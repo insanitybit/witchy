@@ -74,16 +74,18 @@ write results only to the matching source site and checked destination. The
 browser host links these imports but refuses execution until it can authenticate
 the same admitted worker descriptor.
 
-Version 14 adds native canonical Net slice adapters. `net_listen_at` receives
-an authenticated Net and an address read slice; it uses the existing admitted
-bind policy and returns an authenticated Listener. `net_send_slice` receives a
-Socket and a UTF-8 read slice. `net_recv_line_size` and `net_recv_bytes_size`
-perform one receive, staging its result on that authenticated Socket; the latter
-takes an Int byte count. `net_take_received_into` consumes that Socket's staged
-result into a checked write slice, returning its byte length. Short or invalid
-output slices, a different socket, an unconsumed earlier receive, and repeated
-fills fail closed. An empty receive is still a result and is consumed by one
-zero-capacity fill. All five imports are omitted by the browser host.
+Version 14 adds native canonical Net slice adapters. Each fallible Net
+operation is one host call that answers an authenticated Net response:
+`net_connect_at`, `net_listen_at` and `net_resolve_at` take an authenticated Net
+and an address read slice; `net_accept_at` takes a Listener; `net_send_at` and
+`net_send_line_at` take a Socket and a UTF-8 read slice; `net_recv_line_at`,
+`net_recv_all_at` and `net_recv_bytes_at` take a Socket (the last with an Int
+byte count). `net_response_status` selects `Ok` or the `CapError` variant,
+`net_response_size`/`net_response_into` copy the payload (received text,
+NUL-joined resolved addresses, or the failure message) into a checked write
+slice, and `net_response_take_socket`/`net_response_take_listener` take what a
+successful operation minted; a take on any other response traps. The browser
+host omits these imports.
 
 ## Import inclusion is tree-shaken
 
@@ -307,7 +309,6 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `fetch_response_into` | `(externref, i32, i32) -> i32` | internal/toolchain service | none | omitted |
 | `fetch_only_at` | `(externref, i32, i32) -> externref` | capability authority | Fetch | omitted |
 | `net_connect` | `(externref, i32) -> externref` | capability authority | Net.Connect | omitted |
-| `net_try_connect` | `(externref, i32) -> externref` | capability authority | Net.Connect | omitted |
 | `net_resolve_size` | `(externref, i32) -> i32` | capability authority | Net.Connect | omitted |
 | `net_connect_pinned` | `(externref, i32, i32, i64, i32) -> externref` | capability authority | Net.Connect | omitted |
 | `net_try_connect_pinned` | `(externref, i32, i32, i64, i32) -> externref` | capability authority | Net.Connect | omitted |
@@ -349,11 +350,13 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `console_print` | `(externref, i32, i32)` | non-authority infrastructure | none | omitted |
 | `regex_match_spans_into` | `(i32, i32, i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |
 | `net_listen_at` | `(externref, i32, i32) -> externref` | capability authority | Net.Listen | omitted |
-| `net_send_slice` | `(externref, i32, i32)` | capability authority | Net.Connect | omitted |
-| `net_recv_line_size` | `(externref) -> i32` | capability authority | Net.Connect | omitted |
-| `net_recv_bytes_size` | `(externref, i64) -> i32` | capability authority | Net.Connect | omitted |
-| `net_take_received_into` | `(externref, i32, i32) -> i32` | capability authority | Net.Connect | omitted |
-| `net_recv_all_size` | `(externref) -> i32` | capability authority | Net.Connect | omitted |
+| `net_accept_at` | `(externref) -> externref` | capability authority | Net.Listen | omitted |
+| `net_send_at` | `(externref, i32, i32) -> externref` | capability authority | Net.Connect | omitted |
+| `net_send_line_at` | `(externref, i32, i32) -> externref` | capability authority | Net.Connect | omitted |
+| `net_recv_line_at` | `(externref) -> externref` | capability authority | Net.Connect | omitted |
+| `net_recv_bytes_at` | `(externref, i64) -> externref` | capability authority | Net.Connect | omitted |
+| `net_recv_all_at` | `(externref) -> externref` | capability authority | Net.Connect | omitted |
+| `net_resolve_at` | `(externref, i32, i32) -> externref` | capability authority | Net.Connect | omitted |
 | `net_connect_at` | `(externref, i32, i32) -> externref` | capability authority | Net.Connect | omitted |
 | `net_only_at` | `(externref, i32, i32) -> externref` | capability authority | Net.grant | omitted |
 | `net_deny_at` | `(externref, i32, i32) -> externref` | capability authority | Net.grant | omitted |
@@ -361,6 +364,8 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `net_response_size` | `(externref) -> i32` | capability authority | Net.grant | omitted |
 | `net_response_into` | `(externref, i32, i32) -> i32` | capability authority | Net.grant | omitted |
 | `net_response_take_net` | `(externref) -> externref` | capability authority | Net.grant | omitted |
+| `net_response_take_socket` | `(externref) -> externref` | capability authority | Net.grant | omitted |
+| `net_response_take_listener` | `(externref) -> externref` | capability authority | Net.grant | omitted |
 | `__witchy_abort_at` | `(i32, i32, i32, i32, i32)` | runtime diagnostic | none | omitted |
 | `__witchy_list_bounds_at` | `(i64, i32, i32, i32, i32)` | runtime diagnostic | none | omitted |
 | `__witchy_bytes_bounds_at` | `(i64, i32, i32, i32, i32)` | runtime diagnostic | none | omitted |

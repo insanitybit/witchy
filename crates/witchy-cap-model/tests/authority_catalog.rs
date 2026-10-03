@@ -156,14 +156,14 @@ fn derived_only_kinds_cannot_be_roots_or_root_mint_targets() {
 
 #[test]
 fn the_complete_semantic_operation_catalog_is_unique_and_well_formed() {
-    assert_eq!(AUTHORITY_OPERATIONS.len(), 59);
+    assert_eq!(AUTHORITY_OPERATIONS.len(), 58);
     assert_eq!(
         AUTHORITY_OPERATIONS
             .iter()
             .map(|operation| operation.id)
             .collect::<BTreeSet<_>>()
             .len(),
-        59
+        58
     );
     assert_eq!(
         AUTHORITY_OPERATIONS
@@ -171,7 +171,7 @@ fn the_complete_semantic_operation_catalog_is_unique_and_well_formed() {
             .map(|operation| operation.name)
             .collect::<BTreeSet<_>>()
             .len(),
-        59
+        58
     );
 
     let receivers = AUTHORITY_OPERATIONS

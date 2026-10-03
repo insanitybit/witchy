@@ -759,7 +759,7 @@ fn caps_counts_comptime_emitted_apis() {
     let src = write(
         &dir,
         "c.witchy",
-        "comptime:\n    emit_item(quote item:\n        pub fn generated(net: Net, addr: String) -> String:\n            net.connect(addr).recv_all()\n    )\ncomptime:\n    emit_item(quote item:\n        pub fn generated_after() -> Int:\n            42\n    )\n\nfn main(console: Console):\n    console.print(\"hi\")\n",
+        "comptime:\n    emit_item(quote item:\n        pub fn generated(net: Net, addr: String) -> Result(String, CapError):\n            net.connect(addr)?.recv_all()\n    )\ncomptime:\n    emit_item(quote item:\n        pub fn generated_after() -> Int:\n            42\n    )\n\nfn main(console: Console):\n    console.print(\"hi\")\n",
     );
     let out = run(&["caps", &src]);
     assert!(out.status.success(), "caps should succeed: {}", String::from_utf8_lossy(&out.stderr));

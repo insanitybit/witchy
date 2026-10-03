@@ -21,12 +21,12 @@ pub fn load(dir: Dir[Read], name: String) -> String:
 
 // A TCP client. `Net[Connect, Tcp]` can dial out over TCP but cannot `listen`,
 // and is pinned to TCP (`Udp`/`Uds` are type-level markers — not implemented).
-pub fn fetch(net: Net[Connect, Tcp], addr: String) -> String:
-    net.connect(addr).recv_all()
+pub fn fetch(net: Net[Connect, Tcp], addr: String) -> Result(String, CapError):
+    net.connect(addr)?.recv_all()
 
 // A server. `Net[Listen]` can accept inbound connections but cannot dial out;
 // `net.connect(..)` here would be a compile error.
-pub fn serve(net: Net[Listen], addr: String) -> Listener:
+pub fn serve(net: Net[Listen], addr: String) -> Result(Listener, CapError):
     net.listen(addr)
 
 fn main(console: Console, root: Dir):

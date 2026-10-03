@@ -53,8 +53,8 @@ use crate::typeck;
     #[test]
     fn implicit_narrowing_at_call_boundaries() {
         // A full `Net`/`Dir` coerces into a narrowed parameter — no `as` needed.
-        ok("fn fetch(n: Net[Connect]) -> Socket:\n    n.connect(\"a:1\")\nfn main(c: Console, net: Net):\n    let s = fetch(net)\n");
-        ok("fn dial(n: Net[Connect, Tcp]) -> Socket:\n    n.connect(\"a:1\")\nfn main(c: Console, net: Net):\n    let s = dial(net)\n");
+        ok("fn fetch(n: Net[Connect]):\n    let s = n.connect(\"a:1\")\nfn main(c: Console, net: Net):\n    fetch(net)\n");
+        ok("fn dial(n: Net[Connect, Tcp]):\n    let s = n.connect(\"a:1\")\nfn main(c: Console, net: Net):\n    dial(net)\n");
         ok("fn load(d: Dir[Read]) -> String:\n    d.read(\"f\") ?? \"\"\nfn main(c: Console, root: Dir):\n    let x = load(root)\n");
         // The type ceiling holds: a `Net[Connect]` cannot be re-widened to satisfy
         // a full-`Net` parameter (soundness — no laundering authority back up).

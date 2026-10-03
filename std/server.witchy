@@ -385,8 +385,10 @@ fn join_segs(xs: List(String)) -> String:
     out
 
 // ---- Request parsing from the socket ----
+// A failed receive reads as an empty line, so the request is rejected as
+// malformed rather than aborting the server.
 fn read_request(sock: Socket) -> Result(Request, Response):
-    let request_line = sock.recv_line()
+    let request_line = sock.recv_line() ?? ""
     match validate_request_line(request_line):
         Err(e) -> Err(request_parse_error_response(e))
         Ok((m, target)) ->
@@ -396,14 +398,14 @@ fn read_request(sock: Socket) -> Result(Request, Response):
             match framed_length(headers):
                 Err(e) -> Err(request_parse_error_response(e))
                 Ok(len) ->
-                    let body = if len > 0: sock.recv_bytes(len) else: ""
+                    let body = if len > 0: sock.recv_bytes(len) ?? "" else: ""
                     Ok(Request(m, raw_path, [], q, headers, body))
 
 fn read_headers(sock: Socket) -> List((String, String)):
     var hdrs = []
     var done = false
     while !done:
-        let line = sock.recv_line().trim()
+        let line = (sock.recv_line() ?? "").trim()
         if line == "":
             done = true
         else:
@@ -731,17 +733,32 @@ fn wrap_layers(handler: fn(Request) -> Response, layers: List(fn(fn(Request) -> 
         h = mw(h)
     h
 
+// A failed send drops that one connection; a failed accept aborts the server
+// with the reason rather than spinning on a listener that cannot accept.
 fn handle_one(server: Listener, handler: fn(Request) -> Response):
-    let sock = server.accept()
-    // A malformed request (e.g. conflicting Content-Length, BUG-390) short-circuits
-    // to its error Response without ever reaching a handler. The request method is
-    // retained for rendering: a HEAD response must not carry body bytes (BUG-376).
-    let (m, resp) = match read_request(sock):
-        Ok(req) -> (method(req), handler(req))
-        Err(err_resp) -> ("", err_resp)
+    match server.accept():
+        Ok(sock) ->
+            // A malformed request (e.g. conflicting Content-Length, BUG-390) short-circuits
+            // to its error Response without ever reaching a handler. The request method is
+            // retained for rendering: a HEAD response must not carry body bytes (BUG-376).
+            let (m, resp) = match read_request(sock):
+                Ok(req) -> (method(req), handler(req))
+                Err(err_resp) -> ("", err_resp)
 
-    sock.send_bytes(render_for(resp, m))
-    sock.close()
+            let _ = sock.send_bytes(render_for(resp, m))
+            sock.close()
+        Err(e) -> fail("server: accept failed: " + e.message())
+
+// Accept on `server` until `n` requests are served, or forever when `n` is
+// negative. `pool` first spreads the listener across one worker VM per core.
+fn serve_on(server: Listener, app: Router, pool: Bool, n: Int):
+    if pool:
+        server.serve_pool()
+    let handler = handler_of(app)
+    var i = 0
+    while n < 0 || i < n:
+        handle_one(server, handler)
+        i = i + 1
 
 // Serve `app` on `addr` forever, using ALL cores. Needs the `Net` capability to
 // listen; handlers never receive it. `serve_pool` spawns one worker VM per core, each
@@ -749,32 +766,25 @@ fn handle_one(server: Listener, handler: fn(Request) -> Response):
 // load-balances connections across them, so the server scales across cores with no
 // extra effort from you. Handlers are ordinary `fn(Request) -> Response` values whose
 // state and delegated authority may live in captures (e.g. a store `Dir` = the
-// filesystem). (For a single-threaded server, use `serve_one`.)
+// filesystem). (For a single-threaded server, use `serve_one`.) Aborts when the grant
+// does not cover `addr` or it is already in use.
 pub fn serve(net: Net[Listen, Tcp], addr: String, app: Router):
-    let server = net.listen(addr)
-    server.serve_pool()
-    let handler = handler_of(app)
-    var running = true
-    while running:
-        handle_one(server, handler)
+    match net.listen(addr):
+        Ok(server) -> serve_on(server, app, true, -1)
+        Err(e) -> fail("server: cannot listen: " + e.message())
 
 // Serve `app` on `addr` forever on a SINGLE core (one accept loop, no worker pool) -
 // for servers with per-process in-memory state, or when one core is plenty.
 pub fn serve_one(net: Net[Listen, Tcp], addr: String, app: Router):
-    let server = net.listen(addr)
-    let handler = handler_of(app)
-    var running = true
-    while running:
-        handle_one(server, handler)
+    match net.listen(addr):
+        Ok(server) -> serve_on(server, app, false, -1)
+        Err(e) -> fail("server: cannot listen: " + e.message())
 
 // Serve exactly `n` requests then return - for tests and one-shot servers.
 pub fn serve_n(net: Net[Listen, Tcp], addr: String, app: Router, n: Int):
-    let server = net.listen(addr)
-    let handler = handler_of(app)
-    var i = 0
-    while i < n:
-        handle_one(server, handler)
-        i = i + 1
+    match net.listen(addr):
+        Ok(server) -> serve_on(server, app, false, n)
+        Err(e) -> fail("server: cannot listen: " + e.message())
 
 // Serve `app` over HTTPS on `addr` forever, using ALL cores - `serve` with TLS
 // terminated by the host. `cert_pem` is the PUBLIC certificate chain (PEM text -

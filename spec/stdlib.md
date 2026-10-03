@@ -4093,7 +4093,7 @@ Serialize a `Response` to its HTTP/1.1 wire form (inverse of `http.parse_respons
 
 #### `fn serve(net: Net[Listen, Tcp], addr: String, app: Router)`
 
-Serve `app` on `addr` forever, using ALL cores. Needs the `Net` capability to listen; handlers never receive it. `serve_pool` spawns one worker VM per core, each re-running this program and accepting from the SAME bound listener - the kernel load-balances connections across them, so the server scales across cores with no extra effort from you. Handlers are ordinary `fn(Request) -> Response` values whose state and delegated authority may live in captures (e.g. a store `Dir` = the filesystem). (For a single-threaded server, use `serve_one`.)
+Serve `app` on `addr` forever, using ALL cores. Needs the `Net` capability to listen; handlers never receive it. `serve_pool` spawns one worker VM per core, each re-running this program and accepting from the SAME bound listener - the kernel load-balances connections across them, so the server scales across cores with no extra effort from you. Handlers are ordinary `fn(Request) -> Response` values whose state and delegated authority may live in captures (e.g. a store `Dir` = the filesystem). (For a single-threaded server, use `serve_one`.) Aborts when the grant does not cover `addr` or it is already in use.
 
 #### `fn serve_one(net: Net[Listen, Tcp], addr: String, app: Router)`
 

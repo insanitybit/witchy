@@ -361,36 +361,35 @@ fn main(console: Console, argv: List(String)):
     }
 
     /// SEC-050: possessing authority for one endpoint must not turn `Net.resolve`
-    /// into an ambient DNS-query channel for unrelated names. Compiled Wasm
-    /// rejects before consulting the resolver.
+    /// into an ambient DNS-query channel for unrelated names. Admitted Wasm
+    /// answers `Denied` before consulting the resolver.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn net_resolve_requires_queried_host_authority_on_compiled_wasm() {
         use crate::runtime::{Capabilities, Runtime};
         let src = "fn main(console: Console, net: Net):\n\
-                   \x20   let ips = net.resolve(\"unrelated.invalid\")\n\
-                   \x20   console.print(\"${ips}\")\n";
-        let linked = resolve_std_src(src);
-        typeck::check(&linked).expect("typecheck");
-        let allow = vec!["127.0.0.1:9".to_string()];
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
-        let mut runtime = Runtime::new().expect("runtime");
+                   \x20   match net.resolve(\"unrelated.invalid\"):\n\
+                   \x20       Ok(_) -> console.print(\"resolved\")\n\
+                   \x20       Err(e) -> console.print(e.message())\n";
+        let checked = witchy::resolve_std_only_checked(src).expect("checked resolve source");
+        let artifact = codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("the canonical path lowers net.resolve");
+        let mut runtime = Runtime::batch().expect("runtime");
         let mut actor = runtime
-            .spawn(
-                &bytes,
+            .spawn_admitted(
+                &artifact,
                 Capabilities {
                     print: true,
                     quiet: true,
-                    net_allow: Some(allow),
+                    net_allow: Some(vec!["127.0.0.1:9".to_string()]),
                     net_connect: true,
                     ..Default::default()
                 },
                 64,
             )
             .expect("spawn");
-        let compiled_error = actor.run().expect_err("compiled backend must deny the DNS query");
-        assert!(compiled_error.to_string().contains("not permitted"), "{compiled_error}");
+        actor.run().expect("a denied resolve is a value, not a trap");
+        assert_eq!(actor.output(), vec!["`unrelated.invalid` is not permitted by this Net capability".to_string()]);
     }
 
     /// RFC-0020: `connect_pinned` re-checks the Net allowlist on the PINNED IP — a hostile or
@@ -403,7 +402,7 @@ fn main(console: Console, argv: List(String)):
         use crate::runtime::{Capabilities, Runtime};
         let src = "fn main(console: Console, net: Net):\n\
 	                   \x20   let s = net.connect_pinned(\"127.0.0.1\", \"example.com\", 80, false)\n\
-                   \x20   s.send_line(\"x\")\n";
+                   \x20   s.close()\n";
         let linked = resolve_std_src(src);
         typeck::check(&linked).expect("typecheck");
         // Granted only 93.184.216.34:80 (a public IP) — the loopback pin is outside it.

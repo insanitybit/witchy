@@ -1290,17 +1290,11 @@ fn main() -> Int:
         // A listen-only handle accepts inbound.
         check_str("fn f(console: Console, net: Net[Listen]):\n    let l = net.listen(\"0.0.0.0:80\")\n    console.print(\"ok\")\n")
             .expect("Net[Listen] can listen");
-        // ... but it cannot dial out (`connect` or its total sibling `try_connect`).
+        // ... but it cannot dial out (`connect`).
         let err = check_str("fn f(net: Net[Listen]):\n    net.connect(\"example.com:443\")\n")
             .expect_err("Net[Listen] must not connect");
         assert!(
             err.contains("`connect` needs `Connect`") && err.contains("Net[Listen]"),
-            "got: {err}"
-        );
-        let err = check_str("fn f(net: Net[Listen]):\n    net.try_connect(\"example.com:443\")\n")
-            .expect_err("Net[Listen] must not try_connect");
-        assert!(
-            err.contains("`try_connect` needs `Connect`") && err.contains("Net[Listen]"),
             "got: {err}"
         );
         // The transport axis attenuates independently: `connect`/`listen` are TCP-only,

@@ -389,6 +389,12 @@ fn require_capability_data<T: CaptureAuthority>(state: &T, data: &dyn std::any::
         3 => data.is::<super::super::FileAuthority>(),
         id if id == witchy_wir::canonical_safewir::NET_CAPABILITY_KIND.get() =>
             data.is::<super::super::NetAuthority>(),
+        id if id == witchy_wir::canonical_safewir::SOCKET_CAPABILITY_KIND.get() =>
+            data.is::<super::super::SocketResource>(),
+        id if id == witchy_wir::canonical_safewir::LISTENER_CAPABILITY_KIND.get() =>
+            data.is::<super::super::ListenerResource>(),
+        id if id == witchy_wir::canonical_safewir::NET_RESPONSE_KIND.get() =>
+            data.is::<super::network::policy::NetResponse>(),
         id if id == witchy_wir::canonical_safewir::EXEC_CAPABILITY_KIND.get() =>
             data.is::<super::super::ExecAuthority>(),
         _ => false,

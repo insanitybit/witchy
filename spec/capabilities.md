@@ -116,6 +116,13 @@ right and not an allowlist scheme but a *connect-time* `tls:` choice on the
 address you dial (`net.connect("tls:github.com:443")`), terminated on the host -
 see [RFC-0009](../rfcs/retired-rfcs.md).
 
+A Net operation that fails at run time returns `Result(T, CapError)`
+(RFC-0126): `connect`, `listen`, `accept`, `resolve`, and the socket's
+`send_line`, `send_bytes`, `recv_line`, `recv_all` and `recv_bytes`. An address
+the grant does not admit is `Denied`, whether or not it resolves or answers. A
+refused, reset or timed-out connection is `Io` with a fixed reason, and binding
+an address already in use is `AlreadyExists`.
+
 **Resolve-once-and-pin.** `connect` resolves a hostname a *single* time: the IP set
 checked against the allowlist is the same set dialed - no code path re-resolves
 between the check and the connection, so a name cannot rebind to a different

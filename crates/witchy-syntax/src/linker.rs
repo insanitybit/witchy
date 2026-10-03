@@ -160,7 +160,6 @@ const BUILTINS: &[&str] = &[
     "subtree",
     "exec",
     "connect",
-    "try_connect",
     "send_line",
     "recv_line",
     "send_bytes",

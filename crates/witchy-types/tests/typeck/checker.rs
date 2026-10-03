@@ -802,7 +802,10 @@ fn main(console: Console, f: File[Read]):
         let src = r#"
 fn main(rand: Rand, net: Net[Listen, Tcp]):
     let _ = rand.rand_u64()
-    let listener = net.listen("127.0.0.1:0")
+    if let Ok(listener) = net.listen("127.0.0.1:0"):
+        pool(listener)
+
+fn pool(listener: Listener):
     listener.serve_pool()
 "#;
         assert!(check_str(src).is_ok());
@@ -821,7 +824,15 @@ fn main(rand: Rand, net: Net[Listen, Tcp]):
             panic!("expected lowered rand.rand_u64 call");
         };
         assert_eq!(rand_name, "__capop.rand_u64");
-        let Some(Stmt::Expr(Expr::Call { name: serve_name, .. })) = main.body.stmts.last() else {
+        let pool = lowered
+            .items
+            .iter()
+            .find_map(|item| match item {
+                Item::Function(f) if f.name == "pool" => Some(f),
+                _ => None,
+            })
+            .expect("pool");
+        let Some(Stmt::Expr(Expr::Call { name: serve_name, .. })) = pool.body.stmts.last() else {
             panic!("expected lowered listener.serve_pool call");
         };
         assert_eq!(serve_name, "__capop.serve_pool");

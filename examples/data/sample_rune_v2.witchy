@@ -3,5 +3,5 @@
 pub fn load(dir: Dir[Read], name: String) -> Result(String, CapError):
     dir.read(name)
 
-pub fn fetch(net: Net[Connect, Listen], addr: String) -> String:
-    net.connect(addr).recv_all()
+pub fn fetch(net: Net[Connect, Listen], addr: String) -> Result(String, CapError):
+    net.connect(addr)?.recv_all()

@@ -412,50 +412,6 @@ fn main(console: Console):
         }
     }
 
-    /// RFC-0020 step 1: the IPv6 SSRF/rebinding defense, end to end. A program granted `[::1]:80`
-    /// that `net.deny(Net.private())` CANNOT connect to `[::1]:80` — the loopback is now
-    /// CIDR-matched by the deny (before this, `Net.private()`'s IPv6 ranges only ever
-    /// exact-matched, so an internal IPv6 slipped through). Refused identically on both backends
-    /// (the allow-list check is the shared `net_allows`).
-    #[test]
-    fn net_deny_private_blocks_internal_ipv6_on_both_backends() {
-        use crate::runtime::{Capabilities, Runtime};
-        let src = "\
-                   fn main(console: Console, net: Net):\n\
-                   \x20   let safe = net.deny(Net.private())\n\
-                   \x20   let s = safe.connect(\"[::1]:80\")\n\
-                   \x20   s.send_line(\"x\")\n";
-        let linked = resolve_std_src(src);
-        typeck::check(&linked).expect("typecheck");
-        // Interpreter: granted the loopback, then it denies the private ranges.
-        assert!(
-            interpreter::run_module(linked.clone(), ".", vec!["[::1]:80".into()]).is_err(),
-            "interp must refuse an internal IPv6 connect after net.deny(private())"
-        );
-        // Compiled: same grant, same refusal.
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
-        let mut rt = Runtime::new().expect("runtime");
-        let mut actor = rt
-            .spawn(
-                &bytes,
-                Capabilities {
-                    print: true,
-                    quiet: true,
-                    net_allow: Some(vec!["[::1]:80".to_string()]),
-                    net_connect: true,
-                    net_listen: true,
-                    ..Default::default()
-                },
-                64,
-            )
-            .expect("spawn");
-        assert!(
-            actor.run().is_err(),
-            "compiled must refuse an internal IPv6 connect after net.deny(private())"
-        );
-    }
-
     #[test]
     fn fetch_capability_raw_abi_agrees_across_backends() {
         use crate::runtime::{Capabilities, Runtime};
@@ -552,124 +508,9 @@ fn main(console: Console):
         server.join().expect("server");
     }
 
-    /// The Net family compiles to capability-gated host imports and agrees with
-    /// the interpreter: a client connects to an allowlisted loopback server,
-    /// exchanges a line on both backends, and a non-allowlisted address FAILS
-    /// on both.
-    #[test]
-    fn net_capability_compiles_to_wasm_and_confines() {
-        use crate::runtime::{Capabilities, Runtime};
-        use std::io::{BufRead, Write};
-        let server = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
-        let addr = format!("127.0.0.1:{}", server.local_addr().unwrap().port());
-        // One echo exchange per backend run.
-        let handle = std::thread::spawn(move || {
-            for _ in 0..2 {
-                let (stream, _) = server.accept().expect("accept");
-                let mut reader = std::io::BufReader::new(stream);
-                let mut line = String::new();
-                reader.read_line(&mut line).expect("read");
-                let reply = format!("echo: {}\n", line.trim_end());
-                reader.get_mut().write_all(reply.as_bytes()).expect("write");
-            }
-        });
-
-        let src = format!(
-            "fn main(console: Console, net: Net):\n    let sock = net.connect(\"{addr}\")\n    sock.send_line(\"hello\")\n    console.print(sock.recv_line())\n    sock.close()\n"
-        );
-        let want = vec!["echo: hello".to_string()];
-        assert_eq!(
-            interpreter::run_with(&src, ".", vec![addr.clone()]).expect("interp"),
-            want,
-            "interpreter"
-        );
-        let module = parser::parse_module(&src).expect("parse");
-        let bytes = codegen::compile_module_binary(&module)
-            .expect_lowered("the binary path lowers this program");
-        let mut rt = Runtime::batch().expect("runtime");
-        let mut actor = rt
-            .spawn(
-                &bytes,
-                Capabilities {
-                    print: true,
-                    quiet: true,
-                    net_allow: Some(vec![addr.clone()]),
-                    net_connect: true,
-                    ..Default::default()
-                },
-                64,
-            )
-            .expect("spawn");
-        actor.run().expect("run");
-        assert_eq!(actor.output(), want, "compiled WASM must agree");
-        handle.join().expect("server thread");
-
-        // A non-allowlisted address fails on BOTH backends.
-        let bad = "fn main(console: Console, net: Net):\n    let sock = net.connect(\"127.0.0.1:1\")\n    console.print(\"connected\")\n";
-        assert!(
-            interpreter::run_with(bad, ".", vec![addr.clone()]).is_err(),
-            "interp must reject a non-allowlisted address"
-        );
-        let m = parser::parse_module(bad).expect("parse");
-        let wbytes = codegen::compile_module_binary(&m)
-            .expect_lowered("the binary path lowers this program");
-        let mut rt = Runtime::batch().expect("runtime");
-        let mut a = rt
-            .spawn(
-                &wbytes,
-                Capabilities {
-                    print: true,
-                    quiet: true,
-                    net_allow: Some(vec![addr]),
-                    net_connect: true,
-                    ..Default::default()
-                },
-                64,
-            )
-            .expect("spawn");
-        assert!(a.run().is_err(), "WASM must trap on a non-allowlisted address");
-    }
-
-    /// Net verbs are enforced at the GRANT: a listening module cannot
-    /// instantiate under a connect-only grant, and any net import fails with no
-    /// grant at all.
-    #[test]
-    fn net_rights_enforced_at_instantiation() {
-        use crate::runtime::{Capabilities, Runtime};
-        let listener_src = "fn main(console: Console, net: Net):\n    let l = net.listen(\"127.0.0.1:39999\")\n    console.print(\"listening\")\n";
-        let m = parser::parse_module(listener_src).expect("parse");
-        let wbytes = codegen::compile_module_binary(&m)
-            .expect_lowered("the binary path lowers this program");
-        let mut rt = Runtime::batch().expect("runtime");
-        let denied = rt.spawn(
-            &wbytes,
-            Capabilities {
-                print: true,
-                quiet: true,
-                net_allow: Some(vec!["127.0.0.1:39999".into()]),
-                net_connect: true,
-                net_listen: false,
-                ..Default::default()
-            },
-            64,
-        );
-        assert!(denied.is_err(), "listen import must not instantiate under connect-only");
-        let client = "fn main(console: Console, net: Net):\n    let s = net.connect(\"127.0.0.1:1\")\n    console.print(\"x\")\n";
-        let m = parser::parse_module(client).expect("parse");
-        let wbytes = codegen::compile_module_binary(&m)
-            .expect_lowered("the binary path lowers this program");
-        let mut rt = Runtime::batch().expect("runtime");
-        let denied = rt.spawn(
-            &wbytes,
-            Capabilities { print: true, quiet: true, ..Default::default() },
-            64,
-        );
-        assert!(denied.is_err(), "net import must not instantiate without a Net grant");
-    }
-
-    /// Run `src` as unoptimized admitted Wasm under a Connect grant for
-    /// `net_allow`; a trap is `Err` with its root cause.
-    fn run_admitted_net(src: &str, net_allow: &[String]) -> Result<Vec<String>, String> {
+    /// Run `src` as unoptimized admitted Wasm under `caps`; a refused launch
+    /// or a trap is `Err` with its root cause.
+    fn run_admitted_net_with(src: &str, caps: crate::runtime::Capabilities) -> Result<Vec<String>, String> {
         struct ResetOptimization;
         impl Drop for ResetOptimization {
             fn drop(&mut self) { crate::opt::set_for_tests(None); }
@@ -679,14 +520,122 @@ fn main(console: Console):
         let checked = witchy::resolve_std_only_checked(src).expect("check Net program");
         let artifact = codegen::compile_checked_module_artifact(&checked)
             .expect_lowered("admit Net program");
-        let caps = crate::runtime::Capabilities {
-            print: true, quiet: true, net_allow: Some(net_allow.to_vec()), net_connect: true,
-            ..Default::default()
-        };
         let mut rt = crate::runtime::Runtime::batch().expect("runtime");
-        let mut vm = rt.spawn_admitted(&artifact, caps, 64).expect("spawn admitted Net program");
+        let mut vm = rt.spawn_admitted(&artifact, caps, 64).map_err(|error| error.root_cause().to_string())?;
         vm.run().map_err(|error| error.root_cause().to_string())?;
         Ok(vm.output())
+    }
+
+    /// `run_admitted_net_with` under a Connect and Listen grant for `net_allow`.
+    fn run_admitted_net(src: &str, net_allow: &[String]) -> Result<Vec<String>, String> {
+        run_admitted_net_with(src, crate::runtime::Capabilities {
+            print: true, quiet: true, net_allow: Some(net_allow.to_vec()), net_connect: true, net_listen: true,
+            ..Default::default()
+        })
+    }
+
+    /// The `CapError` classes a Net operation answers, rendered independently
+    /// of `show`.
+    const SHOW_NET: &str = "fn shown(r: Result(String, CapError)) -> String:\n    match r:\n        Ok(text) -> \"ok: \" + text\n        Err(Denied(m)) -> \"denied: \" + m\n        Err(AlreadyExists(m)) -> \"exists: \" + m\n        Err(Io(m)) -> \"io: \" + m\n        Err(_) -> \"other\"\n\nfn sent(r: Result((), CapError)) -> String:\n    match r:\n        Ok(_) -> \"sent\"\n        Err(e) -> \"send: \" + e.message()\n\n";
+
+    /// RFC-0126 rule 3 for Net, as admitted Wasm over loopback. An exchange
+    /// with an allowlisted echo server succeeds. An address outside the grant
+    /// is `Denied`, decided before any socket or DNS activity: `localhost` is
+    /// never resolved. A refused connection is `Io` with a fixed reason, and
+    /// binding an address already in use is `AlreadyExists`. No message names
+    /// more than the address the program supplied.
+    #[test]
+    fn net_operations_answer_cap_errors() {
+        use std::io::{BufRead, Write};
+        let echo = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = echo.local_addr().expect("local address").port();
+        let busy = std::net::TcpListener::bind("127.0.0.1:0").expect("bind busy");
+        let busy_port = busy.local_addr().expect("busy address").port();
+        let closed = {
+            let probe = std::net::TcpListener::bind("127.0.0.1:0").expect("bind probe");
+            probe.local_addr().expect("probe address").port()
+        };
+        let server = std::thread::spawn(move || {
+            let (stream, _) = echo.accept().expect("accept");
+            let mut reader = std::io::BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("read");
+            reader.get_mut().write_all(format!("echo: {}\n", line.trim_end()).as_bytes()).expect("write");
+        });
+        let src = format!(r#"{SHOW_NET}fn listened(r: Result(Listener, CapError)) -> String:
+    match r:
+        Ok(_) -> "listening"
+        Err(e) -> shown(Err(e))
+
+fn main(console: Console, net: Net):
+    match net.connect("127.0.0.1:{port}"):
+        Ok(sock) ->
+            console.print(sent(sock.send_line("hello")))
+            console.print(shown(sock.recv_line()))
+            console.print(shown(sock.recv_all()))
+            sock.close()
+        Err(e) -> console.print(shown(Err(e)))
+    match net.connect("127.0.0.1:{closed}"):
+        Ok(_) -> console.print("connected")
+        Err(e) -> console.print(shown(Err(e)))
+    match net.connect("10.9.9.9:80"):
+        Ok(_) -> console.print("connected")
+        Err(e) -> console.print(shown(Err(e)))
+    match net.resolve("localhost"):
+        Ok(_) -> console.print("resolved")
+        Err(e) -> console.print(shown(Err(e)))
+    match net.resolve("127.0.0.1"):
+        Ok(ips) ->
+            for ip in ips:
+                console.print("ip: " + ip)
+        Err(e) -> console.print(shown(Err(e)))
+    console.print(listened(net.listen("127.0.0.1:{busy_port}")))
+    console.print(listened(net.listen("127.0.0.1:1")))
+"#);
+        let allow = vec![format!("127.0.0.1:{port}"), format!("127.0.0.1:{closed}"), format!("127.0.0.1:{busy_port}")];
+        assert_eq!(run_admitted_net(&src, &allow).expect("run"), vec![
+            "sent".to_string(),
+            "ok: echo: hello".to_string(),
+            "ok: ".to_string(),
+            format!("io: `127.0.0.1:{closed}`: connection refused"),
+            "denied: `10.9.9.9:80` is not permitted by this Net capability".to_string(),
+            "denied: `localhost` is not permitted by this Net capability".to_string(),
+            "ip: 127.0.0.1".to_string(),
+            format!("exists: `127.0.0.1:{busy_port}` is already in use"),
+            "denied: `127.0.0.1:1` is not permitted by this Net capability".to_string(),
+        ]);
+        server.join().expect("echo server");
+        drop(busy);
+    }
+
+    /// RFC-0020: a program granted `[::1]:80` that `net.deny(Net.private())`
+    /// cannot dial `[::1]:80`: the loopback is CIDR-matched by the deny, so
+    /// the dial is `Denied`.
+    #[test]
+    fn net_deny_private_blocks_internal_ipv6() {
+        let src = format!(r#"{SHOW_NET}fn main(console: Console, net: Net):
+    match net.deny(Net.private()).connect("[::1]:80"):
+        Ok(_) -> console.print("connected")
+        Err(e) -> console.print(shown(Err(e)))
+"#);
+        assert_eq!(run_admitted_net(&src, &["[::1]:80".to_string()]).expect("run"),
+            vec!["denied: `[::1]:80` is not permitted by this Net capability".to_string()]);
+    }
+
+    /// Net verbs are enforced at the grant: a module that listens traps under a
+    /// connect-only grant, and a Net program cannot launch with no grant.
+    #[test]
+    fn net_rights_enforced_by_the_grant() {
+        use crate::runtime::Capabilities;
+        let listener = "fn main(console: Console, net: Net):\n    match net.listen(\"127.0.0.1:0\"):\n        Ok(_) -> console.print(\"listening\")\n        Err(_) -> console.print(\"refused\")\n";
+        let error = run_admitted_net_with(listener, Capabilities {
+            print: true, quiet: true, net_allow: Some(vec!["127.0.0.1:0".into()]), net_connect: true, net_listen: false,
+            ..Default::default()
+        }).expect_err("listen must not run under a connect-only grant");
+        assert!(error.contains("Listen right"), "{error}");
+        let client = "fn main(console: Console, net: Net):\n    match net.connect(\"127.0.0.1:1\"):\n        Ok(_) -> console.print(\"x\")\n        Err(_) -> console.print(\"y\")\n";
+        assert!(run_admitted_net_with(client, Capabilities { print: true, quiet: true, ..Default::default() }).is_err(),
+            "a Net program must not run without a Net grant");
     }
 
     /// RFC-0126 rule 3: `net.only(policy)` is `Result(Net, CapError)`. A
@@ -721,10 +670,12 @@ fn main(console: Console, net: Net):
     match net.only(Net.tcp("127.0.0.1", {port})):
         Ok(narrowed) ->
             console.print(verdict(narrowed.only(Net.tcp("10.0.0.5", 6379))))
-            let sock = narrowed.connect("127.0.0.1:{port}")
-            sock.send_bytes("hello\n")
-            console.print(sock.recv_line())
-            sock.close()
+            match narrowed.connect("127.0.0.1:{port}"):
+                Ok(sock) ->
+                    let _ = sock.send_bytes("hello\n")
+                    console.print(sock.recv_line() ?? "no line")
+                    sock.close()
+                Err(_) -> console.print("unexpected")
         Err(_) -> console.print("unexpected")
 "#);
         let allow = vec![format!("127.0.0.1:{port}"), "10.0.0.5:6379".to_string(), "10.0.0.6:6379".to_string()];
@@ -747,12 +698,12 @@ fn main(console: Console, net: Net):
 fn main(console: Console, net: Net):
     match net.only(Net.tcp("a.test", 80)):
         Ok(narrow) ->
-            let sock = narrow.connect("b.test:80")
-            sock.close()
+            match narrow.connect("b.test:80"):
+                Ok(_) -> console.print("connected")
+                Err(e) -> console.print(e.message())
         Err(_) -> console.print("unexpected")
 "#;
-        let e = run_admitted_net(attenuated, &["a.test:80".to_string(), "b.test:80".to_string()])
-            .expect_err("the sibling must be unreachable");
-        assert!(e.contains("not permitted"), "expected the sibling to be unreachable, got: {e}");
+        assert_eq!(run_admitted_net(attenuated, &["a.test:80".to_string(), "b.test:80".to_string()]).expect("run"),
+            vec!["`b.test:80` is not permitted by this Net capability".to_string()]);
     }
 

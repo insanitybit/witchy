@@ -12,7 +12,7 @@ use crate::net::Stream;
 #[path = "canonical_network.rs"]
 mod canonical;
 #[path = "canonical_net_policy.rs"]
-mod policy;
+pub(super) mod policy;
 
 /// Register the checked canonical Net ABI.  Registering these imports does not
 /// grant network authority: every operation first authenticates an opaque,
@@ -46,7 +46,6 @@ pub(in crate::runtime) fn link_connect(linker: &mut Linker<VmState>) -> Result<(
     linker.func_wrap("witchy", "net_restrict", host_net_restrict)?;
     linker.func_wrap("witchy", "net_deny", host_net_deny)?;
     linker.func_wrap("witchy", "net_connect", host_net_connect)?;
-    linker.func_wrap("witchy", "net_try_connect", host_net_try_connect)?;
     linker.func_wrap("witchy", "net_resolve_size", host_net_resolve_size)?;
     linker.func_wrap("witchy", "net_connect_pinned", host_net_connect_pinned)?;
     linker.func_wrap("witchy", "net_try_connect_pinned", host_net_try_connect_pinned)?;
@@ -122,7 +121,6 @@ fn socket_ref(
 ) -> Result<Option<Rooted<ExternRef>>> {
     ExternRef::new(caller, SocketResource {
         stream: Arc::new(Mutex::new(std::io::BufReader::new(stream))),
-        canonical_pending: Arc::new(Mutex::new(None)),
     }).map(Some)
 }
 
@@ -187,26 +185,6 @@ fn connect_address(mut caller: Caller<'_, VmState>, net: NetAuthority, addr: Str
     let stream = crate::net::dial(&targets, tls, host_port)
         .map_err(|e| Error::msg(format!("connect to `{addr}` failed: {e}")))?;
     socket_ref(&mut caller, stream)
-}
-
-/// `net_try_connect(net, addr) -> Option(Socket)`: failed connection yields null
-/// (Witchy's nullable-externref `None`) instead of trapping. A capability
-/// violation still traps: that is a policy breach, not transient network weather.
-fn host_net_try_connect(
-    mut caller: Caller<'_, VmState>,
-    net_ref: Option<Rooted<ExternRef>>,
-    addr_ptr: i32,
-) -> Result<Option<Rooted<ExternRef>>> {
-    let mem = memory_of(&mut caller)?;
-    let addr = read_wstr(mem.data(&caller), addr_ptr)?;
-    let net = net_authority_ref(&caller, net_ref)?;
-    let (tls, host_port) = crate::net::parse_scheme(&addr);
-    let targets = witchy_caps::capabilities::resolve_admitted(&net.allow, host_port)
-        .map_err(|e| Error::msg(format!("try_connect: {e}")))?;
-    match crate::net::dial(&targets, tls, host_port) {
-        Ok(stream) => socket_ref(&mut caller, stream),
-        Err(_) => Ok(None),
-    }
 }
 
 /// `net_resolve_size(net, host_ptr) -> bytes` (RFC-0020): resolve `host` to its

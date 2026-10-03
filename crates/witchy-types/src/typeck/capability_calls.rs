@@ -530,22 +530,6 @@ impl Checker {
                 }
                 Ty::Socket
             }
-            // Like `connect` but total: returns `Option(Socket)` — `None` on a failed
-            // dial instead of trapping. Lets a server (e.g. a proxy) survive a down
-            // upstream. Same rights as `connect`.
-            "try_connect" => {
-                if !rights.connect {
-                    return terr(format!(
-                        "`try_connect` needs `Connect` but the capability is `{rights}`"
-                    ));
-                }
-                if !rights.tcp {
-                    return terr(format!(
-                        "`try_connect` is only implemented over `Tcp`, but the capability is `{rights}`"
-                    ));
-                }
-                Ty::Named("Option".into(), vec![Ty::Socket].into())
-            }
             "listen" => {
                 if !rights.listen {
                     return terr(format!(

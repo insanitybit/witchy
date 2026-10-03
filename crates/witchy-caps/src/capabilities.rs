@@ -486,7 +486,7 @@ pub fn unmintable_main_cap(
 /// an allowlisted name at a disallowed host. A hostname that is itself allowlisted
 /// by string falls back to all of its resolved addresses (hostname allowlists are
 /// an ergonomic, explicitly non-rebinding-proof form; prefer IP/CIDR for untrusted
-/// peers). Used by `connect`/`try_connect` on both backends.
+/// peers). Used by `connect` and `listen`.
 pub fn resolve_admitted(allow: &[String], addr: &str) -> Result<Vec<std::net::SocketAddr>, String> {
     resolve_admitted_typed(allow, addr).map_err(|failure| failure.into_message())
 }
@@ -581,6 +581,12 @@ pub fn resolve_admitted_typed(
 /// DNS itself is observable network authority, so a capability for an unrelated
 /// address must not be usable as an arbitrary DNS-query channel.
 pub fn resolve_host_admitted(allow: &[String], host: &str) -> Result<Vec<std::net::IpAddr>, String> {
+    resolve_host_admitted_typed(allow, host).map_err(|failure| failure.into_message())
+}
+
+/// Like [`resolve_host_admitted`], but distinguishes a capability denial
+/// (decided before any DNS query) from a name-resolution failure.
+pub fn resolve_host_admitted_typed(allow: &[String], host: &str) -> Result<Vec<std::net::IpAddr>, AdmitFailure> {
     use std::net::ToSocketAddrs;
 
     let admitted = allow.iter().filter(|entry| !entry.starts_with('!')).any(|entry| {
@@ -590,7 +596,7 @@ pub fn resolve_host_admitted(allow: &[String], host: &str) -> Result<Vec<std::ne
         net_allows(allow, &target)
     });
     if !admitted {
-        return Err(format!("`{host}` is not permitted by this Net capability"));
+        return Err(AdmitFailure::Denied(format!("`{host}` is not permitted by this Net capability")));
     }
 
     // Query the same canonical DNS identity that policy evaluation admitted.
@@ -601,7 +607,7 @@ pub fn resolve_host_admitted(allow: &[String], host: &str) -> Result<Vec<std::ne
     let mut ips = Vec::new();
     let addrs = (bare, 0u16)
         .to_socket_addrs()
-        .map_err(|error| format!("`{host}` could not be resolved: {error}"))?;
+        .map_err(|error| AdmitFailure::Unresolved(format!("`{host}` could not be resolved: {error}")))?;
     for addr in addrs {
         let ip = normalize_ip(addr.ip());
         if !ips.contains(&ip) {

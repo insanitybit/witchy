@@ -1255,8 +1255,6 @@ struct ExecAuthority {
 #[derive(Clone)]
 struct SocketResource {
     stream: Arc<Mutex<std::io::BufReader<Box<dyn Stream>>>>,
-    /// Canonical receive staging is bound to the actual socket, including aliases.
-    canonical_pending: Arc<Mutex<Option<Vec<u8>>>>,
 }
 
 #[derive(Clone)]

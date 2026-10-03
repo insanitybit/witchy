@@ -305,7 +305,6 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "fetch_response_into" (func $fetch_response_into_host (param externref i32 i32) (result i32)))
   (import "witchy" "fetch_only_at" (func $fetch_only_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "net_connect" (func $net_connect_host (param externref i32) (result externref)))
-  (import "witchy" "net_try_connect" (func $net_try_connect_host (param externref i32) (result externref)))
   (import "witchy" "net_resolve_size" (func $net_resolve_size_host (param externref i32) (result i32)))
   (import "witchy" "net_connect_pinned" (func $net_connect_pinned_host (param externref i32 i32 i64 i32) (result externref)))
   (import "witchy" "net_try_connect_pinned" (func $net_try_connect_pinned_host (param externref i32 i32 i64 i32) (result externref)))
@@ -347,11 +346,13 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "console_print" (func $console_print_host (param externref i32 i32)))
   (import "witchy" "regex_match_spans_into" (func $regex_match_spans_into_host (param i32 i32 i32 i32 i32 i32) (result i32)))
   (import "witchy" "net_listen_at" (func $net_listen_at_host (param externref i32 i32) (result externref)))
-  (import "witchy" "net_send_slice" (func $net_send_slice_host (param externref i32 i32)))
-  (import "witchy" "net_recv_line_size" (func $net_recv_line_size_host (param externref) (result i32)))
-  (import "witchy" "net_recv_bytes_size" (func $net_recv_bytes_size_host (param externref i64) (result i32)))
-  (import "witchy" "net_take_received_into" (func $net_take_received_into_host (param externref i32 i32) (result i32)))
-  (import "witchy" "net_recv_all_size" (func $net_recv_all_size_host (param externref) (result i32)))
+  (import "witchy" "net_accept_at" (func $net_accept_at_host (param externref) (result externref)))
+  (import "witchy" "net_send_at" (func $net_send_at_host (param externref i32 i32) (result externref)))
+  (import "witchy" "net_send_line_at" (func $net_send_line_at_host (param externref i32 i32) (result externref)))
+  (import "witchy" "net_recv_line_at" (func $net_recv_line_at_host (param externref) (result externref)))
+  (import "witchy" "net_recv_bytes_at" (func $net_recv_bytes_at_host (param externref i64) (result externref)))
+  (import "witchy" "net_recv_all_at" (func $net_recv_all_at_host (param externref) (result externref)))
+  (import "witchy" "net_resolve_at" (func $net_resolve_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "net_connect_at" (func $net_connect_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "net_only_at" (func $net_only_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "net_deny_at" (func $net_deny_at_host (param externref i32 i32) (result externref)))
@@ -359,6 +360,8 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "net_response_size" (func $net_response_size_host (param externref) (result i32)))
   (import "witchy" "net_response_into" (func $net_response_into_host (param externref i32 i32) (result i32)))
   (import "witchy" "net_response_take_net" (func $net_response_take_net_host (param externref) (result externref)))
+  (import "witchy" "net_response_take_socket" (func $net_response_take_socket_host (param externref) (result externref)))
+  (import "witchy" "net_response_take_listener" (func $net_response_take_listener_host (param externref) (result externref)))
   (import "witchy" "__witchy_abort_at" (func $__witchy_abort_at (param i32 i32 i32 i32 i32)))
   (import "witchy" "__witchy_list_bounds_at" (func $__witchy_list_bounds_at (param i64 i32 i32 i32 i32)))
   (import "witchy" "__witchy_bytes_bounds_at" (func $__witchy_bytes_bounds_at (param i64 i32 i32 i32 i32)))
@@ -650,18 +653,19 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "fetch_only_at"
         | "net_fetch_at"
         | "net_connect"
-        | "net_try_connect"
         | "net_resolve_size"
         | "net_connect_pinned"
         | "net_try_connect_pinned"
         | "net_listen"
         | "net_listen_at"
-        | "net_send_slice"
-        | "net_recv_line_size"
-        | "net_recv_bytes_size"
-        | "net_recv_all_size"
+        | "net_accept_at"
+        | "net_send_at"
+        | "net_send_line_at"
+        | "net_recv_line_at"
+        | "net_recv_bytes_at"
+        | "net_recv_all_at"
+        | "net_resolve_at"
         | "net_connect_at"
-        | "net_take_received_into"
         | "net_listen_tls"
         | "net_accept"
         | "net_restrict"
@@ -672,6 +676,8 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "net_response_size"
         | "net_response_into"
         | "net_response_take_net"
+        | "net_response_take_socket"
+        | "net_response_take_listener"
         | "net_send_line"
         | "net_send_bytes"
         | "net_close"
@@ -760,12 +766,12 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         "file_read_at" | "file_write_at" | "file_response_status"
         | "file_response_size" | "file_response_into" => AUTH_FILE_AUTHORITY,
         "mint_net" | "net_only_at" | "net_deny_at" | "net_response_status" | "net_response_size"
-        | "net_response_into" | "net_response_take_net" => AUTH_NET_GRANT,
+        | "net_response_into" | "net_response_take_net" | "net_response_take_socket"
+        | "net_response_take_listener" => AUTH_NET_GRANT,
         "mint_fetch" => AUTH_FETCH_GRANT,
         "fetch_only" | "fetch_only_at" | "fetch_send_at" => AUTH_FETCH,
         "net_fetch_at" => AUTH_NET_CONNECT,
         "net_connect" | "net_connect_at"
-        | "net_try_connect"
         | "net_resolve_size"
         | "net_connect_pinned"
         | "net_try_connect_pinned"
@@ -777,8 +783,9 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "net_recv_line_len"
         | "net_recv_all_len"
         | "net_recv_bytes_len" => AUTH_NET_CONNECT,
-        "net_send_slice" | "net_recv_line_size" | "net_recv_bytes_size" | "net_recv_all_size" | "net_take_received_into" => AUTH_NET_CONNECT,
-        "net_listen" | "net_listen_at" | "net_accept" | "serve_pool" => AUTH_NET_LISTEN,
+        "net_send_at" | "net_send_line_at" | "net_recv_line_at" | "net_recv_bytes_at" | "net_recv_all_at"
+        | "net_resolve_at" => AUTH_NET_CONNECT,
+        "net_listen" | "net_listen_at" | "net_accept" | "net_accept_at" | "serve_pool" => AUTH_NET_LISTEN,
         "net_listen_tls" => AUTH_NET_LISTEN_SECRET,
         "now" | "now_monotonic" | "clock_now" | "clock_now_monotonic" => AUTH_CLOCK,
         "rand_u64" => AUTH_RAND,

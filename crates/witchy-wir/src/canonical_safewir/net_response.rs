@@ -4,16 +4,18 @@ use super::*;
 /// An internal response value, not a source or launch capability. A fallible
 /// `Net` operation consults the grant once and answers with one of these: a
 /// status (0 success, else the `CapError` variant ordinal plus one), a payload
-/// (the failure message), and on success the `Net` it minted.
+/// (received text, resolved addresses, or the failure message), and on success
+/// the `Net`, `Socket` or `Listener` it minted.
 pub const NET_RESPONSE_KIND: CapabilityKindId = CapabilityKindId::new(24);
-pub const NET_RESPONSE_IMPORT_NAMES: [&str; 6] = [
+pub const NET_RESPONSE_IMPORT_NAMES: [&str; 8] = [
     "net_only_at", "net_deny_at", "net_response_status", "net_response_size",
-    "net_response_into", "net_response_take_net",
+    "net_response_into", "net_response_take_net", "net_response_take_socket",
+    "net_response_take_listener",
 ];
 
 impl CanonicalAbiCatalog {
     pub fn with_net_response_imports(
-        mut self, signatures: [FunctionSignatureId; 6], string_layout: LayoutId,
+        mut self, signatures: [FunctionSignatureId; 8], string_layout: LayoutId,
     ) -> Result<Self, String> {
         use crate::wir_prelude::{AbiImportAuthority, WasmTy::*};
         let net = HostParameterRole::Capability(NET_CAPABILITY_KIND);
@@ -45,8 +47,14 @@ impl CanonicalAbiCatalog {
                 vec![response.clone(), buffer(AccessMode::Write)],
                 size(), HostMutation::WriteBuffers, grant)?,
             authenticated_capability_import(NET_RESPONSE_IMPORT_NAMES[5],
-                &[ExternRef], &[ExternRef], signatures[5], vec![response],
+                &[ExternRef], &[ExternRef], signatures[5], vec![response.clone()],
                 vec![HostResultRole::Capability(NET_CAPABILITY_KIND)], HostMutation::ReadOnly, grant)?,
+            authenticated_capability_import(NET_RESPONSE_IMPORT_NAMES[6],
+                &[ExternRef], &[ExternRef], signatures[6], vec![response.clone()],
+                vec![HostResultRole::Capability(SOCKET_CAPABILITY_KIND)], HostMutation::ReadOnly, grant)?,
+            authenticated_capability_import(NET_RESPONSE_IMPORT_NAMES[7],
+                &[ExternRef], &[ExternRef], signatures[7], vec![response],
+                vec![HostResultRole::Capability(LISTENER_CAPABILITY_KIND)], HostMutation::ReadOnly, grant)?,
         ];
         for import in imports { self.imports.insert(import.id, import); }
         Ok(self)

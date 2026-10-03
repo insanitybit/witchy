@@ -613,20 +613,6 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
-        // Fallible dial: returns nullable externref `Some(Socket)`/`None`. A
-        // capability violation still traps host-side.
-        "net_try_connect" => Some(WirHelperSpec {
-            func: host_call_helper_typed(
-                "net_try_connect",
-                "net_try_connect",
-                &[WirTy::Extern, WirTy::Str],
-                WirTy::Extern,
-            ),
-            helper_deps: &[],
-            import_deps: &["net_try_connect"],
-            uses_heap: false,
-            uses_table: false,
-        }),
         // (RFC-0020) Pinned dials — thin passthroughs like `net_connect`, but the
         // fourth param is the i64 `port` (an `Int`), so a typed helper spells the
         // signature `(net, ip, host, port, secure) -> Socket` out.

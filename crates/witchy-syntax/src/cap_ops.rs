@@ -218,9 +218,8 @@ pub const OPS: &[CapOp] = &[
     op!("write_bytes", Dir, [String, Bytes], Nil?, "dir.write_bytes(path, data)"),
     op!("append_bytes", Dir, [String, Bytes], Nil?, "dir.append_bytes(path, data)"),
     op!("set_executable", Dir, [String], Nil?, "dir.set_executable(path)"),
-    op!("connect", Net, [String], Socket, "net.connect(addr)"),
-    op!("try_connect", Net, [String], OptionSocket, "net.try_connect(addr)"),
-    op!("listen", Net, [String], Listener, "net.listen(addr)"),
+    op!("connect", Net, [String], Socket?, "net.connect(addr)"),
+    op!("listen", Net, [String], Listener?, "net.listen(addr)"),
     op!(
         "listen_tls",
         Net,
@@ -239,7 +238,7 @@ pub const OPS: &[CapOp] = &[
         "fetch.send_raw(method, url, headers, body)"
     ),
     op!("deny", Net, [NetPolicy], SameReceiver, "net.deny(policy)"),
-    op!("resolve", Net, [String], ListString, "net.resolve(host)"),
+    op!("resolve", Net, [String], ListString?, "net.resolve(host)"),
     op!(
         "connect_pinned",
         Net,
@@ -254,13 +253,13 @@ pub const OPS: &[CapOp] = &[
         OptionSocket,
         "net.try_connect_pinned(ip, host, port, secure)"
     ),
-    op!("accept", Listener, [], Socket, "listener.accept()"),
+    op!("accept", Listener, [], Socket?, "listener.accept()"),
     op!("serve_pool", Listener, [], Nil, "listener.serve_pool()"),
-    op!("send_line", Socket, [String], Nil, "socket.send_line(line)"),
-    op!("send_bytes", Socket, [String], Nil, "socket.send_bytes(bytes)"),
-    op!("recv_line", Socket, [], String, "socket.recv_line()"),
-    op!("recv_all", Socket, [], String, "socket.recv_all()"),
-    op!("recv_bytes", Socket, [Int], String, "socket.recv_bytes(n)"),
+    op!("send_line", Socket, [String], Nil?, "socket.send_line(line)"),
+    op!("send_bytes", Socket, [String], Nil?, "socket.send_bytes(bytes)"),
+    op!("recv_line", Socket, [], String?, "socket.recv_line()"),
+    op!("recv_all", Socket, [], String?, "socket.recv_all()"),
+    op!("recv_bytes", Socket, [Int], String?, "socket.recv_bytes(n)"),
     op!("close", Socket, [], Nil, "socket.close()"),
 ];
 

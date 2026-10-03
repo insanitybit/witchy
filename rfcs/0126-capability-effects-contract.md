@@ -191,6 +191,25 @@ spelled it.
   narrowed `Net` on success.
 - `net.deny(policy)` returns `Net`. Subtraction only removes endpoints, so it
   cannot fail.
+- `net.connect(addr)` returns `Result(Socket, CapError)` and `net.listen(addr)`
+  returns `Result(Listener, CapError)`. An address the grant does not admit is
+  `Denied`. A name admitted only through a CIDR or IP pattern must be resolved
+  to be judged, but it answers `Denied` whether or not it resolves; a name the
+  grant admits by spelling that does not resolve is `Io`. A refused, reset,
+  timed-out or unreachable connection is `Io` with that fixed reason. An address
+  already bound is `AlreadyExists`.
+- `listener.accept()` returns `Result(Socket, CapError)`; `socket.send_line`
+  and `socket.send_bytes` return `Result((), CapError)`; `socket.recv_line`,
+  `socket.recv_all` and `socket.recv_bytes` return `Result(String, CapError)`.
+  Their failures are `Io` with a fixed reason and name no address.
+- `net.resolve(host)` returns `Result(List(String), CapError)`. A host the grant
+  does not name is `Denied` before any DNS query.
+- `socket.close()` and `listener.serve_pool()` cannot fail. There is no
+  `try_connect`: `connect` already answers a value.
+
+Each operation is one host call answering a Net response; the guest reads its
+status and payload and takes the minted `Socket` or `Listener` on success.
+`net.listen_tls` is not yet lowered to admitted Wasm.
 
 The cryptographic, networking, filesystem, process, server, environment, and
 secret modules are retained features. Pure hashing, verification, and encoding

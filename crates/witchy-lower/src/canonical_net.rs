@@ -1,6 +1,10 @@
 //! Checked Net operations over authenticated references and ordinary slices.
+//!
+//! Every fallible operation is one host call answering a Net response, read
+//! back as `Result(T, CapError)` (RFC-0126 rule 3): the response mints the
+//! `Socket` or `Listener`, or carries the received text or resolved addresses.
 use super::*;
-use witchy_wir::canonical_safewir::{NET_CAPABILITY_KIND, LISTENER_CAPABILITY_KIND, SOCKET_CAPABILITY_KIND, NET_IMPORT_NAMES};
+use witchy_wir::canonical_safewir::{NET_CAPABILITY_KIND, LISTENER_CAPABILITY_KIND, SOCKET_CAPABILITY_KIND, NET_IMPORT_NAMES, NET_RESPONSE_KIND};
 
 fn operation(name: &str) -> Option<(usize, witchy_wir::canonical_safewir::CapabilityKindId, usize)> {
     Some(match name {
@@ -9,13 +13,25 @@ fn operation(name: &str) -> Option<(usize, witchy_wir::canonical_safewir::Capabi
         "__capop.send_bytes" => (2, SOCKET_CAPABILITY_KIND, 2),
         "__capop.recv_line" => (3, SOCKET_CAPABILITY_KIND, 1),
         "__capop.recv_bytes" => (4, SOCKET_CAPABILITY_KIND, 2),
+        "__capop.send_line" => (5, SOCKET_CAPABILITY_KIND, 2),
         "__capop.close" => (6, SOCKET_CAPABILITY_KIND, 1),
         "__capop.serve_pool" => (7, LISTENER_CAPABILITY_KIND, 1),
         "__capop.recv_all" => (8, SOCKET_CAPABILITY_KIND, 1),
         "__capop.connect" => (9, NET_CAPABILITY_KIND, 2),
+        "__capop.resolve" => (10, NET_CAPABILITY_KIND, 2),
         _ => return None,
     })
 }
+
+/// `close` and `serve_pool` cannot fail; every other operation answers a
+/// response.
+fn answers_response(index: usize) -> bool { !matches!(index, 6 | 7) }
+
+/// The response getters a fallible Net operation reads.
+pub(super) const RESPONSE_IMPORTS: [&str; 5] = [
+    "net_response_status", "net_response_size", "net_response_into",
+    "net_response_take_socket", "net_response_take_listener",
+];
 
 pub(super) fn is_operation(name: &str) -> bool { operation(name).is_some() }
 
@@ -28,7 +44,6 @@ pub(super) fn collect_imports(module: &witchy_syntax::ast::Module) -> BTreeSet<&
         witchy_syntax::ast::visit::visit_block::<()>(&function.body, &mut |expression| {
             if let Expr::Call { name, .. } = expression && let Some((index, _, _)) = operation(name) {
                 needed.insert(NET_IMPORT_NAMES[index]);
-                if matches!(index, 3 | 4 | 8) { needed.insert(NET_IMPORT_NAMES[5]); }
             }
             Ok(())
         }).expect("Net import visitor cannot fail");
@@ -36,28 +51,35 @@ pub(super) fn collect_imports(module: &witchy_syntax::ast::Module) -> BTreeSet<&
     needed
 }
 
+/// Whether the collected Net imports read any response.
+pub(super) fn needs_responses(imports: &BTreeSet<&'static str>) -> bool {
+    NET_IMPORT_NAMES.iter().enumerate().any(|(index, name)| answers_response(index) && imports.contains(name))
+}
+
 pub(super) fn catalog(catalog: CanonicalAbiCatalog, signatures: &mut Vec<FunctionSignature>, layout: witchy_wir::layout::LayoutId) -> Result<CanonicalAbiCatalog, CanonicalLoweringError> {
     let net = ValueType::Capability(NET_CAPABILITY_KIND);
     let listener = ValueType::Capability(LISTENER_CAPABILITY_KIND);
     let socket = ValueType::Capability(SOCKET_CAPABILITY_KIND);
+    let response = ValueType::Capability(NET_RESPONSE_KIND);
     let text = ValueType::Ref(layout);
     let shapes = [
-        (vec![net, text], vec![listener], false),
-        (vec![listener], vec![socket], false),
-        (vec![socket, text], vec![], false),
-        (vec![socket], vec![ValueType::Size], false),
-        (vec![socket, ValueType::Int], vec![ValueType::Size], false),
-        (vec![socket, text], vec![ValueType::Size], true),
-        (vec![socket], vec![], false),
-        (vec![listener], vec![], false),
-        (vec![socket], vec![ValueType::Size], false),
-        (vec![net, text], vec![socket], false),
+        (vec![net, text], vec![response]),
+        (vec![listener], vec![response]),
+        (vec![socket, text], vec![response]),
+        (vec![socket], vec![response]),
+        (vec![socket, ValueType::Int], vec![response]),
+        (vec![socket, text], vec![response]),
+        (vec![socket], vec![]),
+        (vec![listener], vec![]),
+        (vec![socket], vec![response]),
+        (vec![net, text], vec![response]),
+        (vec![net, text], vec![response]),
     ];
-    let mut ids = [FunctionSignatureId::new(0); 10];
-    for (index, (parameters, results, writes)) in shapes.into_iter().enumerate() {
+    let mut ids = [FunctionSignatureId::new(0); 11];
+    for (index, (parameters, results)) in shapes.into_iter().enumerate() {
         let id = FunctionSignatureId::new(u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?);
         let parameter_effects = parameters.iter().enumerate().filter_map(|(index, ty)| {
-            matches!(ty, ValueType::Ref(_)).then_some((index as u32, vec![if writes { MemoryEffect::Write } else { MemoryEffect::Read }]))
+            matches!(ty, ValueType::Ref(_)).then_some((index as u32, vec![MemoryEffect::Read]))
         }).collect();
         let contract = CallableContract {
             parameters: parameters.iter().map(|ty| ParameterContract { value_type: *ty, ownership: ParameterOwnership::Value }).collect(),
@@ -71,6 +93,7 @@ pub(super) fn catalog(catalog: CanonicalAbiCatalog, signatures: &mut Vec<Functio
 
 impl FunctionLowerer<'_> {
     pub(super) fn lower_net(&mut self, name: &str, args: &[Expr]) -> Result<Option<ValueId>, CanonicalLoweringError> {
+        use witchy_types::typeck::{ty_to_ast, Ty};
         let (index, kind, arity) = operation(name).ok_or(CanonicalLoweringError::UnsupportedExpression("Net operation"))?;
         if args.len() != arity {
             return Err(CanonicalLoweringError::CallArityMismatch { callee: name.to_owned(), expected: arity, actual: args.len() });
@@ -82,7 +105,7 @@ impl FunctionLowerer<'_> {
         let import = *self.host_imports.net.get(NET_IMPORT_NAMES[index])
             .ok_or(CanonicalLoweringError::UnsupportedExpression("missing authenticated Net import"))?;
         let mut arguments = vec![HostCallArgument::Capability(token)];
-        if matches!(index, 0 | 2 | 9) {
+        if matches!(index, 0 | 2 | 5 | 9 | 10) {
             let text = self.lower_string_argument(&args[1])?;
             let layout = self.string_layout_id()?;
             arguments.push(self.string_slice_argument(text, layout)?);
@@ -93,39 +116,37 @@ impl FunctionLowerer<'_> {
             }
             arguments.push(HostCallArgument::Value(count));
         }
-        let result_type = match index {
-            0 => Some(ValueType::Capability(LISTENER_CAPABILITY_KIND)),
-            1 | 9 => Some(ValueType::Capability(SOCKET_CAPABILITY_KIND)),
-            3 | 4 | 8 => Some(ValueType::Size),
-            _ => None,
+        if !answers_response(index) {
+            self.push_operation(Operation::HostCall { destinations: Vec::new(), import, arguments });
+            return Ok(None);
+        }
+        let response = self.fresh(ValueType::Capability(NET_RESPONSE_KIND))?;
+        self.push_operation(Operation::HostCall { destinations: vec![response], import, arguments });
+        let checked = |ty: Ty| ty_to_ast(&ty).ok_or(CanonicalLoweringError::UnsupportedExpression("Net result type"));
+        let value = match index {
+            0 | 1 | 9 => {
+                let (success, minted, take) = if index == 0 {
+                    (checked(Ty::Listener)?, LISTENER_CAPABILITY_KIND, "net_response_take_listener")
+                } else {
+                    (checked(Ty::Socket)?, SOCKET_CAPABILITY_KIND, "net_response_take_socket")
+                };
+                self.lower_cap_result_with(response, success, "net", |this, _empty| {
+                    let value = this.fresh(ValueType::Capability(minted))?;
+                    let take = this.capability_import(take)?;
+                    this.push_operation(Operation::HostCall {
+                        destinations: vec![value], import: take,
+                        arguments: vec![HostCallArgument::Capability(response)],
+                    });
+                    Ok(value)
+                })?
+            }
+            2 | 5 => self.lower_cap_result_with(response, checked(Ty::Unit)?, "net", |this, _| this.push_zero(ValueType::Unit))?,
+            10 => {
+                let list = Type::Named("List".into(), vec![Type::Named("String".into(), Vec::new())]);
+                self.lower_cap_result_with(response, list, "net", |this, addresses| this.lower_listing(addresses))?
+            }
+            _ => self.lower_cap_result(response, "String", "net")?,
         };
-        let result = result_type.map(|ty| self.fresh(ty)).transpose()?;
-        self.push_operation(Operation::HostCall { destinations: result.into_iter().collect(), import, arguments });
-        if !matches!(index, 3 | 4 | 8) { return Ok(result); }
-
-        // The size call reads ONCE and stages bytes on this authenticated
-        // socket. The fill cannot consume another socket's pending receive.
-        let length = result.expect("receive size result");
-        let capacity = self.fresh(ValueType::Size)?;
-        self.push_operation(Operation::MoveValue { destination: capacity, source: length });
-        let object = self.alloc_bytes(length, capacity)?;
-        let zero = self.push_const_size(0)?;
-        let written = self.fresh(ValueType::Size)?;
-        let layout = self.string_layout_id()?;
-        let import = *self.host_imports.net.get(NET_IMPORT_NAMES[5])
-            .ok_or(CanonicalLoweringError::UnsupportedExpression("missing authenticated Net receive fill"))?;
-        self.push_operation(Operation::HostCall {
-            destinations: vec![written], import,
-            arguments: vec![HostCallArgument::Capability(token), HostCallArgument::Buffer {
-                place: witchy_wir::canonical_safewir::Place::projected(object, Projection::Slice { start: zero, length: capacity }, ValueType::Ref(layout), AccessMode::Write),
-                extent: HostBufferExtent::Slice,
-            }],
-        });
-        let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, written, capacity)?;
-        self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
-        self.push_operation(Operation::UpdateCount { object, count: written });
-        self.string_lengths.insert(object, written);
-        self.string_capacities.insert(object, capacity);
-        Ok(Some(object))
+        Ok(Some(value))
     }
 }

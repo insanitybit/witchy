@@ -375,7 +375,6 @@ const BUILTINS: &[(&str, &str)] = &[
     ("make_dir", "fn(path: String) -> Result((), Error)\nCreate directory."),
     ("exec", "fn(cmd: Exec, command: String, args: [String]) -> Result(String, Error)\nExecute external process."),
     ("connect", "fn(net: Net, address: String) -> Result(NetConn, Error)\nConnect TCP socket."),
-    ("try_connect", "fn(net: Net, address: String) -> Result(NetConn, Error)\nAttempt TCP connection."),
     ("listen", "fn(net: Net, address: String) -> Result(NetListener, Error)\nListen on TCP port."),
     ("accept", "fn(listener: NetListener) -> Result(NetConn, Error)\nAccept incoming TCP connection."),
     ("send_line", "fn(conn: NetConn, line: String) -> Result((), Error)\nSend line over connection."),
@@ -527,7 +526,6 @@ const CAPABILITY_FILE_METHODS: &[(&str, &str, &str)] = &[
 
 const CAPABILITY_NET_METHODS: &[(&str, &str, &str)] = &[
     ("connect", "fn(address: String) -> Result(NetConn, Error)", "Connects TCP socket to address."),
-    ("try_connect", "fn(address: String) -> Result(NetConn, Error)", "Attempts TCP connection without blocking."),
     ("listen", "fn(address: String) -> Result(NetListener, Error)", "Binds TCP listening socket."),
     ("only", "fn(policy: NetPolicy) -> Net", "Narrows net capability to permitted destinations."),
     ("deny", "fn(policy: NetPolicy) -> Net", "Narrows net capability by denying destinations."),

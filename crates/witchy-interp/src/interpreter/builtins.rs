@@ -4087,6 +4087,18 @@ impl Interpreter {
                 _ => err("deny expects a Net and a NetPolicy"),
             },
             // Connect only to an address the Net capability permits.
+            // The Net operations answer `Result(_, CapError)` (RFC-0126 rule 3).
+            // The frozen walker gains no new semantics: it refuses them rather
+            // than emulating those results.
+            "connect" | "resolve" | "listen" | "accept" | "send_line" | "send_bytes" | "recv_line"
+            | "recv_all" | "recv_bytes"
+                if matches!(args.first(), Some(Value::Net(_) | Value::Socket(_) | Value::Listener(_))) =>
+            {
+                err(format!(
+                    "`{name}` returns a `CapError` result, which the source interpreter does not \
+                     implement; run the program as admitted Wasm"
+                ))
+            }
             "connect" => match args {
                 [Value::Net(allow), Value::Str(addr)] => {
                     let (tls, host_port) = witchy_runtime::net::parse_scheme(addr);
@@ -4104,25 +4116,6 @@ impl Interpreter {
                     }
                 }
                 _ => err("connect expects a Net and an address"),
-            },
-            "try_connect" => match args {
-                [Value::Net(allow), Value::Str(addr)] => {
-                    let (tls, host_port) = witchy_runtime::net::parse_scheme(addr);
-                    let targets = match witchy_caps::capabilities::resolve_admitted(allow, host_port) {
-                        Ok(t) => t,
-                        Err(e) => return err(format!("try_connect: {e}")),
-                    };
-                    let v = match witchy_runtime::net::dial(&targets, tls, host_port) {
-                        Ok(stream) => {
-                            let id = self.sockets.len();
-                            self.sockets.push(BufReader::new(stream));
-                            Value::ctor("Some", vec![Value::Socket(id)])
-                        }
-                        Err(_) => Value::ctor("None", Vec::new()),
-                    };
-                    Ok(Some(v))
-                }
-                _ => err("try_connect expects a Net and an address"),
             },
             // (RFC-0020) Resolve a hostname to its current IP literals. DNS queries
             // are observable network operations, so the host must be explicitly

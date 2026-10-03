@@ -1045,14 +1045,10 @@ impl Codegen<'_> {
                 // checked slices. The legacy ghost/staged route cannot supply it.
                 return None;
             }
-            ("recv_line", 1) => {
-                self.used_net_ops.insert("recv_line");
-                call("net_recv_line", self.lower_args(&[&args[0]])?)
-            }
-            ("recv_all", 1) => {
-                self.used_net_ops.insert("recv_all");
-                call("net_recv_all", self.lower_args(&[&args[0]])?)
-            }
+            // The Net ops answer `Result(_, CapError)` (RFC-0126 rule 3); only
+            // the canonical route builds that result. Refuse them here.
+            ("recv_line", 1) | ("recv_all", 1) | ("recv_bytes", 2) | ("accept", 1) | ("connect", 2)
+            | ("resolve", 2) | ("listen", 2) | ("send_line", 2) | ("send_bytes", 2) => return None,
             // The `Dir` ops: in a WIR-collecting scope, route through a registered
             // host-wrapper helper (so the user body stays free of direct CallHosts
             // and the import is accounted for via `import_deps` — capability-minimal).
@@ -1064,11 +1060,6 @@ impl Codegen<'_> {
             // It answers `Result(Dir, CapError)`; only the canonical route
             // builds that result.
             ("subtree", 2) => return None,
-            ("accept", 1) => {
-                self.used_net_ops.insert("accept");
-                let a = self.lower_args(&[&args[0]])?;
-                if self.collect_wir { call("net_accept", a) } else { host("net_accept_host", a) }
-            }
             ("fetch", 2) => {
                 // The canonical receiver/slice contract cannot be supplied by
                 // this retired raw-header route.
@@ -1116,29 +1107,6 @@ impl Codegen<'_> {
                 let a = vec![self.lower_expr(&args[0])?, self.lower_policy_pattern(&args[1])?];
                 if self.collect_wir { call("net_deny", a) } else { host("net_deny_host", a) }
             }
-            ("connect", 2) => {
-                self.used_net_ops.insert("connect");
-                let a = self.lower_args(&[&args[0], &args[1]])?;
-                if self.collect_wir { call("net_connect", a) } else { host("net_connect_host", a) }
-            }
-            // Fallible dial. After RFC-0005's Socket migration, the host returns a
-            // nullable externref: non-null is `Some(Socket)`, null is `None`.
-            ("try_connect", 2) => {
-                self.used_net_ops.insert("try_connect");
-                let a = self.lower_args(&[&args[0], &args[1]])?;
-                if self.collect_wir {
-                    call("net_try_connect", a)
-                } else {
-                    host("net_try_connect_host", a)
-                }
-            }
-            // (RFC-0020) `net.net.resolve(host) -> List(String)` — resolved IP literals,
-            // via the staged list helper (identical shape to `list`/`dir_list`).
-            ("resolve", 2) => {
-                self.used_net_ops.insert("resolve");
-                let a = self.lower_args(&[&args[0], &args[1]])?;
-                call("net_resolve", a)
-            }
             // (RFC-0020) `net.connect_pinned(net, ip, host, port, secure) -> Socket` — dial
             // the exact `ip:port` with `host` presented as SNI/Host. Same shape as `connect`.
             ("connect_pinned", 5) => {
@@ -1146,21 +1114,14 @@ impl Codegen<'_> {
                 let a = self.lower_args(&[&args[0], &args[1], &args[2], &args[3], &args[4]])?;
                 if self.collect_wir { call("net_connect_pinned", a) } else { host("net_connect_pinned_host", a) }
             }
-            // Fallible pinned dial — nullable-externref `Option(Socket)`, mirroring
-            // `try_connect`.
+            // Fallible pinned dial — nullable-externref `Option(Socket)`.
             ("try_connect_pinned", 5) => {
-                self.used_net_ops.insert("try_connect");
                 let a = self.lower_args(&[&args[0], &args[1], &args[2], &args[3], &args[4]])?;
                 if self.collect_wir {
                     call("net_try_connect_pinned", a)
                 } else {
                     host("net_try_connect_pinned_host", a)
                 }
-            }
-            ("listen", 2) => {
-                self.used_net_ops.insert("listen");
-                let a = self.lower_args(&[&args[0], &args[1]])?;
-                if self.collect_wir { call("net_listen", a) } else { host("net_listen_host", a) }
             }
             // (RFC-0060) HTTPS listen: `(net, addr, cert_pem, key) -> Listener`.
             // The `key` argument is an opaque Secret externref; the key bytes never
@@ -1171,16 +1132,6 @@ impl Codegen<'_> {
                 if self.collect_wir { call("net_listen_tls", a) } else { host("net_listen_tls_host", a) }
             }
             // --- void effects yielding Nil: `{args} call $h ... i32.const 0` ---
-            ("send_line", 2) => {
-                self.used_net_ops.insert("send_line");
-                let a = self.lower_args(&[&args[0], &args[1]])?;
-                if self.collect_wir { call("net_send_line", a) } else { nil0(host("net_send_line_host", a)) }
-            }
-            ("send_bytes", 2) => {
-                self.used_net_ops.insert("send_bytes");
-                let a = self.lower_args(&[&args[0], &args[1]])?;
-                if self.collect_wir { call("net_send_bytes", a) } else { nil0(host("net_send_bytes_host", a)) }
-            }
             ("close", 1) => {
                 self.used_net_ops.insert("close");
                 let a = self.lower_args(&[&args[0]])?;
@@ -1677,14 +1628,6 @@ impl Codegen<'_> {
                         read
                     }
                 }
-            }
-            ("recv_bytes", 2) => {
-                self.used_net_ops.insert("recv_bytes");
-                let nk = self.kind_of(&args[1]);
-                call("net_recv_bytes", vec![
-                    self.lower_expr(&args[0])?,
-                    Self::wir_convert(self.lower_expr(&args[1])?, nk, Kind::I64),
-                ])
             }
             // `dict.length(d)` -> Int: the i32 count at the header, sign-extended.
             (intrinsics::DICT_LENGTH, 1) => W::ToSlot(

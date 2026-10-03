@@ -36,7 +36,7 @@ impl FunctionLowerer<'_> {
 
     /// The NUL-separated names of a listing as a `List(String)`; an empty
     /// payload is the empty list (a split would yield one empty name).
-    fn lower_listing(&mut self, names: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+    pub(super) fn lower_listing(&mut self, names: ValueId) -> Result<ValueId, CanonicalLoweringError> {
         let list_type = Type::Named("List".into(), vec![Type::Named("String".into(), Vec::new())]);
         let (list_layout_id, _, _, _) = list_layout(&list_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
         let length = self.string_length_of(names)?;
