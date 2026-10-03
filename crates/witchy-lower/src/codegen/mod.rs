@@ -1686,9 +1686,6 @@ struct Codegen<'types> {
     uses_float_ord: bool,
     /// Whether the `now` host import is needed (`Clock` capability).
     uses_now: bool,
-    /// Whether the `env_len`/`env_fill` host imports + `$get_env` guest helper
-    /// are needed (`Env` capability).
-    uses_get_env: bool,
     /// Which `Dir` operations the program uses ("read"/"write"/"append"/"exists"/
     /// "is_dir"/"list"/"subdir"/"make_dir"). Each pulls in exactly its own host
     /// import, so a read-only program never imports a write op (and therefore
@@ -2194,7 +2191,6 @@ impl<'types> Codegen<'types> {
             uses_encoding: false,
             uses_float_ord: false,
             uses_now: false,
-            uses_get_env: false,
             used_dir_ops: std::collections::BTreeSet::new(),
             used_build_ops: std::collections::BTreeSet::new(),
             used_net_ops: std::collections::BTreeSet::new(),

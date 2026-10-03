@@ -3993,49 +3993,14 @@ impl Interpreter {
                 [Value::Cap(Capability::Rand)] => Ok(Some(Value::Int(self.rand_next()))),
                 _ => err("rand_u64 expects a Rand"),
             },
-            // Read a named environment variable through an `Env` capability:
-            // `env.get_env(name) -> Option(String)` (None when unset). Reading the
-            // process environment is ambient authority, so it is capability-gated.
+            // `env.get_env` answers `Result(Option(String), CapError)` (RFC-0126
+            // rule 3). The frozen walker gains no new semantics: it refuses the
+            // operation rather than emulating that result.
             "get_env" => match args {
-                #[cfg(feature = "test-fixtures")]
-                [Value::Cap(Capability::Env(allow)), Value::Str(name)]
-                    if self.fixture_host.is_some() =>
-                {
-                    let handle = self
-                        .fixture_env_handles
-                        .get(allow)
-                        .copied()
-                        .ok_or_else(|| RuntimeError {
-                            message:
-                                "invalid or foreign Env fixture capability"
-                                    .into(),
-                        })?;
-                    match self.invoke_fixture(HostRequest::EnvGet {
-                        env: handle,
-                        name: name.as_str().to_owned(),
-                    })? {
-                        HostResponse::OptionalString(Some(value)) => Ok(Some(
-                            Value::ctor("Some", vec![Value::str(value)]),
-                        )),
-                        HostResponse::OptionalString(None) => {
-                            Ok(Some(Value::ctor("None", Vec::new())))
-                        }
-                        other => err(format!(
-                            "internal error: Env fixture returned {other:?}"
-                        )),
-                    }
-                }
-                [Value::Cap(Capability::Env(allow)), Value::Str(name)] => {
-                    if allow.as_ref().is_some_and(|names| !names.contains(name.as_str())) {
-                        return err(format!(
-                            "get_env: `{name}` is not in this Env grant's allow-list"
-                        ));
-                    }
-                    Ok(Some(match std::env::var(name.as_str()) {
-                        Ok(v) => Value::ctor("Some", vec![Value::str(v)]),
-                        Err(_) => Value::ctor("None", Vec::new()),
-                    }))
-                }
+                [Value::Cap(Capability::Env(_)), Value::Str(_)] => err(
+                    "`env.get_env` returns a `CapError` result, which the source interpreter does \
+                     not implement; run the program as admitted Wasm",
+                ),
                 _ => err("get_env expects an Env and a variable name"),
             },
             // --- build-time host operations (only reachable from a `build` step) ---

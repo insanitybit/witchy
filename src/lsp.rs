@@ -362,7 +362,7 @@ const CONSTRUCTORS: &[(&str, &str)] = &[
 const BUILTINS: &[(&str, &str)] = &[
     ("print", "fn(console: Console, message: String) -> ()\nPrint message to standard output."),
     ("now", "fn(clock: Clock) -> Int\nCurrent time in milliseconds."),
-    ("get_env", "fn(env: Env, key: String) -> Option(String)\nRead an environment variable."),
+    ("get_env", "fn(env: Env, key: String) -> Result(Option(String), CapError)\nRead an environment variable: None when unset, Denied outside the grant."),
     ("read", "fn(file: File) -> Result(String, Error)\nRead entire file as string."),
     ("write", "fn(file: File, content: String) -> Result((), Error)\nWrite string to file."),
     ("append", "fn(file: File, content: String) -> Result((), Error)\nAppend string to file."),

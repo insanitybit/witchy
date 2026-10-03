@@ -365,8 +365,10 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `dir_write_at` | `(externref, i32, i32, i32, i32)` | capability authority | Dir.Write | omitted |
 | `dir_subtree_at` | `(externref, i32, i32) -> externref` | capability authority | Dir.grant | omitted |
 | `dir_read_file` | `(externref, i32, i32) -> externref` | capability authority | Dir.Read | omitted |
-| `env_has_var` | `(externref, i32, i32) -> i32` | capability authority | Env | omitted |
-| `env_get_into` | `(externref, i32, i32, i32, i32) -> i32` | capability authority | Env | omitted |
+| `env_get_at` | `(externref, i32, i32) -> externref` | capability authority | Env | omitted |
+| `env_response_status` | `(externref) -> i32` | capability authority | Env | omitted |
+| `env_response_size` | `(externref) -> i32` | capability authority | Env | omitted |
+| `env_response_into` | `(externref, i32, i32) -> i32` | capability authority | Env | omitted |
 | `console_print` | `(externref, i32, i32)` | non-authority infrastructure | none | omitted |
 | `regex_match_spans_into` | `(i32, i32, i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |
 | `net_listen_at` | `(externref, i32, i32) -> externref` | capability authority | Net.Listen | omitted |

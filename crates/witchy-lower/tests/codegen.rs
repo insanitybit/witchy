@@ -371,7 +371,7 @@ mod tests {
             assert!(imports.iter().any(|i| i == needed), "build import `{needed}` missing: {imports:?}");
         }
         for forbidden in [
-            "env_len", "env_fill", "exec_run", "exec_run_at", "env_has_var", "env_get_into",
+            "env_len", "env_fill", "exec_run", "exec_run_at", "env_get_at", "env_response_status",
             "net_connect", "net_try_connect",
             "build_out_write", "build_env_len", "build_env_fill", "build_fetch_len",
         ] {

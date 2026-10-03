@@ -641,40 +641,52 @@ fn admitted_dir_reads_larger_than_the_probe_buffer_and_denied_paths() {
 }
 
 #[test]
-fn admitted_env_get_env_returns_an_option_and_honors_the_allow_list() {
-    // `get_env` asks the host whether the variable is set, reads it into a
-    // bounded buffer only then, and selects the `Option` tag; a name outside
-    // the grant's allow-list traps.
+fn admitted_env_get_env_answers_set_unset_and_denied_without_an_existence_oracle() {
+    // RFC-0126 rule 3: one host lookup answers `Result(Option(String),
+    // CapError)`. The table crosses allow-listed and not-allow-listed names
+    // with set and unset host variables. A denied name answers the same
+    // whether or not the host sets it, and its message names only that name.
+    const SET: &str = "WITCHY_RFC0165_ENV_PROBE";
+    const UNSET: &str = "WITCHY_RFC0165_ENV_UNSET";
+    const DENIED_SET: &str = "WITCHY_RFC0165_ENV_DENIED_SET";
+    const DENIED_UNSET: &str = "WITCHY_RFC0165_ENV_DENIED_UNSET";
     // SAFETY: the names are unique to this test and no other thread reads them.
     unsafe {
-        std::env::set_var("WITCHY_RFC0165_ENV_PROBE", "from the host");
-        std::env::remove_var("WITCHY_RFC0165_ENV_UNSET");
+        std::env::set_var(SET, "from the host");
+        std::env::remove_var(UNSET);
+        std::env::set_var(DENIED_SET, "host secret");
+        std::env::remove_var(DENIED_UNSET);
     }
+    let source = format!(
+        "fn show(console: Console, answer: Result(Option(String), CapError)):\n    match answer:\n        Ok(Some(value)) -> console.print(\"set ${{value}} ${{value.length()}}\")\n        Ok(None) -> console.print(\"unset\")\n        Err(Denied(message)) -> console.print(\"denied ${{message}}\")\n        Err(_) -> console.print(\"other\")\n\nfn main(console: Console, env: Env):\n    for name in [\"{SET}\", \"{UNSET}\", \"{DENIED_SET}\", \"{DENIED_UNSET}\"]:\n        show(console, env.get_env(name))\n"
+    );
     let output = run_admitted_with_grants(
-        "fn main(console: Console, env: Env):\n    match env.get_env(\"WITCHY_RFC0165_ENV_PROBE\"):\n        Some(value) -> console.print(\"set ${value} ${value.length()}\")\n        None -> console.print(\"unset\")\n    match env.get_env(\"WITCHY_RFC0165_ENV_UNSET\"):\n        Some(value) -> console.print(\"set ${value}\")\n        None -> console.print(\"unset\")\n",
+        &source,
         Capabilities {
             print: true,
             print_int: true,
             quiet: true,
             env: true,
-            env_allow: Some(vec!["WITCHY_RFC0165_ENV_PROBE".into(), "WITCHY_RFC0165_ENV_UNSET".into()]),
+            env_allow: Some(vec![SET.into(), UNSET.into()]),
             ..Default::default()
         },
     )
-    .expect("runs");
-    assert_eq!(output, vec!["set from the host 13".to_string(), "unset".to_string()]);
-    let denied = run_admitted_with_grants(
-        "fn main(console: Console, env: Env):\n    match env.get_env(\"WITCHY_RFC0165_ENV_PROBE\"):\n        Some(value) -> console.print(value)\n        None -> console.print(\"unset\")\n",
-        Capabilities {
-            print: true,
-            print_int: true,
-            quiet: true,
-            env: true,
-            env_allow: Some(vec!["OTHER".into()]),
-            ..Default::default()
-        },
+    .expect("a denied name is a value, not a trap");
+    assert_eq!(
+        output,
+        vec![
+            "set from the host 13".to_string(),
+            "unset".to_string(),
+            format!("denied `{DENIED_SET}` is not covered by this Env capability"),
+            format!("denied `{DENIED_UNSET}` is not covered by this Env capability"),
+        ]
     );
-    assert!(denied.is_err(), "{denied:?}");
+    // No allow-listed name or host value crosses in a denial.
+    for line in &output[2..] {
+        for leaked in [format!("`{SET}`"), format!("`{UNSET}`"), "host secret".to_string()] {
+            assert!(!line.contains(&leaked), "{line} leaks {leaked}");
+        }
+    }
 }
 
 #[test]
@@ -685,7 +697,7 @@ fn admitted_entry_without_a_dir_or_env_grant_is_refused_before_it_runs() {
     );
     assert!(refused.is_err(), "{refused:?}");
     let refused = run_admitted_with_grants(
-        "fn main(console: Console, env: Env):\n    match env.get_env(\"HOME\"):\n        Some(_) -> console.print(\"set\")\n        None -> console.print(\"unset\")\n",
+        "fn main(console: Console, env: Env):\n    match env.get_env(\"HOME\"):\n        Ok(_) -> console.print(\"answered\")\n        Err(_) -> console.print(\"failed\")\n",
         Capabilities { print: true, print_int: true, quiet: true, ..Default::default() },
     );
     assert!(refused.is_err(), "{refused:?}");

@@ -847,7 +847,7 @@ fn sandbox_requires_named_env_and_exec_grants() {
         write(
             &dir,
             &format!("{name}.witchy"),
-            &format!("fn main(console: Console, env: Env):\n    console.print(env.get_env(\"{name}\") ?? \"unset\")\n"),
+            &format!("fn main(console: Console, env: Env) -> Int:\n    match env.get_env(\"{name}\"):\n        Ok(value) ->\n            console.print(value ?? \"unset\")\n            0\n        Err(error) ->\n            console.print(show(error))\n            3\n"),
         )
     };
     let (env_prog, unnamed_prog) = (reads("WITCHY_NAMED"), reads("WITCHY_UNNAMED"));
@@ -875,12 +875,13 @@ fn sandbox_requires_named_env_and_exec_grants() {
     let out = sandbox(&["--env", "WITCHY_NAMED"], &env_prog);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(String::from_utf8_lossy(&out.stdout), "named-value\n");
-    // A name outside the grant is a denial, distinct from an unset variable.
+    // A name outside the grant is a `Denied` value, distinct from an unset
+    // variable (RFC-0126 rule 3).
     let out = sandbox(&["--env", "WITCHY_NAMED"], &unnamed_prog);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success(), "an unnamed variable is denied, not read");
-    assert!(stderr.contains("`WITCHY_UNNAMED` is not in this Env grant's allow-list"), "{stderr}");
-    assert!(!String::from_utf8_lossy(&out.stdout).contains("unnamed-value"));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert_eq!(out.status.code(), Some(3), "an unnamed variable is denied, not read: {stdout}");
+    assert!(stdout.contains("`WITCHY_UNNAMED` is not covered by this Env capability"), "{stdout}");
+    assert!(!stdout.contains("unnamed-value") && !stdout.contains("WITCHY_NAMED"), "{stdout}");
 
     let tools = dir.to_str().expect("utf-8 temp dir");
     let out = sandbox(&["--dir", tools], &exec_prog);

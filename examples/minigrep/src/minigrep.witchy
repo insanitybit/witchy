@@ -24,11 +24,13 @@ pub fn search_insensitive(query: String, contents: String) -> List(String):
             hits.push(line)
     hits
 
-// Case-insensitive search is on when IGNORE_CASE is set (to any value).
+// Case-insensitive search is on when IGNORE_CASE is set (to any value). A
+// grant that does not cover the variable leaves it off.
 fn ignore_case(env: Env) -> Bool:
     match env.get_env("IGNORE_CASE"):
-        Some(_v) -> true
-        None -> false
+        Ok(Some(_)) -> true
+        Ok(None) -> false
+        Err(_) -> false
 
 fn main(console: Console, root: Dir[Read], env: Env, args: List(String)) -> Int:
     if args.length() < 2:

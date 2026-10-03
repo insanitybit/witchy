@@ -370,8 +370,10 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "dir_write_at" (func $dir_write_at_host (param externref i32 i32 i32 i32)))
   (import "witchy" "dir_subtree_at" (func $dir_subtree_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "dir_read_file" (func $dir_read_file_host (param externref i32 i32) (result externref)))
-  (import "witchy" "env_has_var" (func $env_has_var_host (param externref i32 i32) (result i32)))
-  (import "witchy" "env_get_into" (func $env_get_into_host (param externref i32 i32 i32 i32) (result i32)))
+  (import "witchy" "env_get_at" (func $env_get_at_host (param externref i32 i32) (result externref)))
+  (import "witchy" "env_response_status" (func $env_response_status_host (param externref) (result i32)))
+  (import "witchy" "env_response_size" (func $env_response_size_host (param externref) (result i32)))
+  (import "witchy" "env_response_into" (func $env_response_into_host (param externref i32 i32) (result i32)))
   (import "witchy" "console_print" (func $console_print_host (param externref i32 i32)))
   (import "witchy" "regex_match_spans_into" (func $regex_match_spans_into_host (param i32 i32 i32 i32 i32 i32) (result i32)))
   (import "witchy" "net_listen_at" (func $net_listen_at_host (param externref i32 i32) (result externref)))
@@ -711,8 +713,10 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "dir_write_at"
         | "dir_subtree_at"
         | "dir_read_file"
-        | "env_has_var"
-        | "env_get_into" => C::CapabilityAuthority,
+        | "env_get_at"
+        | "env_response_status"
+        | "env_response_size"
+        | "env_response_into" => C::CapabilityAuthority,
 
         "args_size" | "user_cap_field_len" => C::LaunchInput,
 
@@ -763,7 +767,8 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         "console_read_len" => AUTH_CONSOLE_READ,
         "crypto.sign" | "crypto.public_key" | "crypto_sign_into" | "crypto_public_key_into" | "secretstore_lookup" | "crypto_reveal_len" | "mint_secret" => AUTH_SECRET,
         "secretstore_lookup_at" => AUTH_SECRET_STORE,
-        "mint_env" | "env_only" | "env_len" | "env_fill" | "env_has_var" | "env_get_into" => AUTH_ENV,
+        "mint_env" | "env_only" | "env_len" | "env_fill" | "env_get_at" | "env_response_status"
+        | "env_response_size" | "env_response_into" => AUTH_ENV,
         "mint_dir" | "dir_subtree_at" => AUTH_DIR_GRANT,
         "dir_read_len"
         | "dir_read_bytes_len"

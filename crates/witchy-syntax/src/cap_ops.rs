@@ -159,7 +159,7 @@ pub const OPS: &[CapOp] = &[
     op!("now", Clock, [], Int, "clock.now()"),
     op!("now_monotonic", Clock, [], Int, "clock.now_monotonic()"),
     op!("rand_u64", Rand, [], Int, "rand.rand_u64()"),
-    op!("get_env", Env, [String], OptionString, "env.get_env(name)"),
+    op!("get_env", Env, [String], OptionString?, "env.get_env(name)"),
     op!("only", Env, [ListString], SameReceiver, "env.only(names)"),
     op!(
         "exec",

@@ -87,6 +87,8 @@ mod registry_hosts;
 pub use registry_hosts::{CLOCK_CAPABILITY_KIND, SECRET_STORE_CAPABILITY_KIND, SECRET_CAPABILITY_KIND, REGISTRY_HOST_IMPORT_NAMES};
 mod dir_storage;
 pub use dir_storage::{DIR_RESPONSE_KIND, DIR_STORAGE_IMPORT_NAMES};
+mod env_response;
+pub use env_response::{ENV_RESPONSE_KIND, ENV_IMPORT_NAMES};
 pub(crate) mod build_read;
 pub use build_read::{BUILD_READ_CAPABILITY_KIND, BUILD_READ_RESPONSE_KIND, BUILD_READ_IMPORT_NAMES};
 pub use build_read::{BUILD_ENV_CAPABILITY_KIND, BUILD_ENV_IMPORT_NAMES};
@@ -568,8 +570,8 @@ pub const FILE_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(3);
 /// BuildOut is a write-only host capability, never a linear-memory value.
 pub const BUILD_OUT_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(9);
 
-/// The canonical signatures the module declares for the six `Dir`/`Env`
-/// operations. Lowering owns the signature ids; the catalog owns everything
+/// The canonical signatures the module declares for the stateless `Dir` and
+/// `File` operations. Lowering owns the signature ids; the catalog owns everything
 /// authenticated about the imports themselves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CapabilityImportSignatures {
@@ -577,8 +579,6 @@ pub struct CapabilityImportSignatures {
     pub dir_write_at: FunctionSignatureId,
     pub dir_subtree_at: FunctionSignatureId,
     pub dir_read_file: FunctionSignatureId,
-    pub env_has_var: FunctionSignatureId,
-    pub env_get_into: FunctionSignatureId,
 }
 
 /// Semantic signatures for stateless compiler introspection imports. The
@@ -933,13 +933,7 @@ impl CanonicalAbiCatalog {
             access: AccessMode::Read,
             extent: HostBufferExtent::Slice,
         };
-        let write_slice = || HostParameterRole::Buffer {
-            value_type: ValueType::Ref(string_layout),
-            access: AccessMode::Write,
-            extent: HostBufferExtent::Slice,
-        };
         let dir = || HostParameterRole::Capability(DIR_CAPABILITY_KIND);
-        let env = || HostParameterRole::Capability(ENV_CAPABILITY_KIND);
         let size = || vec![HostResultRole::Value(ValueType::Size)];
 
         let imports = vec![
@@ -982,26 +976,6 @@ impl CanonicalAbiCatalog {
                 vec![HostResultRole::Capability(FILE_CAPABILITY_KIND)],
                 HostMutation::ReadOnly,
                 &[AbiImportAuthority::DirRead],
-            )?,
-            authenticated_capability_import(
-                "env_has_var",
-                &[WasmTy::ExternRef, WasmTy::I32, WasmTy::I32],
-                &[WasmTy::I32],
-                signatures.env_has_var,
-                vec![env(), read_slice()],
-                size(),
-                HostMutation::ReadOnly,
-                &[AbiImportAuthority::Env],
-            )?,
-            authenticated_capability_import(
-                "env_get_into",
-                &[WasmTy::ExternRef, WasmTy::I32, WasmTy::I32, WasmTy::I32, WasmTy::I32],
-                &[WasmTy::I32],
-                signatures.env_get_into,
-                vec![env(), read_slice(), write_slice()],
-                size(),
-                HostMutation::WriteBuffers,
-                &[AbiImportAuthority::Env],
             )?,
         ];
         for import in imports {
@@ -1848,8 +1822,6 @@ pub mod self_checks {
             dir_write_at: FunctionSignatureId::new(3),
             dir_subtree_at: FunctionSignatureId::new(4),
             dir_read_file: FunctionSignatureId::new(5),
-            env_has_var: FunctionSignatureId::new(7),
-            env_get_into: FunctionSignatureId::new(8),
         }
     }
 

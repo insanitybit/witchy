@@ -60,7 +60,7 @@ effect-free; ordinary `fn` makes no such promise.
 |---|---|---|
 | `Console`, `Console[Read]`, `Console[Write]` | read stdin and write stdout | `console.read_line() -> String`, `console.print(s)` |
 | `Clock` | read the wall clock | `clock.now() -> Int` (epoch ms) |
-| `Env` | read environment variables | `env.get_env(name) -> Option(String)` |
+| `Env` | read environment variables | `env.get_env(name) -> Result(Option(String), CapError)` |
 | `Rand` | draw cryptographically-seeded random values from the host | `rand.u64() -> Int`, `rand.below(n) -> Int`, `rand.bool() -> Bool`, `rand.hex(nbytes) -> String` (std `rand`) |
 | `Dir`, `Dir[Read]`, `Dir[Write]` | a directory **subtree** | `read`, `write`, `append`, `exists`, `is_dir`, `list`, `make_dir`, `subtree`, `read_file`/`write_file` (→ `File`) |
 | `File`, `File[Read]`, `File[Write]` | authority to **one file** (the leaf) | `f.read() -> Result(String, CapError)`, `f.write(data)` (a `Dir` mints one with `read_file`/`write_file`) |
@@ -505,8 +505,10 @@ call**. The enforcement is structural, not a runtime permission check:
   `..`/absolute/symlink confinement as the interpreter.
 - `Env` and `Exec` are granted by name: `--env NAME` allowlists each variable
   `Env` may read and `--exec PROGRAM` each program `Exec` may run. A program
-  whose `main` takes either is refused unless at least one is named, and reading
-  an unnamed variable is a runtime denial, not an unset value.
+  whose `main` takes either is refused unless at least one is named.
+  `env.get_env(name)` answers `Ok(None)` for an unset variable and
+  `Err(Denied(..))` for a name the grant does not cover, whether or not the
+  host sets it; the denial names only the variable asked for.
 - Memory is capped; a scheduler can preempt a runaway guest at loop back-edges.
 - Concurrency stays *inside* the single VM: `async`/`await`, `spawn`, and
   channels lower to a cooperative executor written in witchy (`std/task`, with

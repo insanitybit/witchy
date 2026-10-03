@@ -121,7 +121,12 @@ The host classifies each failure once:
 - any other failure, including text that is not UTF-8, is `Io`.
 
 `env.get_env` returns `Result(Option(String), CapError)`: an unset variable is
-`Ok(None)` and a name outside the grant's allow-list is `Err(Denied(..))`.
+`Ok(None)` and a name outside the grant's allow-list is `Err(Denied(..))`. The
+allow-list is consulted before the environment, so a denied name answers the
+same whether or not the host sets it, and its message names only the variable
+the guest asked for. A variable whose value is not Unicode reads as unset. One
+host call, `env_get_at`, answers with a response handle: status 0 is set, 1 is
+unset and 2 is denied.
 
 No answer is an existence oracle. The program can branch on the variant, so a
 variant never depends on what the capability cannot observe:
@@ -152,12 +157,13 @@ inside the root blocks the host thread. It discloses nothing, but it is a
 denial of service the host does not yet refuse. Under a policy such an entry is
 `Other` and answers `NotFound`.
 
-`dir.read`, `dir.read_bytes`, `dir.list`, and `file.read` implement this rule
-end to end in admitted Wasm. Under an entry policy, `dir.list` names exactly
-the entries `dir.exists` reports. A `File` names no path the program supplied, so its messages
-name none. A `File` read through a symlink leaf that fails is `Denied` whatever
-the target is, and a `File` opened under an entry policy never follows its
-leaf. The remaining `Dir`, `File`, and `Env` operations migrate one
+`dir.read`, `dir.read_bytes`, `dir.list`, `file.read`, and `env.get_env`
+implement this rule end to end in admitted Wasm. Under an entry policy,
+`dir.list` names exactly the entries `dir.exists` reports. A `File` names no
+path the program supplied, so its messages name none. A `File` read through a
+symlink leaf that fails is `Denied` whatever the target is, and a `File` opened
+under an entry policy never follows its leaf. The remaining `Dir` and `File`
+operations migrate one
 slice at a time.
 
 The cryptographic, networking, filesystem, process, server, environment, and

@@ -35,8 +35,9 @@ fn main(console: Console, cwd: Dir[Read], root: Dir[Read], env: Env, args: List(
         Ok(text) ->
             console.print(label + text)
             match env.get_env("RFC0092_TEST_LABEL"):
-                Some(value) -> console.print("env:${value}")
-                None -> console.print("env:missing")
+                Ok(Some(value)) -> console.print("env:${value}")
+                Ok(None) -> console.print("env:missing")
+                Err(_) -> console.print("env:denied")
             console.print("argv:${list.join(args, "|")}")
             23
 "#,

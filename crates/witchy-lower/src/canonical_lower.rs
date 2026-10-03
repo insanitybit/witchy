@@ -42,6 +42,8 @@ mod registry_hosts;
 mod dir_storage;
 #[path = "canonical_cap_response.rs"]
 mod cap_response;
+#[path = "canonical_env.rs"]
+mod env_lookup;
 #[path = "canonical_build_read.rs"]
 mod build_read;
 #[path = "canonical_crypto.rs"]
@@ -1244,12 +1246,21 @@ pub(crate) fn lower_typed_module_with_borrowed_views(
                 dir_write_at: push_import_signature(vec![dir, text, text], Vec::new(), None)?,
                 dir_subtree_at: push_import_signature(vec![dir, text], vec![dir], None)?,
                 dir_read_file: push_import_signature(vec![dir, text], vec![file], None)?,
-                env_has_var: push_import_signature(vec![env, text], vec![ValueType::Size], None)?,
-                env_get_into: push_import_signature(vec![env, text, text], vec![ValueType::Size], Some(2))?,
             };
             catalog = catalog
                 .with_capability_imports(capability_signatures, string_layout)
                 .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+            if witchy_wir::canonical_safewir::ENV_IMPORT_NAMES.iter().any(|name| capability_imports.contains(name)) {
+                let response = ValueType::Capability(witchy_wir::canonical_safewir::ENV_RESPONSE_KIND);
+                let ids = [
+                    push_import_signature(vec![env, text], vec![response], None)?,
+                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
+                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
+                    push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
+                ];
+                catalog = catalog.with_env_imports(ids, string_layout)
+                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+            }
             if capability_imports.contains("dir_is_dir_at") {
                 let signature = push_import_signature(vec![dir, text], vec![ValueType::Bool], None)?;
                 catalog = catalog.with_dir_is_dir_import(signature, string_layout)
@@ -14396,67 +14407,7 @@ impl FunctionLowerer<'_> {
                 let value = self.lower_file_read(token)?;
                 Ok(Some(value))
             }
-            ("__capop.get_env", false, false, [variable]) => {
-                let variable = self.lower_string_argument(variable)?;
-                let has_import = self.capability_import("env_has_var")?;
-                let flag = self.fresh(ValueType::Size)?;
-                let name_slice = self.string_slice_argument(variable, layout)?;
-                self.push_operation(Operation::HostCall {
-                    destinations: vec![flag],
-                    import: has_import,
-                    arguments: vec![HostCallArgument::Capability(token), name_slice],
-                });
-                let zero = self.push_const_size(0)?;
-                let present = self.push_compare(ComparisonOperator::NotEqual, flag, zero)?;
-                // The value is read only when present; the other arm carries
-                // an empty string, which is also what the `None` payload slot
-                // holds. The tag is selected, so one record serves both arms.
-                let facts = self.snapshot_facts();
-                let read_block = self.new_block(&[])?;
-                let absent_block = self.new_block(&[])?;
-                let join = self.new_block_owned(&[
-                    (ValueType::Ref(layout), Some(Ownership::Unique)),
-                    (ValueType::Size, None),
-                    (ValueType::Size, None),
-                ])?;
-                self.finish_current(Terminator::BranchIf {
-                    condition: present,
-                    then_target: read_block,
-                    then_arguments: Vec::new(),
-                    else_target: absent_block,
-                    else_arguments: Vec::new(),
-                })?;
-                self.current = read_block;
-                let value = self.lower_host_read_into("env_get_into", token, Some(variable))?;
-                let (lanes, _) = self.accumulator_lanes(value)?;
-                self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
-                self.current = absent_block;
-                self.restore_snapshot(facts.clone());
-                let empty = self.push_empty_value(&Type::Named("String".into(), Vec::new()))?;
-                let (lanes, _) = self.accumulator_lanes(empty)?;
-                self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
-                self.restore_facts(facts, join);
-                self.current = join;
-                let joined = self.block_parameter_values(join);
-                self.track_accumulator_lanes(&joined);
-                let option_type = Type::Named("Option".into(), vec![Type::Named("String".into(), Vec::new())]);
-                let shape = scalar_aggregate_shape(&option_type, self.definitions)
-                    .ok_or(CanonicalLoweringError::UnsupportedExpression("Option(String) shape"))?;
-                let (some_index, _) = shape.variant("Some").ok_or(CanonicalLoweringError::MissingBinding("Some".into()))?;
-                let (none_index, _) = shape.variant("None").ok_or(CanonicalLoweringError::MissingBinding("None".into()))?;
-                let some_tag = self.push_const_int(i64::try_from(some_index).map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
-                let none_tag = self.push_const_int(i64::try_from(none_index).map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
-                let tag = self.lower_int_select(present, some_tag, none_tag)?;
-                let record = self.lower_heap_record_with_source(
-                    &option_type,
-                    &shape.name,
-                    &shape.fields,
-                    vec![tag, joined[0]],
-                    true,
-                    shape.tagged,
-                )?;
-                Ok(Some(record))
-            }
+            ("__capop.get_env", false, false, [variable]) => self.lower_env_get(token, variable).map(Some),
             _ => Err(CanonicalLoweringError::UnsupportedExpression("capability operation")),
         }
     }
@@ -14490,22 +14441,6 @@ impl FunctionLowerer<'_> {
             ),
             extent: HostBufferExtent::Slice,
         })
-    }
-
-    /// A bounded host read (`env_get_into`) into a fresh
-    /// guest buffer: the host is first asked with an empty buffer for the
-    /// full length, a buffer of that length is allocated, and the host is
-    /// asked again; the published length is the second answer bounded by the
-    /// buffer's capacity, never the first answer (the source may change
-    /// between the two calls).
-    fn lower_host_read_into(&mut self, import_name: &str, token: ValueId, key: Option<ValueId>) -> Result<ValueId, CanonicalLoweringError> {
-        let layout = self.string_layout_id()?;
-        let import = self.capability_import(import_name)?;
-        let mut inputs = vec![HostCallArgument::Capability(token)];
-        if let Some(key) = key {
-            inputs.push(self.string_slice_argument(key, layout)?);
-        }
-        self.lower_bounded_host_result(import, inputs)
     }
 
     fn lower_compiler_service(&mut self, expression: &Expr, name: &str, args: &[Expr]) -> Result<ValueId, CanonicalLoweringError> {
@@ -21492,8 +21427,8 @@ struct HostImports {
 }
 
 /// The canonical capability imports, in catalog order.
-const CAPABILITY_IMPORTS: [&str; 42] =
-    ["dir_exists_at", "dir_write_at", "dir_subtree_at", "dir_read_file", "env_has_var", "env_get_into", "build_out_write_at", "dir_is_dir_at", "build_read_at", "build_read_response_size", "build_read_response_into", "build_env_at", "build_response_is_some", "build_exec_run", "build_net_fetch", "net_fetch_at", "fetch_send_at", "fetch_response_size", "fetch_response_into", "fetch_only_at", "clock_now", "clock_now_monotonic", "dir_make_dir_at", "secretstore_lookup_at", "crypto_sign_into", "crypto_public_key_into", "dir_create_new_at", "dir_replace_at", "dir_read_bytes_at", "dir_response_size", "dir_response_into", "dir_write_bytes_at", "dir_append_bytes_at", "dir_set_executable_at", "dir_rename_at", "dir_read_at", "dir_response_status", "file_read_at", "file_response_status", "file_response_size", "file_response_into", "dir_list_at"];
+const CAPABILITY_IMPORTS: [&str; 44] =
+    ["dir_exists_at", "dir_write_at", "dir_subtree_at", "dir_read_file", "build_out_write_at", "dir_is_dir_at", "build_read_at", "build_read_response_size", "build_read_response_into", "build_env_at", "build_response_is_some", "build_exec_run", "build_net_fetch", "net_fetch_at", "fetch_send_at", "fetch_response_size", "fetch_response_into", "fetch_only_at", "clock_now", "clock_now_monotonic", "dir_make_dir_at", "secretstore_lookup_at", "crypto_sign_into", "crypto_public_key_into", "dir_create_new_at", "dir_replace_at", "dir_read_bytes_at", "dir_response_size", "dir_response_into", "dir_write_bytes_at", "dir_append_bytes_at", "dir_set_executable_at", "dir_rename_at", "dir_read_at", "dir_response_status", "file_read_at", "file_response_status", "file_response_size", "file_response_into", "dir_list_at", "env_get_at", "env_response_status", "env_response_size", "env_response_into"];
 
 /// The separator between the names a `dir_list_at` response carries; a file name never
 /// contains it.
@@ -21653,8 +21588,7 @@ fn collect_capability_imports(module: &witchy_syntax::ast::Module, table: &TypeT
                         needed.extend(["file_read_at", "file_response_status", "file_response_size", "file_response_into"]);
                     }
                     ("__capop.get_env", "Env") => {
-                        needed.insert("env_has_var");
-                        needed.insert("env_get_into");
+                        needed.extend(witchy_wir::canonical_safewir::ENV_IMPORT_NAMES);
                     }
                     _ => {}
                 }

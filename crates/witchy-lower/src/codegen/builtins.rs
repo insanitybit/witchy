@@ -828,8 +828,6 @@ impl Codegen<'_> {
                     W::CallHost { import: "rand_u64_host".to_string(), args: vec![] }
                 }
             }
-            // `env.get_env(name)`: the unforgeable Env handle and name both cross
-            // the host ABI so value-level attenuation remains authoritative.
             // `fail(msg)`: a deliberate, loud abort. (RFC-0045) The message is no
             // longer dropped — it is handed to the always-linked, authority-free
             // `__witchy_abort` host import (the `Fail` template passes the string
@@ -849,10 +847,10 @@ impl Codegen<'_> {
                 nodes.push(witchy_wir::wir::WirNode::Push(W::ConstI32(0)));
                 W::Seq(nodes)
             }
-            ("get_env", 2) => {
-                self.uses_get_env = true;
-                call("get_env", self.lower_args(&[&args[0], &args[1]])?)
-            }
+            // `env.get_env` answers `Result(Option(String), CapError)`
+            // (RFC-0126 rule 3); only the canonical route builds that result.
+            // Refuse it here.
+            ("get_env", 2) => return None,
             // `console.print(msg)`: the Console arg is type-level; print the msg
             // (a void host helper), then yield Nil as `i32.const 0`.
             ("print", 2) => {

@@ -801,11 +801,11 @@ pub fn upload_chunk_seq(net: Net, origin: String, name: String, version: String,
         upload_chunk_seq(net, origin, name, version, target, data, chunk, total, n, i + 1)
 
 // The trusted-publishing identity token from COVEN_ID_TOKEN (a compact OIDC JWT), passed
-// through opaquely; None when unset (an anonymous `uploaded_by` publish). This is the
-// trusted-publishing CLIENT flow: the server verifies the token against its per-namespace
-// trust policy.
+// through opaquely; None when unset or outside the Env grant (an anonymous `uploaded_by`
+// publish). This is the trusted-publishing CLIENT flow: the server verifies the token
+// against its per-namespace trust policy.
 pub fn id_token_from_env(env: Env) -> Option(String):
-    env.get_env("COVEN_ID_TOKEN")
+    env.get_env("COVEN_ID_TOKEN") ?? None
 
 // The coven registry address: the explicit arg if given, else `COVEN_URL` from
 // the environment (the Rust CLI's convention), else the default. The scheme is
@@ -816,7 +816,8 @@ pub fn coven_addr(env: Env, arg_addr: String) -> String:
     if !arg_addr.is_empty():
         arg_addr
     else:
-        match env.get_env("COVEN_URL"):
+        let url: Option(String) = env.get_env("COVEN_URL") ?? None
+        match url:
             Some(u) -> u
             None -> "127.0.0.1:8787"
 
@@ -1636,7 +1637,8 @@ pub fn assume_yes(env: Env, args: List(String)) -> Bool:
     if has_flag(args, "--yes"):
         true
     else:
-        match env.get_env("PM_ASSUME_YES"):
+        let assume: Option(String) = env.get_env("PM_ASSUME_YES") ?? None
+        match assume:
             Some(v) -> v == "1" || v == "true"
             None -> false
 
@@ -2028,7 +2030,8 @@ pub fn cooldown_now(env: Env, clock: Clock, args: List(String)) -> (Int, Int, Bo
     (clock.now() / 1000, cooldown_window(env), has_flag(args, "--allow-fresh"))
 
 pub fn cooldown_window(env: Env) -> Int:
-    match env.get_env("WITCHY_COOLDOWN_SECS"):
+    let secs: Option(String) = env.get_env("WITCHY_COOLDOWN_SECS") ?? None
+    match secs:
         Some(v) -> v.to_int()
         None -> 259200
 

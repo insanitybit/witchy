@@ -714,28 +714,26 @@ fn main(console: Console, config: File[Read]):
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// The enforcement half: a module that imports `now`/`env_*` but was NOT
-    /// granted Clock/Env must fail at instantiation — the host function simply
-    /// is not linked, so the authority is structurally absent.
+    /// The enforcement half: an admitted module that takes a Clock/Env but was
+    /// NOT granted one must fail before it runs — the host function simply is
+    /// not linked, so the authority is structurally absent.
     #[test]
     fn ungranted_clock_and_env_fail_to_instantiate() {
         use crate::runtime::{Capabilities, Runtime};
         let srcs = [
             "fn main(console: Console, clock: Clock):\n    console.print(\"${clock.now()}\")\n",
-            "import option\n\nfn main(console: Console, env: Env):\n    match env.get_env(\"X\"):\n        Some(v) -> console.print(v)\n        None -> console.print(\"unset\")\n",
+            "fn main(console: Console, env: Env):\n    match env.get_env(\"X\"):\n        Ok(_) -> console.print(\"answered\")\n        Err(_) -> console.print(\"denied\")\n",
         ];
         for src in srcs {
-            let module = parser::parse_module(src).expect("parse");
-            let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
-            let bytes = codegen::compile_module_binary(&linked)
-                .expect_lowered("the binary path lowers this program");
+            let checked = witchy::resolve_std_only_checked(src).expect("check");
+            let artifact = codegen::compile_checked_module_artifact(&checked)
+                .expect_lowered("the canonical route admits this program");
             let mut rt = Runtime::batch().expect("runtime");
-            let denied = rt.spawn(
-                &bytes,
-                Capabilities { print: true, ..Default::default() },
-                4,
-            );
-            assert!(denied.is_err(), "ungranted Clock/Env import must fail to instantiate");
+            // The entry's root capability is minted at launch, before `main`.
+            let denied = rt
+                .spawn_admitted(&artifact, Capabilities { print: true, ..Default::default() }, 4)
+                .and_then(|mut vm| vm.run().map(|()| vm.output()));
+            assert!(denied.is_err(), "ungranted Clock/Env must be refused before it runs: {denied:?}");
         }
     }
 
@@ -826,7 +824,7 @@ fn yes(b: Bool) -> String:
         let src_path = root.join("prog.witchy");
         std::fs::write(
             &src_path,
-            "import option\n\nfn main(console: Console, env: Env, dir: Dir[Read], args: List(String)) -> Int:\n    let path = list.at(args, 0)\n    let label = match env.get_env(\"PATH\"):\n        Some(v) -> v\n        None -> \"unlabeled\"\n    for line in (dir.read(path) ?? \"\").lines():\n        if line.contains(\"needle\"):\n            console.print(label + \": \" + line)\n    0\n",
+            "import option\n\nfn main(console: Console, env: Env, dir: Dir[Read], args: List(String)) -> Int:\n    let path = list.at(args, 0)\n    let label = (env.get_env(\"PATH\") ?? None) ?? \"unlabeled\"\n    for line in (dir.read(path) ?? \"\").lines():\n        if line.contains(\"needle\"):\n            console.print(label + \": \" + line)\n    0\n",
         )
         .unwrap();
         let host_path = std::env::var("PATH").expect("the test process has PATH");

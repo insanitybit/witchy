@@ -135,7 +135,7 @@ mod runtime {
             mod tests {
                 use crate::Outcome;
                 use witchy_runtime::runtime::self_checks::host_clock_env_rand_tests as checks;
-                #[test] fn env_has_var_traps_on_a_name_outside_the_allow_list() { checks::env_has_var_traps_on_a_name_outside_the_allow_list().check() }
+                #[test] fn env_get_at_answers_denied_without_an_existence_oracle() { checks::env_get_at_answers_denied_without_an_existence_oracle().check() }
             }
         }
         mod closure_owner {

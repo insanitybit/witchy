@@ -3213,3 +3213,19 @@ names no path.
 
 The admitted Dir transcript lists through `?? []`. The source tree walker and
 legacy codegen refuse `dir.list` by name.
+
+
+### 2026-10-03: `env.get_env` returns `Result(Option(String), CapError)` (RFC-0126 rule 3, row Q partial)
+
+A name outside the `Env` grant's allow-list is now `Err(Denied(..))` instead of
+a trap, and an unset variable is `Ok(None)`. One host call, `env_get_at`,
+returns a response handle read by `env_response_status`, `env_response_size`,
+and `env_response_into`. The retired `env_has_var`/`env_get_into` pair is gone.
+
+`rfc0165_admitted_launch::admitted_env_get_env_answers_set_unset_and_denied_without_an_existence_oracle`
+runs admitted unoptimized Wasm over allow-listed and unlisted names, each set
+and unset on the host. Both denied names answer the same `Denied` message. It
+names only the requested variable, never a host value or another allow-listed
+name. The runtime check `env_get_at_answers_denied_without_an_existence_oracle`
+pins the same answers at the host boundary. The source tree walker and the
+legacy codegen refuse `get_env` by name.

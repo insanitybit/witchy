@@ -1,8 +1,9 @@
 use wasmtime::{Caller, Error, ExternRef, Linker, Result, Rooted};
 use std::sync::Arc;
+use witchy_wir::canonical_safewir::ENV_IMPORT_NAMES;
 
 use super::super::{
-    fill_slice, memory_of, read_slice_str, read_wstr, read_wstr_list, EnvAuthority, VmState,
+    memory_of, read_slice_str, read_wstr, read_wstr_list, EnvAuthority, VmState,
 };
 
 /// Register the `Clock` observation imports.
@@ -65,10 +66,12 @@ pub(in crate::runtime) fn link_env(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "env_only", host_env_only)?;
     linker.func_wrap("witchy", "env_len", host_env_len)?;
     linker.func_wrap("witchy", "env_fill", host_env_fill)?;
-    // (RFC-0165 slice 42) The canonical route's Env pair, under the SAME `Env`
-    // grant as its frozen siblings: an ungranted program cannot link them.
-    linker.func_wrap("witchy", "env_has_var", host_env_has_var)?;
-    linker.func_wrap("witchy", "env_get_into", host_env_get_into)?;
+    // The canonical route's Env lookup, under the SAME `Env` grant as its
+    // frozen siblings: an ungranted program cannot link it.
+    linker.func_wrap("witchy", ENV_IMPORT_NAMES[0], host_env_get_at)?;
+    linker.func_wrap("witchy", ENV_IMPORT_NAMES[1], host_env_response_status)?;
+    linker.func_wrap("witchy", ENV_IMPORT_NAMES[2], host_env_response_size)?;
+    linker.func_wrap("witchy", ENV_IMPORT_NAMES[3], host_env_response_into)?;
     Ok(())
 }
 
@@ -82,14 +85,19 @@ pub(in crate::runtime) fn env_authority(state: &VmState) -> EnvAuthority {
     }
 }
 
-/// Trap unless the grant's allow-list admits `name` — the frozen `env_len` rule,
-/// shared so a canonical lookup can never see a name the frozen one refuses.
+/// Whether the grant's allow-list admits `name`: the one rule the frozen
+/// `env_len` trap and the canonical `Denied` answer share, so neither route can
+/// see a name the other refuses.
+fn env_allows(env: &EnvAuthority, name: &str) -> bool {
+    env.allow.as_ref().is_none_or(|allow| allow.contains(name))
+}
+
+/// Trap unless the grant's allow-list admits `name` (the frozen route).
 fn env_require_allowed(env: &EnvAuthority, name: &str) -> Result<()> {
-    match &env.allow {
-        Some(allow) if !allow.contains(name) => Err(Error::msg(format!(
-            "get_env: `{name}` is not in this Env grant's allow-list"
-        ))),
-        _ => Ok(()),
+    if env_allows(env, name) {
+        Ok(())
+    } else {
+        Err(Error::msg(format!("get_env: `{name}` is not in this Env grant's allow-list")))
     }
 }
 
@@ -197,85 +205,169 @@ fn host_env_fill(
         .map_err(|e| Error::msg(format!("writing env value into guest memory: {e}")))
 }
 
-// --- (RFC-0165 slice 42) the canonical Env pair ---
+// --- the canonical Env lookup (RFC-0126 rule 3) ---
 //
 // The frozen `env_len`/`env_fill` pair encodes "unset" as a -1 length and then
 // trusts the guest to have sized its buffer from the first call. The canonical
-// pair splits the two questions instead: existence is its own total answer, and
-// a read is bounded by the capacity the guest declares, so no host state and no
-// guest-chosen length survives between calls.
+// lookup consults the grant and the environment once and answers with an
+// immutable response: later getters only borrow that snapshot, so no
+// guest-chosen length or second lookup can disagree with the first.
 
-/// `env_has_var(env, name, name_len) -> Bool`: 1 iff the variable is set AND the
-/// grant's allow-list admits it. A name outside the allow-list traps — refusing
-/// it quietly would let a program probe for names it was never granted.
-fn host_env_has_var(
-    mut caller: Caller<'_, VmState>,
-    env: Option<Rooted<ExternRef>>,
-    name_ptr: i32,
-    name_len: i32,
-) -> Result<i32> {
-    let env = env_authority_ref(&caller, env)?;
-    let mem = memory_of(&mut caller)?;
-    let name = read_slice_str(mem.data(&caller), name_ptr, name_len)?;
-    env_require_allowed(&env, &name)?;
-    Ok(std::env::var(&name).is_ok() as i32)
+/// `env_get_at`'s answer for a set variable.
+const ENV_SET: u8 = 0;
+/// `env_get_at`'s answer for an unset (or non-Unicode) variable.
+const ENV_UNSET: u8 = 1;
+/// `env_get_at`'s answer for a name outside the grant's allow-list.
+const ENV_DENIED: u8 = 2;
+
+/// Private immutable lookup result, not an `Env` grant. Neither an integer
+/// kind nor bytes supplied by the guest can construct one. `status` is
+/// `ENV_SET` with the value, `ENV_UNSET` with no payload, or `ENV_DENIED`
+/// with the denial message.
+#[derive(Clone)]
+pub(in crate::runtime) struct EnvResponse {
+    issuer: Arc<()>,
+    status: u8,
+    bytes: Arc<Vec<u8>>,
 }
 
-/// `env_get_into(env, name, name_len, out, out_cap) -> Size`: write
-/// `min(length, out_cap)` bytes of the variable's value at `out` and return its
-/// FULL length. An unset (or non-Unicode) variable traps: the guest asks
-/// `env_has_var` first, so reaching here for an absent name is a contract
-/// violation, not a value the read can report.
-fn host_env_get_into(
+/// The status and payload `env_get_at` answers for `name`. The allow-list is
+/// consulted before the environment, so a denied name answers identically
+/// whether or not the host sets it. The denial message is guest-visible data:
+/// it names only the variable the guest asked for, never another allowed
+/// name, a value, or host detail.
+fn env_lookup(env: &EnvAuthority, name: &str) -> (u8, Vec<u8>) {
+    if !env_allows(env, name) {
+        return (ENV_DENIED, format!("`{name}` is not covered by this Env capability").into_bytes());
+    }
+    match std::env::var(name) {
+        Ok(value) => (ENV_SET, value.into_bytes()),
+        Err(_) => (ENV_UNSET, Vec::new()),
+    }
+}
+
+fn env_bytes_length(length: usize) -> Result<i32> {
+    i32::try_from(length).map_err(|_| Error::msg("Env response exceeds the guest ABI size limit"))
+}
+
+/// `env_get_at(env, name, name_len) -> response`: look `name` up once. A
+/// forged or wrong-kind token traps; a name the grant does not cover is the
+/// response's `Denied` status, not a trap.
+fn host_env_get_at(
     mut caller: Caller<'_, VmState>,
     env: Option<Rooted<ExternRef>>,
     name_ptr: i32,
     name_len: i32,
-    out_ptr: i32,
-    out_cap: i32,
-) -> Result<i32> {
+) -> Result<Option<Rooted<ExternRef>>> {
     let env = env_authority_ref(&caller, env)?;
     let mem = memory_of(&mut caller)?;
     let name = read_slice_str(mem.data(&caller), name_ptr, name_len)?;
-    env_require_allowed(&env, &name)?;
-    let value = std::env::var(&name)
-        .map_err(|_| Error::msg(format!("get_env: `{name}` is not set")))?;
-    fill_slice(&mut caller, out_ptr, out_cap, value.as_bytes(), "environment value")
+    let (status, bytes) = env_lookup(&env, &name);
+    env_bytes_length(bytes.len())?;
+    let response = EnvResponse { issuer: caller.data().registry_issuer.clone(), status, bytes: Arc::new(bytes) };
+    ExternRef::new(&mut caller, response).map(Some)
+}
+
+fn env_response(caller: &Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<EnvResponse> {
+    let token = token.ok_or_else(|| Error::msg("Env response is null"))?;
+    let data = token.data(caller)?.ok_or_else(|| Error::msg("Env response has no host data"))?;
+    let response = data.downcast_ref::<EnvResponse>()
+        .ok_or_else(|| Error::msg("Env response has wrong host kind"))?;
+    if !Arc::ptr_eq(&caller.data().registry_issuer, &response.issuer) {
+        return Err(Error::msg("Env response belongs to another instance"));
+    }
+    Ok(response.clone())
+}
+
+fn host_env_response_status(caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<i32> {
+    Ok(i32::from(env_response(&caller, token)?.status))
+}
+
+fn host_env_response_size(caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<i32> {
+    env_bytes_length(env_response(&caller, token)?.bytes.len())
+}
+
+/// Copy the whole payload when `capacity` holds it and answer its length
+/// either way; a short buffer is left untouched.
+fn host_env_response_into(
+    mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>, out_ptr: i32, capacity: i32,
+) -> Result<i32> {
+    let bytes = env_response(&caller, token)?.bytes;
+    let required = env_bytes_length(bytes.len())?;
+    let start = usize::try_from(out_ptr).map_err(|_| Error::msg("negative Env response pointer"))?;
+    let length = usize::try_from(capacity).map_err(|_| Error::msg("negative Env response capacity"))?;
+    let memory = memory_of(&mut caller)?;
+    let end = start.checked_add(length).filter(|end| *end <= memory.data_size(&caller))
+        .ok_or_else(|| Error::msg("Env response buffer lies outside guest memory"))?;
+    if end - start >= bytes.len() {
+        memory.write(&mut caller, start, bytes.as_slice())?;
+    }
+    Ok(required)
 }
 
 #[cfg(feature = "self-checks")]
 #[doc(hidden)]
 pub mod tests {
-    use super::super::super::{Capabilities, Runtime};
+    use crate::runtime::{Capabilities, Runtime, Vm};
 
-    /// Ask about `OTHER_NAME` (10 bytes at 0), which the allow-list omits.
-    const HAS_VAR_DENIED: &str = r#"
+    /// Look up the name at 0..len and leave (status, payload) in
+    /// `status`/`out`, `out` holding the payload bytes at 64.
+    const LOOKUP: &str = r#"
         (module
           (import "witchy" "mint_env" (func $mint_env (result externref)))
-          (import "witchy" "env_has_var"
-            (func $env_has_var (param externref i32 i32) (result i32)))
+          (import "witchy" "env_get_at" (func $get (param externref i32 i32) (result externref)))
+          (import "witchy" "env_response_status" (func $status (param externref) (result i32)))
+          (import "witchy" "env_response_size" (func $size (param externref) (result i32)))
+          (import "witchy" "env_response_into" (func $copy (param externref i32 i32) (result i32)))
           (memory (export "memory") 1)
-          (data (i32.const 0) "OTHER_NAME")
-          (func (export "run")
-            (drop (call $env_has_var (call $mint_env) (i32.const 0) (i32.const 10)))))
+          (global $status (export "status") (mut i32) (i32.const -1))
+          (global $length (export "length") (mut i32) (i32.const -1))
+          (func (export "lookup") (param $len i32)
+            (local $response externref)
+            (local.set $response (call $get (call $mint_env) (i32.const 0) (local.get $len)))
+            (global.set $status (call $status (local.get $response)))
+            (global.set $length (call $size (local.get $response)))
+            (drop (call $copy (local.get $response) (i32.const 64) (global.get $length)))))
     "#;
 
-    fn env_capabilities(allow: Option<Vec<String>>) -> Capabilities {
-        Capabilities { env: true, env_allow: allow, ..Capabilities::default() }
+    fn lookup(allow: Option<Vec<String>>, name: &str) -> (i32, String) {
+        let caps = Capabilities { env: true, env_allow: allow, ..Capabilities::default() };
+        let mut runtime = Runtime::new().expect("runtime");
+        let mut vm = runtime.spawn(LOOKUP, caps, 4).expect("instantiate the Env lookup probe");
+        let memory = vm.instance.get_memory(&mut vm.store, "memory").expect("memory");
+        memory.write(&mut vm.store, 0, name.as_bytes()).expect("write the name");
+        let run = vm.instance.get_typed_func::<i32, ()>(&mut vm.store, "lookup").expect("lookup export");
+        run.call(&mut vm.store, i32::try_from(name.len()).unwrap()).expect("a lookup never traps on its answer");
+        let global = |vm: &mut Vm, name: &str| {
+            vm.instance.get_global(&mut vm.store, name).expect(name).get(&mut vm.store).i32().expect(name)
+        };
+        let status = global(&mut vm, "status");
+        let length = usize::try_from(global(&mut vm, "length")).expect("payload length");
+        let mut payload = vec![0; length];
+        memory.read(&vm.store, 64, &mut payload).expect("read the payload");
+        (status, String::from_utf8(payload).expect("UTF-8 payload"))
     }
 
-    /// A name outside the allow-list is refused loudly, exactly as the frozen
-    /// `env_len` refuses it — answering `0` would turn the grant into an oracle
-    /// for names it never conferred.
-    pub fn env_has_var_traps_on_a_name_outside_the_allow_list() {
-        let mut runtime = Runtime::new().expect("runtime");
-        let mut vm = runtime
-            .spawn(HAS_VAR_DENIED, env_capabilities(Some(vec!["ALLOWED".to_string()])), 4)
-            .expect("instantiate the allow-list probe");
-        let error = vm.run().expect_err("an unlisted name must trap");
-        assert!(
-            format!("{error:?}").contains("allow-list"),
-            "expected an allow-list refusal, got: {error:?}"
-        );
+    /// Set, unset and denied answers. A name outside the allow-list answers
+    /// the same `Denied` whether or not the host sets it, and the message
+    /// names only that name: never another allowed name or a value.
+    pub fn env_get_at_answers_denied_without_an_existence_oracle() {
+        // The crate forbids `unsafe`, so the probe reads the environment the
+        // test process inherited rather than setting one.
+        const SET: &str = "PATH";
+        const UNSET: &str = "WITCHY_ENV_RESPONSE_PROBE_UNSET";
+        let value = std::env::var(SET).expect("the test process has PATH");
+        assert!(std::env::var_os(UNSET).is_none(), "{UNSET} must be unset");
+        let only = |names: &[&str]| Some(names.iter().map(|name| name.to_string()).collect());
+        assert_eq!(lookup(only(&[SET, UNSET]), SET), (0, value.clone()));
+        assert_eq!(lookup(only(&[SET, UNSET]), UNSET), (1, String::new()));
+        assert_eq!(lookup(None, SET), (0, value.clone()));
+        let denied_set = lookup(only(&["ALLOWED"]), SET);
+        let denied_unset = lookup(only(&["ALLOWED"]), UNSET);
+        assert_eq!(denied_set, (2, format!("`{SET}` is not covered by this Env capability")));
+        assert_eq!(denied_unset, (2, format!("`{UNSET}` is not covered by this Env capability")));
+        for (_, message) in [denied_set, denied_unset] {
+            assert!(!message.contains("ALLOWED") && !message.contains(&value), "{message}");
+        }
     }
 }
