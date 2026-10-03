@@ -139,12 +139,7 @@ impl FunctionLowerer<'_> {
         let path = self.clone_reference_token(path)?;
         if name == "__capop.set_executable" {
             let path = self.string_slice_argument(path, layout)?;
-            let import = self.capability_import("dir_set_executable_at")?;
-            self.push_operation(Operation::HostCall {
-                destinations: Vec::new(), import,
-                arguments: vec![HostCallArgument::Capability(token), path],
-            });
-            return self.push_zero(ValueType::Unit).map(Some);
+            return self.lower_effect_call(token, "dir_set_executable_at", vec![path]).map(Some);
         }
         if name == "__capop.read_bytes" {
             let path = self.string_slice_argument(path, layout)?;
@@ -166,23 +161,92 @@ impl FunctionLowerer<'_> {
         let data = self.clone_reference_token(data)?;
         let path = self.string_slice_argument(path, layout)?;
         let data = self.string_slice_argument(data, layout)?;
-        let (import_name, creates) = match name {
-            "__capop.create_new" => ("dir_create_new_at", true),
-            "__capop.replace" => ("dir_replace_at", false),
-            "__capop.write_bytes" => ("dir_write_bytes_at", false),
-            "__capop.append_bytes" => ("dir_append_bytes_at", false),
-            "__capop.rename" => ("dir_rename_at", false),
+        let import_name = match name {
+            "__capop.create_new" => "dir_create_new_at",
+            "__capop.replace" => "dir_replace_at",
+            "__capop.write_bytes" => "dir_write_bytes_at",
+            "__capop.append_bytes" => "dir_append_bytes_at",
+            "__capop.rename" => "dir_rename_at",
             _ => return Err(CanonicalLoweringError::UnsupportedExpression("Dir storage operation")),
         };
-        let result = if creates { Some(self.fresh(ValueType::Bool)?) } else { None };
-        let import = self.capability_import(import_name)?;
-        self.push_operation(Operation::HostCall {
-            destinations: result.into_iter().collect(), import,
-            arguments: vec![HostCallArgument::Capability(token), path, data],
-        });
-        match result {
-            Some(value) => Ok(Some(value)),
-            None => self.push_zero(ValueType::Unit).map(Some),
+        self.lower_effect_call(token, import_name, vec![path, data]).map(Some)
+    }
+
+    /// One write-family host call answering a response, then
+    /// `Result((), CapError)` from it (RFC-0126 rule 3).
+    fn lower_effect_call(
+        &mut self, token: ValueId, import: &str, arguments: Vec<HostCallArgument>,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let response = self.fresh(ValueType::Capability(witchy_wir::canonical_safewir::DIR_RESPONSE_KIND))?;
+        let import = self.capability_import(import)?;
+        let mut all = vec![HostCallArgument::Capability(token)];
+        all.extend(arguments);
+        self.push_operation(Operation::HostCall { destinations: vec![response], import, arguments: all });
+        let unit = witchy_types::typeck::ty_to_ast(&witchy_types::typeck::Ty::Unit)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("unit result type"))?;
+        self.lower_cap_result_with(response, unit, "dir", |this, _| this.push_zero(ValueType::Unit))
+    }
+
+    /// `dir.write`, `dir.append`, `dir.make_dir`: string arguments in source
+    /// order, retained against later mutation, then one effect call.
+    pub(super) fn lower_dir_effect(
+        &mut self, token: ValueId, import: &str, arguments: &[&Expr],
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let layout = self.string_layout_id()?;
+        let mut values = Vec::new();
+        for argument in arguments {
+            let value = self.lower_string_argument(argument)?;
+            values.push(self.clone_reference_token(value)?);
         }
+        let mut slices = Vec::new();
+        for value in values {
+            slices.push(self.string_slice_argument(value, layout)?);
+        }
+        self.lower_effect_call(token, import, slices)
+    }
+
+    /// `dir.exists`, `dir.is_dir`: one probe answering a response whose flag
+    /// is the answer, as `Result(Bool, CapError)`.
+    pub(super) fn lower_dir_probe(
+        &mut self, token: ValueId, import: &str, path: &Expr,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let layout = self.string_layout_id()?;
+        let path = self.lower_string_argument(path)?;
+        let path = self.string_slice_argument(path, layout)?;
+        let response = self.fresh(ValueType::Capability(witchy_wir::canonical_safewir::DIR_RESPONSE_KIND))?;
+        let import = self.capability_import(import)?;
+        self.push_operation(Operation::HostCall {
+            destinations: vec![response], import,
+            arguments: vec![HostCallArgument::Capability(token), path],
+        });
+        let boolean = witchy_types::typeck::ty_to_ast(&witchy_types::typeck::Ty::Bool)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("Bool result type"))?;
+        self.lower_cap_result_with(response, boolean, "dir", |this, _| {
+            let flag = this.fresh(ValueType::Size)?;
+            let import = this.capability_import("dir_response_flag")?;
+            this.push_operation(Operation::HostCall {
+                destinations: vec![flag], import,
+                arguments: vec![HostCallArgument::Capability(response)],
+            });
+            let zero = this.push_const_size(0)?;
+            this.push_compare(ComparisonOperator::NotEqual, flag, zero)
+        })
+    }
+
+    /// `file.write(data)`: one host write, then `Result((), CapError)` under
+    /// File authority.
+    pub(super) fn lower_file_effect(&mut self, token: ValueId, data: &Expr) -> Result<ValueId, CanonicalLoweringError> {
+        let layout = self.string_layout_id()?;
+        let data = self.lower_string_argument(data)?;
+        let data = self.string_slice_argument(data, layout)?;
+        let response = self.fresh(ValueType::Capability(witchy_wir::canonical_safewir::DIR_RESPONSE_KIND))?;
+        let import = self.capability_import("file_write_at")?;
+        self.push_operation(Operation::HostCall {
+            destinations: vec![response], import,
+            arguments: vec![HostCallArgument::Capability(token), data],
+        });
+        let unit = witchy_types::typeck::ty_to_ast(&witchy_types::typeck::Ty::Unit)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("unit result type"))?;
+        self.lower_cap_result_with(response, unit, "file", |this, _| this.push_zero(ValueType::Unit))
     }
 }

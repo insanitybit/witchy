@@ -2735,6 +2735,9 @@ pub(crate) fn link_capability_imports(
     if (has_real_dir && dir_write) || direct_file_write {
         host::filesystem::link_file_write(linker)?;
     }
+    if has_readable_dir || direct_file_read || (has_real_dir && dir_write) || direct_file_write {
+        host::filesystem::link_file_responses(linker)?;
+    }
     // (RFC-0005 Stage 2) The `run` wrapper mints each `--file` `main` param as an
     // `externref` via `mint_file`; only reachable when a direct File grant exists.
     if has_file_grants {

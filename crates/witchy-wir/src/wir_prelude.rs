@@ -366,8 +366,8 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "heap_unregister" (func $heap_unregister_host (param i32)))
   (import "witchy" "heap_frontier" (func $heap_frontier_host (param i32)))
   (import "witchy" "__witchy_abort" (func $__witchy_abort (param i32 i64 i64 i32)))
-  (import "witchy" "dir_exists_at" (func $dir_exists_at_host (param externref i32 i32) (result i32)))
-  (import "witchy" "dir_write_at" (func $dir_write_at_host (param externref i32 i32 i32 i32)))
+  (import "witchy" "dir_exists_at" (func $dir_exists_at_host (param externref i32 i32) (result externref)))
+  (import "witchy" "dir_write_at" (func $dir_write_at_host (param externref i32 i32 i32 i32) (result externref)))
   (import "witchy" "env_get_at" (func $env_get_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "env_response_status" (func $env_response_status_host (param externref) (result i32)))
   (import "witchy" "env_response_size" (func $env_response_size_host (param externref) (result i32)))
@@ -391,7 +391,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "crypto_rsa_pkcs1_sha256_verify_slices" (func $crypto_rsa_pkcs1_sha256_verify_slices_host (param i32 i32 i32 i32 i32 i32) (result i64)))
   (import "witchy" "crypto_sha256_slices" (func $crypto_sha256_slices_host (param i32 i32 i32 i32) (result i32)))
   (import "witchy" "crypto_rune_hash_slices" (func $crypto_rune_hash_slices_host (param i32 i32 i32 i32) (result i32)))
-  (import "witchy" "dir_is_dir_at" (func $dir_is_dir_at_host (param externref i32 i32) (result i32)))
+  (import "witchy" "dir_is_dir_at" (func $dir_is_dir_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "build_read_at" (func $build_read_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "build_read_response_size" (func $build_read_response_size_host (param externref) (result i32)))
   (import "witchy" "build_read_response_into" (func $build_read_response_into_host (param externref i32 i32) (result i32)))
@@ -399,19 +399,19 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "build_response_is_some" (func $build_response_is_some_host (param externref) (result i32)))
   (import "witchy" "clock_now" (func $clock_now_host (param externref) (result i64)))
   (import "witchy" "clock_now_monotonic" (func $clock_now_monotonic_host (param externref) (result i64)))
-  (import "witchy" "dir_make_dir_at" (func $dir_make_dir_at_host (param externref i32 i32)))
+  (import "witchy" "dir_make_dir_at" (func $dir_make_dir_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "secretstore_lookup_at" (func $secretstore_lookup_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "crypto_sign_into" (func $crypto_sign_into_host (param externref i32 i32 i32 i32) (result i32)))
   (import "witchy" "crypto_public_key_into" (func $crypto_public_key_into_host (param externref i32 i32) (result i32)))
-  (import "witchy" "dir_create_new_at" (func $dir_create_new_at_host (param externref i32 i32 i32 i32) (result i32)))
-  (import "witchy" "dir_replace_at" (func $dir_replace_at_host (param externref i32 i32 i32 i32)))
+  (import "witchy" "dir_create_new_at" (func $dir_create_new_at_host (param externref i32 i32 i32 i32) (result externref)))
+  (import "witchy" "dir_replace_at" (func $dir_replace_at_host (param externref i32 i32 i32 i32) (result externref)))
   (import "witchy" "dir_read_bytes_at" (func $dir_read_bytes_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "dir_response_size" (func $dir_response_size_host (param externref) (result i32)))
   (import "witchy" "dir_response_into" (func $dir_response_into_host (param externref i32 i32) (result i32)))
-  (import "witchy" "dir_write_bytes_at" (func $dir_write_bytes_at_host (param externref i32 i32 i32 i32)))
-  (import "witchy" "dir_append_bytes_at" (func $dir_append_bytes_at_host (param externref i32 i32 i32 i32)))
-  (import "witchy" "dir_set_executable_at" (func $dir_set_executable_at_host (param externref i32 i32)))
-  (import "witchy" "dir_rename_at" (func $dir_rename_at_host (param externref i32 i32 i32 i32)))
+  (import "witchy" "dir_write_bytes_at" (func $dir_write_bytes_at_host (param externref i32 i32 i32 i32) (result externref)))
+  (import "witchy" "dir_append_bytes_at" (func $dir_append_bytes_at_host (param externref i32 i32 i32 i32) (result externref)))
+  (import "witchy" "dir_set_executable_at" (func $dir_set_executable_at_host (param externref i32 i32) (result externref)))
+  (import "witchy" "dir_rename_at" (func $dir_rename_at_host (param externref i32 i32 i32 i32) (result externref)))
   (import "witchy" "dir_read_at" (func $dir_read_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "dir_response_status" (func $dir_response_status_host (param externref) (result i32)))
   (import "witchy" "file_read_at" (func $file_read_at_host (param externref) (result externref)))
@@ -424,6 +424,9 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "dir_write_file_at" (func $dir_write_file_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "dir_response_take_dir" (func $dir_response_take_dir_host (param externref) (result externref)))
   (import "witchy" "dir_response_take_file" (func $dir_response_take_file_host (param externref) (result externref)))
+  (import "witchy" "dir_append_at" (func $dir_append_at_host (param externref i32 i32 i32 i32) (result externref)))
+  (import "witchy" "dir_response_flag" (func $dir_response_flag_host (param externref) (result i32)))
+  (import "witchy" "file_write_at" (func $file_write_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "crypto_sha512_slices" (func $crypto_sha512_slices_host (param i32 i32 i32 i32) (result i32)))
   (import "witchy" "crypto_sha3_256_slices" (func $crypto_sha3_256_slices_host (param i32 i32 i32 i32) (result i32)))
   (import "witchy" "crypto_hmac_sha256_slices" (func $crypto_hmac_sha256_slices_host (param i32 i32 i32 i32 i32 i32) (result i32)))
@@ -633,6 +636,9 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "dir_write_file_at"
         | "dir_response_take_dir"
         | "dir_response_take_file"
+        | "dir_append_at"
+        | "dir_response_flag"
+        | "file_write_at"
         | "dir_write_bytes_at"
         | "dir_append_bytes_at"
         | "dir_set_executable_at"
@@ -776,7 +782,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         "mint_env" | "env_only" | "env_len" | "env_fill" | "env_get_at" | "env_response_status"
         | "env_response_size" | "env_response_into" => AUTH_ENV,
         "mint_dir" | "dir_response_take_dir" | "dir_response_take_file" | "dir_response_status"
-        | "dir_response_size" | "dir_response_into" => AUTH_DIR_GRANT,
+        | "dir_response_size" | "dir_response_into" | "dir_response_flag" => AUTH_DIR_GRANT,
         "dir_read_len"
         | "dir_read_bytes_len"
         | "dir_list_size"
@@ -793,9 +799,9 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "dir_make_dir" | "dir_create" | "dir_create_new" | "dir_replace" | "dir_rename"
         | "dir_write_at" | "dir_make_dir_at" | "dir_create_new_at"
         | "dir_replace_at" | "dir_write_bytes_at" | "dir_append_bytes_at"
-        | "dir_set_executable_at" | "dir_rename_at" | "dir_write_file_at" => AUTH_DIR_WRITE,
+        | "dir_set_executable_at" | "dir_rename_at" | "dir_write_file_at" | "dir_append_at" => AUTH_DIR_WRITE,
         "mint_file" => AUTH_FILE_GRANT,
-        "file_read_len" | "file_write" | "file_read_at" | "file_response_status"
+        "file_read_len" | "file_write" | "file_read_at" | "file_write_at" | "file_response_status"
         | "file_response_size" | "file_response_into" => AUTH_FILE_AUTHORITY,
         "mint_net" => AUTH_NET_GRANT,
         "mint_fetch" => AUTH_FETCH_GRANT,

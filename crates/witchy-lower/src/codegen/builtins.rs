@@ -948,10 +948,11 @@ impl Codegen<'_> {
             // `open`/`create` navigate a Dir to a confined File externref.
             // `file.read` answers `Result(String, CapError)`; refuse it here too.
             ("read", 1) => return None,
-            ("write", 2) => {
-                let a = self.lower_args(&[&args[0], &args[1]])?;
-                if self.collect_wir { call("file_write", a) } else { nil0(host("file_write_host", a)) }
-            }
+            // The Dir/File write family and `exists`/`is_dir` answer `CapError`
+            // results (RFC-0126 rule 3); only the canonical route builds them.
+            ("write", 2) | ("exists", 2) | ("is_dir", 2) | ("write", 3) | ("append", 3)
+            | ("make_dir", 2) | ("create_new", 3) | ("replace", 3) | ("rename", 3)
+            | ("write_bytes", 3) | ("append_bytes", 3) | ("set_executable", 2) => return None,
             // RFC-0012 `dir.read_file`/`dir.write_file` navigate a Dir to a confined
             // File externref (the internal host ops keep their `dir_open`/`dir_create` names).
             // They answer `Result(File, CapError)` (RFC-0126 rule 3); only the
@@ -1063,16 +1064,6 @@ impl Codegen<'_> {
             // It answers `Result(Dir, CapError)`; only the canonical route
             // builds that result.
             ("subtree", 2) => return None,
-            ("exists", 2) => {
-                self.used_dir_ops.insert("exists");
-                let a = self.lower_args(&[&args[0], &args[1]])?;
-                if self.collect_wir { call("dir_exists", a) } else { host("dir_exists_host", a) }
-            }
-            ("is_dir", 2) => {
-                self.used_dir_ops.insert("is_dir");
-                let a = self.lower_args(&[&args[0], &args[1]])?;
-                if self.collect_wir { call("dir_is_dir", a) } else { host("dir_is_dir_host", a) }
-            }
             ("accept", 1) => {
                 self.used_net_ops.insert("accept");
                 let a = self.lower_args(&[&args[0]])?;
@@ -1202,62 +1193,9 @@ impl Codegen<'_> {
                 let a = self.lower_args(&[&args[0]])?;
                 if self.collect_wir { call("serve_pool", a) } else { nil0(host("serve_pool_host", a)) }
             }
-            ("write", 3) => {
-                self.used_dir_ops.insert("write");
-                let a = self.lower_args(&[&args[0], &args[1], &args[2]])?;
-                if self.collect_wir { call("dir_write", a) } else { nil0(host("dir_write_host", a)) }
-            }
-            ("append", 3) => {
-                self.used_dir_ops.insert("append");
-                let a = self.lower_args(&[&args[0], &args[1], &args[2]])?;
-                if self.collect_wir { call("dir_append", a) } else { nil0(host("dir_append_host", a)) }
-            }
-            ("make_dir", 2) => {
-                self.used_dir_ops.insert("make_dir");
-                let a = self.lower_args(&[&args[0], &args[1]])?;
-                if self.collect_wir { call("dir_make_dir", a) } else { nil0(host("dir_make_dir_host", a)) }
-            }
-            // RFC-0118 atomic primitives. `create_new` yields Bool (i32, like
-            // `exists`): 1 = created here, 0 = already existed. `replace`/`rename`
-            // are void effects yielding Nil.
-            ("create_new", 3) => {
-                self.used_dir_ops.insert("create_new");
-                let a = self.lower_args(&[&args[0], &args[1], &args[2]])?;
-                if self.collect_wir { call("dir_create_new", a) } else { host("dir_create_new_host", a) }
-            }
-            ("replace", 3) => {
-                self.used_dir_ops.insert("replace");
-                let a = self.lower_args(&[&args[0], &args[1], &args[2]])?;
-                if self.collect_wir { call("dir_replace", a) } else { nil0(host("dir_replace_host", a)) }
-            }
-            ("rename", 3) => {
-                self.used_dir_ops.insert("rename");
-                let a = self.lower_args(&[&args[0], &args[1], &args[2]])?;
-                if self.collect_wir { call("dir_rename", a) } else { nil0(host("dir_rename_host", a)) }
-            }
-            // RFC-0095 byte-safe I/O. `read_bytes` returns Bytes (a `[len][payload]`
-            // buffer wrapped as Bytes rather than String — identical representation);
-            // `write_bytes` is a void effect taking a Bytes arg.
             // `dir.read_bytes` answers `Result(Bytes, CapError)`; only the
             // canonical route builds that result.
             ("read_bytes", 2) => return None,
-            ("write_bytes", 3) => {
-                self.used_dir_ops.insert("write_bytes");
-                let a = self.lower_args(&[&args[0], &args[1], &args[2]])?;
-                if self.collect_wir { call("dir_write_bytes", a) } else { nil0(host("dir_write_bytes_host", a)) }
-            }
-            // RFC-0095: append Bytes to a file — a void effect, like `append` but binary.
-            ("append_bytes", 3) => {
-                self.used_dir_ops.insert("append_bytes");
-                let a = self.lower_args(&[&args[0], &args[1], &args[2]])?;
-                if self.collect_wir { call("dir_append_bytes", a) } else { nil0(host("dir_append_bytes_host", a)) }
-            }
-            // RFC-0095: chmod +x a file — a void effect taking just a path.
-            ("set_executable", 2) => {
-                self.used_dir_ops.insert("set_executable");
-                let a = self.lower_args(&[&args[0], &args[1]])?;
-                if self.collect_wir { call("dir_set_executable", a) } else { nil0(host("dir_set_executable_host", a)) }
-            }
             ("write_out", 3) => {
                 self.used_build_ops.insert("write_out");
                 // BuildOut is checked at source level and granted by import

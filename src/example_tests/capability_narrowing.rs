@@ -1,4 +1,4 @@
-use crate::{interpreter, parser, typeck};
+use crate::typeck;
 
     fn ok(src: &str) {
         let result = typeck::check_str(src);
@@ -10,80 +10,16 @@ use crate::{interpreter, parser, typeck};
         assert!(error.contains(needle), "error `{error}` should mention `{needle}`");
     }
 
+    /// `list` needs `Read` and `make_dir` needs `Write`: a missing right is a
+    /// compile error. Their confinement (an escape or a link leaf is `Denied`)
+    /// runs as admitted Wasm in `capabilities::dir_capability_compiles_to_wasm_and_confines`
+    /// and at the host in `dir_write_family_answers_failures_as_statuses`.
     #[test]
-    fn dir_write_is_confined_to_the_subtree() {
-        let tmp = std::env::temp_dir().join(format!("witchy_dir_write_test_{}", std::process::id()));
-        std::fs::create_dir_all(&tmp).unwrap();
-        let run = |src: &str| {
-            let mods = vec![("main".to_string(), parser::parse_module(src).expect("parse"))];
-            let linked = crate::pipeline::link(mods, "main").expect("link");
-            interpreter::run_module(linked, &tmp, Vec::new())
-        };
-        // Write then read back, within the confined Dir.
-        let out = run("fn main(console: Console, root: Dir):\n    root.write(\"out.txt\", \"hi\")\n    console.print(\"${root.exists(\"out.txt\")}\")\n")
-            .expect("run");
-        assert_eq!(out, vec!["true"]);
-        assert_eq!(std::fs::read_to_string(tmp.join("out.txt")).unwrap(), "hi");
-        // A `..` write is refused — the capability can't escape its subtree.
-        assert!(run("fn main(console: Console, root: Dir):\n    root.write(\"../escape.txt\", \"x\")\n").is_err());
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    /// `list` (enumerate, sorted) and `make_dir` (create a confined subdir) — the
-    /// filesystem ops a package store/registry needs. `list` needs `Read`,
-    /// `make_dir` needs `Write`, and both stay confined to the capability's subtree.
-    #[test]
-    fn dir_list_and_make_dir_work_and_are_rights_checked() {
-        let tmp = std::env::temp_dir().join(format!("witchy_dir_list_test_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(tmp.join("store")).unwrap();
-        std::fs::write(tmp.join("store/bravo"), "b").unwrap();
-        std::fs::write(tmp.join("store/alpha"), "a").unwrap();
-        let run = |src: &str| {
-            let mods = vec![("main".to_string(), parser::parse_module(src).expect("parse"))];
-            let linked = crate::pipeline::link(mods, "main").expect("link");
-            interpreter::run_module(linked, &tmp, Vec::new())
-        };
-        // `list` answers `Result(List(String), CapError)`, which only admitted
-        // Wasm builds; `capabilities::dir_capability_compiles_to_wasm_and_confines`
-        // pins its sorted listing.
-        // `make_dir` creates a confined subdirectory.
-        run("fn main(console: Console, root: Dir):\n    root.make_dir(\"fresh\")\n").expect("run");
-        assert!(tmp.join("fresh").is_dir(), "make_dir should have created the directory");
-        // Confinement: a `..` make_dir is refused.
-        assert!(run("fn main(console: Console, root: Dir):\n    root.make_dir(\"../escaped\")\n").is_err());
-        assert!(!tmp.parent().unwrap().join("escaped").exists(), "make_dir must not escape the subtree");
-
-        // Rights: `list` needs Read, `make_dir` needs Write.
+    fn dir_list_and_make_dir_are_rights_checked() {
         assert!(typeck::check_str("fn main(c: Console, d: Dir[Write]):\n    let n = d.list()\n").is_err());
-        assert!(typeck::check_str("fn main(c: Console, d: Dir[Read]):\n    d.make_dir(\"x\")\n").is_err());
-        let _ = std::fs::remove_dir_all(&tmp);
+        assert!(typeck::check_str("fn main(c: Console, d: Dir[Read]):\n    let _ = d.make_dir(\"x\")\n").is_err());
+        assert!(typeck::check_str("fn main(c: Console, d: Dir[Write]):\n    let _ = d.make_dir(\"x\")\n").is_ok());
     }
-
-    #[cfg(unix)]
-    #[test]
-    fn dir_write_refuses_a_symlink_leaf() {
-        // A pre-existing symlink in the subtree must not let a write escape it.
-        let base = std::env::temp_dir().join(format!("witchy_dir_symlink_test_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(base.join("sandbox")).unwrap();
-        std::fs::write(base.join("secret.txt"), "ORIGINAL").unwrap();
-        std::os::unix::fs::symlink("../secret.txt", base.join("sandbox/link.txt")).unwrap();
-
-        let mods = vec![(
-            "main".to_string(),
-            parser::parse_module(
-                "fn main(console: Console, root: Dir):\n    root.subtree(\"sandbox\").write(\"link.txt\", \"PWNED\")\n",
-            )
-            .expect("parse"),
-        )];
-        let linked = crate::pipeline::link(mods, "main").expect("link");
-        assert!(interpreter::run_module(linked, &base, Vec::new()).is_err());
-        // The symlink target outside the subtree is untouched.
-        assert_eq!(std::fs::read_to_string(base.join("secret.txt")).unwrap(), "ORIGINAL");
-        let _ = std::fs::remove_dir_all(&base);
-    }
-
 
     /// The `as` ascription narrows a capability to a subset of its rights, and is
     /// the single native mechanism for it (replacing the per-right `_only`

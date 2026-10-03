@@ -20,6 +20,7 @@ pub(in crate::runtime) fn link_mint_dir(linker: &mut Linker<VmState>) -> Result<
     linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[3], host_dir_response_size)?;
     linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[4], host_dir_response_into)?;
     linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[10], host_dir_response_status)?;
+    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[22], host_dir_response_flag)?;
     linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[19], host_dir_response_take_dir)?;
     linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[20], host_dir_response_take_file)?;
     Ok(())
@@ -53,6 +54,7 @@ pub(in crate::runtime) fn link_dir_read(linker: &mut Linker<VmState>) -> Result<
 /// externref (RFC-0012/RFC-0005 stage 2).
 pub(in crate::runtime) fn link_dir_write(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[18], host_dir_write_file_at)?;
+    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[21], host_dir_append_at)?;
     linker.func_wrap("witchy", "dir_write", host_dir_write)?;
     linker.func_wrap("witchy", "dir_append", host_dir_append)?;
     linker.func_wrap("witchy", "dir_make_dir", host_dir_make_dir)?;
@@ -80,6 +82,12 @@ pub(in crate::runtime) fn link_dir_write(linker: &mut Linker<VmState>) -> Result
 pub(in crate::runtime) fn link_file_read(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "file_read_len", host_file_read_len)?;
     linker.func_wrap("witchy", "file_read_at", host_file_read_at)?;
+    Ok(())
+}
+
+/// Register the File response getters, linked whenever any File operation is:
+/// a response only comes from an operation its grant linked.
+pub(in crate::runtime) fn link_file_responses(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "file_response_status", host_dir_response_status)?;
     linker.func_wrap("witchy", "file_response_size", host_dir_response_size)?;
     linker.func_wrap("witchy", "file_response_into", host_dir_response_into)?;
@@ -89,6 +97,7 @@ pub(in crate::runtime) fn link_file_read(linker: &mut Linker<VmState>) -> Result
 /// Register the File write leaf op (RFC-0012).
 pub(in crate::runtime) fn link_file_write(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "file_write", host_file_write)?;
+    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[23], host_file_write_at)?;
     Ok(())
 }
 
@@ -487,64 +496,13 @@ fn host_dir_read_len(
 // state for a second call to place. Nothing here touches `pending`, so no host
 // state survives a canonical call.
 
-/// `dir_exists_at(dir, path, path_len) -> Bool`: `dir_exists`'s semantics over a
-/// checked slice — total, so an escaping or denied path is `false`, not a trap.
-fn host_dir_exists_at(
-    mut caller: Caller<'_, VmState>,
-    d: Option<Rooted<ExternRef>>,
-    path_ptr: i32,
-    path_len: i32,
-) -> Result<i32> {
-    let mem = memory_of(&mut caller)?;
-    let rel = read_slice_str(mem.data(&caller), path_ptr, path_len)?;
-    let dir = dir_authority_ref(&caller, d)?;
-    dir_require_read(&dir)?;
-    let ok = visible_entry_kind(&dir, &rel).ok().flatten().is_some();
-    Ok(ok as i32)
-}
 
-/// The legacy total directory predicate over one bounded UTF-8 slice. Invalid
-/// authority or transport traps; denied, missing, and inaccessible entries are
-/// false. Authenticate before touching memory, and preserve the exact existing
-/// handle-backed entry-policy semantics rather than interpreting paths here.
-fn host_dir_is_dir_at(
-    mut caller: Caller<'_, VmState>,
-    d: Option<Rooted<ExternRef>>,
-    path_ptr: i32,
-    path_len: i32,
-) -> Result<i32> {
-    let dir = dir_authority_ref(&caller, d)?;
-    dir_require_read(&dir)?;
-    let mem = memory_of(&mut caller)?;
-    let rel = read_slice_str(mem.data(&caller), path_ptr, path_len)?;
-    Ok((visible_entry_kind(&dir, &rel).ok().flatten() == Some(true)) as i32)
-}
 
 #[cfg(feature = "self-checks")]
 #[doc(hidden)]
 #[path = "filesystem_metadata_tests.rs"]
 pub mod metadata_tests;
 
-/// `dir_write_at(dir, path, path_len, data, data_len)`: `dir_write`'s semantics
-/// over checked slices — the data is UTF-8 text, and the write needs `Dir[Write]`.
-fn host_dir_write_at(
-    mut caller: Caller<'_, VmState>,
-    d: Option<Rooted<ExternRef>>,
-    path_ptr: i32,
-    path_len: i32,
-    data_ptr: i32,
-    data_len: i32,
-) -> Result<()> {
-    let mem = memory_of(&mut caller)?;
-    let data = mem.data(&caller);
-    let rel = read_slice_str(data, path_ptr, path_len)?;
-    let contents = read_slice_str(data, data_ptr, data_len)?;
-    let dir = dir_authority_ref(&caller, d)?;
-    dir_require_write(&dir)?;
-    dir_guard(&dir, &rel, false)?;
-    let file = dir_file_backing(&dir, &rel, true)?;
-    write_file_backing(&file, contents)
-}
 
 
 /// (RFC-0095) `dir_read_bytes_len(h, rel) -> byte length`: like `dir_read_len` but
@@ -610,6 +568,8 @@ pub(in crate::runtime) struct DirResponse {
     /// The capability a successful navigation (`subtree`, `read_file`,
     /// `write_file`) minted, taken by `dir_response_take_dir`/`_file`.
     minted: Option<Minted>,
+    /// A predicate response's answer (`exists`, `is_dir`).
+    flag: bool,
 }
 
 #[derive(Clone)]
@@ -679,7 +639,7 @@ fn dir_read_response(
         Err(failure) => (failure.kind.status(), guest_failure(failure.kind, &path).into_bytes()),
     };
     dir_bytes_length(bytes.len())?;
-    let response = DirResponse { issuer: caller.data().registry_issuer.clone(), status, bytes: Arc::new(bytes), minted: None };
+    let response = DirResponse { issuer: caller.data().registry_issuer.clone(), status, bytes: Arc::new(bytes), minted: None, flag: false };
     ExternRef::new(&mut caller, response).map(Some)
 }
 
@@ -700,7 +660,7 @@ fn host_file_read_at(mut caller: Caller<'_, VmState>, f: Option<Rooted<ExternRef
         Err(failure) => (failure.kind.status(), format!("this File {}", failure_reason(failure.kind)).into_bytes()),
     };
     dir_bytes_length(bytes.len())?;
-    let response = DirResponse { issuer: caller.data().registry_issuer.clone(), status, bytes: Arc::new(bytes), minted: None };
+    let response = DirResponse { issuer: caller.data().registry_issuer.clone(), status, bytes: Arc::new(bytes), minted: None, flag: false };
     ExternRef::new(&mut caller, response).map(Some)
 }
 
@@ -885,7 +845,7 @@ fn dir_navigation_response(
         Ok(minted) => (0, Vec::new(), Some(minted)),
         Err(failure) => (failure.kind.status(), guest_open_failure(failure.kind, &path).into_bytes(), None),
     };
-    let response = DirResponse { issuer: caller.data().registry_issuer.clone(), status, bytes: Arc::new(bytes), minted };
+    let response = DirResponse { issuer: caller.data().registry_issuer.clone(), status, bytes: Arc::new(bytes), minted, flag: false };
     ExternRef::new(&mut caller, response).map(Some)
 }
 
@@ -926,6 +886,363 @@ fn host_dir_response_take_file(mut caller: Caller<'_, VmState>, token: Option<Ro
         Some(Minted::File(file)) => ExternRef::new(&mut caller, file).map(Some),
         _ => Err(Error::msg("Dir response carries no File")),
     }
+}
+
+/// Where a write may land (RFC-0126 rule 3). An escape or a name the policy
+/// refuses is `Denied` before any filesystem access. Under a policy, a path
+/// through or onto an entry the policy cannot see (a link, an alias, a
+/// case-folded spelling, or an entry of a kind the policy hides) answers
+/// `NotFound`, as `write_file` does: the write never lands on it and its kind
+/// is not observable. A visible directory where a file is written is
+/// `NotAFile`.
+/// Returns whether the path passes through a symlink, which makes any later
+/// failure `Denied` whatever the target is.
+fn dir_write_target(dir: &DirAuthority, rel: &str, is_dir: bool) -> Result<bool, ConfineError> {
+    use crate::confine::{ConfinedDir, ConfinedEntryKind};
+    let DirBacking::Fs(base) = &dir.backing;
+    ConfinedDir::check_relative(rel)?;
+    dir_admits_entry(dir, rel, is_dir)?;
+    let (through_link, parents_visible) = path_shape(dir, rel);
+    if !dir.policy.is_empty() && (through_link || !parents_visible) {
+        return Err(ConfineError::new(ConfineErrorKind::NotFound, format!("`{rel}` is not visible")));
+    }
+    if through_link {
+        return Ok(true);
+    }
+    let occupant = match base.entry_kind_spelled(rel) {
+        Ok(Some(ConfinedEntryKind::Directory)) => Some(true),
+        Ok(Some(ConfinedEntryKind::File)) => Some(false),
+        _ => None,
+    };
+    if let Some(occupied_by_dir) = occupant {
+        // An occupant the policy cannot see answers like an empty name would
+        // under a missing parent: its kind is not observable.
+        if !witchy_caps::capabilities::dir_admits(&dir.policy, rel, occupied_by_dir) {
+            return Err(ConfineError::new(ConfineErrorKind::NotFound, format!("`{rel}` is not visible")));
+        }
+        if occupied_by_dir && !is_dir {
+            return Err(ConfineError::new(ConfineErrorKind::NotAFile, format!("`{rel}` is a directory")));
+        }
+    }
+    Ok(false)
+}
+
+/// A filesystem failure after `dir_write_target` admitted the path: through a
+/// symlink it is `Denied` whatever the target is, otherwise its own kind.
+fn after_link(through_link: bool, rel: &str, failure: ConfineError) -> ConfineError {
+    if through_link {
+        ConfineError::denied(format!("`{rel}` is reached through an alias: {failure}"))
+    } else {
+        failure
+    }
+}
+
+fn io_failure(rel: &str, error: std::io::Error) -> ConfineError {
+    ConfineError::new(ConfineErrorKind::of_io(&error), format!("write failed for `{rel}`: {error}"))
+}
+
+/// Write (or append) `bytes` to the confined file `rel`, never following its leaf.
+fn dir_write_bytes_typed(dir: &DirAuthority, rel: &str, bytes: &[u8], append: bool) -> Result<(), ConfineError> {
+    let through = dir_write_target(dir, rel, false)?;
+    let wrote = (|| {
+        let FileBacking::Fs(file) = dir_file_access(dir, rel, true)?;
+        let written = if append { file.append_all(bytes) } else { file.write_all(bytes) };
+        written.map_err(|error| io_failure(rel, error))
+    })();
+    wrote.map_err(|failure| after_link(through, rel, failure))
+}
+
+/// One write-family operation answered as a response (RFC-0126 rule 3): a
+/// status, a guest-safe message naming `rel`, and `flag` for a predicate.
+fn dir_effect_response(
+    caller: &mut Caller<'_, VmState>, rel: &str, outcome: Result<bool, ConfineError>,
+) -> Result<Option<Rooted<ExternRef>>> {
+    let (status, bytes, flag) = match outcome {
+        Ok(flag) => (0, Vec::new(), flag),
+        Err(failure) => (failure.kind.status(), guest_write_failure(failure.kind, rel).into_bytes(), false),
+    };
+    let response = DirResponse { issuer: caller.data().registry_issuer.clone(), status, bytes: Arc::new(bytes), minted: None, flag };
+    ExternRef::new(caller, response).map(Some)
+}
+
+/// The guest-visible message of a failed write-family operation on `rel`.
+fn guest_write_failure(kind: ConfineErrorKind, rel: &str) -> String {
+    match kind {
+        ConfineErrorKind::Io => format!("`{rel}` could not be written"),
+        ConfineErrorKind::NotFound => format!("`{rel}` was not found (or its parent was not)"),
+        _ => guest_failure(kind, rel),
+    }
+}
+
+/// Authenticate a write-family call and read its path (and optional data)
+/// slices; a missing right, forged token, or bad slice traps.
+fn dir_write_inputs(
+    caller: &mut Caller<'_, VmState>, d: Option<Rooted<ExternRef>>,
+    path_ptr: i32, path_len: i32, data: Option<(i32, i32)>,
+) -> Result<(DirAuthority, String, Vec<u8>)> {
+    let dir = dir_authority_ref(caller, d)?;
+    dir_require_write(&dir)?;
+    let memory = memory_of(caller)?;
+    let size = memory.data_size(&*caller);
+    dir_storage_range(path_ptr, path_len, size)?;
+    let path = read_slice_str(memory.data(&*caller), path_ptr, path_len)?;
+    let bytes = match data {
+        Some((ptr, len)) => memory.data(&*caller)[dir_storage_range(ptr, len, size)?].to_vec(),
+        None => Vec::new(),
+    };
+    Ok((dir, path, bytes))
+}
+
+fn text(bytes: Vec<u8>) -> Result<String> {
+    String::from_utf8(bytes).map_err(|error| Error::msg(format!("write data is not valid UTF-8: {error}")))
+}
+
+/// `dir_write_at(dir, path, data) -> response`: `dir.write(path, data)`.
+fn host_dir_write_at(
+    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>,
+    path_ptr: i32, path_len: i32, data_ptr: i32, data_len: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
+    let (dir, path, bytes) = dir_write_inputs(&mut caller, d, path_ptr, path_len, Some((data_ptr, data_len)))?;
+    let contents = text(bytes)?;
+    let outcome = dir_write_bytes_typed(&dir, &path, contents.as_bytes(), false).map(|()| false);
+    dir_effect_response(&mut caller, &path, outcome)
+}
+
+/// `dir_append_at(dir, path, data) -> response`: `dir.append(path, data)`.
+fn host_dir_append_at(
+    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>,
+    path_ptr: i32, path_len: i32, data_ptr: i32, data_len: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
+    let (dir, path, bytes) = dir_write_inputs(&mut caller, d, path_ptr, path_len, Some((data_ptr, data_len)))?;
+    let contents = text(bytes)?;
+    let outcome = dir_write_bytes_typed(&dir, &path, contents.as_bytes(), true).map(|()| false);
+    dir_effect_response(&mut caller, &path, outcome)
+}
+
+/// `dir_write_bytes_at(dir, path, data) -> response`.
+fn host_dir_write_bytes_at(
+    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>,
+    path_ptr: i32, path_len: i32, data_ptr: i32, data_len: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
+    let (dir, path, bytes) = dir_write_inputs(&mut caller, d, path_ptr, path_len, Some((data_ptr, data_len)))?;
+    let outcome = dir_write_bytes_typed(&dir, &path, &bytes, false).map(|()| false);
+    dir_effect_response(&mut caller, &path, outcome)
+}
+
+/// `dir_append_bytes_at(dir, path, data) -> response`.
+fn host_dir_append_bytes_at(
+    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>,
+    path_ptr: i32, path_len: i32, data_ptr: i32, data_len: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
+    let (dir, path, bytes) = dir_write_inputs(&mut caller, d, path_ptr, path_len, Some((data_ptr, data_len)))?;
+    let outcome = dir_write_bytes_typed(&dir, &path, &bytes, true).map(|()| false);
+    dir_effect_response(&mut caller, &path, outcome)
+}
+
+/// `dir_create_new_at(dir, path, data) -> response`: create `path` only if
+/// nothing occupies the name; an occupied visible name is `AlreadyExists`.
+fn host_dir_create_new_at(
+    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>,
+    path_ptr: i32, path_len: i32, data_ptr: i32, data_len: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
+    let (dir, path, bytes) = dir_write_inputs(&mut caller, d, path_ptr, path_len, Some((data_ptr, data_len)))?;
+    let contents = text(bytes)?;
+    let outcome = (|| {
+        let through = dir_write_target(&dir, &path, false)?;
+        let DirBacking::Fs(base) = &dir.backing;
+        match base.create_new(&path, contents.as_bytes()) {
+            Ok(true) => Ok(false),
+            Ok(false) if through => Err(ConfineError::denied(format!("`{path}` is an alias"))),
+            Ok(false) => Err(ConfineError::new(ConfineErrorKind::AlreadyExists, format!("`{path}` already exists"))),
+            Err(failure) => Err(after_link(through, &path, failure)),
+        }
+    })();
+    dir_effect_response(&mut caller, &path, outcome)
+}
+
+/// `dir_replace_at(dir, path, data) -> response`: atomically replace `path`.
+fn host_dir_replace_at(
+    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>,
+    path_ptr: i32, path_len: i32, data_ptr: i32, data_len: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
+    let (dir, path, bytes) = dir_write_inputs(&mut caller, d, path_ptr, path_len, Some((data_ptr, data_len)))?;
+    let contents = text(bytes)?;
+    let outcome = (|| {
+        let through = dir_write_target(&dir, &path, false)?;
+        let DirBacking::Fs(base) = &dir.backing;
+        base.replace(&path, contents.as_bytes()).map_err(|failure| after_link(through, &path, failure))
+    })().map(|()| false);
+    dir_effect_response(&mut caller, &path, outcome)
+}
+
+/// `dir_set_executable_at(dir, path) -> response`.
+fn host_dir_set_executable_at(
+    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>, path_ptr: i32, path_len: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
+    let (dir, path, _) = dir_write_inputs(&mut caller, d, path_ptr, path_len, None)?;
+    let outcome = (|| {
+        let through = dir_write_target(&dir, &path, false)?;
+        let changed = (|| {
+            let FileBacking::Fs(file) = dir_file_access(&dir, &path, false)?;
+            file.set_executable().map_err(|error| io_failure(&path, error))
+        })();
+        changed.map_err(|failure| after_link(through, &path, failure))
+    })().map(|()| false);
+    dir_effect_response(&mut caller, &path, outcome)
+}
+
+/// `dir_make_dir_at(dir, path) -> response`: create the directory path
+/// (idempotent).
+fn host_dir_make_dir_at(
+    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>, path_ptr: i32, path_len: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
+    let (dir, path, _) = dir_write_inputs(&mut caller, d, path_ptr, path_len, None)?;
+    let outcome = (|| {
+        let through = dir_write_target(&dir, &path, true)?;
+        let DirBacking::Fs(base) = &dir.backing;
+        base.make_dir(&path).map_err(|failure| after_link(through, &path, failure))
+    })().map(|()| false);
+    dir_effect_response(&mut caller, &path, outcome)
+}
+
+/// `dir_rename_at(dir, from, to) -> response`: both names are judged as a
+/// write target of the source's kind; a source the grant cannot see is
+/// `NotFound`, exactly like a missing one.
+fn host_dir_rename_at(
+    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>,
+    from_ptr: i32, from_len: i32, to_ptr: i32, to_len: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
+    let (dir, from, to_bytes) = dir_write_inputs(&mut caller, d, from_ptr, from_len, Some((to_ptr, to_len)))?;
+    let to = text(to_bytes)?;
+    // A failure judged on the destination names the destination.
+    let source = |failure| (false, failure);
+    let target = |failure| (true, failure);
+    let outcome = (|| -> Result<(), (bool, ConfineError)> {
+        use crate::confine::ConfinedEntryKind;
+        let DirBacking::Fs(base) = &dir.backing;
+        crate::confine::ConfinedDir::check_relative(&from).map_err(source)?;
+        crate::confine::ConfinedDir::check_relative(&to).map_err(target)?;
+        let source_is_dir = if dir.policy.is_empty() {
+            false
+        } else if !witchy_caps::capabilities::dir_admits(&dir.policy, &from, false)
+            && !witchy_caps::capabilities::dir_admits(&dir.policy, &from, true)
+        {
+            // A name the policy refuses as any kind is Denied, present or not.
+            return Err(source(ConfineError::denied(format!("`{from}` is not permitted by this Dir capability's entry policy"))));
+        } else {
+            let (through, parents_visible) = path_shape(&dir, &from);
+            let kind = if through || !parents_visible { None } else { base.entry_kind_spelled(&from).ok().flatten() };
+            match kind {
+                Some(ConfinedEntryKind::File) => Some(false),
+                Some(ConfinedEntryKind::Directory) => Some(true),
+                _ => None,
+            }.filter(|is_dir| witchy_caps::capabilities::dir_admits(&dir.policy, &from, *is_dir))
+                .ok_or_else(|| source(ConfineError::new(ConfineErrorKind::NotFound, format!("`{from}` is not visible"))))?
+        };
+        dir_admits_entry(&dir, &from, source_is_dir).map_err(source)?;
+        let through_from = path_shape(&dir, &from).0;
+        let through_to = dir_write_target(&dir, &to, source_is_dir).map_err(target)?;
+        base.rename(&from, &to).map_err(|failure| {
+            // The source was judged present above (or is checked here), so a
+            // failure past it is the destination's.
+            let blame_target = !through_from
+                && (through_to || matches!(base.entry_kind_spelled(&from), Ok(Some(_))));
+            let rel = if blame_target { &to } else { &from };
+            (blame_target, after_link(through_from || through_to, rel, failure))
+        })
+    })();
+    match outcome {
+        Ok(()) => dir_effect_response(&mut caller, &from, Ok(false)),
+        Err((true, failure)) => dir_effect_response(&mut caller, &to, Err(failure)),
+        Err((false, failure)) => dir_effect_response(&mut caller, &from, Err(failure)),
+    }
+}
+
+/// `dir_exists_at(dir, path) -> response`: `dir.exists(path)`. An escape or a
+/// name the policy refuses is `Denied`; otherwise the flag is whether the
+/// grant can see an entry there, so an invisible entry answers `false`.
+fn host_dir_exists_at(
+    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>, path_ptr: i32, path_len: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
+    dir_probe_response(&mut caller, d, path_ptr, path_len, false)
+}
+
+/// `dir_is_dir_at(dir, path) -> response`: `dir.is_dir(path)`, as
+/// `dir_exists_at` but true only for a visible directory.
+fn host_dir_is_dir_at(
+    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>, path_ptr: i32, path_len: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
+    dir_probe_response(&mut caller, d, path_ptr, path_len, true)
+}
+
+fn dir_probe_response(
+    caller: &mut Caller<'_, VmState>, d: Option<Rooted<ExternRef>>, path_ptr: i32, path_len: i32, directory: bool,
+) -> Result<Option<Rooted<ExternRef>>> {
+    let dir = dir_authority_ref(caller, d)?;
+    dir_require_read(&dir)?;
+    let memory = memory_of(caller)?;
+    let rel = read_slice_str(memory.data(&*caller), path_ptr, path_len)?;
+    let outcome = (|| {
+        crate::confine::ConfinedDir::check_relative(&rel)?;
+        if !dir.policy.is_empty()
+            && !witchy_caps::capabilities::dir_admits(&dir.policy, &rel, false)
+            && !witchy_caps::capabilities::dir_admits(&dir.policy, &rel, true)
+        {
+            return Err(ConfineError::denied(format!("`{rel}` is not permitted by this Dir capability's entry policy")));
+        }
+        if dir.policy.is_empty() {
+            // A link that leaves the root fails to resolve whatever its target
+            // is; like a read through it, that is `Denied`.
+            let DirBacking::Fs(base) = &dir.backing;
+            let found = base.exists(&rel).map_err(|failure| after_link(path_shape(&dir, &rel).0, &rel, failure))?;
+            return Ok(found && (!directory || base.is_dir(&rel).unwrap_or(false)));
+        }
+        let (through_link, parents_visible) = path_shape(&dir, &rel);
+        if through_link || !parents_visible {
+            return Ok(false);
+        }
+        Ok(match visible_entry_kind(&dir, &rel).ok().flatten() {
+            Some(is_dir) => !directory || is_dir,
+            None => false,
+        })
+    })();
+    let (status, bytes, flag) = match outcome {
+        Ok(flag) => (0, Vec::new(), flag),
+        Err(failure) => (failure.kind.status(), guest_failure(failure.kind, &rel).into_bytes(), false),
+    };
+    let response = DirResponse { issuer: caller.data().registry_issuer.clone(), status, bytes: Arc::new(bytes), minted: None, flag };
+    ExternRef::new(&mut *caller, response).map(Some)
+}
+
+/// `dir_response_flag(response) -> i32`: a predicate response's answer.
+fn host_dir_response_flag(caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<i32> {
+    Ok(i32::from(dir_response(&caller, token)?.flag))
+}
+
+/// `file_write_at(file, data) -> response`: `file.write(data)` (RFC-0126
+/// rule 3). A missing Write right or forged token traps; a filesystem failure
+/// is the status with a fixed message that names no path. Writes never follow
+/// the leaf.
+fn host_file_write_at(
+    mut caller: Caller<'_, VmState>, f: Option<Rooted<ExternRef>>, data_ptr: i32, data_len: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
+    let file = file_authority_ref(&caller, f)?;
+    if !file.rights.write {
+        return Err(Error::msg("this File capability does not grant Write"));
+    }
+    let memory = memory_of(&mut caller)?;
+    let contents = text(memory.data(&caller)[dir_storage_range(data_ptr, data_len, memory.data_size(&caller))?].to_vec())?;
+    let FileBacking::Fs(backing) = &file.backing;
+    let (status, bytes) = match backing.write_all(contents.as_bytes()) {
+        Ok(()) => (0, Vec::new()),
+        Err(error) => {
+            let kind = ConfineErrorKind::of_io(&error);
+            let reason = match kind { ConfineErrorKind::Io => "could not be written", other => failure_reason(other) };
+            (kind.status(), format!("this File {reason}").into_bytes())
+        }
+    };
+    let response = DirResponse { issuer: caller.data().registry_issuer.clone(), status, bytes: Arc::new(bytes), minted: None, flag: false };
+    ExternRef::new(&mut caller, response).map(Some)
 }
 
 /// The guest-visible message of a failed navigation on `rel`.
@@ -981,63 +1298,6 @@ fn host_dir_response_into(
         memory.write(&mut caller, output.start, bytes.as_slice())?;
     }
     Ok(required)
-}
-
-fn dir_storage_text_inputs(
-    caller: &mut Caller<'_, VmState>, dir: Option<Rooted<ExternRef>>,
-    path_ptr: i32, path_len: i32, data_ptr: i32, data_len: i32,
-) -> Result<(DirAuthority, String, String)> {
-    let dir = dir_authority_ref(caller, dir)?;
-    dir_require_write(&dir)?;
-    let memory = memory_of(caller)?;
-    let path = read_slice_str(memory.data(&*caller), path_ptr, path_len)?;
-    let contents = read_slice_str(memory.data(&*caller), data_ptr, data_len)?;
-    Ok((dir, path, contents))
-}
-
-fn host_dir_create_new_at(
-    mut caller: Caller<'_, VmState>, dir: Option<Rooted<ExternRef>>,
-    path_ptr: i32, path_len: i32, data_ptr: i32, data_len: i32,
-) -> Result<i32> {
-    let (dir, path, contents) = dir_storage_text_inputs(&mut caller, dir, path_ptr, path_len, data_ptr, data_len)?;
-    dir_guard(&dir, &path, false)?;
-    let _ = dir_file_backing(&dir, &path, true)?;
-    let created = match &dir.backing {
-        DirBacking::Fs(base) => base.create_new(&path, contents.as_bytes())
-            .map_err(|e| Error::msg(format!("create_new failed for `{path}`: {}", e.message)))?,
-    };
-    Ok(i32::from(created))
-}
-
-fn host_dir_replace_at(
-    mut caller: Caller<'_, VmState>, dir: Option<Rooted<ExternRef>>,
-    path_ptr: i32, path_len: i32, data_ptr: i32, data_len: i32,
-) -> Result<()> {
-    let (dir, path, contents) = dir_storage_text_inputs(&mut caller, dir, path_ptr, path_len, data_ptr, data_len)?;
-    dir_guard(&dir, &path, false)?;
-    let _ = dir_file_backing(&dir, &path, true)?;
-    match &dir.backing {
-        DirBacking::Fs(base) => base.replace(&path, contents.as_bytes())
-            .map_err(|e| Error::msg(format!("replace failed for `{path}`: {}", e.message))),
-    }
-}
-
-fn host_dir_write_bytes_at(
-    mut caller: Caller<'_, VmState>, dir: Option<Rooted<ExternRef>>,
-    path_ptr: i32, path_len: i32, data_ptr: i32, data_len: i32,
-) -> Result<()> {
-    let dir = dir_authority_ref(&caller, dir)?;
-    dir_require_write(&dir)?;
-    let memory = memory_of(&mut caller)?;
-    let path = read_slice_str(memory.data(&caller), path_ptr, path_len)?;
-    let input = dir_storage_range(data_ptr, data_len, memory.data_size(&caller))?;
-    let bytes = memory.data(&caller)[input].to_vec();
-    dir_guard(&dir, &path, false)?;
-    match dir_file_backing(&dir, &path, true)? {
-        FileBacking::Fs(file) => file.write_all(&bytes).map_err(|e| {
-            Error::msg(format!("write failed for `{}`: {e}", file.display_path().display()))
-        }),
-    }
 }
 
 #[cfg(feature = "self-checks")]
@@ -1139,7 +1399,7 @@ fn host_dir_list_at(mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>
         Err(failure) => (failure.kind.status(), format!("this Dir {}", list_failure_reason(failure.kind)).into_bytes()),
     };
     dir_bytes_length(bytes.len())?;
-    let response = DirResponse { issuer: caller.data().registry_issuer.clone(), status, bytes: Arc::new(bytes), minted: None };
+    let response = DirResponse { issuer: caller.data().registry_issuer.clone(), status, bytes: Arc::new(bytes), minted: None, flag: false };
     ExternRef::new(&mut caller, response).map(Some)
 }
 
@@ -1231,59 +1491,8 @@ fn host_dir_append(
     }
 }
 
-/// Bounded installer writes authenticate the existing Dir Write authority before
-/// memory access, and snapshot all arguments before any filesystem operation.
-fn host_dir_append_bytes_at(
-    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>,
-    path_ptr: i32, path_len: i32, data_ptr: i32, data_len: i32,
-) -> Result<()> {
-    let dir = dir_authority_ref(&caller, d)?;
-    dir_require_write(&dir)?;
-    let memory = memory_of(&mut caller)?;
-    let data = memory.data(&caller);
-    dir_storage_range(path_ptr, path_len, data.len())?;
-    let payload = dir_storage_range(data_ptr, data_len, data.len())?;
-    let path = read_slice_str(data, path_ptr, path_len)?;
-    let bytes = data[payload].to_vec();
-    dir_guard(&dir, &path, false)?;
-    match dir_file_backing(&dir, &path, true)? {
-        FileBacking::Fs(file) => file.append_all(&bytes).map_err(|e| {
-            Error::msg(format!("append failed for `{}`: {e}", file.display_path().display()))
-        }),
-    }
-}
 
-fn host_dir_set_executable_at(
-    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>,
-    path_ptr: i32, path_len: i32,
-) -> Result<()> {
-    let dir = dir_authority_ref(&caller, d)?;
-    dir_require_write(&dir)?;
-    let memory = memory_of(&mut caller)?;
-    dir_storage_range(path_ptr, path_len, memory.data_size(&caller))?;
-    let path = read_slice_str(memory.data(&caller), path_ptr, path_len)?;
-    dir_guard(&dir, &path, false)?;
-    match dir_file_backing(&dir, &path, false)? {
-        FileBacking::Fs(file) => file.set_executable().map_err(|e| {
-            Error::msg(format!("set_executable failed for `{}`: {e}", file.display_path().display()))
-        }),
-    }
-}
 
-fn host_dir_rename_at(
-    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>,
-    from_ptr: i32, from_len: i32, to_ptr: i32, to_len: i32,
-) -> Result<()> {
-    let dir = dir_authority_ref(&caller, d)?;
-    dir_require_write(&dir)?;
-    let memory = memory_of(&mut caller)?;
-    let data = memory.data(&caller);
-    dir_storage_range(from_ptr, from_len, data.len())?;
-    dir_storage_range(to_ptr, to_len, data.len())?;
-    let from = read_slice_str(data, from_ptr, from_len)?;
-    let to = read_slice_str(data, to_ptr, to_len)?;
-    rename_dir_entries(&dir, &from, &to)
-}
 
 #[cfg(feature = "self-checks")]
 #[doc(hidden)]
@@ -1336,23 +1545,6 @@ fn host_dir_set_executable(
     }
 }
 
-/// `dir_make_dir(h, name)`: create a confined subdirectory (idempotent). Creating a
-/// directory is a directory op (RFC-0011 `kind`): a `files()` policy forbids it.
-fn host_dir_make_dir_at(
-    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>,
-    path_ptr: i32, path_len: i32,
-) -> Result<()> {
-    let dir = dir_authority_ref(&caller, d)?;
-    dir_require_write(&dir)?;
-    let memory = memory_of(&mut caller)?;
-    let name = read_slice_str(memory.data(&caller), path_ptr, path_len)?;
-    dir_guard(&dir, &name, true)?;
-    match &dir.backing {
-        DirBacking::Fs(base) => base.make_dir(&name).map_err(|e| Error::msg(format!(
-            "make_dir failed for `{}`: {}", base.display_path().join(&name).display(), e.message
-        ))),
-    }
-}
 
 fn host_dir_make_dir(
     mut caller: Caller<'_, VmState>,
@@ -1494,13 +1686,13 @@ pub mod tests {
         (module
           (import "witchy" "mint_dir" (func $mint_dir (param i32) (result externref)))
           (import "witchy" "dir_write_at"
-            (func $dir_write_at (param externref i32 i32 i32 i32)))
+            (func $dir_write_at (param externref i32 i32 i32 i32) (result externref)))
           (memory (export "memory") 1)
           (data (i32.const 0) "w.txt")
           (data (i32.const 16) "data")
           (func (export "run")
-            (call $dir_write_at (call $mint_dir (i32.const 0))
-              (i32.const 0) (i32.const 5) (i32.const 16) (i32.const 4))))
+            (drop (call $dir_write_at (call $mint_dir (i32.const 0))
+              (i32.const 0) (i32.const 5) (i32.const 16) (i32.const 4)))))
     "#;
 
     fn seeded_root(name: &str, contents: &str) -> tempfile::TempDir {

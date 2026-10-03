@@ -7,11 +7,11 @@ impl CanonicalAbiCatalog {
     {
         use crate::wir_prelude::{AbiImportAuthority, WasmTy};
         let import = authenticated_capability_import("dir_is_dir_at",
-            &[WasmTy::ExternRef, WasmTy::I32, WasmTy::I32], &[WasmTy::I32], signature,
+            &[WasmTy::ExternRef, WasmTy::I32, WasmTy::I32], &[WasmTy::ExternRef], signature,
             vec![HostParameterRole::Capability(DIR_CAPABILITY_KIND),
                 HostParameterRole::Buffer { value_type: ValueType::Ref(string_layout),
                     access: AccessMode::Read, extent: HostBufferExtent::Slice }],
-            vec![HostResultRole::Value(ValueType::Bool)], HostMutation::ReadOnly,
+            vec![HostResultRole::Capability(DIR_RESPONSE_KIND)], HostMutation::ReadOnly,
             &[AbiImportAuthority::DirRead])?;
         self.imports.insert(import.id, import);
         Ok(self)

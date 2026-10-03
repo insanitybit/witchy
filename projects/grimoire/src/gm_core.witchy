@@ -1841,6 +1841,69 @@ pub fn collect_text(root: Dir, path: String, rel: String, ext: String) -> List((
             fail(show(e))
             []
 
+// The write family for the package manager: a failed write aborts with its
+// `CapError`.
+pub fn write_or_fail(root: Dir, path: String, data: String):
+    match root.write(path, data):
+        Ok(_) -> ()
+        Err(e) -> fail(show(e))
+
+pub fn mkdir_or_fail(root: Dir, path: String):
+    match root.make_dir(path):
+        Ok(_) -> ()
+        Err(e) -> fail(show(e))
+
+pub fn ensure_or_fail(root: Dir, path: String):
+    match fs.ensure_dir(root, path):
+        Ok(_) -> ()
+        Err(e) -> fail(show(e))
+
+pub fn replace_or_fail(root: Dir, path: String, data: String):
+    match root.replace(path, data):
+        Ok(_) -> ()
+        Err(e) -> fail(show(e))
+
+pub fn rename_or_fail(root: Dir, from: String, to: String):
+    match root.rename(from, to):
+        Ok(_) -> ()
+        Err(e) -> fail(show(e))
+
+pub fn append_or_fail(root: Dir, path: String, data: Bytes):
+    match root.append_bytes(path, data):
+        Ok(_) -> ()
+        Err(e) -> fail(show(e))
+
+pub fn chmod_or_fail(root: Dir, path: String):
+    match root.set_executable(path):
+        Ok(_) -> ()
+        Err(e) -> fail(show(e))
+
+// Whether `path` names an entry (`has`) or a directory (`path_is_dir`); a path the
+// capability refuses aborts with its `CapError`.
+pub fn path_exists(root: Dir[Read], path: String) -> Bool:
+    match root.exists(path):
+        Ok(found) -> found
+        Err(e) ->
+            fail(show(e))
+            false
+
+pub fn path_is_dir(root: Dir[Read], path: String) -> Bool:
+    match root.is_dir(path):
+        Ok(found) -> found
+        Err(e) ->
+            fail(show(e))
+            false
+
+// `create_new`: true when this call created `path`, false when the name was
+// already taken; any other failure aborts.
+pub fn claim(root: Dir, path: String, data: String) -> Bool:
+    match root.create_new(path, data):
+        Ok(_) -> true
+        Err(AlreadyExists(_)) -> false
+        Err(e) ->
+            fail(show(e))
+            false
+
 // `read_text` for raw bytes: a failed read aborts with its `CapError`.
 pub fn read_raw(root: Dir[Read], path: String) -> Bytes:
     let unreachable = bytes.from_string("")

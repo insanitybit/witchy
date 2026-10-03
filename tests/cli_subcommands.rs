@@ -363,7 +363,7 @@ fn sandbox_wasm_requires_explicit_dir_grant() {
     let src = write(
         &dir,
         "d.witchy",
-        "fn main(console: Console, dir: Dir) -> Int:\n    if dir.exists(\"x\"):\n        console.print(\"yes\")\n    else:\n        console.print(\"no\")\n    0\n",
+        "fn main(console: Console, dir: Dir) -> Int:\n    if dir.exists(\"x\") ?? false:\n        console.print(\"yes\")\n    else:\n        console.print(\"no\")\n    0\n",
     );
     let wasm = dir.join("d.wasm");
     let emitted = run(&["emit-wasm", &src, "-o", wasm.to_str().unwrap()]);

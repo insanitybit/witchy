@@ -3275,3 +3275,32 @@ Admitted transcripts cover a `subtree` that is missing or escapes, and
 
 The source tree walker and the legacy codegen refuse all three by name. The
 nightly legacy policy test keeps only its write-family refusals.
+
+### 2026-10-03: the `Dir`/`File` write family, `exists` and `is_dir` return `CapError` results (RFC-0126 rule 3, row Q partial)
+
+`write`, `append`, `write_bytes`, `append_bytes`, `create_new`, `replace`,
+`rename`, `make_dir`, `set_executable` and `file.write` return
+`Result((), CapError)`; `exists` and `is_dir` return `Result(Bool, CapError)`.
+Every write import now answers a `DirResponse`, read with
+`dir_response_status`/`_size`/`_into` (and `file_response_*` for
+`file_write_at`). The new `dir_append_at` import gives `dir.append` a canonical
+lowering, and `dir_response_flag` reads a probe's answer. A missing right, a
+forged token and a bad slice still trap.
+
+`dir_write_family_answers_failures_as_statuses` pins every operation against
+the no-oracle rules:
+
+- escapes (`..`, absolute, a link leaving the root) are `Denied` whether or not
+  the target exists, for effects and probes alike;
+- a name the policy refuses is `Denied` present or absent, including a rename
+  source;
+- under a policy, a path through or onto an entry the grant cannot see is
+  `NotFound`, and a probe of such an entry is `Ok(false)`;
+- a directory where a file is written is `NotAFile`, a taken name for
+  `create_new` is `AlreadyExists`, and no write follows a link leaf;
+- no message carries a host path.
+
+The source tree walker and the legacy codegen refuse the family by name. The
+package manager keeps its aborting behavior through `gm_core` helpers
+(`write_or_fail`, `path_exists`, `claim`, ...), and `fs.ensure_dir` returns
+`Result((), CapError)`.

@@ -100,7 +100,7 @@ use crate::{codegen, interpreter, parser, typeck};
         std::fs::write(root.join("a.txt"), "alpha").expect("seed a");
         std::fs::write(root.join("sub/b.txt"), "beta").expect("seed b");
 
-        let src = format!("{SHOW_DIR_READ}fn main(console: Console, dir: Dir):\n    console.print(shown(dir.read(\"a.txt\")))\n    console.print(\"${{dir.exists(\"a.txt\")}}\")\n    console.print(\"${{dir.exists(\"missing.txt\")}}\")\n    let sub = dir.subtree(\"sub\") ?? dir\n    console.print(shown(sub.read(\"b.txt\")))\n    dir.write(\"out.txt\", \"written\")\n    console.print(shown(dir.read(\"out.txt\")))\n    dir.make_dir(\"made\")\n    console.print(\"${{dir.is_dir(\"made\")}}\")\n    for name in dir.list() ?? []:\n        console.print(\"entry: \" + name)\n");
+        let src = format!("{SHOW_DIR_READ}fn main(console: Console, dir: Dir):\n    console.print(shown(dir.read(\"a.txt\")))\n    console.print(\"${{dir.exists(\"a.txt\") ?? false}}\")\n    console.print(\"${{dir.exists(\"missing.txt\") ?? true}}\")\n    let sub = dir.subtree(\"sub\") ?? dir\n    console.print(shown(sub.read(\"b.txt\")))\n    let _ = dir.write(\"out.txt\", \"written\")\n    console.print(shown(dir.read(\"out.txt\")))\n    let _ = dir.make_dir(\"made\")\n    console.print(\"${{dir.is_dir(\"made\") ?? false}}\")\n    for name in dir.list() ?? []:\n        console.print(\"entry: \" + name)\n");
         let want = [
             "ok: alpha", "true", "false", "ok: beta", "ok: written", "true",
             "entry: a.txt", "entry: made", "entry: out.txt", "entry: sub",
@@ -136,6 +136,26 @@ use crate::{codegen, interpreter, parser, typeck};
         let out = run_admitted_dir(&format!("{SHOW_DIR_READ}{body}"), &root).expect("a failed read is a value");
         let want: Vec<String> = rows.iter().map(|(_, _, want)| want.clone()).collect();
         assert_eq!(out, want);
+        // The write family and the probes answer `CapError` values the same
+        // way (RFC-0126 rule 3); every class is pinned at the host by
+        // `dir_write_family_answers_failures_as_statuses`.
+        let effects = "fn done(r: Result((), CapError)) -> String:\n    match r:\n        Ok(_) -> \"ok\"\n        Err(Denied(m)) -> \"denied: \" + m\n        Err(NotFound(m)) -> \"missing: \" + m\n        Err(NotAFile(m)) -> \"not a file: \" + m\n        Err(AlreadyExists(_)) -> \"exists\"\n        Err(Io(m)) -> \"io: \" + m\n\nfn probed(r: Result(Bool, CapError)) -> String:\n    match r:\n        Ok(found) -> \"${found}\"\n        Err(e) -> show(e)\n\nfn main(console: Console, dir: Dir):\n    console.print(done(dir.write(\"../escape.txt\", \"x\")))\n    console.print(done(dir.write(\"sub\", \"x\")))\n    console.print(done(dir.append(\"nowhere/x.txt\", \"x\")))\n    console.print(done(dir.create_new(\"a.txt\", \"x\")))\n    console.print(done(dir.create_new(\"fresh.txt\", \"x\")))\n    console.print(done(dir.make_dir(\"../made\")))\n    console.print(done(dir.rename(\"fresh.txt\", \"/etc/moved\")))\n    console.print(probed(dir.exists(\"../outside.txt\")))\n    console.print(probed(dir.is_dir(\"sub\")))\n";
+        let want = vec![
+            "denied: `../escape.txt` is not covered by this Dir capability".to_string(),
+            "not a file: `sub` is not a file".to_string(),
+            "missing: `nowhere/x.txt` was not found (or its parent was not)".to_string(),
+            "exists".to_string(), "ok".to_string(),
+            "denied: `../made` is not covered by this Dir capability".to_string(),
+            "denied: `/etc/moved` is not covered by this Dir capability".to_string(),
+            "denied: `../outside.txt` is not covered by this Dir capability".to_string(),
+            "true".to_string(),
+        ];
+        let out = run_admitted_dir(effects, &root).expect("a failed write is a value");
+        assert_eq!(out, want);
+        assert!(!base.join("escape.txt").exists() && !base.join("made").exists());
+        for line in &out {
+            assert!(!line.contains(base.to_str().expect("utf8 base")), "a guest message disclosed a host path: {line}");
+        }
         let host = base.to_str().expect("utf8 base");
         for line in &out {
             assert!(!line.contains(host), "a guest message disclosed a host path: {line}");
@@ -144,135 +164,16 @@ use crate::{codegen, interpreter, parser, typeck};
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    /// RFC-0011: the `kind:` Dir entry policy. `dir.only(Dir.files())` admits a file
-    /// read but DENIES opening a sub-directory; `dir.only(Dir.dirs())` is the mirror.
-    /// An `ext`-only policy still traverses (kind gates directories, ext gates file names),
-    /// so `kind` is additive and backward-compatible — all identical on both backends.
-    #[test]
-    fn dir_kind_policy_confines_on_both_backends() {
-        if !is_nightly() {
-            return;
-        }
-        use crate::runtime::{Capabilities, Runtime};
-        let root = std::env::temp_dir().join(format!("witchy_dirkind_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join("sub")).expect("mkdir sub");
-        std::fs::write(root.join("ok.txt"), "hello").expect("seed txt");
-        std::fs::write(root.join("secret.key"), "TOPSECRET").expect("seed key");
-        let root_str = root.to_str().expect("utf8 root").to_string();
+    // RFC-0011 `kind:`/`ext:` entry policies on every Dir operation, including
+    // links and case-folded aliases that would reach a refused file, are pinned
+    // at the host: `dir_storage_*`, `dir_installer_*`, and the
+    // `dir_*_answers_failures_as_statuses` checks (`dir.only` does not lower to
+    // admitted Wasm, and the legacy backends refuse `CapError` operations).
 
-        let caps = || Capabilities {
-            print: true,
-            quiet: true,
-            dir_root: Some(root.clone()),
-            dir_read: true,
-            dir_write: true,
-            ..Default::default()
-        };
-        // Assert BOTH backends produce `want`.
-        let ok_both = |src: &str, want: Vec<String>| {
-            assert_eq!(
-                interpreter::run_module(resolve_std_src(src), &root_str, Vec::new()).expect("interp"),
-                want,
-                "interp: {src}",
-            );
-            let bytes = codegen::compile_module_binary(&resolve_std_src(src))
-                .expect_lowered("the binary path lowers this program");
-            let mut rt = Runtime::batch().expect("runtime");
-            let mut actor = rt.spawn(&bytes, caps(), 64).expect("spawn");
-            actor.run().expect("run");
-            assert_eq!(actor.output(), want, "wasm: {src}");
-        };
-        // Assert BOTH backends REFUSE (the policy check trips identically).
-        let err_both = |src: &str| {
-            assert!(
-                interpreter::run_module(resolve_std_src(src), &root_str, Vec::new()).is_err(),
-                "interp should refuse: {src}",
-            );
-            let bytes = codegen::compile_module_binary(&resolve_std_src(src))
-                .expect_lowered("the binary path lowers this program");
-            let mut rt = Runtime::batch().expect("runtime");
-            let mut actor = rt.spawn(&bytes, caps(), 64).expect("spawn");
-            assert!(actor.run().is_err(), "wasm should refuse: {src}");
-        };
-
-        // Navigation (`subtree`, `read_file`) and reads answer `CapError`
-        // values, which these two legacy backends do not build; the host pins
-        // their policy behavior in `dir_navigation_answers_failures_as_statuses`
-        // and `dir_read_at_answers_failures_as_statuses`. The write family below
-        // still traps on both.
-
-        // SEC-056/062: policy uses the actual no-follow entry identity. A files-only
-        // handle cannot rename/chmod a directory, and an admitted extension alias
-        // cannot lead to a denied file on either backend.
-        err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.files())\n    d.rename(\"sub\", \"moved\")\n");
-        err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.files())\n    d.set_executable(\"sub\")\n");
-        #[cfg(unix)]
-        {
-            std::os::unix::fs::symlink("secret.key", root.join("alias.txt"))
-                .expect("seed in-root alias");
-            std::os::unix::fs::symlink("alias.txt", root.join("multi.txt"))
-                .expect("seed multi-hop alias");
-            err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    d.append(\"alias.txt\", \"changed\")\n");
-            err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    d.replace(\"alias.txt\", \"changed\")\n");
-            err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    console.print(\"${d.create_new(\"alias.txt\", \"changed\")}\")\n");
-            err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    d.set_executable(\"alias.txt\")\n");
-            assert_eq!(std::fs::read_to_string(root.join("secret.key")).unwrap(), "TOPSECRET");
-        }
-        std::fs::write(root.join("classified.TXT"), "case-private").expect("seed case alias");
-        if root.join("classified.txt").exists() {
-            err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    d.write(\"classified.txt\", \"changed\")\n");
-            err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    d.append(\"classified.txt\", \"changed\")\n");
-            err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    d.replace(\"classified.txt\", \"changed\")\n");
-            err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    console.print(\"${d.create_new(\"classified.txt\", \"changed\")}\")\n");
-            assert_eq!(
-                std::fs::read_to_string(root.join("classified.TXT")).unwrap(),
-                "case-private",
-            );
-        }
-
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn narrowed_dir_hides_denied_entries_from_lists_and_named_probes() {
-        use crate::runtime::{Capabilities, Runtime};
-        let root = std::env::temp_dir().join(format!("witchy_dir_probe_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("mkdir");
-        std::fs::create_dir_all(root.join("private-dir")).expect("mkdir private");
-        std::fs::write(root.join("public.txt"), "public").expect("seed public");
-        let hidden = "550e8400-e29b-41d4-a716-446655440000.key";
-        std::fs::write(root.join(hidden), "secret").expect("seed secret");
-        let root_str = root.to_str().expect("utf8 root").to_string();
-        let src = "fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    console.print(\"${d.exists(\"550e8400-e29b-41d4-a716-446655440000.key\")}\")\n    console.print(\"${d.is_dir(\"private-dir\")}\")\n    let files = dir.only(Dir.files())\n    console.print(\"${files.exists(\"private-dir\")}\")\n    console.print(\"${files.is_dir(\"private-dir\")}\")\n    let dirs = dir.only(Dir.dirs())\n    console.print(\"${dirs.exists(\"public.txt\")}\")\n";
-        let expected = vec![
-            "false".to_string(),
-            "true".to_string(),
-            "false".to_string(),
-            "false".to_string(),
-            "false".to_string(),
-        ];
-
-        assert_eq!(
-            interpreter::run_module(resolve_std_src(src), &root_str, Vec::new()).expect("interp"),
-            expected,
-            "interpreter hides policy-denied entry metadata",
-        );
-        let bytes = codegen::compile_module_binary(&resolve_std_src(src))
-            .expect_lowered("probe lowers");
-        let mut rt = Runtime::batch().expect("runtime");
-        let mut actor = rt.spawn(&bytes, Capabilities {
-            print: true,
-            quiet: true,
-            dir_root: Some(root.clone()),
-            dir_read: true,
-            ..Default::default()
-        }, 64).expect("spawn");
-        actor.run().expect("run");
-        assert_eq!(actor.output(), expected, "Wasm hides policy-denied entry metadata");
-        let _ = std::fs::remove_dir_all(&root);
-    }
+    // Under an entry policy, `exists`/`is_dir` answer `Ok(false)` for an
+    // entry the grant cannot see and `Denied` for a refused name: pinned at
+    // the host by `dir_write_family_answers_failures_as_statuses` and the
+    // `dir_is_dir_slices_*` checks (`dir.only` does not lower to admitted Wasm).
 
     /// RFC-0011: `dir.subtree(path)` narrows a `Dir` to a subtree, chained
     /// `.subtree(...).subtree(...)` alike, and the same `..` confinement holds
@@ -313,7 +214,7 @@ use crate::{codegen, interpreter, parser, typeck};
         std::fs::create_dir_all(&root).expect("mkdir");
         std::fs::write(root.join("note.txt"), "alpha").expect("seed");
 
-        let src = "fn shown(r: Result(String, CapError)) -> String:\n    match r:\n        Ok(text) -> \"ok: \" + text\n        Err(e) -> \"failed: \" + show(e)\n\nfn read_through(dir: Dir, name: String) -> Result(String, CapError):\n    dir.read_file(name)?.read()\n\nfn main(console: Console, dir: Dir):\n    console.print(shown(read_through(dir, \"note.txt\")))\n    match dir.write_file(\"out.txt\"):\n        Ok(_) -> dir.write(\"out.txt\", \"beta\")\n        Err(e) -> console.print(show(e))\n    console.print(shown(read_through(dir, \"out.txt\")))\n    console.print(shown(read_through(dir, \"missing.txt\")))\n    console.print(shown(read_through(dir, \"../escape.txt\")))\n";
+        let src = "fn shown(r: Result(String, CapError)) -> String:\n    match r:\n        Ok(text) -> \"ok: \" + text\n        Err(e) -> \"failed: \" + show(e)\n\nfn read_through(dir: Dir, name: String) -> Result(String, CapError):\n    dir.read_file(name)?.read()\n\nfn main(console: Console, dir: Dir):\n    console.print(shown(read_through(dir, \"note.txt\")))\n    match dir.write_file(\"out.txt\"):\n        Ok(out) ->\n            match out.write(\"beta\"):\n                Ok(_) -> ()\n                Err(e) -> console.print(show(e))\n        Err(e) -> console.print(show(e))\n    console.print(shown(read_through(dir, \"out.txt\")))\n    console.print(shown(read_through(dir, \"missing.txt\")))\n    console.print(shown(read_through(dir, \"../escape.txt\")))\n";
         assert_eq!(run_admitted_dir(src, &root).expect("run"), [
             "ok: alpha", "ok: beta",
             "failed: not found: `missing.txt` was not found",
@@ -323,51 +224,11 @@ use crate::{codegen, interpreter, parser, typeck};
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// RFC-0012: `main` may receive a `File` DIRECTLY (the `--file` grant) — the
-    /// least-authority single-file case, with NO `Dir`. The i-th `File` param
-    /// maps to the i-th grant on both legacy backends.
-    #[test]
-    fn file_main_grant_runs_on_both_backends() {
-        let root = std::env::temp_dir().join(format!("witchy_wasm_fmg_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(&root).expect("mkdir");
-        let a_txt = root.join("a.txt");
-        let b_txt = root.join("b.txt");
-        std::fs::write(&a_txt, "alpha").expect("seed a");
-        std::fs::write(&b_txt, "beta").expect("seed b");
-
-        // Two File params, mapped positionally to two grants; no Dir granted.
-        // This file's admitted launcher does not yet supply a `File` entry
-        // parameter (the installed trusted-app test covers `file.read()` on a
-        // granted File), and the legacy backends do not build its `CapError`
-        // result, so the mapping is observed through writes on both.
-        let src = "fn main(console: Console, first: File[Write], second: File[Write]):\n    first.write(\"first\")\n    second.write(\"second\")\n    console.print(\"wrote\")\n";
-        let module = parser::parse_module(src).expect("parse");
-        let interp_out = interpreter::run_module_files(module, &root, vec![a_txt.clone(), b_txt.clone()])
-            .expect("interp");
-        assert_eq!(interp_out, ["wrote"], "interpreter");
-        assert_eq!((std::fs::read_to_string(&a_txt).unwrap(), std::fs::read_to_string(&b_txt).unwrap()),
-            ("first".to_string(), "second".to_string()));
-        std::fs::write(&a_txt, "alpha").expect("reseed a");
-        std::fs::write(&b_txt, "beta").expect("reseed b");
-        let module = parser::parse_module(src).expect("parse");
-        let bytes = codegen::compile_module_binary(&module)
-            .expect_lowered("the binary path lowers this program");
-        let mut rt = crate::runtime::Runtime::batch().expect("runtime");
-        let mut actor = rt
-            .spawn(&bytes, crate::runtime::Capabilities {
-                print: true,
-                quiet: true,
-                file_grants: vec![a_txt.clone(), b_txt.clone()],
-                ..Default::default()
-            }, 64)
-            .expect("spawn");
-        actor.run().expect("run");
-        assert_eq!(actor.output(), ["wrote"], "compiled WASM must agree");
-        assert_eq!((std::fs::read_to_string(&a_txt).unwrap(), std::fs::read_to_string(&b_txt).unwrap()),
-            ("first".to_string(), "second".to_string()));
-        let _ = std::fs::remove_dir_all(&root);
-    }
+    // A `File` entry parameter (the `--file` grant) cannot yet be supplied by
+    // the admitted launch protocol, and `file.write` answers a `CapError`
+    // result that only admitted Wasm builds; the installed trusted-app test
+    // covers a granted `File`, and `file_capability_compiles_to_wasm_and_confines`
+    // covers `file.write` on a navigated `File`.
 
     /// SEC-080: a capability-free dependency must not corrupt a path retained
     /// by its caller and thereby steer the caller's `Dir[Read]` authority. The
@@ -396,7 +257,9 @@ use crate::{codegen, interpreter, parser, typeck};
 fn main(console: Console, root: Dir[Read]):
     let publisher_path = ["safe.json"]
     let _ignored = attacker.slice("input")
-    console.print("${root.exists(publisher_path[0])}")
+    // The path the caller would hand `root`: no Dir operation lowers on
+    // this legacy optimized path, so the steered path itself is the escape.
+    console.print(publisher_path[0])
 "#;
         let attacker = parser::parse_module(attacker_src).expect("attacker parse");
         let footprint = crate::capabilities::analyze(&attacker);
@@ -662,13 +525,14 @@ fn main(console: Console, config: File[Read]):
         use crate::runtime::{Capabilities, Runtime};
         let root = std::env::temp_dir().join(format!("witchy_wasm_dir_rights_{}", std::process::id()));
         std::fs::create_dir_all(&root).expect("mkdir");
-        let writer = "fn main(console: Console, dir: Dir):\n    dir.write(\"x.txt\", \"data\")\n    console.print(\"wrote\")\n";
-        let module = parser::parse_module(writer).expect("parse");
-        let bytes = codegen::compile_module_binary(&module)
-            .expect_lowered("the binary path lowers this program");
+        let admit = |src: &str| {
+            let checked = witchy::resolve_std_only_checked(src).expect("check");
+            codegen::compile_checked_module_artifact(&checked).expect_lowered("the canonical route admits this program")
+        };
+        let writer = admit("fn main(console: Console, dir: Dir):\n    let _ = dir.write(\"x.txt\", \"data\")\n    console.print(\"wrote\")\n");
         let mut rt = Runtime::batch().expect("runtime");
-        let denied = rt.spawn(
-            &bytes,
+        let denied = rt.spawn_admitted(
+            &writer,
             Capabilities {
                 print: true,
                 quiet: true,
@@ -680,17 +544,14 @@ fn main(console: Console, config: File[Read]):
             64,
         );
         assert!(denied.is_err(), "write import must not instantiate under a read-only grant");
-        let reader = "fn main(console: Console, dir: Dir):\n    console.print(\"${dir.exists(\"x.txt\")}\")\n";
-        let m = parser::parse_module(reader).expect("parse");
-        let wbytes = codegen::compile_module_binary(&m)
-            .expect_lowered("the binary path lowers this program");
+        let reader = admit("fn main(console: Console, dir: Dir):\n    console.print(\"${dir.exists(\"x.txt\") ?? false}\")\n");
         let mut rt = Runtime::batch().expect("runtime");
-        let denied = rt.spawn(
-            &wbytes,
+        let denied = rt.spawn_admitted(
+            &reader,
             Capabilities { print: true, quiet: true, ..Default::default() },
             64,
         );
-        assert!(denied.is_err(), "Dir import must not instantiate without a Dir grant");
+        assert!(denied.and_then(|mut vm| vm.run()).is_err(), "a Dir program must be refused before it runs without a Dir grant");
         let _ = std::fs::remove_dir_all(&root);
     }
 

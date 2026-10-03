@@ -21,7 +21,7 @@ from json import Json
 from semver import Version, Req
 from toml import Toml
 from gm_core import BuildOptions, FootprintError, LockIntegrityError, LockPinError, RecordFootprintError, RegistryRootKeyError, TufError, VendoredRecordError, VersionResolveError
-from gm_core import add_unique, arg, read_text, read_raw, collect_text, list_names, list_dir, basename, build_exec_child_paths, build_exec_programs, build_footprint, canonical_version, check_path_identity, closure_has, content_hash, conventional_entry, cooling, cooling_remaining, declared_caps, dep_flag_owned, dep_req, dep_source, entry_alias, entry_is_registry, entry_source, exact_record_state, field, first_witchy, flatten_argv, footprint_toml, footprint_values, grant_flags, granted_build_kinds, has_dep, has_flag, has_grants_section, jget, join_path, latest_label, lock_baseline, lock_rune_entries, locked_hash, locked_registry_alias, manifest_upsert_dep, manifest_upsert_precompiled_dep, module_name, module_stem, normalize_path, optional_lock_string, package_owner_flag, parse_origin, parse_vendored_record, pick_version_cooled, pinned_registry_trust, project_data_dir, record_matches_coordinate, record_payload, record_signature_valid, recorded_field, recorded_hash, registry_get, registry_origin, registry_placeholder, registry_post, released_version_records, required_lock_field, required_manifest_coordinate, resp_field, runtime_net_flags, signed_canonical, signed_field, signed_field_int, signed_field_str, signed_valid, snapshot_schema_ok, source_files, strict_footprint, strip_net_flags, target_digest, timestamp_schema_ok, union_all, valid_registry_rootpub, validate_source_files, verified_snapshot_line, verify_record_signature, version_records, version_satisfies, wire
+from gm_core import add_unique, write_or_fail, mkdir_or_fail, ensure_or_fail, replace_or_fail, rename_or_fail, append_or_fail, chmod_or_fail, path_exists, path_is_dir, claim, arg, read_text, read_raw, collect_text, list_names, list_dir, basename, build_exec_child_paths, build_exec_programs, build_footprint, canonical_version, check_path_identity, closure_has, content_hash, conventional_entry, cooling, cooling_remaining, declared_caps, dep_flag_owned, dep_req, dep_source, entry_alias, entry_is_registry, entry_source, exact_record_state, field, first_witchy, flatten_argv, footprint_toml, footprint_values, grant_flags, granted_build_kinds, has_dep, has_flag, has_grants_section, jget, join_path, latest_label, lock_baseline, lock_rune_entries, locked_hash, locked_registry_alias, manifest_upsert_dep, manifest_upsert_precompiled_dep, module_name, module_stem, normalize_path, optional_lock_string, package_owner_flag, parse_origin, parse_vendored_record, pick_version_cooled, pinned_registry_trust, project_data_dir, record_matches_coordinate, record_payload, record_signature_valid, recorded_field, recorded_hash, registry_get, registry_origin, registry_placeholder, registry_post, released_version_records, required_lock_field, required_manifest_coordinate, resp_field, runtime_net_flags, signed_canonical, signed_field, signed_field_int, signed_field_str, signed_valid, snapshot_schema_ok, source_files, strict_footprint, strip_net_flags, target_digest, timestamp_schema_ok, union_all, valid_registry_rootpub, validate_source_files, verified_snapshot_line, verify_record_signature, version_records, version_satisfies, wire
 
 pub fn build_project_target(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String, entry: String, deps: List(String), build_flags: List(String), options: BuildOptions) -> Int:
     if options.target == "trusted-publisher":
@@ -80,7 +80,7 @@ pub fn run_project(console: Console, runner: Exec, root: Dir, bin: Dir, dir: Str
 // registry lock during a build.
 pub fn ensure_lock_integrity(root: Dir, dir: String) -> Result((), LockIntegrityError):
     let lockpath = join_path(dir, "witchy.lock")
-    if !root.exists(lockpath):
+    if !path_exists(root, lockpath):
         let manifest = read_text(root, join_path(dir, "witchy.toml"))
         let problems = lock_problems(root, dir, manifest)
         if list.length(problems) > 0:
@@ -89,7 +89,7 @@ pub fn ensure_lock_integrity(root: Dir, dir: String) -> Result((), LockIntegrity
             match generate_lock(root, dir):
                 Err(e) -> Err(LockCannotCreate(e.show()))
                 Ok(lock) ->
-                    root.write(lockpath, lock)
+                    write_or_fail(root, lockpath, lock)
                     verify_lock_integrity(root, dir)
     else:
         verify_lock_integrity(root, dir)
@@ -106,7 +106,7 @@ pub fn ensure_lock_integrity(root: Dir, dir: String) -> Result((), LockIntegrity
 // phase of `verify --online`.
 pub fn verify_lock_integrity(root: Dir, dir: String) -> Result((), LockIntegrityError):
     let lockpath = join_path(dir, "witchy.lock")
-    if !root.exists(lockpath):
+    if !path_exists(root, lockpath):
         Err(LockMissing)
     else:
         let lock = read_text(root, lockpath)
@@ -139,7 +139,7 @@ pub fn verify_registry_lock_entries(root: Dir, dir: String, lock: String) -> Res
                         return Err(LockRootKeyMissing)
                     let rune_dir = join_path(join_path(dir, "vendor"), alias)
                     let record_path = join_path(rune_dir, "coven.json")
-                    if !root.exists(record_path):
+                    if !path_exists(root, record_path):
                         return Err(LockVendorMissing(alias))
                     let record_text = read_text(root, record_path)
                     let record_doc = match verify_record_signature(rootpub, record_text):
@@ -161,7 +161,7 @@ pub fn verify_registry_lock_entries(root: Dir, dir: String, lock: String) -> Res
                         return Err(LockEntryMalformed("registry entry `${alias}` has unsupported kind `${kind}`"))
                     else:
                         let hash = required_lock_field(entry, "hash")?
-                        if !root.exists(join_path(rune_dir, "witchy.toml")):
+                        if !path_exists(root, join_path(rune_dir, "witchy.toml")):
                             return Err(LockVendorManifestMissing(alias))
                         else if record.hash != hash:
                             return Err(LockRecordCoordinateMismatch(alias, "hash", hash, record.hash))
@@ -185,9 +185,9 @@ fn verify_precompiled_lock_entry(root: Dir, rune_dir: String, alias: String, ent
     let locked_manifest = required_lock_field(entry, "artifact_digest")?
     if !coven_artifact.valid_library_module(module):
         Err(LockEntryMalformed("precompiled entry `${alias}` has an invalid module selector"))
-    else if root.exists(join_path(rune_dir, "src")) || root.exists(join_path(rune_dir, "witchy.toml")):
+    else if path_exists(root, join_path(rune_dir, "src")) || path_exists(root, join_path(rune_dir, "witchy.toml")):
         Err(LockPrecompiledArtifactInvalid(alias, "source and precompiled layouts coexist"))
-    else if !root.exists(join_path(rune_dir, "coven-artifact.json")):
+    else if !path_exists(root, join_path(rune_dir, "coven-artifact.json")):
         Err(LockPrecompiledManifestMissing(alias))
     else if jget(record, "artifact_digest") != locked_manifest:
         Err(LockPrecompiledArtifactInvalid(alias, "signed record artifact_digest differs from witchy.lock"))
@@ -205,7 +205,7 @@ fn verify_precompiled_lock_entry(root: Dir, rune_dir: String, alias: String, ent
                             let base = join_path(join_path(rune_dir, "artifacts"), module)
                             let wasm = base + ".wasm"
                             let sidecar = base + ".opt"
-                            if !root.exists(wasm) || !root.exists(sidecar):
+                            if !path_exists(root, wasm) || !path_exists(root, sidecar):
                                 Err(LockPrecompiledArtifactInvalid(alias, "materialized Wasm or sidecar is missing"))
                             else if bytes.length(read_raw(root, wasm)) != library.wasm_size || crypto.sha256_bytes(read_raw(root, wasm)) != library.wasm_sha256:
                                 Err(LockPrecompiledByteMismatch(alias, "Wasm"))
@@ -264,7 +264,7 @@ pub fn dep_flags(root: Dir, dir: String) -> Result(List(String), LockIntegrityEr
 // source and nearest manifest rather than trusting this spelling as authority.
 pub fn dep_flags_for_entry(root: Dir, dir: String, entry: String) -> Result(List(String), LockIntegrityError):
     let manifest_path = join_path(dir, "witchy.toml")
-    if !root.exists(manifest_path):
+    if !path_exists(root, manifest_path):
         Err(LockEntryMalformed("project has no witchy.toml for authenticated package ownership"))
     else:
         let manifest = read_text(root, manifest_path)
@@ -279,12 +279,12 @@ pub fn dep_flags_for_entry(root: Dir, dir: String, entry: String) -> Result(List
 // mis-resolve imports.
 pub fn collect_deps(root: Dir, dir: String, flags: List(String)) -> Result(List(String), LockIntegrityError):
     var acc = flags
-    if root.exists(join_path(dir, "witchy.toml")):
+    if path_exists(root, join_path(dir, "witchy.toml")):
         let manifest = read_text(root, join_path(dir, "witchy.toml"))
         for pair in toml.table(manifest, "dependencies"):
             acc = push_path_dep(root, dir, acc, pair)?
     let lockpath = join_path(dir, "witchy.lock")
-    if root.exists(lockpath):
+    if path_exists(root, lockpath):
         let lock = read_text(root, lockpath)
         let rootpub: String = match pinned_registry_trust(lock):
             Err(e) -> return Err(LockEntryMalformed(e.show()))
@@ -332,7 +332,7 @@ pub fn push_path_dep(root: Dir, dir: String, flags: List(String), pair: (String,
 
 pub fn workspace_dependency_owner(root: Dir, dep_dir: String) -> Result((String, String, String, String), LockIntegrityError):
     let manifest_path = join_path(dep_dir, "witchy.toml")
-    if !root.exists(manifest_path):
+    if !path_exists(root, manifest_path):
         Err(LockEntryMalformed("path dependency `${dep_dir}` has no witchy.toml for authenticated ownership"))
     else:
         let manifest = read_text(root, manifest_path)
@@ -342,7 +342,7 @@ pub fn workspace_dependency_owner(root: Dir, dep_dir: String) -> Result((String,
 
 pub fn dependency_owner(root: Dir, dir: String, alias: String, depdir: String) -> Result((String, String, String), LockIntegrityError):
     let lockpath = join_path(dir, "witchy.lock")
-    if root.exists(lockpath):
+    if path_exists(root, lockpath):
         let lock = read_text(root, lockpath)
         for entry in lock_rune_entries(lock)?:
             if entry_is_registry(entry) && entry_alias(entry) == alias:
@@ -367,11 +367,11 @@ pub fn vendored_module(root: Dir, dir: String, name: String) -> Option(String):
 // in listing order for a rune whose entry does not follow the convention.
 pub fn module_in_src(root: Dir, base: String) -> Option(String):
     let srcdir = join_path(base, "src")
-    if !root.exists(srcdir):
+    if !path_exists(root, srcdir):
         None
     else:
         let conventional = manifest_entry(root, base)
-        if !conventional.is_empty() && root.exists(conventional):
+        if !conventional.is_empty() && path_exists(root, conventional):
             Some(conventional)
         else:
             match first_witchy(list_dir(root, srcdir)):
@@ -383,7 +383,7 @@ pub fn module_in_src(root: Dir, base: String) -> Option(String):
 // no `rune.name`. BUG-086.
 pub fn manifest_entry(root: Dir, base: String) -> String:
     let manifest_path = join_path(base, "witchy.toml")
-    if !root.exists(manifest_path):
+    if !path_exists(root, manifest_path):
         ""
     else:
         match toml.get(read_text(root, manifest_path), "rune.name"):
@@ -434,29 +434,29 @@ pub fn build_step_flags(console: Console, runner: Exec, root: Dir, bin: Dir, dir
 // relative to the project) and its vendored registry dependencies (`vendor/<name>`).
 pub fn dep_dirs(root: Dir, dir: String) -> Result(List((String, String)), LockIntegrityError):
     var out = []
-    if root.exists(join_path(dir, "witchy.toml")):
+    if path_exists(root, join_path(dir, "witchy.toml")):
         let manifest = read_text(root, join_path(dir, "witchy.toml"))
         for name, inline in toml.table(manifest, "dependencies"):
             if let Some(rel) = toml.inline_get(inline, "path"):
                 out.push((name, normalize_path(join_path(dir, rel))))
     let vendor = join_path(dir, "vendor")
-    if root.exists(vendor):
+    if path_exists(root, vendor):
         let lockpath = join_path(dir, "witchy.lock")
-        let lock = if root.exists(lockpath): read_text(root, lockpath) else: ""
+        let lock = if path_exists(root, lockpath): read_text(root, lockpath) else: ""
         for name in list_dir(root, vendor):
             let rune_dir = join_path(vendor, name)
             // BUG-095: only treat a vendored subdir as a real dependency (and thus
             // run its build step) when it carries provenance (coven.json) AND is
             // pinned in witchy.lock. A stray directory dropped under vendor/, or an
             // unpinned partial add, must not have its build step executed.
-            if root.exists(join_path(rune_dir, "coven.json")) && locked_registry_alias(lock, name)?:
+            if path_exists(root, join_path(rune_dir, "coven.json")) && locked_registry_alias(lock, name)?:
                 out.push((name, rune_dir))
     Ok(out)
 
 // Whether a dependency ships a `build` step (`src/build.witchy` defining `build`).
 pub fn has_build_step(root: Dir, depdir: String) -> Bool:
     let path = join_path(join_path(depdir, "src"), "build.witchy")
-    root.exists(path) && read_text(root, path).contains("fn build")
+    path_exists(root, path) && read_text(root, path).contains("fn build")
 
 // Run one dependency's build step under its grant, returning (code, dep_flags).
 // Default-deny layer 1: refuse unless the consumer accepted execution with a
@@ -497,7 +497,7 @@ pub fn exec_build_step(console: Console, runner: Exec, root: Dir, bin: Dir, dir:
             console.print("`${name}` build step failed:")
             console.print(result.1)
             return (1, [])
-        root.write(join_path(gendir, ".witchy-build-cache"), key)
+        write_or_fail(root, join_path(gendir, ".witchy-build-cache"), key)
     audit_then_flags(console, root, dir, name, depdir, gendir)
 
 // Post-generation audit (the smuggle gate): the dependency's footprint over its
@@ -562,9 +562,9 @@ pub fn build_cache_key(root: Dir, dir: String, manifest: String, name: String, b
 // directory root) the recursive contents of a directory. Absent inputs hash to a
 // stable sentinel so a later-appearing input still flips the key.
 pub fn read_input_digest(root: Dir, path: String) -> String:
-    if !root.exists(path):
+    if !path_exists(root, path):
         "(absent)"
-    else if root.is_dir(path):
+    else if path_is_dir(root, path):
         var material = ""
         for rel, contents in collect_text(root, path, "", ""):
             material = material + rel + "=" + crypto.sha256(contents) + "\n"
@@ -574,7 +574,7 @@ pub fn read_input_digest(root: Dir, path: String) -> String:
 
 pub fn cache_hit(root: Dir, gendir: String, key: String) -> Bool:
     let keyfile = join_path(gendir, ".witchy-build-cache")
-    root.exists(keyfile) && read_text(root, keyfile) == key
+    path_exists(root, keyfile) && read_text(root, keyfile) == key
 
 // --- audit: the footprint a single file demands -----------------------------
 pub fn report_check(console: Console, undeclared: List(String), unused: List(String)) -> Int:
@@ -590,7 +590,7 @@ pub fn report_check(console: Console, undeclared: List(String), unused: List(Str
 
 // --- guard: block an upgrade that widens authority --------------------------
 pub fn tree_children(console: Console, root: Dir, dir: String, indent: String, seen: List(String)):
-    if root.exists(join_path(dir, "witchy.toml")):
+    if path_exists(root, join_path(dir, "witchy.toml")):
         for name, inline in toml.table(read_text(root, join_path(dir, "witchy.toml")), "dependencies"):
             console.print("${indent}${name} (${dep_source(inline)})")
             if let Some(rel) = toml.inline_get(inline, "path"):
@@ -607,7 +607,7 @@ pub fn tree_children(console: Console, root: Dir, dir: String, indent: String, s
 pub fn vendor_closure(root: Dir, base: String, vendor: String, seen: List(String), count: Int) -> (List(String), Int):
     var visited = seen
     var total = count
-    if root.exists(join_path(base, "witchy.toml")):
+    if path_exists(root, join_path(base, "witchy.toml")):
         for name, inline in toml.table(read_text(root, join_path(base, "witchy.toml")), "dependencies"):
             if let Some(rel) = toml.inline_get(inline, "path"):
                 if !visited.contains(name):
@@ -623,17 +623,17 @@ pub fn vendor_closure(root: Dir, base: String, vendor: String, seen: List(String
 // returning the number of source files written.
 pub fn vendor_one(root: Dir, dep_dir: String, vendor: String, name: String) -> Int:
     let dest = join_path(vendor, name)
-    if !root.exists(dest):
-        root.make_dir(dest)
-    if !root.exists(join_path(dest, "src")):
-        root.make_dir(join_path(dest, "src"))
+    if !path_exists(root, dest):
+        mkdir_or_fail(root, dest)
+    if !path_exists(root, join_path(dest, "src")):
+        mkdir_or_fail(root, join_path(dest, "src"))
     var count = 0
     for relpath, contents in collect_text(root, join_path(dep_dir, "src"), "src", ".witchy"):
-        fs.ensure_dir(root, join_path(dest, fs.parent_dir(relpath) ?? ""))
-        root.write(join_path(dest, relpath), contents)
+        ensure_or_fail(root, join_path(dest, fs.parent_dir(relpath) ?? ""))
+        write_or_fail(root, join_path(dest, relpath), contents)
         count = count + 1
-    if root.exists(join_path(dep_dir, "witchy.toml")):
-        root.write(join_path(dest, "witchy.toml"), read_text(root, join_path(dep_dir, "witchy.toml")))
+    if path_exists(root, join_path(dep_dir, "witchy.toml")):
+        write_or_fail(root, join_path(dest, "witchy.toml"), read_text(root, join_path(dep_dir, "witchy.toml")))
     count
 
 // publish <dir> [host:port] [identity] — stage a rune to a coven registry. Reads
@@ -644,7 +644,7 @@ pub fn vendor_one(root: Dir, dep_dir: String, vendor: String, name: String) -> I
 // for a source-only rune. It is uploaded verbatim; coven validates and freezes it.
 pub fn read_optional_artifact(root: Dir, dir: String) -> Option(String):
     let path = join_path(dir, "artifact.json")
-    if root.exists(path):
+    if path_exists(root, path):
         Some(read_text(root, path))
     else:
         None
@@ -695,7 +695,7 @@ pub fn upload_artifacts(console: Console, net: Net, root: Dir, dir: String, mani
 
 pub fn upload_artifact_dir(console: Console, net: Net, root: Dir, dir: String, manifest: String, origin: String, targets: List(String)) -> Int:
     let art_dir = join_path(dir, "artifacts")
-    if !root.exists(art_dir):
+    if !path_exists(root, art_dir):
         0
     else:
         let name = field(manifest, "rune.name")
@@ -732,7 +732,7 @@ pub fn upload_precompiled_libraries(console: Console, net: Net, root: Dir, dir: 
                         let base = join_path(join_path(dir, "artifacts"), module)
                         let wasm = base + ".wasm"
                         let sidecar = base + ".opt"
-                        if !root.exists(wasm) || !root.exists(sidecar):
+                        if !path_exists(root, wasm) || !path_exists(root, sidecar):
                             console.print("  precompiled ${module}: missing .wasm or .opt")
                             failed = 1
                         else:
@@ -856,7 +856,7 @@ pub fn publish_files(root: Dir, dir: String, manifest: String) -> List((String, 
 // or None if `target` is not reachable through the path-dependency closure.
 pub fn why_path(root: Dir, dir: String, target: String, seen: List(String)) -> Option(String):
     var found = None
-    if root.exists(join_path(dir, "witchy.toml")):
+    if path_exists(root, join_path(dir, "witchy.toml")):
         for name, inline in toml.table(read_text(root, join_path(dir, "witchy.toml")), "dependencies"):
             if found.is_none():
                 if name == target:
@@ -879,7 +879,7 @@ pub fn path_closure(root: Dir, dir: String) -> List((String, String)):
 
 pub fn path_closure_rec(root: Dir, base: String, acc: List((String, String))) -> List((String, String)):
     var out = acc
-    if root.exists(join_path(base, "witchy.toml")):
+    if path_exists(root, join_path(base, "witchy.toml")):
         for name, inline in toml.table(read_text(root, join_path(base, "witchy.toml")), "dependencies"):
             if let Some(rel) = toml.inline_get(inline, "path"):
                 if !closure_has(out, name):
@@ -905,7 +905,7 @@ pub fn lock_problems(root: Dir, dir: String, manifest: String) -> List(String):
                 out.push("BLOCK: `${name}` is a registry dependency — `grimoire lock` locks path dependencies only; run `grimoire add ${name}` to resolve and pin it")
             Some(rel) ->
                 let dep_toml = join_path(normalize_path(join_path(dir, rel)), "witchy.toml")
-                if !root.exists(dep_toml):
+                if !path_exists(root, dep_toml):
                     out.push("BLOCK: path dependency `${name}` has no witchy.toml at ${rel}")
                 else:
                     let dep_manifest = read_text(root, dep_toml)
@@ -1043,17 +1043,17 @@ pub fn check_targets(console: Console, root: Dir, dir: String, snap_env: String)
 pub fn vendored_runes(root: Dir, dir: String) -> List(String):
     var out = []
     let vendor = join_path(dir, "vendor")
-    if root.exists(vendor):
+    if path_exists(root, vendor):
         for entry in list_dir(root, vendor):
             let rune_dir = join_path(vendor, entry)
-            if root.exists(join_path(rune_dir, "coven.json")):
+            if path_exists(root, join_path(rune_dir, "coven.json")):
                 out.push(rune_dir)
     out
 
 // The pinned registry root for network trust checks. A project with no lock or a
 // path-only lock is unpinned; any partial/malformed registry trust record is Err.
 pub fn pinned_registry_rootpub(root: Dir) -> Result(String, LockPinError):
-    if !root.exists("witchy.lock"):
+    if !path_exists(root, "witchy.lock"):
         Ok("")
     else:
         match pinned_registry_trust(read_text(root, "witchy.lock")):
@@ -1079,7 +1079,7 @@ pub fn hash_mismatches(root: Dir, dir: String, lock: String) -> Result(List(Stri
 // yields no pins (the integrity commands report that fault separately).
 pub fn staged_lock_pins(root: Dir, lock_rel: String) -> List((String, String)):
     var out = []
-    if root.exists(lock_rel):
+    if path_exists(root, lock_rel):
         match lock_rune_entries(read_text(root, lock_rel)):
             Err(_e) -> ()
             Ok(entries) ->
@@ -1233,7 +1233,7 @@ pub fn update_vendored(console: Console, net: Net, root: Dir, origin: String, on
                                 console.print("BLOCK: cannot regenerate witchy.lock — ${e.show()}")
                                 2
                             Ok(lock) ->
-                                root.write("witchy.lock", lock)
+                                write_or_fail(root, "witchy.lock", lock)
                                 console.print("updated ${changed} dependencies -> witchy.lock")
                                 0
 
@@ -1269,7 +1269,7 @@ pub fn update_closure_gate(console: Console, root: Dir, allowed: List(String)) -
 // and past the staging cooldown (BUG-090).
 pub fn update_one(console: Console, net: Net, root: Dir, origin: String, entry: String, allowed: List(String), cooldown: (Int, Int, Bool), manifest: String, clock: Clock) -> (Int, Bool, Bool):
     let rune_dir = join_path("vendor", entry)
-    if !root.exists(join_path(rune_dir, "coven.json")):
+    if !path_exists(root, join_path(rune_dir, "coven.json")):
         (0, false, false)
     else:
         let vendored = match parse_vendored_record(read_text(root, join_path(rune_dir, "coven.json"))):
@@ -1448,13 +1448,13 @@ pub fn install_fetch_and_write(console: Console, net: Net, home: Dir, clock: Clo
     // to disk (append_bytes) — a real trusted-publisher is 100+ MB and can neither traverse
     // one HTTP body nor be held whole in memory, so nothing ever accumulates the whole
     // in the guest. Then read the written file back once to verify its sha256.
-    fs.ensure_dir(home, "bin")
+    ensure_or_fail(home, "bin")
     let binpath = join_path("bin", command)
     // Download into a fresh non-executable staging file. The live command is
     // replaced only after the complete byte stream matches the signed digest.
     // `create_new` also keeps concurrent installs from sharing a staging file.
     let staged = join_path("bin", ".${command}.install-${clock.now()}")
-    if !home.create_new(staged, ""):
+    if !claim(home, staged, ""):
         console.print("BLOCK: could not create a fresh staging file for ${command}")
         return 1
     // state: 0 = downloading, 1 = complete, 2 = transport/decode error,
@@ -1481,7 +1481,7 @@ pub fn install_fetch_and_write(console: Console, net: Net, home: Dir, clock: Clo
                         if written + bytes.length(piece) > size:
                             state = 4
                         else:
-                            home.append_bytes(staged, piece)
+                            append_or_fail(home, staged, piece)
                             written = written + bytes.length(piece)
                             idx = idx + 1
     if state == 3:
@@ -1499,8 +1499,8 @@ pub fn install_fetch_and_write(console: Console, net: Net, home: Dir, clock: Clo
     else:
         // The verified trusted-publisher is written non-executable; flip it runnable so the
         // installed command can be launched directly from $WITCHY_HOME/bin.
-        home.set_executable(staged)
-        home.rename(staged, binpath)
+        chmod_or_fail(home, staged)
+        rename_or_fail(home, staged, binpath)
         console.print("installed ${command} -> \$WITCHY_HOME/bin/${command}")
         0
 
@@ -1516,7 +1516,7 @@ pub fn materialize_precompiled_library(console: Console, net: Net, root: Dir, cl
         1
     else:
         let vendor = join_path("vendor", alias)
-        if root.exists(join_path(vendor, "src")) || root.exists(join_path(vendor, "witchy.toml")):
+        if path_exists(root, join_path(vendor, "src")) || path_exists(root, join_path(vendor, "witchy.toml")):
             console.print("BLOCK: `${alias}` cannot be both a source and precompiled dependency")
             1
         else:
@@ -1539,8 +1539,8 @@ pub fn materialize_precompiled_library(console: Console, net: Net, root: Dir, cl
                                     // Commit receipts last. A consumer seeing a partial
                                     // materialization cannot use it: it requires both
                                     // blobs and independently rechecks their digests.
-                                    root.write(join_path(vendor, "coven-artifact.json"), manifest)
-                                    root.write(join_path(vendor, "coven.json"), record.0)
+                                    write_or_fail(root, join_path(vendor, "coven-artifact.json"), manifest)
+                                    write_or_fail(root, join_path(vendor, "coven.json"), record.0)
                                     console.print("materialized precompiled ${name}@${version} ${module} -> ${vendor}")
                                     0
 
@@ -1592,7 +1592,7 @@ fn materialize_precompiled_blobs(net: Net, root: Dir, clock: Clock, origin: Stri
     let base = join_path(join_path(vendor, "artifacts"), module)
     let wasm = base + ".wasm"
     let sidecar = base + ".opt"
-    fs.ensure_dir(root, fs.parent_dir(wasm) ?? "")
+    ensure_or_fail(root, fs.parent_dir(wasm) ?? "")
     download_precompiled_blob(net, root, clock, origin, name, version, module, "/coven/library/wasm", wasm, entry.wasm_size, entry.wasm_sha256)?
     download_precompiled_blob(net, root, clock, origin, name, version, module, "/coven/library/opt", sidecar, entry.opt_callable_export_size, entry.opt_callable_export_sha256)
 
@@ -1601,14 +1601,14 @@ fn download_precompiled_blob(net: Net, root: Dir, clock: Clock, origin: String, 
     // staging name is replaced before every attempt, and the final identity is
     // still published only by rename after size + digest verification.
     let staged = destination + ".stage"
-    root.replace(staged, "")
+    replace_or_fail(root, staged, "")
     let downloaded = download_precompiled_blob_chunks(net, root, origin, name, version, module, endpoint, staged, expected_size, 0, 0)
     if downloaded != expected_size:
         Err("downloaded byte count does not match the signed size")
     else if crypto.sha256_bytes(read_raw(root, staged)) != expected_sha256:
         Err("downloaded bytes do not match the signed digest")
     else:
-        root.rename(staged, destination)
+        rename_or_fail(root, staged, destination)
         Ok(())
 
 fn download_precompiled_blob_chunks(net: Net, root: Dir, origin: String, name: String, version: String, module: String, endpoint: String, staged: String, expected_size: Int, index: Int, written: Int) -> Int:
@@ -1626,7 +1626,7 @@ fn download_precompiled_blob_chunks(net: Net, root: Dir, origin: String, name: S
                     if written + bytes.length(chunk) > expected_size:
                         -1
                     else:
-                        root.append_bytes(staged, chunk)
+                        append_or_fail(root, staged, chunk)
                         download_precompiled_blob_chunks(net, root, origin, name, version, module, endpoint, staged, expected_size, index + 1, written + bytes.length(chunk))
 
 // Whether a staged-install prompt should be auto-confirmed (RFC-0120): the
@@ -1745,7 +1745,7 @@ pub fn add_pkg_gate_widen(console: Console, net: Net, root: Dir, origin: String,
 // precompiled inline must never smuggle a second package/version coordinate.
 // Partial selectors and source/path coexistence are errors, not a source fallback.
 fn selected_precompiled_module(root: Dir, alias: String) -> Result(Option(String), String):
-    if !root.exists("witchy.toml"):
+    if !path_exists(root, "witchy.toml"):
         Ok(None)
     else:
         precompiled_module_in_manifest(read_text(root, "witchy.toml"), alias)
@@ -1792,13 +1792,13 @@ pub fn add_pkg_finalize(console: Console, net: Net, root: Dir, origin: String, n
 // entry, never duplicates). With no project manifest there is nothing to record
 // against, so it is a no-op.
 pub fn record_manifest_dep(root: Dir, name: String, version: String, module: Option(String)):
-    if root.exists("witchy.toml"):
+    if path_exists(root, "witchy.toml"):
         let old = read_text(root, "witchy.toml")
         let next = match module:
             Some(selected) -> manifest_upsert_precompiled_dep(old, basename(name), version, selected)
             None -> manifest_upsert_dep(old, basename(name), version)
 
-        root.write("witchy.toml", next)
+        write_or_fail(root, "witchy.toml", next)
 
 // The capability authority the project already admits: its own declared runtime
 // caps (from witchy.toml, if any) plus every capability the lockfile already
@@ -1806,10 +1806,10 @@ pub fn record_manifest_dep(root: Dir, name: String, version: String, module: Opt
 // against, so adding a same-or-narrower rune is silent and a widening one gates.
 pub fn project_baseline(root: Dir) -> Result(List(String), LockIntegrityError):
     var out = []
-    if root.exists("witchy.toml"):
+    if path_exists(root, "witchy.toml"):
         for c in declared_caps(read_text(root, "witchy.toml")):
             out = add_unique(out, c)
-    if root.exists("witchy.lock"):
+    if path_exists(root, "witchy.lock"):
         // Keep the fallible lock decode in an explicit branch.  The compact
         // `?` assignment leaves the owned accumulator's release placement
         // ambiguous in canonical lowering when the error enum carries strings.
@@ -1835,7 +1835,7 @@ pub fn pin_lock(console: Console, net: Net, root: Dir, origin: String, name: Str
                     console.print("BLOCK: cannot regenerate witchy.lock — ${e.show()}")
                     2
                 Ok(lock) ->
-                    root.write("witchy.lock", lock)
+                    write_or_fail(root, "witchy.lock", lock)
                     console.print("locked ${basename(name)} -> witchy.lock")
                     0
 
@@ -1887,10 +1887,10 @@ pub fn fetch_registry_rootpub(net: Net, origin: String) -> Result(String, Regist
 // idiom-exempt: concatenation in this section is canonical lockfile serialization.
 pub fn vendor_lock(root: Dir, snapshot_line: String) -> Result(String, VendoredRecordError):
     var out = "# witchy.lock — generated by `grimoire add`. Pins every vendored dependency\n# by content hash. Regenerate with `grimoire add`. Do not edit by hand.\n" + snapshot_line
-    if root.exists("vendor"):
+    if path_exists(root, "vendor"):
         for entry in list_dir(root, "vendor"):
             let rune_dir = join_path("vendor", entry)
-            if root.exists(join_path(rune_dir, "coven.json")):
+            if path_exists(root, join_path(rune_dir, "coven.json")):
                 match vendor_lock_entry(root, entry, rune_dir):
                     Err(e) -> return Err(e)
                     Ok(lock_entry) -> out = out + lock_entry
@@ -1907,7 +1907,7 @@ pub fn vendor_lock_entry(root: Dir, alias: String, rune_dir: String) -> Result(S
     // `pm publish` can refuse it. The marker self-heals: once the version is released,
     // a re-vendor rewrites the record's state and this line disappears.
     let staged_marker = if record.state == "staged": "staged = \"true\"\n" else: ""
-    if root.exists(join_path(rune_dir, "witchy.toml")):
+    if path_exists(root, join_path(rune_dir, "witchy.toml")):
         Ok("\n[[rune]]\nname = \"" + record.name + "\"\nalias = \"" + alias + "\"\nversion = \"" + record.version + "\"\nsource = \"coven\"\nhash = \"" + record.hash + "\"\n" + staged_marker + "runtime_footprint = [" + fp + "]\n")
     else:
         let module = selected_precompiled_module(root, alias).map_err(fn(reason: String): VendoredRecordPrecompiled(reason))?
@@ -1915,7 +1915,7 @@ pub fn vendor_lock_entry(root: Dir, alias: String, rune_dir: String) -> Result(S
             None -> Err(VendoredRecordPrecompiled("vendor/${alias} has no source tree and no explicit precompiled selector"))
             Some(selected) ->
                 let artifact_path = join_path(rune_dir, "coven-artifact.json")
-                if !root.exists(artifact_path):
+                if !path_exists(root, artifact_path):
                     Err(VendoredRecordPrecompiled("vendor/${alias} has no coven-artifact.json"))
                 else:
                     let record_doc = json.decode(read_text(root, join_path(rune_dir, "coven.json"))).map_err(fn(_e): VendoredRecordPrecompiled("coven.json is not JSON"))?
@@ -1938,7 +1938,7 @@ pub fn vendor_lock_entry(root: Dir, alias: String, rune_dir: String) -> Result(S
 // second silently shadows the first. Refuse it — `import util` cannot name both.
 pub fn add_rune(console: Console, net: Net, root: Dir, origin: String, name: String, req: String, dest: String, cooldown: (Int, Int, Bool), allowed: List(String)) -> Int:
     let vendored = join_path(dest, basename(name))
-    if root.exists(join_path(vendored, "coven.json")):
+    if path_exists(root, join_path(vendored, "coven.json")):
         match parse_vendored_record(read_text(root, join_path(vendored, "coven.json"))):
             Err(e) ->
                 console.print("BLOCK: cannot reuse `${vendored}` — ${e.show()}")
@@ -2116,9 +2116,9 @@ pub fn write_vendored_source(console: Console, root: Dir, dest: String, name: St
             let base = join_path(dest, basename(name))
             for path, text in files:
                 let full = join_path(base, path)
-                fs.ensure_dir(root, fs.parent_dir(full) ?? "")
-                root.write(full, text)
-            root.write(join_path(base, "coven.json"), record)
+                ensure_or_fail(root, fs.parent_dir(full) ?? "")
+                write_or_fail(root, full, text)
+            write_or_fail(root, join_path(base, "coven.json"), record)
             console.print("added ${name}@${version} -> ${base}")
             0
 
@@ -2179,10 +2179,10 @@ pub fn rune_footprint(root: Dir, dir: String) -> Result(List(String), FootprintE
 // transitive dep's capabilities; summing the on-disk closure does.
 pub fn vendored_closure_footprint(root: Dir) -> Result(List(String), FootprintError):
     var out = []
-    if root.exists("vendor"):
+    if path_exists(root, "vendor"):
         for entry in list_dir(root, "vendor"):
             let rune_dir = join_path("vendor", entry)
-            if root.exists(join_path(rune_dir, "coven.json")):
+            if path_exists(root, join_path(rune_dir, "coven.json")):
                 let caps = rune_footprint(root, rune_dir)?
                 for cap in caps:
                     out = add_unique(out, cap)

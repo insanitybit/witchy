@@ -10,7 +10,8 @@ const WAT: &str = r#"(module
   (import "witchy" "crypto_sign_into" (func $sign (param externref i32 i32 i32 i32) (result i32)))
   (import "witchy" "crypto_public_key_into" (func $pk (param externref i32 i32) (result i32)))
   (import "witchy" "crypto_reveal_len" (func $reveal (param externref) (result i32)))
-  (import "witchy" "dir_make_dir_at" (func $mkdir (param externref i32 i32)))
+  (import "witchy" "dir_make_dir_at" (func $mkdir (param externref i32 i32) (result externref)))
+  (import "witchy" "dir_response_status" (func $status (param externref) (result i32)))
   (memory (export "memory") 1)
   (func (export "run"))
   (func (export "now") (param externref) (result i64) local.get 0 call $now)
@@ -21,8 +22,8 @@ const WAT: &str = r#"(module
   (func (export "pk") (param externref i32 i32) (result i32)
     local.get 0 local.get 1 local.get 2 call $pk)
   (func (export "reveal") (param externref) (result i32) local.get 0 call $reveal)
-  (func (export "mkdir") (param externref i32 i32)
-    local.get 0 local.get 1 local.get 2 call $mkdir))"#;
+  (func (export "mkdir") (param externref i32 i32) (result i32)
+    local.get 0 local.get 1 local.get 2 call $mkdir call $status))"#;
 
 // RFC 8032 test vector 1: independent expected key and empty-message signature.
 const SEED: &str = "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60";
@@ -95,8 +96,9 @@ fn sign(vm: &mut Vm, key: Token, ptr: i32, len: i32, out: i32, cap: i32) -> Resu
     vm.instance.get_typed_func::<(Token, i32, i32, i32, i32), i32>(&mut vm.store, "sign").unwrap()
         .call(&mut vm.store, (key, ptr, len, out, cap))
 }
-fn mkdir(vm: &mut Vm, root: Token, ptr: i32, len: i32) -> Result<()> {
-    vm.instance.get_typed_func::<(Token, i32, i32), ()>(&mut vm.store, "mkdir").unwrap()
+/// `dir_make_dir_at`, answered as its response's status.
+fn mkdir(vm: &mut Vm, root: Token, ptr: i32, len: i32) -> Result<i32> {
+    vm.instance.get_typed_func::<(Token, i32, i32), i32>(&mut vm.store, "mkdir").unwrap()
         .call(&mut vm.store, (root, ptr, len))
 }
 fn error(error: Error, expected: &str) {
@@ -193,7 +195,7 @@ pub fn registry_hosts_make_dir_rejects_outside_symlink() {
     std::os::unix::fs::symlink(outside.path(), root.path().join("escape")).unwrap();
     let grant = dir(&mut vm);
     write(&mut vm, 0, b"escape/created");
-    assert!(mkdir(&mut vm, grant, 0, 14).is_err());
+    assert_eq!(mkdir(&mut vm, grant, 0, 14).unwrap(), 1, "a link out of the root is Denied");
     assert!(!outside.path().join("created").exists());
 }
 

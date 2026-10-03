@@ -5,12 +5,21 @@ use crate::runtime::{Capabilities, Runtime, Vm};
 type Token = Option<Rooted<ExternRef>>;
 type WriteArgs = (Token, i32, i32, i32, i32);
 const WAT: &str = r#"(module
-  (import "witchy" "dir_create_new_at" (func $create (param externref i32 i32 i32 i32) (result i32)))
-  (import "witchy" "dir_replace_at" (func $replace (param externref i32 i32 i32 i32)))
+  (import "witchy" "dir_create_new_at" (func $create (param externref i32 i32 i32 i32) (result externref)))
+  (import "witchy" "dir_replace_at" (func $replace (param externref i32 i32 i32 i32) (result externref)))
   (import "witchy" "dir_read_bytes_at" (func $read (param externref i32 i32) (result externref)))
   (import "witchy" "dir_response_size" (func $size (param externref) (result i32)))
   (import "witchy" "dir_response_into" (func $copy (param externref i32 i32) (result i32)))
-  (import "witchy" "dir_write_bytes_at" (func $write (param externref i32 i32 i32 i32)))
+  (import "witchy" "dir_write_bytes_at" (func $write (param externref i32 i32 i32 i32) (result externref)))
+  (import "witchy" "dir_write_at" (func $write_text (param externref i32 i32 i32 i32) (result externref)))
+  (import "witchy" "dir_append_at" (func $append_text (param externref i32 i32 i32 i32) (result externref)))
+  (import "witchy" "dir_append_bytes_at" (func $append (param externref i32 i32 i32 i32) (result externref)))
+  (import "witchy" "dir_rename_at" (func $rename (param externref i32 i32 i32 i32) (result externref)))
+  (import "witchy" "dir_make_dir_at" (func $make_dir (param externref i32 i32) (result externref)))
+  (import "witchy" "dir_set_executable_at" (func $set_executable (param externref i32 i32) (result externref)))
+  (import "witchy" "dir_exists_at" (func $exists (param externref i32 i32) (result externref)))
+  (import "witchy" "dir_is_dir_at" (func $is_dir (param externref i32 i32) (result externref)))
+  (import "witchy" "dir_response_flag" (func $flag (param externref) (result i32)))
   (import "witchy" "dir_read_at" (func $read_text (param externref i32 i32) (result externref)))
   (import "witchy" "dir_response_status" (func $status (param externref) (result i32)))
   (import "witchy" "dir_read_file_at" (func $open_file (param externref i32 i32) (result externref)))
@@ -25,12 +34,29 @@ const WAT: &str = r#"(module
   (import "witchy" "file_response_into" (func $file_copy (param externref i32 i32) (result i32)))
   (memory (export "memory") 1)
   (func (export "run"))
-  (func (export "create") (param externref i32 i32 i32 i32) (result i32)
+  (func (export "create") (param externref i32 i32 i32 i32) (result externref)
     local.get 0 local.get 1 local.get 2 local.get 3 local.get 4 call $create)
-  (func (export "replace") (param externref i32 i32 i32 i32)
+  (func (export "replace") (param externref i32 i32 i32 i32) (result externref)
     local.get 0 local.get 1 local.get 2 local.get 3 local.get 4 call $replace)
-  (func (export "write") (param externref i32 i32 i32 i32)
+  (func (export "write") (param externref i32 i32 i32 i32) (result externref)
     local.get 0 local.get 1 local.get 2 local.get 3 local.get 4 call $write)
+  (func (export "write_text") (param externref i32 i32 i32 i32) (result externref)
+    local.get 0 local.get 1 local.get 2 local.get 3 local.get 4 call $write_text)
+  (func (export "append_text") (param externref i32 i32 i32 i32) (result externref)
+    local.get 0 local.get 1 local.get 2 local.get 3 local.get 4 call $append_text)
+  (func (export "append") (param externref i32 i32 i32 i32) (result externref)
+    local.get 0 local.get 1 local.get 2 local.get 3 local.get 4 call $append)
+  (func (export "rename") (param externref i32 i32 i32 i32) (result externref)
+    local.get 0 local.get 1 local.get 2 local.get 3 local.get 4 call $rename)
+  (func (export "make_dir") (param externref i32 i32) (result externref)
+    local.get 0 local.get 1 local.get 2 call $make_dir)
+  (func (export "set_executable") (param externref i32 i32) (result externref)
+    local.get 0 local.get 1 local.get 2 call $set_executable)
+  (func (export "exists") (param externref i32 i32) (result externref)
+    local.get 0 local.get 1 local.get 2 call $exists)
+  (func (export "is_dir") (param externref i32 i32) (result externref)
+    local.get 0 local.get 1 local.get 2 call $is_dir)
+  (func (export "flag") (param externref) (result i32) local.get 0 call $flag)
   (func (export "read") (param externref i32 i32) (result externref)
     local.get 0 local.get 1 local.get 2 call $read)
   (func (export "read_text") (param externref i32 i32) (result externref)
@@ -87,11 +113,13 @@ fn inputs(vm: &mut Vm, root: Token, path: &str, data: &[u8]) -> WriteArgs {
     put(vm, 1024, data);
     (root, 0, path.len() as i32, 1024, data.len() as i32)
 }
-fn create(vm: &mut Vm, args: WriteArgs) -> Result<i32> {
-    vm.instance.get_typed_func::<WriteArgs, i32>(&mut vm.store, "create").unwrap().call(&mut vm.store, args)
+/// A write-family export on `args`, answered as its response's status.
+fn write(vm: &mut Vm, name: &str, args: WriteArgs) -> Result<i32> {
+    let response = vm.instance.get_typed_func::<WriteArgs, Token>(&mut vm.store, name).unwrap().call(&mut vm.store, args)?;
+    vm.instance.get_typed_func::<Token, i32>(&mut vm.store, "status").unwrap().call(&mut vm.store, response)
 }
-fn write(vm: &mut Vm, name: &str, args: WriteArgs) -> Result<()> {
-    vm.instance.get_typed_func::<WriteArgs, ()>(&mut vm.store, name).unwrap().call(&mut vm.store, args)
+fn create(vm: &mut Vm, args: WriteArgs) -> Result<i32> {
+    write(vm, "create", args)
 }
 fn read(vm: &mut Vm, root: Token, ptr: i32, len: i32) -> Result<Token> {
     vm.instance.get_typed_func::<(Token, i32, i32), Token>(&mut vm.store, "read").unwrap()
@@ -169,7 +197,7 @@ pub fn dir_storage_full_input_preflight_precedes_file_mutation() {
                 let mut args = inputs(&mut vm, grant, "keep", b"overwrite");
                 if path_bad { args.1 = ptr; args.2 = len; } else { args.3 = ptr; args.4 = len; }
                 let before = memory(&mut vm);
-                let result = if operation == "create" { create(&mut vm, args).map(|_| ()) } else { write(&mut vm, operation, args) };
+                let result = write(&mut vm, operation, args);
                 assert!(result.is_err(), "{operation}: ({ptr}, {len}), path_bad={path_bad}");
                 assert_eq!(memory(&mut vm), before);
                 assert_eq!(std::fs::read(root.path().join("keep")).unwrap(), b"original");
@@ -189,8 +217,7 @@ pub fn dir_storage_full_input_preflight_precedes_file_mutation() {
     assert!(read(&mut vm, grant, 0, 1).is_err());
     for (ptr, len) in [(-1, 0), (0, -1), (65535, 2)] { assert!(read(&mut vm, grant, ptr, len).is_err()); }
     for operation in ["create", "replace", "write"] {
-        let result = if operation == "create" { create(&mut vm, (grant, 0, 1, 1024, 0)).map(|_| ()) }
-            else { write(&mut vm, operation, (grant, 0, 1, 1024, 0)) };
+        let result = write(&mut vm, operation, (grant, 0, 1, 1024, 0));
         assert!(result.is_err());
     }
     assert_eq!(names(root.path()), ["keep".into()].into_iter().collect());
@@ -204,7 +231,7 @@ pub fn dir_storage_kind_rights_and_response_issuer_precede_memory() {
     for operation in ["create", "replace", "write"] {
         for (token, message) in [(None, "null"), (forged, "wrong host data"), (read_only, "does not grant Write")] {
             let args = (token, -1, -1, -1, -1);
-            let result = if operation == "create" { create(&mut vm, args).map(|_| ()) } else { write(&mut vm, operation, args) };
+            let result = write(&mut vm, operation, args);
             error(result.unwrap_err(), message);
         }
     }
@@ -234,16 +261,16 @@ pub fn dir_storage_entry_policy_is_preserved_for_every_file_operation() {
     let directories_only = attenuate(&mut vm, grant, true, true, "kind:dir");
     for token in [text_only, directories_only] {
         let args = inputs(&mut vm, token, "keep.bin", b"changed");
-        error(create(&mut vm, args).unwrap_err(), "entry policy");
-        error(write(&mut vm, "replace", args).unwrap_err(), "entry policy");
-        error(write(&mut vm, "write", args).unwrap_err(), "entry policy");
+        for operation in ["create", "replace", "write"] {
+            assert_eq!(write(&mut vm, operation, args).unwrap(), 1, "{operation}: a refused write is Denied");
+        }
         assert_eq!(read_bytes_status(&mut vm, token, "keep.bin").0, 1, "a refused read is Denied");
         assert_eq!(std::fs::read(root.path().join("keep.bin")).unwrap(), b"original");
     }
     let args = inputs(&mut vm, text_only, "allowed.txt", b"allowed");
-    assert_eq!(create(&mut vm, args).unwrap(), 1);
-    write(&mut vm, "replace", args).unwrap();
-    write(&mut vm, "write", args).unwrap();
+    for operation in ["create", "replace", "write"] {
+        assert_eq!(write(&mut vm, operation, args).unwrap(), 0, "{operation}");
+    }
     let response = read_path(&mut vm, text_only, "allowed.txt");
     assert_eq!(payload(&mut vm, response), b"allowed");
 }
@@ -255,22 +282,22 @@ pub fn dir_storage_symlinks_never_acquire_outside_authority() {
     std::fs::write(outside.path().join("secret"), b"outside").unwrap();
     std::os::unix::fs::symlink(outside.path(), root.path().join("parent-link")).unwrap();
     let args = inputs(&mut vm, grant, "parent-link/secret", b"changed");
-    assert!(create(&mut vm, args).is_err());
-    assert!(write(&mut vm, "replace", args).is_err());
-    assert!(write(&mut vm, "write", args).is_err());
+    for operation in ["create", "replace", "write"] {
+        assert_eq!(write(&mut vm, operation, args).unwrap(), 1, "{operation} through a link out of the root is Denied");
+    }
     let (status, data) = read_bytes_status(&mut vm, grant, "parent-link/secret");
     assert_eq!(status, 1, "a read through a link out of the root is Denied");
     assert!(!data.windows(7).any(|window| window == b"outside"));
     std::os::unix::fs::symlink(outside.path().join("secret"), root.path().join("leaf.txt")).unwrap();
     let filtered = attenuate(&mut vm, grant, true, true, "ext:.txt");
     let args = inputs(&mut vm, filtered, "leaf.txt", b"changed");
-    assert!(write(&mut vm, "replace", args).is_err(), "filtered aliases must not bypass entry policy");
+    assert_eq!(write(&mut vm, "replace", args).unwrap(), 2, "a filtered alias is invisible, never followed");
     let args = inputs(&mut vm, grant, "leaf.txt", b"local replacement");
-    assert_eq!(create(&mut vm, args).unwrap(), 0);
-    assert!(write(&mut vm, "write", args).is_err());
+    assert_eq!(create(&mut vm, args).unwrap(), 1, "a link leaf is Denied, whatever its target");
+    assert_eq!(write(&mut vm, "write", args).unwrap(), 1, "a write never follows a link leaf");
     assert_eq!(read_bytes_status(&mut vm, grant, "leaf.txt").0, 1, "a link leaf out of the root is Denied");
     // Unrestricted atomic rename replaces the link itself, not its target.
-    write(&mut vm, "replace", args).unwrap();
+    assert_eq!(write(&mut vm, "replace", args).unwrap(), 0);
     assert!(!std::fs::symlink_metadata(root.path().join("leaf.txt")).unwrap().file_type().is_symlink());
     assert_eq!(std::fs::read(root.path().join("leaf.txt")).unwrap(), b"local replacement");
     assert_eq!(std::fs::read(outside.path().join("secret")).unwrap(), b"outside");
@@ -282,8 +309,7 @@ pub fn dir_storage_imports_remain_grant_gated() {
         ("dir_write_bytes_at", true, false), ("dir_read_bytes_at", false, true)]
     {
         let (parameters, result) = if name == "dir_read_bytes_at" { ("externref i32 i32", "(result externref)") }
-            else if name == "dir_create_new_at" { ("externref i32 i32 i32 i32", "(result i32)") }
-            else { ("externref i32 i32 i32 i32", "") };
+            else { ("externref i32 i32 i32 i32", "(result externref)") };
         let wat = format!("(module (import \"witchy\" \"{name}\" (func (param {parameters}) {result})) (func (export \"run\")))");
         let caps = Capabilities { dir_root: Some(root.path().to_owned()), dir_read: read, dir_write: write, ..Capabilities::none() };
         let result = Runtime::new().unwrap().spawn(&wat, caps, 1);
@@ -621,4 +647,158 @@ pub fn write_only_dir_links_write_file() {
       (func (export "run")))"#;
     let caps = Capabilities { dir_root: Some(root.path().to_owned()), dir_read: false, dir_write: true, ..Capabilities::none() };
     Runtime::new().unwrap().spawn(wat, caps, 1).expect("write-only Dir links write_file");
+}
+
+/// A write-family or probe export on `path` (and `data`, the rename target for
+/// `rename`), answered as (status, flag, message).
+fn effect(vm: &mut Vm, export: &str, root: Token, path: &str, data: &[u8]) -> Result<(i32, i32, String)> {
+    let response = if matches!(export, "make_dir" | "set_executable" | "exists" | "is_dir") {
+        put(vm, 0, path.as_bytes());
+        vm.instance.get_typed_func::<(Token, i32, i32), Token>(&mut vm.store, export).unwrap()
+            .call(&mut vm.store, (root, 0, path.len() as i32))?
+    } else {
+        let args = inputs(vm, root, path, data);
+        vm.instance.get_typed_func::<WriteArgs, Token>(&mut vm.store, export).unwrap().call(&mut vm.store, args)?
+    };
+    let status = vm.instance.get_typed_func::<Token, i32>(&mut vm.store, "status").unwrap().call(&mut vm.store, response)?;
+    let flag = vm.instance.get_typed_func::<Token, i32>(&mut vm.store, "flag").unwrap().call(&mut vm.store, response)?;
+    Ok((status, flag, String::from_utf8(payload(vm, response)).unwrap()))
+}
+
+/// The write family and the `exists`/`is_dir` probes answer failures as
+/// statuses (RFC-0126 rule 3) under the same no-oracle rules as `dir.read`:
+/// an escape (`..`, absolute, or a link leaving the root) is Denied whether or
+/// not anything is there, a name the policy refuses is Denied present or
+/// absent, a path through an entry a policy cannot see answers like a missing
+/// parent, a write never follows a link leaf, and an exclusive create of a
+/// taken name is AlreadyExists. A probe answers its flag with status 0, and an
+/// entry a policy cannot see is `false`. No message names a host path. A
+/// missing right still traps.
+pub fn dir_write_family_answers_failures_as_statuses() {
+    let outer = tempfile::tempdir().unwrap();
+    let root = outer.path().join("root");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::create_dir(outer.path().join("outside-dir")).unwrap();
+    std::fs::write(outer.path().join("outside.txt"), b"escaped contents").unwrap();
+    std::fs::create_dir(root.join("sub")).unwrap();
+    for name in ["a.txt", "b.txt", "move.txt", "keep.bin", "secret.key", "classified.TXT"] {
+        std::fs::write(root.join(name), b"hello").unwrap();
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        symlink("../outside-dir", root.join("outdir")).unwrap();
+        symlink("../missing-dir", root.join("nodir")).unwrap();
+        symlink("../outside.txt", root.join("out.txt")).unwrap();
+        symlink("../missing.txt", root.join("dangling.txt")).unwrap();
+        symlink("secret.key", root.join("alias.txt")).unwrap();
+        symlink("alias.txt", root.join("multi.txt")).unwrap();
+    }
+    let (mut vm, grant) = vm_at(&root, true);
+    let text_only = attenuate(&mut vm, grant, true, true, "ext:.txt");
+    let files_only = attenuate(&mut vm, grant, true, true, "kind:file");
+    let dirs_only = attenuate(&mut vm, grant, true, true, "kind:dir");
+    // (export, grant, path, data, status, flag)
+    let mut rows: Vec<(&str, Token, &str, &str, i32, i32)> = vec![
+        ("write_text", grant, "new.txt", "x", 0, 0), ("write_text", grant, "missing/x.txt", "x", 2, 0),
+        ("write_text", grant, "sub", "x", 3, 0), ("write_text", grant, "../outside.txt", "x", 1, 0),
+        ("write_text", grant, "../missing.txt", "x", 1, 0), ("write_text", grant, "/tmp/x.txt", "x", 1, 0),
+        ("write_text", text_only, "keep.bin", "x", 1, 0), ("write_text", text_only, "absent.bin", "x", 1, 0),
+        ("write_text", text_only, "keep.bin/x.txt", "x", 2, 0), ("write_text", text_only, "sub", "x", 1, 0),
+        ("append_text", grant, "a.txt", "x", 0, 0), ("append_text", grant, "sub", "x", 3, 0),
+        ("append_text", grant, "../outside.txt", "x", 1, 0),
+        ("write", grant, "blob.bin", "x", 0, 0), ("append", grant, "blob.bin", "x", 0, 0),
+        ("append", grant, "../missing.txt", "x", 1, 0),
+        ("create", grant, "fresh.txt", "x", 0, 0), ("create", grant, "a.txt", "x", 4, 0),
+        ("create", grant, "sub", "x", 3, 0), ("create", grant, "../missing.txt", "x", 1, 0),
+        ("create", text_only, "keep.bin", "x", 1, 0), ("create", text_only, "absent.bin", "x", 1, 0),
+        ("replace", grant, "b.txt", "x", 0, 0), ("replace", grant, "../outside.txt", "x", 1, 0),
+        ("make_dir", grant, "newdir", "", 0, 0), ("make_dir", grant, "sub", "", 0, 0),
+        ("make_dir", grant, "../newdir", "", 1, 0),
+        ("set_executable", grant, "a.txt", "", 0, 0), ("set_executable", grant, "missing.txt", "", 2, 0),
+        ("set_executable", grant, "../outside.txt", "", 1, 0),
+        ("rename", grant, "move.txt", "moved.txt", 0, 0), ("rename", grant, "missing.txt", "x.txt", 2, 0),
+        ("rename", grant, "a.txt", "../stolen.txt", 1, 0), ("rename", grant, "../outside.txt", "here.txt", 1, 0),
+        // An extension policy admits any directory name, so a refused file name
+        // as a rename source is invisible rather than refused.
+        ("rename", text_only, "keep.bin", "k.txt", 2, 0), ("rename", text_only, "absent.bin", "k.txt", 2, 0),
+        ("rename", files_only, "sub", "moved", 2, 0),
+        // SEC-056/062: an occupant the policy hides answers like a missing
+        // name, never its kind, and is never written.
+        ("write_text", files_only, "sub", "x", 2, 0), ("append", files_only, "sub", "x", 2, 0),
+        ("create", files_only, "sub", "x", 2, 0), ("replace", files_only, "sub", "x", 2, 0),
+        ("set_executable", files_only, "sub", "", 2, 0), ("rename", files_only, "a.txt", "sub", 2, 0),
+        ("make_dir", dirs_only, "a.txt", "", 2, 0),
+        ("rename", text_only, "a.txt", "a.bin", 1, 0),
+        ("exists", grant, "a.txt", "", 0, 1), ("exists", grant, "missing", "", 0, 0), ("exists", grant, "sub", "", 0, 1),
+        ("exists", grant, "../outside.txt", "", 1, 0), ("exists", grant, "../missing.txt", "", 1, 0),
+        ("exists", grant, "/tmp", "", 1, 0),
+        ("exists", text_only, "a.txt", "", 0, 1), ("exists", text_only, "keep.bin", "", 0, 0),
+        ("exists", text_only, "absent.bin", "", 0, 0),
+        ("is_dir", grant, "sub", "", 0, 1), ("is_dir", grant, "a.txt", "", 0, 0), ("is_dir", grant, "missing", "", 0, 0),
+        ("is_dir", grant, "..", "", 1, 0),
+    ];
+    #[cfg(unix)]
+    rows.extend([
+        ("write_text", grant, "out.txt", "x", 1, 0), ("write_text", grant, "dangling.txt", "x", 1, 0),
+        ("write_text", grant, "outdir/x.txt", "x", 1, 0), ("write_text", grant, "nodir/x.txt", "x", 1, 0),
+        ("write_text", text_only, "outdir/x.txt", "x", 2, 0), ("write_text", text_only, "nodir/x.txt", "x", 2, 0),
+        ("create", grant, "dangling.txt", "x", 1, 0), ("create", grant, "outdir/x.txt", "x", 1, 0),
+        // SEC-056/062: an in-root alias (one or two hops) to a refused file
+        // is invisible under the policy and is never written through.
+        ("write_text", text_only, "alias.txt", "x", 2, 0), ("append_text", text_only, "alias.txt", "x", 2, 0),
+        ("create", text_only, "alias.txt", "x", 2, 0), ("replace", text_only, "alias.txt", "x", 2, 0),
+        ("set_executable", text_only, "alias.txt", "", 2, 0), ("append_text", text_only, "multi.txt", "x", 2, 0),
+        ("replace", text_only, "multi.txt", "x", 2, 0), ("rename", text_only, "multi.txt", "m.txt", 2, 0),
+        ("exists", text_only, "alias.txt", "", 0, 0), ("exists", text_only, "outdir/x.txt", "", 0, 0),
+        ("make_dir", grant, "outdir/new", "", 1, 0), ("make_dir", grant, "nodir/new", "", 1, 0),
+        ("exists", grant, "out.txt", "", 1, 0), ("exists", grant, "dangling.txt", "", 1, 0),
+        ("exists", grant, "outdir", "", 1, 0), ("exists", grant, "nodir", "", 1, 0),
+        ("exists", text_only, "out.txt", "", 0, 0), ("exists", text_only, "dangling.txt", "", 0, 0),
+        ("is_dir", grant, "outdir", "", 1, 0), ("is_dir", grant, "nodir", "", 1, 0),
+    ]);
+    let host = outer.path().to_string_lossy().into_owned();
+    for (export, token, path, data, status, flag) in rows {
+        let (answer, set, message) = effect(&mut vm, export, token, path, data.as_bytes()).unwrap();
+        assert_eq!((answer, set), (status, flag), "{export} {path}: {message}");
+        if status == 0 {
+            assert!(message.is_empty(), "{export} {path}: {message}");
+            continue;
+        }
+        // A rename refused on its destination names the destination.
+        let named = message.starts_with(&format!("`{path}` "))
+            || (export == "rename" && message.starts_with(&format!("`{data}` ")));
+        assert!(named, "{export} {path}: {message}");
+        assert!(!message.contains(&host) && !message.contains("escaped contents"), "{export} {path}: {message}");
+    }
+    assert_eq!(std::fs::read(outer.path().join("outside.txt")).unwrap(), b"escaped contents");
+    assert_eq!(std::fs::read(root.join("secret.key")).unwrap(), b"hello");
+    assert!(root.join("sub").is_dir());
+    // On a case-insensitive filesystem a case-folded spelling reaches
+    // `classified.TXT`: it is invisible to an `ext:.txt` grant and never written.
+    if root.join("classified.txt").exists() {
+        for export in ["write_text", "append_text", "create", "replace"] {
+            let (status, _, message) = effect(&mut vm, export, text_only, "classified.txt", b"x").unwrap();
+            assert_eq!(status, 2, "{export} classified.txt: {message}");
+        }
+        assert_eq!(std::fs::read(root.join("classified.TXT")).unwrap(), b"hello");
+    }
+    for escaped in ["missing.txt", "stolen.txt", "newdir", "outside-dir/x.txt", "outside-dir/new", "missing-dir"] {
+        assert!(!outer.path().join(escaped).exists(), "{escaped} was created outside the root");
+    }
+    assert_eq!(std::fs::read(root.join("new.txt")).unwrap(), b"x");
+    assert_eq!(std::fs::read(root.join("a.txt")).unwrap(), b"hellox");
+    assert_eq!(std::fs::read(root.join("blob.bin")).unwrap(), b"xx");
+    assert_eq!(std::fs::read(root.join("b.txt")).unwrap(), b"x");
+    assert_eq!(std::fs::read(root.join("moved.txt")).unwrap(), b"hello");
+    assert_eq!(std::fs::read(root.join("keep.bin")).unwrap(), b"hello");
+    assert!(root.join("newdir").is_dir() && !root.join("move.txt").exists());
+    let read_only = attenuate(&mut vm, grant, true, false, "");
+    let write_only = attenuate(&mut vm, grant, false, true, "");
+    for export in ["write_text", "append_text", "append", "create", "replace", "rename", "make_dir", "set_executable"] {
+        error(effect(&mut vm, export, read_only, "new.txt", b"x").unwrap_err(), "does not grant Write");
+    }
+    for export in ["exists", "is_dir"] {
+        error(effect(&mut vm, export, write_only, "a.txt", b"").unwrap_err(), "does not grant Read");
+    }
 }

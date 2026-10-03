@@ -581,7 +581,7 @@ fn admitted_dir_read_exists_write_and_subtree_go_through_bounded_host_calls() {
     std::fs::write(root.join("greeting.txt"), "héllo, dir").expect("seed file");
     std::fs::write(root.join("notes/todo.txt"), "a\nb\n").expect("seed file");
     let output = run_admitted_with_grants(
-        "fn shout(dir: Dir[Read], name: String) -> String:\n    (dir.read(name) ?? \"\").to_upper()\n\nfn main(console: Console, dir: Dir):\n    console.print(dir.read(\"greeting.txt\") ?? \"\")\n    console.print(\"${dir.exists(\"greeting.txt\")} ${dir.exists(\"missing.txt\")} ${(dir.read(\"greeting.txt\") ?? \"\").length()}\")\n    let notes = dir.subtree(\"notes\") ?? dir\n    console.print(\"${(notes.read(\"todo.txt\") ?? \"\").length()} ${notes.exists(\"todo.txt\")}\")\n    dir.write(\"out.txt\", \"written by main\")\n    console.print(dir.read(\"out.txt\") ?? \"\")\n    console.print(shout(dir as Dir[Read], \"greeting.txt\"))\n",
+        "fn shout(dir: Dir[Read], name: String) -> String:\n    (dir.read(name) ?? \"\").to_upper()\n\nfn main(console: Console, dir: Dir):\n    console.print(dir.read(\"greeting.txt\") ?? \"\")\n    console.print(\"${dir.exists(\"greeting.txt\") ?? false} ${dir.exists(\"missing.txt\") ?? false} ${(dir.read(\"greeting.txt\") ?? \"\").length()}\")\n    let notes = dir.subtree(\"notes\") ?? dir\n    console.print(\"${(notes.read(\"todo.txt\") ?? \"\").length()} ${notes.exists(\"todo.txt\") ?? false}\")\n    let _ = dir.write(\"out.txt\", \"written by main\")\n    console.print(dir.read(\"out.txt\") ?? \"\")\n    console.print(shout(dir as Dir[Read], \"greeting.txt\"))\n",
         Capabilities {
             print: true,
             print_int: true,
@@ -632,7 +632,7 @@ fn admitted_dir_reads_larger_than_the_probe_buffer_and_denied_paths() {
     .expect("an escape is a value");
     assert_eq!(escape, vec!["denied".to_string()]);
     let write = run_admitted_with_grants(
-        "fn main(console: Console, dir: Dir):\n    dir.write(\"out.txt\", \"denied\")\n    console.print(\"unreachable\")\n",
+        "fn main(console: Console, dir: Dir):\n    let _ = dir.write(\"out.txt\", \"denied\")\n    console.print(\"unreachable\")\n",
         grants(),
     );
     assert!(write.is_err(), "{write:?}");
@@ -692,7 +692,7 @@ fn admitted_env_get_env_answers_set_unset_and_denied_without_an_existence_oracle
 #[test]
 fn admitted_entry_without_a_dir_or_env_grant_is_refused_before_it_runs() {
     let refused = run_admitted_with_grants(
-        "fn main(console: Console, dir: Dir[Read]):\n    console.print(\"${dir.exists(\"x\")}\")\n",
+        "fn main(console: Console, dir: Dir[Read]):\n    console.print(\"${dir.exists(\"x\") ?? false}\")\n",
         Capabilities { print: true, print_int: true, quiet: true, ..Default::default() },
     );
     assert!(refused.is_err(), "{refused:?}");

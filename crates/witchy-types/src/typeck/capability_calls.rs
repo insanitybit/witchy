@@ -266,18 +266,10 @@ impl Checker {
                 }
                 Ty::Unit
             }
-            // RFC-0118 atomic primitives — all `Write`. `create_new` reports whether
-            // this call won the exclusive create (`true`) or the path already existed
-            // (`false`); `replace`/`rename` are atomic whole-file swaps returning `()`.
-            "create_new" => {
-                if !rights.write {
-                    return terr(format!(
-                        "`create_new` needs `Write` but the capability is `{rights}`"
-                    ));
-                }
-                Ty::Bool
-            }
-            "replace" | "rename" => {
+            // RFC-0118 atomic primitives — all `Write`. `create_new` creates only a
+            // fresh name (a taken one is `AlreadyExists`); `replace`/`rename` are
+            // atomic whole-file swaps.
+            "create_new" | "replace" | "rename" => {
                 if !rights.write {
                     return terr(format!(
                         "`{name}` needs `Write` but the capability is `{rights}`"

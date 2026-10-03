@@ -361,8 +361,8 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `heap_unregister` | `(i32)` | runtime diagnostic | none | omitted |
 | `heap_frontier` | `(i32)` | runtime diagnostic | none | omitted |
 | `__witchy_abort` | `(i32, i64, i64, i32)` | runtime diagnostic | none | provided |
-| `dir_exists_at` | `(externref, i32, i32) -> i32` | capability authority | Dir.Read | omitted |
-| `dir_write_at` | `(externref, i32, i32, i32, i32)` | capability authority | Dir.Write | omitted |
+| `dir_exists_at` | `(externref, i32, i32) -> externref` | capability authority | Dir.Read | omitted |
+| `dir_write_at` | `(externref, i32, i32, i32, i32) -> externref` | capability authority | Dir.Write | omitted |
 | `env_get_at` | `(externref, i32, i32) -> externref` | capability authority | Env | omitted |
 | `env_response_status` | `(externref) -> i32` | capability authority | Env | omitted |
 | `env_response_size` | `(externref) -> i32` | capability authority | Env | omitted |
@@ -386,7 +386,7 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `crypto_rsa_pkcs1_sha256_verify_slices` | `(i32, i32, i32, i32, i32, i32) -> i64` | non-authority infrastructure | none | omitted |
 | `crypto_sha256_slices` | `(i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |
 | `crypto_rune_hash_slices` | `(i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |
-| `dir_is_dir_at` | `(externref, i32, i32) -> i32` | capability authority | Dir.Read | omitted |
+| `dir_is_dir_at` | `(externref, i32, i32) -> externref` | capability authority | Dir.Read | omitted |
 | `build_read_at` | `(externref, i32, i32) -> externref` | capability authority | Build.Read | omitted |
 | `build_read_response_size` | `(externref) -> i32` | internal/toolchain service | none | omitted |
 | `build_read_response_into` | `(externref, i32, i32) -> i32` | internal/toolchain service | none | omitted |
@@ -394,19 +394,19 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `build_response_is_some` | `(externref) -> i32` | internal/toolchain service | none | omitted |
 | `clock_now` | `(externref) -> i64` | capability authority | Clock | omitted |
 | `clock_now_monotonic` | `(externref) -> i64` | capability authority | Clock | omitted |
-| `dir_make_dir_at` | `(externref, i32, i32)` | capability authority | Dir.Write | omitted |
+| `dir_make_dir_at` | `(externref, i32, i32) -> externref` | capability authority | Dir.Write | omitted |
 | `secretstore_lookup_at` | `(externref, i32, i32) -> externref` | capability authority | SecretStore | omitted |
 | `crypto_sign_into` | `(externref, i32, i32, i32, i32) -> i32` | capability authority | Secret | omitted |
 | `crypto_public_key_into` | `(externref, i32, i32) -> i32` | capability authority | Secret | omitted |
-| `dir_create_new_at` | `(externref, i32, i32, i32, i32) -> i32` | capability authority | Dir.Write | omitted |
-| `dir_replace_at` | `(externref, i32, i32, i32, i32)` | capability authority | Dir.Write | omitted |
+| `dir_create_new_at` | `(externref, i32, i32, i32, i32) -> externref` | capability authority | Dir.Write | omitted |
+| `dir_replace_at` | `(externref, i32, i32, i32, i32) -> externref` | capability authority | Dir.Write | omitted |
 | `dir_read_bytes_at` | `(externref, i32, i32) -> externref` | capability authority | Dir.Read | omitted |
 | `dir_response_size` | `(externref) -> i32` | capability authority | Dir.grant | omitted |
 | `dir_response_into` | `(externref, i32, i32) -> i32` | capability authority | Dir.grant | omitted |
-| `dir_write_bytes_at` | `(externref, i32, i32, i32, i32)` | capability authority | Dir.Write | omitted |
-| `dir_append_bytes_at` | `(externref, i32, i32, i32, i32)` | capability authority | Dir.Write | omitted |
-| `dir_set_executable_at` | `(externref, i32, i32)` | capability authority | Dir.Write | omitted |
-| `dir_rename_at` | `(externref, i32, i32, i32, i32)` | capability authority | Dir.Write | omitted |
+| `dir_write_bytes_at` | `(externref, i32, i32, i32, i32) -> externref` | capability authority | Dir.Write | omitted |
+| `dir_append_bytes_at` | `(externref, i32, i32, i32, i32) -> externref` | capability authority | Dir.Write | omitted |
+| `dir_set_executable_at` | `(externref, i32, i32) -> externref` | capability authority | Dir.Write | omitted |
+| `dir_rename_at` | `(externref, i32, i32, i32, i32) -> externref` | capability authority | Dir.Write | omitted |
 | `dir_read_at` | `(externref, i32, i32) -> externref` | capability authority | Dir.Read | omitted |
 | `dir_response_status` | `(externref) -> i32` | capability authority | Dir.grant | omitted |
 | `file_read_at` | `(externref) -> externref` | capability authority | File.authority | omitted |
@@ -419,6 +419,9 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `dir_write_file_at` | `(externref, i32, i32) -> externref` | capability authority | Dir.Write | omitted |
 | `dir_response_take_dir` | `(externref) -> externref` | capability authority | Dir.grant | omitted |
 | `dir_response_take_file` | `(externref) -> externref` | capability authority | Dir.grant | omitted |
+| `dir_append_at` | `(externref, i32, i32, i32, i32) -> externref` | capability authority | Dir.Write | omitted |
+| `dir_response_flag` | `(externref) -> i32` | capability authority | Dir.grant | omitted |
+| `file_write_at` | `(externref, i32, i32) -> externref` | capability authority | File.authority | omitted |
 | `crypto_sha512_slices` | `(i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |
 | `crypto_sha3_256_slices` | `(i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |
 | `crypto_hmac_sha256_slices` | `(i32, i32, i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |

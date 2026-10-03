@@ -63,7 +63,7 @@ effect-free; ordinary `fn` makes no such promise.
 | `Env` | read environment variables | `env.get_env(name) -> Result(Option(String), CapError)` |
 | `Rand` | draw cryptographically-seeded random values from the host | `rand.u64() -> Int`, `rand.below(n) -> Int`, `rand.bool() -> Bool`, `rand.hex(nbytes) -> String` (std `rand`) |
 | `Dir`, `Dir[Read]`, `Dir[Write]` | a directory **subtree** | `read`, `write`, `append`, `exists`, `is_dir`, `list`, `make_dir`, `subtree`, `read_file`/`write_file` (→ `File`) |
-| `File`, `File[Read]`, `File[Write]` | authority to **one file** (the leaf) | `f.read() -> Result(String, CapError)`, `f.write(data)` (a `Dir` mints one with `read_file`/`write_file`) |
+| `File`, `File[Read]`, `File[Write]` | authority to **one file** (the leaf) | `f.read() -> Result(String, CapError)`, `f.write(data) -> Result((), CapError)` (a `Dir` mints one with `read_file`/`write_file`) |
 | `Exec` | spawn a confined native subprocess | `exec.run(e, dir, path, args, stdin) -> (Int, String)` (std `exec`) |
 | `Net`, `Net[Connect]`, `Net[Listen]` (+ `Tcp`/`Udp`/`Uds` transport markers) | the network | `connect`, `listen`, `accept`, `send_line`, `recv_line`, `recv_all`, `only`, `deny`, … |
 | `Fetch` | origin-scoped HTTP(S) | `fetch.only(origin)`; `http.get` / `http.try_get`; native code with `Net[Connect, Tcp]` derives one via `net.fetch(origin)` |
@@ -94,7 +94,7 @@ one with `dir.read_file("x.txt")` (a `File[Read]`; must exist) or
 `dir.write_file("x.txt")` (a `File[Write]`; need not). Both return
 `Result(File, CapError)` and refuse a `..`/absolute escape as `Denied`, exactly
 as `read` does, and `dir.subtree(path)` returns `Result(Dir, CapError)` the
-same way; then `f.read() -> Result(String, CapError)` / `f.write(data)` operate on the leaf with no path
+same way; then `f.read() -> Result(String, CapError)` / `f.write(data) -> Result((), CapError)` operate on the leaf with no path
 argument. `File[Read]` expresses "this one file, read-only" - the least-authority
 form for a single-file need, instead of handing over a whole `Dir`. `main` can
 also receive a `File` **directly**: each `--file <path>` grant fills `main`'s

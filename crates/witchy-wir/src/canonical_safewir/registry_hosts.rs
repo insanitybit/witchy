@@ -45,8 +45,9 @@ impl CanonicalAbiCatalog {
         };
         self = self.with_clock_import(signatures[0])?;
         let imports = [
-            authenticated_capability_import(REGISTRY_HOST_IMPORT_NAMES[1], &[ExternRef, I32, I32], &[], signatures[1],
-                vec![cap(DIR_CAPABILITY_KIND), buffer(AccessMode::Read)], Vec::new(),
+            authenticated_capability_import(REGISTRY_HOST_IMPORT_NAMES[1], &[ExternRef, I32, I32], &[ExternRef], signatures[1],
+                vec![cap(DIR_CAPABILITY_KIND), buffer(AccessMode::Read)],
+                vec![HostResultRole::Capability(DIR_RESPONSE_KIND)],
                 HostMutation::ReadOnly, &[AbiImportAuthority::DirWrite])?,
             authenticated_capability_import(REGISTRY_HOST_IMPORT_NAMES[2], &[ExternRef, I32, I32], &[ExternRef], signatures[2],
                 vec![cap(SECRET_STORE_CAPABILITY_KIND), buffer(AccessMode::Read)],

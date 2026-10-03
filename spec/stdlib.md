@@ -1545,9 +1545,9 @@ Run `path` with `args` and no stdin - the common case.
 
 fs - small directory helpers over the `Dir` capability. Each function's authority is exactly the `Dir` the caller passes: `collect_files`/`parent_dir` need only read, `ensure_dir` needs write. Nothing here widens a capability - the confinement of the `Dir` you hand in is preserved.
 
-#### `fn ensure_dir(root: Dir, path: String)`
+#### `fn ensure_dir(root: Dir, path: String) -> Result((), CapError)`
 
-Create each level of `path` under `root` (the confined `Dir`'s `make_dir` is not recursive). Idempotent. Needs a writable `Dir`.
+Create each level of `path` under `root` (the confined `Dir`'s `make_dir` is not recursive). Idempotent. Needs a writable `Dir`. The first level that cannot be probed or created is the `Err`.
 
 #### `fn parent_dir(path: String) -> Option(String)`
 

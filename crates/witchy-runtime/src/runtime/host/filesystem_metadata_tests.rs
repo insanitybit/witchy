@@ -4,12 +4,16 @@ use crate::runtime::{Capabilities, Runtime, Vm};
 type Token = Option<Rooted<ExternRef>>;
 const WAT: &str = r#"(module
   (import "witchy" "mint_dir" (func $mint (param i32) (result externref)))
-  (import "witchy" "dir_is_dir_at" (func $query (param externref i32 i32) (result i32)))
+  (import "witchy" "dir_is_dir_at" (func $query (param externref i32 i32) (result externref)))
+  (import "witchy" "dir_response_status" (func $status (param externref) (result i32)))
+  (import "witchy" "dir_response_flag" (func $flag (param externref) (result i32)))
   (import "witchy" "dir_is_dir" (func $legacy (param externref i32) (result i32)))
   (memory (export "memory") 1)
   (export "mint" (func $mint))
-  (func (export "query") (param externref i32 i32) (result i32)
+  (func (export "query") (param externref i32 i32) (result externref)
     local.get 0 local.get 1 local.get 2 call $query)
+  (func (export "status") (param externref) (result i32) local.get 0 call $status)
+  (func (export "flag") (param externref) (result i32) local.get 0 call $flag)
   (func (export "legacy") (param externref i32) (result i32)
     local.get 0 local.get 1 call $legacy)
   (func (export "run")))"#;
@@ -37,11 +41,19 @@ fn attenuate(vm: &mut Vm, token: Token, policy: &str, read: bool) -> Token {
     Some(ExternRef::new(&mut vm.store, authority).unwrap())
 }
 
-fn call(vm: &mut Vm, token: Token, ptr: i32, len: i32) -> Result<i32> {
+/// `dir_is_dir_at` on a slice, answered as (status, flag).
+fn call(vm: &mut Vm, token: Token, ptr: i32, len: i32) -> Result<(i32, i32)> {
     let memory = vm.instance.get_memory(&mut vm.store, "memory");
     let before = memory.map(|memory| memory.data(&vm.store).to_vec());
-    let result = vm.instance.get_typed_func::<(Token, i32, i32), i32>(&mut vm.store, "query").unwrap()
-        .call(&mut vm.store, (token, ptr, len));
+    let result = vm.instance.get_typed_func::<(Token, i32, i32), Token>(&mut vm.store, "query").unwrap()
+        .call(&mut vm.store, (token, ptr, len))
+        .and_then(|response| {
+            let status = vm.instance.get_typed_func::<Token, i32>(&mut vm.store, "status").unwrap()
+                .call(&mut vm.store, response)?;
+            let flag = vm.instance.get_typed_func::<Token, i32>(&mut vm.store, "flag").unwrap()
+                .call(&mut vm.store, response)?;
+            Ok((status, flag))
+        });
     if let (Some(memory), Some(before)) = (memory, before) {
         assert_eq!(memory.data(&vm.store), before.as_slice());
     }
@@ -49,11 +61,14 @@ fn call(vm: &mut Vm, token: Token, ptr: i32, len: i32) -> Result<i32> {
     result
 }
 
-fn query(vm: &mut Vm, token: Token, path: &str, expected: i32) {
+/// `dir.is_dir(path)` answers `(status, flag)`: a refusal (an escape, or a
+/// name the policy refuses) is status 1 (Denied) and otherwise the flag. The
+/// frozen legacy import answers the flag, and false for any refusal.
+fn query(vm: &mut Vm, token: Token, path: &str, status: i32, expected: i32) {
     let memory = vm.instance.get_memory(&mut vm.store, "memory").unwrap();
     memory.data_mut(&mut vm.store).fill(0xa5);
     memory.write(&mut vm.store, 17, path.as_bytes()).unwrap();
-    assert_eq!(call(vm, token, 17, path.len() as i32).unwrap(), expected, "{path:?}");
+    assert_eq!(call(vm, token, 17, path.len() as i32).unwrap(), (status, expected), "{path:?}");
     // The frozen header-based ABI must give the same total predicate. This
     // fixture writes a header only for that independent legacy invocation.
     memory.write(&mut vm.store, 4096, &(path.len() as u32).to_le_bytes()).unwrap();
@@ -72,12 +87,12 @@ pub fn dir_is_dir_slices_preserve_entry_policy_without_minting_authority() {
     let files = attenuate(&mut vm, token, "kind:file", true);
     let deny_policy = witchy_caps::capabilities::dir_only("ext:.txt", "ext:.md");
     let denied = attenuate(&mut vm, token, &deny_policy, true);
-    query(&mut vm, directories, "nested", 1);
-    query(&mut vm, directories, "file", 0);
-    query(&mut vm, files, "nested", 0);
-    query(&mut vm, denied, "nested", 0);
-    query(&mut vm, directories, "missing", 0);
-    query(&mut vm, directories, "../", 0);
+    query(&mut vm, directories, "nested", 0, 1);
+    query(&mut vm, directories, "file", 0, 0);
+    query(&mut vm, files, "nested", 0, 0);
+    query(&mut vm, denied, "nested", 1, 0);
+    query(&mut vm, directories, "missing", 0, 0);
+    query(&mut vm, directories, "../", 1, 0);
 }
 
 #[cfg(unix)]
@@ -87,13 +102,13 @@ pub fn dir_is_dir_slices_preserve_confined_and_policy_alias_behavior() {
     std::os::unix::fs::symlink("nested", root.path().join("inside-link")).unwrap();
     std::os::unix::fs::symlink(outside.path(), root.path().join("outside-link")).unwrap();
     std::os::unix::fs::symlink("missing", root.path().join("dangling-link")).unwrap();
-    query(&mut vm, token, "inside-link", 1);
-    query(&mut vm, token, "outside-link", 0);
-    query(&mut vm, token, "dangling-link", 0);
+    query(&mut vm, token, "inside-link", 0, 1);
+    query(&mut vm, token, "outside-link", 1, 0);
+    query(&mut vm, token, "dangling-link", 0, 0);
     let directories = attenuate(&mut vm, token, "kind:dir", true);
-    query(&mut vm, directories, "inside-link", 0);
-    query(&mut vm, directories, "outside-link", 0);
-    query(&mut vm, directories, "nested", 1);
+    query(&mut vm, directories, "inside-link", 0, 0);
+    query(&mut vm, directories, "outside-link", 0, 0);
+    query(&mut vm, directories, "nested", 0, 1);
 }
 
 pub fn dir_is_dir_slices_reject_invalid_transport_after_authentication() {
@@ -128,7 +143,7 @@ pub fn dir_is_dir_slices_link_only_with_existing_read_grant() {
     let mut runtime = Runtime::new().unwrap();
     // No mint or legacy import can mask which import fails this boundary.
     let wat = r#"(module
-      (import "witchy" "dir_is_dir_at" (func (param externref i32 i32) (result i32)))
+      (import "witchy" "dir_is_dir_at" (func (param externref i32 i32) (result externref)))
       (func (export "run")))"#;
     for caps in [Capabilities::none(), Capabilities {
         dir_root: Some(root.path().to_path_buf()), dir_write: true, ..Capabilities::none()

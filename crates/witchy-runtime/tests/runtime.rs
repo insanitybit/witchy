@@ -241,6 +241,7 @@ mod runtime {
                 #[test] fn file_read_at_answers_failures_as_statuses() { checks::file_read_at_answers_failures_as_statuses().check() }
                 #[test] fn dir_list_at_lists_only_what_the_grant_observes() { checks::dir_list_at_lists_only_what_the_grant_observes().check() }
                 #[test] fn dir_navigation_answers_failures_as_statuses() { checks::dir_navigation_answers_failures_as_statuses().check() }
+                #[test] fn dir_write_family_answers_failures_as_statuses() { checks::dir_write_family_answers_failures_as_statuses().check() }
                 #[test] fn write_only_dir_links_write_file() { checks::write_only_dir_links_write_file().check() }
                 #[test] fn dir_storage_imports_remain_grant_gated() { checks::dir_storage_imports_remain_grant_gated().check() }
                 #[test] fn dir_storage_kind_rights_and_response_issuer_precede_memory() { checks::dir_storage_kind_rights_and_response_issuer_precede_memory().check() }
