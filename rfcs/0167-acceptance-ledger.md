@@ -642,6 +642,16 @@ refuses at source checking, including the general direct, function-value, and
 existential call paths. This adds one nested record carrier to rows H and K;
 arbitrary aggregate and collection paths remain open.
 
+Borrowed nested `must` inspection, 2026-10-03: a normal-mode `let Outer`
+match reads two scalar fields through `Outer(Box(Ticket(Int, Int)))` without
+transferring either nested owner. Canonical lowering emits temporary affine
+field borrows; SafeWIR authenticates each child against the recursive physical
+plan and ends every temporary before a non-read operation or block edge. The
+admitted unoptimized Wasm witness returns the independent result `143` with
+zero canonical heap leaks, and the focused source refusals still reject child
+extraction and root escape. This extends row K's nested resource inspection
+evidence; it does not establish general resource views or collection paths.
+
 Nested normal-mode view storage, 2026-10-03: `rfc0167_nested_list_root_view`
 now verifies a three-level `&List(List(List(Int)))` snapshot after an inner
 write (independent result `19`) and a `&List(Dict(String, &String))` snapshot

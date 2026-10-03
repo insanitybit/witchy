@@ -1198,9 +1198,7 @@ pub fn borrowed_affine_match_shape(
                     matches!(StoragePlan::classify(field.unqualified(), definitions, |_| Some(0)),
                         StoragePlan::InlineScalar(_)),
                 Pattern::Ctor { .. } | Pattern::AnonCtor { .. } | Pattern::Tuple(_) | Pattern::Or(_) =>
-                    !StoragePlan::classify(field, definitions, |_| Some(0))
-                        .requires_affine_owner_token()
-                        && read_only(field, argument, definitions, depth + 1),
+                    read_only(field, argument, definitions, depth + 1),
                 Pattern::Str(_) | Pattern::List { .. } => false,
             }
         })

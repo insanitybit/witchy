@@ -136,6 +136,15 @@ impl<'a> MemoryChecker<'a> {
 
     /// Returns true when this operation belongs to the memory judgment.
     pub(crate) fn check(&mut self, operation: &Operation) -> Result<bool, InitialCheckError> {
+        if !self.state.pending_affine_field_borrow.is_empty() {
+            let borrowed_field_read = matches!(operation, Operation::Load { place, transfer, .. }
+                if self.state.pending_affine_field_borrow.iter().any(|(borrowed, _)| place.object() == *borrowed)
+                    && ((*transfer == LoadTransfer::CopyScalar && !place.value_type().is_memory_bearing())
+                        || *transfer == LoadTransfer::BorrowAffine));
+            if !borrowed_field_read {
+                self.finish_affine_field_borrow();
+            }
+        }
         if self.state.pending_affine_borrow.is_some()
             && !matches!(operation, Operation::Call { .. })
         {
@@ -784,6 +793,35 @@ impl<'a> MemoryChecker<'a> {
         }
         self.require_supported_runtime_buffer_access(place, "Load(non-raw RuntimeBuffer)")?;
         let expected = self.check_place(place)?;
+        if transfer == LoadTransfer::BorrowAffine {
+            let ValueType::Ref(layout) = expected else {
+                return self.unsupported("Load(affine field borrow requires reference)");
+            };
+            self.require_ref_type(destination, layout)?;
+            let Projection::Field { index } = place.projection() else {
+                return self.unsupported("Load(affine field borrow requires field)");
+            };
+            let parent = self.live_object(place.object())?.clone();
+            if !parent.initialized_owned_slots {
+                return self.unsupported("Load(affine field borrow requires initialized parent)");
+            }
+            let child_plan = self.state.affine_plans.get(&place.object()).and_then(|plan| match plan {
+                super::super::AffinePhysicalPlan::NullableFields { fields, .. } => fields.iter()
+                    .find(|(field, pointee, _)| field == index && *pointee == layout)
+                    .map(|(_, _, child)| child.as_ref().clone()),
+                _ => None,
+            }).ok_or(InitialCheckError::UnsupportedMemoryOperation {
+                function: self.function.id, operation: "Load(affine field borrow lacks recursive proof)",
+            })?;
+            self.state.objects.insert(destination, ObjectState {
+                identity: destination, owner_generation: parent.owner_generation,
+                layout, extent: self.parameter_extent(layout)?, ownership: Ownership::Shared,
+                allocation_class: None, shared_immutable: true, initialized_owned_slots: true,
+            });
+            self.seed_affine_plan(destination, &child_plan);
+            self.state.pending_affine_field_borrow.push((destination, place.object()));
+            return Ok(());
+        }
         if expected == ValueType::V128 {
             return self.unsupported("Load(V128)");
         }
@@ -1063,7 +1101,7 @@ impl<'a> MemoryChecker<'a> {
             return Ok(());
         };
         match transfer {
-            LoadTransfer::BorrowAffine => return self.unsupported("Load(affine borrow is dictionary-only)"),
+            LoadTransfer::BorrowAffine => unreachable!("handled before ordinary reference loads"),
             LoadTransfer::ClonePresent | LoadTransfer::TakeLast | LoadTransfer::TakeNullableUnique | LoadTransfer::TakeOwnedField => unreachable!("handled before ordinary reference loads"),
             LoadTransfer::CloneShared => {
                 let affine_child = match (self.state.affine_plans.get(&place.object()), place.projection()) {

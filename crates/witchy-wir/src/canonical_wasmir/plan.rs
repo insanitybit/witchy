@@ -1523,7 +1523,8 @@ pub(super) fn expected_block_operations_plan(
             Operation::Load { destination, place, transfer }
                 if matches!(
                     transfer,
-                    LoadTransfer::CopyScalar
+                    LoadTransfer::BorrowAffine
+                        | LoadTransfer::CopyScalar
                         | LoadTransfer::CloneShared
                         | LoadTransfer::ClonePresent
                         | LoadTransfer::MoveUnique
@@ -1544,7 +1545,9 @@ pub(super) fn expected_block_operations_plan(
                 }
                 push_memory_load_plan(&mut plan, function, layouts, &layout, place, *destination)?;
                 match transfer {
-                    LoadTransfer::BorrowAffine => return Err(CanonicalAdmissionError::UnsupportedPlan),
+                    LoadTransfer::BorrowAffine => {
+                        push_require_present_plan(&mut plan, &layout, *destination)?;
+                    },
                     LoadTransfer::CloneShared => push_share_plan(&mut plan, &layout, *destination, *destination)?,
                     LoadTransfer::ClonePresent => {
                         push_require_present_plan(&mut plan, &layout, *destination)?;

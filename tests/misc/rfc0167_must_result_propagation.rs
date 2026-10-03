@@ -116,24 +116,38 @@ fn main() -> Int:
 }
 
 #[test]
-fn borrowed_match_refuses_nested_must_storage_until_child_borrow_has_a_carrier() {
-    let error = witchy::resolve_std_only_checked(r#"
+fn borrowed_match_reads_scalar_inside_nested_must_storage() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let checked = witchy::resolve_std_only_checked(r#"
 must type Ticket:
-    Ticket(Int)
+    Ticket(Int, Int)
 must type Box:
     Box(Ticket)
-fn inspect(let box: Box) -> Int:
-    match box:
-        Box(Ticket(value)) -> value
-fn finish(own box: Box) -> Int:
-    match move box:
-        Box(ticket) ->
-            match move ticket:
-                Ticket(value) -> value
+must type Outer:
+    Outer(Box)
+fn inspect(let outer: Outer) -> Int:
+    match outer:
+        Outer(Box(Ticket(left, right))) -> left + right
+fn finish(own outer: Outer) -> Int:
+    match move outer:
+        Outer(box) ->
+            match move box:
+                Box(ticket) ->
+                    match move ticket:
+                        Ticket(left, right) -> left + right
 fn main() -> Int:
-    let box = Box(Ticket(9))
-    let seen = inspect(box)
-    seen * 10 + finish(box)
-"#).expect_err("nested borrowed must child has no admitted carrier");
-    assert!(format!("{error:?}").contains("must-consume"), "{error:?}");
+    let outer = Outer(Box(Ticket(9, 4)))
+    let seen = inspect(outer)
+    seen * 10 + finish(outer)
+"#).expect("nested borrowed must inspection checks");
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("nested borrowed must inspection admits");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(&artifact,
+        Capabilities { print_int: true, quiet: true, ..Capabilities::none() },
+        128).expect("admitted Wasm instance");
+    vm.run().expect("admitted Wasm execution");
+    assert_eq!(vm.output(), vec!["143".to_string()]);
+    assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
 }

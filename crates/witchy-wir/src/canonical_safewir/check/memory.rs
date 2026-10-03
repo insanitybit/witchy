@@ -213,6 +213,10 @@ pub(super) struct MemoryState {
     /// One non-owning affine dictionary child, valid only for the next call
     /// in this block. The dictionary root must stay live until that call.
     pending_affine_borrow: Option<(ValueId, ValueId)>,
+    /// Source-proved affine aggregate children may be traversed recursively
+    /// and read through scalar fields before this block ends. These temporary
+    /// pointers never become owned tokens.
+    pending_affine_field_borrow: Vec<(ValueId, ValueId)>,
     /// Checked move-only list roots whose initialized prefix owns exclusive
     /// child tokens. A physical list shape alone never creates this fact.
     affine_list_roots: CowFacts<SortedSet<ValueId>>,
@@ -314,6 +318,7 @@ impl<'a> MemoryChecker<'a> {
                 nullable_present_slots: SortedSet::new().into(),
                 affine_plans: SortedMap::new().into(),
                 pending_affine_borrow: None,
+                pending_affine_field_borrow: Vec::new(),
                 affine_list_roots: SortedSet::new().into(),
                 nullable_absent_slots: SortedSet::new().into(),
                 range_states: SortedMap::new().into(),

@@ -11483,14 +11483,32 @@ impl FunctionLowerer<'_> {
         linear_index: usize,
         value_type: ValueType,
     ) -> Result<ValueId, CanonicalLoweringError> {
-        if scalar_aggregate_shape(source, self.definitions)
+        let affine_child = scalar_aggregate_shape(source, self.definitions)
             .and_then(|shape| shape.fields.get(linear_index).cloned())
             .is_some_and(|field| StoragePlan::classify(&field, self.definitions, |_| Some(0))
-                .requires_affine_owner_token())
-        {
-            return Err(CanonicalLoweringError::UnsupportedExpression(
-                "aggregate field read requires consuming affine extraction",
-            ));
+                .requires_affine_owner_token());
+        if affine_child {
+            if !matches!(self.values[&object], ValueType::Ref(_))
+                || !matches!(value_type, ValueType::Ref(_))
+            {
+                return Err(CanonicalLoweringError::UnsupportedExpression(
+                    "affine aggregate field borrow requires a linear root and child",
+                ));
+            }
+            let destination = self.fresh(value_type)?;
+            self.push_operation(Operation::Load {
+                destination,
+                place: witchy_wir::canonical_safewir::Place::projected(
+                    object,
+                    Projection::Field {
+                        index: u32::try_from(linear_index).map_err(|_| CanonicalLoweringError::IdOverflow)?,
+                    },
+                    value_type,
+                    AccessMode::Read,
+                ),
+                transfer: witchy_wir::canonical_safewir::LoadTransfer::BorrowAffine,
+            });
+            return Ok(destination);
         }
         if !matches!(self.values[&object], ValueType::Gc(_)) {
             return self.load_record_field(

@@ -1631,9 +1631,13 @@ pub(super) fn emit_instruction(
             let access = resolve_memory_place(function, layouts, place).map_err(EncodeError::Lowering)?;
             emit_typed_load(body, function, layout, access, *destination)?;
             match transfer {
-                LoadTransfer::BorrowAffine => return Err(EncodeError::UnsupportedLayout {
-                    function: function.id, operation: "affine borrow outside dictionary",
-                }),
+                LoadTransfer::BorrowAffine => {
+                    emit_get(body, layout, function.id, *destination)?;
+                    body.instruction(&wasm_encoder::Instruction::I32Eqz);
+                    body.instruction(&wasm_encoder::Instruction::If(wasm_encoder::BlockType::Empty));
+                    body.instruction(&wasm_encoder::Instruction::Unreachable);
+                    body.instruction(&wasm_encoder::Instruction::End);
+                },
                 LoadTransfer::CloneShared => emit_clone_ref(body, layout, *destination, *destination, function)?,
                 LoadTransfer::ClonePresent => emit_clone_present(body, layout, *destination, function)?,
                 LoadTransfer::TakeNullableUnique | LoadTransfer::TakeOwnedField => {

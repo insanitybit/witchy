@@ -1,7 +1,17 @@
 use super::*;
 
 impl<'a> MemoryChecker<'a> {
-    pub(crate) fn ensure_no_pending_affine_borrow(&self) -> Result<(), InitialCheckError> {
+    pub(crate) fn finish_affine_field_borrow(&mut self) {
+        for (borrowed, _) in self.state.pending_affine_field_borrow.drain(..) {
+            self.state.affine_plans.remove(&borrowed);
+            if let Some(object) = self.state.objects.get_mut(&borrowed) {
+                object.ownership = Ownership::Consumed;
+            }
+        }
+    }
+
+    pub(crate) fn ensure_no_pending_affine_borrow(&mut self) -> Result<(), InitialCheckError> {
+        self.finish_affine_field_borrow();
         if self.state.pending_affine_borrow.is_some() {
             return self.unsupported("Dictionary(borrowed affine child crosses a block edge)");
         }
