@@ -284,6 +284,15 @@ their normal-mode safety obligations; wider proofs and opt-dependent parts are
 deferred. Rows I and J retain their existing evidence but their opt and
 cross-mode matrices are outside the current milestone.
 
+Normal-mode row H checkpoint (2026-10-03): an indirect function-value call
+with a `var Option(&Int)` parameter now admits the same checked GC write-back
+ownership lane already accepted for direct calls. The `var &[Int]` case also
+passes through an indirect call. Admitted unoptimized Wasm returns the
+independent snapshot results `2011` and `123`, with zero heap leaks; a
+region-born `&Int` written into an outer `Option(&Int)` through the indirect
+call is refused during source checking. This covers these two carrier forms,
+not arbitrary nested view aggregates or full row H acceptance.
+
 Until a path has a valid implementation and proof, its compiler behavior must
 refuse rather than silently weaken ownership, resource disposition, or
 authority rules. Historical evidence below records what was tested; it does

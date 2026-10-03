@@ -60,3 +60,67 @@ fn main() -> Int:
 "#, 2011);
 }
 
+#[test]
+fn var_option_view_rebinds_without_changing_the_old_snapshot() {
+    assert_wasm(r#"
+fn retarget(var v: Option(&Int), other: &Int):
+    v = Some(other)
+
+fn read(v: Option(&Int)) -> Int:
+    match v:
+        Some(item) -> *item
+        None -> 0
+
+fn main() -> Int:
+    let a = 1
+    let b = 20
+    var v: Option(&Int) = Some(&a)
+    let before = v
+    let change = retarget
+    change(v, &b)
+    read(v) * 100 + read(before) * 10 + a
+"#, 2011);
+}
+
+#[test]
+fn var_slice_view_rebinds_without_changing_the_old_projection() {
+    assert_wasm(r#"
+fn retarget(var v: &[Int], other: &[Int]):
+    v = other
+
+fn main() -> Int:
+    let a = [1, 2, 3]
+    let b = [4, 5, 6]
+    var v: &[Int] = &a[0..2]
+    let before = v
+    let change = retarget
+    change(v, &b[1..2])
+    v.length() * 100 + before.length() * 10 + a.length()
+"#, 123);
+}
+
+#[test]
+fn indirect_var_option_view_cannot_escape_a_region_born_root() {
+    let source = r#"
+fn retarget(var v: Option(&Int), other: &Int):
+    v = Some(other)
+
+fn main() -> Int:
+    let root = 1
+    var v: Option(&Int) = Some(&root)
+    let change = retarget
+    let _ = region -> ():
+        let local = 5
+        change(v, &local)
+    0
+"#;
+    let error = witchy::resolve_std_only_checked(source)
+        .err()
+        .map(|error| error.to_string())
+        .expect("region-born view is refused at checking");
+    assert!(
+        error.contains("cannot write back into `v` inside `region:`")
+            && error.contains("can hold a view"),
+        "refusal names the region write-back rule: {error}"
+    );
+}

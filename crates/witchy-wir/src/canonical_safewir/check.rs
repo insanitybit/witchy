@@ -2285,7 +2285,7 @@ fn check_indirect_reference_arguments(
             (CallArgument::Move(_), Ok(ValueType::Ref(_)), ValueType::Ref(_), ParameterOwnership::Shared | ParameterOwnership::WriteBack)
                 | (CallArgument::Move(_), Ok(ValueType::Ref(_)), ValueType::Ref(_), ParameterOwnership::Unique)
                 | (CallArgument::Move(_), Ok(ValueType::Ref(_)), ValueType::Ref(_), ParameterOwnership::UniqueWriteBack)
-                | (CallArgument::Move(_), Ok(ValueType::Gc(_)), ValueType::Gc(_), ParameterOwnership::Shared)
+                | (CallArgument::Move(_), Ok(ValueType::Gc(_)), ValueType::Gc(_), ParameterOwnership::Shared | ParameterOwnership::WriteBack)
         ) || exact_indirect_moved_value_alias_parameter_transport(index, argument, signature);
         memory_bearing && !supported
     }) {
