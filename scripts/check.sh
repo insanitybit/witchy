@@ -656,6 +656,24 @@ if cargo nextest --version >/dev/null 2>&1; then
         test_cmd_extra=()
     else
         test_cmd=("${nextest_cmd[@]}")
+        # Explicit `--test <binary>` targets are compiled before filtering (a
+        # misspelled one fails at target lookup), so a selection whose every
+        # admitted test is deferred is a compile check, not a failure. Any
+        # broader selector keeps nextest's loud empty-selection error.
+        explicit_targets_only=0
+        if [ "${#nextest_sel[@]}" -ge 2 ] \
+            && [ "$(( ${#nextest_sel[@]} % 2 ))" -eq 0 ]; then
+            explicit_targets_only=1
+            selector_index=0
+            while [ "$selector_index" -lt "${#nextest_sel[@]}" ]; do
+                if [ "${nextest_sel[$selector_index]}" != "--test" ]; then
+                    explicit_targets_only=0
+                    break
+                fi
+                selector_index=$((selector_index + 2))
+            done
+        fi
+        [ "$explicit_targets_only" -eq 0 ] || test_cmd+=(--no-tests=warn)
         [ -z "$main_expr" ] || test_cmd+=(-E "$main_expr")
         test_cmd_extra=()
         if [ "${#nextest_extra_cmd[@]}" -gt 0 ]; then
