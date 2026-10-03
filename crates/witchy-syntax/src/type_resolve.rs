@@ -870,6 +870,16 @@ impl<'a> Scope<'a> {
             }
         }
 
+        // A preluded module's types are in scope bare, like its functions. A
+        // local or from-imported type of the same name shadows it.
+        for module in crate::linker::PRELUDE_MODULES.iter().copied().filter(|m| *m != home) {
+            if let Some(mt) = world.types.get(module) {
+                for t in &mt.types {
+                    type_map.entry(t.clone()).or_insert_with(|| format!("{module}.{t}"));
+                }
+            }
+        }
+
         // Plain imports make trait names available bare, matching the existing
         // trait surface. Unlike the old flat namespace, two imported modules
         // exporting the same spelling are an explicit ambiguity; callers can
@@ -1236,6 +1246,12 @@ impl<'a> Scope<'a> {
         if let Some(canon) = self.ctor_map.get(name) {
             return Ok(canon.clone());
         }
+        // A preluded module's constructor builds bare when nothing in scope
+        // claims the name. Patterns do not consult this: a bare constructor
+        // pattern resolves against its scrutinee's type instead.
+        if let Some(canon) = self.prelude_ctor(name) {
+            return Ok(canon);
+        }
         // Not a constructor — a bare TYPE used as a static-method receiver.
         if is_ambient_type(name) {
             return Ok(name.to_string());
@@ -1266,6 +1282,19 @@ impl<'a> Scope<'a> {
                      it: {list}"
                 ))
             }
+        }
+    }
+
+    /// The canonical spelling of a bare constructor exported by exactly one
+    /// preluded module other than this one.
+    fn prelude_ctor(&self, name: &str) -> Option<String> {
+        let mut owners = crate::linker::PRELUDE_MODULES.iter().copied().filter(|module| {
+            *module != self.home
+                && self.world.types.get(*module).is_some_and(|mt| mt.ctors.contains_key(name))
+        });
+        match (owners.next(), owners.next()) {
+            (Some(module), None) => Some(format!("{module}.{name}")),
+            _ => None,
         }
     }
 
@@ -1369,6 +1398,21 @@ impl<'a> Scope<'a> {
         // it (rather than leaving it bare) so the sealing check keys on the same
         // canonical name and reports "cannot destructure" (BUG-313 × RFC-0042).
         if let Some(canon) = self.sealed_ctor_canonical(name) {
+            return Ok(canon);
+        }
+        // An explicitly imported module's constructor shadows a preluded one of
+        // the same name, as a from-imported type shadows a preluded type. Any
+        // other bare pattern waits for the post-merge sweep.
+        let mut imported = self.imports.iter().filter(|module| {
+            module.as_str() != self.home
+                && self.world.types.get(module.as_str()).is_some_and(|mt| mt.ctors.contains_key(name))
+        });
+        match (imported.next(), imported.next()) {
+            (Some(module), None) => return Ok(format!("{module}.{name}")),
+            (Some(_), Some(_)) => return Ok(name.to_string()),
+            (None, _) => {}
+        }
+        if let Some(canon) = self.prelude_ctor(name) {
             return Ok(canon);
         }
         Ok(name.to_string())

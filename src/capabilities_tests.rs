@@ -520,7 +520,7 @@ pub fn serve(console: Console) -> Int:
         let no_root_demand = [
             "list", "string", "math", "option", "result", "func", "cmp", "ascii", "set",
             "json", "url", "duration", "prng", "regex", "compiler", "toml", "semver",
-            "rights", "dict", "time", "encoding", "path", "policy",
+            "rights", "dict", "time", "encoding", "path", "policy", "caperror",
         ];
         for name in no_root_demand {
             let src = witchy_syntax::linker::std_source(name).expect("bundled module");

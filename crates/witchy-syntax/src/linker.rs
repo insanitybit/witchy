@@ -619,13 +619,13 @@ pub const STD_MODULES: &[&str] = &[
     "iter", "semver", "rights", "fs", "dict", "time", "encoding", "path", "testing",
     "future", "task", "chan", "webauthn", "secretstore", "reflect", "dynamic", "meta", "convert", "exec",
     "policy", "jwt", "oauth", "rand", "vm", "bytes", "error", "public_state", "cbor",
-    "transaction",
+    "transaction", "caperror",
 ];
 
 /// Bundled modules linked into every program and usable without an explicit
 /// import. This is the single prelude registry used by linking and tooling.
 pub const PRELUDE_MODULES: &[&str] =
-    &["list", "string", "dict", "math", "option", "result", "policy", "show"];
+    &["list", "string", "dict", "math", "option", "result", "policy", "show", "caperror"];
 
 /// Bundled playground/package modules. These are compiler-shipped for
 /// filesystem-free docs and playgrounds, but retain a package owner distinct
@@ -949,6 +949,7 @@ bundled_source_table!(std_table_source, STD_SOURCE_PATHS {
     "cbor" => "cbor",
     "public_state" => "public_state",
     "transaction" => "transaction",
+    "caperror" => "caperror",
 });
 
 // (RFC-0041) `glamour` is a published RUNE, not std — deliberately ABSENT from

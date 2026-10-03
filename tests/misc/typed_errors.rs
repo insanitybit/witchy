@@ -101,6 +101,63 @@ fn main(console: Console):
     );
 }
 
+/// The preluded `CapError` needs no import: bare constructors build and match
+/// it, and `?` bridges it to a `String` error through its `From` impl.
+#[test]
+fn prelude_cap_error_is_matchable_and_bridges_to_string() {
+    run_witchy_test(
+        "caperror",
+        r#"fn classify(e: CapError) -> String:
+    match e:
+        Denied(m) -> "denied:" + m
+        NotFound(m) -> "missing:" + m
+        NotAFile(m) -> "dir:" + m
+        AlreadyExists(m) -> "taken:" + m
+        Io(m) -> "io:" + m
+
+fn lift(r: Result(Int, CapError)) -> Result(Int, String):
+    let v = r?
+    Ok(v + 1)
+
+fn main(console: Console):
+    for e in [Denied("a"), NotFound("b"), NotAFile("c"), AlreadyExists("d"), caperror.Io("e")]:
+        console.print(classify(e) + " " + e.message() + " " + show(e))
+    match lift(Err(NotFound("f"))):
+        Ok(v) -> console.print("ok ${v}")
+        Err(s) -> console.print(s)
+"#,
+        &[
+            "denied:a a denied: a",
+            "missing:b b not found: b",
+            "dir:c c not a file: c",
+            "taken:d d already exists: d",
+            "io:e e io error: e",
+            "not found: f",
+        ],
+    );
+    // An explicitly imported module's `Denied` shadows the preluded one.
+    run_witchy_test(
+        "caperror-shadow",
+        r#"import http
+
+fn which(e: http.HttpError) -> String:
+    match e:
+        Denied(m) -> "http:" + m
+        _ -> "other"
+
+fn cap(e: CapError) -> String:
+    match e:
+        caperror.Denied(m) -> "cap:" + m
+        _ -> "other"
+
+fn main(console: Console):
+    console.print(which(http.Denied("a")))
+    console.print(cap(caperror.Denied("b")))
+"#,
+        &["http:a", "cap:b"],
+    );
+}
+
 #[test]
 fn jwt_typed_errors_are_matchable_and_bridge_to_string() {
     run_witchy_test(

@@ -1,0 +1,46 @@
+// caperror - the one error type for capability operations that can fail at run
+// time (RFC-0126). A missing right is a compile error and a forged token is a
+// trap; what remains is a failure the program can handle, and the variant says
+// which kind it is. `Denied` means the capability does not cover the request: a
+// path that escapes the root, an absolute path, an entry the policy excludes, or
+// a name outside the allowlist. `NotFound` means the request was permitted but
+// names nothing. `NotAFile` means a directory stands where a file was expected.
+// `AlreadyExists` means the operation required a fresh name that is taken. `Io`
+// is any other host failure, including contents that are not UTF-8.
+//
+// Each variant carries the host's message. The module is preluded: `CapError`
+// and its constructors need no import, and `?` converts one into a `String`
+// error. A module that imports another declarer of one of these constructor
+// names matches this one as `caperror.Denied(...)`.
+
+import convert
+
+type CapError:
+    Denied(String)
+    NotFound(String)
+    NotAFile(String)
+    AlreadyExists(String)
+    Io(String)
+
+impl CapError:
+    // The host's message, without the variant.
+    pub fn message(self) -> String:
+        match self:
+            Denied(message) -> message
+            NotFound(message) -> message
+            NotAFile(message) -> message
+            AlreadyExists(message) -> message
+            Io(message) -> message
+
+impl Show for CapError:
+    fn show(self) -> String:
+        match self:
+            Denied(message) -> "denied: " + message
+            NotFound(message) -> "not found: " + message
+            NotAFile(message) -> "not a file: " + message
+            AlreadyExists(message) -> "already exists: " + message
+            Io(message) -> "io error: " + message
+
+impl From(CapError) for String:
+    fn from(value: CapError) -> Self:
+        value.show()

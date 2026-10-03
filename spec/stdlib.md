@@ -187,6 +187,34 @@ Exchange the bytes at indices `first` and `second`.
 
 - `fn from(value: BytesError) -> Self`
 
+## `caperror`
+
+caperror - the one error type for capability operations that can fail at run time (RFC-0126). A missing right is a compile error and a forged token is a trap; what remains is a failure the program can handle, and the variant says which kind it is. `Denied` means the capability does not cover the request: a path that escapes the root, an absolute path, an entry the policy excludes, or a name outside the allowlist. `NotFound` means the request was permitted but names nothing. `NotAFile` means a directory stands where a file was expected. `AlreadyExists` means the operation required a fresh name that is taken. `Io` is any other host failure, including contents that are not UTF-8.
+
+Each variant carries the host's message. The module is preluded: `CapError` and its constructors need no import, and `?` converts one into a `String` error. A module that imports another declarer of one of these constructor names matches this one as `caperror.Denied(...)`.
+
+#### `type CapError`
+
+- `Denied(String)`
+- `NotFound(String)`
+- `NotAFile(String)`
+- `AlreadyExists(String)`
+- `Io(String)`
+
+#### `CapError.message() -> String`
+
+The host's message, without the variant.
+
+### Trait implementations
+
+#### `impl Show for CapError`
+
+- `fn show(self) -> String`
+
+#### `impl From(CapError) for String`
+
+- `fn from(value: CapError) -> Self`
+
 ## `cbor`
 
 cbor - a minimal CBOR (RFC 8949) decoder for the WebAuthn subset: the values a registration `attestationObject` and its embedded COSE_Key use. Supports unsigned/negative integers, byte strings, text strings, arrays, and definite- length maps. Indefinite-length items, tags, floats, and simple values are rejected - they do not occur in a WebAuthn attestation. The module demands no root capability; that footprint fact is separate from a `pure fn` contract.
