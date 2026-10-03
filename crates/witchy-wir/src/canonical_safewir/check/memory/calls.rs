@@ -9,14 +9,24 @@ impl<'a> MemoryChecker<'a> {
     }
 
     pub(crate) fn is_borrowed_parameter(&self, value: ValueId) -> bool {
-        // Candidate ABI binding restricts a Ref/Value lane to an explicit
-        // borrowed affine source parameter. Its result can be aggregate when
-        // the call contract cannot alias this parameter.
+        // Keep the existing scalar-result borrow exemption. An aggregate
+        // result gets the same treatment only for an authenticated recursive
+        // affine parameter proof; the call contract cannot alias that borrow.
         self.function.blocks.iter().find(|block| block.id == self.function.entry)
             .and_then(|entry| entry.parameters.iter().position(|parameter| parameter.value == value))
-            .and_then(|index| self.signature.contract.parameters.get(index))
-            .is_some_and(|parameter| matches!(parameter.value_type, ValueType::Ref(_))
-                && parameter.ownership == ParameterOwnership::Value)
+            .is_some_and(|index| {
+                let scalar_result = self.signature.results.iter().all(|result| matches!(result,
+                    ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit
+                        | ValueType::Size | ValueType::V128));
+                let affine_borrow = self.affine_abi
+                    .and_then(|proofs| proofs.get(&self.signature.id))
+                    .and_then(|proof| proof.parameters.get(index))
+                    .and_then(Option::as_ref).is_some();
+                (scalar_result || affine_borrow)
+                    && self.signature.contract.parameters.get(index).is_some_and(|parameter|
+                        matches!(parameter.value_type, ValueType::Ref(_))
+                            && parameter.ownership == ParameterOwnership::Value)
+            })
     }
 
     pub(super) fn initialize_parameters(
