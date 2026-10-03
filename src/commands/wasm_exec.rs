@@ -614,11 +614,12 @@ mod tests {
         let portable = probe(&sealed).unwrap().unwrap();
         // Coordinates are relative to the capture root: no host layout ships.
         let temp = std::env::temp_dir();
-        let host_prefixes = [temp.to_str().unwrap(), env!("CARGO_MANIFEST_DIR")]
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/nonexistent-home".into());
+        let host_prefixes = [temp.to_str().unwrap(), home.as_str()]
             .map(|prefix| prefix.trim_start_matches('/').trim_end_matches('/').to_owned());
         assert_eq!(portable.source_inputs.entry, path.file_name().unwrap().to_str().unwrap());
         for file in &portable.source_inputs.files {
-            assert!(host_prefixes.iter().all(|prefix| !file.path.contains(prefix.as_str())), "{}", file.path);
+            assert!(host_prefixes.iter().all(|prefix| prefix.is_empty() || !file.path.contains(prefix.as_str())), "{}", file.path);
         }
         let mut forged_source = portable.source_inputs.clone();
         let entry = forged_source.files.iter_mut().find(|file| file.path == forged_source.entry).unwrap();
