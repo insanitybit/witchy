@@ -7,15 +7,12 @@ const WAT: &str = r#"(module
   (import "witchy" "dir_is_dir_at" (func $query (param externref i32 i32) (result externref)))
   (import "witchy" "dir_response_status" (func $status (param externref) (result i32)))
   (import "witchy" "dir_response_flag" (func $flag (param externref) (result i32)))
-  (import "witchy" "dir_is_dir" (func $legacy (param externref i32) (result i32)))
   (memory (export "memory") 1)
   (export "mint" (func $mint))
   (func (export "query") (param externref i32 i32) (result externref)
     local.get 0 local.get 1 local.get 2 call $query)
   (func (export "status") (param externref) (result i32) local.get 0 call $status)
   (func (export "flag") (param externref) (result i32) local.get 0 call $flag)
-  (func (export "legacy") (param externref i32) (result i32)
-    local.get 0 local.get 1 call $legacy)
   (func (export "run")))"#;
 
 fn setup(memory: bool) -> (tempfile::TempDir, Vm, Token) {
@@ -62,22 +59,12 @@ fn call(vm: &mut Vm, token: Token, ptr: i32, len: i32) -> Result<(i32, i32)> {
 }
 
 /// `dir.is_dir(path)` answers `(status, flag)`: a refusal (an escape, or a
-/// name the policy refuses) is status 1 (Denied) and otherwise the flag. The
-/// frozen legacy import answers the flag, and false for any refusal.
+/// name the policy refuses) is status 1 (Denied) and otherwise the flag.
 fn query(vm: &mut Vm, token: Token, path: &str, status: i32, expected: i32) {
     let memory = vm.instance.get_memory(&mut vm.store, "memory").unwrap();
     memory.data_mut(&mut vm.store).fill(0xa5);
     memory.write(&mut vm.store, 17, path.as_bytes()).unwrap();
     assert_eq!(call(vm, token, 17, path.len() as i32).unwrap(), (status, expected), "{path:?}");
-    // The frozen header-based ABI must give the same total predicate. This
-    // fixture writes a header only for that independent legacy invocation.
-    memory.write(&mut vm.store, 4096, &(path.len() as u32).to_le_bytes()).unwrap();
-    memory.write(&mut vm.store, 4100, path.as_bytes()).unwrap();
-    let before = memory.data(&vm.store).to_vec();
-    let actual = vm.instance.get_typed_func::<(Token, i32), i32>(&mut vm.store, "legacy").unwrap()
-        .call(&mut vm.store, (token, 4096)).unwrap();
-    assert_eq!(actual, expected, "legacy {path:?}");
-    assert_eq!(memory.data(&vm.store), before.as_slice());
     assert!(vm.output().is_empty());
 }
 
@@ -141,7 +128,7 @@ pub fn dir_is_dir_slices_reject_invalid_transport_after_authentication() {
 pub fn dir_is_dir_slices_link_only_with_existing_read_grant() {
     let root = tempfile::tempdir().unwrap();
     let mut runtime = Runtime::new().unwrap();
-    // No mint or legacy import can mask which import fails this boundary.
+    // No mint import can mask which import fails this boundary.
     let wat = r#"(module
       (import "witchy" "dir_is_dir_at" (func (param externref i32 i32) (result externref)))
       (func (export "run")))"#;

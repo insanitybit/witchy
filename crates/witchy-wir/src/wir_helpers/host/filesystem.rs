@@ -2,116 +2,11 @@
 
 use crate::wir::*;
 
-/// `$dir_read(h, rel) -> String` through the confined Dir host capability.
-pub(in crate::wir_helpers) fn dir_read_helper() -> WirFunc {
-    use WirExpr as E;
-    use WirNode as N;
-    let getl = |n: &str| E::GetLocal(n.into());
-    let i32c = E::ConstI32;
-    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
-    WirFunc {
-        name: "dir_read".into(),
-        params: vec![
-            WirLocal { name: "h".into(), ty: WirTy::Extern },
-            WirLocal { name: "rel".into(), ty: WirTy::Str },
-        ],
-        ret: vec![WirTy::Str],
-        locals: vec![
-            WirLocal { name: "len".into(), ty: WirTy::Bool },
-            WirLocal { name: "res".into(), ty: WirTy::Bool },
-        ],
-        body: vec![
-            N::SetLocal { local: "len".into(), value: E::CallHost { import: "dir_read_len".into(), args: vec![getl("h"), getl("rel")] } },
-            // (RFC-0016) allocate through `$rc_alloc` (header + free-list reuse); it reserves + bumps `$heap`.
-            N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] } },
-            N::SafeStore {
-                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), getl("len")),
-                value: getl("len"),
-                kind: Kind::I32,
-            },
-            N::Do(E::CallHost { import: "fill_pending".into(), args: vec![b(BinOp::Add, getl("res"), i32c(4))] }),
-            N::Push(getl("res")),
-        ],
-        raw_body: None,
-    }
-}
-
-/// (RFC-0095) `$dir_read_bytes(h, rel) -> Bytes` — identical two-phase protocol to
-/// `$dir_read`, but reads RAW bytes (host `dir_read_bytes_len` skips UTF-8) and the
-/// value is typed `Bytes`. `Bytes` shares `Str`'s `[len][payload]` WIR representation.
-pub(in crate::wir_helpers) fn dir_read_bytes_helper() -> WirFunc {
-    use WirExpr as E;
-    use WirNode as N;
-    let getl = |n: &str| E::GetLocal(n.into());
-    let i32c = E::ConstI32;
-    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
-    WirFunc {
-        name: "dir_read_bytes".into(),
-        params: vec![
-            WirLocal { name: "h".into(), ty: WirTy::Extern },
-            WirLocal { name: "rel".into(), ty: WirTy::Str },
-        ],
-        ret: vec![WirTy::Str],
-        locals: vec![
-            WirLocal { name: "len".into(), ty: WirTy::Bool },
-            WirLocal { name: "res".into(), ty: WirTy::Bool },
-        ],
-        body: vec![
-            N::SetLocal { local: "len".into(), value: E::CallHost { import: "dir_read_bytes_len".into(), args: vec![getl("h"), getl("rel")] } },
-            N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] } },
-            N::SafeStore {
-                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), getl("len")),
-                value: getl("len"),
-                kind: Kind::I32,
-            },
-            N::Do(E::CallHost { import: "fill_pending".into(), args: vec![b(BinOp::Add, getl("res"), i32c(4))] }),
-            N::Push(getl("res")),
-        ],
-        raw_body: None,
-    }
-}
-
-/// `$file_read(f) -> i32` — the contents of file capability `f` as a String
-/// (RFC-0012/RFC-0005 Stage 2). A `File` is a leaf (no path), so this takes only
-/// the unforgeable externref. Two-phase host
-/// protocol identical to [`dir_read_helper`]: `file_read_len` reads the file and
-/// reports its byte length (staging the bytes host-side), then `fill_pending`
-/// copies the staged bytes into `res+4`. Needs a `File[Read]` capability.
-pub(in crate::wir_helpers) fn file_read_helper() -> WirFunc {
-    use WirExpr as E;
-    use WirNode as N;
-    let getl = |n: &str| E::GetLocal(n.into());
-    let i32c = E::ConstI32;
-    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
-    WirFunc {
-        name: "file_read".into(),
-        params: vec![WirLocal { name: "f".into(), ty: WirTy::Extern }],
-        ret: vec![WirTy::Str],
-        locals: vec![
-            WirLocal { name: "len".into(), ty: WirTy::Bool },
-            WirLocal { name: "res".into(), ty: WirTy::Bool },
-        ],
-        body: vec![
-            N::SetLocal { local: "len".into(), value: E::CallHost { import: "file_read_len".into(), args: vec![getl("f")] } },
-            // (RFC-0016) allocate through `$rc_alloc` (header + free-list reuse); it reserves + bumps `$heap`.
-            N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![b(BinOp::Add, getl("len"), i32c(4))] } },
-            N::SafeStore {
-                place: crate::wir_helpers::layouts::byte_buffer_length_place(getl("res"), getl("len")),
-                value: getl("len"),
-                kind: Kind::I32,
-            },
-            N::Do(E::CallHost { import: "fill_pending".into(), args: vec![b(BinOp::Add, getl("res"), i32c(4))] }),
-            N::Push(getl("res")),
-        ],
-        raw_body: None,
-    }
-}
-
 /// `$exec(exec, h, path, args, stdin) -> i32` — spawn the executable `path`
 /// through the attenuable Exec authority and under Dir externref `h` (confined
-/// like `dir_read`), passing the `\0`-joined argv `args` and `stdin`, returning
+/// like `dir.read`), passing the `\0`-joined argv `args` and `stdin`, returning
 /// the payload string `"<exit_code>\n<stdout><stderr>"`.
-/// Two-phase host protocol identical to [`dir_read_helper`]: `exec_run` runs the
+/// Two-phase pending-buffer protocol: `exec_run` runs the
 /// process and reports the staged payload's byte length, then `fill_pending`
 /// copies it into `res+4`. Needs the `Exec` capability.
 pub(in crate::wir_helpers) fn exec_helper() -> WirFunc {
@@ -219,33 +114,6 @@ pub(in crate::wir_helpers) fn regex_match_spans_helper() -> WirFunc {
                 kind: Kind::I32,
             },
             N::Do(E::CallHost { import: "fill_pending".into(), args: vec![b(BinOp::Add, getl("res"), i32c(4))] }),
-            N::Push(getl("res")),
-        ],
-        raw_body: None,
-    }
-}
-
-/// `$dir_list(h) -> i32` — the entries of Dir externref `h`, as a
-/// `List(String)`. The host reports the total byte size of the marshaled list
-/// (`dir_list_size`), then writes the whole `[count][ptr..]` + payload structure
-/// into the reserved block (`write_pending_list`). Needs the Dir(Read) capability.
-pub(in crate::wir_helpers) fn dir_list_helper() -> WirFunc {
-    use WirExpr as E;
-    use WirNode as N;
-    let getl = |n: &str| E::GetLocal(n.into());
-    WirFunc {
-        name: "dir_list".into(),
-        params: vec![WirLocal { name: "h".into(), ty: WirTy::Extern }],
-        ret: vec![WirTy::Bool],
-        locals: vec![
-            WirLocal { name: "size".into(), ty: WirTy::Bool },
-            WirLocal { name: "res".into(), ty: WirTy::Bool },
-        ],
-        body: vec![
-            N::SetLocal { local: "size".into(), value: E::CallHost { import: "dir_list_size".into(), args: vec![getl("h")] } },
-            // (RFC-0016) allocate through `$rc_alloc` (header + free-list reuse).
-            N::SetLocal { local: "res".into(), value: E::Call { func: "rc_alloc".into(), args: vec![getl("size")] } },
-            N::Do(E::CallHost { import: "write_pending_list".into(), args: vec![getl("res")] }),
             N::Push(getl("res")),
         ],
         raw_body: None,

@@ -171,7 +171,7 @@ pub(super) fn crypto_keyed_helper(name: &str, import: &str, hexlen: i32, has_msg
 }
 
 /// `$crypto_reveal(key) -> i32` — the raw bytes of the Secret externref as a fresh
-/// String (lossy UTF-8). Identical staging to [`crate::wir_helpers::dir_read_helper`]:
+/// String (lossy UTF-8), staged through the pending buffer:
 /// the host `crypto_reveal_len` reads the host-side secret and reports its byte
 /// length (staging the bytes), then `fill_pending` copies them into `res+4`.
 /// Value secrets are revealed to external sinks; signing keys remain host-side.

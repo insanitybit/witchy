@@ -3340,3 +3340,21 @@ or alias the grant cannot see is `NotFound` for reads and writes and
 `Ok(false)` for probes, escapes are `Denied`, visible entries work, and chained
 and disjoint narrowing compose. The legacy `dir_only` import stays only for the
 frozen backends.
+
+### 2026-10-03: retired legacy `Dir`/`File`/`Env` imports deleted
+
+No emitter remains for the header-based `Dir`/`File` imports the `CapError`
+migration replaced, or for the `Env` imports behind the retired `get_env`
+helper: the canonical route lowers to the response imports, and the legacy
+codegen refuses those operations by name. Deleted from the prelude import
+table, the ABI authority table, the native and fixture linkers, the WIR helper
+registry and `spec/wasm-abi.md`: `dir_subdir`, `dir_read_len`,
+`dir_read_bytes_len`, `dir_list_size`, `dir_exists`, `dir_is_dir`, `dir_open`,
+`dir_create`, `dir_write`, `dir_write_bytes`, `dir_append`,
+`dir_append_bytes`, `dir_set_executable`, `dir_make_dir`, `dir_create_new`,
+`dir_replace`, `dir_rename`, `file_read_len`, `file_write`, `env_len` and
+`env_fill`, with the `dir_read`, `dir_read_bytes`, `file_read`, `dir_list` and
+`get_env` helpers. Raw-WAT runtime tests that used them now exercise the
+response imports; the `dir.is_dir` slice test drops its legacy cross-check.
+`dir_only`, `env_only` and `exec_only` remain: the legacy codegen still emits
+them. The browser hosts under `web/` are not updated.

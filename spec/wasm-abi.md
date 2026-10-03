@@ -165,7 +165,7 @@ Host→guest values of dynamic size cross the boundary in **two calls**, so the
 data is read once with no time-of-check/time-of-use gap:
 
 1. The guest calls a sizing import (e.g. `regex_match_spans_len`,
-   `dir_read_len`, `args_size`). The host computes the result, **stashes the
+   `args_size`). The host computes the result, **stashes the
    bytes in a one-slot `pending` buffer**, and returns the byte length.
 2. The guest allocates that many bytes, then calls the matching drain import,
    which copies the staged bytes into guest memory and clears the buffer:
@@ -262,11 +262,6 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `mint_secret` | `(i32) -> externref` | capability authority | Secret | omitted |
 | `mint_env` | `() -> externref` | capability authority | Env | omitted |
 | `env_only` | `(externref, i32) -> externref` | capability authority | Env | omitted |
-| `env_len` | `(externref, i32) -> i32` | capability authority | Env | omitted |
-| `env_fill` | `(externref, i32, i32)` | capability authority | Env | omitted |
-| `dir_read_len` | `(externref, i32) -> i32` | capability authority | Dir.Read | omitted |
-| `dir_read_bytes_len` | `(externref, i32) -> i32` | capability authority | Dir.Read | omitted |
-| `dir_list_size` | `(externref) -> i32` | capability authority | Dir.Read | omitted |
 | `args_size` | `() -> i32` | launch input | none | provided |
 | `write_pending_list` | `(i32)` | non-authority infrastructure | none | provided |
 | `vm_par_map_run` | `(i32, i32) -> i32` | internal/toolchain service | none | omitted |
@@ -301,24 +296,8 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `print_float` | `(f64)` | non-authority infrastructure | none | provided |
 | `string_from_code` | `(i64, i32) -> i32` | non-authority infrastructure | none | provided |
 | `mint_dir` | `(i32) -> externref` | capability authority | Dir.grant | omitted |
-| `dir_subdir` | `(externref, i32) -> externref` | capability authority | Dir.Read | omitted |
 | `dir_only` | `(externref, i32) -> externref` | capability authority | Dir.Read | omitted |
-| `dir_exists` | `(externref, i32) -> i32` | capability authority | Dir.Read | omitted |
-| `dir_is_dir` | `(externref, i32) -> i32` | capability authority | Dir.Read | omitted |
-| `dir_write` | `(externref, i32, i32)` | capability authority | Dir.Write | omitted |
-| `dir_write_bytes` | `(externref, i32, i32)` | capability authority | Dir.Write | omitted |
-| `dir_append` | `(externref, i32, i32)` | capability authority | Dir.Write | omitted |
-| `dir_append_bytes` | `(externref, i32, i32)` | capability authority | Dir.Write | omitted |
-| `dir_set_executable` | `(externref, i32)` | capability authority | Dir.Write | omitted |
-| `dir_make_dir` | `(externref, i32)` | capability authority | Dir.Write | omitted |
-| `dir_open` | `(externref, i32) -> externref` | capability authority | Dir.Read | omitted |
-| `dir_create` | `(externref, i32) -> externref` | capability authority | Dir.Write | omitted |
-| `dir_create_new` | `(externref, i32, i32) -> i32` | capability authority | Dir.Write | omitted |
-| `dir_replace` | `(externref, i32, i32)` | capability authority | Dir.Write | omitted |
-| `dir_rename` | `(externref, i32, i32)` | capability authority | Dir.Write | omitted |
 | `mint_file` | `(i32) -> externref` | capability authority | File.grant | omitted |
-| `file_read_len` | `(externref) -> i32` | capability authority | File.authority | omitted |
-| `file_write` | `(externref, i32)` | capability authority | File.authority | omitted |
 | `mint_net` | `(i32) -> externref` | capability authority | Net.grant | omitted |
 | `mint_fetch` | `(i32) -> externref` | capability authority | Fetch.grant | omitted |
 | `fetch_only` | `(externref, i32) -> externref` | capability authority | Fetch | omitted |

@@ -556,13 +556,6 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
-        "dir_subdir" => Some(WirHelperSpec {
-            func: host_call_helper_typed("dir_subdir", "dir_subdir", &[WirTy::Extern, WirTy::Str], WirTy::Extern),
-            helper_deps: &[],
-            import_deps: &["dir_subdir"],
-            uses_heap: false,
-            uses_table: false,
-        }),
         // RFC-0011/RFC-0005: `dir.only(DirPolicy)` narrows a Dir's entry policy,
         // minting a fresh unforgeable Dir externref.
         "dir_only" => Some(WirHelperSpec {
@@ -598,30 +591,6 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
         }),
         // Replaced by authenticated token/slice/immutable-response imports.
         "net_fetch" | "fetch_send" => None,
-        // RFC-0012/RFC-0005 Stage 2: `dir.open`/`dir.create` navigate a Dir to a
-        // confined File externref; `file_write` consumes that externref. Each wraps
-        // its host import so user code stays free of direct CallHosts.
-        "dir_open" => Some(WirHelperSpec {
-            func: host_call_helper_typed("dir_open", "dir_open", &[WirTy::Extern, WirTy::Str], WirTy::Extern),
-            helper_deps: &[],
-            import_deps: &["dir_open"],
-            uses_heap: false,
-            uses_table: false,
-        }),
-        "dir_create" => Some(WirHelperSpec {
-            func: host_call_helper_typed("dir_create", "dir_create", &[WirTy::Extern, WirTy::Str], WirTy::Extern),
-            helper_deps: &[],
-            import_deps: &["dir_create"],
-            uses_heap: false,
-            uses_table: false,
-        }),
-        "file_write" => Some(WirHelperSpec {
-            func: host_void_helper_typed("file_write", "file_write", &[WirTy::Extern, WirTy::Str]),
-            helper_deps: &[],
-            import_deps: &["file_write"],
-            uses_heap: false,
-            uses_table: false,
-        }),
         // Resolve a named secret to a nullable opaque externref (`None` is null).
         // Wraps the `secretstore_lookup` host import so user code stays free of
         // direct CallHosts; the bytes never enter the guest.
@@ -629,85 +598,6 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             func: host_call_helper_typed("secretstore_lookup", "secretstore_lookup", &[WirTy::Str], WirTy::Extern),
             helper_deps: &[],
             import_deps: &["secretstore_lookup"],
-            uses_heap: false,
-            uses_table: false,
-        }),
-        "dir_exists" => Some(WirHelperSpec {
-            func: host_call_helper_typed("dir_exists", "dir_exists", &[WirTy::Extern, WirTy::Str], WirTy::Bool),
-            helper_deps: &[],
-            import_deps: &["dir_exists"],
-            uses_heap: false,
-            uses_table: false,
-        }),
-        "dir_is_dir" => Some(WirHelperSpec {
-            func: host_call_helper_typed("dir_is_dir", "dir_is_dir", &[WirTy::Extern, WirTy::Str], WirTy::Bool),
-            helper_deps: &[],
-            import_deps: &["dir_is_dir"],
-            uses_heap: false,
-            uses_table: false,
-        }),
-        "dir_write_bytes" => Some(WirHelperSpec {
-            func: host_void_helper_typed("dir_write_bytes", "dir_write_bytes", &[WirTy::Extern, WirTy::Str, WirTy::Str]),
-            helper_deps: &[],
-            import_deps: &["dir_write_bytes"],
-            uses_heap: false,
-            uses_table: false,
-        }),
-        "dir_write" => Some(WirHelperSpec {
-            func: host_void_helper_typed("dir_write", "dir_write", &[WirTy::Extern, WirTy::Str, WirTy::Str]),
-            helper_deps: &[],
-            import_deps: &["dir_write"],
-            uses_heap: false,
-            uses_table: false,
-        }),
-        "dir_append" => Some(WirHelperSpec {
-            func: host_void_helper_typed("dir_append", "dir_append", &[WirTy::Extern, WirTy::Str, WirTy::Str]),
-            helper_deps: &[],
-            import_deps: &["dir_append"],
-            uses_heap: false,
-            uses_table: false,
-        }),
-        "dir_append_bytes" => Some(WirHelperSpec {
-            func: host_void_helper_typed("dir_append_bytes", "dir_append_bytes", &[WirTy::Extern, WirTy::Str, WirTy::Str]),
-            helper_deps: &[],
-            import_deps: &["dir_append_bytes"],
-            uses_heap: false,
-            uses_table: false,
-        }),
-        "dir_set_executable" => Some(WirHelperSpec {
-            func: host_void_helper_typed("dir_set_executable", "dir_set_executable", &[WirTy::Extern, WirTy::Str]),
-            helper_deps: &[],
-            import_deps: &["dir_set_executable"],
-            uses_heap: false,
-            uses_table: false,
-        }),
-        "dir_make_dir" => Some(WirHelperSpec {
-            func: host_void_helper_typed("dir_make_dir", "dir_make_dir", &[WirTy::Extern, WirTy::Str]),
-            helper_deps: &[],
-            import_deps: &["dir_make_dir"],
-            uses_heap: false,
-            uses_table: false,
-        }),
-        // RFC-0118 atomic primitives. `dir_create_new` returns Bool (1 = created,
-        // 0 = already existed); `dir_replace`/`dir_rename` are void effects.
-        "dir_create_new" => Some(WirHelperSpec {
-            func: host_call_helper_typed("dir_create_new", "dir_create_new", &[WirTy::Extern, WirTy::Str, WirTy::Str], WirTy::Bool),
-            helper_deps: &[],
-            import_deps: &["dir_create_new"],
-            uses_heap: false,
-            uses_table: false,
-        }),
-        "dir_replace" => Some(WirHelperSpec {
-            func: host_void_helper_typed("dir_replace", "dir_replace", &[WirTy::Extern, WirTy::Str, WirTy::Str]),
-            helper_deps: &[],
-            import_deps: &["dir_replace"],
-            uses_heap: false,
-            uses_table: false,
-        }),
-        "dir_rename" => Some(WirHelperSpec {
-            func: host_void_helper_typed("dir_rename", "dir_rename", &[WirTy::Extern, WirTy::Str, WirTy::Str]),
-            helper_deps: &[],
-            import_deps: &["dir_rename"],
             uses_heap: false,
             uses_table: false,
         }),
@@ -1044,28 +934,6 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: true,
             uses_table: false,
         }),
-        "dir_read" => Some(WirHelperSpec {
-            func: dir_read_helper(),
-            helper_deps: &["rc_alloc"],
-            import_deps: &["dir_read_len", "fill_pending"],
-            uses_heap: true,
-            uses_table: false,
-        }),
-        // RFC-0095 byte-safe read: same two-phase protocol as dir_read, raw bytes.
-        "dir_read_bytes" => Some(WirHelperSpec {
-            func: dir_read_bytes_helper(),
-            helper_deps: &["rc_alloc"],
-            import_deps: &["dir_read_bytes_len", "fill_pending"],
-            uses_heap: true,
-            uses_table: false,
-        }),
-        "file_read" => Some(WirHelperSpec {
-            func: file_read_helper(),
-            helper_deps: &["rc_alloc"],
-            import_deps: &["file_read_len", "fill_pending"],
-            uses_heap: true,
-            uses_table: false,
-        }),
         "exec" => Some(WirHelperSpec {
             func: exec_helper(),
             helper_deps: &["rc_alloc"],
@@ -1113,13 +981,6 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: true,
             uses_table: false,
         }),
-        "dir_list" => Some(WirHelperSpec {
-            func: dir_list_helper(),
-            helper_deps: &["rc_alloc"],
-            import_deps: &["dir_list_size", "write_pending_list"],
-            uses_heap: true,
-            uses_table: false,
-        }),
         // (RFC-0020) `net.net.resolve(host) -> List(String)` — the resolved IP literals.
         // The two-phase staged-list protocol, identical shape to `dir_list`: the host
         // resolves the name NOW and reports the marshaled byte size (`net_resolve_size`),
@@ -1163,13 +1024,6 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             import_deps: &["vm_serve_run", "vm_par_map_bytes_write"],
             uses_heap: true,
             uses_table: true,
-        }),
-        "get_env" => Some(WirHelperSpec {
-            func: get_env_helper(),
-            helper_deps: &["rc_alloc"],
-            import_deps: &["env_len", "env_fill"],
-            uses_heap: true,
-            uses_table: false,
         }),
         "replace" => Some(WirHelperSpec {
             func: replace_helper(),

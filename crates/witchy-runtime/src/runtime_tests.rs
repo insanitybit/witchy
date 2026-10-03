@@ -524,9 +524,9 @@ fi
     ))]
     const NULL_FILE_READ: &str = r#"
         (module
-          (import "witchy" "file_read_len" (func $file_read_len (param externref) (result i32)))
+          (import "witchy" "file_read_at" (func $file_read_at (param externref) (result externref)))
           (func (export "run")
-            (drop (call $file_read_len (ref.null extern)))))
+            (drop (call $file_read_at (ref.null extern)))))
     "#;
 
     const DIR_READ_FILE_INVALID_PATH: &str = r#"
@@ -551,10 +551,10 @@ fi
 
     const NULL_DIR_READ: &str = r#"
         (module
-          (import "witchy" "dir_read_len" (func $dir_read_len (param externref i32) (result i32)))
+          (import "witchy" "dir_read_at" (func $dir_read_at (param externref i32 i32) (result externref)))
           (memory (export "memory") 1)
           (func (export "run")
-            (drop (call $dir_read_len (ref.null extern) (i32.const 0)))))
+            (drop (call $dir_read_at (ref.null extern) (i32.const 0) (i32.const 0)))))
     "#;
 
     const NULL_NET_CONNECT: &str = r#"
@@ -597,17 +597,18 @@ fi
     const DIRECT_FILE_WRITE: &str = r#"
         (module
           (import "witchy" "mint_file" (func $mint_file (param i32) (result externref)))
-          (import "witchy" "file_write" (func $file_write (param externref i32)))
+          (import "witchy" "file_write_at" (func $file_write_at (param externref i32 i32) (result externref)))
           (memory (export "memory") 1)
           (func (export "run")
-            (call $file_write (call $mint_file (i32.const 0)) (i32.const 0))))
+            (drop (call $file_write_at (call $mint_file (i32.const 0)) (i32.const 0) (i32.const 0)))))
     "#;
 
     const VM_WITH_DIR_START_AUTHORITY: &str = r#"
         (module
           (import "witchy" "print" (func $print (param i32 i32)))
           (import "witchy" "mint_dir" (func $mint_dir (param i32) (result externref)))
-          (import "witchy" "dir_exists" (func $dir_exists (param externref i32) (result i32)))
+          (import "witchy" "dir_exists_at" (func $dir_exists_at (param externref i32 i32) (result externref)))
+          (import "witchy" "dir_response_flag" (func $dir_response_flag (param externref) (result i32)))
           (import "witchy" "fill_pending" (func $fill_pending (param i32)))
           (import "witchy" "vm_with_dir_run"
             (func $vm_with_dir_run (param externref i32 i32) (result i32)))
@@ -619,8 +620,10 @@ fi
           (func $start
             i32.const 0
             call $mint_dir
-            i32.const 0
-            call $dir_exists
+            i32.const 4
+            i32.const 10
+            call $dir_exists_at
+            call $dir_response_flag
             global.set $found)
           (start $start)
           (func (export "__galloc") (param i32) (result i32) i32.const 1024)

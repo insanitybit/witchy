@@ -216,10 +216,10 @@ fn precompiled_runner_authority_rows_are_cataloged() {
     use AbiImportAuthority as A;
 
     assert_eq!(authorities_for("mint_dir"), vec![A::DirGrant]);
-    assert_eq!(authorities_for("dir_open"), vec![A::DirRead]);
-    assert_eq!(authorities_for("dir_create"), vec![A::DirWrite]);
+    assert_eq!(authorities_for("dir_read_at"), vec![A::DirRead]);
+    assert_eq!(authorities_for("dir_write_file_at"), vec![A::DirWrite]);
     assert_eq!(authorities_for("mint_file"), vec![A::FileGrant]);
-    assert_eq!(authorities_for("file_read_len"), vec![A::FileAuthority]);
+    assert_eq!(authorities_for("file_read_at"), vec![A::FileAuthority]);
     assert_eq!(authorities_for("mint_net"), vec![A::NetGrant]);
     assert_eq!(authorities_for("net_connect_pinned"), vec![A::NetConnect]);
     assert_eq!(authorities_for("net_listen"), vec![A::NetListen]);

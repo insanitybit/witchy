@@ -90,15 +90,8 @@ const HELPER_NAMES: &[&str] = &[
     "build_user_cap_field",
     "float_to_str",
     "encoding",
-    "get_env",
-    "dir_read",
-    "dir_read_bytes",
-    "dir_write_bytes",
-    "dir_append_bytes",
-    "file_read",
     "build_read",
     "build_out_write",
-    "dir_list",
     "net_resolve",
     "net_recv_line",
     "net_recv_all",
@@ -267,11 +260,6 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "mint_secret" (func $mint_secret_host (param i32) (result externref)))
   (import "witchy" "mint_env" (func $mint_env_host (result externref)))
   (import "witchy" "env_only" (func $env_only_host (param externref i32) (result externref)))
-  (import "witchy" "env_len" (func $env_len_host (param externref i32) (result i32)))
-  (import "witchy" "env_fill" (func $env_fill_host (param externref i32 i32)))
-  (import "witchy" "dir_read_len" (func $dir_read_len_host (param externref i32) (result i32)))
-  (import "witchy" "dir_read_bytes_len" (func $dir_read_bytes_len_host (param externref i32) (result i32)))
-  (import "witchy" "dir_list_size" (func $dir_list_size_host (param externref) (result i32)))
   (import "witchy" "args_size" (func $args_size_host (result i32)))
   (import "witchy" "write_pending_list" (func $write_pending_list_host (param i32)))
   (import "witchy" "vm_par_map_run" (func $vm_par_map_run_host (param i32 i32) (result i32)))
@@ -306,24 +294,8 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "print_float" (func $print_float (param f64)))
   (import "witchy" "string_from_code" (func $string_from_code_host (param i64 i32) (result i32)))
   (import "witchy" "mint_dir" (func $mint_dir_host (param i32) (result externref)))
-  (import "witchy" "dir_subdir" (func $dir_subdir_host (param externref i32) (result externref)))
   (import "witchy" "dir_only" (func $dir_only_host (param externref i32) (result externref)))
-  (import "witchy" "dir_exists" (func $dir_exists_host (param externref i32) (result i32)))
-  (import "witchy" "dir_is_dir" (func $dir_is_dir_host (param externref i32) (result i32)))
-  (import "witchy" "dir_write" (func $dir_write_host (param externref i32 i32)))
-  (import "witchy" "dir_write_bytes" (func $dir_write_bytes_host (param externref i32 i32)))
-  (import "witchy" "dir_append" (func $dir_append_host (param externref i32 i32)))
-  (import "witchy" "dir_append_bytes" (func $dir_append_bytes_host (param externref i32 i32)))
-  (import "witchy" "dir_set_executable" (func $dir_set_executable_host (param externref i32)))
-  (import "witchy" "dir_make_dir" (func $dir_make_dir_host (param externref i32)))
-  (import "witchy" "dir_open" (func $dir_open_host (param externref i32) (result externref)))
-  (import "witchy" "dir_create" (func $dir_create_host (param externref i32) (result externref)))
-  (import "witchy" "dir_create_new" (func $dir_create_new_host (param externref i32 i32) (result i32)))
-  (import "witchy" "dir_replace" (func $dir_replace_host (param externref i32 i32)))
-  (import "witchy" "dir_rename" (func $dir_rename_host (param externref i32 i32)))
   (import "witchy" "mint_file" (func $mint_file_host (param i32) (result externref)))
-  (import "witchy" "file_read_len" (func $file_read_len_host (param externref) (result i32)))
-  (import "witchy" "file_write" (func $file_write_host (param externref i32)))
   (import "witchy" "mint_net" (func $mint_net_host (param i32) (result externref)))
   (import "witchy" "mint_fetch" (func $mint_fetch_host (param i32) (result externref)))
   (import "witchy" "fetch_only" (func $fetch_only_host (param externref i32) (result externref)))
@@ -658,12 +630,6 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "mint_secret"
         | "mint_env"
         | "env_only"
-        | "env_len"
-        | "env_fill"
-        | "dir_read_len"
-        | "dir_read_bytes_len"
-        | "dir_write_bytes"
-        | "dir_list_size"
         | "build_read_len"
         | "build_out_write"
         | "build_out_write_at"
@@ -674,24 +640,9 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "net_recv_line_len"
         | "net_recv_all_len"
         | "net_recv_bytes_len"
-        | "dir_subdir"
         | "dir_only"
-        | "dir_exists"
-        | "dir_is_dir"
-        | "dir_write"
-        | "dir_append"
-        | "dir_append_bytes"
-        | "dir_set_executable"
-        | "dir_make_dir"
-        | "dir_create_new"
-        | "dir_replace"
-        | "dir_rename"
         | "mint_dir"
-        | "dir_open"
-        | "dir_create"
         | "mint_file"
-        | "file_read_len"
-        | "file_write"
         | "mint_net"
         | "mint_fetch"
         | "fetch_only"
@@ -793,29 +744,20 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         "console_read_len" => AUTH_CONSOLE_READ,
         "crypto.sign" | "crypto.public_key" | "crypto_sign_into" | "crypto_public_key_into" | "secretstore_lookup" | "crypto_reveal_len" | "mint_secret" => AUTH_SECRET,
         "secretstore_lookup_at" => AUTH_SECRET_STORE,
-        "mint_env" | "env_only" | "env_len" | "env_fill" | "env_get_at" | "env_response_status"
+        "mint_env" | "env_only" | "env_get_at" | "env_response_status"
         | "env_response_size" | "env_response_into" => AUTH_ENV,
         "mint_dir" | "dir_response_take_dir" | "dir_response_take_file" | "dir_response_status"
         | "dir_response_size" | "dir_response_into" | "dir_response_flag" | "dir_only_at" => AUTH_DIR_GRANT,
-        "dir_read_len"
-        | "dir_read_bytes_len"
-        | "dir_list_size"
-        | "dir_subdir"
-        | "dir_only"
-        | "dir_exists"
-        | "dir_is_dir"
-        | "dir_open"
+        "dir_only"
         | "dir_exists_at"
         | "dir_is_dir_at"
         | "dir_read_file_at" | "dir_subtree_open_at" | "dir_read_bytes_at"
         | "dir_read_at" | "dir_list_at" => AUTH_DIR_READ,
-        "dir_write" | "dir_write_bytes" | "dir_append" | "dir_append_bytes" | "dir_set_executable"
-        | "dir_make_dir" | "dir_create" | "dir_create_new" | "dir_replace" | "dir_rename"
-        | "dir_write_at" | "dir_make_dir_at" | "dir_create_new_at"
+        "dir_write_at" | "dir_make_dir_at" | "dir_create_new_at"
         | "dir_replace_at" | "dir_write_bytes_at" | "dir_append_bytes_at"
         | "dir_set_executable_at" | "dir_rename_at" | "dir_write_file_at" | "dir_append_at" => AUTH_DIR_WRITE,
         "mint_file" => AUTH_FILE_GRANT,
-        "file_read_len" | "file_write" | "file_read_at" | "file_write_at" | "file_response_status"
+        "file_read_at" | "file_write_at" | "file_response_status"
         | "file_response_size" | "file_response_into" => AUTH_FILE_AUTHORITY,
         "mint_net" | "net_only_at" | "net_deny_at" | "net_response_status" | "net_response_size"
         | "net_response_into" | "net_response_take_net" => AUTH_NET_GRANT,

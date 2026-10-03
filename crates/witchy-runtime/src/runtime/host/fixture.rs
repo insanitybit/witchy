@@ -2,7 +2,7 @@ use wasmtime::{Caller, Error, Extern, ExternRef, Linker, Result, Rooted};
 use witchy_test_host::{FixtureRoots, HostHandle, HostRequest, HostResponse};
 use witchy_testkit::{FixtureErrorCode, FixtureFetchRequest, SourceLocation, U64Text};
 
-use super::super::{memory_of, read_wbytes, read_wstr, read_wstr_list, slice, VmState};
+use super::super::{memory_of, read_wstr, read_wstr_list, slice, VmState};
 
 pub(in crate::runtime) fn link_basic(
     linker: &mut Linker<VmState>,
@@ -24,8 +24,6 @@ pub(in crate::runtime) fn link_basic(
     if roots.env.is_some() {
         linker.func_wrap("witchy", "mint_env", host_mint_env)?;
         linker.func_wrap("witchy", "env_only", host_env_only)?;
-        linker.func_wrap("witchy", "env_len", host_env_len)?;
-        linker.func_wrap("witchy", "env_fill", host_env_fill)?;
     }
     Ok(())
 }
@@ -47,24 +45,7 @@ pub(in crate::runtime) fn link_filesystem(
 pub(in crate::runtime) fn link_granted_filesystem(
     linker: &mut Linker<VmState>,
 ) -> Result<()> {
-    linker.func_wrap("witchy", "dir_subdir", host_dir_subdir)?;
     linker.func_wrap("witchy", "dir_only", host_dir_only)?;
-    linker.func_wrap("witchy", "dir_read_len", host_dir_read_len)?;
-    linker.func_wrap("witchy", "dir_read_bytes_len", host_dir_read_bytes_len)?;
-    linker.func_wrap("witchy", "dir_exists", host_dir_exists)?;
-    linker.func_wrap("witchy", "dir_is_dir", host_dir_is_dir)?;
-    linker.func_wrap("witchy", "dir_list_size", host_dir_list_size)?;
-    linker.func_wrap("witchy", "dir_open", host_dir_open)?;
-    linker.func_wrap("witchy", "dir_write", host_dir_write)?;
-    linker.func_wrap("witchy", "dir_write_bytes", host_dir_write_bytes)?;
-    linker.func_wrap("witchy", "dir_append", host_dir_append)?;
-    linker.func_wrap("witchy", "dir_make_dir", host_dir_make_dir)?;
-    linker.func_wrap("witchy", "dir_create", host_dir_create)?;
-    linker.func_wrap("witchy", "dir_create_new", host_dir_create_new)?;
-    linker.func_wrap("witchy", "dir_replace", host_dir_replace)?;
-    linker.func_wrap("witchy", "dir_rename", host_dir_rename)?;
-    linker.func_wrap("witchy", "file_read_len", host_file_read_len)?;
-    linker.func_wrap("witchy", "file_write", host_file_write)?;
     Ok(())
 }
 
@@ -272,48 +253,6 @@ fn host_env_only(
     }
 }
 
-fn host_env_len(
-    mut caller: Caller<'_, VmState>,
-    env: Option<Rooted<ExternRef>>,
-    name_pointer: i32,
-) -> Result<i32> {
-    let env = fixture_handle(&caller, env, "Env")?;
-    let memory = memory_of(&mut caller)?;
-    let name = read_wstr(memory.data(&caller), name_pointer)?;
-    match invoke(&mut caller, HostRequest::EnvGet { env, name })? {
-        HostResponse::OptionalString(Some(value)) => {
-            let length = i32::try_from(value.len())
-                .map_err(|_| Error::msg("Env fixture value exceeds the guest ABI size limit"))?;
-            caller.data_mut().pending = Some(value.into_bytes());
-            Ok(length)
-        }
-        HostResponse::OptionalString(None) => {
-            caller.data_mut().pending = None;
-            Ok(-1)
-        }
-        response => Err(Error::msg(format!(
-            "fixture Env.get returned unexpected response {response:?}"
-        ))),
-    }
-}
-
-fn host_env_fill(
-    mut caller: Caller<'_, VmState>,
-    _env: Option<Rooted<ExternRef>>,
-    _name_pointer: i32,
-    output_pointer: i32,
-) -> Result<()> {
-    let bytes = caller
-        .data_mut()
-        .pending
-        .take()
-        .ok_or_else(|| Error::msg("env_fill called without a staged fixture value"))?;
-    let memory = memory_of(&mut caller)?;
-    memory
-        .write(&mut caller, output_pointer as usize, &bytes)
-        .map_err(|error| Error::msg(format!("writing fixture Env value: {error}")))
-}
-
 fn host_mint_dir(
     mut caller: Caller<'_, VmState>,
     index: i32,
@@ -323,22 +262,6 @@ fn host_mint_dir(
     }
     let handle = root_handle(&caller, "Filesystem")?;
     ExternRef::new(&mut caller, handle).map(Some)
-}
-
-fn host_dir_subdir(
-    mut caller: Caller<'_, VmState>,
-    dir: Option<Rooted<ExternRef>>,
-    name_pointer: i32,
-) -> Result<Option<Rooted<ExternRef>>> {
-    let dir = fixture_handle(&caller, dir, "Dir")?;
-    let memory = memory_of(&mut caller)?;
-    let name = read_wstr(memory.data(&caller), name_pointer)?;
-    match invoke(&mut caller, HostRequest::DirSubdir { dir, name })? {
-        HostResponse::Handle(handle) => ExternRef::new(&mut caller, handle).map(Some),
-        response => Err(Error::msg(format!(
-            "fixture Dir.subdir returned unexpected response {response:?}"
-        ))),
-    }
 }
 
 fn host_dir_only(
@@ -353,294 +276,6 @@ fn host_dir_only(
         HostResponse::Handle(handle) => ExternRef::new(&mut caller, handle).map(Some),
         response => Err(Error::msg(format!(
             "fixture Dir.only returned unexpected response {response:?}"
-        ))),
-    }
-}
-
-fn host_dir_read_len(
-    mut caller: Caller<'_, VmState>,
-    dir: Option<Rooted<ExternRef>>,
-    path_pointer: i32,
-) -> Result<i32> {
-    let dir = fixture_handle(&caller, dir, "Dir")?;
-    let memory = memory_of(&mut caller)?;
-    let path = read_wstr(memory.data(&caller), path_pointer)?;
-    match invoke(&mut caller, HostRequest::DirRead { dir, path })? {
-        HostResponse::Bytes(bytes) => stage_bytes(&mut caller, bytes, "Dir read"),
-        response => Err(Error::msg(format!(
-            "fixture Dir.read returned unexpected response {response:?}"
-        ))),
-    }
-}
-
-fn host_dir_exists(
-    mut caller: Caller<'_, VmState>,
-    dir: Option<Rooted<ExternRef>>,
-    path_pointer: i32,
-) -> Result<i32> {
-    let dir = fixture_handle(&caller, dir, "Dir")?;
-    let memory = memory_of(&mut caller)?;
-    let path = read_wstr(memory.data(&caller), path_pointer)?;
-    match invoke(&mut caller, HostRequest::DirExists { dir, path })? {
-        HostResponse::Bool(value) => Ok(value.into()),
-        response => Err(Error::msg(format!(
-            "fixture Dir.exists returned unexpected response {response:?}"
-        ))),
-    }
-}
-
-fn host_dir_is_dir(
-    mut caller: Caller<'_, VmState>,
-    dir: Option<Rooted<ExternRef>>,
-    path_pointer: i32,
-) -> Result<i32> {
-    let dir = fixture_handle(&caller, dir, "Dir")?;
-    let memory = memory_of(&mut caller)?;
-    let path = read_wstr(memory.data(&caller), path_pointer)?;
-    match invoke(&mut caller, HostRequest::DirIsDir { dir, path })? {
-        HostResponse::Bool(value) => Ok(value.into()),
-        response => Err(Error::msg(format!(
-            "fixture Dir.is_dir returned unexpected response {response:?}"
-        ))),
-    }
-}
-
-fn host_dir_list_size(
-    mut caller: Caller<'_, VmState>,
-    dir: Option<Rooted<ExternRef>>,
-) -> Result<i32> {
-    let dir = fixture_handle(&caller, dir, "Dir")?;
-    match invoke(&mut caller, HostRequest::DirList { dir })? {
-        HostResponse::Strings(names) => {
-            let size = 4usize
-                .checked_add(8usize.saturating_mul(names.len()))
-                .and_then(|size| {
-                    names
-                        .iter()
-                        .try_fold(size, |size, name| size.checked_add(4 + name.len()))
-                })
-                .ok_or_else(|| Error::msg("fixture directory listing exceeds ABI size limits"))?;
-            let size = i32::try_from(size)
-                .map_err(|_| Error::msg("fixture directory listing exceeds ABI size limits"))?;
-            caller.data_mut().pending_list = Some(names);
-            Ok(size)
-        }
-        response => Err(Error::msg(format!(
-            "fixture Dir.list returned unexpected response {response:?}"
-        ))),
-    }
-}
-
-fn host_dir_open(
-    mut caller: Caller<'_, VmState>,
-    dir: Option<Rooted<ExternRef>>,
-    path_pointer: i32,
-) -> Result<Option<Rooted<ExternRef>>> {
-    let dir = fixture_handle(&caller, dir, "Dir")?;
-    let memory = memory_of(&mut caller)?;
-    let path = read_wstr(memory.data(&caller), path_pointer)?;
-    match invoke(&mut caller, HostRequest::DirOpen { dir, path })? {
-        HostResponse::Handle(handle) => ExternRef::new(&mut caller, handle).map(Some),
-        response => Err(Error::msg(format!(
-            "fixture Dir.open returned unexpected response {response:?}"
-        ))),
-    }
-}
-
-fn host_dir_write(
-    mut caller: Caller<'_, VmState>,
-    dir: Option<Rooted<ExternRef>>,
-    path_pointer: i32,
-    contents_pointer: i32,
-) -> Result<()> {
-    let dir = fixture_handle(&caller, dir, "Dir")?;
-    let memory = memory_of(&mut caller)?;
-    let data = memory.data(&caller);
-    let path = read_wstr(data, path_pointer)?;
-    let bytes = read_wstr(data, contents_pointer)?.into_bytes();
-    match invoke(&mut caller, HostRequest::DirWrite { dir, path, bytes })? {
-        HostResponse::Count(_) => Ok(()),
-        response => Err(Error::msg(format!(
-            "fixture Dir.write returned unexpected response {response:?}"
-        ))),
-    }
-}
-
-/// RFC-0095 `dir_read_bytes_len(d, path) -> len`: fixture bridge for the raw byte
-/// read; stages the file's bytes, guest allocates a Bytes and calls fill_pending.
-fn host_dir_read_bytes_len(
-    mut caller: Caller<'_, VmState>,
-    dir: Option<Rooted<ExternRef>>,
-    path_pointer: i32,
-) -> Result<i32> {
-    let dir = fixture_handle(&caller, dir, "Dir")?;
-    let memory = memory_of(&mut caller)?;
-    let path = read_wstr(memory.data(&caller), path_pointer)?;
-    match invoke(&mut caller, HostRequest::DirReadBytes { dir, path })? {
-        HostResponse::Bytes(bytes) => stage_bytes(&mut caller, bytes, "Dir read_bytes"),
-        response => Err(Error::msg(format!(
-            "fixture Dir.read_bytes returned unexpected response {response:?}"
-        ))),
-    }
-}
-
-/// RFC-0095 `dir_write_bytes(d, path, data)`: fixture bridge for the raw byte write.
-fn host_dir_write_bytes(
-    mut caller: Caller<'_, VmState>,
-    dir: Option<Rooted<ExternRef>>,
-    path_pointer: i32,
-    data_pointer: i32,
-) -> Result<()> {
-    let dir = fixture_handle(&caller, dir, "Dir")?;
-    let memory = memory_of(&mut caller)?;
-    let data = memory.data(&caller);
-    let path = read_wstr(data, path_pointer)?;
-    let bytes = read_wbytes(data, data_pointer)?;
-    match invoke(&mut caller, HostRequest::DirWriteBytes { dir, path, bytes })? {
-        HostResponse::Count(_) => Ok(()),
-        response => Err(Error::msg(format!(
-            "fixture Dir.write_bytes returned unexpected response {response:?}"
-        ))),
-    }
-}
-
-fn host_dir_append(
-    mut caller: Caller<'_, VmState>,
-    dir: Option<Rooted<ExternRef>>,
-    path_pointer: i32,
-    contents_pointer: i32,
-) -> Result<()> {
-    let dir = fixture_handle(&caller, dir, "Dir")?;
-    let memory = memory_of(&mut caller)?;
-    let data = memory.data(&caller);
-    let path = read_wstr(data, path_pointer)?;
-    let bytes = read_wstr(data, contents_pointer)?.into_bytes();
-    match invoke(&mut caller, HostRequest::DirAppend { dir, path, bytes })? {
-        HostResponse::Count(_) => Ok(()),
-        response => Err(Error::msg(format!(
-            "fixture Dir.append returned unexpected response {response:?}"
-        ))),
-    }
-}
-
-fn host_dir_make_dir(
-    mut caller: Caller<'_, VmState>,
-    dir: Option<Rooted<ExternRef>>,
-    path_pointer: i32,
-) -> Result<()> {
-    let dir = fixture_handle(&caller, dir, "Dir")?;
-    let memory = memory_of(&mut caller)?;
-    let path = read_wstr(memory.data(&caller), path_pointer)?;
-    match invoke(&mut caller, HostRequest::DirMakeDir { dir, path })? {
-        HostResponse::Unit => Ok(()),
-        response => Err(Error::msg(format!(
-            "fixture Dir.make_dir returned unexpected response {response:?}"
-        ))),
-    }
-}
-
-/// RFC-0118 `dir_create_new(d, path, contents) -> i32`: atomic exclusive create.
-/// Returns 1 when this call created the file, 0 when it already existed.
-fn host_dir_create_new(
-    mut caller: Caller<'_, VmState>,
-    dir: Option<Rooted<ExternRef>>,
-    path_pointer: i32,
-    contents_pointer: i32,
-) -> Result<i32> {
-    let dir = fixture_handle(&caller, dir, "Dir")?;
-    let memory = memory_of(&mut caller)?;
-    let data = memory.data(&caller);
-    let path = read_wstr(data, path_pointer)?;
-    let bytes = read_wstr(data, contents_pointer)?.into_bytes();
-    match invoke(&mut caller, HostRequest::DirCreateNew { dir, path, bytes })? {
-        HostResponse::Bool(created) => Ok(created as i32),
-        response => Err(Error::msg(format!(
-            "fixture Dir.create_new returned unexpected response {response:?}"
-        ))),
-    }
-}
-
-/// RFC-0118 `dir_replace(d, path, contents)`: atomic whole-file replace.
-fn host_dir_replace(
-    mut caller: Caller<'_, VmState>,
-    dir: Option<Rooted<ExternRef>>,
-    path_pointer: i32,
-    contents_pointer: i32,
-) -> Result<()> {
-    let dir = fixture_handle(&caller, dir, "Dir")?;
-    let memory = memory_of(&mut caller)?;
-    let data = memory.data(&caller);
-    let path = read_wstr(data, path_pointer)?;
-    let bytes = read_wstr(data, contents_pointer)?.into_bytes();
-    match invoke(&mut caller, HostRequest::DirReplace { dir, path, bytes })? {
-        HostResponse::Unit => Ok(()),
-        response => Err(Error::msg(format!(
-            "fixture Dir.replace returned unexpected response {response:?}"
-        ))),
-    }
-}
-
-/// RFC-0118 `dir_rename(d, from, to)`: atomic rename/replace within the Dir.
-fn host_dir_rename(
-    mut caller: Caller<'_, VmState>,
-    dir: Option<Rooted<ExternRef>>,
-    from_pointer: i32,
-    to_pointer: i32,
-) -> Result<()> {
-    let dir = fixture_handle(&caller, dir, "Dir")?;
-    let memory = memory_of(&mut caller)?;
-    let data = memory.data(&caller);
-    let from = read_wstr(data, from_pointer)?;
-    let to = read_wstr(data, to_pointer)?;
-    match invoke(&mut caller, HostRequest::DirRename { dir, from, to })? {
-        HostResponse::Unit => Ok(()),
-        response => Err(Error::msg(format!(
-            "fixture Dir.rename returned unexpected response {response:?}"
-        ))),
-    }
-}
-
-fn host_dir_create(
-    mut caller: Caller<'_, VmState>,
-    dir: Option<Rooted<ExternRef>>,
-    path_pointer: i32,
-) -> Result<Option<Rooted<ExternRef>>> {
-    let dir = fixture_handle(&caller, dir, "Dir")?;
-    let memory = memory_of(&mut caller)?;
-    let path = read_wstr(memory.data(&caller), path_pointer)?;
-    match invoke(&mut caller, HostRequest::DirCreate { dir, path })? {
-        HostResponse::Handle(handle) => ExternRef::new(&mut caller, handle).map(Some),
-        response => Err(Error::msg(format!(
-            "fixture Dir.create returned unexpected response {response:?}"
-        ))),
-    }
-}
-
-fn host_file_read_len(
-    mut caller: Caller<'_, VmState>,
-    file: Option<Rooted<ExternRef>>,
-) -> Result<i32> {
-    let file = fixture_handle(&caller, file, "File")?;
-    match invoke(&mut caller, HostRequest::FileRead { file })? {
-        HostResponse::Bytes(bytes) => stage_bytes(&mut caller, bytes, "File read"),
-        response => Err(Error::msg(format!(
-            "fixture File.read returned unexpected response {response:?}"
-        ))),
-    }
-}
-
-fn host_file_write(
-    mut caller: Caller<'_, VmState>,
-    file: Option<Rooted<ExternRef>>,
-    contents_pointer: i32,
-) -> Result<()> {
-    let file = fixture_handle(&caller, file, "File")?;
-    let memory = memory_of(&mut caller)?;
-    let bytes = read_wstr(memory.data(&caller), contents_pointer)?.into_bytes();
-    match invoke(&mut caller, HostRequest::FileWrite { file, bytes })? {
-        HostResponse::Count(_) => Ok(()),
-        response => Err(Error::msg(format!(
-            "fixture File.write returned unexpected response {response:?}"
         ))),
     }
 }

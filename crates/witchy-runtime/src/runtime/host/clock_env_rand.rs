@@ -3,7 +3,7 @@ use std::sync::Arc;
 use witchy_wir::canonical_safewir::ENV_IMPORT_NAMES;
 
 use super::super::{
-    memory_of, read_slice_str, read_wstr, read_wstr_list, EnvAuthority, VmState,
+    memory_of, read_slice_str, read_wstr_list, EnvAuthority, VmState,
 };
 
 /// Register the `Clock` observation imports.
@@ -64,8 +64,6 @@ pub(in crate::runtime) fn link_rand(linker: &mut Linker<VmState>) -> Result<()> 
 pub(in crate::runtime) fn link_env(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "mint_env", host_mint_env)?;
     linker.func_wrap("witchy", "env_only", host_env_only)?;
-    linker.func_wrap("witchy", "env_len", host_env_len)?;
-    linker.func_wrap("witchy", "env_fill", host_env_fill)?;
     // The canonical route's Env lookup, under the SAME `Env` grant as its
     // frozen siblings: an ungranted program cannot link it.
     linker.func_wrap("witchy", ENV_IMPORT_NAMES[0], host_env_get_at)?;
@@ -90,15 +88,6 @@ pub(in crate::runtime) fn env_authority(state: &VmState) -> EnvAuthority {
 /// see a name the other refuses.
 fn env_allows(env: &EnvAuthority, name: &str) -> bool {
     env.allow.as_ref().is_none_or(|allow| allow.contains(name))
-}
-
-/// Trap unless the grant's allow-list admits `name` (the frozen route).
-fn env_require_allowed(env: &EnvAuthority, name: &str) -> Result<()> {
-    if env_allows(env, name) {
-        Ok(())
-    } else {
-        Err(Error::msg(format!("get_env: `{name}` is not in this Env grant's allow-list")))
-    }
 }
 
 fn env_authority_ref(
@@ -166,43 +155,6 @@ fn host_now_monotonic(_caller: Caller<'_, VmState>) -> i64 {
     static START: std::sync::LazyLock<std::time::Instant> =
         std::sync::LazyLock::new(std::time::Instant::now);
     START.elapsed().as_nanos() as i64
-}
-
-/// `env_len(name_ptr) -> Int`: the byte length of the named environment
-/// variable's value, or -1 when unset (or not valid Unicode — matching the
-/// interpreter's `std::env::var`, which errors on both). The guest sizes its
-/// buffer from this, then calls `env_fill`. Linked only under an `Env` grant.
-fn host_env_len(
-    mut caller: Caller<'_, VmState>,
-    env: Option<Rooted<ExternRef>>,
-    name_ptr: i32,
-) -> Result<i32> {
-    let env = env_authority_ref(&caller, env)?;
-    let mem = memory_of(&mut caller)?;
-    let name = read_wstr(mem.data(&caller), name_ptr)?;
-    env_require_allowed(&env, &name)?;
-    match std::env::var(&name) {
-        Ok(v) => Ok(v.len() as i32),
-        Err(_) => Ok(-1),
-    }
-}
-
-/// `env_fill(name_ptr, out_ptr)`: write the named environment variable's value
-/// bytes into guest memory at `out_ptr` (the guest pre-allocated `env_len`
-/// bytes). Linked only under an `Env` grant.
-fn host_env_fill(
-    mut caller: Caller<'_, VmState>,
-    env: Option<Rooted<ExternRef>>,
-    name_ptr: i32,
-    out_ptr: i32,
-) -> Result<()> {
-    let env = env_authority_ref(&caller, env)?;
-    let mem = memory_of(&mut caller)?;
-    let name = read_wstr(mem.data(&caller), name_ptr)?;
-    env_require_allowed(&env, &name)?;
-    let value = std::env::var(&name).unwrap_or_default();
-    mem.write(&mut caller, out_ptr as usize, value.as_bytes())
-        .map_err(|e| Error::msg(format!("writing env value into guest memory: {e}")))
 }
 
 // --- the canonical Env lookup (RFC-0126 rule 3) ---
