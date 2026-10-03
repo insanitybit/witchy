@@ -366,7 +366,11 @@ fn sandbox_wasm_requires_explicit_dir_grant() {
         "fn main(console: Console, dir: Dir) -> Int:\n    if dir.exists(\"x\"):\n        console.print(\"yes\")\n    else:\n        console.print(\"no\")\n    0\n",
     );
     let wasm = dir.join("d.wasm");
-    assert!(run(&["emit-wasm", &src, "-o", wasm.to_str().unwrap()]).status.success());
+    let emitted = run(&["emit-wasm", &src, "-o", wasm.to_str().unwrap()]);
+    assert!(emitted.status.success());
+    // Portable Wasm embeds its source; the producer must say so.
+    let notice = String::from_utf8_lossy(&emitted.stderr);
+    assert!(notice.contains("embedding closed source in") && notice.contains("d.witchy"), "{notice}");
 
     let denied = run(&["sandbox", wasm.to_str().unwrap()]);
     assert!(!denied.status.success(), "sandbox must refuse a Dir-importing wasm with no --dir");

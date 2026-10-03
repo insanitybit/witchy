@@ -200,6 +200,7 @@ pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
                         let sealed = witchy::portable_artifact::seal(&bytes, &inputs)?;
                         std::fs::write(f, &sealed)
                             .map_err(|e| format!("cannot write `{f}`: {e}"))?;
+                        announce_embedded_source(f, &inputs);
                     }
                 }
                 other => {
@@ -555,6 +556,11 @@ fn compile_to_development_wasm_cached(
     Ok(compiled)
 }
 
+/// Portable Wasm ships its closed source. Say exactly what, every time.
+fn announce_embedded_source(out: &str, inputs: &trusted_publisher::source_inputs::SourceInputs) {
+    eprintln!("embedding closed source in {out}: {}", witchy::portable_artifact::embedded_source_summary(inputs));
+}
+
 /// Compile a `.witchy` program to a wasm binary and write it to `out`. The
 /// produced module is the Tier-1 distribution artifact: run it with `witchy
 /// <out>` under its source-derived launch contract and imported host families.
@@ -563,6 +569,7 @@ pub(crate) fn emit_wasm_file(path: &str, out: &str) -> Result<(), String> {
     enforce_performance_modes(checked.module(), stem.as_str())?;
     let binary = witchy::portable_artifact::seal(&compile_checked_to_wasm(&checked)?, &inputs)?;
     std::fs::write(out, &binary).map_err(|e| format!("cannot write `{out}`: {e}"))?;
+    announce_embedded_source(out, &inputs);
     Ok(())
 }
 

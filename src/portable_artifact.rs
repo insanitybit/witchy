@@ -50,6 +50,17 @@ pub fn seal(wasm: &[u8], inputs: &SourceInputs) -> Result<Vec<u8>, String> {
     Ok(sealed)
 }
 
+/// What a sealed artifact discloses: every embedded file with contents and
+/// their total size. Producers print this so publishing is never silent.
+pub fn embedded_source_summary(inputs: &SourceInputs) -> String {
+    let files: Vec<_> = inputs.files.iter()
+        .filter_map(|file| file.contents.as_ref().map(|contents| (file.path.as_str(), contents.len())))
+        .collect();
+    let bytes: usize = files.iter().map(|(_, len)| len).sum();
+    let paths: Vec<_> = files.iter().map(|(path, _)| *path).collect();
+    format!("{} files ({}), {bytes} bytes", files.len(), paths.join(", "))
+}
+
 /// Split a binary module at its `witchy.source.v1` section. `Ok(None)` means
 /// the module carries no section. Once one is present, every malformation
 /// fails closed: it must be unique, canonically encoded, last, sized within
