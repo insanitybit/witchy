@@ -13,6 +13,8 @@ Usage:
     scripts/gate-test-cost.py --trend          # week-over-week regression
     scripts/gate-test-cost.py --workspace-only # ignore scoped landing shards
     scripts/gate-test-cost.py --jobs 8         # estimate scheduling headroom
+    scripts/gate-test-cost.py --jobs 8 --group-jobs 4 --log misc.log
+                                              # one shared test group only
     scripts/gate-test-cost.py --log state/merge-queue/logs/gate.log # inspect one named log
     scripts/gate-test-cost.py --budget 5.0     # list tests over a budget
     scripts/gate-test-cost.py --assert-budget 2 # fail if any ordinary test exceeds 2s
@@ -30,10 +32,13 @@ budget" set is run-dependent, not a stable enforcement signal. Point this
 at a --full or CI log (the whole workspace, every time) before treating a
 failure as real, and before wiring this into any automated gate.
 
---jobs is the actual nextest worker count for the selected invocation. Its
-capacity bound uses summed test wall time because each active test occupies a
-worker. Test groups and startup can make the attainable wall time higher than
-this bound; duration rounding can also make it approximate.
+--jobs is the actual nextest worker count for the selected invocation. The
+capacity bound is at least the longest single test and the summed test wall
+time divided by worker count. --group-jobs additionally applies one shared
+group cap when every selected test belongs to that group. Other constraints
+and startup can make attainable wall time higher; duration rounding also makes
+the estimate approximate. Logs without per-test PASS lines retain their
+summary wall time but cannot support cost or capacity analysis.
 """
 
 import argparse
@@ -108,8 +113,7 @@ def parse(path):
                 failures.append((result.group(1), duration, binary, name))
         summary = SUMMARY.search(line)
         if summary:
-            if tests:
-                segments.append((float(summary.group(1)), int(summary.group(2)), tests, current_stage))
+            segments.append((float(summary.group(1)), int(summary.group(2)), tests, current_stage))
             tests = []
     if not segments:
         # A red nextest invocation may stop before printing Summary. Keep it
@@ -132,6 +136,7 @@ def parse(path):
             "stage": current_stage,
             "workspace": False,
             "incomplete": True,
+            "details_complete": False,
         }
     selected_index, selected = max(enumerate(segments), key=lambda pair: pair[1][0])
     wall, count, tests, selected_stage = selected
@@ -154,6 +159,7 @@ def parse(path):
             and "check.sh: serialized nextest selection:" not in text
         ) or (selected_stage is None and "check.sh: serialized nextest selection:" not in text),
         "incomplete": False,
+        "details_complete": count > 0 and len({(binary, name) for _, binary, name in tests}) >= count,
     }
 
 
@@ -164,7 +170,7 @@ def load(limit, workspace_only=False):
         if len(runs) >= limit:
             break
         run = parse(path)
-        if run and run["tests"] and (not workspace_only or run["workspace"]):
+        if run and run["details_complete"] and (not workspace_only or run["workspace"]):
             runs.append(run)
     runs.sort(key=lambda r: r["mtime"])
     return runs
@@ -184,7 +190,7 @@ def load_exempt(path):
     return names
 
 
-def profile(run, top, budget, exempt=None, jobs=None):
+def profile(run, top, budget, exempt=None, jobs=None, group_jobs=None):
     tests = sorted(run["tests"], reverse=True)
     test_seconds = sum(d for d, _, _ in tests)
     when = datetime.datetime.fromtimestamp(run["mtime"]).strftime("%Y-%m-%d %H:%M")
@@ -201,19 +207,29 @@ def profile(run, top, budget, exempt=None, jobs=None):
             f"stage+{run['all_binaries_started_stage_s']}s (upper bound; overlaps tests)"
         )
     print(f"execution  {run['wall']:.0f}s wall")
+    if not run["details_complete"]:
+        print("per-test   unavailable; rerun with NEXTEST_STATUS_LEVEL=pass")
+        print_failures(run)
+        return []
     print(f"test time  {test_seconds:.0f}s summed per-test wall (overlaps; not CPU)")
     if run["wall"]:
         print(f"overlap    {test_seconds / run['wall']:.1f}x summed-test-time / execution wall")
     else:
         print("overlap    unavailable (incomplete failed invocation)")
     if jobs is not None and run["wall"]:
-        floor = test_seconds / jobs
-        occupancy = test_seconds / (run["wall"] * jobs)
-        print(f"capacity   {floor:.1f}s minimum at {jobs} jobs; "
+        effective_jobs = min(jobs, group_jobs) if group_jobs else jobs
+        floor = max(test_seconds / effective_jobs, tests[0][0])
+        occupancy = test_seconds / (run["wall"] * effective_jobs)
+        unit = "job" if effective_jobs == 1 else "jobs"
+        print(f"capacity   {floor:.1f}s minimum at {effective_jobs} {unit}; "
               f"{occupancy:.0%} observed worker occupancy")
         print(f"headroom   {max(0.0, run['wall'] - floor):.1f}s maximum possible "
               "scheduling-only reduction at this job count")
         print("           conditional on unchanged test durations; load can change them")
+        if group_jobs:
+            print("           assumes every selected test shares this one group limit")
+        else:
+            print("           ignores test-group limits and other scheduling constraints")
     print(f"longest    {tests[0][0]:.0f}s single test")
     print()
 
@@ -373,11 +389,13 @@ def main():
     ap.add_argument("--top", type=int, default=25, help="how many costliest tests to list")
     ap.add_argument("--jobs", type=int, default=None,
                     help="actual nextest job count, for a worker-capacity bound")
+    ap.add_argument("--group-jobs", type=int, default=None,
+                    help="one shared test-group limit, only for a homogeneous selection")
     ap.add_argument("--trend", action="store_true", help="week-over-week suite cost")
     ap.add_argument("--workspace-only", action="store_true",
                     help="ignore path-scoped nextest selections and mine full workspace stages")
     ap.add_argument("--log", type=str, default="",
-                    help="inspect exactly one existing gate log instead of selecting the newest")
+                    help="inspect one gate or local nextest/check.sh log")
     ap.add_argument("--failures", action="store_true",
                     help="list failed tests and focused selectors from the selected log")
     ap.add_argument("--budget", type=float, default=0.0,
@@ -392,8 +410,10 @@ def main():
     args = ap.parse_args()
     if args.jobs is not None and args.jobs <= 0:
         ap.error("--jobs must be a positive integer")
+    if args.group_jobs is not None and (args.group_jobs <= 0 or args.jobs is None):
+        ap.error("--group-jobs requires --jobs and a positive integer")
 
-    if not os.path.isdir(LOG_DIR):
+    if not args.log and not os.path.isdir(LOG_DIR):
         print(f"no gate logs at {LOG_DIR} — run the merge queue first", file=sys.stderr)
         return 1
 
@@ -423,7 +443,10 @@ def main():
         return 0
     budget = args.assert_budget or args.budget
     exempt = load_exempt(args.exempt_file)
-    over = profile(runs[-1], args.top, budget, exempt, args.jobs)
+    if budget and not runs[-1]["details_complete"]:
+        print("cannot inspect a per-test budget without complete test results", file=sys.stderr)
+        return 1
+    over = profile(runs[-1], args.top, budget, exempt, args.jobs, args.group_jobs)
     if args.assert_budget and over:
         print(
             f"FAIL: {len(over)} tests exceed the {args.assert_budget:.1f}s hard ceiling",
