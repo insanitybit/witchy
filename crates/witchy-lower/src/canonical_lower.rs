@@ -4524,6 +4524,8 @@ struct LoopContext {
     /// A Size cursor equal to the source Int cursor: both start at zero and
     /// advance together while the immutable bound is a list's u32 count.
     size_counter: Option<ValueId>,
+    /// Header comparison that admits this iteration's checked element guard.
+    bounded_list_condition: Option<ValueId>,
 }
 
 enum LoopAdvance {
@@ -9244,6 +9246,7 @@ impl FunctionLowerer<'_> {
             advance: LoopAdvance::Condition,
             bounded_list_index: None,
             size_counter: None,
+            bounded_list_condition: None,
         });
         let lowered = self.lower_block_effect(body);
         self.loop_contexts.pop();
@@ -9490,6 +9493,7 @@ impl FunctionLowerer<'_> {
             advance: LoopAdvance::Condition,
             bounded_list_index: None,
             size_counter: None,
+            bounded_list_condition: None,
         });
         let lowered = self.lower_block_effect(body);
         self.loop_contexts.pop();
@@ -9744,11 +9748,18 @@ impl FunctionLowerer<'_> {
         }
         let counter = header_values[header_values.len() - 1 - usize::from(bounded_list_index.is_some())];
         let condition = self.fresh(ValueType::Bool)?;
+        // Normal mode can reuse the checked header edge as the element bound.
+        // Keep opt mode's established compare shape for its backend lowering.
+        let bounded_size = bounded_list_index.as_ref().filter(|_| !self.opt_mode).map(|(_, object)| {
+            (*header_values.last().expect("size lane"), self.list_counts[object])
+        });
         self.push_operation(Operation::Compare {
             destination: condition,
-            operator: if inclusive { ComparisonOperator::LessEqualSigned } else { ComparisonOperator::LessSigned },
-            left: counter,
-            right: bound,
+            operator: if bounded_size.is_some() { ComparisonOperator::LessUnsigned }
+                else if inclusive { ComparisonOperator::LessEqualSigned }
+                else { ComparisonOperator::LessSigned },
+            left: bounded_size.map_or(counter, |(size, _)| size),
+            right: bounded_size.map_or(bound, |(_, count)| count),
         });
         self.finish_current(Terminator::BranchIf {
             condition,
@@ -9771,6 +9782,7 @@ impl FunctionLowerer<'_> {
             advance: LoopAdvance::IntCounter(body_counter),
             bounded_list_index,
             size_counter,
+            bounded_list_condition: size_counter.filter(|_| !self.opt_mode).map(|_| condition),
         });
         // Bounds were evaluated in the outer scope. The immutable counter has
         // its own scope around the body, just like the checker/interpreter;
@@ -10112,6 +10124,7 @@ impl FunctionLowerer<'_> {
             advance: LoopAdvance::ListCursor(body_index),
             bounded_list_index: None,
             size_counter: None,
+            bounded_list_condition: None,
         });
         // The iterable was evaluated before shadowing. This separate binder
         // scope also makes reference-valued elements read-only and restores
@@ -16078,7 +16091,14 @@ impl FunctionLowerer<'_> {
         };
         // The diagnostic path authenticates the extent; the proven counted
         // path retains the extent authenticated while evaluating its bound.
-        self.load_list_element(object, index_size, element_type)
+        let known_condition = proven_size.and_then(|_| self.loop_contexts.iter().rev().find_map(|context| {
+                (matches!(context.advance, LoopAdvance::IntCounter(counter) if counter == index_value)
+                    && context.bounded_list_index.as_ref().is_some_and(|(root, original)| {
+                        *original == object && self.bindings.get(root) == Some(&object)
+                    }))
+                .then_some(context.bounded_list_condition).flatten()
+            }));
+        self.load_list_element_with_condition(object, index_size, element_type, known_condition)
     }
 
     /// Load the element at `index_size` of `object` behind a bounds guard
@@ -16088,6 +16108,16 @@ impl FunctionLowerer<'_> {
         object: ValueId,
         index_size: ValueId,
         element_type: ValueType,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        self.load_list_element_with_condition(object, index_size, element_type, None)
+    }
+
+    fn load_list_element_with_condition(
+        &mut self,
+        object: ValueId,
+        index_size: ValueId,
+        element_type: ValueType,
+        known_condition: Option<ValueId>,
     ) -> Result<ValueId, CanonicalLoweringError> {
         if let Some(family) = self.owner_list_family(object).cloned() {
             if element_type != ValueType::Gc(family.owner_type) {
@@ -16102,17 +16132,21 @@ impl FunctionLowerer<'_> {
         let logical_count = *self.list_counts.get(&object).ok_or(
             CanonicalLoweringError::UnsupportedExpression("list index extent"),
         )?;
-        let condition = self.fresh(ValueType::Bool)?;
-        self.push_operation(Operation::Compare {
-            destination: condition,
-            operator: ComparisonOperator::LessUnsigned,
-            left: index_size,
-            right: logical_count,
-        });
-        self.push_operation(Operation::Guard {
-            condition,
-            kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
-        });
+        // The SafeWIR checker independently requires a current-owner bound on
+        // the true header edge before admitting a load without this Guard.
+        if known_condition.is_none() {
+            let condition = self.fresh(ValueType::Bool)?;
+            self.push_operation(Operation::Compare {
+                destination: condition,
+                operator: ComparisonOperator::LessUnsigned,
+                left: index_size,
+                right: logical_count,
+            });
+            self.push_operation(Operation::Guard {
+                condition,
+                kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
+            });
+        }
         let destination = self.fresh(element_type)?;
         self.push_operation(Operation::Load {
             destination,

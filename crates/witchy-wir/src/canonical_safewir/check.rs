@@ -1358,9 +1358,19 @@ fn check_block_flow(
         checked_bodies.insert(block.id, (input, memory.snapshot()));
     }
     let mut updates: Vec<(BlockId, memory::MemoryState)> = Vec::new();
-    for (target, arguments) in memory_successor_edges(&block.terminator, memory) {
+    for (target, arguments, true_condition) in memory_successor_edges(&block.terminator, memory) {
         let target_block = blocks[&target];
-        let transferred = memory.transfer_edge(target_block, arguments)?;
+        let transferred = if let Some(condition) = true_condition {
+            // A true branch establishes its comparison without executing an
+            // additional Guard. Restore before checking the other successor.
+            let prior = memory.snapshot();
+            let result = memory.assume_true_bounds_comparison(condition)
+                .and_then(|()| memory.transfer_edge(target_block, arguments));
+            memory.restore(prior);
+            result?
+        } else {
+            memory.transfer_edge(target_block, arguments)?
+        };
         // Both conditional arms may reach the same block with different
         // arguments. Include the earlier arm before publishing either update;
         // otherwise the later arm overwrites its facts without a join.
@@ -1379,9 +1389,9 @@ fn check_block_flow(
 fn memory_successor_edges<'a>(
     terminator: &'a Terminator,
     memory: &MemoryChecker<'_>,
-) -> Vec<(BlockId, &'a [ValueId])> {
+) -> Vec<(BlockId, &'a [ValueId], Option<ValueId>)> {
     match terminator {
-        Terminator::Branch { target, arguments } => vec![(*target, arguments)],
+        Terminator::Branch { target, arguments } => vec![(*target, arguments, None)],
         Terminator::BranchIf {
             condition,
             then_target,
@@ -1389,9 +1399,9 @@ fn memory_successor_edges<'a>(
             else_target,
             else_arguments,
         } => match memory.constant_condition(*condition) {
-            Some(true) => vec![(*then_target, then_arguments)],
-            Some(false) => vec![(*else_target, else_arguments)],
-            None => vec![(*then_target, then_arguments), (*else_target, else_arguments)],
+            Some(true) => vec![(*then_target, then_arguments, Some(*condition))],
+            Some(false) => vec![(*else_target, else_arguments, None)],
+            None => vec![(*then_target, then_arguments, Some(*condition)), (*else_target, else_arguments, None)],
         },
         Terminator::Return { .. }
         | Terminator::TailCall { .. }

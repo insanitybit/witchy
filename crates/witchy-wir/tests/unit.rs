@@ -56,6 +56,7 @@ mod canonical_safewir {
                 #[test] fn affine_boundary_rejects_duplicate_owned_return_lanes() { witchy_wir::self_checks::canonical_safewir_check_memory::affine_boundary_rejects_duplicate_owned_return_lanes() }
                 #[test] fn affine_boundary_tail_call_requires_no_untransferred_tokens() { witchy_wir::self_checks::canonical_safewir_check_memory::affine_boundary_tail_call_requires_no_untransferred_tokens() }
                 #[test] fn bounds_guards_name_the_current_owner_generation() { witchy_wir::self_checks::canonical_safewir_check_memory::bounds_guards_name_the_current_owner_generation() }
+                #[test] fn true_edge_bounds_do_not_cross_other_edges_or_owner_generations() { witchy_wir::self_checks::canonical_safewir_check_memory::true_edge_bounds_do_not_cross_other_edges_or_owner_generations() }
                 #[test] fn byte_copy_requires_a_dominating_dynamic_end_guard() { witchy_wir::self_checks::canonical_safewir_check_memory::byte_copy_requires_a_dominating_dynamic_end_guard() }
                 #[test] fn clone_ref_tracks_two_affine_shared_tokens() { witchy_wir::self_checks::canonical_safewir_check_memory::clone_ref_tracks_two_affine_shared_tokens() }
                 #[test] fn complete_managed_abi_subrange_admits_bounded_clone() { witchy_wir::self_checks::canonical_safewir_check_memory::complete_managed_abi_subrange_admits_bounded_clone() }

@@ -1,6 +1,35 @@
 use super::*;
 
 impl<'a> MemoryChecker<'a> {
+    /// A direct unsigned Size comparison is true on its BranchIf true edge.
+    /// Record only the generations attached to that comparison's bound; a
+    /// stale count cannot become current merely because its Bool is true.
+    pub(crate) fn assume_true_bounds_comparison(
+        &mut self,
+        condition: ValueId,
+    ) -> Result<(), InitialCheckError> {
+        let Some(comparison) = self.state.comparisons.get(&condition).copied() else {
+            return Ok(());
+        };
+        if comparison.operator != ComparisonOperator::LessUnsigned
+            || value_type(self.function, comparison.left)? != ValueType::Size
+            || value_type(self.function, comparison.right)? != ValueType::Size
+        {
+            return Ok(());
+        }
+        let relation = (comparison.operator, comparison.left, comparison.right);
+        self.state.guards.insert(relation);
+        let generations = self.state.bound_generations
+            .get(&comparison.left)
+            .into_iter()
+            .chain(self.state.bound_generations.get(&comparison.right))
+            .flat_map(|facts| facts.iter().copied())
+            .chain(self.fresh_header_generations(comparison.right))
+            .collect::<SortedSet<_>>();
+        self.state.guard_generations.insert(relation, generations);
+        Ok(())
+    }
+
     pub(super) fn consume_call_move(
         &mut self,
         source: ValueId,

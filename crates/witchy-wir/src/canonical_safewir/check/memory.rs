@@ -1456,6 +1456,44 @@ pub mod self_checks {
         )
     }
 
+    pub fn true_edge_bounds_do_not_cross_other_edges_or_owner_generations() {
+        with_checker_capacity(false, 2, |checker, _list| {
+            checker.state.constants.remove(&START);
+            checker.check(&Operation::Compare {
+                destination: CONDITION,
+                operator: ComparisonOperator::LessUnsigned,
+                left: START,
+                right: COUNT,
+            }).expect("direct Size comparison");
+            let before = checker.snapshot();
+            let place = Place::projected(
+                SOURCE, Projection::Element { index: START }, ValueType::Size, AccessMode::Read,
+            );
+            assert!(matches!(checker.check_place(&place), Err(InitialCheckError::MissingBoundsGuard { .. })));
+            checker.assume_true_bounds_comparison(CONDITION).expect("true comparison fact");
+            checker.check_place(&place).expect("only the true edge has this bound");
+            let true_edge = checker.snapshot();
+
+            // A false arm, bypass predecessor, or two arms with the same
+            // target meet away the fact before that target can read.
+            let target = BasicBlock {
+                id: crate::canonical_safewir::BlockId::new(1),
+                parameters: Vec::new(), operations: Vec::new(),
+                terminator: crate::canonical_safewir::Terminator::Return { values: Vec::new() },
+            };
+            let joined = checker.meet(&target, &true_edge, &before).expect("compatible paths");
+            checker.restore(joined);
+            assert!(matches!(checker.check_place(&place), Err(InitialCheckError::MissingBoundsGuard { .. })));
+
+            checker.restore(true_edge);
+            checker.state.initialized_scalar_slots.insert((SOURCE, SlotIdentity::Constant(1)));
+            checker.check(&Operation::UpdateCount { object: SOURCE, count: LONG_LENGTH })
+                .expect("initialized prefix may grow");
+            assert!(matches!(checker.check_place(&place), Err(InitialCheckError::MissingBoundsGuard { .. })),
+                "the old true edge cannot authorize a changed owner extent");
+        });
+    }
+
     pub fn bounds_guards_name_the_current_owner_generation() {
         let guarded_read = |checker: &mut MemoryChecker<'_>, object, list| {
             checker.check(&Operation::Compare {
