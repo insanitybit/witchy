@@ -227,6 +227,12 @@ independent `let`, so this proof cannot authorize discarding a later live
 obligation. The rule remains limited to the exact intrinsic and
 its unguarded `None` arm.
 
+A `Result(Int, List(Ticket))` error now carries its `must` list through `?`
+and a second callable to the caller, which drains both Tickets. The same
+normal-mode admitted Wasm witness also executes the `Ok` path; the independent
+combined result is 153, with zero owned-heap leaks. This proves one nested
+error transfer and disposition route, not every error or deferred owner.
+
 The runtime diagnostic golden migration at merged `0ca522869` checks list bounds,
 user `fail`, and a missing named secret through checked source and admitted
 Wasm, retaining their source-level messages. The direct and nested
