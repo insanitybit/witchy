@@ -135,6 +135,54 @@ fn main() -> Int:
     assert_admitted_wasm(&checked, 211);
 }
 
+#[test]
+fn a_generic_var_parameter_writes_back_a_view_carrier() {
+    let checked = witchy::resolve_std_only_checked(r#"
+type Box(a):
+    value: a
+
+fn replace[a](var box: Box(a), other: a):
+    box = Box(value: other)
+
+fn main() -> Int:
+    let first = 1
+    let second = 2
+    var box = Box(value: &first)
+    let before = box
+    let change = replace
+    change(box, &second)
+    (*box.value) * 100 + (*before.value) * 10 + first
+"#)
+    .expect("generic var write-back keeps a concrete view carrier");
+    assert_admitted_wasm(&checked, 211);
+}
+
+#[test]
+fn generic_var_view_write_back_cannot_escape_a_region() {
+    let source = r#"
+type Box(a):
+    value: a
+
+fn replace[a](var box: Box(a), other: a):
+    box = Box(value: other)
+
+fn main() -> Int:
+    let root = 1
+    var box = Box(value: &root)
+    let change = replace
+    let _ = region -> ():
+        let local = 2
+        change(box, &local)
+    0
+"#;
+    let error = witchy::resolve_std_only_checked(source)
+        .err()
+        .map(|error| error.to_string())
+        .expect("region-born root cannot leave through generic var write-back");
+    assert!(error.contains("cannot write back into `box` inside `region:`")
+        && error.contains("can hold a view"), "refusal names the region write-back rule: {error}");
+}
+
 const FAST: &str = r#"mode opt
 
 type Holder:

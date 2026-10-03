@@ -300,6 +300,12 @@ the old record as a readable snapshot after the caller's binding changes.
 These concrete nested and cross-mode carriers pass; recursive, generic, and
 open callable carriers remain unproved.
 
+A specialized `Box(a)` with `a = &Int` now also passes an indirect generic
+`var Box(a)` write-back and retained-snapshot witness on admitted Wasm with
+zero leaks. The matching region-born-root attempt refuses at source checking.
+This proves the concrete specialization, not all generic instantiations or
+open callable provenance.
+
 Until a path has a valid implementation and proof, its compiler behavior must
 refuse rather than silently weaken ownership, resource disposition, or
 authority rules. Historical evidence below records what was tested; it does
