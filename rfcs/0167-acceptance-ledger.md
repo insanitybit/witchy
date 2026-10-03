@@ -306,6 +306,13 @@ zero leaks. The matching region-born-root attempt refuses at source checking.
 This proves the concrete specialization, not all generic instantiations or
 open callable provenance.
 
+Two further normal-mode row G/H aggregate shapes now pass admitted-Wasm,
+zero-leak execution: a record containing `List(&Int)` crosses a constructor
+call and indirect `var` replacement while its prior snapshot remains readable;
+a record containing `&Float` likewise crosses an indirect `var` replacement
+and retains its old scalar view. These establish the named payload families,
+not a universal nested-view carrier rule.
+
 Until a path has a valid implementation and proof, its compiler behavior must
 refuse rather than silently weaken ownership, resource disposition, or
 authority rules. Historical evidence below records what was tested; it does

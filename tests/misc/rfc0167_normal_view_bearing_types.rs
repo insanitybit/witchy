@@ -183,6 +183,60 @@ fn main() -> Int:
         && error.contains("can hold a view"), "refusal names the region write-back rule: {error}");
 }
 
+#[test]
+fn a_record_of_view_list_crosses_a_call_and_var_write_back() {
+    let checked = witchy::resolve_std_only_checked(r#"
+type Holder:
+    views: List(&Int)
+
+fn build(a: &Int, b: &Int) -> Holder:
+    Holder(views: [a, b])
+
+fn replace(var h: Holder, a: &Int, b: &Int):
+    h = build(a, b)
+
+fn read(h: Holder) -> Int:
+    *(h.views[0]) * 10 + *(h.views[1])
+
+fn main() -> Int:
+    let a = 1
+    let b = 2
+    let c = 3
+    var h = build(&a, &b)
+    let before = h
+    let change = replace
+    change(h, &b, &c)
+    read(h) * 100 + read(before)
+"#)
+    .expect("a record containing a list of views is checked");
+    assert_admitted_wasm(&checked, 2312);
+}
+
+#[test]
+fn a_float_view_in_a_record_crosses_a_call_and_var_write_back() {
+    let checked = witchy::resolve_std_only_checked(r#"
+type Holder:
+    value: &Float
+
+fn replace(var h: Holder, next: &Float):
+    h = Holder(value: next)
+
+fn read(h: Holder) -> Float:
+    *h.value
+
+fn main() -> Int:
+    let a = 1.0
+    let b = 2.0
+    var h = Holder(value: &a)
+    let before = h
+    let change = replace
+    change(h, &b)
+    if read(h) == 2.0 && read(before) == 1.0 && a == 1.0: 211 else: 0
+"#)
+    .expect("record of Float view is checked");
+    assert_admitted_wasm(&checked, 211);
+}
+
 const FAST: &str = r#"mode opt
 
 type Holder:
