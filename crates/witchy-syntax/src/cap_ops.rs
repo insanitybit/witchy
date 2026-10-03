@@ -228,7 +228,7 @@ pub const OPS: &[CapOp] = &[
         Listener,
         "net.listen_tls(addr, cert_pem, key)"
     ),
-    op!("only", Net, [NetPolicy], SameReceiver, "cap.only(policy)"),
+    op!("only", Net, [NetPolicy], SameReceiver?, "cap.only(policy)"),
     op!("fetch", Net, [String], Fetch, "net.fetch(origins)"),
     op!("only", Fetch, [String], SameReceiver, "fetch.only(origins)"),
     op!(

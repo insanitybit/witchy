@@ -1943,7 +1943,18 @@ fn block_tail_type(block: &Block, type_of: &dyn Fn(&Expr) -> Option<Type>) -> Op
 
 fn cap_op_result_type(e: &Expr, type_of: &dyn Fn(&Expr) -> Option<Type>) -> Option<Type> {
     let Expr::Call { name, args } = e else { return None };
-    let (shape, fallible) = cap_ops::result_shape(name, args.len())?;
+    // An overloaded name (`only`) differs by receiver, so the receiver's
+    // own row decides when its type is known.
+    let receiver = args.first().and_then(type_of).and_then(|ty| match ty.unqualified() {
+        Type::Named(name, _) => cap_ops::ReceiverKind::from_type_name(name),
+        _ => None,
+    });
+    let (shape, fallible) = match receiver.and_then(|kind| cap_ops::operation(name, kind))
+        .filter(|op| op.total_arity() == args.len())
+    {
+        Some(op) => (op.result, op.fallible),
+        None => cap_ops::result_shape(name, args.len())?,
+    };
     let value = match shape {
         cap_ops::ResultShape::SameReceiver => args.first().and_then(type_of),
         cap_ops::ResultShape::Nil => Some(unit_type()),

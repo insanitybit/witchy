@@ -456,21 +456,6 @@ fn main(console: Console):
         );
     }
 
-    /// RFC-0011: `Net.union(a, b)` builds a multi-endpoint `NetPolicy`, and
-    /// `net.only(union(...))` narrows to the WHOLE set — so a further refinement to EITHER
-    /// endpoint still succeeds (both are admitted). On both backends.
-    #[test]
-    fn net_only_union_admits_each_endpoint_backends_agree() {
-        let src = "fn main(net: Net, console: Console):\n    let pair = net.only(Net.union(Net.tcp(\"10.0.0.5\", 6379), Net.tcp(\"10.0.0.6\", 6379)))\n    let a = pair.only(Net.tcp(\"10.0.0.5\", 6379))\n    let b = pair.only(Net.tcp(\"10.0.0.6\", 6379))\n    console.print(\"both\")\n";
-        let expected = vec!["both".to_string()];
-        assert_eq!(link_run_net(src, &["10.0.0.5:6379", "10.0.0.6:6379"]), expected, "interp");
-        assert_eq!(
-            run_linked_on_wasm_net(&[("main", src)], "main", &["10.0.0.5:6379", "10.0.0.6:6379"]),
-            expected,
-            "wasm",
-        );
-    }
-
     #[test]
     fn fetch_capability_raw_abi_agrees_across_backends() {
         use crate::runtime::{Capabilities, Runtime};
@@ -682,29 +667,92 @@ fn main(console: Console):
         assert!(denied.is_err(), "net import must not instantiate without a Net grant");
     }
 
+    /// Run `src` as unoptimized admitted Wasm under a Connect grant for
+    /// `net_allow`; a trap is `Err` with its root cause.
+    fn run_admitted_net(src: &str, net_allow: &[String]) -> Result<Vec<String>, String> {
+        struct ResetOptimization;
+        impl Drop for ResetOptimization {
+            fn drop(&mut self) { crate::opt::set_for_tests(None); }
+        }
+        crate::opt::set_for_tests(Some(crate::opt::OptSet::none()));
+        let _reset = ResetOptimization;
+        let checked = witchy::resolve_std_only_checked(src).expect("check Net program");
+        let artifact = codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("admit Net program");
+        let caps = crate::runtime::Capabilities {
+            print: true, quiet: true, net_allow: Some(net_allow.to_vec()), net_connect: true,
+            ..Default::default()
+        };
+        let mut rt = crate::runtime::Runtime::batch().expect("runtime");
+        let mut vm = rt.spawn_admitted(&artifact, caps, 64).expect("spawn admitted Net program");
+        vm.run().map_err(|error| error.root_cause().to_string())?;
+        Ok(vm.output())
+    }
+
+    /// RFC-0126 rule 3: `net.only(policy)` is `Result(Net, CapError)`. A
+    /// policy within the receiver's set is `Ok`, and the narrowed `Net` dials
+    /// only what it admits; one outside it is `Denied`, decided from the
+    /// grant alone (`10.0.0.7` is never dialed or resolved). A union narrows
+    /// to the whole set, and `deny` cannot be undone by a later `only`.
+    #[test]
+    fn net_only_answers_denied_outside_the_receiver_set() {
+        use std::io::{BufRead, Write};
+        let server = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let port = server.local_addr().expect("local address").port();
+        let echo = std::thread::spawn(move || {
+            let (stream, _) = server.accept().expect("accept");
+            let mut reader = std::io::BufReader::new(stream);
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("read");
+            reader.get_mut().write_all(format!("echo: {}\n", line.trim_end()).as_bytes()).expect("write");
+        });
+        let src = format!(r#"
+fn verdict(r: Result(Net, CapError)) -> String:
+    match r:
+        Ok(_) -> "ok"
+        Err(Denied(m)) -> "denied: " + m
+        Err(_) -> "other"
+
+fn main(console: Console, net: Net):
+    console.print(verdict(net.only(Net.tcp("127.0.0.1", {port}))))
+    console.print(verdict(net.only(Net.tcp("10.0.0.7", 6379))))
+    console.print(verdict(net.only(Net.union(Net.tcp("10.0.0.5", 6379), Net.tcp("10.0.0.6", 6379)))))
+    console.print(verdict(net.deny(Net.tcp("10.0.0.5", 6379)).only(Net.tcp("10.0.0.5", 6379))))
+    match net.only(Net.tcp("127.0.0.1", {port})):
+        Ok(narrowed) ->
+            console.print(verdict(narrowed.only(Net.tcp("10.0.0.5", 6379))))
+            let sock = narrowed.connect("127.0.0.1:{port}")
+            sock.send_bytes("hello\n")
+            console.print(sock.recv_line())
+            sock.close()
+        Err(_) -> console.print("unexpected")
+"#);
+        let allow = vec![format!("127.0.0.1:{port}"), "10.0.0.5:6379".to_string(), "10.0.0.6:6379".to_string()];
+        assert_eq!(run_admitted_net(&src, &allow).expect("run"), vec![
+            "ok".to_string(),
+            "denied: `10.0.0.7:6379` is not covered by this Net capability".to_string(),
+            "ok".to_string(),
+            "denied: `10.0.0.5:6379` is not covered by this Net capability".to_string(),
+            "denied: `10.0.0.5:6379` is not covered by this Net capability".to_string(),
+            "echo: hello".to_string(),
+        ]);
+        echo.join().expect("echo server");
+    }
+
+    /// Attenuation is real: after narrowing to one address, a sibling that
+    /// was in the original grant is no longer reachable.
     #[test]
     fn net_capability_cannot_escalate() {
-        // narrowing to an address not already held is denied (can't widen).
-        let restrict_denied = r#"
-fn main(console: Console, net: Net):
-    net.only(Net.tcp("evil.test", 80)).connect("evil.test:80").send_line("x")
-"#;
-        // `resolve_std_src` links `policy`; `run_module` grants the Net allow-list.
-        let e = interpreter::run_module(resolve_std_src(restrict_denied), ".", vec!["allowed.test:80".into()])
-            .unwrap_err()
-            .to_string();
-        assert!(e.contains("not in this Net"), "expected a restrict denial, got: {e}");
-
-        // Attenuation is real: after narrowing to one address, a sibling that
-        // was in the original grant is no longer reachable.
         let attenuated = r#"
 fn main(console: Console, net: Net):
-    let narrow = net.only(Net.tcp("a.test", 80))
-    narrow.connect("b.test:80").send_line("x")
+    match net.only(Net.tcp("a.test", 80)):
+        Ok(narrow) ->
+            let sock = narrow.connect("b.test:80")
+            sock.close()
+        Err(_) -> console.print("unexpected")
 "#;
-        let e = interpreter::run_module(resolve_std_src(attenuated), ".", vec!["a.test:80".into(), "b.test:80".into()])
-            .unwrap_err()
-            .to_string();
+        let e = run_admitted_net(attenuated, &["a.test:80".to_string(), "b.test:80".to_string()])
+            .expect_err("the sibling must be unreachable");
         assert!(e.contains("not permitted"), "expected the sibling to be unreachable, got: {e}");
     }
 

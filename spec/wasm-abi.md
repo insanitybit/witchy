@@ -376,6 +376,12 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `net_take_received_into` | `(externref, i32, i32) -> i32` | capability authority | Net.Connect | omitted |
 | `net_recv_all_size` | `(externref) -> i32` | capability authority | Net.Connect | omitted |
 | `net_connect_at` | `(externref, i32, i32) -> externref` | capability authority | Net.Connect | omitted |
+| `net_only_at` | `(externref, i32, i32) -> externref` | capability authority | Net.grant | omitted |
+| `net_deny_at` | `(externref, i32, i32) -> externref` | capability authority | Net.grant | omitted |
+| `net_response_status` | `(externref) -> i32` | capability authority | Net.grant | omitted |
+| `net_response_size` | `(externref) -> i32` | capability authority | Net.grant | omitted |
+| `net_response_into` | `(externref, i32, i32) -> i32` | capability authority | Net.grant | omitted |
+| `net_response_take_net` | `(externref) -> externref` | capability authority | Net.grant | omitted |
 | `__witchy_abort_at` | `(i32, i32, i32, i32, i32)` | runtime diagnostic | none | omitted |
 | `__witchy_list_bounds_at` | `(i64, i32, i32, i32, i32)` | runtime diagnostic | none | omitted |
 | `__witchy_bytes_bounds_at` | `(i64, i32, i32, i32, i32)` | runtime diagnostic | none | omitted |

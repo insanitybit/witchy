@@ -2211,8 +2211,10 @@ nothing hidden (the hard, runtime-enforced `Net` plus a soft, library-enforced
 Rights (§13.1) narrow which *verbs* a `Net` permits; to narrow which *hosts* it may
 dial, confine its **address-set** with typed policy values built on the capability
 itself (`Net.tcp(…)`).
-`net.only(policy)` intersects the carried set with `policy` (an endpoint survives
-only if already admitted); `net.deny(policy)` subtracts a slice. Both are monotone -
+`net.only(policy)` intersects the carried set with `policy` and returns
+`Result(Net, CapError)`: an endpoint the receiver does not already admit is
+`Err(Denied(..))`. `net.deny(policy)` subtracts a slice and returns the `Net`
+directly. Both are monotone -
 refinement only ever shrinks - and host-enforced **at the syscall** on both
 backends, the address analog of `dir.subtree` for `Dir`.
 
@@ -2220,7 +2222,10 @@ backends, the address analog of `dir.subtree` for `Dir`.
 fn main(console: Console, net: Net):
     let db = net.only(Net.tcp("10.0.0.5", 6379))
     let safe = net.deny(Net.cidr_any("10.0.0.0/8")).only(Net.tcp("192.168.1.1", 80))
-    console.print("net confined")
+    match db:
+        Ok(_) -> console.print("net confined")
+        Err(_) -> console.print("outside the grant")
+    let _ = safe
 ```
 
 The policy constructors are `Net.tcp(host, port)`, `Net.any_port(host)`,

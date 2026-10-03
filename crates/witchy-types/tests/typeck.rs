@@ -1377,11 +1377,11 @@ fn main() -> Int:
     fn policy_narrowing_preserves_rights_and_cannot_rewiden() {
         // `net.only(policy)` keeps the receiver's rights: the result is still
         // connect-capable, so `connect` on it type-checks.
-        check_str("type NetPolicy:\n    NetPolicy(String)\nfn f(console: Console, net: Net[Connect]):\n    let scoped = net.only(NetPolicy(\"example.com:443\"))\n    let s = scoped.connect(\"example.com:443\")\n    console.print(\"ok\")\n")
+        check_str("type NetPolicy:\n    NetPolicy(String)\nfn f(console: Console, net: Net[Connect]):\n    let scoped = net.only(NetPolicy(\"example.com:443\")) ?? net\n    let s = scoped.connect(\"example.com:443\")\n    console.print(\"ok\")\n")
             .expect("net.only preserves the Connect right");
         // ... and because the rights are preserved (still connect-only, not full),
         // the narrowed handle cannot be re-widened to a full `Net` by a cast.
-        let err = check_str("type NetPolicy:\n    NetPolicy(String)\nfn f(console: Console, net: Net[Connect]):\n    let scoped = net.only(NetPolicy(\"example.com:443\"))\n    let wide = scoped as Net\n    console.print(\"no\")\n")
+        let err = check_str("type NetPolicy:\n    NetPolicy(String)\nfn f(console: Console, net: Net[Connect]):\n    let scoped = net.only(NetPolicy(\"example.com:443\")) ?? net\n    let wide = scoped as Net\n    console.print(\"no\")\n")
             .expect_err("a policy-narrowed Net[Connect] must not re-widen to full Net");
         assert!(err.contains("can only drop rights"), "got: {err}");
         // `dir.only(policy)` likewise keeps `Read` ...

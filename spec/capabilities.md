@@ -104,8 +104,11 @@ also receive a `File` **directly**: each `--file <path>` grant fills `main`'s
 A `Net` likewise carries an **address-set**, narrowed with typed policy values
 built on the capability itself: `Net.tcp(host, port)`, `Net.any_port(host)`, `Net.cidr(block,
 port)`, `Net.cidr_any(block)`, and `Net.union(a, b)` for a multi-endpoint set.
-`net.only(policy)` intersects the carried set with `policy` (each endpoint must
-already be admitted); `net.deny(policy)` subtracts one (set difference). Both are
+`net.only(policy)` intersects the carried set with `policy` and returns
+`Result(Net, CapError)`: an endpoint the receiver does not already admit is
+`Err(Denied(..))`, decided from the grant before any DNS or socket activity.
+`net.deny(policy)` subtracts one (set difference) and returns the narrowed `Net`
+directly; endpoints it removes stay removed under a later `only`. Both are
 **monotone** - refinement can only ever shrink the set - and enforced **at the
 syscall by the runtime** on both backends, so a narrowed `Net` cannot dial
 elsewhere. Policy patterns are **scheme-agnostic `host:port`**: HTTPS isn't a
@@ -188,10 +191,14 @@ fn main(console: Console, dir: Dir):
 ```witchy
 fn main(console: Console, net: Net):
     // Address-set attenuation: confine Net to one endpoint (scheme-agnostic).
-    let db = net.only(Net.tcp("10.0.0.5", 6379))
+    // An endpoint outside the held set is `Err(Denied(..))`, never a wider Net.
+    match net.only(Net.tcp("10.0.0.5", 6379)):
+        Ok(_) -> console.print("db confined")
+        Err(_) -> console.print("outside the grant")
 
-    // `deny` subtracts a block; refinement only ever shrinks. Chains, too.
-    let safe = net.deny(Net.cidr_any("10.0.0.0/8")).only(Net.tcp("192.168.1.1", 80))
+    // `deny` subtracts a block and cannot fail; refinement only ever shrinks.
+    let safe = net.deny(Net.cidr_any("10.0.0.0/8"))
+    let _ = safe.only(Net.tcp("192.168.1.1", 80))
 
     console.print("net confined")
 ```

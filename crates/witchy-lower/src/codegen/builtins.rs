@@ -1103,9 +1103,9 @@ impl Codegen<'_> {
                     let a = self.lower_args(&[&args[0], &args[1]])?;
                     if self.collect_wir { call("fetch_only", a) } else { host("fetch_only_host", a) }
                 } else {
-                    self.used_net_ops.insert("restrict");
-                    let a = vec![self.lower_expr(&args[0])?, self.lower_policy_pattern(&args[1])?];
-                    if self.collect_wir { call("net_restrict", a) } else { host("net_restrict_host", a) }
+                    // `net.only` answers `Result(Net, CapError)` (RFC-0126
+                    // rule 3); only the canonical route builds that result.
+                    return None;
                 }
             }
             ("send_raw", 5) => {

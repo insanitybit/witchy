@@ -11,6 +11,8 @@ use crate::net::Stream;
 
 #[path = "canonical_network.rs"]
 mod canonical;
+#[path = "canonical_net_policy.rs"]
+mod policy;
 
 /// Register the checked canonical Net ABI.  Registering these imports does not
 /// grant network authority: every operation first authenticates an opaque,
@@ -20,6 +22,7 @@ mod canonical;
 /// authority that its entry point did not request.
 pub(in crate::runtime) fn link_canonical(linker: &mut Linker<VmState>) -> Result<()> {
     canonical::link_connect(linker)?;
+    policy::link(linker)?;
     canonical::link_listen(linker)?;
     canonical::link_socket_io(linker)?;
     linker.func_wrap("witchy", "net_accept", host_net_accept)?;

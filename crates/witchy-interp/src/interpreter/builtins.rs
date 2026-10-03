@@ -3950,12 +3950,13 @@ impl Interpreter {
                         )),
                     }
                 }
-                [Value::Net(allow), Value::Ctor { fields, .. }] if fields.len() == 1 => {
-                    let Value::Str(addr) = &fields[0] else {
-                        return err("only expects a NetPolicy");
-                    };
-                    Ok(Some(net_narrow_to(allow, addr)?))
-                }
+                // `net.only` answers `Result(Net, CapError)` (RFC-0126 rule 3).
+                // The frozen walker gains no new semantics: it refuses the
+                // operation rather than emulating that result.
+                [Value::Net(_), Value::Ctor { fields, .. }] if fields.len() == 1 => err(
+                    "`net.only` returns a `CapError` result, which the source interpreter does \
+                     not implement; run the program as admitted Wasm",
+                ),
                 // RFC-0011: `dir.only(DirPolicy)` narrows the Dir's entry policy.
                 [Value::Dir(base, pol), Value::Ctor { fields, .. }] if fields.len() == 1 => {
                     let Value::Str(refine) = &fields[0] else {

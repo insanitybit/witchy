@@ -132,14 +132,3 @@ pub(super) fn write_file_value_bytes(file: &FileValue, contents: &[u8]) -> Resul
     }
 }
 
-/// Narrow a `Net`'s allowlist to a `NetPolicy`'s pattern set (`\n`-joined for a union from
-/// `confine.union`). Each pattern must already be admitted by the current allowlist
-/// (monotone — refinement only shrinks). Returns the narrowed `Net`.
-pub(super) fn net_narrow_to(allow: &[String], patterns: &str) -> Result<Value, RuntimeError> {
-    match witchy_caps::capabilities::net_only(allow, patterns) {
-        Ok(narrowed) => Ok(Value::Net(narrowed)),
-        Err(p) => Err(RuntimeError {
-            message: format!("`{p}` is not in this Net capability"),
-        }),
-    }
-}

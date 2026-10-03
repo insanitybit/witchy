@@ -619,7 +619,7 @@ impl Checker {
             "only" | "deny" => Ty::Net(rights),
             _ => unreachable!(),
         };
-        Ok(Some(ret))
+        Ok(Some(if operation.fallible { Self::cap_result(ret) } else { ret }))
     }
 
 }

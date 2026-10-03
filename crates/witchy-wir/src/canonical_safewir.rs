@@ -89,6 +89,8 @@ mod dir_storage;
 pub use dir_storage::{DIR_RESPONSE_KIND, DIR_STORAGE_IMPORT_NAMES};
 mod env_response;
 pub use env_response::{ENV_RESPONSE_KIND, ENV_IMPORT_NAMES};
+mod net_response;
+pub use net_response::{NET_RESPONSE_KIND, NET_RESPONSE_IMPORT_NAMES};
 pub(crate) mod build_read;
 pub use build_read::{BUILD_READ_CAPABILITY_KIND, BUILD_READ_RESPONSE_KIND, BUILD_READ_IMPORT_NAMES};
 pub use build_read::{BUILD_ENV_CAPABILITY_KIND, BUILD_ENV_IMPORT_NAMES};

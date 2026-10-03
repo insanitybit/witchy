@@ -381,6 +381,12 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "net_take_received_into" (func $net_take_received_into_host (param externref i32 i32) (result i32)))
   (import "witchy" "net_recv_all_size" (func $net_recv_all_size_host (param externref) (result i32)))
   (import "witchy" "net_connect_at" (func $net_connect_at_host (param externref i32 i32) (result externref)))
+  (import "witchy" "net_only_at" (func $net_only_at_host (param externref i32 i32) (result externref)))
+  (import "witchy" "net_deny_at" (func $net_deny_at_host (param externref i32 i32) (result externref)))
+  (import "witchy" "net_response_status" (func $net_response_status_host (param externref) (result i32)))
+  (import "witchy" "net_response_size" (func $net_response_size_host (param externref) (result i32)))
+  (import "witchy" "net_response_into" (func $net_response_into_host (param externref i32 i32) (result i32)))
+  (import "witchy" "net_response_take_net" (func $net_response_take_net_host (param externref) (result externref)))
   (import "witchy" "__witchy_abort_at" (func $__witchy_abort_at (param i32 i32 i32 i32 i32)))
   (import "witchy" "__witchy_list_bounds_at" (func $__witchy_list_bounds_at (param i64 i32 i32 i32 i32)))
   (import "witchy" "__witchy_bytes_bounds_at" (func $__witchy_bytes_bounds_at (param i64 i32 i32 i32 i32)))
@@ -709,6 +715,12 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "net_accept"
         | "net_restrict"
         | "net_deny"
+        | "net_only_at"
+        | "net_deny_at"
+        | "net_response_status"
+        | "net_response_size"
+        | "net_response_into"
+        | "net_response_take_net"
         | "net_send_line"
         | "net_send_bytes"
         | "net_close"
@@ -805,7 +817,8 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         "mint_file" => AUTH_FILE_GRANT,
         "file_read_len" | "file_write" | "file_read_at" | "file_write_at" | "file_response_status"
         | "file_response_size" | "file_response_into" => AUTH_FILE_AUTHORITY,
-        "mint_net" => AUTH_NET_GRANT,
+        "mint_net" | "net_only_at" | "net_deny_at" | "net_response_status" | "net_response_size"
+        | "net_response_into" | "net_response_take_net" => AUTH_NET_GRANT,
         "mint_fetch" => AUTH_FETCH_GRANT,
         "fetch_only" | "fetch_only_at" | "fetch_send_at" => AUTH_FETCH,
         "net_fetch_at" => AUTH_NET_CONNECT,

@@ -91,7 +91,7 @@ mod calls;
 mod places;
 mod capability_values;
 use capability_values::{
-    dir_child_value, dir_file_value_for_policy, exact_entry_kind, net_narrow_to,
+    dir_child_value, dir_file_value_for_policy, exact_entry_kind,
     visible_entry_kind, write_file_value,
     write_file_value_bytes,
 };

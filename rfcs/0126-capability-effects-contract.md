@@ -177,6 +177,21 @@ never follows its leaf.
 `dir.only(policy)` narrows the entry policy those rules consult. It cannot
 widen and cannot fail, so it returns `Dir` rather than a `Result`.
 
+### Rule 3 for network capabilities
+
+`Net` follows the same rule. A failure is decided from the grant before any DNS
+lookup or socket activity, so a denied endpoint answers identically whether or
+not it resolves or is reachable. A message names the endpoint only as the guest
+spelled it.
+
+- `net.only(policy)` returns `Result(Net, CapError)`. A policy endpoint the
+  receiver does not already admit is `Err(Denied(..))`. Endpoints the receiver
+  denies stay denied, so `net.deny(p).only(p)` is `Denied`. One host call,
+  `net_only_at`, answers with a response; `net_response_take_net` takes the
+  narrowed `Net` on success.
+- `net.deny(policy)` returns `Net`. Subtraction only removes endpoints, so it
+  cannot fail.
+
 The cryptographic, networking, filesystem, process, server, environment, and
 secret modules are retained features. Pure hashing, verification, and encoding
 need no authority merely because their implementation is host-native. Secret
