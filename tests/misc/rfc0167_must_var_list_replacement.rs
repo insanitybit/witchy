@@ -30,7 +30,7 @@ fn replace(var tickets: List(Ticket)) -> Int:
     match list.__pop_extract(tickets):
         Some(ticket) -> finish(ticket) + replace(tickets)
         None ->
-            let pause = 0
+            let pause = if true: 0 else: 0
             tickets = [Ticket(3)]
             pause
 
@@ -66,6 +66,7 @@ fn replace(var tickets: List(Ticket)) -> Int:
     for body in [
         "            tickets = [Ticket(3)]\n            tickets = [Ticket(4)]\n            0\n",
         "            let unrelated = 1\n            tickets = [Ticket(3)]\n            tickets = [Ticket(4)]\n            unrelated\n",
+        "            let unrelated = if true:\n                tickets = [Ticket(4)]\n                0\n            else: 0\n            tickets = [Ticket(3)]\n            unrelated\n",
     ] {
         let source = format!("{prefix}{body}fn main() -> Int:\n    var tickets = [Ticket(1)]\n    replace(tickets)\n");
         let error = witchy::resolve_std_only_checked(&source)

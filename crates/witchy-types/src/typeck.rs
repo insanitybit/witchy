@@ -373,9 +373,16 @@ fn bare_cap_op_error(name: &str, arity: usize) -> Option<String> {
 
 /// An exact-pop `None` proof remains valid across statements that cannot
 /// access the borrowed list. Restrict the prefix to independent straight-line
-/// statements. Nested bodies are excluded because their assignment targets
-/// are not part of the expression visitor's read set. The first whole-binding
+/// statements. Check nested bodies' assignment targets as well as expression
+/// reads, so an unrelated control-flow expression preserves the proof but a
+/// write through that expression does not. The first whole-binding
 /// assignment then consumes the proof in the ordinary assignment checker.
+fn block_assigns_binding(block: &Block, binding: &str) -> bool {
+    block.stmts.iter().any(|statement| {
+        matches!(statement, Stmt::Assign { name, .. } if name == binding)
+    })
+}
+
 fn exact_empty_replacement_after_independent_prefix(body: &Expr, binding: &str) -> bool {
     let Expr::Block(block) = body else { return false };
     for statement in &block.stmts {
@@ -388,11 +395,18 @@ fn exact_empty_replacement_after_independent_prefix(body: &Expr, binding: &str) 
         };
         let mut independent = true;
         let _: Result<(), ()> = ast::visit::visit_expr(value, &mut |expression| {
+            let nested_write = match expression {
+                Expr::Lambda { body, .. } | Expr::Block(body)
+                | Expr::While { body, .. } | Expr::For { body, .. }
+                | Expr::WhileLet { body, .. } => block_assigns_binding(body, binding),
+                Expr::If { then_block, else_block, .. } => {
+                    block_assigns_binding(then_block, binding)
+                        || else_block.as_ref().is_some_and(|block| block_assigns_binding(block, binding))
+                }
+                _ => false,
+            };
             if matches!(expression, Expr::Var(name) if name == binding)
-                || matches!(expression,
-                    Expr::Lambda { .. } | Expr::If { .. } | Expr::Match { .. }
-                    | Expr::Block(_) | Expr::While { .. } | Expr::For { .. }
-                    | Expr::WhileLet { .. })
+                || nested_write
             {
                 independent = false;
             }

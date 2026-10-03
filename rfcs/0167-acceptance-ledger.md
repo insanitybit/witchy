@@ -219,9 +219,9 @@ is a bounded list-disposition case, not general task-resource disposition.
 
 An exact-pop `None` arm can now replace the proved-empty write-back slot of
 a borrowed `var List(Ticket)` once, either immediately or after independent
-straight-line statements that cannot access that binding. The admitted
-normal-mode Wasm witness drains two old Tickets, writes back a new Ticket,
-then drains that replacement at the caller; the independent result is 33
+statements, including nested control flow, that cannot access that binding.
+The admitted normal-mode Wasm witness drains two old Tickets, writes back a
+new Ticket, then drains that replacement at the caller; the result is 33
 with zero owned-heap leaks. A second replacement refuses even after an
 independent `let`, so this proof cannot authorize discarding a later live
 obligation. The rule remains limited to the exact intrinsic and
