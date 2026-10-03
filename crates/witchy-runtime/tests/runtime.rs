@@ -238,6 +238,7 @@ mod runtime {
                 #[test] fn dir_storage_entry_policy_is_preserved_for_every_file_operation() { checks::dir_storage_entry_policy_is_preserved_for_every_file_operation().check() }
                 #[test] fn dir_storage_full_input_preflight_precedes_file_mutation() { checks::dir_storage_full_input_preflight_precedes_file_mutation().check() }
                 #[test] fn dir_read_at_answers_failures_as_statuses() { checks::dir_read_at_answers_failures_as_statuses().check() }
+                #[test] fn file_read_at_answers_failures_as_statuses() { checks::file_read_at_answers_failures_as_statuses().check() }
                 #[test] fn dir_storage_imports_remain_grant_gated() { checks::dir_storage_imports_remain_grant_gated().check() }
                 #[test] fn dir_storage_kind_rights_and_response_issuer_precede_memory() { checks::dir_storage_kind_rights_and_response_issuer_precede_memory().check() }
                 #[test] fn dir_storage_response_preflight_short_capacity_and_exact_prefix() { checks::dir_storage_response_preflight_short_capacity_and_exact_prefix().check() }
@@ -323,8 +324,7 @@ mod runtime {
         #[test] fn empty_build_grants_do_not_widen_outer_authority() { checks::empty_build_grants_do_not_widen_outer_authority().check() }
         #[test] fn empty_network_grant_remains_distinct_from_no_network_grant() { checks::empty_network_grant_remains_distinct_from_no_network_grant().check() }
         #[test] fn exec_child_paths_widen_only_the_read_only_outer_fence() { checks::exec_child_paths_widen_only_the_read_only_outer_fence().check() }
-        #[test] fn file_read_into_rejects_invalid_path_file_utf8_and_unrelated_externrefs() { checks::file_read_into_rejects_invalid_path_file_utf8_and_unrelated_externrefs().check() }
-        #[test] fn file_read_into_validates_full_short_range_and_does_not_partially_write() { checks::file_read_into_validates_full_short_range_and_does_not_partially_write().check() }
+        #[test] fn dir_read_file_rejects_an_invalid_utf8_path() { checks::dir_read_file_rejects_an_invalid_utf8_path().check() }
         #[test] fn forged_par_map_count_is_bounded_before_host_allocation() { checks::forged_par_map_count_is_bounded_before_host_allocation().check() }
         #[test] fn heap_check_overrun_redzone_traps() { checks::heap_check_overrun_redzone_traps().check() }
         #[test] fn host_imports_require_generated_layout_metadata_before_linking() { checks::host_imports_require_generated_layout_metadata_before_linking().check() }

@@ -3151,3 +3151,34 @@ existence-independence at the host, including:
 The source tree walker refuses `dir.read` by name instead of gaining
 `CapError`. The legacy two-backend Dir tests that read now run as admitted Wasm
 or read through `File`, which adds no new walker dependency.
+
+### 2026-10-03: `dir.read_bytes` and `file.read` return `CapError` results (RFC-0126 rule 3, row Q partial)
+
+`dir.read_bytes` answers through the same response protocol and the same
+classification as `dir.read`, minus UTF-8 decoding. `file.read` performs one
+read through `file_read_at`, and its `file_response_*` imports carry the same
+protocol under File authority. The retired `file_read_into` import is gone.
+
+`dir_read_at_answers_failures_as_statuses` checks every row twice:
+`dir.read_bytes` must answer the same status and payload as `dir.read`, except
+that raw non-UTF-8 bytes succeed. `file_read_at_answers_failures_as_statuses`
+covers each failure of a File opened before the change:
+
+- deletion is `NotFound`;
+- a directory swapped in is `NotAFile`;
+- non-UTF-8 text is `Io`; and
+- a symlink swapped in to an outside file, existing or missing, is `Denied`.
+
+That test also pins the traps: a wrong-kind token, a null File, and an
+out-of-range copy. Admitted-Wasm transcripts cover subtree, multi-`Dir`, and
+`File` reads.
+
+The source tree walker and the legacy codegen refuse both operations by name.
+The example-test admitted launcher does not yet supply a `File` entry
+parameter, so that test observes direct-`File` positional mapping through
+writes on the legacy backends. The installed trusted-application test runs
+`file.read()` on a granted `File` end to end.
+
+A File opened under an entry policy reads without following its leaf. A link
+swapped in later answers `Denied`, which the File host test pins.
+

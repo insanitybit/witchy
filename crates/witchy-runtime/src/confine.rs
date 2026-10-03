@@ -84,6 +84,7 @@ fn err<T>(message: impl Into<String>) -> Result<T, ConfineError> {
     Err(ConfineError::denied(message))
 }
 
+#[cfg(target_arch = "wasm32")]
 fn unavailable<T>() -> Result<T, ConfineError> {
     Err(ConfineError::new(
         ConfineErrorKind::Io,
@@ -243,6 +244,7 @@ impl ConfinedDir {
             display: self.display.join(path),
             parent,
             name: PathBuf::from(name),
+            no_follow: false,
         };
         if must_exist {
             file.open_read_handle()
@@ -463,6 +465,9 @@ pub struct ConfinedFile {
     parent: ConfinedDir,
     name: PathBuf,
     display: PathBuf,
+    /// Set when an entry policy admitted this file on its no-follow identity:
+    /// a later read must not follow a symlink swapped in at the name.
+    no_follow: bool,
 }
 
 impl ConfinedFile {
@@ -478,6 +483,7 @@ impl ConfinedFile {
             parent,
             name: PathBuf::from(name),
             display: path.to_path_buf(),
+            no_follow: false,
         })
     }
 
@@ -574,10 +580,10 @@ impl ConfinedFile {
         }
     }
 
-    /// `read_to_string` without following a symlink leaf, so an entry policy
+    /// `read_bytes` without following a symlink leaf, so an entry policy
     /// judged on the leaf's no-follow identity still holds if the name is
     /// swapped for a link after that judgment.
-    pub fn read_to_string_no_follow(&self) -> std::io::Result<String> {
+    pub fn read_bytes_no_follow(&self) -> std::io::Result<Vec<u8>> {
         #[cfg(not(target_arch = "wasm32"))]
         {
             use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
@@ -585,14 +591,37 @@ impl ConfinedFile {
             let mut options = cap_std::fs::OpenOptions::new();
             options.read(true).follow(FollowSymlinks::No);
             let mut file = self.parent.inner.open_with(&self.name, &options)?;
-            let mut contents = String::new();
-            file.read_to_string(&mut contents)?;
+            let mut contents = Vec::new();
+            file.read_to_end(&mut contents)?;
             Ok(contents)
         }
         #[cfg(target_arch = "wasm32")]
         {
             Err(unsupported())
         }
+    }
+
+    /// This file as admitted by an entry policy: its reads never follow a
+    /// symlink leaf, even one swapped in after the policy judged the name.
+    pub fn without_following(mut self) -> Self {
+        self.no_follow = true;
+        self
+    }
+
+    /// Read this file's bytes for a guest that branches on the failure
+    /// (RFC-0126 rule 3). A failed read through a symlink leaf is `Denied`
+    /// whatever its target is, so a link leaving the root never reports
+    /// whether its outside target exists; any other failure is classified by
+    /// its I/O kind.
+    pub fn read_bytes_classified(&self) -> Result<Vec<u8>, ConfineError> {
+        let read = if self.no_follow { self.read_bytes_no_follow() } else { self.read_bytes() };
+        read.map_err(|error| {
+            let through_link = self.name.to_str().is_some_and(|name| {
+                matches!(self.parent.entry_kind_spelled(name), Ok(Some(ConfinedEntryKind::Other)))
+            });
+            let kind = if through_link { ConfineErrorKind::Denied } else { ConfineErrorKind::of_io(&error) };
+            ConfineError::new(kind, format!("read failed for `{}`: {error}", self.display.display()))
+        })
     }
 
     /// Read the confined file's RAW bytes without UTF-8 validation — for binary

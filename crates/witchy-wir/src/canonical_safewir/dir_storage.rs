@@ -1,25 +1,27 @@
 //! Bounded directory storage and immutable read responses.
 use super::*;
 
-/// An internal response value, not a source or launch capability. A `Dir`
-/// read performs its filesystem operation once and answers with one of these:
+/// An internal response value, not a source or launch capability. A `Dir` or
+/// `File` read performs its filesystem operation once and answers with one of these:
 /// a status (0 success, else the `CapError` variant ordinal plus one) and a
 /// payload (the contents, or the failure message), each read back without
 /// touching the filesystem again.
 pub const DIR_RESPONSE_KIND: CapabilityKindId = CapabilityKindId::new(22);
-pub const DIR_STORAGE_IMPORT_NAMES: [&str; 11] = [
+pub const DIR_STORAGE_IMPORT_NAMES: [&str; 15] = [
     "dir_create_new_at", "dir_replace_at", "dir_read_bytes_at",
     "dir_response_size", "dir_response_into", "dir_write_bytes_at",
     "dir_append_bytes_at", "dir_set_executable_at", "dir_rename_at",
     "dir_read_at", "dir_response_status",
+    "file_read_at", "file_response_status", "file_response_size", "file_response_into",
 ];
 
 impl CanonicalAbiCatalog {
     pub fn with_dir_storage_imports(
-        mut self, signatures: [FunctionSignatureId; 11], byte_layout: LayoutId,
+        mut self, signatures: [FunctionSignatureId; 15], byte_layout: LayoutId,
     ) -> Result<Self, String> {
         use crate::wir_prelude::{AbiImportAuthority, WasmTy::*};
         let dir = HostParameterRole::Capability(DIR_CAPABILITY_KIND);
+        let file = HostParameterRole::Capability(FILE_CAPABILITY_KIND);
         let response = HostParameterRole::Capability(DIR_RESPONSE_KIND);
         let buffer = |access| HostParameterRole::Buffer {
             value_type: ValueType::Ref(byte_layout), access, extent: HostBufferExtent::Slice,
@@ -70,9 +72,27 @@ impl CanonicalAbiCatalog {
                 vec![HostResultRole::Capability(DIR_RESPONSE_KIND)],
                 HostMutation::ReadOnly, &[AbiImportAuthority::DirRead])?,
             authenticated_capability_import(DIR_STORAGE_IMPORT_NAMES[10],
-                &[ExternRef], &[I32], signatures[10], vec![response],
+                &[ExternRef], &[I32], signatures[10], vec![response.clone()],
                 vec![HostResultRole::Value(ValueType::Size)], HostMutation::ReadOnly,
                 &[AbiImportAuthority::DirRead])?,
+            // `file.read()`: the same response protocol under File authority.
+            authenticated_capability_import(DIR_STORAGE_IMPORT_NAMES[11],
+                &[ExternRef], &[ExternRef], signatures[11], vec![file],
+                vec![HostResultRole::Capability(DIR_RESPONSE_KIND)],
+                HostMutation::ReadOnly, &[AbiImportAuthority::FileAuthority])?,
+            authenticated_capability_import(DIR_STORAGE_IMPORT_NAMES[12],
+                &[ExternRef], &[I32], signatures[12], vec![response.clone()],
+                vec![HostResultRole::Value(ValueType::Size)], HostMutation::ReadOnly,
+                &[AbiImportAuthority::FileAuthority])?,
+            authenticated_capability_import(DIR_STORAGE_IMPORT_NAMES[13],
+                &[ExternRef], &[I32], signatures[13], vec![response.clone()],
+                vec![HostResultRole::Value(ValueType::Size)], HostMutation::ReadOnly,
+                &[AbiImportAuthority::FileAuthority])?,
+            authenticated_capability_import(DIR_STORAGE_IMPORT_NAMES[14],
+                &[ExternRef, I32, I32], &[I32], signatures[14],
+                vec![response, buffer(AccessMode::Write)],
+                vec![HostResultRole::Value(ValueType::Size)], HostMutation::WriteBuffers,
+                &[AbiImportAuthority::FileAuthority])?,
         ];
         for import in imports { self.imports.insert(import.id, import); }
         Ok(self)

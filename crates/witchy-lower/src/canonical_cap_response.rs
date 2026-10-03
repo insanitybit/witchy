@@ -10,12 +10,14 @@ use witchy_syntax::cap_ops::{CAP_ERROR_TYPE, CAP_ERROR_VARIANTS};
 use witchy_wir::canonical_safewir::DIR_RESPONSE_KIND;
 
 impl FunctionLowerer<'_> {
-    /// The response payload copied into a fresh guest string. The published
-    /// length is the copy's answer under the buffer's own capacity guard.
-    pub(super) fn lower_dir_response_payload(&mut self, response: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+    /// The response payload copied into a fresh guest byte buffer (a `String`
+    /// or `Bytes`). `family` (`dir` or `file`) names the response imports the
+    /// operation's authority links. The published length is the copy's
+    /// answer under the buffer's own capacity guard.
+    pub(super) fn lower_response_payload(&mut self, response: ValueId, family: &str) -> Result<ValueId, CanonicalLoweringError> {
         let layout = self.string_layout_id()?;
         let size = self.fresh(ValueType::Size)?;
-        let size_import = self.capability_import("dir_response_size")?;
+        let size_import = self.capability_import(&format!("{family}_response_size"))?;
         self.push_operation(Operation::HostCall {
             destinations: vec![size], import: size_import,
             arguments: vec![HostCallArgument::Capability(response)],
@@ -23,7 +25,7 @@ impl FunctionLowerer<'_> {
         let zero = self.push_const_size(0)?;
         let output = self.alloc_bytes(zero, size)?;
         let required = self.fresh(ValueType::Size)?;
-        let copy = self.capability_import("dir_response_into")?;
+        let copy = self.capability_import(&format!("{family}_response_into"))?;
         self.push_operation(Operation::HostCall {
             destinations: vec![required], import: copy,
             arguments: vec![HostCallArgument::Capability(response), HostCallArgument::Buffer {
@@ -40,24 +42,25 @@ impl FunctionLowerer<'_> {
         Ok(output)
     }
 
-    /// `Result(String, CapError)` from a `Dir` response whose payload is the
-    /// success text or the failure message.
-    pub(super) fn lower_dir_text_result(&mut self, response: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+    /// `Result(T, CapError)` from a response whose payload is the success
+    /// value (`T` is `String` or `Bytes`, both byte buffers) or the failure
+    /// message.
+    pub(super) fn lower_cap_result(&mut self, response: ValueId, success: &str, family: &str) -> Result<ValueId, CanonicalLoweringError> {
         if self.values[&response] != ValueType::Capability(DIR_RESPONSE_KIND) {
-            return Err(CanonicalLoweringError::UnsupportedExpression("Dir response token"));
+            return Err(CanonicalLoweringError::UnsupportedExpression("capability response token"));
         }
         let status = self.fresh(ValueType::Size)?;
-        let status_import = self.capability_import("dir_response_status")?;
+        let status_import = self.capability_import(&format!("{family}_response_status"))?;
         self.push_operation(Operation::HostCall {
             destinations: vec![status], import: status_import,
             arguments: vec![HostCallArgument::Capability(response)],
         });
-        let text = self.lower_dir_response_payload(response)?;
-        let string = Type::Named("String".into(), Vec::new());
+        let text = self.lower_response_payload(response, family)?;
+        let value = Type::Named(success.into(), Vec::new());
         let error = Type::Named(CAP_ERROR_TYPE.into(), Vec::new());
-        let result = Type::Named("Result".into(), vec![string, error.clone()]);
+        let result = Type::Named("Result".into(), vec![value, error.clone()]);
         let result_shape = scalar_aggregate_shape(&result, self.definitions)
-            .ok_or(CanonicalLoweringError::UnsupportedExpression("Result(String, CapError) shape"))?;
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("Result(T, CapError) shape"))?;
         let error_shape = scalar_aggregate_shape(&error, self.definitions)
             .ok_or(CanonicalLoweringError::UnsupportedExpression("CapError shape"))?;
         let (ok, _) = result_shape.variant("Ok").ok_or(CanonicalLoweringError::MissingBinding("Ok".into()))?;

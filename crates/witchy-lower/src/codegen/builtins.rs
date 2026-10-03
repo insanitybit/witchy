@@ -948,7 +948,8 @@ impl Codegen<'_> {
             // RFC-0012 File ops. `read(File)` is arity 1 (a leaf, no path) and goes
             // through the `file_read` WIR helper; `write(File, data)` is arity 2.
             // `open`/`create` navigate a Dir to a confined File externref.
-            ("read", 1) => call("file_read", self.lower_args(&[&args[0]])?),
+            // `file.read` answers `Result(String, CapError)`; refuse it here too.
+            ("read", 1) => return None,
             ("write", 2) => {
                 let a = self.lower_args(&[&args[0], &args[1]])?;
                 if self.collect_wir { call("file_write", a) } else { nil0(host("file_write_host", a)) }
@@ -1247,10 +1248,9 @@ impl Codegen<'_> {
             // RFC-0095 byte-safe I/O. `read_bytes` returns Bytes (a `[len][payload]`
             // buffer wrapped as Bytes rather than String — identical representation);
             // `write_bytes` is a void effect taking a Bytes arg.
-            ("read_bytes", 2) => {
-                self.used_dir_ops.insert("read_bytes");
-                call("dir_read_bytes", self.lower_args(&[&args[0], &args[1]])?)
-            }
+            // `dir.read_bytes` answers `Result(Bytes, CapError)`; only the
+            // canonical route builds that result.
+            ("read_bytes", 2) => return None,
             ("write_bytes", 3) => {
                 self.used_dir_ops.insert("write_bytes");
                 let a = self.lower_args(&[&args[0], &args[1], &args[2]])?;

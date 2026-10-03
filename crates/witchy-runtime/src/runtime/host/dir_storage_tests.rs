@@ -13,6 +13,11 @@ const WAT: &str = r#"(module
   (import "witchy" "dir_write_bytes_at" (func $write (param externref i32 i32 i32 i32)))
   (import "witchy" "dir_read_at" (func $read_text (param externref i32 i32) (result externref)))
   (import "witchy" "dir_response_status" (func $status (param externref) (result i32)))
+  (import "witchy" "dir_read_file" (func $open_file (param externref i32 i32) (result externref)))
+  (import "witchy" "file_read_at" (func $file_read (param externref) (result externref)))
+  (import "witchy" "file_response_status" (func $file_status (param externref) (result i32)))
+  (import "witchy" "file_response_size" (func $file_size (param externref) (result i32)))
+  (import "witchy" "file_response_into" (func $file_copy (param externref i32 i32) (result i32)))
   (memory (export "memory") 1)
   (func (export "run"))
   (func (export "create") (param externref i32 i32 i32 i32) (result i32)
@@ -26,6 +31,13 @@ const WAT: &str = r#"(module
   (func (export "read_text") (param externref i32 i32) (result externref)
     local.get 0 local.get 1 local.get 2 call $read_text)
   (func (export "status") (param externref) (result i32) local.get 0 call $status)
+  (func (export "open_file") (param externref i32 i32) (result externref)
+    local.get 0 local.get 1 local.get 2 call $open_file)
+  (func (export "file_read") (param externref) (result externref) local.get 0 call $file_read)
+  (func (export "file_status") (param externref) (result i32) local.get 0 call $file_status)
+  (func (export "file_size") (param externref) (result i32) local.get 0 call $file_size)
+  (func (export "file_copy") (param externref i32 i32) (result i32)
+    local.get 0 local.get 1 local.get 2 call $file_copy)
   (func (export "size") (param externref) (result i32) local.get 0 call $size)
   (func (export "copy") (param externref i32 i32) (result i32)
     local.get 0 local.get 1 local.get 2 call $copy))"#;
@@ -92,6 +104,13 @@ fn size(vm: &mut Vm, token: Token) -> Result<i32> {
 fn copy(vm: &mut Vm, token: Token, ptr: i32, cap: i32) -> Result<i32> {
     vm.instance.get_typed_func::<(Token, i32, i32), i32>(&mut vm.store, "copy").unwrap()
         .call(&mut vm.store, (token, ptr, cap))
+}
+/// `dir_read_bytes_at` on `path`, answered as its status and payload.
+fn read_bytes_status(vm: &mut Vm, root: Token, path: &str) -> (i32, Vec<u8>) {
+    let response = read_path(vm, root, path);
+    let status = vm.instance.get_typed_func::<Token, i32>(&mut vm.store, "status").unwrap()
+        .call(&mut vm.store, response).unwrap();
+    (status, payload(vm, response))
 }
 fn payload(vm: &mut Vm, token: Token) -> Vec<u8> {
     let length = size(vm, token).unwrap();
@@ -206,7 +225,7 @@ pub fn dir_storage_entry_policy_is_preserved_for_every_file_operation() {
         error(create(&mut vm, args).unwrap_err(), "entry policy");
         error(write(&mut vm, "replace", args).unwrap_err(), "entry policy");
         error(write(&mut vm, "write", args).unwrap_err(), "entry policy");
-        error(read(&mut vm, token, 0, 8).unwrap_err(), "entry policy");
+        assert_eq!(read_bytes_status(&mut vm, token, "keep.bin").0, 1, "a refused read is Denied");
         assert_eq!(std::fs::read(root.path().join("keep.bin")).unwrap(), b"original");
     }
     let args = inputs(&mut vm, text_only, "allowed.txt", b"allowed");
@@ -227,7 +246,9 @@ pub fn dir_storage_symlinks_never_acquire_outside_authority() {
     assert!(create(&mut vm, args).is_err());
     assert!(write(&mut vm, "replace", args).is_err());
     assert!(write(&mut vm, "write", args).is_err());
-    assert!(read(&mut vm, grant, 0, 18).is_err());
+    let (status, data) = read_bytes_status(&mut vm, grant, "parent-link/secret");
+    assert_eq!(status, 1, "a read through a link out of the root is Denied");
+    assert!(!data.windows(7).any(|window| window == b"outside"));
     std::os::unix::fs::symlink(outside.path().join("secret"), root.path().join("leaf.txt")).unwrap();
     let filtered = attenuate(&mut vm, grant, true, true, "ext:.txt");
     let args = inputs(&mut vm, filtered, "leaf.txt", b"changed");
@@ -235,7 +256,7 @@ pub fn dir_storage_symlinks_never_acquire_outside_authority() {
     let args = inputs(&mut vm, grant, "leaf.txt", b"local replacement");
     assert_eq!(create(&mut vm, args).unwrap(), 0);
     assert!(write(&mut vm, "write", args).is_err());
-    assert!(read(&mut vm, grant, 0, 8).is_err());
+    assert_eq!(read_bytes_status(&mut vm, grant, "leaf.txt").0, 1, "a link leaf out of the root is Denied");
     // Unrestricted atomic rename replaces the link itself, not its target.
     write(&mut vm, "replace", args).unwrap();
     assert!(!std::fs::symlink_metadata(root.path().join("leaf.txt")).unwrap().file_type().is_symlink());
@@ -259,7 +280,8 @@ pub fn dir_storage_imports_remain_grant_gated() {
     }
 }
 
-/// A covered read answers status 0 and the contents; every refusal the grant
+/// A covered read (`dir.read` and `dir.read_bytes` alike) answers status 0
+/// and the contents; every refusal the grant
 /// makes and every filesystem failure is a `CapError` status carrying the
 /// message (1 Denied, 2 NotFound, 3 NotAFile, 5 Io). A missing right or a
 /// forged token still traps.
@@ -325,6 +347,14 @@ pub fn dir_read_at_answers_failures_as_statuses() {
         let (answer, payload) = read_text(&mut vm, token, path).unwrap();
         let text = String::from_utf8_lossy(&payload);
         assert_eq!(answer, status, "{path}: {text}");
+        // `dir.read_bytes` classifies identically; only UTF-8 decoding differs.
+        let (bytes_answer, bytes_payload) = read_bytes_status(&mut vm, token, path);
+        if path == "raw.txt" {
+            assert_eq!((bytes_answer, bytes_payload.as_slice()), (0, &[0xff_u8, 0xfe][..]));
+        } else {
+            assert_eq!(bytes_answer, status, "read_bytes {path}");
+            assert_eq!(bytes_payload, payload, "read_bytes {path}");
+        }
         if status == 0 { assert_eq!(payload, b"hello"); continue; }
         assert!(!text.contains("escaped contents"), "{path} leaked the escaped file");
         // A failure message is guest data: never the host's location of the root.
@@ -336,4 +366,84 @@ pub fn dir_read_at_answers_failures_as_statuses() {
     let forged = Some(ExternRef::new(&mut vm.store, witchy_wir::canonical_safewir::DIR_RESPONSE_KIND.get()).unwrap());
     let status = vm.instance.get_typed_func::<Token, i32>(&mut vm.store, "status").unwrap();
     error(status.call(&mut vm.store, forged).unwrap_err(), "wrong host kind");
+}
+
+fn open_file(vm: &mut Vm, root: Token, path: &str) -> Result<Token> {
+    put(vm, 0, path.as_bytes());
+    vm.instance.get_typed_func::<(Token, i32, i32), Token>(&mut vm.store, "open_file").unwrap()
+        .call(&mut vm.store, (root, 0, path.len() as i32))
+}
+/// `file_read_at` on `file`, answered as (status, payload).
+fn read_file(vm: &mut Vm, file: Token) -> Result<(i32, Vec<u8>)> {
+    let response = vm.instance.get_typed_func::<Token, Token>(&mut vm.store, "file_read").unwrap()
+        .call(&mut vm.store, file)?;
+    let status = vm.instance.get_typed_func::<Token, i32>(&mut vm.store, "file_status").unwrap()
+        .call(&mut vm.store, response)?;
+    let size = vm.instance.get_typed_func::<Token, i32>(&mut vm.store, "file_size").unwrap()
+        .call(&mut vm.store, response)?;
+    let copied = vm.instance.get_typed_func::<(Token, i32, i32), i32>(&mut vm.store, "file_copy").unwrap()
+        .call(&mut vm.store, (response, 4096, size))?;
+    assert_eq!(copied, size);
+    Ok((status, memory(vm)[4096..4096 + size as usize].to_vec()))
+}
+
+/// `file.read()` answers its failures as statuses with a fixed message that
+/// names no path (RFC-0126 rule 3): a deleted file is NotFound, a directory
+/// swapped in is NotAFile, non-UTF-8 text is Io, and a symlink swapped in
+/// is Denied whether or not its outside target exists. A forged or wrong-kind
+/// token, a null File, and an out-of-range copy still trap.
+pub fn file_read_at_answers_failures_as_statuses() {
+    let outer = tempfile::tempdir().unwrap();
+    let root = outer.path().join("root");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(outer.path().join("outside.txt"), b"escaped contents").unwrap();
+    for name in ["ok.txt", "gone.txt", "dir.txt", "raw.txt", "out.txt", "dangling.txt"] {
+        std::fs::write(root.join(name), b"hello").unwrap();
+    }
+    let (mut vm, grant) = vm_at(&root, true);
+    let mut files = std::collections::BTreeMap::new();
+    for name in ["ok.txt", "gone.txt", "dir.txt", "raw.txt", "out.txt", "dangling.txt"] {
+        files.insert(name, open_file(&mut vm, grant, name).unwrap());
+    }
+    std::fs::remove_file(root.join("gone.txt")).unwrap();
+    std::fs::remove_file(root.join("dir.txt")).unwrap();
+    std::fs::create_dir(root.join("dir.txt")).unwrap();
+    std::fs::write(root.join("raw.txt"), [0xff, 0xfe]).unwrap();
+    let mut rows = vec![("ok.txt", 0), ("gone.txt", 2), ("dir.txt", 3), ("raw.txt", 5)];
+    #[cfg(unix)]
+    {
+        for name in ["out.txt", "dangling.txt"] { std::fs::remove_file(root.join(name)).unwrap(); }
+        std::os::unix::fs::symlink("../outside.txt", root.join("out.txt")).unwrap();
+        std::os::unix::fs::symlink("../missing.txt", root.join("dangling.txt")).unwrap();
+        rows.extend([("out.txt", 1), ("dangling.txt", 1)]);
+    }
+    let host = outer.path().to_string_lossy().into_owned();
+    for (name, status) in rows {
+        let (answer, payload) = read_file(&mut vm, files[name]).unwrap();
+        let text = String::from_utf8_lossy(&payload);
+        assert_eq!(answer, status, "{name}: {text}");
+        if status == 0 { assert_eq!(payload, b"hello"); continue; }
+        assert!(text.starts_with("this File "), "{name}: {text}");
+        assert!(!text.contains("escaped contents") && !text.contains(&host) && !text.contains(name), "{name}: {text}");
+    }
+    // A File a policy admitted never reads through a link swapped in later,
+    // even to an admitted sibling: it answers Denied.
+    #[cfg(unix)]
+    {
+        std::fs::write(root.join("keep.bin"), b"binary").unwrap();
+        std::fs::write(root.join("fenced.txt"), b"hello").unwrap();
+        let text_only = attenuate(&mut vm, grant, true, false, "ext:.txt");
+        let file = open_file(&mut vm, text_only, "fenced.txt").unwrap();
+        std::fs::remove_file(root.join("fenced.txt")).unwrap();
+        std::os::unix::fs::symlink("keep.bin", root.join("fenced.txt")).unwrap();
+        let (status, payload) = read_file(&mut vm, file).unwrap();
+        assert_eq!(status, 1, "{}", String::from_utf8_lossy(&payload));
+        assert!(!payload.windows(6).any(|window| window == b"binary"));
+    }
+    error(read_file(&mut vm, grant).unwrap_err(), "File externref has wrong host data");
+    error(read_file(&mut vm, None).unwrap_err(), "File externref is null");
+    let response = vm.instance.get_typed_func::<Token, Token>(&mut vm.store, "file_read").unwrap()
+        .call(&mut vm.store, files["ok.txt"]).unwrap();
+    let copy = vm.instance.get_typed_func::<(Token, i32, i32), i32>(&mut vm.store, "file_copy").unwrap();
+    assert!(copy.call(&mut vm.store, (response, 65535, 2)).is_err(), "an out-of-range copy must trap");
 }

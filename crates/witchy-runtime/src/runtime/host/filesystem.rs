@@ -74,7 +74,10 @@ pub(in crate::runtime) fn link_dir_write(linker: &mut Linker<VmState>) -> Result
 /// Register the File read leaf op (RFC-0012).
 pub(in crate::runtime) fn link_file_read(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "file_read_len", host_file_read_len)?;
-    linker.func_wrap("witchy", "file_read_into", host_file_read_into)?;
+    linker.func_wrap("witchy", "file_read_at", host_file_read_at)?;
+    linker.func_wrap("witchy", "file_response_status", host_dir_response_status)?;
+    linker.func_wrap("witchy", "file_response_size", host_dir_response_size)?;
+    linker.func_wrap("witchy", "file_response_into", host_dir_response_into)?;
     Ok(())
 }
 
@@ -242,7 +245,7 @@ fn dir_file_access(dir: &DirAuthority, rel: &str, write: bool) -> Result<FileBac
             match base.entry_kind_exact(rel)? {
                 Some(crate::confine::ConfinedEntryKind::File) => {}
                 None if write => {}
-                None => return Ok(FileBacking::Fs(base.file(rel, true)?)),
+                None => return Ok(FileBacking::Fs(base.file(rel, true)?.without_following())),
                 Some(crate::confine::ConfinedEntryKind::Directory) => {
                     return Err(ConfineError::new(
                         ConfineErrorKind::NotAFile,
@@ -255,7 +258,7 @@ fn dir_file_access(dir: &DirAuthority, rel: &str, write: bool) -> Result<FileBac
                     )));
                 }
             }
-            Ok(FileBacking::Fs(base.file(rel, false)?))
+            Ok(FileBacking::Fs(base.file(rel, false)?.without_following()))
         }
     }
 }
@@ -448,37 +451,6 @@ fn host_file_read_len(mut caller: Caller<'_, VmState>, f: Option<Rooted<ExternRe
     let len = contents.len() as i32;
     caller.data_mut().pending = Some(contents.into_bytes());
     Ok(len)
-}
-
-/// `file_read_into(f, out, out_capacity) -> byte length`: validate the complete
-/// output range, read the current confined file as strict UTF-8, and write only
-/// when the supplied capacity fits the complete value. No pending host state or
-/// cursor is involved, and the returned i32 carries the unsigned wasm32 length.
-fn host_file_read_into(
-    mut caller: Caller<'_, VmState>,
-    f: Option<Rooted<ExternRef>>,
-    out_ptr: i32,
-    out_capacity: i32,
-) -> Result<i32> {
-    let mem = memory_of(&mut caller)?;
-    let (out_start, out_capacity) = checked_unsigned_guest_range(
-        mem.data(&caller).len(),
-        out_ptr,
-        out_capacity,
-        "File output",
-    )?;
-    let file = file_authority_ref(&caller, f)?;
-    if !file.rights.read {
-        return Err(Error::msg("this File capability does not grant Read"));
-    }
-    let contents = read_file_backing(&file.backing)?;
-    let required = u32::try_from(contents.len())
-        .map_err(|_| Error::msg("File contents exceed the wasm32 size limit"))?;
-    if usize::try_from(required).expect("u32 fits usize on supported targets") <= out_capacity {
-        let bytes = contents.as_bytes();
-        mem.data_mut(&mut caller)[out_start..out_start + bytes.len()].copy_from_slice(bytes);
-    }
-    Ok(required as i32)
 }
 
 fn read_unsigned_slice_str(data: &[u8], ptr: i32, len: i32, what: &str) -> Result<String> {
@@ -724,16 +696,7 @@ fn dir_response(caller: &Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) 
 fn host_dir_read_bytes_at(
     mut caller: Caller<'_, VmState>, dir: Option<Rooted<ExternRef>>, path_ptr: i32, path_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
-    let dir = dir_authority_ref(&caller, dir)?;
-    dir_require_read(&dir)?;
-    let memory = memory_of(&mut caller)?;
-    let path = read_slice_str(memory.data(&caller), path_ptr, path_len)?;
-    dir_guard(&dir, &path, false)?;
-    // Exactly one filesystem read. Later getters only borrow this snapshot.
-    let bytes = read_bytes_backing(&dir_file_backing(&dir, &path, false)?)?;
-    dir_bytes_length(bytes.len())?;
-    let response = DirResponse { issuer: caller.data().registry_issuer.clone(), status: 0, bytes: Arc::new(bytes) };
-    ExternRef::new(&mut caller, response).map(Some)
+    dir_read_response(caller, dir, path_ptr, path_len, false)
 }
 
 /// `dir_read_at(dir, path, path_len) -> response`: read the confined file
@@ -743,12 +706,24 @@ fn host_dir_read_bytes_at(
 fn host_dir_read_at(
     mut caller: Caller<'_, VmState>, dir: Option<Rooted<ExternRef>>, path_ptr: i32, path_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
+    dir_read_response(caller, dir, path_ptr, path_len, true)
+}
+
+/// One confined read answered as a response (RFC-0126 rule 3). Rights are
+/// checked first and a missing right or forged token still traps; a request
+/// the grant does not cover, and every filesystem failure, is the response's
+/// status and a guest-safe message. Later getters only borrow this snapshot.
+fn dir_read_response(
+    mut caller: Caller<'_, VmState>, dir: Option<Rooted<ExternRef>>, path_ptr: i32, path_len: i32, text: bool,
+) -> Result<Option<Rooted<ExternRef>>> {
     let dir = dir_authority_ref(&caller, dir)?;
     dir_require_read(&dir)?;
     let memory = memory_of(&mut caller)?;
     let path = read_slice_str(memory.data(&caller), path_ptr, path_len)?;
-    let (status, bytes) = match dir_read_text(&dir, &path) {
-        Ok(text) => (0, text.into_bytes()),
+    let read = dir_read_contents(&dir, &path)
+        .and_then(|bytes| if text { utf8_contents(bytes, &path).map(String::into_bytes) } else { Ok(bytes) });
+    let (status, bytes) = match read {
+        Ok(bytes) => (0, bytes),
         Err(failure) => (failure.kind.status(), guest_failure(failure.kind, &path).into_bytes()),
     };
     dir_bytes_length(bytes.len())?;
@@ -756,7 +731,28 @@ fn host_dir_read_at(
     ExternRef::new(&mut caller, response).map(Some)
 }
 
-/// `dir.read`'s classification (RFC-0126 rule 3). The guest can branch on
+/// `file_read_at(file) -> response`: `file.read()` as one confined read
+/// (RFC-0126 rule 3). A missing `Read` right or a forged token traps; a
+/// filesystem failure is the response's status and a fixed message. A
+/// `File` names no path the guest supplied, so the message names none.
+fn host_file_read_at(mut caller: Caller<'_, VmState>, f: Option<Rooted<ExternRef>>) -> Result<Option<Rooted<ExternRef>>> {
+    let file = file_authority_ref(&caller, f)?;
+    if !file.rights.read {
+        return Err(Error::msg("this File capability does not grant Read"));
+    }
+    let FileBacking::Fs(backing) = &file.backing;
+    let read = backing.read_bytes_classified()
+        .and_then(|bytes| utf8_contents(bytes, "File").map(String::into_bytes));
+    let (status, bytes) = match read {
+        Ok(bytes) => (0, bytes),
+        Err(failure) => (failure.kind.status(), format!("this File {}", failure_reason(failure.kind)).into_bytes()),
+    };
+    dir_bytes_length(bytes.len())?;
+    let response = DirResponse { issuer: caller.data().registry_issuer.clone(), status, bytes: Arc::new(bytes) };
+    ExternRef::new(&mut caller, response).map(Some)
+}
+
+/// `dir.read` and `dir.read_bytes`'s classification (RFC-0126 rule 3). The guest can branch on
 /// the answer, so no answer may depend on anything the capability cannot
 /// observe:
 ///
@@ -769,7 +765,14 @@ fn host_dir_read_at(
 /// - without a policy, a read through a symlink (the leaf or any parent
 ///   component) that fails is `Denied` whatever the target is, so a link
 ///   leaving the root never reports whether its outside target exists.
-fn dir_read_text(dir: &DirAuthority, rel: &str) -> Result<String, ConfineError> {
+/// The bytes a guest read decodes as text, or `Io` when they are not UTF-8.
+fn utf8_contents(bytes: Vec<u8>, what: &str) -> Result<String, ConfineError> {
+    String::from_utf8(bytes).map_err(|error| {
+        ConfineError::new(ConfineErrorKind::Io, format!("`{what}` is not UTF-8: {error}"))
+    })
+}
+
+fn dir_read_contents(dir: &DirAuthority, rel: &str) -> Result<Vec<u8>, ConfineError> {
     use crate::confine::{ConfinedDir, ConfinedEntryKind};
     let DirBacking::Fs(base) = &dir.backing;
     ConfinedDir::check_relative(rel)?;
@@ -799,7 +802,7 @@ fn dir_read_text(dir: &DirAuthority, rel: &str) -> Result<String, ConfineError> 
         return match base.entry_kind_spelled(rel)? {
             Some(ConfinedEntryKind::File) => {
                 let file = base.file(rel, false)?;
-                file.read_to_string_no_follow().map_err(|error| ConfineError::new(
+                file.read_bytes_no_follow().map_err(|error| ConfineError::new(
                     ConfineErrorKind::of_io(&error),
                     format!("read failed for `{rel}`: {error}"),
                 ))
@@ -813,7 +816,10 @@ fn dir_read_text(dir: &DirAuthority, rel: &str) -> Result<String, ConfineError> 
         };
     }
     base.file(rel, true)
-        .and_then(|file| read_file_text(&FileBacking::Fs(file)))
+        .and_then(|file| file.read_bytes().map_err(|error| ConfineError::new(
+            ConfineErrorKind::of_io(&error),
+            format!("read failed for `{rel}`: {error}"),
+        )))
         .map_err(|failure| if through_link {
             ConfineError::denied(format!("`{rel}` is read through an alias that cannot be read: {failure}"))
         } else {
@@ -829,12 +835,20 @@ fn dir_read_text(dir: &DirAuthority, rel: &str) -> Result<String, ConfineError> 
 fn guest_failure(kind: ConfineErrorKind, rel: &str) -> String {
     let reason = match kind {
         ConfineErrorKind::Denied => "is not covered by this Dir capability",
+        _ => failure_reason(kind),
+    };
+    format!("`{rel}` {reason}")
+}
+
+/// The fixed guest-visible reason for a failure kind.
+fn failure_reason(kind: ConfineErrorKind) -> &'static str {
+    match kind {
+        ConfineErrorKind::Denied => "is not covered by its capability",
         ConfineErrorKind::NotFound => "was not found",
         ConfineErrorKind::NotAFile => "is not a file",
         ConfineErrorKind::AlreadyExists => "already exists",
         ConfineErrorKind::Io => "could not be read",
-    };
-    format!("`{rel}` {reason}")
+    }
 }
 
 fn host_dir_response_status(caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<i32> {

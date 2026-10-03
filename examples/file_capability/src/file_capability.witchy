@@ -10,10 +10,12 @@
 // whole `Dir`. `witchy caps` reports it as exactly `File[Read]`, so it provably
 // cannot see any other file. (`main` can also receive a `File` directly via the
 // `--file` grant; here we navigate one from a `Dir` so the example is self-contained.)
-pub fn load_config(f: File[Read]) -> String:
+pub fn load_config(f: File[Read]) -> Result(String, CapError):
     f.read()
 
 fn main(console: Console, root: Dir):
     // Narrow the granted Dir down to this example's data dir, then open ONE file.
     let data = root.subtree("examples").subtree("file_capability").subtree("data")
-    console.print("config: " + load_config(data.read_file("config.txt")))
+    match load_config(data.read_file("config.txt")):
+        Ok(text) -> console.print("config: " + text)
+        Err(e) -> console.print("cannot read the config: " + show(e))

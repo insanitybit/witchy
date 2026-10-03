@@ -770,7 +770,9 @@ fn read(f: File[Read]) -> String:
     "shadow"
 
 fn main(console: Console, f: File[Read]):
-    console.print(f.read())
+    match f.read():
+        Ok(text) -> console.print(text)
+        Err(_) -> console.print("failed")
 "#;
         check_str(src).expect("file read capability method should type-check");
 
@@ -784,11 +786,10 @@ fn main(console: Console, f: File[Read]):
                 _ => None,
             })
             .expect("main");
-        let Some(Stmt::Expr(Expr::Call { name, args })) = main.body.stmts.last() else {
-            panic!("expected lowered console.print call");
+        let Some(Stmt::Expr(Expr::Match { scrutinee, .. })) = main.body.stmts.last() else {
+            panic!("expected a match on the lowered f.read call");
         };
-        assert_eq!(name, "__capop.print");
-        let Some(Expr::Call { name: inner, .. }) = args.get(1) else {
+        let Expr::Call { name: inner, .. } = scrutinee.as_ref() else {
             panic!("expected lowered f.read call");
         };
         assert_eq!(inner, "__capop.read");

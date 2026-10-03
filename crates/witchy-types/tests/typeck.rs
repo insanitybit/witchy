@@ -713,7 +713,7 @@ mod tests {
         check_str("fn maybe(pair: (Option(File), Int)) -> (Option(File), Int):\n    pair\n")
             .expect("a nullable direct externref remains reference-typed in a tuple");
 
-        check_str("fn main(console: Console, f: File[Read]):\n    let read_later = fn() -> String: f.read()\n    console.print(\"x\")\n")
+        check_str("fn main(console: Console, f: File[Read]):\n    let read_later = fn() -> String: f.read() ?? \"\"\n    console.print(\"x\")\n")
             .expect("a closure capture of File uses a typed GC environment");
 
         check_str(

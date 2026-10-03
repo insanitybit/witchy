@@ -105,33 +105,6 @@ pub(super) fn exact_entry_kind(
     }
 }
 
-pub(super) fn read_file_value(file: &FileValue) -> Result<String, RuntimeError> {
-    match file {
-        FileValue::Fs(file) => {
-            match file.read_to_string() {
-                Ok(contents) => Ok(contents),
-                Err(e) => err(format!("read failed for `{}`: {e}", file.display_path().display())),
-            }
-        }
-        #[cfg(feature = "test-fixtures")]
-        FileValue::Fixture(_) => {
-            err("internal error: fixture File bypassed fixture dispatch")
-        }
-    }
-}
-
-// RFC-0095: read a confined file's RAW bytes (no UTF-8 validation).
-pub(super) fn read_file_value_bytes(file: &FileValue) -> Result<Vec<u8>, RuntimeError> {
-    match file {
-        FileValue::Fs(file) => match file.read_bytes() {
-            Ok(bytes) => Ok(bytes),
-            Err(e) => err(format!("read failed for `{}`: {e}", file.display_path().display())),
-        },
-        #[cfg(feature = "test-fixtures")]
-        FileValue::Fixture(_) => err("internal error: fixture File bypassed fixture dispatch"),
-    }
-}
-
 pub(super) fn write_file_value(file: &FileValue, contents: &str) -> Result<(), RuntimeError> {
     match file {
         FileValue::Fs(file) => {

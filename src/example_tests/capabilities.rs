@@ -53,6 +53,19 @@ use crate::{codegen, interpreter, parser, typeck};
     /// Run `src` as unoptimized admitted Wasm with a read/write `Dir` grant on
     /// `root`; a trap is `Err` with its root cause.
     fn run_admitted_dir(src: &str, root: &std::path::Path) -> Result<Vec<String>, String> {
+        run_admitted(src, crate::runtime::Capabilities {
+            print: true,
+            quiet: true,
+            dir_root: Some(root.to_path_buf()),
+            dir_read: true,
+            dir_write: true,
+            ..Default::default()
+        })
+    }
+
+    /// Run `src` as unoptimized admitted Wasm under `caps`; a trap is `Err`
+    /// with its root cause.
+    fn run_admitted(src: &str, caps: crate::runtime::Capabilities) -> Result<Vec<String>, String> {
         struct ResetOptimization;
         impl Drop for ResetOptimization {
             fn drop(&mut self) { crate::opt::set_for_tests(None); }
@@ -63,14 +76,6 @@ use crate::{codegen, interpreter, parser, typeck};
         let artifact = codegen::compile_checked_module_artifact(&checked)
             .expect_lowered("admit Dir program");
         let mut rt = crate::runtime::Runtime::batch().expect("runtime");
-        let caps = crate::runtime::Capabilities {
-            print: true,
-            quiet: true,
-            dir_root: Some(root.to_path_buf()),
-            dir_read: true,
-            dir_write: true,
-            ..Default::default()
-        };
         let mut vm = rt.spawn_admitted(&artifact, caps, 64).expect("spawn admitted Dir program");
         vm.run().map_err(|error| error.root_cause().to_string())?;
         Ok(vm.output())
@@ -191,13 +196,14 @@ use crate::{codegen, interpreter, parser, typeck};
             assert!(actor.run().is_err(), "wasm should refuse: {src}");
         };
 
-        // A file read under `policy`: `Some(text)` or refused. Reads go through
-        // `File`; `dir.read`'s `CapError` answers are pinned at the host by
+        // Opening a file under `policy` (`dir.read_file`) is admitted or
+        // refused. Reads answer `CapError` values, which these two legacy
+        // backends do not build; the host pins them in
         // `dir_read_at_answers_failures_as_statuses`.
         let read = |policy: &str, path: &str, want: Option<&str>| {
-            let src = format!("fn main(console: Console, dir: Dir):\n    let d = dir.only({policy})\n    console.print(d.read_file(\"{path}\").read())\n");
+            let src = format!("fn main(console: Console, dir: Dir):\n    let d = dir.only({policy})\n    let f = d.read_file(\"{path}\")\n    console.print(\"opened\")\n");
             match want {
-                Some(text) => ok_both(&src, vec![text.to_string()]),
+                Some(_) => ok_both(&src, vec!["opened".to_string()]),
                 None => err_both(&src),
             }
         };
@@ -234,8 +240,6 @@ use crate::{codegen, interpreter, parser, typeck};
                 .expect("seed multi-hop alias");
             read("Dir.ext(\".txt\")", "alias.txt", None);
             read("Dir.ext(\".txt\")", "multi.txt", None);
-            err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    let b = d.read_bytes(\"alias.txt\")\n    console.print(\"${b.length()}\")\n");
-            err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    console.print(d.read_file(\"alias.txt\").read())\n");
             err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    d.append(\"alias.txt\", \"changed\")\n");
             err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    d.replace(\"alias.txt\", \"changed\")\n");
             err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    console.print(\"${d.create_new(\"alias.txt\", \"changed\")}\")\n");
@@ -300,121 +304,52 @@ use crate::{codegen, interpreter, parser, typeck};
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// RFC-0011: `dir.subtree(path)` is the method form of `subdir` — it narrows a
-    /// `Dir` to a subtree identically on both backends, and the same `..`/absolute
-    /// confinement applies. Mirrors `net.only(...)` as the host-primitive method form.
+    /// RFC-0011: `dir.subtree(path)` narrows a `Dir` to a subtree, chained
+    /// `.subtree(...).subtree(...)` alike, and the same `..` confinement holds
+    /// inside it: an escape from a subtree is `Denied`.
     #[test]
     fn dir_subtree_method_narrows_on_both_backends() {
-        use crate::runtime::{Capabilities, Runtime};
         let root = std::env::temp_dir().join(format!("witchy_subtree_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join("sub")).expect("mkdir");
-        std::fs::write(root.join("sub/b.txt"), "beta").expect("seed b");
-
-        // Method form `dir.subtree("sub")` and chained `.subtree(...).subtree(...)`.
         std::fs::create_dir_all(root.join("sub/deep")).expect("mkdir deep");
+        std::fs::write(root.join("a.txt"), "alpha").expect("seed a");
+        std::fs::write(root.join("sub/b.txt"), "beta").expect("seed b");
         std::fs::write(root.join("sub/deep/c.txt"), "gamma").expect("seed c");
-        let src = "fn main(console: Console, dir: Dir):\n    let s = dir.subtree(\"sub\")\n    console.print(s.read_file(\"b.txt\").read())\n    console.print(s.subtree(\"deep\").read_file(\"c.txt\").read())\n";
-        let want = vec!["beta".to_string(), "gamma".to_string()];
-
-        let interp_out = interpreter::run_in(src, &root).expect("interp");
-        assert_eq!(interp_out, want, "interpreter");
-        let module = parser::parse_module(src).expect("parse");
-        let bytes = codegen::compile_module_binary(&module)
-            .expect_lowered("the binary path lowers this program");
-        let mut rt = Runtime::batch().expect("runtime");
-        let mut actor = rt
-            .spawn(
-                &bytes,
-                Capabilities {
-                    print: true,
-                    quiet: true,
-                    dir_root: Some(root.clone()),
-                    dir_read: true,
-                    ..Default::default()
-                },
-                64,
-            )
-            .expect("spawn");
-        actor.run().expect("run");
-        assert_eq!(actor.output(), want, "compiled WASM must agree");
-
-        // The subtree is still confined: `..` from inside it escapes and FAILS.
-        let esc = "fn main(console: Console, dir: Dir):\n    console.print(dir.subtree(\"sub\").read_file(\"../a.txt\").read())\n";
-        assert!(interpreter::run_in(esc, &root).is_err(), "interp rejects `..` from a subtree");
+        let src = format!("{SHOW_DIR_READ}fn main(console: Console, dir: Dir):\n    let s = dir.subtree(\"sub\")\n    console.print(shown(s.read(\"b.txt\")))\n    console.print(shown(s.subtree(\"deep\").read(\"c.txt\")))\n    console.print(shown(s.read(\"../a.txt\")))\n");
+        assert_eq!(
+            run_admitted_dir(&src, &root).expect("run"),
+            ["ok: beta", "ok: gamma", "denied: `../a.txt` is not covered by this Dir capability"],
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// RFC-0012: the `File` capability round-trips on BOTH backends. `dir.read_file`/
-    /// `dir.write_file` navigate a `Dir` to a confined `File` leaf; `read(File)` /
-    /// `write(File, data)` operate on it (no path arg), with the same `..`/absolute
-    /// confinement as `Dir`. The compiled path uses the `file_read` WIR helper plus
-    /// `dir_open`/`dir_create`/`file_write` host ops.
+    /// RFC-0012: `dir.read_file`/`dir.write_file` navigate a `Dir` to a
+    /// confined `File` leaf, and `file.read()`/`file.write(data)` operate on
+    /// it. `file.read()` answers `Result(String, CapError)` (RFC-0126 rule 3);
+    /// its failure classes are pinned at the host by
+    /// `file_read_at_answers_failures_as_statuses`. Opening a path outside the
+    /// `Dir` still traps.
     #[test]
     fn file_capability_compiles_to_wasm_and_confines() {
-        use crate::runtime::{Capabilities, Runtime};
         let root = std::env::temp_dir().join(format!("witchy_wasm_file_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("mkdir");
         std::fs::write(root.join("note.txt"), "alpha").expect("seed");
 
-        let src = "fn main(console: Console, dir: Dir):\n    console.print(dir.read_file(\"note.txt\").read())\n    let out = dir.write_file(\"out.txt\")\n    out.write(\"beta\")\n    console.print(dir.read_file(\"out.txt\").read())\n";
-        let want = vec!["alpha".to_string(), "beta".to_string()];
-        let interp_out = interpreter::run_in(src, &root).expect("interp");
-        assert_eq!(interp_out, want, "interpreter");
-        let module = parser::parse_module(src).expect("parse");
-        let bytes = codegen::compile_module_binary(&module)
-            .expect_lowered("the binary path lowers this program");
-        let mut rt = Runtime::batch().expect("runtime");
-        let mut actor = rt
-            .spawn(
-                &bytes,
-                Capabilities {
-                    print: true,
-                    quiet: true,
-                    dir_root: Some(root.clone()),
-                    dir_read: true,
-                    dir_write: true,
-                    ..Default::default()
-                },
-                64,
-            )
-            .expect("spawn");
-        actor.run().expect("run");
-        assert_eq!(actor.output(), want, "compiled WASM must agree");
+        let src = "fn shown(r: Result(String, CapError)) -> String:\n    match r:\n        Ok(text) -> \"ok: \" + text\n        Err(e) -> \"failed: \" + show(e)\n\nfn main(console: Console, dir: Dir):\n    console.print(shown(dir.read_file(\"note.txt\").read()))\n    dir.write(\"out.txt\", \"beta\")\n    console.print(shown(dir.read_file(\"out.txt\").read()))\n";
+        assert_eq!(run_admitted_dir(src, &root).expect("run"), ["ok: alpha", "ok: beta"]);
 
-        // A `File` opened via navigation is still confined: `..` escapes and FAILS
-        // on both backends.
-        let esc = "fn main(console: Console, dir: Dir):\n    console.print(dir.read_file(\"../escape.txt\").read())\n";
-        assert!(interpreter::run_in(esc, &root).is_err(), "interp rejects `..` via open");
-        let m = parser::parse_module(esc).expect("parse");
-        let wbytes = codegen::compile_module_binary(&m)
-            .expect_lowered("the binary path lowers this program");
-        let mut rt = Runtime::batch().expect("runtime");
-        let mut a = rt
-            .spawn(
-                &wbytes,
-                Capabilities {
-                    print: true,
-                    quiet: true,
-                    dir_root: Some(root.clone()),
-                    dir_read: true,
-                    ..Default::default()
-                },
-                64,
-            )
-            .expect("spawn");
-        assert!(a.run().is_err(), "WASM must trap on `..` via open");
+        let esc = "fn main(console: Console, dir: Dir):\n    let f = dir.read_file(\"../escape.txt\")\n    console.print(\"unreached\")\n";
+        let refusal = run_admitted_dir(esc, &root).expect_err("opening outside the Dir traps");
+        assert!(refusal.contains("escapes the Dir capability"), "{refusal}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
     /// RFC-0012: `main` may receive a `File` DIRECTLY (the `--file` grant) — the
-    /// least-authority single-file case, with NO `Dir`. The i-th `File` param maps
-    /// to the i-th grant on both backends (interpreter `file_grants` /
-    /// `Capabilities::file_grants` + the pre-populated files table).
+    /// least-authority single-file case, with NO `Dir`. The i-th `File` param
+    /// maps to the i-th grant on both legacy backends.
     #[test]
     fn file_main_grant_runs_on_both_backends() {
-        use crate::runtime::{Capabilities, Runtime};
         let root = std::env::temp_dir().join(format!("witchy_wasm_fmg_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).expect("mkdir");
@@ -424,30 +359,35 @@ use crate::{codegen, interpreter, parser, typeck};
         std::fs::write(&b_txt, "beta").expect("seed b");
 
         // Two File params, mapped positionally to two grants; no Dir granted.
-        let src = "fn main(console: Console, first: File[Read], second: File[Read]):\n    console.print(first.read())\n    console.print(second.read())\n";
-        let want = vec!["alpha".to_string(), "beta".to_string()];
+        // This file's admitted launcher does not yet supply a `File` entry
+        // parameter (the installed trusted-app test covers `file.read()` on a
+        // granted File), and the legacy backends do not build its `CapError`
+        // result, so the mapping is observed through writes on both.
+        let src = "fn main(console: Console, first: File[Write], second: File[Write]):\n    first.write(\"first\")\n    second.write(\"second\")\n    console.print(\"wrote\")\n";
         let module = parser::parse_module(src).expect("parse");
         let interp_out = interpreter::run_module_files(module, &root, vec![a_txt.clone(), b_txt.clone()])
             .expect("interp");
-        assert_eq!(interp_out, want, "interpreter");
+        assert_eq!(interp_out, ["wrote"], "interpreter");
+        assert_eq!((std::fs::read_to_string(&a_txt).unwrap(), std::fs::read_to_string(&b_txt).unwrap()),
+            ("first".to_string(), "second".to_string()));
+        std::fs::write(&a_txt, "alpha").expect("reseed a");
+        std::fs::write(&b_txt, "beta").expect("reseed b");
         let module = parser::parse_module(src).expect("parse");
         let bytes = codegen::compile_module_binary(&module)
             .expect_lowered("the binary path lowers this program");
-        let mut rt = Runtime::batch().expect("runtime");
+        let mut rt = crate::runtime::Runtime::batch().expect("runtime");
         let mut actor = rt
-            .spawn(
-                &bytes,
-                Capabilities {
-                    print: true,
-                    quiet: true,
-                    file_grants: vec![a_txt.clone(), b_txt.clone()],
-                    ..Default::default()
-                },
-                64,
-            )
+            .spawn(&bytes, crate::runtime::Capabilities {
+                print: true,
+                quiet: true,
+                file_grants: vec![a_txt.clone(), b_txt.clone()],
+                ..Default::default()
+            }, 64)
             .expect("spawn");
         actor.run().expect("run");
-        assert_eq!(actor.output(), want, "compiled WASM must agree");
+        assert_eq!(actor.output(), ["wrote"], "compiled WASM must agree");
+        assert_eq!((std::fs::read_to_string(&a_txt).unwrap(), std::fs::read_to_string(&b_txt).unwrap()),
+            ("first".to_string(), "second".to_string()));
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -561,7 +501,9 @@ fn main(console: Console, root: Dir[Read]):
         i = i + 4
     let fake = list.at(consoles, 0)
     fake.print("FILE-ONLY-CAPABILITY-ESCAPE")
-    file.read()
+    // Only `File[Read]` reaches this dependency; it never needs to read it
+    // for the forged Console to be the observable escape.
+    "unread"
 "#;
         let app_src = r#"import attacker
 
@@ -709,7 +651,6 @@ fn main(console: Console, config: File[Read]):
     /// that subtree's file, and the two never cross. (RFC-0004 multi-Dir.)
     #[test]
     fn multi_dir_grants_are_positional_and_agree() {
-        use crate::runtime::{Capabilities, Runtime};
         let base = std::env::temp_dir().join(format!("witchy_multidir_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let dir_a = base.join("a");
@@ -720,33 +661,17 @@ fn main(console: Console, config: File[Read]):
         std::fs::write(dir_b.join("f.txt"), "from-B").expect("seed b");
 
         // Both Dirs name `f.txt`, but each resolves within its own subtree.
-        let src = "fn main(console: Console, da: Dir, db: Dir):\n    console.print(da.read_file(\"f.txt\").read())\n    console.print(db.read_file(\"f.txt\").read())\n";
-        let want = vec!["from-A".to_string(), "from-B".to_string()];
-
-        let interp_out =
-            interpreter::run_in_dirs(src, &[dir_a.clone(), dir_b.clone()]).expect("interp");
-        assert_eq!(interp_out, want, "interpreter multi-dir");
-
-        let module = parser::parse_module(src).expect("parse");
-        let bytes = codegen::compile_module_binary(&module)
-            .expect_lowered("the binary path lowers this program");
-        let mut rt = Runtime::batch().expect("runtime");
-        let mut actor = rt
-            .spawn(
-                &bytes,
-                Capabilities {
-                    print: true,
-                    quiet: true,
-                    dir_root: Some(dir_a.clone()),
-                    dir_roots: vec![dir_b.clone()],
-                    dir_read: true,
-                    ..Default::default()
-                },
-                64,
-            )
-            .expect("spawn");
-        actor.run().expect("run");
-        assert_eq!(actor.output(), want, "compiled WASM multi-dir must agree");
+        let src = "fn main(console: Console, da: Dir, db: Dir):\n    console.print(da.read(\"f.txt\") ?? \"unreadable\")\n    console.print(db.read(\"f.txt\") ?? \"unreadable\")\n";
+        let out = run_admitted(src, crate::runtime::Capabilities {
+            print: true,
+            quiet: true,
+            dir_root: Some(dir_a.clone()),
+            dir_roots: vec![dir_b.clone()],
+            dir_read: true,
+            ..Default::default()
+        })
+        .expect("run");
+        assert_eq!(out, ["from-A", "from-B"]);
 
         let _ = std::fs::remove_dir_all(&base);
     }

@@ -1840,3 +1840,12 @@ pub fn collect_text(root: Dir, path: String, rel: String, ext: String) -> List((
         Err(e) ->
             fail(show(e))
             []
+
+// `read_text` for raw bytes: a failed read aborts with its `CapError`.
+pub fn read_raw(root: Dir[Read], path: String) -> Bytes:
+    let unreachable = bytes.from_string("")
+    match root.read_bytes(path):
+        Ok(data) -> data
+        Err(e) ->
+            fail(show(e))
+            unreachable

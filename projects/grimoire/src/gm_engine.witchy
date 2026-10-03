@@ -21,7 +21,7 @@ from json import Json
 from semver import Version, Req
 from toml import Toml
 from gm_core import BuildOptions, FootprintError, LockIntegrityError, LockPinError, RecordFootprintError, RegistryRootKeyError, TufError, VendoredRecordError, VersionResolveError
-from gm_core import add_unique, arg, read_text, collect_text, basename, build_exec_child_paths, build_exec_programs, build_footprint, canonical_version, check_path_identity, closure_has, content_hash, conventional_entry, cooling, cooling_remaining, declared_caps, dep_flag_owned, dep_req, dep_source, entry_alias, entry_is_registry, entry_source, exact_record_state, field, first_witchy, flatten_argv, footprint_toml, footprint_values, grant_flags, granted_build_kinds, has_dep, has_flag, has_grants_section, jget, join_path, latest_label, lock_baseline, lock_rune_entries, locked_hash, locked_registry_alias, manifest_upsert_dep, manifest_upsert_precompiled_dep, module_name, module_stem, normalize_path, optional_lock_string, package_owner_flag, parse_origin, parse_vendored_record, pick_version_cooled, pinned_registry_trust, project_data_dir, record_matches_coordinate, record_payload, record_signature_valid, recorded_field, recorded_hash, registry_get, registry_origin, registry_placeholder, registry_post, released_version_records, required_lock_field, required_manifest_coordinate, resp_field, runtime_net_flags, signed_canonical, signed_field, signed_field_int, signed_field_str, signed_valid, snapshot_schema_ok, source_files, strict_footprint, strip_net_flags, target_digest, timestamp_schema_ok, union_all, valid_registry_rootpub, validate_source_files, verified_snapshot_line, verify_record_signature, version_records, version_satisfies, wire
+from gm_core import add_unique, arg, read_text, read_raw, collect_text, basename, build_exec_child_paths, build_exec_programs, build_footprint, canonical_version, check_path_identity, closure_has, content_hash, conventional_entry, cooling, cooling_remaining, declared_caps, dep_flag_owned, dep_req, dep_source, entry_alias, entry_is_registry, entry_source, exact_record_state, field, first_witchy, flatten_argv, footprint_toml, footprint_values, grant_flags, granted_build_kinds, has_dep, has_flag, has_grants_section, jget, join_path, latest_label, lock_baseline, lock_rune_entries, locked_hash, locked_registry_alias, manifest_upsert_dep, manifest_upsert_precompiled_dep, module_name, module_stem, normalize_path, optional_lock_string, package_owner_flag, parse_origin, parse_vendored_record, pick_version_cooled, pinned_registry_trust, project_data_dir, record_matches_coordinate, record_payload, record_signature_valid, recorded_field, recorded_hash, registry_get, registry_origin, registry_placeholder, registry_post, released_version_records, required_lock_field, required_manifest_coordinate, resp_field, runtime_net_flags, signed_canonical, signed_field, signed_field_int, signed_field_str, signed_valid, snapshot_schema_ok, source_files, strict_footprint, strip_net_flags, target_digest, timestamp_schema_ok, union_all, valid_registry_rootpub, validate_source_files, verified_snapshot_line, verify_record_signature, version_records, version_satisfies, wire
 
 pub fn build_project_target(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String, entry: String, deps: List(String), build_flags: List(String), options: BuildOptions) -> Int:
     if options.target == "trusted-publisher":
@@ -207,9 +207,9 @@ fn verify_precompiled_lock_entry(root: Dir, rune_dir: String, alias: String, ent
                             let sidecar = base + ".opt"
                             if !root.exists(wasm) || !root.exists(sidecar):
                                 Err(LockPrecompiledArtifactInvalid(alias, "materialized Wasm or sidecar is missing"))
-                            else if bytes.length(root.read_bytes(wasm)) != library.wasm_size || crypto.sha256_bytes(root.read_bytes(wasm)) != library.wasm_sha256:
+                            else if bytes.length(read_raw(root, wasm)) != library.wasm_size || crypto.sha256_bytes(read_raw(root, wasm)) != library.wasm_sha256:
                                 Err(LockPrecompiledByteMismatch(alias, "Wasm"))
-                            else if bytes.length(root.read_bytes(sidecar)) != library.opt_callable_export_size || crypto.sha256_bytes(root.read_bytes(sidecar)) != library.opt_callable_export_sha256:
+                            else if bytes.length(read_raw(root, sidecar)) != library.opt_callable_export_size || crypto.sha256_bytes(read_raw(root, sidecar)) != library.opt_callable_export_sha256:
                                 Err(LockPrecompiledByteMismatch(alias, "sidecar"))
                             else:
                                 Ok(())
@@ -702,7 +702,7 @@ pub fn upload_artifact_dir(console: Console, net: Net, root: Dir, dir: String, m
         let version = field(manifest, "rune.version")
         var failed = 0
         for target in targets:
-            let data = root.read_bytes(join_path(art_dir, target))
+            let data = read_raw(root, join_path(art_dir, target))
             let resp = upload_artifact_chunked(net, origin, name, version, target, data)
             let st = http.status(resp)
             if st >= 200 && st < 300:
@@ -736,8 +736,8 @@ pub fn upload_precompiled_libraries(console: Console, net: Net, root: Dir, dir: 
                             console.print("  precompiled ${module}: missing .wasm or .opt")
                             failed = 1
                         else:
-                            let wasm_bytes = root.read_bytes(wasm)
-                            let sidecar_bytes = root.read_bytes(sidecar)
+                            let wasm_bytes = read_raw(root, wasm)
+                            let sidecar_bytes = read_raw(root, sidecar)
                             if bytes.length(wasm_bytes) != entry.wasm_size || crypto.sha256_bytes(wasm_bytes) != entry.wasm_sha256:
                                 console.print("  precompiled ${module}: Wasm does not match signed size/digest")
                                 failed = 1
@@ -1492,7 +1492,7 @@ pub fn install_fetch_and_write(console: Console, net: Net, home: Dir, clock: Clo
     else if state == 4:
         console.print("BLOCK: artifact for ${name}@${version} target `${target}` streamed more than its signed ${size} bytes — refusing (tampered/hostile mirror?)")
         1
-    else if crypto.sha256_bytes(home.read_bytes(staged)) != sha:
+    else if crypto.sha256_bytes(read_raw(home, staged)) != sha:
         console.print("BLOCK: fetched artifact bytes do not match the signed sha256 (tampered mirror?)")
         1
     else:
@@ -1604,7 +1604,7 @@ fn download_precompiled_blob(net: Net, root: Dir, clock: Clock, origin: String, 
     let downloaded = download_precompiled_blob_chunks(net, root, origin, name, version, module, endpoint, staged, expected_size, 0, 0)
     if downloaded != expected_size:
         Err("downloaded byte count does not match the signed size")
-    else if crypto.sha256_bytes(root.read_bytes(staged)) != expected_sha256:
+    else if crypto.sha256_bytes(read_raw(root, staged)) != expected_sha256:
         Err("downloaded bytes do not match the signed digest")
     else:
         root.rename(staged, destination)

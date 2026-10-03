@@ -198,7 +198,7 @@ pub const OPS: &[CapOp] = &[
         String,
         "build_exec.run_tool(tool, input)"
     ),
-    op!("read", File, [], String, "file.read()"),
+    op!("read", File, [], String?, "file.read()"),
     op!("write", File, [String], Nil, "file.write(data)"),
     op!("only", Dir, [DirPolicy], SameReceiver, "cap.only(policy)"),
     op!("list", Dir, [], ListString, "dir.list()"),
@@ -214,7 +214,7 @@ pub const OPS: &[CapOp] = &[
     op!("create_new", Dir, [String, String], Bool, "dir.create_new(path, data)"),
     op!("replace", Dir, [String, String], Nil, "dir.replace(path, data)"),
     op!("rename", Dir, [String, String], Nil, "dir.rename(from, to)"),
-    op!("read_bytes", Dir, [String], Bytes, "dir.read_bytes(path)"),
+    op!("read_bytes", Dir, [String], Bytes?, "dir.read_bytes(path)"),
     op!("write_bytes", Dir, [String, Bytes], Nil, "dir.write_bytes(path, data)"),
     op!("append_bytes", Dir, [String, Bytes], Nil, "dir.append_bytes(path, data)"),
     op!("set_executable", Dir, [String], Nil, "dir.set_executable(path)"),

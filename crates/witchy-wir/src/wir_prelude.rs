@@ -371,7 +371,6 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "dir_write_at" (func $dir_write_at_host (param externref i32 i32 i32 i32)))
   (import "witchy" "dir_subtree_at" (func $dir_subtree_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "dir_read_file" (func $dir_read_file_host (param externref i32 i32) (result externref)))
-  (import "witchy" "file_read_into" (func $file_read_into_host (param externref i32 i32) (result i32)))
   (import "witchy" "env_has_var" (func $env_has_var_host (param externref i32 i32) (result i32)))
   (import "witchy" "env_get_into" (func $env_get_into_host (param externref i32 i32 i32 i32) (result i32)))
   (import "witchy" "console_print" (func $console_print_host (param externref i32 i32)))
@@ -416,6 +415,10 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "dir_rename_at" (func $dir_rename_at_host (param externref i32 i32 i32 i32)))
   (import "witchy" "dir_read_at" (func $dir_read_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "dir_response_status" (func $dir_response_status_host (param externref) (result i32)))
+  (import "witchy" "file_read_at" (func $file_read_at_host (param externref) (result externref)))
+  (import "witchy" "file_response_status" (func $file_response_status_host (param externref) (result i32)))
+  (import "witchy" "file_response_size" (func $file_response_size_host (param externref) (result i32)))
+  (import "witchy" "file_response_into" (func $file_response_into_host (param externref i32 i32) (result i32)))
   (import "witchy" "crypto_sha512_slices" (func $crypto_sha512_slices_host (param i32 i32 i32 i32) (result i32)))
   (import "witchy" "crypto_sha3_256_slices" (func $crypto_sha3_256_slices_host (param i32 i32 i32 i32) (result i32)))
   (import "witchy" "crypto_hmac_sha256_slices" (func $crypto_hmac_sha256_slices_host (param i32 i32 i32 i32 i32 i32) (result i32)))
@@ -615,6 +618,10 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "dir_response_into"
         | "dir_response_status"
         | "dir_read_at"
+        | "file_read_at"
+        | "file_response_status"
+        | "file_response_size"
+        | "file_response_into"
         | "dir_write_bytes_at"
         | "dir_append_bytes_at"
         | "dir_set_executable_at"
@@ -704,7 +711,6 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "dir_write_at"
         | "dir_subtree_at"
         | "dir_read_file"
-        | "file_read_into"
         | "env_has_var"
         | "env_get_into" => C::CapabilityAuthority,
 
@@ -778,7 +784,8 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "dir_replace_at" | "dir_write_bytes_at" | "dir_append_bytes_at"
         | "dir_set_executable_at" | "dir_rename_at" => AUTH_DIR_WRITE,
         "mint_file" => AUTH_FILE_GRANT,
-        "file_read_len" | "file_write" | "file_read_into" => AUTH_FILE_AUTHORITY,
+        "file_read_len" | "file_write" | "file_read_at" | "file_response_status"
+        | "file_response_size" | "file_response_into" => AUTH_FILE_AUTHORITY,
         "mint_net" => AUTH_NET_GRANT,
         "mint_fetch" => AUTH_FETCH_GRANT,
         "fetch_only" | "fetch_only_at" | "fetch_send_at" => AUTH_FETCH,

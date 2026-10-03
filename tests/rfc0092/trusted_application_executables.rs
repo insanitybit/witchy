@@ -253,7 +253,7 @@ fn fixed_file_and_named_secret_providers_resolve_only_at_startup() {
     let entry = scratch.join("providers.witchy");
     std::fs::write(
         &entry,
-        "import crypto\nimport secretstore\n\nfn main(console: Console, config: File[Read], store: SecretStore):\n    console.print(config.read())\n    console.print(crypto.reveal(secretstore.require(store, \"token\")))\n",
+        "import crypto\nimport secretstore\n\nfn main(console: Console, config: File[Read], store: SecretStore):\n    console.print(config.read() ?? \"\")\n    console.print(crypto.reveal(secretstore.require(store, \"token\")))\n",
     )
     .unwrap();
     let manifest = scratch.join("witchy.toml");

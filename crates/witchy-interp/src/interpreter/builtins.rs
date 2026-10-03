@@ -3458,22 +3458,10 @@ impl Interpreter {
                     "`dir.read` returns a `CapError` result, which the source interpreter does not \
                      implement; run the program as admitted Wasm",
                 ),
-                #[cfg(feature = "test-fixtures")]
-                [Value::File(FileValue::Fixture(handle))] => {
-                    match self.invoke_fixture(HostRequest::FileRead { file: *handle })? {
-                        HostResponse::Bytes(bytes) => String::from_utf8(bytes)
-                            .map(Value::str)
-                            .map(Some)
-                            .map_err(|error| RuntimeError {
-                                message: format!("read returned invalid UTF-8: {error}"),
-                            }),
-                        other => err(format!(
-                            "internal error: File fixture returned {other:?}"
-                        )),
-                    }
-                }
-                // A `File` is already a confined path; read it directly (RFC-0012).
-                [Value::File(file)] => Ok(Some(Value::str(read_file_value(file)?))),
+                [Value::File(_)] => err(
+                    "`file.read` returns a `CapError` result, which the source interpreter does not \
+                     implement; run the program as admitted Wasm",
+                ),
                 _ => err("read expects a Dir and a relative path, or a File"),
             },
             // Write a file relative to a Dir capability, confined to its subtree
@@ -3633,27 +3621,12 @@ impl Interpreter {
             },
             // RFC-0095: read a file's RAW bytes (no UTF-8 validation) — a binary
             // artifact — yielding `Bytes`.
-            "read_bytes" => match args {
-                #[cfg(feature = "test-fixtures")]
-                [Value::Dir(DirValue::Fixture(handle), _), Value::Str(rel)] => {
-                    match self.invoke_fixture(HostRequest::DirReadBytes {
-                        dir: *handle,
-                        path: rel.as_str().to_owned(),
-                    })? {
-                        HostResponse::Bytes(bytes) => Ok(Some(Value::Bytes(bytes))),
-                        other => err(format!(
-                            "internal error: Dir fixture returned {other:?}"
-                        )),
-                    }
-                }
-                [Value::Dir(base, pol), Value::Str(rel)] => {
-                    if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
-                        return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
-                    }
-                    Ok(Some(Value::Bytes(read_file_value_bytes(&dir_file_value_for_policy(base, pol, rel, false)?)?)))
-                }
-                _ => err("read_bytes expects a Dir and a relative path"),
-            },
+            // `dir.read_bytes` answers `Result(Bytes, CapError)` (RFC-0126
+            // rule 3); the frozen walker refuses it rather than emulate that.
+            "read_bytes" => err(
+                "`dir.read_bytes` returns a `CapError` result, which the source interpreter does \
+                 not implement; run the program as admitted Wasm",
+            ),
             // RFC-0095: write RAW bytes to a file (no UTF-8 requirement).
             "write_bytes" => match args {
                 #[cfg(feature = "test-fixtures")]

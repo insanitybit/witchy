@@ -366,7 +366,6 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `dir_write_at` | `(externref, i32, i32, i32, i32)` | capability authority | Dir.Write | omitted |
 | `dir_subtree_at` | `(externref, i32, i32) -> externref` | capability authority | Dir.grant | omitted |
 | `dir_read_file` | `(externref, i32, i32) -> externref` | capability authority | Dir.Read | omitted |
-| `file_read_into` | `(externref, i32, i32) -> i32` | capability authority | File.authority | omitted |
 | `env_has_var` | `(externref, i32, i32) -> i32` | capability authority | Env | omitted |
 | `env_get_into` | `(externref, i32, i32, i32, i32) -> i32` | capability authority | Env | omitted |
 | `console_print` | `(externref, i32, i32)` | non-authority infrastructure | none | omitted |
@@ -411,6 +410,10 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `dir_rename_at` | `(externref, i32, i32, i32, i32)` | capability authority | Dir.Write | omitted |
 | `dir_read_at` | `(externref, i32, i32) -> externref` | capability authority | Dir.Read | omitted |
 | `dir_response_status` | `(externref) -> i32` | capability authority | Dir.Read | omitted |
+| `file_read_at` | `(externref) -> externref` | capability authority | File.authority | omitted |
+| `file_response_status` | `(externref) -> i32` | capability authority | File.authority | omitted |
+| `file_response_size` | `(externref) -> i32` | capability authority | File.authority | omitted |
+| `file_response_into` | `(externref, i32, i32) -> i32` | capability authority | File.authority | omitted |
 | `crypto_sha512_slices` | `(i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |
 | `crypto_sha3_256_slices` | `(i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |
 | `crypto_hmac_sha256_slices` | `(i32, i32, i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |

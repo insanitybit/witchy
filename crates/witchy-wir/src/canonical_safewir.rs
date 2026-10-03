@@ -578,7 +578,6 @@ pub struct CapabilityImportSignatures {
     pub dir_write_at: FunctionSignatureId,
     pub dir_subtree_at: FunctionSignatureId,
     pub dir_read_file: FunctionSignatureId,
-    pub file_read_into: FunctionSignatureId,
     pub env_has_var: FunctionSignatureId,
     pub env_get_into: FunctionSignatureId,
 }
@@ -941,7 +940,6 @@ impl CanonicalAbiCatalog {
             extent: HostBufferExtent::Slice,
         };
         let dir = || HostParameterRole::Capability(DIR_CAPABILITY_KIND);
-        let file = || HostParameterRole::Capability(FILE_CAPABILITY_KIND);
         let env = || HostParameterRole::Capability(ENV_CAPABILITY_KIND);
         let size = || vec![HostResultRole::Value(ValueType::Size)];
 
@@ -997,16 +995,6 @@ impl CanonicalAbiCatalog {
                 vec![HostResultRole::Capability(FILE_CAPABILITY_KIND)],
                 HostMutation::ReadOnly,
                 &[AbiImportAuthority::DirRead],
-            )?,
-            authenticated_capability_import(
-                "file_read_into",
-                &[WasmTy::ExternRef, WasmTy::I32, WasmTy::I32],
-                &[WasmTy::I32],
-                signatures.file_read_into,
-                vec![file(), write_slice()],
-                size(),
-                HostMutation::WriteBuffers,
-                &[AbiImportAuthority::FileAuthority],
             )?,
             authenticated_capability_import(
                 "env_has_var",
@@ -1874,7 +1862,6 @@ pub mod self_checks {
             dir_write_at: FunctionSignatureId::new(3),
             dir_subtree_at: FunctionSignatureId::new(4),
             dir_read_file: FunctionSignatureId::new(5),
-            file_read_into: FunctionSignatureId::new(6),
             env_has_var: FunctionSignatureId::new(7),
             env_get_into: FunctionSignatureId::new(8),
         }

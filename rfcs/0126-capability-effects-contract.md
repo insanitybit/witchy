@@ -152,8 +152,12 @@ inside the root blocks the host thread. It discloses nothing, but it is a
 denial of service the host does not yet refuse. Under a policy such an entry is
 `Other` and answers `NotFound`.
 
-`dir.read` implements this rule end to end in admitted Wasm. The remaining
-`Dir`, `File`, and `Env` operations migrate one slice at a time.
+`dir.read`, `dir.read_bytes`, and `file.read` implement this rule end to end
+in admitted Wasm. A `File` names no path the program supplied, so its messages
+name none. A `File` read through a symlink leaf that fails is `Denied` whatever
+the target is, and a `File` opened under an entry policy never follows its
+leaf. The remaining `Dir`, `File`, and `Env` operations migrate one
+slice at a time.
 
 The cryptographic, networking, filesystem, process, server, environment, and
 secret modules are retained features. Pure hashing, verification, and encoding

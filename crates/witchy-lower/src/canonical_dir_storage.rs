@@ -19,7 +19,19 @@ impl FunctionLowerer<'_> {
             destinations: vec![response], import: read,
             arguments: vec![HostCallArgument::Capability(token), path],
         });
-        self.lower_dir_text_result(response)
+        self.lower_cap_result(response, "String", "dir")
+    }
+
+    /// `file.read()`: one host read, then `Result(String, CapError)` from its
+    /// response under File authority.
+    pub(super) fn lower_file_read(&mut self, token: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let response = self.fresh(ValueType::Capability(witchy_wir::canonical_safewir::DIR_RESPONSE_KIND))?;
+        let read = self.capability_import("file_read_at")?;
+        self.push_operation(Operation::HostCall {
+            destinations: vec![response], import: read,
+            arguments: vec![HostCallArgument::Capability(token)],
+        });
+        self.lower_cap_result(response, "String", "file")
     }
 
     pub(super) fn lower_dir_storage(
@@ -53,9 +65,9 @@ impl FunctionLowerer<'_> {
                 destinations: vec![response], import: read,
                 arguments: vec![HostCallArgument::Capability(token), path],
             });
-            // Size and copy consult the same immutable host snapshot. Neither
-            // performs another filesystem read or consumes a staged global.
-            return self.lower_dir_response_payload(response).map(Some);
+            // Status, size and copy consult the same immutable host snapshot.
+            // None performs another filesystem read or consumes a staged global.
+            return self.lower_cap_result(response, "Bytes", "dir").map(Some);
         }
         let data = if matches!(name, "__capop.write_bytes" | "__capop.append_bytes") {
             self.lower_expr(&arguments[1])?
