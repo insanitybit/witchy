@@ -72,7 +72,10 @@ effect-free; ordinary `fn` makes no such promise.
 
 A `Dir` isn't "the filesystem" - it's one subtree. `dir.read(path)` resolves
 `path` relative to the capability and rejects `..`, absolute paths, and
-symlinks that point outside the subtree. `dir.subtree("sub")` mints a new,
+symlinks that point outside the subtree. It returns `Result(String, CapError)`:
+a path the capability does not cover is `Err(Denied(..))`, distinct from
+`NotFound`, `NotAFile`, and `Io` failures. A missing right is a check-time
+error, not a `CapError`. `dir.subtree("sub")` mints a new,
 smaller capability - handing a callee `dir.subtree("uploads")` gives it that
 folder and nothing else. A `Dir` also carries an **entry policy** ([RFC-0011](../rfcs/retired-rfcs.md)) in two dimensions:
 name-suffix (`dir.only(Dir.ext(".txt"))` - only `.txt` entries) and entry-kind
@@ -162,19 +165,19 @@ confined subprocess; see [RFC-0004](../rfcs/retired-rfcs.md).
 
 ```witchy
 // Implicit narrowing at a call: more authority stands in for less.
-fn load(dir: Dir[Read], name: String) -> String:
+fn load(dir: Dir[Read], name: String) -> Result(String, CapError):
     dir.read(name)
 
 fn main(console: Console, dir: Dir):
-    console.print(load(dir, "notes.txt")) // full Dir -> Dir[Read] parameter
+    console.print(load(dir, "notes.txt") ?? "") // full Dir -> Dir[Read] parameter
 
     // Explicit narrowing when you want to NAME the smaller handle:
     let ro = dir as Dir[Read]
-    console.print(ro.read("config.txt"))
+    console.print(ro.read("config.txt") ?? "")
 
     // Subtree attenuation: a smaller world, not just fewer verbs.
     let uploads = dir.subtree("uploads")
-    console.print(uploads.read("latest.bin"))
+    console.print(uploads.read("latest.bin") ?? "")
 ```
 
 `Net` narrows the same way, with typed policy values on the `Net` type itself instead of strings:

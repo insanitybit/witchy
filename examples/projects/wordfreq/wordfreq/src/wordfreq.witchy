@@ -6,8 +6,10 @@
 import wordlib
 
 fn main(console: Console, root: Dir[Read]):
-    let text = root.read("sample.txt")
-    console.print("Top words:")
-    for entry in wordlib.top_words(text, 5):
-        let (word, count) = entry
-        console.print("  " + word.pad_right(10, " ") + "${count}")
+    match root.read("sample.txt"):
+        Err(e) -> console.print("cannot read sample.txt: " + show(e))
+        Ok(text) ->
+            console.print("Top words:")
+            for entry in wordlib.top_words(text, 5):
+                let (word, count) = entry
+                console.print("  " + word.pad_right(10, " ") + "${count}")

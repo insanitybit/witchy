@@ -97,6 +97,59 @@ Effectful modules follow four rules:
 4. native-only or browser-only operations fail at target checking rather than
    disappearing at runtime.
 
+### Rule 3 for filesystem and environment capabilities
+
+A `Dir`, `File`, or `Env` operation that can fail at run time returns
+`Result(T, CapError)`. `CapError` is one preluded type:
+
+```witchy-static
+type CapError:
+    Denied(String)
+    NotFound(String)
+    NotAFile(String)
+    AlreadyExists(String)
+    Io(String)
+```
+
+The host classifies each failure once:
+
+- a path that escapes the capability, an absolute path, an alias out of the
+  root, an entry-policy refusal, or a host permission refusal is `Denied`;
+- a missing entry is `NotFound`;
+- a directory where a file is expected is `NotAFile`;
+- an existing entry that an exclusive create refuses is `AlreadyExists`; and
+- any other failure, including text that is not UTF-8, is `Io`.
+
+`env.get_env` returns `Result(Option(String), CapError)`: an unset variable is
+`Ok(None)` and a name outside the grant's allow-list is `Err(Denied(..))`.
+
+No answer is an existence oracle. The program can branch on the variant, so a
+variant never depends on what the capability cannot observe:
+
+- an absolute or `..` path, or a name the entry policy refuses, is `Denied`
+  before any filesystem access, whether or not anything exists there;
+- a read through a symlink that leaves the root is `Denied` whether or not its
+  target exists; and
+- under an entry policy, an entry the policy cannot see is `NotFound`, exactly
+  like a missing name, as `dir.exists` answers `false`. Such entries are
+  aliases, paths through an alias or a non-directory, case-folded spellings,
+  and directories a `files()` handle cannot open. A read under a policy never
+  follows a symlink leaf, even one swapped in after the policy check.
+
+The rule covers only failures the program cannot rule out statically. A missing
+right is still a check-time error. A forged or wrong-kind host token, an
+invalid guest slice, a result too large for the guest ABI, or other ABI misuse
+still traps. There are no `try_` variants: one operation, one result.
+
+A `CapError` message is guest-visible data, so it names only what the
+capability already reveals. A message names the path as the guest supplied it
+and gives a fixed reason. It never contains a host-resolved, canonicalized, or
+absolute host path, raw operating-system error text, or another allow-listed
+name. Host diagnostics for traps may keep full detail.
+
+`dir.read` implements this rule end to end in admitted Wasm. The remaining
+`Dir`, `File`, and `Env` operations migrate one slice at a time.
+
 The cryptographic, networking, filesystem, process, server, environment, and
 secret modules are retained features. Pure hashing, verification, and encoding
 need no authority merely because their implementation is host-native. Secret

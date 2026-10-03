@@ -17,7 +17,7 @@
 // this function provably only reads — and a caller may hand it a full `Dir`,
 // which narrows implicitly at the call boundary.
 pub fn load(dir: Dir[Read], name: String) -> String:
-    dir.read(name)
+    dir.read(name) ?? "<unreadable>"
 
 // A TCP client. `Net[Connect, Tcp]` can dial out over TCP but cannot `listen`,
 // and is pinned to TCP (`Udp`/`Uds` are type-level markers — not implemented).

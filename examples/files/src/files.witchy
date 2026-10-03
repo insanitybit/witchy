@@ -4,4 +4,6 @@
 fn main(console: Console, root: Dir):
     let examples = root.subtree("examples")
     let data = examples.subtree("data")
-    console.print(data.read("greeting.txt"))
+    match data.read("greeting.txt"):
+        Ok(text) -> console.print(text)
+        Err(e) -> console.print("cannot read the greeting: " + show(e))

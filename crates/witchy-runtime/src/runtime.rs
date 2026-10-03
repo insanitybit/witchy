@@ -2830,7 +2830,7 @@ pub(crate) fn link_capability_imports(
 }
 
 fn confine<T>(r: std::result::Result<T, crate::confine::ConfineError>) -> Result<T> {
-    r.map_err(|e| Error::msg(e.0))
+    r.map_err(|e| Error::msg(e.message))
 }
 
 /// The single `VmState` constructor: build a VM's host state from the capabilities it
@@ -2898,13 +2898,13 @@ fn vmstate_from_caps(
         .as_deref()
         .map(crate::confine::ConfinedDir::open_ambient)
         .transpose()
-        .map_err(|error| Error::msg(error.0))?;
+        .map_err(|error| Error::msg(error.message))?;
     let build_read_roots = caps
         .build_read_roots
         .iter()
         .map(|root| crate::confine::ConfinedDir::open_ambient(root))
         .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|error| Error::msg(error.0))?;
+        .map_err(|error| Error::msg(error.message))?;
     let build_exec_tools = caps
         .build_exec_tools
         .iter()
@@ -2913,7 +2913,7 @@ fn vmstate_from_caps(
                 .map(|file| (name.clone(), file))
         })
         .collect::<std::result::Result<_, _>>()
-        .map_err(|error| Error::msg(error.0))?;
+        .map_err(|error| Error::msg(error.message))?;
     Ok(VmState {
         compiler_syntax: None,
         id,

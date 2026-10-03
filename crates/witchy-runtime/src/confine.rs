@@ -12,20 +12,83 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 /// A confinement violation (an escape attempt, or an inaccessible base/target).
-/// Carries the human-readable message both backends surface.
+/// Carries the human-readable message both backends surface, and the kind a
+/// fallible capability operation reports as its `CapError` variant.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ConfineError(pub String);
+pub struct ConfineError {
+    pub kind: ConfineErrorKind,
+    pub message: String,
+}
+
+/// Why a confined operation failed, in `CapError` variant order (RFC-0126
+/// rule 3): the capability does not cover the request, or the request was
+/// covered and the filesystem said no.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfineErrorKind {
+    /// An escaping, absolute, or aliased path, or an entry the policy excludes.
+    Denied,
+    NotFound,
+    /// A directory where a file was expected.
+    NotAFile,
+    AlreadyExists,
+    /// Any other failure, including contents that are not UTF-8.
+    Io,
+}
+
+impl ConfineErrorKind {
+    /// The kind of a host I/O failure. The OS refusing access, including
+    /// `cap-std` refusing a symlink that leaves the root, is a denial.
+    pub fn of_io(error: &std::io::Error) -> Self {
+        match error.kind() {
+            std::io::ErrorKind::NotFound => Self::NotFound,
+            std::io::ErrorKind::PermissionDenied => Self::Denied,
+            std::io::ErrorKind::IsADirectory => Self::NotAFile,
+            std::io::ErrorKind::AlreadyExists => Self::AlreadyExists,
+            _ => Self::Io,
+        }
+    }
+
+    /// The host response status that selects this `CapError` variant: its
+    /// ordinal plus one (0 is success).
+    pub fn status(self) -> u8 {
+        match self {
+            Self::Denied => 1,
+            Self::NotFound => 2,
+            Self::NotAFile => 3,
+            Self::AlreadyExists => 4,
+            Self::Io => 5,
+        }
+    }
+}
+
+impl ConfineError {
+    pub fn new(kind: ConfineErrorKind, message: impl Into<String>) -> Self {
+        Self { kind, message: message.into() }
+    }
+
+    /// A request the capability does not cover.
+    pub fn denied(message: impl Into<String>) -> Self {
+        Self::new(ConfineErrorKind::Denied, message)
+    }
+}
 
 impl std::fmt::Display for ConfineError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.message)
     }
 }
 
 impl std::error::Error for ConfineError {}
 
 fn err<T>(message: impl Into<String>) -> Result<T, ConfineError> {
-    Err(ConfineError(message.into()))
+    Err(ConfineError::denied(message))
+}
+
+fn unavailable<T>() -> Result<T, ConfineError> {
+    Err(ConfineError::new(
+        ConfineErrorKind::Io,
+        "host filesystem capabilities are unavailable on this target",
+    ))
 }
 
 fn validate_relative(path: &Path) -> Result<(), ConfineError> {
@@ -49,7 +112,10 @@ fn denotes_self(path: &Path) -> bool {
 }
 
 fn inaccessible(path: &Path, error: std::io::Error) -> ConfineError {
-    ConfineError(format!("cannot access `{}`: {error}", path.display()))
+    ConfineError::new(
+        ConfineErrorKind::of_io(&error),
+        format!("cannot access `{}`: {error}", path.display()),
+    )
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -104,7 +170,7 @@ impl ConfinedDir {
                 cap_std::ambient_authority(),
             )
             .map_err(|error| {
-                ConfineError(format!("invalid Dir base `{}`: {error}", path.display()))
+                ConfineError::new(ConfineErrorKind::of_io(&error), format!("invalid Dir base `{}`: {error}", path.display()))
             })?;
             Ok(Self {
                 inner: Arc::new(inner),
@@ -146,7 +212,7 @@ impl ConfinedDir {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = display;
-            err("host filesystem capabilities are unavailable on this target")
+            unavailable()
         }
     }
 
@@ -159,14 +225,14 @@ impl ConfinedDir {
         let path = Path::new(rel);
         validate_relative(path)?;
         let name = path.file_name().ok_or_else(|| {
-            ConfineError(format!("cannot access `{}`: path does not name a file", self.display.join(path).display()))
+            ConfineError::new(ConfineErrorKind::NotAFile, format!("cannot access `{}`: path does not name a file", self.display.join(path).display()))
         })?;
         let parent_path = path.parent().unwrap_or_else(|| Path::new(""));
         let parent = if parent_path.as_os_str().is_empty() {
             self.clone()
         } else {
             let parent = parent_path.to_str().ok_or_else(|| {
-                ConfineError(format!(
+                ConfineError::new(ConfineErrorKind::Io, format!(
                     "cannot access `{}`: path is not valid UTF-8",
                     self.display.join(parent_path).display()
                 ))
@@ -201,7 +267,7 @@ impl ConfinedDir {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = path;
-            err("host filesystem capabilities are unavailable on this target")
+            unavailable()
         }
     }
 
@@ -219,8 +285,14 @@ impl ConfinedDir {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = path;
-            err("host filesystem capabilities are unavailable on this target")
+            unavailable()
         }
+    }
+
+    /// Reject an absolute or `..` path before any filesystem access, so the
+    /// refusal cannot depend on what exists outside the capability.
+    pub fn check_relative(rel: &str) -> Result<(), ConfineError> {
+        validate_relative(Path::new(rel))
     }
 
     /// Inspect an entry without following its leaf and require the caller's
@@ -228,6 +300,24 @@ impl ConfinedDir {
     /// symlink and case-folding aliases for a finer-grained `Dir.only` policy.
     /// A missing entry is `Ok(None)`; confinement and I/O failures remain loud.
     pub fn entry_kind_exact(&self, rel: &str) -> Result<Option<ConfinedEntryKind>, ConfineError> {
+        match self.entry_identity(rel)? {
+            Some((_, false)) => err(format!(
+                "`{rel}` resolves through a differently named filesystem entry"
+            )),
+            Some((kind, true)) => Ok(Some(kind)),
+            None => Ok(None),
+        }
+    }
+
+    /// `entry_kind_exact` without the refusal: a differently spelled entry
+    /// (a case-folding alias) is `Other`, an entry no policy can admit.
+    pub fn entry_kind_spelled(&self, rel: &str) -> Result<Option<ConfinedEntryKind>, ConfineError> {
+        Ok(self.entry_identity(rel)?.map(|(kind, exact)| if exact { kind } else { ConfinedEntryKind::Other }))
+    }
+
+    /// The no-follow kind of `rel`'s leaf and whether the caller spelled it
+    /// exactly as its directory entry.
+    fn entry_identity(&self, rel: &str) -> Result<Option<(ConfinedEntryKind, bool)>, ConfineError> {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let file = self.file(rel, false)?;
@@ -237,7 +327,7 @@ impl ConfinedDir {
                 Err(error) => return Err(inaccessible(&file.display, error)),
             };
             let requested = file.name.file_name().ok_or_else(|| {
-                ConfineError(format!("cannot access `{}`: path does not name an entry", file.display.display()))
+                ConfineError::new(ConfineErrorKind::NotAFile, format!("cannot access `{}`: path does not name an entry", file.display.display()))
             })?;
             let exact = file
                 .parent
@@ -246,24 +336,20 @@ impl ConfinedDir {
                 .map_err(|error| inaccessible(&file.display, error))?
                 .filter_map(Result::ok)
                 .any(|entry| entry.file_name() == requested);
-            if !exact {
-                return err(format!(
-                    "`{rel}` resolves through a differently named filesystem entry"
-                ));
-            }
             let file_type = metadata.file_type();
-            Ok(Some(if file_type.is_file() {
+            let kind = if file_type.is_file() {
                 ConfinedEntryKind::File
             } else if file_type.is_dir() {
                 ConfinedEntryKind::Directory
             } else {
                 ConfinedEntryKind::Other
-            }))
+            };
+            Ok(Some((kind, exact)))
         }
         #[cfg(target_arch = "wasm32")]
         {
             let _ = rel;
-            err("host filesystem capabilities are unavailable on this target")
+            unavailable()
         }
     }
 
@@ -309,7 +395,7 @@ impl ConfinedDir {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = display;
-            err("host filesystem capabilities are unavailable on this target")
+            unavailable()
         }
     }
 
@@ -329,7 +415,7 @@ impl ConfinedDir {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = contents;
-            err("host filesystem capabilities are unavailable on this target")
+            unavailable()
         }
     }
 
@@ -347,7 +433,7 @@ impl ConfinedDir {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = contents;
-            err("host filesystem capabilities are unavailable on this target")
+            unavailable()
         }
     }
 
@@ -366,7 +452,7 @@ impl ConfinedDir {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            err("host filesystem capabilities are unavailable on this target")
+            unavailable()
         }
     }
 }
@@ -384,7 +470,7 @@ impl ConfinedFile {
     /// authority.
     pub fn open_ambient(path: &Path) -> Result<Self, ConfineError> {
         let name = path.file_name().ok_or_else(|| {
-            ConfineError(format!("invalid File grant `{}`: path does not name a file", path.display()))
+            ConfineError::new(ConfineErrorKind::NotAFile, format!("invalid File grant `{}`: path does not name a file", path.display()))
         })?;
         let parent_path = path.parent().unwrap_or_else(|| Path::new("."));
         let parent = ConfinedDir::open_ambient(parent_path)?;
@@ -406,7 +492,7 @@ impl ConfinedFile {
                 .metadata(&self.name)
                 .map_err(|error| inaccessible(&self.display, error))?;
             if !metadata.is_file() {
-                return err(format!("File grant `{}` is not a file", self.display.display()));
+                return Err(ConfineError::new(ConfineErrorKind::NotAFile, format!("File grant `{}` is not a file", self.display.display())));
             }
             if read {
                 self.open_read_handle()
@@ -426,7 +512,7 @@ impl ConfinedFile {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = (read, write);
-            err("host filesystem capabilities are unavailable on this target")
+            unavailable()
         }
     }
 
@@ -478,6 +564,27 @@ impl ConfinedFile {
         {
             use std::io::Read;
             let mut file = self.open_read_handle()?;
+            let mut contents = String::new();
+            file.read_to_string(&mut contents)?;
+            Ok(contents)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Err(unsupported())
+        }
+    }
+
+    /// `read_to_string` without following a symlink leaf, so an entry policy
+    /// judged on the leaf's no-follow identity still holds if the name is
+    /// swapped for a link after that judgment.
+    pub fn read_to_string_no_follow(&self) -> std::io::Result<String> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
+            use std::io::Read;
+            let mut options = cap_std::fs::OpenOptions::new();
+            options.read(true).follow(FollowSymlinks::No);
+            let mut file = self.parent.inner.open_with(&self.name, &options)?;
             let mut contents = String::new();
             file.read_to_string(&mut contents)?;
             Ok(contents)

@@ -10,11 +10,19 @@ import compiler
 from json import Json
 
 fn main(console: Console, root: Dir[Read]) -> Int:
-    let old = root.read("examples/data/sample_rune.witchy")
-    let new = root.read("examples/data/sample_rune_v2.witchy")
-    let report = compiler.diff(old, new)
-    console.print(gate(report))
-    exit_code(report)
+    match read_both(root):
+        Ok((old, new)) ->
+            let report = compiler.diff(old, new)
+            console.print(gate(report))
+            exit_code(report)
+        Err(e) ->
+            console.print("cannot read a rune: " + show(e))
+            1
+
+fn read_both(root: Dir[Read]) -> Result((String, String), CapError):
+    let old = root.read("examples/data/sample_rune.witchy")?
+    let new = root.read("examples/data/sample_rune_v2.witchy")?
+    Ok((old, new))
 
 // The process exit status: 2 on a blocked widening, 1 on a malformed diff or
 // compiler error, else 0 — so the gate can be wired into CI

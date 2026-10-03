@@ -100,7 +100,7 @@ fn read_at(
                 }
                 Err(error) => last = format!("`{}`: {error}", file.display_path().display()),
             },
-            Err(error) => last = error.0,
+            Err(error) => last = error.message,
         }
     }
     bail!("read_build: `{path}` not found in any granted read root ({last})")

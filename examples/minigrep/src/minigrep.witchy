@@ -36,8 +36,12 @@ fn main(console: Console, root: Dir[Read], env: Env, args: List(String)) -> Int:
         1
     else:
         let query = args.at(0)
-        let contents = root.read(args.at(1))
-        let hits = if ignore_case(env): search_insensitive(query, contents) else: search(query, contents)
-        for line in hits:
-            console.print(line)
-        0
+        match root.read(args.at(1)):
+            Err(e) ->
+                console.print("minigrep: " + show(e))
+                1
+            Ok(contents) ->
+                let hits = if ignore_case(env): search_insensitive(query, contents) else: search(query, contents)
+                for line in hits:
+                    console.print(line)
+                0

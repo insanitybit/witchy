@@ -896,7 +896,7 @@ mod test_mode_link_tests {
             &suite,
             "import testing\n\n\
              fn main(console: Console, root: Dir[Read]):\n    \
-             console.print(root.read(\"secret.txt\"))\n\n\
+             console.print(root.read(\"secret.txt\") ?? \"\")\n\n\
              fn test_pure_logic():\n    \
              testing.assert_int_eq(2 + 2, 4)\n",
         )

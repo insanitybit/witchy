@@ -984,7 +984,7 @@ impl Interpreter {
             Some(Type::Named(n, _)) if n == "Env" => Ok(Value::Cap(Capability::Env(None))),
             Some(Type::Named(n, _)) if n == "Dir" => {
                 let root = witchy_runtime::confine::ConfinedDir::open_ambient(&self.root)
-                    .map_err(|error| RuntimeError { message: error.0 })?;
+                    .map_err(|error| RuntimeError { message: error.message })?;
                 Ok(Value::Dir(DirValue::Fs(root), String::new()))
             }
             Some(Type::Named(n, _)) if n == "Net" => Ok(Value::Net(self.net_allow.clone())),
@@ -1048,7 +1048,7 @@ impl Interpreter {
         match ty {
             Some(Type::Named(n, _)) if n == "BuildOut" => {
                 let out = witchy_runtime::confine::ConfinedDir::open_ambient(&grants.out_dir)
-                    .map_err(|error| RuntimeError { message: error.0 })?;
+                    .map_err(|error| RuntimeError { message: error.message })?;
                 Ok(Value::Build(BuildCap::Out(out)))
             }
             Some(Type::Named(n, _)) if n == "BuildRead" => {
@@ -1060,7 +1060,7 @@ impl Interpreter {
                     .iter()
                     .map(|root| witchy_runtime::confine::ConfinedDir::open_ambient(root))
                     .collect::<Result<Vec<_>, _>>()
-                    .map_err(|error| RuntimeError { message: error.0 })?;
+                    .map_err(|error| RuntimeError { message: error.message })?;
                 Ok(Value::Build(BuildCap::Read(roots)))
             }
             Some(Type::Named(n, _)) if n == "BuildEnv" => {

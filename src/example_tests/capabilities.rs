@@ -50,81 +50,93 @@ use crate::{codegen, interpreter, parser, typeck};
         assert!(parse_module(lib).is_ok());
     }
 
-    /// The full Dir family compiles to capability-gated host imports and agrees
-    /// with the interpreter: read/exists/is_dir/subdir/write/make_dir/list all
-    /// round-trip in a confined temp directory, and escape attempts (`..`,
-    /// absolute paths) FAIL on both backends.
+    /// Run `src` as unoptimized admitted Wasm with a read/write `Dir` grant on
+    /// `root`; a trap is `Err` with its root cause.
+    fn run_admitted_dir(src: &str, root: &std::path::Path) -> Result<Vec<String>, String> {
+        struct ResetOptimization;
+        impl Drop for ResetOptimization {
+            fn drop(&mut self) { crate::opt::set_for_tests(None); }
+        }
+        crate::opt::set_for_tests(Some(crate::opt::OptSet::none()));
+        let _reset = ResetOptimization;
+        let checked = witchy::resolve_std_only_checked(src).expect("check Dir program");
+        let artifact = codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("admit Dir program");
+        let mut rt = crate::runtime::Runtime::batch().expect("runtime");
+        let caps = crate::runtime::Capabilities {
+            print: true,
+            quiet: true,
+            dir_root: Some(root.to_path_buf()),
+            dir_read: true,
+            dir_write: true,
+            ..Default::default()
+        };
+        let mut vm = rt.spawn_admitted(&artifact, caps, 64).expect("spawn admitted Dir program");
+        vm.run().map_err(|error| error.root_cause().to_string())?;
+        Ok(vm.output())
+    }
+
+    /// The `CapError` classes `dir.read` answers, rendered independently of
+    /// `show`, for the admitted-Wasm Dir tests.
+    const SHOW_DIR_READ: &str = "fn shown(r: Result(String, CapError)) -> String:\n    match r:\n        Ok(text) -> \"ok: \" + text\n        Err(Denied(m)) -> \"denied: \" + m\n        Err(NotFound(m)) -> \"missing: \" + m\n        Err(NotAFile(m)) -> \"not a file: \" + m\n        Err(AlreadyExists(m)) -> \"exists: \" + m\n        Err(Io(m)) -> \"io: \" + m\n\n";
+
+    /// The Dir family runs confined as admitted Wasm: read/exists/is_dir/
+    /// subtree/write/make_dir/list round-trip in a temp directory. RFC-0126
+    /// rule 3: `dir.read` answers `NotFound` and `NotAFile` for what the
+    /// capability can see, and `Denied` for an escape or a policy refusal
+    /// whether or not anything exists behind it, so the variant is never an
+    /// existence oracle. No answer the guest sees names a host path.
     #[test]
     fn dir_capability_compiles_to_wasm_and_confines() {
-        use crate::runtime::{Capabilities, Runtime};
-        let root = std::env::temp_dir().join(format!("witchy_wasm_dir_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
+        let base = std::env::temp_dir().join(format!("witchy_wasm_dir_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("root");
         std::fs::create_dir_all(root.join("sub")).expect("mkdir");
         std::fs::write(root.join("a.txt"), "alpha").expect("seed a");
         std::fs::write(root.join("sub/b.txt"), "beta").expect("seed b");
 
-        let src = "fn main(console: Console, dir: Dir):\n    console.print(dir.read(\"a.txt\"))\n    console.print(\"${dir.exists(\"a.txt\")}\")\n    console.print(\"${dir.exists(\"missing.txt\")}\")\n    let sub = dir.subtree(\"sub\")\n    console.print(sub.read(\"b.txt\"))\n    dir.write(\"out.txt\", \"written\")\n    console.print(dir.read(\"out.txt\"))\n    dir.make_dir(\"made\")\n    console.print(\"${dir.is_dir(\"made\")}\")\n    for name in dir.list():\n        console.print(\"entry: \" + name)\n";
-        let want = vec![
-            "alpha".to_string(),
-            "true".to_string(),
-            "false".to_string(),
-            "beta".to_string(),
-            "written".to_string(),
-            "true".to_string(),
-            "entry: a.txt".to_string(),
-            "entry: made".to_string(),
-            "entry: out.txt".to_string(),
-            "entry: sub".to_string(),
+        let src = format!("{SHOW_DIR_READ}fn main(console: Console, dir: Dir):\n    console.print(shown(dir.read(\"a.txt\")))\n    console.print(\"${{dir.exists(\"a.txt\")}}\")\n    console.print(\"${{dir.exists(\"missing.txt\")}}\")\n    let sub = dir.subtree(\"sub\")\n    console.print(shown(sub.read(\"b.txt\")))\n    dir.write(\"out.txt\", \"written\")\n    console.print(shown(dir.read(\"out.txt\")))\n    dir.make_dir(\"made\")\n    console.print(\"${{dir.is_dir(\"made\")}}\")\n    for name in dir.list():\n        console.print(\"entry: \" + name)\n");
+        let want = [
+            "ok: alpha", "true", "false", "ok: beta", "ok: written", "true",
+            "entry: a.txt", "entry: made", "entry: out.txt", "entry: sub",
         ];
-        let interp_out = interpreter::run_in(src, &root).expect("interp");
-        assert_eq!(interp_out, want, "interpreter");
-        let module = parser::parse_module(src).expect("parse");
-        let bytes = codegen::compile_module_binary(&module)
-            .expect_lowered("the binary path lowers this program");
-        let mut rt = Runtime::batch().expect("runtime");
-        let mut actor = rt
-            .spawn(
-                &bytes,
-                Capabilities {
-                    print: true,
-                    quiet: true,
-                    dir_root: Some(root.clone()),
-                    dir_read: true,
-                    dir_write: true,
-                    ..Default::default()
-                },
-                64,
-            )
-            .expect("spawn");
-        actor.run().expect("run");
-        assert_eq!(actor.output(), want, "compiled WASM must agree");
+        assert_eq!(run_admitted_dir(&src, &root).expect("run Dir program"), want);
 
-        for bad in ["../outside.txt", "/etc/hosts"] {
-            let esc = format!(
-                "fn main(console: Console, dir: Dir):\n    console.print(dir.read(\"{bad}\"))\n"
-            );
-            assert!(interpreter::run_in(&esc, &root).is_err(), "interp must reject `{bad}`");
-            let m = parser::parse_module(&esc).expect("parse");
-            let wbytes = codegen::compile_module_binary(&m)
-                .expect_lowered("the binary path lowers this program");
-            let mut rt = Runtime::batch().expect("runtime");
-            let mut a = rt
-                .spawn(
-                    &wbytes,
-                    Capabilities {
-                        print: true,
-                        quiet: true,
-                        dir_root: Some(root.clone()),
-                        dir_read: true,
-                        dir_write: true,
-                        ..Default::default()
-                    },
-                    64,
-                )
-                .expect("spawn");
-            assert!(a.run().is_err(), "WASM must trap on `{bad}`");
+        std::fs::write(base.join("outside.txt"), "escaped contents").expect("seed outside");
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink("../outside.txt", root.join("link-out.txt")).expect("link out");
+            std::os::unix::fs::symlink("../missing.txt", root.join("link-missing.txt")).expect("link missing");
         }
-        let _ = std::fs::remove_dir_all(&root);
+        let denied = |path: &str| format!("denied: `{path}` is not covered by this Dir capability");
+        // (receiver, path, expected): one program reads every row.
+        let mut rows = vec![
+            ("dir", "missing.txt", "missing: `missing.txt` was not found".to_string()),
+            ("dir", "sub", "not a file: `sub` is not a file".to_string()),
+            ("dir", "../outside.txt", denied("../outside.txt")),
+            ("dir", "../missing.txt", denied("../missing.txt")),
+            ("dir", "/etc/hosts", denied("/etc/hosts")),
+        ];
+        if cfg!(unix) {
+            rows.push(("dir", "link-out.txt", denied("link-out.txt")));
+            rows.push(("dir", "link-missing.txt", denied("link-missing.txt")));
+        }
+        // Policy refusals (present or absent, aliases) are pinned at the host by
+        // `dir_read_at_answers_failures_as_statuses`: `dir.only` does not lower
+        // to admitted Wasm yet.
+        let mut body = String::from("fn main(console: Console, dir: Dir):\n");
+        for (receiver, path, _) in &rows {
+            body.push_str(&format!("    console.print(shown({receiver}.read(\"{path}\")))\n"));
+        }
+        let out = run_admitted_dir(&format!("{SHOW_DIR_READ}{body}"), &root).expect("a failed read is a value");
+        let want: Vec<String> = rows.iter().map(|(_, _, want)| want.clone()).collect();
+        assert_eq!(out, want);
+        let host = base.to_str().expect("utf8 base");
+        for line in &out {
+            assert!(!line.contains(host), "a guest message disclosed a host path: {line}");
+            assert!(!line.contains("escaped contents"), "a guest message carried an excluded file: {line}");
+        }
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// RFC-0011: the `kind:` Dir entry policy. `dir.only(Dir.files())` admits a file
@@ -179,11 +191,19 @@ use crate::{codegen, interpreter, parser, typeck};
             assert!(actor.run().is_err(), "wasm should refuse: {src}");
         };
 
+        // A file read under `policy`: `Some(text)` or refused. Reads go through
+        // `File`; `dir.read`'s `CapError` answers are pinned at the host by
+        // `dir_read_at_answers_failures_as_statuses`.
+        let read = |policy: &str, path: &str, want: Option<&str>| {
+            let src = format!("fn main(console: Console, dir: Dir):\n    let d = dir.only({policy})\n    console.print(d.read_file(\"{path}\").read())\n");
+            match want {
+                Some(text) => ok_both(&src, vec![text.to_string()]),
+                None => err_both(&src),
+            }
+        };
+
         // `files()`: read a file OK; opening a sub-directory DENIED (the DoD headline).
-        ok_both(
-            "fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.files())\n    console.print(d.read(\"ok.txt\"))\n",
-            vec!["hello".to_string()],
-        );
+        read("Dir.files()", "ok.txt", Some("hello"));
         err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.files())\n    let s = d.subtree(\"sub\")\n    console.print(\"unreached\")\n");
 
         // `dirs()`: open a sub-directory OK; reading a file DENIED (the mirror).
@@ -191,18 +211,15 @@ use crate::{codegen, interpreter, parser, typeck};
             "fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.dirs())\n    let s = d.subtree(\"sub\")\n    console.print(\"traversed\")\n",
             vec!["traversed".to_string()],
         );
-        err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.dirs())\n    console.print(d.read(\"ok.txt\"))\n");
+        read("Dir.dirs()", "ok.txt", None);
 
         // An `ext`-only policy still traverses — kind gates directories, ext gates files.
         ok_both(
             "fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    let s = d.subtree(\"sub\")\n    console.print(\"traversed\")\n",
             vec!["traversed".to_string()],
         );
-        ok_both(
-            "fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    console.print(d.read(\"ok.txt\"))\n",
-            vec!["hello".to_string()],
-        );
-        err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    console.print(d.read(\"secret.key\"))\n");
+        read("Dir.ext(\".txt\")", "ok.txt", Some("hello"));
+        read("Dir.ext(\".txt\")", "secret.key", None);
 
         // SEC-056/062: policy uses the actual no-follow entry identity. A files-only
         // handle cannot rename/chmod a directory, and an admitted extension alias
@@ -215,8 +232,8 @@ use crate::{codegen, interpreter, parser, typeck};
                 .expect("seed in-root alias");
             std::os::unix::fs::symlink("alias.txt", root.join("multi.txt"))
                 .expect("seed multi-hop alias");
-            err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    console.print(d.read(\"alias.txt\"))\n");
-            err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    console.print(d.read(\"multi.txt\"))\n");
+            read("Dir.ext(\".txt\")", "alias.txt", None);
+            read("Dir.ext(\".txt\")", "multi.txt", None);
             err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    let b = d.read_bytes(\"alias.txt\")\n    console.print(\"${b.length()}\")\n");
             err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    console.print(d.read_file(\"alias.txt\").read())\n");
             err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    d.append(\"alias.txt\", \"changed\")\n");
@@ -227,7 +244,7 @@ use crate::{codegen, interpreter, parser, typeck};
         }
         std::fs::write(root.join("classified.TXT"), "case-private").expect("seed case alias");
         if root.join("classified.txt").exists() {
-            err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    console.print(d.read(\"classified.txt\"))\n");
+            read("Dir.ext(\".txt\")", "classified.txt", None);
             err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    d.write(\"classified.txt\", \"changed\")\n");
             err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    d.append(\"classified.txt\", \"changed\")\n");
             err_both("fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    d.replace(\"classified.txt\", \"changed\")\n");
@@ -297,7 +314,7 @@ use crate::{codegen, interpreter, parser, typeck};
         // Method form `dir.subtree("sub")` and chained `.subtree(...).subtree(...)`.
         std::fs::create_dir_all(root.join("sub/deep")).expect("mkdir deep");
         std::fs::write(root.join("sub/deep/c.txt"), "gamma").expect("seed c");
-        let src = "fn main(console: Console, dir: Dir):\n    let s = dir.subtree(\"sub\")\n    console.print(s.read(\"b.txt\"))\n    console.print(s.subtree(\"deep\").read(\"c.txt\"))\n";
+        let src = "fn main(console: Console, dir: Dir):\n    let s = dir.subtree(\"sub\")\n    console.print(s.read_file(\"b.txt\").read())\n    console.print(s.subtree(\"deep\").read_file(\"c.txt\").read())\n";
         let want = vec!["beta".to_string(), "gamma".to_string()];
 
         let interp_out = interpreter::run_in(src, &root).expect("interp");
@@ -323,7 +340,7 @@ use crate::{codegen, interpreter, parser, typeck};
         assert_eq!(actor.output(), want, "compiled WASM must agree");
 
         // The subtree is still confined: `..` from inside it escapes and FAILS.
-        let esc = "fn main(console: Console, dir: Dir):\n    console.print(dir.subtree(\"sub\").read(\"../a.txt\"))\n";
+        let esc = "fn main(console: Console, dir: Dir):\n    console.print(dir.subtree(\"sub\").read_file(\"../a.txt\").read())\n";
         assert!(interpreter::run_in(esc, &root).is_err(), "interp rejects `..` from a subtree");
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -461,7 +478,7 @@ use crate::{codegen, interpreter, parser, typeck};
 fn main(console: Console, root: Dir[Read]):
     let publisher_path = ["safe.json"]
     let _ignored = attacker.slice("input")
-    console.print(root.read(publisher_path[0]))
+    console.print("${root.exists(publisher_path[0])}")
 "#;
         let attacker = parser::parse_module(attacker_src).expect("attacker parse");
         let footprint = crate::capabilities::analyze(&attacker);
@@ -703,7 +720,7 @@ fn main(console: Console, config: File[Read]):
         std::fs::write(dir_b.join("f.txt"), "from-B").expect("seed b");
 
         // Both Dirs name `f.txt`, but each resolves within its own subtree.
-        let src = "fn main(console: Console, da: Dir, db: Dir):\n    console.print(da.read(\"f.txt\"))\n    console.print(db.read(\"f.txt\"))\n";
+        let src = "fn main(console: Console, da: Dir, db: Dir):\n    console.print(da.read_file(\"f.txt\").read())\n    console.print(db.read_file(\"f.txt\").read())\n";
         let want = vec!["from-A".to_string(), "from-B".to_string()];
 
         let interp_out =
@@ -760,7 +777,7 @@ fn main(console: Console, config: File[Read]):
             64,
         );
         assert!(denied.is_err(), "write import must not instantiate under a read-only grant");
-        let reader = "fn main(console: Console, dir: Dir):\n    console.print(dir.read(\"x.txt\"))\n";
+        let reader = "fn main(console: Console, dir: Dir):\n    console.print(\"${dir.exists(\"x.txt\")}\")\n";
         let m = parser::parse_module(reader).expect("parse");
         let wbytes = codegen::compile_module_binary(&m)
             .expect_lowered("the binary path lowers this program");
@@ -886,7 +903,7 @@ fn yes(b: Bool) -> String:
         let src_path = root.join("prog.witchy");
         std::fs::write(
             &src_path,
-            "import option\n\nfn main(console: Console, env: Env, dir: Dir[Read], args: List(String)) -> Int:\n    let path = list.at(args, 0)\n    let label = match env.get_env(\"PATH\"):\n        Some(v) -> v\n        None -> \"unlabeled\"\n    for line in dir.read(path).lines():\n        if line.contains(\"needle\"):\n            console.print(label + \": \" + line)\n    0\n",
+            "import option\n\nfn main(console: Console, env: Env, dir: Dir[Read], args: List(String)) -> Int:\n    let path = list.at(args, 0)\n    let label = match env.get_env(\"PATH\"):\n        Some(v) -> v\n        None -> \"unlabeled\"\n    for line in (dir.read(path) ?? \"\").lines():\n        if line.contains(\"needle\"):\n            console.print(label + \": \" + line)\n    0\n",
         )
         .unwrap();
         let host_path = std::env::var("PATH").expect("the test process has PATH");

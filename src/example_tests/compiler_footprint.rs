@@ -65,7 +65,7 @@ use crate::{ast, interpreter, parser, typeck};
             return;
         }
         // The rights-precise footprint comes back as JSON.
-        let footprint = "import compiler\nfn main(console: Console):\n    console.print(compiler.footprint(\"pub fn load(d: Dir[Read]) -> String:\\n    d.read(\\\"x\\\")\\n\"))\n";
+        let footprint = "import compiler\nfn main(console: Console):\n    console.print(compiler.footprint(\"pub fn load(d: Dir[Read]) -> Result(String, CapError):\\n    d.read(\\\"x\\\")\\n\"))\n";
         let out = link_run(footprint);
         assert_eq!(wasm_run(footprint), out, "footprint interpreter/WASM parity");
         assert!(out[0].contains("\"total\":[\"Dir[Read]\"]"), "total wrong: {}", out[0]);

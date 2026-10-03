@@ -28,13 +28,15 @@ pub fn config_dir(root: Dir) -> Option(ConfigDir):
 // Reads only from the config dir — the signature requires the brand, and the
 // `Dir` inside is confined to that subtree, so this can touch nothing else.
 // Public, so `witchy caps` shows it auditing as `Dir`, refined as `ConfigDir`.
-pub fn load(c: ConfigDir, name: String) -> String:
+pub fn load(c: ConfigDir, name: String) -> Result(String, CapError):
     match c:
         ConfigDir(dir) -> dir.read(name)
 
 fn main(console: Console, root: Dir):
     // `if let` only proceeds once the directory has been confirmed and branded.
     if let Some(cfg) = config_dir(root.subtree("examples")):
-        console.print("config says: " + load(cfg, "greeting.txt"))
+        match load(cfg, "greeting.txt"):
+            Ok(text) -> console.print("config says: " + text)
+            Err(e) -> console.print("cannot read the greeting: " + show(e))
     else:
         console.print("no config directory found")

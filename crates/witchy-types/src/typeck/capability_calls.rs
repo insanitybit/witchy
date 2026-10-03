@@ -74,7 +74,7 @@ impl Checker {
             }
             _ => unreachable!(),
         };
-        Ok(Some(ret))
+        Ok(Some(if operation.fallible { Self::cap_result(ret) } else { ret }))
     }
 
     pub(super) fn check_env_op(&mut self, name: &str, args: &[Expr]) -> Result<Option<Ty>, TypeError> {
@@ -325,7 +325,7 @@ impl Checker {
             }
             _ => unreachable!(),
         };
-        Ok(Some(ret))
+        Ok(Some(if operation.fallible { Self::cap_result(ret) } else { ret }))
     }
 
     /// Type-check the low-level `exec` op:

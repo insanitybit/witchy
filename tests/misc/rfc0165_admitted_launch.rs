@@ -581,7 +581,7 @@ fn admitted_dir_read_exists_write_and_subtree_go_through_bounded_host_calls() {
     std::fs::write(root.join("greeting.txt"), "héllo, dir").expect("seed file");
     std::fs::write(root.join("notes/todo.txt"), "a\nb\n").expect("seed file");
     let output = run_admitted_with_grants(
-        "fn shout(dir: Dir[Read], name: String) -> String:\n    dir.read(name).to_upper()\n\nfn main(console: Console, dir: Dir):\n    console.print(dir.read(\"greeting.txt\"))\n    console.print(\"${dir.exists(\"greeting.txt\")} ${dir.exists(\"missing.txt\")} ${dir.read(\"greeting.txt\").length()}\")\n    let notes = dir.subtree(\"notes\")\n    console.print(\"${notes.read(\"todo.txt\").length()} ${notes.exists(\"todo.txt\")}\")\n    dir.write(\"out.txt\", \"written by main\")\n    console.print(dir.read(\"out.txt\"))\n    console.print(shout(dir as Dir[Read], \"greeting.txt\"))\n",
+        "fn shout(dir: Dir[Read], name: String) -> String:\n    (dir.read(name) ?? \"\").to_upper()\n\nfn main(console: Console, dir: Dir):\n    console.print(dir.read(\"greeting.txt\") ?? \"\")\n    console.print(\"${dir.exists(\"greeting.txt\")} ${dir.exists(\"missing.txt\")} ${(dir.read(\"greeting.txt\") ?? \"\").length()}\")\n    let notes = dir.subtree(\"notes\")\n    console.print(\"${(notes.read(\"todo.txt\") ?? \"\").length()} ${notes.exists(\"todo.txt\")}\")\n    dir.write(\"out.txt\", \"written by main\")\n    console.print(dir.read(\"out.txt\") ?? \"\")\n    console.print(shout(dir as Dir[Read], \"greeting.txt\"))\n",
         Capabilities {
             print: true,
             print_int: true,
@@ -605,8 +605,8 @@ fn admitted_dir_read_exists_write_and_subtree_go_through_bounded_host_calls() {
 fn admitted_dir_reads_larger_than_the_probe_buffer_and_denied_paths() {
     // The first host call answers the full length into an empty buffer,
     // the second fills an exact-size buffer; a file well past any fixed
-    // buffer comes back whole. A path outside the root and a write through
-    // a read-only grant trap on the host, the interpreter's abort.
+    // buffer comes back whole. A path outside the root is a `Denied` value
+    // (RFC-0126 rule 3); a write through a read-only grant traps on the host.
     let root = scratch_dir("dir-large");
     let large = "x".repeat(100_000) + "end";
     std::fs::write(root.join("large.txt"), &large).expect("seed file");
@@ -620,16 +620,17 @@ fn admitted_dir_reads_larger_than_the_probe_buffer_and_denied_paths() {
         ..Default::default()
     };
     let output = run_admitted_with_grants(
-        "fn main(console: Console, dir: Dir[Read]):\n    let text = dir.read(\"large.txt\")\n    console.print(\"${text.length()} ${text.substring(100000, 100003)}\")\n",
+        "fn main(console: Console, dir: Dir[Read]):\n    let text = dir.read(\"large.txt\") ?? \"\"\n    console.print(\"${text.length()} ${text.substring(100000, 100003)}\")\n",
         grants(),
     )
     .expect("runs");
     assert_eq!(output, vec!["100003 end".to_string()]);
     let escape = run_admitted_with_grants(
-        "fn main(console: Console, dir: Dir[Read]):\n    console.print(dir.read(\"../escape.txt\"))\n",
+        "fn main(console: Console, dir: Dir[Read]):\n    match dir.read(\"../escape.txt\"):\n        Ok(text) -> console.print(\"read \" + text)\n        Err(Denied(_)) -> console.print(\"denied\")\n        Err(_) -> console.print(\"other\")\n",
         grants(),
-    );
-    assert!(escape.is_err(), "{escape:?}");
+    )
+    .expect("an escape is a value");
+    assert_eq!(escape, vec!["denied".to_string()]);
     let write = run_admitted_with_grants(
         "fn main(console: Console, dir: Dir):\n    dir.write(\"out.txt\", \"denied\")\n    console.print(\"unreachable\")\n",
         grants(),

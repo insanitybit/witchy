@@ -8,9 +8,11 @@ const WAT: &str = r#"(module
   (import "witchy" "dir_create_new_at" (func $create (param externref i32 i32 i32 i32) (result i32)))
   (import "witchy" "dir_replace_at" (func $replace (param externref i32 i32 i32 i32)))
   (import "witchy" "dir_read_bytes_at" (func $read (param externref i32 i32) (result externref)))
-  (import "witchy" "dir_bytes_response_size" (func $size (param externref) (result i32)))
-  (import "witchy" "dir_bytes_response_into" (func $copy (param externref i32 i32) (result i32)))
+  (import "witchy" "dir_response_size" (func $size (param externref) (result i32)))
+  (import "witchy" "dir_response_into" (func $copy (param externref i32 i32) (result i32)))
   (import "witchy" "dir_write_bytes_at" (func $write (param externref i32 i32 i32 i32)))
+  (import "witchy" "dir_read_at" (func $read_text (param externref i32 i32) (result externref)))
+  (import "witchy" "dir_response_status" (func $status (param externref) (result i32)))
   (memory (export "memory") 1)
   (func (export "run"))
   (func (export "create") (param externref i32 i32 i32 i32) (result i32)
@@ -21,6 +23,9 @@ const WAT: &str = r#"(module
     local.get 0 local.get 1 local.get 2 local.get 3 local.get 4 call $write)
   (func (export "read") (param externref i32 i32) (result externref)
     local.get 0 local.get 1 local.get 2 call $read)
+  (func (export "read_text") (param externref i32 i32) (result externref)
+    local.get 0 local.get 1 local.get 2 call $read_text)
+  (func (export "status") (param externref) (result i32) local.get 0 call $status)
   (func (export "size") (param externref) (result i32) local.get 0 call $size)
   (func (export "copy") (param externref i32 i32) (result i32)
     local.get 0 local.get 1 local.get 2 call $copy))"#;
@@ -71,6 +76,15 @@ fn read(vm: &mut Vm, root: Token, ptr: i32, len: i32) -> Result<Token> {
 fn read_path(vm: &mut Vm, root: Token, path: &str) -> Token {
     put(vm, 0, path.as_bytes());
     read(vm, root, 0, path.len() as i32).unwrap()
+}
+/// `dir_read_at` on `path`, answered as (status, payload).
+fn read_text(vm: &mut Vm, root: Token, path: &str) -> Result<(i32, Vec<u8>)> {
+    put(vm, 0, path.as_bytes());
+    let response = vm.instance.get_typed_func::<(Token, i32, i32), Token>(&mut vm.store, "read_text").unwrap()
+        .call(&mut vm.store, (root, 0, path.len() as i32))?;
+    let status = vm.instance.get_typed_func::<Token, i32>(&mut vm.store, "status").unwrap()
+        .call(&mut vm.store, response)?;
+    Ok((status, payload(vm, response)))
 }
 fn size(vm: &mut Vm, token: Token) -> Result<i32> {
     vm.instance.get_typed_func::<Token, i32>(&mut vm.store, "size").unwrap().call(&mut vm.store, token)
@@ -155,7 +169,7 @@ pub fn dir_storage_kind_rights_and_response_issuer_precede_memory() {
     let (_root, mut vm, grant) = setup(false);
     let read_only = attenuate(&mut vm, grant, true, false, "");
     let write_only = attenuate(&mut vm, grant, false, true, "");
-    let forged = Some(ExternRef::new(&mut vm.store, witchy_wir::canonical_safewir::DIR_BYTES_RESPONSE_KIND.get()).unwrap());
+    let forged = Some(ExternRef::new(&mut vm.store, witchy_wir::canonical_safewir::DIR_RESPONSE_KIND.get()).unwrap());
     for operation in ["create", "replace", "write"] {
         for (token, message) in [(None, "null"), (forged, "wrong host data"), (read_only, "does not grant Write")] {
             let args = (token, -1, -1, -1, -1);
@@ -173,7 +187,7 @@ pub fn dir_storage_kind_rights_and_response_issuer_precede_memory() {
     let (other_root, mut other, other_grant) = setup(true);
     std::fs::write(other_root.path().join("bytes"), b"foreign").unwrap();
     let response = read_path(&mut other, other_grant, "bytes").unwrap();
-    let foreign = response.data(&other.store).unwrap().unwrap().downcast_ref::<DirBytesResponse>().unwrap().clone();
+    let foreign = response.data(&other.store).unwrap().unwrap().downcast_ref::<DirResponse>().unwrap().clone();
     let foreign = Some(ExternRef::new(&mut vm.store, foreign).unwrap());
     error(size(&mut vm, foreign).unwrap_err(), "another instance");
     error(copy(&mut vm, foreign, -1, -1).unwrap_err(), "another instance");
@@ -243,4 +257,83 @@ pub fn dir_storage_imports_remain_grant_gated() {
         let Err(failure) = result else { panic!("{name} linked without its right") };
         assert!(format!("{failure:#}").contains(name));
     }
+}
+
+/// A covered read answers status 0 and the contents; every refusal the grant
+/// makes and every filesystem failure is a `CapError` status carrying the
+/// message (1 Denied, 2 NotFound, 3 NotAFile, 5 Io). A missing right or a
+/// forged token still traps.
+///
+/// No status is an existence oracle. An escape (`..`, absolute, or a symlink
+/// leaving the root) is Denied whether or not its outside target exists, a
+/// name the policy refuses is Denied whether or not it exists, and an entry a
+/// policy cannot see answers like a missing one. No payload carries the
+/// escaped file's contents or the host location of the root.
+pub fn dir_read_at_answers_failures_as_statuses() {
+    let outer = tempfile::tempdir().unwrap();
+    let root = outer.path().join("root");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::write(outer.path().join("outside.txt"), b"escaped contents").unwrap();
+    std::fs::create_dir(outer.path().join("outside-dir")).unwrap();
+    std::fs::write(outer.path().join("outside-dir/x.txt"), b"escaped contents").unwrap();
+    std::fs::write(root.join("a.txt"), b"hello").unwrap();
+    std::fs::write(root.join("raw.txt"), [0xff, 0xfe]).unwrap();
+    std::fs::write(root.join("keep.bin"), b"binary").unwrap();
+    std::fs::create_dir(root.join("sub")).unwrap();
+    std::fs::create_dir(root.join("notes.txt")).unwrap();
+    std::fs::write(root.join("sub/y.txt"), b"hello").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        symlink("../outside.txt", root.join("out.txt")).unwrap();
+        symlink("../missing.txt", root.join("dangling.txt")).unwrap();
+        symlink(outer.path().join("outside.txt"), root.join("absolute.txt")).unwrap();
+        symlink("../outside-dir", root.join("outdir")).unwrap();
+        symlink("../missing-dir", root.join("nodir")).unwrap();
+        symlink("a.txt", root.join("alias.txt")).unwrap();
+    }
+    let (mut vm, grant) = vm_at(&root, true);
+    let text_only = attenuate(&mut vm, grant, true, false, "ext:.txt");
+    let files_only = attenuate(&mut vm, grant, true, false, "kind:file");
+    let mut rows = vec![
+        (grant, "a.txt", 0), (grant, "missing.txt", 2), (grant, "sub", 3), (grant, "raw.txt", 5),
+        // Lexical escapes, outside target present or not.
+        (grant, "../outside.txt", 1), (grant, "../missing.txt", 1), (grant, "/etc/passwd", 1),
+        (grant, "/no/such/file", 1),
+        // A name the policy refuses, present or not.
+        (text_only, "keep.bin", 1), (text_only, "absent.bin", 1), (text_only, "sub", 1),
+        // Entries a policy cannot see answer like a missing name.
+        (files_only, "sub", 2), (files_only, "nothing", 2), (text_only, "nothing.txt", 2),
+        (text_only, "notes.txt", 3),
+        // A path through an entry the policy cannot traverse, present or not.
+        (text_only, "keep.bin/x.txt", 2), (text_only, "absent.bin/x.txt", 2),
+        (files_only, "sub/x.txt", 2), (files_only, "absent/x.txt", 2),
+        (text_only, "sub/y.txt", 0), (files_only, "sub/y.txt", 0),
+    ];
+    #[cfg(unix)]
+    rows.extend([
+        // A symlink leaving the root, outside target present or not.
+        (grant, "out.txt", 1), (grant, "dangling.txt", 1), (grant, "absolute.txt", 1),
+        (grant, "outdir/x.txt", 1), (grant, "nodir/x.txt", 1),
+        // An in-root alias under a policy is invisible, like a missing name.
+        (text_only, "alias.txt", 2), (text_only, "out.txt", 2), (text_only, "dangling.txt", 2),
+        (text_only, "outdir/x.txt", 2),
+    ]);
+    let host_root = root.to_string_lossy().into_owned();
+    let host_outer = outer.path().to_string_lossy().into_owned();
+    for (token, path, status) in rows {
+        let (answer, payload) = read_text(&mut vm, token, path).unwrap();
+        let text = String::from_utf8_lossy(&payload);
+        assert_eq!(answer, status, "{path}: {text}");
+        if status == 0 { assert_eq!(payload, b"hello"); continue; }
+        assert!(!text.contains("escaped contents"), "{path} leaked the escaped file");
+        // A failure message is guest data: never the host's location of the root.
+        assert!(!text.contains(&host_root) && !text.contains(&host_outer), "{path} leaked a host path: {text}");
+        assert!(text.starts_with(&format!("`{path}` ")), "{path}: {text}");
+    }
+    let write_only = attenuate(&mut vm, grant, false, true, "");
+    error(read_text(&mut vm, write_only, "a.txt").unwrap_err(), "does not grant Read");
+    let forged = Some(ExternRef::new(&mut vm.store, witchy_wir::canonical_safewir::DIR_RESPONSE_KIND.get()).unwrap());
+    let status = vm.instance.get_typed_func::<Token, i32>(&mut vm.store, "status").unwrap();
+    error(status.call(&mut vm.store, forged).unwrap_err(), "wrong host kind");
 }

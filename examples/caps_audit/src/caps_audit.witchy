@@ -10,8 +10,9 @@ from json import Json
 
 fn main(console: Console, root: Dir[Read]):
     let target = "examples/data/sample_rune.witchy"
-    let report = compiler.footprint(root.read(target))
-    console.print(target + " demands: " + total_of(report))
+    match root.read(target):
+        Ok(source) -> console.print(target + " demands: " + total_of(compiler.footprint(source)))
+        Err(e) -> console.print("cannot read " + target + ": " + show(e))
 
 // Pull the "total" array out of the footprint JSON and render it. Fails closed:
 // a compiler error report is surfaced, never rendered as "(none)".

@@ -1943,7 +1943,8 @@ fn block_tail_type(block: &Block, type_of: &dyn Fn(&Expr) -> Option<Type>) -> Op
 
 fn cap_op_result_type(e: &Expr, type_of: &dyn Fn(&Expr) -> Option<Type>) -> Option<Type> {
     let Expr::Call { name, args } = e else { return None };
-    match cap_ops::result_shape(name, args.len())? {
+    let (shape, fallible) = cap_ops::result_shape(name, args.len())?;
+    let value = match shape {
         cap_ops::ResultShape::SameReceiver => args.first().and_then(type_of),
         cap_ops::ResultShape::Nil => Some(unit_type()),
         cap_ops::ResultShape::Int => Some(named_type("Int")),
@@ -1964,7 +1965,12 @@ fn cap_op_result_type(e: &Expr, type_of: &dyn Fn(&Expr) -> Option<Type>) -> Opti
             Some(Type::Named("Option".to_string(), vec![named_type("Socket")]))
         }
         cap_ops::ResultShape::Listener => Some(named_type("Listener")),
-    }
+    }?;
+    Some(if fallible {
+        Type::Named("Result".to_string(), vec![value, named_type(cap_ops::CAP_ERROR_TYPE)])
+    } else {
+        value
+    })
 }
 
 impl Ctx<'_> {

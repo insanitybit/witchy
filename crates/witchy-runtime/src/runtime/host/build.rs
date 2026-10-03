@@ -90,7 +90,7 @@ fn host_build_read_len(mut caller: Caller<'_, VmState>, rel_ptr: i32) -> Result<
                     Err(e) => last = format!("`{}`: {e}", file.display_path().display()),
                 }
             }
-            Err(e) => last = e.0,
+            Err(e) => last = e.message,
         }
     }
     Err(Error::msg(format!("read_build: `{rel}` not found in any granted read root ({last})")))

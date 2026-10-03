@@ -835,7 +835,9 @@ type DirPolicy:
     Any
 
 fn load(dir: Dir[Read], policy: DirPolicy) -> String:
-    dir.only(policy).read("config.txt")
+    match dir.only(policy).read("config.txt"):
+        Ok(text) -> text
+        Err(_) -> ""
 "#;
         check_str(src).expect("Dir.only(...).read(...) should type-check");
 
@@ -849,9 +851,10 @@ fn load(dir: Dir[Read], policy: DirPolicy) -> String:
                 _ => None,
             })
             .expect("load");
-        let Some(Stmt::Expr(Expr::Call { name: read_name, args: read_args })) =
-            load.body.stmts.last()
-        else {
+        let Some(Stmt::Expr(Expr::Match { scrutinee, .. })) = load.body.stmts.last() else {
+            panic!("expected a match on the lowered dir.read call");
+        };
+        let Expr::Call { name: read_name, args: read_args } = scrutinee.as_ref() else {
             panic!("expected lowered dir.read call");
         };
         assert_eq!(read_name, "__capop.read");

@@ -86,7 +86,7 @@ pub use fetch::{FETCH_CAPABILITY_KIND, FETCH_RESPONSE_KIND, FETCH_IMPORT_NAMES};
 mod registry_hosts;
 pub use registry_hosts::{CLOCK_CAPABILITY_KIND, SECRET_STORE_CAPABILITY_KIND, SECRET_CAPABILITY_KIND, REGISTRY_HOST_IMPORT_NAMES};
 mod dir_storage;
-pub use dir_storage::{DIR_BYTES_RESPONSE_KIND, DIR_STORAGE_IMPORT_NAMES};
+pub use dir_storage::{DIR_RESPONSE_KIND, DIR_STORAGE_IMPORT_NAMES};
 pub(crate) mod build_read;
 pub use build_read::{BUILD_READ_CAPABILITY_KIND, BUILD_READ_RESPONSE_KIND, BUILD_READ_IMPORT_NAMES};
 pub use build_read::{BUILD_ENV_CAPABILITY_KIND, BUILD_ENV_IMPORT_NAMES};
@@ -573,7 +573,6 @@ pub const BUILD_OUT_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(9)
 /// authenticated about the imports themselves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CapabilityImportSignatures {
-    pub dir_read_into: FunctionSignatureId,
     pub dir_list_into: FunctionSignatureId,
     pub dir_exists_at: FunctionSignatureId,
     pub dir_write_at: FunctionSignatureId,
@@ -947,16 +946,6 @@ impl CanonicalAbiCatalog {
         let size = || vec![HostResultRole::Value(ValueType::Size)];
 
         let imports = vec![
-            authenticated_capability_import(
-                "dir_read_into",
-                &[WasmTy::ExternRef, WasmTy::I32, WasmTy::I32, WasmTy::I32, WasmTy::I32],
-                &[WasmTy::I32],
-                signatures.dir_read_into,
-                vec![dir(), read_slice(), write_slice()],
-                size(),
-                HostMutation::WriteBuffers,
-                &[AbiImportAuthority::DirRead],
-            )?,
             // The directory's admitted entry names, NUL-separated, into a
             // guest buffer (the guest splits them).
             authenticated_capability_import(
@@ -1880,7 +1869,6 @@ pub mod self_checks {
 
     fn signatures() -> CapabilityImportSignatures {
         CapabilityImportSignatures {
-            dir_read_into: FunctionSignatureId::new(1),
             dir_list_into: FunctionSignatureId::new(2),
             dir_exists_at: FunctionSignatureId::new(2),
             dir_write_at: FunctionSignatureId::new(3),

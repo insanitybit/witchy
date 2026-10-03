@@ -942,10 +942,9 @@ impl Codegen<'_> {
                 self.uses_dict_iter = true;
                 call(intrinsic_helper(name), self.lower_args(&[&args[0]])?)
             }
-            ("read", 2) => {
-                self.used_dir_ops.insert("read");
-                call("dir_read", self.lower_args(&[&args[0], &args[1]])?)
-            }
+            // `dir.read` answers `Result(String, CapError)` (RFC-0126 rule 3);
+            // only the canonical route builds that result. Refuse it here.
+            ("read", 2) => return None,
             // RFC-0012 File ops. `read(File)` is arity 1 (a leaf, no path) and goes
             // through the `file_read` WIR helper; `write(File, data)` is arity 2.
             // `open`/`create` navigate a Dir to a confined File externref.

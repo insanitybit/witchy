@@ -13,12 +13,14 @@ implementation remains opaque.
 
 ```witchy
 // This helper receives read authority, not write authority.
-fn load(dir: Dir[Read], name: String) -> String:
+fn load(dir: Dir[Read], name: String) -> Result(String, CapError):
     dir.read(name)
 
 fn main(console: Console, dir: Dir):
-    // Full Dir narrows to Dir[Read].
-    console.print(load(dir, "notes.txt"))
+    // Full Dir narrows to Dir[Read]. A denied or missing file is a value.
+    match load(dir, "notes.txt"):
+        Ok(text) -> console.print(text)
+        Err(e) -> console.print("cannot read notes.txt: " + show(e))
 ```
 
 A web API where `serve` keeps possession of the listening `Net`, while this

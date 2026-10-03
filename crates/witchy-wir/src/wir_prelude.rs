@@ -366,7 +366,6 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "heap_unregister" (func $heap_unregister_host (param i32)))
   (import "witchy" "heap_frontier" (func $heap_frontier_host (param i32)))
   (import "witchy" "__witchy_abort" (func $__witchy_abort (param i32 i64 i64 i32)))
-  (import "witchy" "dir_read_into" (func $dir_read_into_host (param externref i32 i32 i32 i32) (result i32)))
   (import "witchy" "dir_list_into" (func $dir_list_into_host (param externref i32 i32) (result i32)))
   (import "witchy" "dir_exists_at" (func $dir_exists_at_host (param externref i32 i32) (result i32)))
   (import "witchy" "dir_write_at" (func $dir_write_at_host (param externref i32 i32 i32 i32)))
@@ -409,12 +408,14 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "dir_create_new_at" (func $dir_create_new_at_host (param externref i32 i32 i32 i32) (result i32)))
   (import "witchy" "dir_replace_at" (func $dir_replace_at_host (param externref i32 i32 i32 i32)))
   (import "witchy" "dir_read_bytes_at" (func $dir_read_bytes_at_host (param externref i32 i32) (result externref)))
-  (import "witchy" "dir_bytes_response_size" (func $dir_bytes_response_size_host (param externref) (result i32)))
-  (import "witchy" "dir_bytes_response_into" (func $dir_bytes_response_into_host (param externref i32 i32) (result i32)))
+  (import "witchy" "dir_response_size" (func $dir_response_size_host (param externref) (result i32)))
+  (import "witchy" "dir_response_into" (func $dir_response_into_host (param externref i32 i32) (result i32)))
   (import "witchy" "dir_write_bytes_at" (func $dir_write_bytes_at_host (param externref i32 i32 i32 i32)))
   (import "witchy" "dir_append_bytes_at" (func $dir_append_bytes_at_host (param externref i32 i32 i32 i32)))
   (import "witchy" "dir_set_executable_at" (func $dir_set_executable_at_host (param externref i32 i32)))
   (import "witchy" "dir_rename_at" (func $dir_rename_at_host (param externref i32 i32 i32 i32)))
+  (import "witchy" "dir_read_at" (func $dir_read_at_host (param externref i32 i32) (result externref)))
+  (import "witchy" "dir_response_status" (func $dir_response_status_host (param externref) (result i32)))
   (import "witchy" "crypto_sha512_slices" (func $crypto_sha512_slices_host (param i32 i32 i32 i32) (result i32)))
   (import "witchy" "crypto_sha3_256_slices" (func $crypto_sha3_256_slices_host (param i32 i32 i32 i32) (result i32)))
   (import "witchy" "crypto_hmac_sha256_slices" (func $crypto_hmac_sha256_slices_host (param i32 i32 i32 i32 i32 i32) (result i32)))
@@ -610,8 +611,10 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "dir_create_new_at"
         | "dir_replace_at"
         | "dir_read_bytes_at"
-        | "dir_bytes_response_size"
-        | "dir_bytes_response_into"
+        | "dir_response_size"
+        | "dir_response_into"
+        | "dir_response_status"
+        | "dir_read_at"
         | "dir_write_bytes_at"
         | "dir_append_bytes_at"
         | "dir_set_executable_at"
@@ -695,7 +698,6 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "exec_run"
         // The canonical route's stateless `Dir`/`Env` operations. They take a
         // capability token and checked slices, never host-staged state.
-        | "dir_read_into"
         | "dir_list_into"
         | "dir_exists_at"
         | "dir_is_dir_at"
@@ -765,12 +767,11 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "dir_exists"
         | "dir_is_dir"
         | "dir_open"
-        | "dir_read_into"
         | "dir_list_into"
         | "dir_exists_at"
         | "dir_is_dir_at"
-        | "dir_read_file" | "dir_read_bytes_at" | "dir_bytes_response_size"
-        | "dir_bytes_response_into" => AUTH_DIR_READ,
+        | "dir_read_file" | "dir_read_bytes_at" | "dir_response_size"
+        | "dir_response_into" | "dir_read_at" | "dir_response_status" => AUTH_DIR_READ,
         "dir_write" | "dir_write_bytes" | "dir_append" | "dir_append_bytes" | "dir_set_executable"
         | "dir_make_dir" | "dir_create" | "dir_create_new" | "dir_replace" | "dir_rename"
         | "dir_write_at" | "dir_make_dir_at" | "dir_create_new_at"

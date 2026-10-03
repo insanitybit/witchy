@@ -3107,3 +3107,35 @@ literal expansion, and precompiled declaration graphs still use or require
 separate linker support. The test and build command adapters still use their
 existing compiler-service routes. The source tree walker therefore remains in
 the workspace, and row Q is partial.
+
+### 2026-10-03: `dir.read` returns `Result(String, CapError)` (RFC-0126 rule 3, row Q partial)
+
+`dir.read` now answers a run-time failure as a value instead of a trap. One
+host call, `dir_read_at`, returns a response handle; `dir_response_status`
+selects `Ok` or the `CapError` variant, and the existing size/into imports copy
+the payload. The retired `dir_read_into` import is gone. A missing `Read` right
+is still a check-time error, and a forged response token or a write-only token
+still traps on the host.
+
+`capabilities::dir_capability_compiles_to_wasm_and_confines` runs on admitted
+unoptimized Wasm against independent transcripts. `ok: alpha` succeeds. A
+missing file is `NotFound` and a directory is `NotAFile`. These are `Denied`
+whether or not their target exists:
+
+- `../outside.txt` and `../missing.txt`;
+- an absolute path; and
+- a symlink to an outside file or to a missing outside file.
+
+No guest-visible message contains a host path or the escaped contents.
+
+The runtime test `dir_read_at_answers_failures_as_statuses` pins the same
+existence-independence at the host, including:
+
+- non-UTF-8 text as `Io`;
+- links through outside directories;
+- policy refusals of present and absent names; and
+- policy-invisible aliases and directories answering like a missing name.
+
+The source tree walker refuses `dir.read` by name instead of gaining
+`CapError`. The legacy two-backend Dir tests that read now run as admitted Wasm
+or read through `File`, which adds no new walker dependency.

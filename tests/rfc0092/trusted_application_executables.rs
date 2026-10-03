@@ -28,9 +28,9 @@ fn trusted_publisher_application_end_to_end() {
 fn main(console: Console, cwd: Dir[Read], root: Dir[Read], env: Env, args: List(String)) -> Int:
     let requested = list.at(args, 0)
     if requested.starts_with("/"):
-        console.print("absolute:${root.read(requested.strip_prefix("/"))}")
+        console.print("absolute:${root.read(requested.strip_prefix("/")) ?? "<unreadable>"}")
     else:
-        console.print("relative:${cwd.read(requested)}")
+        console.print("relative:${cwd.read(requested) ?? "<unreadable>"}")
     match env.get_env("RFC0092_TEST_LABEL"):
         Some(label) -> console.print("env:${label}")
         None -> console.print("env:missing")
@@ -216,7 +216,7 @@ fn dependency_footprint_does_not_widen_the_trusted_root() {
     let dependency = scratch.join("dependency.witchy");
     std::fs::write(
         &dependency,
-        "pub fn answer() -> Int:\n    42\n\npub fn effectful(root: Dir[Read]) -> String:\n    root.read(\"secret.txt\")\n",
+        "pub fn answer() -> Int:\n    42\n\npub fn effectful(root: Dir[Read]) -> Result(String, CapError):\n    root.read(\"secret.txt\")\n",
     )
     .unwrap();
     let entry = scratch.join("root.witchy");

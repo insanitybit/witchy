@@ -8,7 +8,7 @@ pub(super) fn dir_child_value(dir: &DirValue, name: &str) -> Result<DirValue, Ru
         DirValue::Fs(base) => base
             .open_dir(name)
             .map(DirValue::Fs)
-            .map_err(|error| RuntimeError { message: error.0 }),
+            .map_err(|error| RuntimeError { message: error.message }),
         #[cfg(feature = "test-fixtures")]
         DirValue::Fixture(_) => {
             err("internal error: fixture Dir bypassed fixture dispatch")
@@ -21,7 +21,7 @@ pub(super) fn dir_file_value(dir: &DirValue, rel: &str, write: bool) -> Result<F
         DirValue::Fs(base) => base
             .file(rel, !write)
             .map(FileValue::Fs)
-            .map_err(|error| RuntimeError { message: error.0 }),
+            .map_err(|error| RuntimeError { message: error.message }),
         #[cfg(feature = "test-fixtures")]
         DirValue::Fixture(_) => {
             err("internal error: fixture Dir bypassed fixture dispatch")
@@ -47,7 +47,7 @@ pub(super) fn dir_file_value_for_policy(
     }
     match base
         .entry_kind_exact(rel)
-        .map_err(|error| RuntimeError { message: error.0 })?
+        .map_err(|error| RuntimeError { message: error.message })?
     {
         Some(witchy_runtime::confine::ConfinedEntryKind::File) => {}
         None if write => {}
@@ -82,7 +82,7 @@ pub(super) fn visible_entry_kind(
     }
     let kind = base
         .entry_kind_exact(rel)
-        .map_err(|error| RuntimeError { message: error.0 })?;
+        .map_err(|error| RuntimeError { message: error.message })?;
     Ok(match kind {
         Some(witchy_runtime::confine::ConfinedEntryKind::File)
             if witchy_caps::capabilities::dir_admits(policy, rel, false) => Some(false),
@@ -99,7 +99,7 @@ pub(super) fn exact_entry_kind(
     match dir {
         DirValue::Fs(base) => base
             .entry_kind_exact(rel)
-            .map_err(|error| RuntimeError { message: error.0 }),
+            .map_err(|error| RuntimeError { message: error.message }),
         #[cfg(feature = "test-fixtures")]
         DirValue::Fixture(_) => err("internal error: fixture Dir bypassed fixture dispatch"),
     }

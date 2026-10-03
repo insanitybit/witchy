@@ -852,7 +852,7 @@ fn run_prepared_entry_limited(
                     };
                     dir_idx += 1;
                     let dir = witchy_runtime::confine::ConfinedDir::open_ambient(&r)
-                        .map_err(|error| RuntimeError { message: error.0 })?;
+                        .map_err(|error| RuntimeError { message: error.message })?;
                     vals.push(Value::Dir(DirValue::Fs(dir), String::new()));
                 } else if matches!(&p.ty, Some(Type::Named(n, _)) if n == "File") {
                     // The i-th `File` param maps to the i-th `--file` grant (RFC-0012).
@@ -861,7 +861,7 @@ fn run_prepared_entry_limited(
                     })?;
                     file_idx += 1;
                     let file = witchy_runtime::confine::ConfinedFile::open_ambient(&path)
-                        .map_err(|error| RuntimeError { message: error.0 })?;
+                        .map_err(|error| RuntimeError { message: error.message })?;
                     vals.push(Value::File(FileValue::Fs(file)));
                 } else if let Some(Type::Named(tn, _)) = &p.ty {
                     // RFC-0038: a record-typed `main` param is a bare grantable cap

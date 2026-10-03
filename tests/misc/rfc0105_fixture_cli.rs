@@ -285,14 +285,14 @@ fn vm_with_dir_preserves_fixture_state_across_both_backends() {
         "suite.witchy",
         "import bytes\nimport vm\n\n\
          fn worker(dir: Dir, name: Bytes) -> Bytes:\n    \
-         let value = dir.read(bytes.to_string(name))\n    \
+         let value = dir.read(bytes.to_string(name)) ?? \"\"\n    \
          dir.write(\"output.txt\", value + \"!\")\n    \
-         bytes.from_string(dir.read(\"output.txt\"))\n\n\
+         bytes.from_string(dir.read(\"output.txt\") ?? \"\")\n\n\
          fn test_vm(console: Console, root: Dir):\n    \
          let sandbox = root.subtree(\"sandbox\")\n    \
          let result = vm.with_dir(sandbox, worker, bytes.from_string(\"input.txt\"))\n    \
          console.print(bytes.to_string(result))\n    \
-         console.print(sandbox.read(\"output.txt\"))\n",
+         console.print(sandbox.read(\"output.txt\") ?? \"\")\n",
     );
     let plan = temp.write_plan(&FixturePlan {
         console: Some(ConsoleFixture::default()),

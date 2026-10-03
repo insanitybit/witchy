@@ -8,7 +8,9 @@ import stats
 from json import Json
 
 fn main(console: Console, root: Dir[Read]):
-    console.print(report(root.read("scores.json")))
+    match root.read("scores.json"):
+        Ok(text) -> console.print(report(text))
+        Err(e) -> console.print("cannot read scores.json: " + show(e))
 
 // Decode the document and render the report, or an error line on malformed JSON.
 fn report(text: String) -> String:

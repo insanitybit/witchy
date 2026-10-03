@@ -9,7 +9,12 @@
 import tasklib
 
 fn main(console: Console, root: Dir[Read]):
-    let tasks = tasklib.parse(root.read("tasks.md"))
+    match root.read("tasks.md"):
+        Ok(text) -> show_tasks(console, text)
+        Err(e) -> console.print("cannot read tasks.md: " + show(e))
+
+fn show_tasks(console: Console, text: String):
+    let tasks = tasklib.parse(text)
     console.print("TODO")
     console.print(tasklib.render(tasks))
     console.print("")

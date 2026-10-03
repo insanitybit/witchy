@@ -237,6 +237,7 @@ mod runtime {
                 use witchy_runtime::runtime::self_checks::host_filesystem_dir_storage_tests as checks;
                 #[test] fn dir_storage_entry_policy_is_preserved_for_every_file_operation() { checks::dir_storage_entry_policy_is_preserved_for_every_file_operation().check() }
                 #[test] fn dir_storage_full_input_preflight_precedes_file_mutation() { checks::dir_storage_full_input_preflight_precedes_file_mutation().check() }
+                #[test] fn dir_read_at_answers_failures_as_statuses() { checks::dir_read_at_answers_failures_as_statuses().check() }
                 #[test] fn dir_storage_imports_remain_grant_gated() { checks::dir_storage_imports_remain_grant_gated().check() }
                 #[test] fn dir_storage_kind_rights_and_response_issuer_precede_memory() { checks::dir_storage_kind_rights_and_response_issuer_precede_memory().check() }
                 #[test] fn dir_storage_response_preflight_short_capacity_and_exact_prefix() { checks::dir_storage_response_preflight_short_capacity_and_exact_prefix().check() }
@@ -253,7 +254,6 @@ mod runtime {
             mod tests {
                 use crate::Outcome;
                 use witchy_runtime::runtime::self_checks::host_filesystem_tests as checks;
-                #[test] fn dir_read_into_traps_on_a_path_escaping_the_root() { checks::dir_read_into_traps_on_a_path_escaping_the_root().check() }
                 #[test] fn dir_write_at_is_not_linked_without_a_write_grant() { checks::dir_write_at_is_not_linked_without_a_write_grant().check() }
                 #[test] fn dir_write_at_refuses_a_read_only_dir() { checks::dir_write_at_refuses_a_read_only_dir().check() }
             }

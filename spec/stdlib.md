@@ -1535,9 +1535,9 @@ Create each level of `path` under `root` (the confined `Dir`'s `make_dir` is not
 
 The parent component of a relative path as `Some`: "a/b/c" -> Some("a/b"). A single component has no parent, so "a" is `None` (RFC-0044 rule 1: absence is `Option`, never an empty-string sentinel). Callers ensuring a parent exists can default explicitly: `fs.parent_dir(p) ?? ""` (ensure_dir of "" creates nothing).
 
-#### `fn collect_files(root: Dir, path: String, rel: String, ext: String) -> List((String, String))`
+#### `fn collect_files(root: Dir, path: String, rel: String, ext: String) -> Result(List((String, String)), CapError)`
 
-Recursively collect every file under `path` whose name ends with `ext`, as (relpath, contents) pairs. `rel` is prefixed to each result path (so a nested `a/b.witchy` keeps its full relative path). An empty `path` walks from the Dir root itself. Needs a readable `Dir`.
+Recursively collect every file under `path` whose name ends with `ext`, as (relpath, contents) pairs. `rel` is prefixed to each result path (so a nested `a/b.witchy` keeps its full relative path). An empty `path` walks from the Dir root itself. The first file that cannot be read is the `Err`. Needs a readable `Dir`.
 
 ## `func`
 

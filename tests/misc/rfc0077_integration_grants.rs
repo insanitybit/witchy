@@ -26,7 +26,7 @@ fn real_dir_access_requires_integration_and_an_explicit_grant() {
     std::fs::write(granted.join("secret.txt"), "integration-secret").expect("seed real file");
     let suite = temp.write(
         "suite.witchy",
-        "import testing\n\nfn test_reads_real_file(root: Dir[Read]):\n    testing.assert_eq(root.read(\"secret.txt\"), \"integration-secret\")\n",
+        "import testing\n\nfn test_reads_real_file(root: Dir[Read]):\n    testing.assert_eq(root.read(\"secret.txt\") ?? \"\", \"integration-secret\")\n",
     );
 
     let plain = run([OsString::from("test"), suite.clone().into_os_string()]);
@@ -115,7 +115,7 @@ fn resolved_dependency_tests_receive_zero_real_grants() {
     );
     temp.write(
         "vendor/dep/src/dep.witchy",
-        "import testing\n\nfn test_dependency_reads_real_file(root: Dir[Read]):\n    testing.assert_eq(root.read(\"secret.txt\"), \"dependency-must-not-read-this\")\n",
+        "import testing\n\nfn test_dependency_reads_real_file(root: Dir[Read]):\n    testing.assert_eq(root.read(\"secret.txt\") ?? \"\", \"dependency-must-not-read-this\")\n",
     );
 
     let output = run([
@@ -136,7 +136,7 @@ fn linked_library_capabilities_do_not_widen_a_nullary_test_entry() {
     let temp = TempDir::new("linked");
     temp.write(
         "helper.witchy",
-        "pub fn answer() -> Int:\n    42\n\npub fn effectful(root: Dir[Read]) -> String:\n    root.read(\"secret.txt\")\n",
+        "pub fn answer() -> Int:\n    42\n\npub fn effectful(root: Dir[Read]) -> Result(String, CapError):\n    root.read(\"secret.txt\")\n",
     );
     let suite = temp.write(
         "suite.witchy",

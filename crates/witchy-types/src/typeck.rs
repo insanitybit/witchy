@@ -4778,6 +4778,13 @@ impl Checker {
         signature
     }
 
+    /// `Result(value, CapError)`: the type of a fallible capability operation
+    /// (RFC-0126 rule 3).
+    pub(super) fn cap_result(value: Ty) -> Ty {
+        let error = Ty::Named(cap_ops::CAP_ERROR_TYPE.into(), Vec::new().into());
+        Ty::Named("Result".into(), vec![value, error].into())
+    }
+
     fn cap_op_call_sig(operation: &cap_ops::CapOp) -> (Vec<Ty>, Ty) {
         use cap_ops::{ArgumentShape as A, ReceiverKind as R, ResultShape as O};
 
@@ -4828,6 +4835,7 @@ impl Checker {
             O::OptionSocket => Ty::Named("Option".into(), vec![Ty::Socket].into()),
             O::Listener => Ty::Listener,
         };
+        let result = if operation.fallible { Self::cap_result(result) } else { result };
         (parameters, result)
     }
 

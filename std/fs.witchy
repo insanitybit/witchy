@@ -31,8 +31,9 @@ pub fn parent_dir(path: String) -> Option(String):
 // Recursively collect every file under `path` whose name ends with `ext`, as
 // (relpath, contents) pairs. `rel` is prefixed to each result path (so a nested
 // `a/b.witchy` keeps its full relative path). An empty `path` walks from the
-// Dir root itself. Needs a readable `Dir`.
-pub fn collect_files(root: Dir, path: String, rel: String, ext: String) -> List((String, String)):
+// Dir root itself. The first file that cannot be read is the `Err`. Needs a
+// readable `Dir`.
+pub fn collect_files(root: Dir, path: String, rel: String, ext: String) -> Result(List((String, String)), CapError):
     var out = []
     if root.exists(path):
         for entry in root.subtree(path).list():
@@ -42,8 +43,8 @@ pub fn collect_files(root: Dir, path: String, rel: String, ext: String) -> List(
             let child = if path.is_empty(): entry else: path + "/" + entry
             let child_rel = if rel.is_empty(): entry else: rel + "/" + entry
             if root.is_dir(child):
-                for f in collect_files(root, child, child_rel, ext):
+                for f in collect_files(root, child, child_rel, ext)?:
                     list.push(out, f)
             else if entry.ends_with(ext):
-                list.push(out, (child_rel, root.read(child)))
-    out
+                list.push(out, (child_rel, root.read(child)?))
+    Ok(out)

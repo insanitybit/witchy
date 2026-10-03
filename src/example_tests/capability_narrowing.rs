@@ -20,9 +20,9 @@ use crate::{interpreter, parser, typeck};
             interpreter::run_module(linked, &tmp, Vec::new())
         };
         // Write then read back, within the confined Dir.
-        let out = run("fn main(console: Console, root: Dir):\n    root.write(\"out.txt\", \"hi\")\n    console.print(root.read(\"out.txt\"))\n")
+        let out = run("fn main(console: Console, root: Dir):\n    root.write(\"out.txt\", \"hi\")\n    console.print(\"${root.exists(\"out.txt\")}\")\n")
             .expect("run");
-        assert_eq!(out, vec!["hi"]);
+        assert_eq!(out, vec!["true"]);
         assert_eq!(std::fs::read_to_string(tmp.join("out.txt")).unwrap(), "hi");
         // A `..` write is refused — the capability can't escape its subtree.
         assert!(run("fn main(console: Console, root: Dir):\n    root.write(\"../escape.txt\", \"x\")\n").is_err());
@@ -120,7 +120,7 @@ use crate::{interpreter, parser, typeck};
         // A full `Net`/`Dir` coerces into a narrowed parameter — no `as` needed.
         ok("fn fetch(n: Net[Connect]) -> Socket:\n    n.connect(\"a:1\")\nfn main(c: Console, net: Net):\n    let s = fetch(net)\n");
         ok("fn dial(n: Net[Connect, Tcp]) -> Socket:\n    n.connect(\"a:1\")\nfn main(c: Console, net: Net):\n    let s = dial(net)\n");
-        ok("fn load(d: Dir[Read]) -> String:\n    d.read(\"f\")\nfn main(c: Console, root: Dir):\n    let x = load(root)\n");
+        ok("fn load(d: Dir[Read]) -> String:\n    d.read(\"f\") ?? \"\"\nfn main(c: Console, root: Dir):\n    let x = load(root)\n");
         // The type ceiling holds: a `Net[Connect]` cannot be re-widened to satisfy
         // a full-`Net` parameter (soundness — no laundering authority back up).
         err(

@@ -3451,23 +3451,13 @@ impl Interpreter {
             },
             // Read a file relative to a Dir capability (confined to its subtree).
             "read" => match args {
-                #[cfg(feature = "test-fixtures")]
-                [Value::Dir(DirValue::Fixture(handle), _), Value::Str(rel)] => {
-                    match self.invoke_fixture(HostRequest::DirRead {
-                        dir: *handle,
-                        path: rel.as_str().to_owned(),
-                    })? {
-                        HostResponse::Bytes(bytes) => String::from_utf8(bytes)
-                            .map(Value::str)
-                            .map(Some)
-                            .map_err(|error| RuntimeError {
-                                message: format!("read returned invalid UTF-8: {error}"),
-                            }),
-                        other => err(format!(
-                            "internal error: Dir fixture returned {other:?}"
-                        )),
-                    }
-                }
+                // `dir.read` answers `Result(String, CapError)` (RFC-0126
+                // rule 3). The frozen walker gains no new semantics: it
+                // refuses the operation rather than emulating that result.
+                [Value::Dir(..), Value::Str(_)] => err(
+                    "`dir.read` returns a `CapError` result, which the source interpreter does not \
+                     implement; run the program as admitted Wasm",
+                ),
                 #[cfg(feature = "test-fixtures")]
                 [Value::File(FileValue::Fixture(handle))] => {
                     match self.invoke_fixture(HostRequest::FileRead { file: *handle })? {
@@ -3481,12 +3471,6 @@ impl Interpreter {
                             "internal error: File fixture returned {other:?}"
                         )),
                     }
-                }
-                [Value::Dir(base, pol), Value::Str(rel)] => {
-                    if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
-                        return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
-                    }
-                    Ok(Some(Value::str(read_file_value(&dir_file_value_for_policy(base, pol, rel, false)?)?)))
                 }
                 // A `File` is already a confined path; read it directly (RFC-0012).
                 [Value::File(file)] => Ok(Some(Value::str(read_file_value(file)?))),
@@ -3755,7 +3739,7 @@ impl Interpreter {
                     match base {
                         DirValue::Fs(base) => match base.create_new(rel, contents.as_bytes()) {
                             Ok(created) => Ok(Some(Value::Bool(created))),
-                            Err(e) => err(format!("create_new failed for `{rel}`: {}", e.0)),
+                            Err(e) => err(format!("create_new failed for `{rel}`: {}", e.message)),
                         },
                         #[cfg(feature = "test-fixtures")]
                         DirValue::Fixture(_) => err(
@@ -3794,7 +3778,7 @@ impl Interpreter {
                     match base {
                         DirValue::Fs(base) => match base.replace(rel, contents.as_bytes()) {
                             Ok(()) => Ok(Some(Value::Unit)),
-                            Err(e) => err(format!("replace failed for `{rel}`: {}", e.0)),
+                            Err(e) => err(format!("replace failed for `{rel}`: {}", e.message)),
                         },
                         #[cfg(feature = "test-fixtures")]
                         DirValue::Fixture(_) => err(
@@ -3860,7 +3844,7 @@ impl Interpreter {
                     match base {
                         DirValue::Fs(base) => match base.rename(from, to) {
                             Ok(()) => Ok(Some(Value::Unit)),
-                            Err(e) => err(format!("rename failed (`{from}` -> `{to}`): {}", e.0)),
+                            Err(e) => err(format!("rename failed (`{from}` -> `{to}`): {}", e.message)),
                         },
                         #[cfg(feature = "test-fixtures")]
                         DirValue::Fixture(_) => err(
@@ -3990,7 +3974,7 @@ impl Interpreter {
                                 Err(e) => err(format!(
                                     "make_dir failed for `{}`: {}",
                                     base.display_path().join(name.as_str()).display(),
-                                    e.0
+                                    e.message
                                 )),
                             }
                         }
@@ -4130,10 +4114,10 @@ impl Interpreter {
                             message: format!("write_out path `{rel}` is not valid UTF-8"),
                         })?;
                     base.make_dir(parent)
-                        .map_err(|error| RuntimeError { message: error.0 })?;
+                        .map_err(|error| RuntimeError { message: error.message })?;
                     let file = base
                         .file(rel, false)
-                        .map_err(|error| RuntimeError { message: error.0 })?;
+                        .map_err(|error| RuntimeError { message: error.message })?;
                     match file.write_all(contents.as_bytes()) {
                         Ok(()) => Ok(Some(Value::Unit)),
                         Err(e) => err(format!(
@@ -4165,7 +4149,7 @@ impl Interpreter {
                                     )),
                                 }
                             }
-                            Err(e) => last_err = Some(e.0),
+                            Err(e) => last_err = Some(e.message),
                         }
                     }
                     err(format!(

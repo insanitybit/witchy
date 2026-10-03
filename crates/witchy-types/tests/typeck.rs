@@ -806,7 +806,7 @@ capability ConfigDir from Dir[Read]
 
 fn load(c: ConfigDir, name: String) -> String:
     match c:
-        ConfigDir(dir) -> dir.read(name)
+        ConfigDir(dir) -> dir.read(name) ?? ""
 "#;
         check_str(branded_dir)
             .expect("Dir migration is blocked on branded-cap aggregate representation");
@@ -831,7 +831,7 @@ type Workspace:
     label: String
 
 fn load(w: Workspace, name: String) -> String:
-    w.dir.read(name)
+    w.dir.read(name) ?? ""
 
 fn relabel(w: Workspace, label: String) -> Workspace:
     Workspace(label: label, ..w)
@@ -851,7 +851,7 @@ type Outer:
     label: String
 
 fn load(o: Outer, name: String) -> String:
-    o.inner.dir.read(name)
+    o.inner.dir.read(name) ?? ""
 "#;
         check_str(nested_record).expect("nested cap-carrying records GC-lower");
 
@@ -1329,7 +1329,7 @@ fn main() -> Int:
     fn dir_capability_rights_and_narrowing() {
         // RFC-0012: a `Dir`'s rights split `Read` from `Write` on independent axes.
         // A read-only handle reads (and lists/exists).
-        check_str("fn f(console: Console, d: Dir[Read]):\n    let s = d.read(\"a.txt\")\n    console.print(s)\n")
+        check_str("fn f(console: Console, d: Dir[Read]):\n    let s = d.read(\"a.txt\") ?? \"\"\n    console.print(s)\n")
             .expect("Dir[Read] can read");
         // ... but it cannot `write`, `append`, or `make_dir` (all `Write` verbs).
         let err = check_str("fn f(d: Dir[Read]):\n    d.write(\"a.txt\", \"x\")\n")
@@ -1385,7 +1385,7 @@ fn main() -> Int:
             .expect_err("a policy-narrowed Net[Connect] must not re-widen to full Net");
         assert!(err.contains("can only drop rights"), "got: {err}");
         // `dir.only(policy)` likewise keeps `Read` ...
-        check_str("type DirPolicy:\n    DirPolicy(String)\nfn f(console: Console, d: Dir[Read]):\n    let scoped = d.only(DirPolicy(\"ext:txt\"))\n    let s = scoped.read(\"a.txt\")\n    console.print(s)\n")
+        check_str("type DirPolicy:\n    DirPolicy(String)\nfn f(console: Console, d: Dir[Read]):\n    let scoped = d.only(DirPolicy(\"ext:txt\"))\n    let s = scoped.read(\"a.txt\") ?? \"\"\n    console.print(s)\n")
             .expect("dir.only preserves the Read right");
         // ... and the narrowed `Dir[Read]` cannot be re-widened to a full `Dir`.
         let err = check_str("type DirPolicy:\n    DirPolicy(String)\nfn f(console: Console, d: Dir[Read]):\n    let scoped = d.only(DirPolicy(\"ext:txt\"))\n    let wide = scoped as Dir\n    console.print(\"no\")\n")

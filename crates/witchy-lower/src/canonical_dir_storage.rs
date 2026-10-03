@@ -7,6 +7,21 @@ pub(super) fn is_operation(name: &str) -> bool {
 }
 
 impl FunctionLowerer<'_> {
+    /// `dir.read(path)`: one host read, then `Result(String, CapError)` from
+    /// its response.
+    pub(super) fn lower_dir_read(&mut self, token: ValueId, path: &Expr) -> Result<ValueId, CanonicalLoweringError> {
+        let layout = self.string_layout_id()?;
+        let path = self.lower_string_argument(path)?;
+        let path = self.string_slice_argument(path, layout)?;
+        let response = self.fresh(ValueType::Capability(witchy_wir::canonical_safewir::DIR_RESPONSE_KIND))?;
+        let read = self.capability_import("dir_read_at")?;
+        self.push_operation(Operation::HostCall {
+            destinations: vec![response], import: read,
+            arguments: vec![HostCallArgument::Capability(token), path],
+        });
+        self.lower_dir_text_result(response)
+    }
+
     pub(super) fn lower_dir_storage(
         &mut self, name: &str, token: ValueId, arguments: &[Expr],
     ) -> Result<Option<ValueId>, CanonicalLoweringError> {
@@ -32,7 +47,7 @@ impl FunctionLowerer<'_> {
         }
         if name == "__capop.read_bytes" {
             let path = self.string_slice_argument(path, layout)?;
-            let response = self.fresh(ValueType::Capability(witchy_wir::canonical_safewir::DIR_BYTES_RESPONSE_KIND))?;
+            let response = self.fresh(ValueType::Capability(witchy_wir::canonical_safewir::DIR_RESPONSE_KIND))?;
             let read = self.capability_import("dir_read_bytes_at")?;
             self.push_operation(Operation::HostCall {
                 destinations: vec![response], import: read,
@@ -40,30 +55,7 @@ impl FunctionLowerer<'_> {
             });
             // Size and copy consult the same immutable host snapshot. Neither
             // performs another filesystem read or consumes a staged global.
-            let size = self.fresh(ValueType::Size)?;
-            let size_import = self.capability_import("dir_bytes_response_size")?;
-            self.push_operation(Operation::HostCall {
-                destinations: vec![size], import: size_import,
-                arguments: vec![HostCallArgument::Capability(response)],
-            });
-            let zero = self.push_const_size(0)?;
-            let output = self.alloc_bytes(zero, size)?;
-            let required = self.fresh(ValueType::Size)?;
-            let copy = self.capability_import("dir_bytes_response_into")?;
-            self.push_operation(Operation::HostCall {
-                destinations: vec![required], import: copy,
-                arguments: vec![HostCallArgument::Capability(response), HostCallArgument::Buffer {
-                    place: witchy_wir::canonical_safewir::Place::projected(output,
-                        Projection::Slice { start: zero, length: size }, ValueType::Ref(layout), AccessMode::Write),
-                    extent: HostBufferExtent::Slice,
-                }],
-            });
-            let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, required, size)?;
-            self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
-            self.push_operation(Operation::UpdateCount { object: output, count: required });
-            self.string_lengths.insert(output, required);
-            self.string_capacities.insert(output, size);
-            return Ok(Some(output));
+            return self.lower_dir_response_payload(response).map(Some);
         }
         let data = if matches!(name, "__capop.write_bytes" | "__capop.append_bytes") {
             self.lower_expr(&arguments[1])?

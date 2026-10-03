@@ -5,6 +5,8 @@ use witchy_wir::canonical_safewir::DIR_STORAGE_IMPORT_NAMES;
 #[path = "exec.rs"]
 pub(in crate::runtime) mod canonical_exec;
 
+use crate::confine::{ConfineError, ConfineErrorKind};
+
 use super::super::{
     confine, fill_slice, memory_of, read_slice_str, read_wbytes, read_wstr, read_wstr_list,
     DirAuthority, DirBacking, ExecAuthority, FileAuthority, FileBacking, FsRights, VmState,
@@ -31,14 +33,15 @@ pub(in crate::runtime) fn link_dir_read(linker: &mut Linker<VmState>) -> Result<
     // (RFC-0165 slice 42) The canonical route's read family, gated by the SAME
     // `Dir[Read]` grant as its frozen siblings above: a program without the
     // right cannot even link the import.
-    linker.func_wrap("witchy", "dir_read_into", host_dir_read_into)?;
     linker.func_wrap("witchy", "dir_list_into", host_dir_list_into)?;
     linker.func_wrap("witchy", "dir_exists_at", host_dir_exists_at)?;
     linker.func_wrap("witchy", "dir_is_dir_at", host_dir_is_dir_at)?;
     linker.func_wrap("witchy", "dir_subtree_at", host_dir_subtree_at)?;
     linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[2], host_dir_read_bytes_at)?;
-    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[3], host_dir_bytes_response_size)?;
-    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[4], host_dir_bytes_response_into)?;
+    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[3], host_dir_response_size)?;
+    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[4], host_dir_response_into)?;
+    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[9], host_dir_read_at)?;
+    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[10], host_dir_response_status)?;
     Ok(())
 }
 
@@ -197,10 +200,15 @@ fn dir_require_write(dir: &DirAuthority) -> Result<()> {
 /// `is_dir` is whether `name` denotes a directory entry (a traversal), so the policy's
 /// `kind:` dimension can distinguish files from directories.
 fn dir_guard(dir: &DirAuthority, name: &str, is_dir: bool) -> Result<()> {
+    confine(dir_admits_entry(dir, name, is_dir))
+}
+
+/// `dir_guard`'s judgment as a typed denial.
+fn dir_admits_entry(dir: &DirAuthority, name: &str, is_dir: bool) -> Result<(), ConfineError> {
     if witchy_caps::capabilities::dir_admits(&dir.policy, name, is_dir) {
         Ok(())
     } else {
-        Err(Error::msg(format!(
+        Err(ConfineError::denied(format!(
             "`{name}` is not permitted by this Dir capability's entry policy"
         )))
     }
@@ -220,25 +228,34 @@ fn dir_child_backing(dir: &DirAuthority, name: &str) -> Result<DirBacking> {
 }
 
 fn dir_file_backing(dir: &DirAuthority, rel: &str, write: bool) -> Result<FileBacking> {
+    confine(dir_file_access(dir, rel, write))
+}
+
+/// Bind `rel` to a confined file, failing with a typed kind: an alias is a
+/// denial, a directory is not a file.
+fn dir_file_access(dir: &DirAuthority, rel: &str, write: bool) -> Result<FileBacking, ConfineError> {
     match &dir.backing {
         DirBacking::Fs(base) => {
             if dir.policy.is_empty() {
-                return Ok(FileBacking::Fs(confine(base.file(rel, !write))?));
+                return Ok(FileBacking::Fs(base.file(rel, !write)?));
             }
-            match confine(base.entry_kind_exact(rel))? {
+            match base.entry_kind_exact(rel)? {
                 Some(crate::confine::ConfinedEntryKind::File) => {}
                 None if write => {}
-                None => return Ok(FileBacking::Fs(confine(base.file(rel, true))?)),
+                None => return Ok(FileBacking::Fs(base.file(rel, true)?)),
                 Some(crate::confine::ConfinedEntryKind::Directory) => {
-                    return Err(Error::msg(format!("`{rel}` is a directory, not a file")));
+                    return Err(ConfineError::new(
+                        ConfineErrorKind::NotAFile,
+                        format!("`{rel}` is a directory, not a file"),
+                    ));
                 }
                 Some(crate::confine::ConfinedEntryKind::Other) => {
-                    return Err(Error::msg(format!(
+                    return Err(ConfineError::denied(format!(
                         "`{rel}` is a filesystem alias or unsupported entry"
                     )));
                 }
             }
-            Ok(FileBacking::Fs(confine(base.file(rel, false))?))
+            Ok(FileBacking::Fs(base.file(rel, false)?))
         }
     }
 }
@@ -261,10 +278,18 @@ fn visible_entry_kind(dir: &DirAuthority, rel: &str) -> Result<Option<bool>> {
 }
 
 fn read_file_backing(file: &FileBacking) -> Result<String> {
+    confine(read_file_text(file))
+}
+
+/// A file's UTF-8 contents, or the typed reason it could not be read.
+fn read_file_text(file: &FileBacking) -> Result<String, ConfineError> {
     match file {
         FileBacking::Fs(file) => {
             file.read_to_string().map_err(|e| {
-                Error::msg(format!("read failed for `{}`: {e}", file.display_path().display()))
+                ConfineError::new(
+                    ConfineErrorKind::of_io(&e),
+                    format!("read failed for `{}`: {e}", file.display_path().display()),
+                )
             })
         }
     }
@@ -527,29 +552,6 @@ fn host_dir_read_len(
 // state for a second call to place. Nothing here touches `pending`, so no host
 // state survives a canonical call.
 
-/// `dir_read_into(dir, path, path_len, out, out_cap) -> Size`: read the confined
-/// file NOW under `dir_read_len`'s exact rules (a missing or denied file, or one
-/// whose bytes are not UTF-8, traps), write `min(length, out_cap)` bytes at
-/// `out`, and return the file's FULL byte length. A guest whose buffer was short
-/// sees that in the answer and calls again with a bigger one; it must never
-/// index by the first answer, because the file may have changed in between.
-fn host_dir_read_into(
-    mut caller: Caller<'_, VmState>,
-    d: Option<Rooted<ExternRef>>,
-    path_ptr: i32,
-    path_len: i32,
-    out_ptr: i32,
-    out_cap: i32,
-) -> Result<i32> {
-    let mem = memory_of(&mut caller)?;
-    let rel = read_slice_str(mem.data(&caller), path_ptr, path_len)?;
-    let dir = dir_authority_ref(&caller, d)?;
-    dir_require_read(&dir)?;
-    dir_guard(&dir, &rel, false)?;
-    let contents = read_file_backing(&dir_file_backing(&dir, &rel, false)?)?;
-    fill_slice(&mut caller, out_ptr, out_cap, contents.as_bytes(), "file contents")
-}
-
 /// `dir_exists_at(dir, path, path_len) -> Bool`: `dir_exists`'s semantics over a
 /// checked slice — total, so an escaping or denied path is `false`, not a trap.
 fn host_dir_exists_at(
@@ -683,14 +685,17 @@ fn read_bytes_backing(file: &FileBacking) -> Result<Vec<u8>> {
 
 /// Private immutable read result, not a Dir or an entry grant. Neither an
 /// integer kind nor bytes supplied by the guest can construct this authority.
+/// `status` 0 carries the contents; any other is a `CapError` status
+/// (`ConfineErrorKind::status`) carrying the failure message.
 #[derive(Clone)]
-struct DirBytesResponse {
+pub(in crate::runtime) struct DirResponse {
     issuer: Arc<()>,
+    status: u8,
     bytes: Arc<Vec<u8>>,
 }
 
 fn dir_bytes_length(length: usize) -> Result<i32> {
-    i32::try_from(length).map_err(|_| Error::msg("Dir byte response exceeds the guest ABI size limit"))
+    i32::try_from(length).map_err(|_| Error::msg("Dir response exceeds the guest ABI size limit"))
 }
 
 fn dir_storage_range(ptr: i32, length: i32, limit: usize) -> Result<std::ops::Range<usize>> {
@@ -701,15 +706,19 @@ fn dir_storage_range(ptr: i32, length: i32, limit: usize) -> Result<std::ops::Ra
     Ok(start..end)
 }
 
-fn dir_bytes_response(caller: &Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<Arc<Vec<u8>>> {
-    let token = token.ok_or_else(|| Error::msg("Dir byte response is null"))?;
-    let data = token.data(caller)?.ok_or_else(|| Error::msg("Dir byte response has no host data"))?;
-    let response = data.downcast_ref::<DirBytesResponse>()
-        .ok_or_else(|| Error::msg("Dir byte response has wrong host kind"))?;
+fn dir_response_bytes(caller: &Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<Arc<Vec<u8>>> {
+    dir_response(caller, token).map(|response| response.bytes)
+}
+
+fn dir_response(caller: &Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<DirResponse> {
+    let token = token.ok_or_else(|| Error::msg("Dir response is null"))?;
+    let data = token.data(caller)?.ok_or_else(|| Error::msg("Dir response has no host data"))?;
+    let response = data.downcast_ref::<DirResponse>()
+        .ok_or_else(|| Error::msg("Dir response has wrong host kind"))?;
     if !Arc::ptr_eq(&caller.data().registry_issuer, &response.issuer) {
-        return Err(Error::msg("Dir byte response belongs to another instance"));
+        return Err(Error::msg("Dir response belongs to another instance"));
     }
-    Ok(response.bytes.clone())
+    Ok(response.clone())
 }
 
 fn host_dir_read_bytes_at(
@@ -723,18 +732,123 @@ fn host_dir_read_bytes_at(
     // Exactly one filesystem read. Later getters only borrow this snapshot.
     let bytes = read_bytes_backing(&dir_file_backing(&dir, &path, false)?)?;
     dir_bytes_length(bytes.len())?;
-    let response = DirBytesResponse { issuer: caller.data().registry_issuer.clone(), bytes: Arc::new(bytes) };
+    let response = DirResponse { issuer: caller.data().registry_issuer.clone(), status: 0, bytes: Arc::new(bytes) };
     ExternRef::new(&mut caller, response).map(Some)
 }
 
-fn host_dir_bytes_response_size(caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<i32> {
-    dir_bytes_length(dir_bytes_response(&caller, token)?.len())
+/// `dir_read_at(dir, path, path_len) -> response`: read the confined file
+/// once. Rights are checked first and a missing right or forged token still
+/// traps; a request the grant does not cover, and every filesystem failure,
+/// is the response's status and message (RFC-0126 rule 3).
+fn host_dir_read_at(
+    mut caller: Caller<'_, VmState>, dir: Option<Rooted<ExternRef>>, path_ptr: i32, path_len: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
+    let dir = dir_authority_ref(&caller, dir)?;
+    dir_require_read(&dir)?;
+    let memory = memory_of(&mut caller)?;
+    let path = read_slice_str(memory.data(&caller), path_ptr, path_len)?;
+    let (status, bytes) = match dir_read_text(&dir, &path) {
+        Ok(text) => (0, text.into_bytes()),
+        Err(failure) => (failure.kind.status(), guest_failure(failure.kind, &path).into_bytes()),
+    };
+    dir_bytes_length(bytes.len())?;
+    let response = DirResponse { issuer: caller.data().registry_issuer.clone(), status, bytes: Arc::new(bytes) };
+    ExternRef::new(&mut caller, response).map(Some)
 }
 
-fn host_dir_bytes_response_into(
+/// `dir.read`'s classification (RFC-0126 rule 3). The guest can branch on
+/// the answer, so no answer may depend on anything the capability cannot
+/// observe:
+///
+/// - an absolute or `..` path, and a name the entry policy refuses, are
+///   `Denied` before any filesystem access;
+/// - under an entry policy, an entry the policy cannot see (an alias or a
+///   path through one, a case-folded spelling, a directory a `files()`
+///   handle cannot open) is `NotFound`, exactly like a missing name, as
+///   `dir.exists` answers `false`;
+/// - without a policy, a read through a symlink (the leaf or any parent
+///   component) that fails is `Denied` whatever the target is, so a link
+///   leaving the root never reports whether its outside target exists.
+fn dir_read_text(dir: &DirAuthority, rel: &str) -> Result<String, ConfineError> {
+    use crate::confine::{ConfinedDir, ConfinedEntryKind};
+    let DirBacking::Fs(base) = &dir.backing;
+    ConfinedDir::check_relative(rel)?;
+    dir_admits_entry(dir, rel, false)?;
+    let invisible = || ConfineError::new(ConfineErrorKind::NotFound, format!("`{rel}` is not visible"));
+    // The shallowest symlink on the path always has a real parent inside the
+    // root, so this probe never resolves anything outside it.
+    let through_link = std::path::Path::new(rel).ancestors().filter_map(|prefix| prefix.to_str()).any(|prefix| {
+        !prefix.is_empty()
+            && matches!(base.entry_kind_spelled(prefix), Ok(Some(ConfinedEntryKind::Other)))
+    });
+    if !dir.policy.is_empty() {
+        // Every parent must be an exactly spelled directory; anything else (a
+        // file, an alias, a missing name) is invisible, so a probe through it
+        // never reports what it hit. This matches `dir.exists`.
+        let parents_visible = std::path::Path::new(rel)
+            .ancestors()
+            .skip(1)
+            .filter_map(|prefix| prefix.to_str())
+            .filter(|prefix| !prefix.is_empty())
+            .all(|prefix| {
+                matches!(base.entry_kind_spelled(prefix), Ok(Some(ConfinedEntryKind::Directory)))
+            });
+        if through_link || !parents_visible {
+            return Err(invisible());
+        }
+        return match base.entry_kind_spelled(rel)? {
+            Some(ConfinedEntryKind::File) => {
+                let file = base.file(rel, false)?;
+                file.read_to_string_no_follow().map_err(|error| ConfineError::new(
+                    ConfineErrorKind::of_io(&error),
+                    format!("read failed for `{rel}`: {error}"),
+                ))
+            }
+            Some(ConfinedEntryKind::Directory)
+                if witchy_caps::capabilities::dir_admits(&dir.policy, rel, true) =>
+            {
+                Err(ConfineError::new(ConfineErrorKind::NotAFile, format!("`{rel}` is a directory")))
+            }
+            Some(_) | None => Err(invisible()),
+        };
+    }
+    base.file(rel, true)
+        .and_then(|file| read_file_text(&FileBacking::Fs(file)))
+        .map_err(|failure| if through_link {
+            ConfineError::denied(format!("`{rel}` is read through an alias that cannot be read: {failure}"))
+        } else {
+            failure
+        })
+}
+
+/// The guest-visible message of a failed `Dir` operation on `rel`. A
+/// `CapError` message is program data that may leave over any channel the
+/// program holds, so it names the path only as the guest spelled it and the
+/// failure only by a fixed reason for its kind. The host message (a host
+/// path, raw OS error text) never crosses.
+fn guest_failure(kind: ConfineErrorKind, rel: &str) -> String {
+    let reason = match kind {
+        ConfineErrorKind::Denied => "is not covered by this Dir capability",
+        ConfineErrorKind::NotFound => "was not found",
+        ConfineErrorKind::NotAFile => "is not a file",
+        ConfineErrorKind::AlreadyExists => "already exists",
+        ConfineErrorKind::Io => "could not be read",
+    };
+    format!("`{rel}` {reason}")
+}
+
+fn host_dir_response_status(caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<i32> {
+    Ok(i32::from(dir_response(&caller, token)?.status))
+}
+
+fn host_dir_response_size(caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<i32> {
+    dir_bytes_length(dir_response_bytes(&caller, token)?.len())
+}
+
+fn host_dir_response_into(
     mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>, out_ptr: i32, capacity: i32,
 ) -> Result<i32> {
-    let bytes = dir_bytes_response(&caller, token)?;
+    let bytes = dir_response_bytes(&caller, token)?;
     let required = dir_bytes_length(bytes.len())?;
     let memory = memory_of(&mut caller)?;
     let output = dir_storage_range(out_ptr, capacity, memory.data_size(&caller))?;
@@ -767,7 +881,7 @@ fn host_dir_create_new_at(
     let _ = dir_file_backing(&dir, &path, true)?;
     let created = match &dir.backing {
         DirBacking::Fs(base) => base.create_new(&path, contents.as_bytes())
-            .map_err(|e| Error::msg(format!("create_new failed for `{path}`: {}", e.0)))?,
+            .map_err(|e| Error::msg(format!("create_new failed for `{path}`: {}", e.message)))?,
     };
     Ok(i32::from(created))
 }
@@ -781,7 +895,7 @@ fn host_dir_replace_at(
     let _ = dir_file_backing(&dir, &path, true)?;
     match &dir.backing {
         DirBacking::Fs(base) => base.replace(&path, contents.as_bytes())
-            .map_err(|e| Error::msg(format!("replace failed for `{path}`: {}", e.0))),
+            .map_err(|e| Error::msg(format!("replace failed for `{path}`: {}", e.message))),
     }
 }
 
@@ -890,7 +1004,7 @@ fn host_dir_is_dir(
 
 /// `dir_list_into(dir, out, out_cap) -> byte length`: the admitted entry names
 /// (sorted, the same policy filter as `dir_list_size`) joined by NUL, written
-/// through the bounded slice protocol of `dir_read_into`; the guest splits
+/// through a bounded guest slice; the guest splits
 /// them. A name cannot contain NUL, so the separator is unambiguous.
 fn host_dir_list_into(
     mut caller: Caller<'_, VmState>,
@@ -1090,7 +1204,7 @@ fn host_dir_make_dir_at(
     dir_guard(&dir, &name, true)?;
     match &dir.backing {
         DirBacking::Fs(base) => base.make_dir(&name).map_err(|e| Error::msg(format!(
-            "make_dir failed for `{}`: {}", base.display_path().join(&name).display(), e.0
+            "make_dir failed for `{}`: {}", base.display_path().join(&name).display(), e.message
         ))),
     }
 }
@@ -1110,7 +1224,7 @@ fn host_dir_make_dir(
             base.make_dir(&name).map_err(|e| Error::msg(format!(
                 "make_dir failed for `{}`: {}",
                 base.display_path().join(&name).display(),
-                e.0
+                e.message
             )))
         }
     }
@@ -1136,7 +1250,7 @@ fn host_dir_create_new(
     let _ = dir_file_backing(&dir, &rel, true)?;
     let created = match &dir.backing {
         DirBacking::Fs(base) => base.create_new(&rel, contents.as_bytes()).map_err(|e| {
-            Error::msg(format!("create_new failed for `{rel}`: {}", e.0))
+            Error::msg(format!("create_new failed for `{rel}`: {}", e.message))
         })?,
     };
     Ok(created as i32)
@@ -1161,7 +1275,7 @@ fn host_dir_replace(
     let _ = dir_file_backing(&dir, &rel, true)?;
     match &dir.backing {
         DirBacking::Fs(base) => base.replace(&rel, contents.as_bytes()).map_err(|e| {
-            Error::msg(format!("replace failed for `{rel}`: {}", e.0))
+            Error::msg(format!("replace failed for `{rel}`: {}", e.message))
         }),
     }
 }
@@ -1220,7 +1334,7 @@ fn rename_dir_entries(dir: &DirAuthority, from: &str, to: &str) -> Result<()> {
     }
     match &dir.backing {
         DirBacking::Fs(base) => base.rename(from, to).map_err(|e| {
-            Error::msg(format!("rename failed (`{from}` -> `{to}`): {}", e.0))
+            Error::msg(format!("rename failed (`{from}` -> `{to}`): {}", e.message))
         }),
     }
 }
@@ -1229,19 +1343,6 @@ fn rename_dir_entries(dir: &DirAuthority, from: &str, to: &str) -> Result<()> {
 #[doc(hidden)]
 pub mod tests {
     use super::super::super::{Capabilities, FsRights, Runtime};
-
-    /// The same read, aimed outside the granted root.
-    const READ_ESCAPING: &str = r#"
-        (module
-          (import "witchy" "mint_dir" (func $mint_dir (param i32) (result externref)))
-          (import "witchy" "dir_read_into"
-            (func $dir_read_into (param externref i32 i32 i32 i32) (result i32)))
-          (memory (export "memory") 1)
-          (data (i32.const 0) "../escape.txt")
-          (func (export "run")
-            (drop (call $dir_read_into (call $mint_dir (i32.const 0))
-              (i32.const 0) (i32.const 13) (i32.const 64) (i32.const 64)))))
-    "#;
 
     /// Write through the FIRST Dir grant, which the tests below grant read-only.
     const WRITE_AT: &str = r#"
@@ -1261,32 +1362,6 @@ pub mod tests {
         let root = tempfile::tempdir().expect("granted root");
         std::fs::write(root.path().join(name), contents).expect("seed the granted root");
         root
-    }
-
-    /// Confinement is the frozen route's, unchanged: a path that leaves the
-    /// granted root traps rather than reading.
-    pub fn dir_read_into_traps_on_a_path_escaping_the_root() {
-        let root = seeded_root("a.txt", "hello");
-        std::fs::write(root.path().parent().expect("temp parent").join("escape.txt"), "secret")
-            .expect("seed a file outside the grant");
-        let mut runtime = Runtime::new().expect("runtime");
-        let mut vm = runtime
-            .spawn(
-                READ_ESCAPING,
-                Capabilities {
-                    dir_root: Some(root.path().to_path_buf()),
-                    dir_read: true,
-                    ..Capabilities::default()
-                },
-                4,
-            )
-            .expect("instantiate the escaping-read probe");
-        let error = vm.run().expect_err("an escaping path must trap");
-        let detail = format!("{error:?}");
-        assert!(
-            !detail.contains("secret"),
-            "the trap must not leak the escaped file, got: {detail}"
-        );
     }
 
     /// Rights live in the authority object, so a read-only token refuses the

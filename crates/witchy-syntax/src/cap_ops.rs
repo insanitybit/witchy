@@ -99,8 +99,21 @@ pub struct CapOp {
     /// Lowered operands after the receiver argument.
     pub arguments: &'static [ArgumentShape],
     pub result: ResultShape,
+    /// Whether a run-time failure is a value: the operation returns
+    /// `Result(result, CapError)` instead of trapping (RFC-0126 rule 3).
+    pub fallible: bool,
     pub suggestion: &'static str,
 }
+
+/// The canonical name of the preluded error type every fallible capability
+/// operation returns.
+pub const CAP_ERROR_TYPE: &str = "caperror.CapError";
+
+/// The `CapError` constructors, indexed by the host response status that
+/// selects them (status 0 is success).
+pub const CAP_ERROR_VARIANTS: [&str; 5] = [
+    "caperror.Denied", "caperror.NotFound", "caperror.NotAFile", "caperror.AlreadyExists", "caperror.Io",
+];
 
 impl CapOp {
     pub fn total_arity(self) -> usize {
@@ -109,6 +122,16 @@ impl CapOp {
 }
 
 macro_rules! op {
+    // `Shape?` marks an operation whose run-time failure is a `CapError`.
+    (
+        $name:literal,
+        $receiver:ident,
+        [$($argument:ident),* $(,)?],
+        $result:ident ?,
+        $suggestion:literal
+    ) => {
+        op!(@row $name, $receiver, [$($argument),*], $result, true, $suggestion)
+    };
     (
         $name:literal,
         $receiver:ident,
@@ -116,11 +139,15 @@ macro_rules! op {
         $result:ident,
         $suggestion:literal
     ) => {
+        op!(@row $name, $receiver, [$($argument),*], $result, false, $suggestion)
+    };
+    (@row $name:literal, $receiver:ident, [$($argument:ident),*], $result:ident, $fallible:literal, $suggestion:literal) => {
         CapOp {
             name: $name,
             receiver: ReceiverKind::$receiver,
             arguments: &[$(ArgumentShape::$argument),*],
             result: ResultShape::$result,
+            fallible: $fallible,
             suggestion: $suggestion,
         }
     };
@@ -175,7 +202,7 @@ pub const OPS: &[CapOp] = &[
     op!("write", File, [String], Nil, "file.write(data)"),
     op!("only", Dir, [DirPolicy], SameReceiver, "cap.only(policy)"),
     op!("list", Dir, [], ListString, "dir.list()"),
-    op!("read", Dir, [String], String, "dir.read(path)"),
+    op!("read", Dir, [String], String?, "dir.read(path)"),
     op!("exists", Dir, [String], Bool, "dir.exists(path)"),
     op!("is_dir", Dir, [String], Bool, "dir.is_dir(path)"),
     op!("subtree", Dir, [String], Dir, "dir.subtree(path)"),
@@ -273,8 +300,8 @@ pub fn diagnostic_suggestion(name: &str, total_arity: usize) -> Option<&'static 
         .map(|op| op.suggestion)
 }
 
-pub fn result_shape(name: &str, total_arity: usize) -> Option<ResultShape> {
-    op_info(name, total_arity).map(|op| op.result)
+pub fn result_shape(name: &str, total_arity: usize) -> Option<(ResultShape, bool)> {
+    op_info(name, total_arity).map(|op| (op.result, op.fallible))
 }
 
 /// The unique operation named `name` on `receiver`.
