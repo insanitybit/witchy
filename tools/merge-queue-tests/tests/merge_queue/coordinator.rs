@@ -425,6 +425,35 @@ fn agent_instruction_paths_do_not_excuse_a_product_change() {
 }
 
 #[test]
+fn cost_report_only_changes_run_the_cost_tool_gate() {
+    for path in ["scripts/gate-test-cost.py", "scripts/test-gate-test-cost.py"] {
+        let fixture = QueueFixture::stack(&[path]);
+        fixture.mq_ok(&["submit", "a"], "true");
+        let env_log = fixture._temp.path().join("gate-env");
+        let gate = format!(
+            "printf 'scope=%s\\n' \"${{WITCHY_GATE_SCOPE:-}}\" >{}",
+            env_log.display(),
+        );
+        fixture.mq_ok(&["run", "--once"], &gate);
+        let env = fs::read_to_string(&env_log).expect("read classified gate env");
+        assert!(env.contains("scope=cost-tool"), "{path} used the wrong gate: {env}");
+    }
+
+    let fixture = QueueFixture::stack(&[
+        "scripts/gate-test-cost.py", "crates/witchy-lower/src/analysis.rs",
+    ]);
+    fixture.mq_ok(&["submit", "b"], "true");
+    let env_log = fixture._temp.path().join("gate-env");
+    let gate = format!(
+        "printf 'scope=%s\\n' \"${{WITCHY_GATE_SCOPE:-}}\" >{}",
+        env_log.display(),
+    );
+    fixture.mq_ok(&["run", "--once"], &gate);
+    let env = fs::read_to_string(&env_log).expect("read classified mixed gate env");
+    assert!(env.contains("scope=all"), "mixed product change bypassed the full gate: {env}");
+}
+
+#[test]
 fn docs_only_master_move_does_not_regate_a_green_code_candidate() {
     let fixture = QueueFixture::stack(&["code.txt"]);
     fixture.mq_ok(&["submit", "a"], "true");

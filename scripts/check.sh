@@ -176,7 +176,8 @@ nightly_excl_positive="test(/${nightly_names}/)"
 nightly_excl="not ($nightly_excl_positive)"
 
 # Gate scope (WITCHY_GATE_SCOPE, default `all`) — set by the merge-queue
-# coordinator from the batch diff (see merge-queue.sh, GATE_NO_TEST_PATHS).
+# coordinator from the batch diff (see merge-queue.sh, GATE_NO_TEST_PATHS and
+# COST_TOOL_PATHS). An exact cost-report-only diff runs its Python regression.
 # `docs` means every changed path is documentation or an agent-instruction
 # file that NO test or gate stage reads: CLAUDE.md, the .claude/ and .codex/
 # trees (skills, settings, hooks), and the documentation set (rfcs/ minus
@@ -192,8 +193,8 @@ nightly_excl="not ($nightly_excl_positive)"
 # section.
 gate_scope="${WITCHY_GATE_SCOPE:-all}"
 case "$gate_scope" in
-    all | docs) ;;
-    *) echo "check.sh: unknown WITCHY_GATE_SCOPE='$gate_scope' (want all|docs)" >&2; exit 2 ;;
+    all | docs | cost-tool) ;;
+    *) echo "check.sh: unknown WITCHY_GATE_SCOPE='$gate_scope' (want all|docs|cost-tool)" >&2; exit 2 ;;
 esac
 if [ "$full" -eq 1 ] || [ "$fast" -eq 1 ]; then gate_scope="all"; fi
 
@@ -1146,6 +1147,13 @@ if [ "$gate_scope" = "docs" ]; then
             run "docs-only scope — heavy stages skipped" true ;;
     esac
     printf '\n\033[1;32mall green\033[0m — WITCHY_GATE_SCOPE=docs: compiler tests/check/fmt skipped (post-merge CI runs the full suite)\n'
+    exit 0
+fi
+
+if [ "$gate_scope" = "cost-tool" ]; then
+    run "gate cost tooling" python3 scripts/test-gate-test-cost.py
+    run "prose style (no em dashes)" prose_em_dash_check
+    printf '\n\033[1;32mall green\033[0m — WITCHY_GATE_SCOPE=cost-tool\n'
     exit 0
 fi
 

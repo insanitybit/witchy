@@ -1347,6 +1347,10 @@ group_is_busy() { # group_is_busy <pgid>
 # include_str!'d into the witchy binary, so deleting or renaming one breaks
 # the build and must still be gated.
 GATE_NO_TEST_PATHS='^(rfcs/|wiki/|bugs/|docs/|external-refs/|scratch/|security-eval/|\.claude/|\.codex/|CLAUDE\.md$|AGENTS\.md$|tests/glamour\.rs$|tests/glamour/|src/example_tests/glamour\.rs$|src/example_tests/pm_coven\.rs$|src/source/package_inputs/registry_replay_tests\.rs$|src/commands/project_resolver_tests\.rs$|projects/coven-web/)'
+# The cost report and its Python regression are not inputs to Cargo or product
+# nextest. Gate exactly these paths with their regression on the rebased
+# candidate; any other path keeps its existing gate scope.
+COST_TOOL_PATHS='^scripts/(gate-test-cost|test-gate-test-cost)\.py$'
 # The product nextest invocation parses and exercises `.config/nextest.toml`.
 # It cannot change queue process/lock behavior, so do not append the unrelated
 # queue fixture suite merely because test scheduling changed.
@@ -1368,6 +1372,13 @@ diff_is_docs_safe() { # diff_is_docs_safe <newline-separated-paths>
         return 1
     fi
     return 0
+}
+
+diff_is_cost_tool_only() { # diff_is_cost_tool_only <newline-separated-paths>
+    local paths="$1" other
+    [ -n "$paths" ] || return 1
+    other="$(printf '%s\n' "$paths" | grep -vE "$COST_TOOL_PATHS" || true)"
+    [ -z "$other" ]
 }
 
 diff_is_queue_infra_only() { # diff_is_queue_infra_only <newline-separated-paths>
@@ -2944,10 +2955,11 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     # read by no test or gate stage — if a test ever starts reading them,
     # REMOVE them from this list), external-refs/ (vendored research notes,
     # never build inputs), and scratch//security-eval/ (gitignored). Everything
-    # else — book/, spec/, README.md, std/, scripts/, .claude/, .github/,
-    # Cargo metadata — runs the full gate. Fail SAFE: errored/empty diff ->
-    # all. The --no-renames above matters doubly here: without it a rename
-    # INTO the safe set would hide the deletion side entirely.
+    # else — book/, spec/, README.md, std/, scripts/ except the two exact
+    # cost-tool paths, .claude/, .github/, Cargo metadata — runs the full gate.
+    # The cost-tool pair runs its Python regression on the candidate. Fail SAFE:
+    # errored/empty diff -> all. Without --no-renames, a rename into the safe
+    # set would hide the deletion side entirely.
     # (Capture-and-test rather than `grep -qv`: an inverted quiet match is the
     # one grep construct with divergent exit semantics across implementations,
     # e.g. a ugrep-shimmed PATH — and this decision gates merges.)
@@ -2964,6 +2976,8 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     fi
     if [ -n "$changed" ] && diff_is_docs_safe "$changed"; then
         gate_scope="docs"
+    elif [ -n "$changed" ] && diff_is_cost_tool_only "$changed"; then
+        gate_scope="cost-tool"
     fi
 
     # Corpus sweeps from the same diff (see check.sh's WITCHY_GATE_SKIP_SWEEPS).

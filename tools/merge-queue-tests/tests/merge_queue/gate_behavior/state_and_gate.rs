@@ -395,6 +395,23 @@ fn fixture_gate_invocations_scrub_every_ambient_gate_knob() {
 }
 
 #[test]
+fn cost_tool_scope_runs_its_regression_without_workspace_tests() {
+    let root = workspace_root();
+    let output = check_sh(&root, &[])
+        .env("WITCHY_GATE_SCOPE", "cost-tool")
+        .output()
+        .expect("run cost-tool gate");
+    assert!(
+        output.status.success(),
+        "cost-tool gate failed: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("gate cost tooling"), "cost regression did not run: {stdout}");
+    assert!(!stdout.contains("tests (workspace)"), "cost gate ran product tests: {stdout}");
+}
+
+#[test]
 fn fast_gate_emits_structured_foreground_and_background_timings() {
     let root = workspace_root();
     let temp = TempDir::new();
