@@ -2174,19 +2174,27 @@ A temporary admitted unoptimized CLI run of those copyable calls printed the
 hand-computed `7 2`. This smoke has no durable Wasm witness or zero-leak audit;
 no A–O row closes.
 
-Copyable capability fields in closure aggregates (implemented but unverified,
-2026-09-26): the shared recursive aggregate ownership judgment now treats a
+Copyable capability fields in closure aggregates (bounded admitted-Wasm
+evidence, 2026-10-03): the shared recursive aggregate ownership judgment treats a
 source-authenticated direct capability as a copyable token field.
 Closure capture, aggregate layout, and SafeWIR reclassification consume that
 same judgment and still check physical capability kind. A temporary admitted
 unoptimized CLI program captures `(Console, List(Int))` and prints the
 hand-computed `2`. A `unique List(Int)` child and a persistent view of the
-capability-bearing tuple both refuse. Adversarial review identified a mixed
+capability-bearing tuple both refuse. The durable
+`rfc0126_capability_closure_aggregate::captured_capability_and_list_keep_their_checked_host_authority`
+witness now checks a normal-mode closure capturing `(Console, List(Int))`:
+admitted unoptimized Wasm prints the independent result `2` with zero canonical
+heap leaks. Its explicit `Console` local is necessary because method lookup on
+an untyped tuple projection still refuses; this witness does not establish that
+broader method-resolution form or all capability-bearing aggregates.
+Adversarial review identified a mixed
 direct-capability/affine shell whose consuming deconstruction cannot transfer
 the capability output; the shared operation judgment now refuses that shell
 before lowering. A nullable capability child also remains
-refused for lack of an aggregate capture layout. No zero-leak audit or A–O
-closure is claimed.
+refused for lack of an aggregate capture layout. This closes the prior positive
+execution and leak-evidence gap for this exact shape, not row K or the full
+capability contract.
 
 Generated iterator diagnostic origins (implemented but unverified,
 2026-09-26): generator lowering now completes the parallel statement-location

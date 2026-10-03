@@ -139,6 +139,8 @@ mod rfc0167_view_locals_across_await;
 mod rfc0167_write_only_var_after_await;
 #[path = "misc/rfc0167_frozen_view_replacement.rs"]
 mod rfc0167_frozen_view_replacement;
+#[path = "misc/rfc0126_capability_closure_aggregate.rs"]
+mod rfc0126_capability_closure_aggregate;
 #[path = "misc/rfc0167_unique_root_view_cow.rs"]
 mod rfc0167_unique_root_view_cow;
 #[path = "misc/record_local_ownership.rs"]
