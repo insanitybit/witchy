@@ -4095,6 +4095,8 @@ fn lower_function(
         string_lengths: HashMap::new(),
         string_capacities: HashMap::new(),
         list_counts: HashMap::new(),
+        checked_list_indices: HashMap::new(),
+        assumed_branch_bounds: Vec::new(),
         list_capacities: HashMap::new(),
         known_list_lengths: HashMap::new(),
         owned_parameters: Vec::new(),
@@ -4816,6 +4818,12 @@ struct FunctionLowerer<'a> {
     string_lengths: HashMap<ValueId, ValueId>,
     string_capacities: HashMap<ValueId, ValueId>,
     list_counts: HashMap<ValueId, ValueId>,
+    /// A diagnostic success edge proves an exact index against an exact
+    /// current count. Reuse it only within its block and until a stateful op.
+    checked_list_indices: HashMap<(u32, ValueId, ValueId, ValueId), ValueId>,
+    /// Pure source conjunctions known true in the current `if` arm. These
+    /// authorize one checked Size guard at the first matching element read.
+    assumed_branch_bounds: Vec<(ValueId, ValueId)>,
     list_capacities: HashMap<ValueId, ValueId>,
     known_list_lengths: HashMap<ValueId, u64>,
     owned_parameters: Vec<ValueId>,
@@ -7053,6 +7061,64 @@ impl FunctionLowerer<'_> {
         self.bindings.retain(|name, _| names.iter().any(|outer| outer == name));
     }
 
+    /// Every pure conjunct is true in the branch body. Pair a nonnegative
+    /// Int variable with a comparison below the current length of one list.
+    /// An `||`, a computed index, or an effectful extra term grants no fact.
+    fn source_nonnegative_list_bounds(condition: &Expr) -> Vec<(&str, &str)> {
+        if !matches!(condition, Expr::Binary { op: BinOp::And, .. }) {
+            return Vec::new();
+        }
+        fn nonnegative(expr: &Expr) -> Option<&str> {
+            match expr {
+                Expr::Binary { op: BinOp::GtEq, lhs, rhs }
+                    if matches!(rhs.as_ref(), Expr::Int(0)) => {
+                    let Expr::Var(index) = lhs.as_ref() else { return None };
+                    Some(index)
+                }
+                Expr::Binary { op: BinOp::LtEq, lhs, rhs }
+                    if matches!(lhs.as_ref(), Expr::Int(0)) => {
+                    let Expr::Var(index) = rhs.as_ref() else { return None };
+                    Some(index)
+                }
+                _ => None,
+            }
+        }
+        fn below_length(expr: &Expr) -> Option<(&str, &str)> {
+            let Expr::Binary { op: BinOp::Lt, lhs, rhs } = expr else { return None };
+            let Expr::Var(index) = lhs.as_ref() else { return None };
+            let Expr::Call { name, args } = rhs.as_ref() else { return None };
+            if !matches!(name.as_str(), "list.length" | "list.__length") {
+                return None;
+            }
+            let [Expr::Var(root)] = args.as_slice() else { return None };
+            Some((index, root))
+        }
+        fn collect_conjuncts<'a>(expr: &'a Expr, output: &mut Vec<&'a Expr>) {
+            if let Expr::Binary { op: BinOp::And, lhs, rhs } = expr {
+                collect_conjuncts(lhs, output);
+                collect_conjuncts(rhs, output);
+            } else {
+                output.push(expr);
+            }
+        }
+        let mut conjuncts = Vec::new();
+        collect_conjuncts(condition, &mut conjuncts);
+        let mut nonnegative_indices = HashSet::new();
+        let mut upper_bounds = Vec::new();
+        for conjunct in conjuncts {
+            if let Some(index) = nonnegative(conjunct) {
+                nonnegative_indices.insert(index);
+            } else if let Some(pair) = below_length(conjunct) {
+                upper_bounds.push(pair);
+            } else if !matches!(conjunct, Expr::Var(_) | Expr::Bool(_)) {
+                return Vec::new();
+            }
+        }
+        upper_bounds.into_iter()
+            .filter_map(|(index, root)| nonnegative_indices.contains(index).then_some((root, index)))
+            .collect()
+    }
+
     fn lower_if(
         &mut self,
         condition: &Expr,
@@ -7062,9 +7128,18 @@ impl FunctionLowerer<'_> {
         affine_result: bool,
         declared: Option<&Type>,
     ) -> Result<Option<ValueId>, CanonicalLoweringError> {
+        let source_bounds = Self::source_nonnegative_list_bounds(condition);
         let condition = self.lower_expr(condition)?;
         self.lower_conditional_branches(condition, affine_result, |this| {
-            if with_value {
+            let previous_bounds = this.assumed_branch_bounds.len();
+            for (root, index) in &source_bounds {
+                if let (Some(&object), Some(&index)) =
+                    (this.bindings.get(*root), this.bindings.get(*index))
+                {
+                    this.assumed_branch_bounds.push((object, index));
+                }
+            }
+            let value = if with_value {
                 match this.lower_block_flow_value_for_storage(then_block, declared)? {
                     Some(value) => Ok(Some(this.detach_bound_result(value, affine_result)?)),
                     None => Ok(None),
@@ -7072,7 +7147,9 @@ impl FunctionLowerer<'_> {
             } else {
                 this.lower_block_effect(then_block)?;
                 Ok(None)
-            }
+            };
+            this.assumed_branch_bounds.truncate(previous_bounds);
+            value
         }, |this| {
             if with_value {
                 match this.lower_block_flow_value_for_storage(else_block, declared)? {
@@ -9460,6 +9537,7 @@ impl FunctionLowerer<'_> {
             header_values[metadata_index] = count;
             header_values[metadata_index + 1] = capacity;
         }
+        let source_bounds = Self::source_nonnegative_list_bounds(condition);
         let condition = self.lower_expr(condition)?;
         if self.values[&condition] != ValueType::Bool {
             return Err(CanonicalLoweringError::UnsupportedExpression("non-boolean condition"));
@@ -9495,7 +9573,16 @@ impl FunctionLowerer<'_> {
             size_counter: None,
             bounded_list_condition: None,
         });
+        let previous_bounds = self.assumed_branch_bounds.len();
+        for (root, index) in source_bounds {
+            if let (Some(&object), Some(&index)) =
+                (self.bindings.get(root), self.bindings.get(index))
+            {
+                self.assumed_branch_bounds.push((object, index));
+            }
+        }
         let lowered = self.lower_block_effect(body);
+        self.assumed_branch_bounds.truncate(previous_bounds);
         self.loop_contexts.pop();
         lowered?;
         // Return, tail call, break, and continue already own their edge. Do
@@ -10294,6 +10381,17 @@ impl FunctionLowerer<'_> {
     }
 
     fn push_operation(&mut self, operation: Operation) {
+        if !matches!(&operation,
+            Operation::ConstUnit { .. } | Operation::ConstInt { .. }
+            | Operation::ConstFloat { .. } | Operation::ConstBool { .. }
+            | Operation::ConstSize { .. } | Operation::Arithmetic { .. }
+            | Operation::Compare { .. } | Operation::NarrowSize { .. }
+            | Operation::WidenSize { .. } | Operation::FloatUnary { .. }
+            | Operation::Guard { .. } | Operation::Load { .. }
+        ) {
+            self.checked_list_indices.clear();
+            self.assumed_branch_bounds.clear();
+        }
         if let Operation::StaticData { destination, .. } = &operation {
             self.static_data_values.insert(*destination);
         }
@@ -16051,15 +16149,15 @@ impl FunctionLowerer<'_> {
             list_layout(&logical_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
         let object = if let Expr::Var(root) = base
             && let Some(&object) = self.bindings.get(root)
-            && self.loop_contexts.iter().rev().any(|context| {
+            && (self.loop_contexts.iter().rev().any(|context| {
                 context.bounded_list_index.as_ref().is_some_and(|(bounded_root, original)| {
                     bounded_root == root && *original == object
                 })
-            })
+            }) || self.assumed_branch_bounds.iter().any(|(bounded, _)| *bounded == object))
         {
-            // The counted loop authenticated this unchanged root while
-            // evaluating its bound. A second variable read would emit the
-            // same extent guards on every iteration.
+            // A dominating loop or branch checked this unchanged root while
+            // evaluating its bound. Re-reading it would emit duplicate extent
+            // guards and lose the exact owner identity of that proof.
             object
         } else {
             self.lower_expr(base)?
@@ -16080,16 +16178,34 @@ impl FunctionLowerer<'_> {
                 .then_some(context.size_counter).flatten()
             })).flatten();
         let proven_index = proven_size.is_some();
-        if !proven_index {
+        let source_assumed = self.assumed_branch_bounds.contains(&(object, index_value));
+        if source_assumed {
+            self.ensure_list_extent(object)?;
+        }
+        let cached_size = self.list_counts.get(&object).and_then(|count| {
+            self.checked_list_indices.get(&(self.current.get(), object, index_value, *count)).copied()
+        });
+        let assumed_bound = source_assumed;
+        if !proven_index && cached_size.is_none() && !assumed_bound {
             self.diagnose_list_index(object, index_value, &site)?;
         }
         let index_size = if let Some(size) = proven_size {
+            size
+        } else if let Some(size) = cached_size {
             size
         } else {
             let size = self.fresh(ValueType::Size)?;
             self.push_operation(Operation::NarrowSize { destination: size, value: index_value });
             size
         };
+        if !proven_index && cached_size.is_none() && assumed_bound {
+            let count = self.list_counts[&object];
+            let condition = self.push_compare(ComparisonOperator::LessUnsigned, index_size, count)?;
+            self.push_operation(Operation::Guard {
+                condition,
+                kind: witchy_wir::canonical_safewir::GuardKind::Bounds,
+            });
+        }
         // The diagnostic path authenticates the extent; the proven counted
         // path retains the extent authenticated while evaluating its bound.
         let known_condition = proven_size.and_then(|_| self.loop_contexts.iter().rev().find_map(|context| {
@@ -16099,7 +16215,19 @@ impl FunctionLowerer<'_> {
                     }))
                 .then_some(context.bounded_list_condition).flatten()
             }));
-        self.load_list_element_with_condition(object, index_size, element_type, known_condition)
+        // A checked branch fact or an earlier guard in this block can avoid
+        // another element guard. The ordinary diagnostic path still publishes
+        // its own Size guard for independent SafeWIR admission.
+        let result = self.load_list_element_with_condition(
+            object, index_size, element_type,
+            known_condition.is_some() || assumed_bound || cached_size.is_some(),
+        )?;
+        if !proven_index && cached_size.is_none()
+            && let Some(&count) = self.list_counts.get(&object)
+        {
+            self.checked_list_indices.insert((self.current.get(), object, index_value, count), index_size);
+        }
+        Ok(result)
     }
 
     /// Load the element at `index_size` of `object` behind a bounds guard
@@ -16110,7 +16238,7 @@ impl FunctionLowerer<'_> {
         index_size: ValueId,
         element_type: ValueType,
     ) -> Result<ValueId, CanonicalLoweringError> {
-        self.load_list_element_with_condition(object, index_size, element_type, None)
+        self.load_list_element_with_condition(object, index_size, element_type, false)
     }
 
     fn load_list_element_with_condition(
@@ -16118,7 +16246,7 @@ impl FunctionLowerer<'_> {
         object: ValueId,
         index_size: ValueId,
         element_type: ValueType,
-        known_condition: Option<ValueId>,
+        bound_on_entry: bool,
     ) -> Result<ValueId, CanonicalLoweringError> {
         if let Some(family) = self.owner_list_family(object).cloned() {
             if element_type != ValueType::Gc(family.owner_type) {
@@ -16133,9 +16261,9 @@ impl FunctionLowerer<'_> {
         let logical_count = *self.list_counts.get(&object).ok_or(
             CanonicalLoweringError::UnsupportedExpression("list index extent"),
         )?;
-        // The SafeWIR checker independently requires a current-owner bound on
-        // the true header edge before admitting a load without this Guard.
-        if known_condition.is_none() {
+        // The SafeWIR checker independently requires a current-owner bound in
+        // the active control flow before admitting a load without this Guard.
+        if !bound_on_entry {
             let condition = self.fresh(ValueType::Bool)?;
             self.push_operation(Operation::Compare {
                 destination: condition,

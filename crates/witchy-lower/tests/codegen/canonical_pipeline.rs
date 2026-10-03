@@ -92,6 +92,19 @@ fn run_oob(source: &str) -> String {
         .root_cause().to_string()
 }
 
+#[cfg(feature = "native-test-runtime")]
+fn run_index_result(source: &str, export: &str) -> i64 {
+    let artifact = compile_checked_module_artifact(&checked(source))
+        .expect_lowered("admit source bounds proof");
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, artifact.wasm()).expect("compile admitted artifact");
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = diagnostic_linker(&engine).instantiate(&mut store, &module)
+        .expect("instantiate admitted artifact");
+    instance.get_typed_func::<(), i64>(&mut store, export)
+        .expect("canonical main export").call(&mut store, ()).expect("bounded read")
+}
+
 #[test]
 fn admitted_artifact_carries_checked_launch_contract_and_refuses_mutation() {
     let checked = checked("fn main(console: Console):\n    console.print(\"ok\")\n");
@@ -152,6 +165,26 @@ fn list_int_out_of_bounds_source_admits_then_traps() {
 fn list_push_keeps_length_bounds_check_for_out_of_bounds_index() {
     assert_eq!(run_oob("fn main() -> Int:\n    var xs = [1]\n    xs.push(2)\n    xs[2]\n"),
         "runtime error: `main`, line 4: list index 2 out of bounds (length 2)");
+}
+
+#[cfg(feature = "native-test-runtime")]
+#[test]
+fn branch_bounds_prove_if_and_while_reads() {
+    let if_source = "mode opt\nfn read(own xs: List(Int), let i: Int, let ready: Bool) -> Int:\n    if ready && i >= 0 && i < list.length(xs):\n        xs[i] + xs[i]\n    else:\n        0\nfn main() -> Int:\n    read([10, 20, 30], 1, true)\n";
+    let while_source = "mode opt\nfn main() -> Int:\n    let xs = [10, 20, 30]\n    var i = 0\n    var total = 0\n    while i >= 0 && i < list.length(xs):\n        total += xs[i]\n        i += 1\n    total\n";
+    assert_eq!(run_index_result(if_source, "f1"), 40);
+    assert_eq!(run_index_result(while_source, "f0"), 60);
+}
+
+#[cfg(feature = "native-test-runtime")]
+#[test]
+fn branch_bounds_do_not_authorize_mutated_or_unproven_indices() {
+    let rebound = "mode opt\nfn main() -> Int:\n    var xs = [10, 20]\n    let i = 1\n    if i >= 0 && i < list.length(xs):\n        xs = []\n        xs[i]\n    else:\n        0\n";
+    let advanced = "mode opt\nfn main() -> Int:\n    let xs = [10, 20]\n    var i = 1\n    while i >= 0 && i < list.length(xs):\n        i += 1\n        xs[i]\n    0\n";
+    let disjunction = "mode opt\nfn main() -> Int:\n    let xs = [10, 20]\n    let i = -1\n    if i >= 0 || i < list.length(xs):\n        xs[i]\n    else:\n        0\n";
+    assert_eq!(run_oob(rebound), "runtime error: `main`, line 7: list index 1 out of bounds (length 0)");
+    assert_eq!(run_oob(advanced), "runtime error: `main`, line 7: list index 2 out of bounds (length 2)");
+    assert_eq!(run_oob(disjunction), "runtime error: `main`, line 6: list index -1 out of bounds (length 2)");
 }
 
 #[cfg(feature = "native-test-runtime")]
