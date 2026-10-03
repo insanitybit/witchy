@@ -20,10 +20,10 @@ and the current compiler route before closing a row.
 | 4. Compile-time cost | Profile before selecting among [arena/interning](0164-compiler-performance-arenas-and-interning.md), [compile std once](0169-compile-std-once.md), and the [protected service](0172-protected-compiler-service.md). These are proposals, not three simultaneous commitments. |
 
 The Glamour, hosted Coven, native-extension, and deferred opt-mode proposals
-remain parked at their stated triggers. Implemented RFCs remain historical
-decision records. The [retirement index](retired-rfcs.md) removes superseded
-and rejected bodies from the working corpus without deleting Git history or
-closing surviving security and runtime obligations.
+remain parked at their stated triggers. Implemented decisions with no active
+cross-references are summarized in [one index](implemented-decisions.md). The
+[retirement index](retired-rfcs.md) tracks removed bodies without deleting Git
+history or closing surviving security and runtime obligations.
 
 ## Authority
 
@@ -63,6 +63,9 @@ deleted during an authorized consolidation once their surviving decisions,
 active obligations, evidence, and links are accounted for. Git is the historical
 archive; the working directory is the usable design set. Preserve machine-readable
 evidence that tests consume. Never manufacture completion by deleting its ledger.
+Implemented bodies without current cross-references may likewise be
+consolidated into a decision index when their acceptance boundary is terminal;
+this does not broaden their historical status into current-tip certification.
 
 For later language changes, amend this contract with a dated decision and update
 its acceptance ledger. Detailed RFCs proposing a mechanism must identify the

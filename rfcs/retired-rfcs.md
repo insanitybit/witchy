@@ -105,3 +105,17 @@ git show 237712905:rfcs/0160-zero-cost-verified-wasm-memory-safety.md
 | `0156-aot-native-trusted-executables.md` | Rejected by [RFC-0157](0157-trusted-publishers-and-executable-state.md) |
 | `0160-zero-cost-verified-wasm-memory-safety.md` | [RFC-0162 SafeWIR](0162-validated-safewir.md) |
 | `concurrency-design.md` | [RFC-0167 section 7](0167-witchy-language-contract.md#7-resources-effects-and-suspension) and its [acceptance ledger](0167-acceptance-ledger.md) |
+
+## Implemented-body consolidation, 2026-10-03
+
+Twenty implemented RFC bodies with no direct Markdown references were
+consolidated into the [implemented decisions index](implemented-decisions.md).
+That index names every retired number, retained decision, and current home.
+Their exact bodies remain at master commit `d31b2e4cb`; for example:
+
+```sh
+git show d31b2e4cb:rfcs/0144-hybrid-list-and-string-primitives.md
+```
+
+The consolidation does not close wider acceptance ledgers or prove that a
+historical implementation still passes on the current compiler route.
