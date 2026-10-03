@@ -10366,6 +10366,14 @@ impl FunctionLowerer<'_> {
                         .filter(|current| matches!(self.values.get(current), Some(ValueType::Ref(_))))
                         .unwrap_or(*parameter)
                 })
+                // A successor token moved by a call in one branch cannot be
+                // dropped after that branch joins an unconsumed sibling.
+                // The release placer uses the explicit CFG to release it on
+                // only the edges that still own it.
+                .filter(|current| !self.blocks.iter().any(|block| block.operations.iter().any(|operation| {
+                    matches!(operation, Operation::Call { arguments, .. } | Operation::VarCall { arguments, .. }
+                        if arguments.iter().any(|argument| matches!(argument, CallArgument::Move(value) if value == current)))
+                })))
                 .filter(|parameter| !transferred.contains(parameter))
                 .collect::<Vec<_>>();
             for object in drops {

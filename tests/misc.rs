@@ -161,6 +161,8 @@ mod rfc0167_indirect_var_view_tuple;
 mod rfc0167_result_list_root_view;
 #[path = "misc/rfc0167_nested_list_root_view.rs"]
 mod rfc0167_nested_list_root_view;
+#[path = "misc/rfc0167_must_list_disposition.rs"]
+mod rfc0167_must_list_disposition;
 #[path = "misc/rfc0167_option_list_view_boundary.rs"]
 mod rfc0167_option_list_view_boundary;
 #[path = "misc/rfc0167_dict_root_view.rs"]

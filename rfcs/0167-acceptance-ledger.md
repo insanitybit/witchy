@@ -202,6 +202,14 @@ two normal-caller/opt-defined-type cases in the same run are deferred evidence,
 not normal-mode completion credit. This establishes a bounded row N slice;
 broader aggregate views and task-resource disposition remain open.
 
+An exact consuming `list.__pop_extract` drain now has an admitted normal-mode
+Wasm witness for `List(Ticket)` where `Ticket` is `must`: each nonempty arm
+forwards the remaining list and disposes the popped ticket, while the empty
+arm disposes the empty list. It returns 3 with zero owned-heap leaks. The
+lowerer leaves a successor token moved in one match arm to CFG release
+placement, so a return after the join does not drop that token twice. This
+is a bounded list-disposition case, not general task-resource disposition.
+
 The runtime diagnostic golden migration at merged `0ca522869` checks list bounds,
 user `fail`, and a missing named secret through checked source and admitted
 Wasm, retaining their source-level messages. The direct and nested
