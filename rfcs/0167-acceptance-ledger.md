@@ -258,6 +258,11 @@ Both module and method `contains_key` borrow the query key for the call. A
 `must Key` can be queried repeatedly, explicitly disposed afterward, and
 leave the move-only table available for draining; the admitted-Wasm witness
 returns the independently calculated 39 with zero heap leaks.
+Read-only `at`, `get_or`, and `get` also borrow an affine query key. The
+canonical call ABI now carries its recursive affine proof through a call with
+an aggregate result, while refusing a result that aliases that borrowed
+parameter. A checked `must Key` witness repeats hits, handles a miss, disposes
+both queries, drains the table, and returns 59 on admitted Wasm with zero leaks.
 
 The runtime diagnostic golden migration at merged `0ca522869` checks list bounds,
 user `fail`, and a missing named secret through checked source and admitted

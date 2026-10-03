@@ -89,7 +89,7 @@ pub(super) fn candidate_signature_matches_source_inner(
             source.unqualified(), records, |_| Some(0),
         ).requires_affine_owner_token();
         if affine_owner && convention == witchy_syntax::ast::Convention::Borrow
-            && scalar_result && matches!(actual.value_type, super::super::ValueType::Ref(_))
+            && matches!(actual.value_type, super::super::ValueType::Ref(_))
         {
             return actual.ownership == super::super::ParameterOwnership::Value;
         }

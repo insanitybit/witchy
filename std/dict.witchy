@@ -62,7 +62,7 @@ pub fn insert_owned(var d: unique Dict(k, v), own key: k, own val: v) -> Option(
     dict.__insert_extract(d, key, val)
 
 // The value for `key`, or `default` when absent.
-pub fn get_or(let d: Dict(k, v), key: k, default: v) -> v where k: Hash:
+pub fn get_or(let d: Dict(k, v), let key: k, default: v) -> v where k: Hash:
     dict.get_or(d, key, default)
 
 // The value for `key`, inserting `default` first when the key is absent. Returns
@@ -78,7 +78,7 @@ pub fn get_or_insert(var d: unique Dict(k, v), key: k, default: v) -> v where k:
 
 // The value for `key`, or a runtime error when absent. This is the read half of
 // the `d[key]` subscript surface; use `get`/`get_or` when absence is ordinary.
-pub fn at(let d: Dict(k, v), key: k) -> v where k: Hash:
+pub fn at(let d: Dict(k, v), let key: k) -> v where k: Hash:
     dict.at(d, key)
 
 // Single-lookup upsert: apply `f` to the current value (or `default` when
@@ -193,13 +193,13 @@ impl Dict(k, v) where k: Hash:
 
     // A lookup that says whether the key was present, rather than forcing a
     // default (O(1) hash lookup).
-    pub fn get(let self, key: k) -> Option(v):
+    pub fn get(let self, let key: k) -> Option(v):
         if dict.contains_key(self, key):
             Some(dict.at(self, key))
         else:
             None
 
-    pub fn get_or(let self, key: k, default: v) -> v:
+    pub fn get_or(let self, let key: k, default: v) -> v:
         dict.get_or(self, key, default)
 
     // The value for `key`, inserting `default` first when the key is absent -
@@ -211,7 +211,7 @@ impl Dict(k, v) where k: Hash:
     // The value for `key`, or a runtime error when absent. This is the read
     // half of the `d[key]` subscript surface; use `get`/`get_or` when absence
     // is ordinary.
-    pub fn at(let self, key: k) -> v:
+    pub fn at(let self, let key: k) -> v:
         dict.at(self, key)
 
     // Whether `key` is present. The `_key` suffix is deliberate: a Dict

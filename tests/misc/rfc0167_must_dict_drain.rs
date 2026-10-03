@@ -220,6 +220,62 @@ fn main() -> Int:
 }
 
 #[test]
+fn must_key_read_queries_preserve_query_and_table_ownership() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let checked = witchy::resolve_std_only_checked(r#"
+import cmp
+import dict
+must type Key:
+    id: Int
+impl PartialEq for Key:
+    fn eq(let self, let other: Self) -> Bool:
+        self.id == other.id
+impl Eq for Key
+impl Hash for Key:
+    fn hash(let self) -> Int:
+        self.id
+fn finish_key(own key: Key) -> Int:
+    match move key:
+        Key(id) -> id
+fn drain(own entries: Dict(Key, Int)) -> Int:
+    match dict.__pop_extract(entries):
+        Some(pair) ->
+            match move pair:
+                (key, value) -> finish_key(key) * 10 + value + drain(entries)
+        None -> 0
+fn main() -> Int:
+    var entries: Dict(Key, Int) = dict.new()
+    let old = match dict.insert_owned(entries, Key(2), 7):
+        Some(pair) ->
+            match move pair:
+                (key, value) -> finish_key(key) + value
+        None -> 0
+    let query = Key(2)
+    let a = dict.at(entries, query)
+    let b = dict.get_or(entries, query, 0)
+    let c = match entries.get(query):
+        Some(value) -> value
+        None -> 0
+    let query_score = finish_key(query)
+    let missing = Key(4)
+    let d = entries.get_or(missing, 5)
+    let missing_score = finish_key(missing)
+    let tail = drain(entries)
+    old + a + b + c + d + query_score + missing_score + tail
+"#).expect("must key reads check without consuming either query");
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("must key reads admit");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(&artifact,
+        Capabilities { print_int: true, quiet: true, ..Capabilities::none() },
+        128).expect("admitted Wasm instance");
+    vm.run().expect("admitted Wasm execution");
+    assert_eq!(vm.output(), vec!["59".to_string()]);
+    assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+}
+
+#[test]
 fn exact_empty_dictionary_can_replace_borrowed_var_once() {
     opt::set_for_tests(Some(OptSet::none()));
     let _reset = ResetOptimizationOverride;

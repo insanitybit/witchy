@@ -974,7 +974,7 @@ Insert `key` with `val`, returning the displaced value when the key existed. The
 
 Transfer an affine key or value into the table. On a hit, the unused incoming key and displaced value remain the caller's obligations.
 
-#### `fn get_or(let d: Dict(k, v), key: k, default: v) -> v where k: Hash`
+#### `fn get_or(let d: Dict(k, v), let key: k, default: v) -> v where k: Hash`
 
 The value for `key`, or `default` when absent.
 
@@ -982,7 +982,7 @@ The value for `key`, or `default` when absent.
 
 The value for `key`, inserting `default` first when the key is absent. Returns the existing value on a hit and `default` on a miss, so the key is guaranteed present afterward. Like `insert`, the `unique` receiver makes the write a checked ownership contract in `mode opt`.
 
-#### `fn at(let d: Dict(k, v), key: k) -> v where k: Hash`
+#### `fn at(let d: Dict(k, v), let key: k) -> v where k: Hash`
 
 The value for `key`, or a runtime error when absent. This is the read half of the `d[key]` subscript surface; use `get`/`get_or` when absence is ordinary.
 
@@ -1066,11 +1066,11 @@ Transfer an affine key or value into the table. On a hit, the unused incoming ke
 
 Remove `key`, returning its old value when present. The dictionary performs one semantic key search. Unique storage moves the old value out and repairs insertion order in place; shared storage uses copy-on-write in normal mode. In `mode opt`, the `unique` receiver rejects a shared or loaned call site instead of silently taking that copy.
 
-#### `Dict.get(key: k) -> Option(v)`
+#### `Dict.get(let key: k) -> Option(v)`
 
 A lookup that says whether the key was present, rather than forcing a default (O(1) hash lookup).
 
-#### `Dict.get_or(key: k, default: v) -> v`
+#### `Dict.get_or(let key: k, default: v) -> v`
 
 The value for `key`, or `default` when absent.
 
@@ -1078,7 +1078,7 @@ The value for `key`, or `default` when absent.
 
 The value for `key`, inserting `default` first when the key is absent - the key is present afterward either way. Returns the existing value on a hit and `default` on a miss.
 
-#### `Dict.at(key: k) -> v`
+#### `Dict.at(let key: k) -> v`
 
 The value for `key`, or a runtime error when absent. This is the read half of the `d[key]` subscript surface; use `get`/`get_or` when absence is ordinary.
 

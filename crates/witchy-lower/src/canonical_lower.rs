@@ -2863,7 +2863,7 @@ fn signature_from_type(
             {
                 ParameterOwnership::Value
             }
-            (ValueType::Ref(_), Convention::Borrow) if affine_owner && scalar_result => {
+            (ValueType::Ref(_), Convention::Borrow) if affine_owner => {
                 ParameterOwnership::Value
             }
             (ValueType::Gc(_), Convention::Let | Convention::Borrow)
@@ -12020,7 +12020,6 @@ impl FunctionLowerer<'_> {
                         ParameterOwnership::Value if matches!(actual, ValueType::Ref(_)) => {
                             let source_type = self.expression_type(argument)?;
                             if conventions[parameter] == Convention::Borrow
-                                && signature.results.iter().all(|result| is_inline_scalar(*result))
                                 && StoragePlan::classify(source_type.unqualified(), self.definitions, |_| Some(0))
                                     .requires_affine_owner_token()
                             {

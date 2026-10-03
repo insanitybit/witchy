@@ -9,9 +9,10 @@ impl<'a> MemoryChecker<'a> {
     }
 
     pub(crate) fn is_borrowed_parameter(&self, value: ValueId) -> bool {
-        self.signature.results.iter().all(|result| matches!(result,
-            ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit | ValueType::Size | ValueType::V128))
-            && self.function.blocks.iter().find(|block| block.id == self.function.entry)
+        // Candidate ABI binding restricts a Ref/Value lane to an explicit
+        // borrowed affine source parameter. Its result can be aggregate when
+        // the call contract cannot alias this parameter.
+        self.function.blocks.iter().find(|block| block.id == self.function.entry)
             .and_then(|entry| entry.parameters.iter().position(|parameter| parameter.value == value))
             .and_then(|index| self.signature.contract.parameters.get(index))
             .is_some_and(|parameter| matches!(parameter.value_type, ValueType::Ref(_))
@@ -331,10 +332,17 @@ impl<'a> MemoryChecker<'a> {
             }
             argument_states.push(Some(self.live_object(value)?.clone()));
             match argument {
+                // A recursive affine proof permits a call-scoped borrow even
+                // when the result is an aggregate, provided the result does
+                // not claim an alias of this borrowed parameter.
                 CallArgument::Value(value) if parameter.ownership == ParameterOwnership::Value
-                    && results.iter().all(|result| matches!(result,
+                    && (results.iter().all(|result| matches!(result,
                         ResultContract::Value(ValueType::Int | ValueType::Float | ValueType::Bool
-                            | ValueType::Unit | ValueType::Size | ValueType::V128))) =>
+                            | ValueType::Unit | ValueType::Size | ValueType::V128)))
+                        || affine_proof.and_then(|proof| proof.parameters.get(parameter_index))
+                            .and_then(Option::as_ref).is_some()
+                            && !results.iter().any(|result| matches!(result,
+                                ResultContract::AliasesParameter { parameter, .. } if usize::try_from(*parameter).ok() == Some(parameter_index)))) =>
                 {
                     self.require_complete_value_initialized(*value, "Call(uninitialized borrowed slot)")?;
                     if let Some(plan) = affine_proof.and_then(|proof|
