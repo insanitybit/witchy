@@ -195,8 +195,8 @@ fn gate_report_is_read_only_and_aggregates_batches_failures_and_phases() {
             "{{\"ts\":\"2026-07-16T00:00:35Z\",\"event\":\"resubmitted\",\"branch\":\"b\",\"change_id\":\"change-b\",\"attempt_id\":\"attempt-b1\",\"submitted_sha\":\"sha-b1\",\"presubmit_edit_elapsed_s\":\"30\",\"touches\":\"runtime\"}}\n",
             "{{\"ts\":\"2026-07-16T00:00:40Z\",\"event\":\"coordinator_started\",\"branch\":\"a\",\"attempt_id\":\"attempt-a1\"}}\n",
             "{{\"ts\":\"2026-07-16T00:01:00Z\",\"event\":\"resubmitted\",\"branch\":\"a\",\"change_id\":\"change-a\",\"attempt_id\":\"attempt-a2\",\"submitted_sha\":\"sha-a2\",\"touches\":\"codegen\"}}\n",
-            "{{\"ts\":\"2026-07-16T00:01:40Z\",\"event\":\"merged\",\"branch\":\"a\",\"change_id\":\"change-a\",\"attempt_id\":\"attempt-a1\",\"submitted_sha\":\"sha-a1\",\"elapsed_s\":\"302\",\"gate_load_start\":\"2.00\",\"gate_load_end\":\"2.10\",\"host_ncpu\":\"10\",\"attempt_elapsed_s\":\"302\",\"lock_wait_s\":\"181\",\"prepare_elapsed_s\":\"5\",\"preflight_elapsed_s\":\"0\",\"gate_elapsed_s\":\"111\",\"landing_elapsed_s\":\"5\",\"batch\":\"2\",\"log\":{green:?}}}\n",
-            "{{\"ts\":\"2026-07-16T00:01:40Z\",\"event\":\"merged\",\"branch\":\"b\",\"change_id\":\"change-b\",\"attempt_id\":\"attempt-b1\",\"submitted_sha\":\"sha-b1\",\"elapsed_s\":\"302\",\"gate_load_start\":\"2.00\",\"gate_load_end\":\"2.10\",\"host_ncpu\":\"10\",\"attempt_elapsed_s\":\"302\",\"lock_wait_s\":\"181\",\"prepare_elapsed_s\":\"5\",\"preflight_elapsed_s\":\"0\",\"gate_elapsed_s\":\"111\",\"landing_elapsed_s\":\"5\",\"batch\":\"2\",\"log\":{green:?}}}\n",
+            "{{\"ts\":\"2026-07-16T00:01:40Z\",\"event\":\"merged\",\"branch\":\"a\",\"change_id\":\"change-a\",\"attempt_id\":\"attempt-a1\",\"submitted_sha\":\"sha-a1\",\"elapsed_s\":\"302\",\"gate_load_start\":\"2.00\",\"gate_load_end\":\"2.10\",\"host_ncpu\":\"10\",\"attempt_elapsed_s\":\"302\",\"lock_wait_s\":\"181\",\"prepare_elapsed_s\":\"5\",\"preflight_elapsed_s\":\"0\",\"gate_elapsed_s\":\"111\",\"landing_elapsed_s\":\"5\",\"test_selector\":\"dtest\",\"dtest_status\":\"selected\",\"dtest_elapsed_ms\":\"12\",\"dtest_changed_files\":\"2\",\"dtest_changed_definitions\":\"3\",\"dtest_selected_tests\":\"4\",\"batch\":\"2\",\"log\":{green:?}}}\n",
+            "{{\"ts\":\"2026-07-16T00:01:40Z\",\"event\":\"merged\",\"branch\":\"b\",\"change_id\":\"change-b\",\"attempt_id\":\"attempt-b1\",\"submitted_sha\":\"sha-b1\",\"elapsed_s\":\"302\",\"gate_load_start\":\"2.00\",\"gate_load_end\":\"2.10\",\"host_ncpu\":\"10\",\"attempt_elapsed_s\":\"302\",\"lock_wait_s\":\"181\",\"prepare_elapsed_s\":\"5\",\"preflight_elapsed_s\":\"0\",\"gate_elapsed_s\":\"111\",\"landing_elapsed_s\":\"5\",\"test_selector\":\"dtest\",\"dtest_status\":\"selected\",\"dtest_elapsed_ms\":\"12\",\"dtest_changed_files\":\"2\",\"dtest_changed_definitions\":\"3\",\"dtest_selected_tests\":\"4\",\"batch\":\"2\",\"log\":{green:?}}}\n",
             "{{\"ts\":\"2026-07-16T00:03:20Z\",\"event\":\"submitted\",\"branch\":\"c\",\"presubmit_edit_elapsed_s\":\"\",\"presubmit_eligible\":\"false\"}}\n",
             "{{\"ts\":\"2026-07-16T00:04:20Z\",\"event\":\"timeout\",\"branch\":\"c\",\"elapsed_s\":\"60\",\"gate_load_start\":\"40.00\",\"gate_load_end\":\"41.00\",\"host_ncpu\":\"10\",\"log\":{timeout:?}}}\n",
             "{{\"ts\":\"2026-07-16T00:05:00Z\",\"event\":\"submitted\",\"branch\":\"d\"}}\n",
@@ -245,6 +245,11 @@ fn gate_report_is_read_only_and_aggregates_batches_failures_and_phases() {
         .expect("failed gate minutes is numeric");
     assert!((failed_gate_minutes - (120.0 / 60.0)).abs() < f64::EPSILON);
     assert_eq!(report["schema"], 3);
+    assert_eq!(report["dtest"]["samples"], 1);
+    assert_eq!(report["dtest"]["selected_gates"], 1);
+    assert_eq!(report["dtest"]["selection_ms"]["p50"], 12);
+    assert_eq!(report["dtest"]["selected_tests"]["p50"], 4);
+    assert_eq!(report["dtest"]["gate_s"]["dtest"]["p50"], 111);
     assert_eq!(report["attempt_s"]["p50"], 40);
     assert_eq!(report["attempt_s"]["p90"], 302);
     assert_eq!(report["gate_s"]["p50"], 40);

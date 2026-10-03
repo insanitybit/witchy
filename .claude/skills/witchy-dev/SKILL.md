@@ -273,6 +273,11 @@ deliberately heuristic, so `dtest` shortens the edit loop but does not replace
 `./scripts/agent-check.sh edit`, the merge queue, or periodic full gates. If it
 is missing, install it from the dtest source checkout with
 `cargo install --path . --locked` while that checkout is your current directory.
+The merge queue also uses dtest to narrow the existing audited package/target
+selection for Rust edits. It falls back to that selection on any dtest error
+and retains workspace routes, native feature partitions, queue fixtures, and
+full CI. Inspect adoption and timing with
+`./scripts/gate-report.sh --since 24h` or its `--json` form.
 
 **`cargo check -p witchy-runtime` does NOT compile the Wasm kernel.** The
 `runtime` module sits behind that crate's non-default `native` feature, which

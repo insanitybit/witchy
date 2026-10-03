@@ -1,2 +1,3 @@
 runner = "nextest"
 state_dir = "state/dtest"
+nextest_args = ["--features", "witchy-wir/native,witchy-lower/native-test-runtime"]

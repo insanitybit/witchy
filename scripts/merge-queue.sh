@@ -166,6 +166,13 @@ deferred_sweep=0
 active_gate_pgid=""
 gate_preflight_expr=""
 gate_preflight_nextest=""
+gate_test_selector="legacy"
+gate_dtest_status="not_attempted"
+gate_dtest_elapsed_ms=""
+gate_dtest_changed_files=""
+gate_dtest_changed_definitions=""
+gate_dtest_selected_tests=""
+gate_dtest_reason=""
 # A function run_gate polls between monitor ticks; when it succeeds the gate
 # is killed and reports `yielded`. Only the idle master canary sets it.
 gate_yield_probe=""
@@ -507,6 +514,13 @@ record_attempt() { # event branch start prepared locked gate-start gate-end fini
     [ -n "$gate_load_start" ] && contention+=(gate_load_start "$gate_load_start")
     [ -n "$gate_load_end" ] && contention+=(gate_load_end "$gate_load_end")
     [ -n "$host_ncpu" ] && contention+=(host_ncpu "$host_ncpu")
+    local selection=(test_selector "${gate_test_selector:-legacy}"
+        dtest_status "${gate_dtest_status:-not_attempted}")
+    [ -n "${gate_dtest_elapsed_ms:-}" ] && selection+=(dtest_elapsed_ms "$gate_dtest_elapsed_ms")
+    [ -n "${gate_dtest_changed_files:-}" ] && selection+=(dtest_changed_files "$gate_dtest_changed_files")
+    [ -n "${gate_dtest_changed_definitions:-}" ] && selection+=(dtest_changed_definitions "$gate_dtest_changed_definitions")
+    [ -n "${gate_dtest_selected_tests:-}" ] && selection+=(dtest_selected_tests "$gate_dtest_selected_tests")
+    [ -n "${gate_dtest_reason:-}" ] && selection+=(dtest_reason "$gate_dtest_reason")
 
     # RFC-0159 E. `reason` already carries the failing stage and failure line,
     # concatenated into prose -- so grouping reds by cause meant re-parsing a
@@ -582,6 +596,7 @@ record_attempt() { # event branch start prepared locked gate-start gate-end fini
         gate_elapsed_s "$((gate_end - gate_start))" \
         landing_elapsed_s "$((finish - gate_end))" \
         ${contention[@]+"${contention[@]}"} \
+        ${selection[@]+"${selection[@]}"} \
         ${classified[@]+"${classified[@]}"} \
         "$@"
 }
@@ -1259,7 +1274,7 @@ classify_touches() { # classify_touches <newline-separated-paths>
         'confinement:^crates/witchy-confinement/' \
         'std:^std/' \
         'docs:^(rfcs|book|spec|docs|wiki)/' \
-        'queue-infra:^(scripts/(merge-queue|check|gate-report|test-for-paths|agent-check|test-agent-check-qos|submit-with-presubmit|test-submit-with-presubmit)\.sh|tools/merge-queue-tests/)' \
+        'queue-infra:^(scripts/(merge-queue|check|gate-report|dtest-gate-selection|test-dtest-gate-selection|test-for-paths|agent-check|test-agent-check-qos|submit-with-presubmit|test-submit-with-presubmit)\.sh|tools/merge-queue-tests/)' \
         ; do
         name="${pair%%:*}"
         pattern="${pair#*:}"
@@ -1354,8 +1369,8 @@ COST_TOOL_PATHS='^scripts/(gate-test-cost|test-gate-test-cost)\.py$'
 # The product nextest invocation parses and exercises `.config/nextest.toml`.
 # It cannot change queue process/lock behavior, so do not append the unrelated
 # queue fixture suite merely because test scheduling changed.
-QUEUE_INFRA_PATHS='^(\.mbx\.toml|scripts/(check|gate-report|merge-queue|nextest-list-wrapper|state-paths|test-for-paths|test-impact|worktree-status|worktree-warm)\.(sh|py)|tools/merge-queue-tests/)'
-QUEUE_INFRA_CORE_PATHS='^(\.mbx\.toml|scripts/(merge-queue|state-paths|check|test-for-paths|test-impact|gate-report)\.(sh|py)|tools/merge-queue-tests/)'
+QUEUE_INFRA_PATHS='^(\.mbx\.toml|scripts/(check|gate-report|merge-queue|dtest-gate-selection|test-dtest-gate-selection|nextest-list-wrapper|state-paths|test-for-paths|test-impact|worktree-status|worktree-warm)\.(sh|py)|tools/merge-queue-tests/)'
+QUEUE_INFRA_CORE_PATHS='^(\.mbx\.toml|scripts/(merge-queue|state-paths|check|dtest-gate-selection|test-dtest-gate-selection|test-for-paths|test-impact|gate-report)\.(sh|py)|tools/merge-queue-tests/)'
 
 # Docs-safe path set, matching check.sh's WITCHY_GATE_SCOPE=docs classifier.
 # RFCs have lightweight cross-link/status contracts in repo-tests; docs scope
@@ -2631,6 +2646,13 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     gate_load_end=""
     gate_preflight_expr=""
     gate_preflight_nextest=""
+    gate_test_selector="legacy"
+    gate_dtest_status="not_attempted"
+    gate_dtest_elapsed_ms=""
+    gate_dtest_changed_files=""
+    gate_dtest_changed_definitions=""
+    gate_dtest_selected_tests=""
+    gate_dtest_reason=""
     local branch change_id submitted_sha attempt_id
     branch="$(jq -r .branch "$f")"
     change_id="$(jq -r '.change_id // empty' "$f")"
@@ -3049,6 +3071,44 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
             ;;
     esac
 
+    # Narrow the mapper's already-audited package/target scope to the exact
+    # tests reached by dtest. The mapper continues to own Cargo feature graphs,
+    # secondary partitions, queue fixtures, and fail-safe workspace routes.
+    # This deliberately does not narrow WORKSPACE: dtest is heuristic, and a
+    # broad/unknown path remains the conservative escape hatch. Any dtest
+    # absence, error, or malformed output leaves the legacy selection intact.
+    local dtest_helper="$gate_wt/scripts/dtest-gate-selection.sh" dtest_json=""
+    if [ -n "$nextest_args" ] && [ -n "$changed" ] \
+        && printf '%s\n' "$changed" | grep -cE '\.rs$' >/dev/null \
+        && [ -x "$dtest_helper" ]; then
+        dtest_json="$("$dtest_helper" "$gate_wt" "$base" HEAD 2>/dev/null || true)"
+        gate_dtest_status="$(jq -r '.status // "fallback"' <<<"$dtest_json" 2>/dev/null || echo fallback)"
+        gate_dtest_elapsed_ms="$(jq -r '.elapsed_ms // empty' <<<"$dtest_json" 2>/dev/null || true)"
+        gate_dtest_changed_files="$(jq -r '.changed_files // empty' <<<"$dtest_json" 2>/dev/null || true)"
+        gate_dtest_changed_definitions="$(jq -r '.changed_definitions // empty' <<<"$dtest_json" 2>/dev/null || true)"
+        gate_dtest_selected_tests="$(jq -r '.selected_tests // empty' <<<"$dtest_json" 2>/dev/null || true)"
+        gate_dtest_reason="$(jq -r '.reason // empty' <<<"$dtest_json" 2>/dev/null || true)"
+        case "$gate_dtest_status" in
+            selected)
+                nextest_expr="$(jq -r '.expression' <<<"$dtest_json")"
+                gate_test_selector="dtest"
+                ;;
+            empty)
+                # nextest fails an empty package selection unless every mapper
+                # route is an explicit target. Retain the legacy expression;
+                # an empty heuristic result must not turn a green gate red.
+                gate_dtest_reason="no affected tests; retained legacy selection"
+                ;;
+            *) gate_dtest_status="fallback" ;;
+        esac
+    elif [ -z "$nextest_args" ]; then
+        gate_dtest_status="skipped_workspace"
+        gate_dtest_reason="legacy mapper required workspace"
+    else
+        gate_dtest_status="skipped_non_rust"
+        gate_dtest_reason="no changed Rust source"
+    fi
+
     local ungated="glamour grimoire"
 
     # Queue fixtures manipulate process groups, detached daemons, file locks,
@@ -3165,7 +3225,7 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         gate_preflight_nextest="$(preflight_nextest_for "$change_id" || true)"
     fi
     [ -n "$gate_preflight_expr" ] && note "preflight: replaying last attempt's failures first"
-    note "gating $branch (rebased to $sha on $base; target=$cargo_target_dir; fuzz=$fuzz_mode; scope=$gate_scope; queue-infra=$queue_infra; queue-infra-only=$queue_infra_only; ungated=[$ungated]; skip-sweeps=$skip_sweeps; skip-book=$skip_book; skip-rust-class=$skip_rust_class; skip-compile=$skip_compile; skip-wasm=$skip_wasm; skip-fmt=$skip_fmt; nextest=[${nextest_args:-workspace}]${nextest_extra:+ extra=[$nextest_extra]}); log: $log"
+    note "gating $branch (rebased to $sha on $base; target=$cargo_target_dir; fuzz=$fuzz_mode; scope=$gate_scope; queue-infra=$queue_infra; queue-infra-only=$queue_infra_only; ungated=[$ungated]; skip-sweeps=$skip_sweeps; skip-book=$skip_book; skip-rust-class=$skip_rust_class; skip-compile=$skip_compile; skip-wasm=$skip_wasm; skip-fmt=$skip_fmt; selector=$gate_test_selector; nextest=[${nextest_args:-workspace}]${nextest_extra:+ extra=[$nextest_extra]}); log: $log"
     local gate_started; gate_started="$(date +%s)"
     gate_load_start="$(load1)"
     run_gate "$log" "$fuzz_mode" "$gate_scope" "$queue_infra" "$queue_infra_only" \
