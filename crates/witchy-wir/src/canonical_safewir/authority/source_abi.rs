@@ -87,7 +87,8 @@ pub(super) fn record_root_plans_in_signature(
                         view.storage_plan(ty),
                         witchy_canonical_source::storage::StoragePlan::RootedView(
                             witchy_canonical_source::rooted_view::RootedViewStorage::RetainedRoot(
-                            witchy_canonical_source::rooted_view::RetainedRootStorage::CheckedAggregate(_)))
+                            witchy_canonical_source::rooted_view::RetainedRootStorage::CheckedAggregate(_)
+                            | witchy_canonical_source::rooted_view::RetainedRootStorage::CheckedGraph(_)))
                     ) => return false,
                     None => return false,
                     _ => {}

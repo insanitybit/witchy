@@ -647,7 +647,7 @@ impl AggregateGraphPlan {
     pub fn cloneable(&self) -> bool { self.cloneable }
     pub fn movable(&self) -> bool { self.movable }
 
-    fn classify(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<Self> {
+    pub(crate) fn classify(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<Self> {
         if crate::capabilities::representation(ty, definitions).is_some() { return None; }
         let shape = scalar_aggregate_shape(ty, definitions)?;
         if shape.packed { return None; }
@@ -760,7 +760,8 @@ fn graph_storage_operations(
             RootedViewStorage::RetainedRoot(RetainedRootStorage::ByteBuffer(_)
                 | RetainedRootStorage::Sequence(_)
                 | RetainedRootStorage::StructuralRecord(_)
-                | RetainedRootStorage::CheckedAggregate(_)) => Some(GraphOperations { cloneable: true, movable: false, direct_capability_field: false }),
+                | RetainedRootStorage::CheckedAggregate(_)
+                | RetainedRootStorage::CheckedGraph(_)) => Some(GraphOperations { cloneable: true, movable: false, direct_capability_field: false }),
             RootedViewStorage::RetainedProjection(element) if element.within_resource_bounds() =>
                 Some(GraphOperations { cloneable: true, movable: false, direct_capability_field: false }),
             // A scalar-cell view carries a shared GC owner. Crossing an

@@ -57,8 +57,10 @@ fn main() -> Int:
 }
 
 #[test]
-fn option_root_with_list_of_views_fails_closed_at_storage_classification() {
-    let error = witchy::resolve_std_only_checked(
+fn option_root_with_list_of_views_keeps_its_snapshot() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let checked = witchy::resolve_std_only_checked(
         r#"
 fn read(view: &Option(List(&Int))) -> Int:
     match *view:
@@ -66,11 +68,90 @@ fn read(view: &Option(List(&Int))) -> Int:
         None -> 0
 
 fn main() -> Int:
-    let value = 2
-    let box: Option(List(&Int)) = Some([&value])
-    read(&box)
+    let old_value = 2
+    let new_value = 9
+    var box: Option(List(&Int)) = Some([&old_value])
+    let old = &box
+    box = Some([&new_value])
+    read(old) * 10 + read(&box)
 "#,
     )
-    .expect_err("nested view-bearing List has no authenticated Option root carrier");
-    assert!(error.to_string().contains("immutable view formation cannot form an immutable view without an authenticated storage carrier"), "{error}");
+    .expect("nested view-bearing List has a checked Option root carrier");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("Option root preserves the nested view carrier");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(&artifact,
+        Capabilities { print_int: true, quiet: true, ..Capabilities::none() }, 128)
+        .expect("admitted Wasm instance");
+    vm.run().expect("admitted Wasm execution");
+    assert_eq!(vm.output(), vec!["29".to_string()]);
+    assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+}
+
+#[test]
+fn nominal_root_with_list_of_views_keeps_its_snapshot() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let checked = witchy::resolve_std_only_checked(r#"
+type Holder:
+    views: List(&Int)
+
+fn read(view: &Holder) -> Int:
+    let h = *view
+    *(h.views[0])
+
+fn main() -> Int:
+    let a = 2
+    let b = 9
+    var h = Holder(views: [&a])
+    let old = &h
+    h = Holder(views: [&b])
+    read(old) * 10 + read(&h)
+"#).expect("nominal nested-view root checks");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("nominal nested-view root admits");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(&artifact,
+        Capabilities { print_int: true, quiet: true, ..Capabilities::none() }, 128)
+        .expect("admitted Wasm instance");
+    vm.run().expect("admitted Wasm execution");
+    assert_eq!(vm.output(), vec!["29".to_string()]);
+    assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+}
+
+#[test]
+fn region_born_root_cannot_escape_in_nested_view_graph() {
+    let error = witchy::resolve_std_only_checked(r#"
+type Holder:
+    views: List(&Int)
+
+fn main() -> Int:
+    let view = region -> &Holder:
+        let local = 5
+        let h = Holder(views: [&local])
+        &h
+    *(*view).views[0]
+"#).expect_err("region-born nested view graph must not escape");
+    assert!(error.to_string().contains("cannot copy out region-born reference `h` from `region:`"),
+        "refusal names the region-born root: {error}");
+}
+
+#[test]
+fn nested_view_graph_does_not_hide_a_must_obligation() {
+    let error = witchy::resolve_std_only_checked(r#"
+must type Ticket:
+    Ticket(Int)
+
+type Holder:
+    views: List(&Int)
+    ticket: Ticket
+
+fn main() -> Int:
+    let value = 5
+    let holder = Holder(views: [&value], ticket: Ticket(1))
+    let snapshot = &holder
+    0
+"#).expect_err("a must-bearing aggregate cannot acquire a persistent view");
+    assert!(error.to_string().contains("must-consume"),
+        "refusal retains the must-consume obligation: {error}");
 }

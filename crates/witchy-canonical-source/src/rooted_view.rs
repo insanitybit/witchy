@@ -13,6 +13,8 @@ use crate::abi::{
 };
 use crate::carrier::CarrierElement;
 use crate::rooted_record::RecordRootPlan;
+use crate::storage::AggregateGraphPlan;
+use crate::structural_identity::SourceTypeKey;
 
 /// Physical representation of a rooted source view. Its typed child proof
 /// determines identity and the ownership operation at every containing edge.
@@ -32,6 +34,46 @@ pub enum RetainedRootStorage {
     Sequence(CarrierElement),
     StructuralRecord(CarrierElement),
     CheckedAggregate(RecordRootPlan),
+    CheckedGraph(GraphRootPlan),
+}
+
+/// A nominal root whose nested view fields use the checked aggregate graph
+/// operation proof rather than the ordinary `CarrierElement` grammar.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphRootPlan {
+    pub graph: AggregateGraphPlan,
+    ordinal: u32,
+}
+
+impl GraphRootPlan {
+    fn classify(payload: &Type, definitions: &BTreeMap<String, TypeDef>,
+        nominal: impl Fn(&str) -> Option<u32>) -> Option<Self> {
+        let Type::Named(name, _) = payload else { return None };
+        if !definitions.contains_key(name) { return None; }
+        if !matches!(crate::aggregates::contains_stored_view(payload, definitions), Some(true)) {
+            return None;
+        }
+        let graph = AggregateGraphPlan::classify(payload, definitions)?;
+        graph.cloneable().then_some(Self { graph, ordinal: nominal(name)? })
+    }
+
+    fn append_identity_bytes(&self, bytes: &mut Vec<u8>) -> Option<()> {
+        bytes.extend_from_slice(&self.ordinal.to_le_bytes());
+        bytes.extend_from_slice(&self.graph.source_key());
+        let shape = self.graph.shape();
+        bytes.extend_from_slice(&u32::try_from(shape.fields.len()).ok()?.to_le_bytes());
+        for field in &shape.fields {
+            bytes.extend_from_slice(&SourceTypeKey { source: field }.digest()?);
+        }
+        bytes.extend_from_slice(&u32::try_from(shape.variants.len()).ok()?.to_le_bytes());
+        for variant in &shape.variants {
+            bytes.extend_from_slice(&u32::try_from(variant.name.len()).ok()?.to_le_bytes());
+            bytes.extend_from_slice(variant.name.as_bytes());
+            bytes.extend_from_slice(&u32::try_from(variant.first_field).ok()?.to_le_bytes());
+            bytes.extend_from_slice(&u32::try_from(variant.arity).ok()?.to_le_bytes());
+        }
+        Some(())
+    }
 }
 
 /// A shared physical byte buffer whose source identity remains distinct.
@@ -164,8 +206,11 @@ impl RootedViewStorage {
             }
         }
         if crate::rooted_record::has_record_root_head(payload, definitions)? {
-            return Some(Self::RetainedRoot(RetainedRootStorage::CheckedAggregate(
-                RecordRootPlan::from_checked_type(payload, definitions, nominal)?,
+            if let Some(plan) = RecordRootPlan::from_checked_type(payload, definitions, &nominal) {
+                return Some(Self::RetainedRoot(RetainedRootStorage::CheckedAggregate(plan)));
+            }
+            return Some(Self::RetainedRoot(RetainedRootStorage::CheckedGraph(
+                GraphRootPlan::classify(payload, definitions, nominal)?,
             )));
         }
         if let Some(element) = CarrierElement::from_list_root_payload_type_with_definitions(
@@ -257,6 +302,10 @@ impl RootedViewStorage {
                     RetainedRootStorage::CheckedAggregate(plan) => {
                         bytes.extend_from_slice(&[3, 3]);
                         if !plan.identity.append_identity_bytes(&mut bytes) { return None; }
+                    }
+                    RetainedRootStorage::CheckedGraph(plan) => {
+                        bytes.extend_from_slice(&[3, 4]);
+                        plan.append_identity_bytes(&mut bytes)?;
                     }
                 }
                 CanonicalRootedViewCarrier::RetainedRoot

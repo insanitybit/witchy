@@ -782,7 +782,7 @@ fn view_aggregate_plan_at(
 /// Views retained by the value's checked storage, excluding phantom type
 /// arguments and callable signatures. Unknown storage refuses both a plain
 /// field and a whole-root identity; it cannot be treated as view-free.
-fn contains_stored_view(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<bool> {
+pub(crate) fn contains_stored_view(ty: &Type, definitions: &BTreeMap<String, TypeDef>) -> Option<bool> {
     fn walk(
         ty: &Type,
         definitions: &BTreeMap<String, TypeDef>,

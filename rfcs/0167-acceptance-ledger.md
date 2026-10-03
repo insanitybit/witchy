@@ -239,19 +239,19 @@ At merged `09b28a66e`, `rfc0167_option_list_view_boundary` adds a normal-mode
 recursive-carrier boundary. A view of `Option(List(Int))` keeps the old snapshot
 after root replacement, produces the independent result 29 on admitted
 unoptimized Wasm, and releases its root with zero leaks. A view of
-`Option(List(&Int))` refuses at `typeck::admit_view_payload` because the nested
-view-bearing child has no authenticated storage carrier. This checked refusal
-does not establish nested view ownership. Admitting that shape needs a
-recursive root-carrier and retain/release plan.
-
-The 2026-10-03 classifier probe confirmed the specific gap: `List(&Int)` has
-the specialized `RetainedOwnerList` storage plan, but the enclosing Option
-root identity requires `CarrierElement`, whose retained-view grammar excludes
-the scalar-cell `&Int` element. Removing the outer stored-view guard alone
-still refuses at source checking. The guard remains in place until that
-recursive identity and physical ownership relation are implemented. A
-separate indirect `var List(&Int)` replacement does admit and execute with
-the independently expected old/new snapshot result `2312` and zero leaks.
+`Option(List(&Int))` previously refused at `typeck::admit_view_payload`: its
+specialized `RetainedOwnerList` child is outside the ordinary `CarrierElement`
+grammar. The 2026-10-03 graph-root path now classifies a non-packed nominal
+whose stored views have a checked cloneable aggregate graph. Its identity binds
+the nominal ordinal, instantiated source, field types, and variants; lowering
+retains the exact GC owner token, and SafeWIR matches that owner family to the
+checked source aggregate. `&Option(List(&Int))` and a user-record root holding
+`List(&Int)` each preserve an old snapshot after root replacement, produce the
+independent result 29 on admitted unoptimized Wasm, and report zero leaks. A
+region-born root and a must-bearing aggregate still refuse at source checking.
+This proves these nested graph shapes, not every recursive carrier or retained
+resource family. A separate indirect `var List(&Int)` replacement admits and
+executes with the independent old/new snapshot result `2312` and zero leaks.
 
 `rfc0167_frozen_view_replacement` adds a normal-mode row L composition
 witness: a rooted `&frozen Box` keeps the old field value when a `var frozen

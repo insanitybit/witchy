@@ -16357,6 +16357,12 @@ impl FunctionLowerer<'_> {
                 RetainedRootStorage::Sequence(_)
                     | RetainedRootStorage::StructuralRecord(_)
                     | RetainedRootStorage::CheckedAggregate(_)
+                    | RetainedRootStorage::CheckedGraph(_)
+            )))
+        );
+        let graph_root = matches!(storage.as_ref(),
+            Some(StoragePlan::RootedView(RootedViewStorage::RetainedRoot(
+                RetainedRootStorage::CheckedGraph(_)
             )))
         );
         if matches!(fact.payload(), Ty::Float | Ty::Bool | Ty::Duration) {
@@ -16407,7 +16413,8 @@ impl FunctionLowerer<'_> {
             }
             check_field_view_source(&fact, steps, operand)?;
             let value = self.lower_expr(operand)?;
-            if !matches!(self.values.get(&value), Some(ValueType::Ref(_))) {
+            if !matches!(self.values.get(&value), Some(ValueType::Ref(_)))
+                && !(graph_root && matches!(self.values.get(&value), Some(ValueType::Gc(_)))) {
                 return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
                     "immutable byte-buffer or record field view does not read a heap value".to_string(),
                 ));
@@ -16419,7 +16426,8 @@ impl FunctionLowerer<'_> {
             // view's retained root token, which is exactly its snapshot.
             check_field_view_source(&fact, &[], operand)?;
             let value = self.lower_expr(operand)?;
-            if !matches!(self.values.get(&value), Some(ValueType::Ref(_))) {
+            if !matches!(self.values.get(&value), Some(ValueType::Ref(_)))
+                && !(graph_root && matches!(self.values.get(&value), Some(ValueType::Gc(_)))) {
                 return Err(CanonicalLoweringError::InvalidCheckedViewFacts(
                     "immutable whole view through a view does not read a heap value".to_string(),
                 ));
@@ -16436,7 +16444,8 @@ impl FunctionLowerer<'_> {
                 ))
             })?;
             if !fact.place().steps().is_empty() || !matches!(operand, Expr::Var(_))
-                || !matches!(self.values.get(&root), Some(ValueType::Ref(_)))
+                || (!matches!(self.values.get(&root), Some(ValueType::Ref(_)))
+                    && !(graph_root && matches!(self.values.get(&root), Some(ValueType::Gc(_)))))
             {
                 return Err(CanonicalLoweringError::UnsupportedExpression(
                     "rooted byte-buffer or record view is only a whole-root carrier",
@@ -16621,6 +16630,11 @@ impl FunctionLowerer<'_> {
             && self.expression_type(operand).is_ok_and(|ty| matches!(&ty,
                 Type::Qualified(TypeQual::View, inner)
                     if witchy_canonical_source::aggregates::is_inline_scalar_view_payload(inner)));
+        let graph_root_view = operator == UnOp::Deref
+            && self.expression_type(operand).is_ok_and(|ty| matches!(
+                StoragePlan::classify(&ty, self.definitions, |_| Some(0)),
+                StoragePlan::RootedView(RootedViewStorage::RetainedRoot(
+                    RetainedRootStorage::CheckedGraph(_)))));
         let direct_mut_root = operator == UnOp::BorrowMut && matches!(operand, Expr::Var(_));
         let direct_mut_projected_field = operator == UnOp::BorrowMut
             && self.authenticated_direct_projected_exclusive_handle_open(operand)?;
@@ -16742,6 +16756,7 @@ impl FunctionLowerer<'_> {
                 }));
                 Ok(destination)
             }
+            (UnOp::Deref, ValueType::Gc(_)) if graph_root_view => self.clone_reference_token(operand),
             (UnOp::Deref, ValueType::Ref(_)) => self.clone_reference_token(operand),
             // A `&Float`/`&Bool`/`&Duration` view is the scalar value itself
             // (`InlineScalar`); `&Int` is a GC cell handled above.
@@ -21061,7 +21076,8 @@ fn source_value_type(
             StoragePlan::RootedView(RootedViewStorage::InlineScalar(_)
                 | RootedViewStorage::RetainedRoot(
                     RetainedRootStorage::StructuralRecord(_)
-                        | RetainedRootStorage::CheckedAggregate(_))))
+                        | RetainedRootStorage::CheckedAggregate(_)
+                        | RetainedRootStorage::CheckedGraph(_))))
     {
         return source_value_type(inner, layout_bundle, layouts, closure_layouts, definitions);
     }

@@ -25,6 +25,16 @@ pub(crate) fn value_type_matches_source(
             _ => None,
         };
         if record_head == Some(true) {
+            if let Some(RootedViewStorage::RetainedRoot(RetainedRootStorage::CheckedGraph(plan))) = &storage {
+                let super::super::ValueType::Gc(id) = actual else { return false };
+                let Some(expected) = witchy_canonical_source::aggregates::canonical_owner_aggregate_identity(payload, records) else { return false };
+                return plan.graph.cloneable() && context.owner_families.iter().any(|family| {
+                    family.owner_type == id
+                        && matches!(&family.source,
+                            super::super::closure_owner_contract::OwnerFamilySource::Aggregate(source)
+                                if source == &expected)
+                });
+            }
             let Some(RootedViewStorage::RetainedRoot(RetainedRootStorage::CheckedAggregate(plan))) = storage else { return false };
             let super::super::ValueType::Ref(layout) = actual else { return false };
             if !nominal_layout_matches_source_identity(layout, payload, layouts, records) { return false; }
