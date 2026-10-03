@@ -292,14 +292,14 @@ pub(crate) fn run() -> wasmtime::Result<()> {
     }
     // `witchy grants-check <prog.witchy> <grants.toml>` (RFC-0013) cross-checks a
     // grant document against the program's computed footprint: an over-request
-    // warns, an under-grant exits 2 (the program would fail at the missing cap).
+    // warns; a document `sandbox --grants` would refuse exits 2 (RFC-0126).
     if std::env::args().nth(1).as_deref() == Some("grants-check") {
         let (Some(prog), Some(grants)) = (std::env::args().nth(2), std::env::args().nth(3)) else {
             eprintln!("usage: witchy grants-check <prog.witchy> <grants.toml>");
             std::process::exit(1);
         };
         match report_grant_check(&prog, &grants) {
-            Ok(under_grant) => std::process::exit(if under_grant { 2 } else { 0 }),
+            Ok(refused) => std::process::exit(if refused { 2 } else { 0 }),
             Err(e) => {
                 eprintln!("{e}");
                 std::process::exit(1);

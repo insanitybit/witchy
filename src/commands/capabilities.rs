@@ -157,35 +157,42 @@ pub(crate) fn report_capability_diff(old_path: &str, new_path: &str) -> Result<b
     Ok(d.widened())
 }
 
-/// RFC-0013: cross-check a grant document against a program's computed footprint.
-/// Returns `true` when there is an UNDER-grant (the fatal case): the code needs
-/// authority the grant withholds, so the program would fail at the missing
-/// capability anyway. An over-grant (authority the code never uses) only warns.
+/// RFC-0013/RFC-0126: check a grant document against a program the way
+/// `witchy sandbox --grants` will launch it. Returns `true` when the launch would
+/// be refused: an under-grant, or a document that does not bind `main`'s
+/// parameters (a missing, unbound, or rights-mismatched entry). An over-grant
+/// (authority `main` never receives) only warns.
 pub(crate) fn report_grant_check(prog_path: &str, grants_path: &str) -> Result<bool, String> {
-    let footprint = analyze_file(prog_path)?;
+    let (checked, _) = crate::link_file_checked(prog_path)?;
+    let linked = checked.module();
+    if !crate::linked_has_main(linked) {
+        return Err(format!("`{prog_path}` has no `main` for a grant to bind"));
+    }
     let doc_src = std::fs::read_to_string(grants_path)
         .map_err(|e| format!("cannot read `{grants_path}`: {e}"))?;
     let doc = grants::GrantDoc::parse(&doc_src)?;
     let grant = doc.cap_set();
-    let check = grants::cross_check(&grant, &footprint.total);
-    println!("Grant cross-check: `{grants_path}` vs the footprint of `{prog_path}`");
-    println!("  code needs:  {}", capability_model::show_caps(&footprint.total));
+    let needed = capability_model::run_grant(linked);
+    println!("Grant cross-check: `{grants_path}` vs the `main` of `{prog_path}`");
+    println!("  code needs:  {}", capability_model::show_caps(&needed));
     println!("  grant gives: {}", capability_model::show_caps(&grant));
-    if check.clean() {
-        println!("  OK: the grant matches what the code exercises exactly.");
-    }
-    if !check.over_grant.is_empty() {
-        println!(
-            "  WARN over-grant (authority the code never exercises): {}",
-            capability_model::show_caps(&check.over_grant)
-        );
-    }
-    if !check.under_grant.is_empty() {
-        println!(
-            "  ERROR under-grant (authority the code needs but the grant withholds): {}",
-            capability_model::show_caps(&check.under_grant)
-        );
-    }
+    let refused = match super::sandbox::bind_grant_document(linked, &doc, grants_path) {
+        Ok(binding) => {
+            if binding.over_grant.is_empty() {
+                println!("  OK: the grant binds `main` and matches what it exercises exactly.");
+            } else {
+                println!(
+                    "  WARN over-grant (authority the code never exercises): {}",
+                    capability_model::show_caps(&binding.over_grant)
+                );
+            }
+            false
+        }
+        Err(error) => {
+            println!("  ERROR the launch would be refused: {error}");
+            true
+        }
+    };
     // (RFC-0060/BUG-610) `SecretStore` is one capability, but each granted secret
     // carries its own reveal policy — and the cap-set axis cannot express that.
     // Print it per secret, so the cross-check reports which secrets the code could
@@ -197,7 +204,7 @@ pub(crate) fn report_grant_check(prog_path: &str, grants_path: &str) -> Result<b
             capability_model::secret_reveal_suffix(s.sealed)
         );
     }
-    Ok(!check.sufficient())
+    Ok(refused)
 }
 
 /// (RFC-0060/BUG-610) Compare two grant documents and fail when the newer one

@@ -847,6 +847,7 @@ fn grant_document_binds_each_net_parameter_to_its_own_entry() {
         "g.toml",
         "[net]\npublic = [\"example.com:443\"]\nadmin = [\"10.0.0.5:22\"]\n",
     );
+    let grants_ok = grants.clone();
     let out = run(&["sandbox", "--grants", &grants, "--accept-grants", &admin_prog]);
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("derived"), "admin holds its own entry: {stdout}{}", String::from_utf8_lossy(&out.stderr));
@@ -870,7 +871,14 @@ fn grant_document_binds_each_net_parameter_to_its_own_entry() {
         assert!(!out.status.success(), "{body}");
         assert!(stderr.contains(expected), "{body}: {stderr}");
         assert!(!String::from_utf8_lossy(&out.stdout).contains("derived"), "refused before running");
+        // `grants-check` makes the same decision the launcher does (RFC-0126).
+        let check = run(&["grants-check", &prog, &grants]);
+        let report = format!("{}{}", String::from_utf8_lossy(&check.stdout), String::from_utf8_lossy(&check.stderr));
+        assert!(!check.status.success(), "grants-check must refuse what sandbox refuses: {report}");
+        assert!(report.contains(expected), "{body}: {report}");
     }
+    let check = run(&["grants-check", &prog, &grants_ok]);
+    assert!(check.status.success(), "{}", String::from_utf8_lossy(&check.stdout));
 }
 
 // ---- an env-injected secret must not remain readable as an env variable ----

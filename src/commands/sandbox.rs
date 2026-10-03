@@ -157,6 +157,143 @@ pub(crate) fn run_file_grants(
         .map_err(|e| format!("cannot read `{grants_path}`: {e}"))?;
     let doc = grants::GrantDoc::parse(&doc_src)?;
 
+    let binding = bind_grant_document(linked, &doc, grants_path)?;
+    if !binding.over_grant.is_empty() {
+        eprintln!(
+            "warning: grant `{grants_path}` over-requests {} \u{2014} the code never exercises it",
+            capabilities::show_caps(&binding.over_grant)
+        );
+    }
+    let GrantBinding {
+        dir_roots,
+        file_grants,
+        net_grants,
+        fetch_origins,
+        env_allow,
+        exec_allow,
+        exec_child_paths,
+        user_cap_fields,
+        over_grant: _,
+    } = binding;
+    let exec_child_paths = if exec_child_paths.is_empty() {
+        Vec::new()
+    } else {
+        runtime::resolve_exec_child_paths(
+            &exec_child_paths,
+            &std::env::current_dir()
+                .map_err(|error| format!("cannot determine launch directory: {error}"))?,
+        )?
+    };
+    // Resolve every secret up front, consuming each backing environment variable
+    // before the VM exists — so a guest `Env` cannot read the injected value back
+    // out. Bytes come back keyed BY NAME, so a name is never paired with another
+    // secret's value.
+    let mut resolved_secrets = resolve_secrets_from(&doc)?;
+    let mut named_secrets: Vec<runtime::SecretGrant> = Vec::new();
+    for (name, s) in &doc.secrets {
+        let bytes = resolved_secrets
+            .remove(name)
+            .ok_or_else(|| format!("grant `{grants_path}` secret `{name}` did not resolve"))?;
+        // BUG-146: carry the document's `sealed` modifier through to the runtime
+        // grant — otherwise a grant that declares a signing/TLS key as unrevealable
+        // was silently lowered to a revealable secret (`crypto.reveal` would leak it).
+        named_secrets.push(runtime::SecretGrant {
+            name: name.clone(),
+            bytes,
+            sealed: s.sealed,
+        });
+    }
+    // Show exactly what `main` will receive — a reviewable diff — then, unless
+    // pre-accepted (`--accept-grants`) or non-interactive, require confirmation
+    // before handing the authority over (RFC-0013's approval step).
+    eprintln!("grant `{grants_path}` for `{path}` confers:");
+    eprintln!("  capabilities: {}", capabilities::show_caps(&doc.cap_set()));
+    for (name, g) in &doc.dirs {
+        eprintln!("  dir    {name}: {}", g.root);
+    }
+    for (name, g) in &doc.files {
+        eprintln!("  file   {name}: {}", g.path);
+    }
+    for (name, patterns) in &doc.net {
+        eprintln!("  net    {name}: {}", patterns.join(", "));
+    }
+    for (name, origins) in &doc.fetch {
+        eprintln!("  fetch  {name}: {}", origins.join(", "));
+    }
+    for (name, names) in &doc.env {
+        eprintln!("  env    {name}: {}", names.join(", "));
+    }
+    for (name, binding) in &doc.exec {
+        eprintln!("  exec   {name}: {}", binding.programs().join(", "));
+        if !binding.child_paths().is_empty() {
+            eprintln!("    child paths: {}", binding.child_paths().join(", "));
+        }
+    }
+    for (name, s) in &doc.secrets {
+        // (RFC-0060/BUG-610) The reveal policy is part of what is being approved:
+        // a revealable secret can be read into guest memory, a sealed one can
+        // only be consumed by handle. Printing both rows identically hid the
+        // strongest per-secret guarantee at the one point a human decides.
+        eprintln!("  secret {name}: {}{}", s.from, capabilities::secret_reveal_suffix(s.sealed));
+    }
+    if !accept_grants && std::io::stdin().is_terminal() {
+        use std::io::Write;
+        eprint!("Approve and run? [y/N] ");
+        let _ = std::io::stderr().flush();
+        let mut line = String::new();
+        std::io::stdin()
+            .read_line(&mut line)
+            .map_err(|e| format!("reading confirmation: {e}"))?;
+        if !matches!(line.trim().chars().next(), Some('y' | 'Y')) {
+            return Err("grant not approved \u{2014} aborting".to_string());
+        }
+    }
+    // Secrets reach the program by name through the `SecretStore` (`require`/`get`);
+    // the bare root `Secret` (`--signing-key`) is not granted via documents here.
+    run_checked_compiled(
+        &checked,
+        dir_roots,
+        file_grants,
+        net_grants,
+        fetch_origins,
+        env_allow,
+        exec_allow,
+        exec_child_paths,
+        args,
+        None,
+        named_secrets,
+        user_cap_fields,
+        true,
+        confinement,
+    )
+}
+
+/// What a grant document hands `main`, positionally per parameter, once it has
+/// been bound against the checked program.
+pub(crate) struct GrantBinding {
+    pub dir_roots: Vec<std::path::PathBuf>,
+    pub file_grants: Vec<std::path::PathBuf>,
+    pub net_grants: Vec<Vec<String>>,
+    pub fetch_origins: Vec<String>,
+    pub env_allow: Option<Vec<String>>,
+    pub exec_allow: Option<Vec<String>>,
+    /// As written; resolved against the launch directory only at launch.
+    pub exec_child_paths: Vec<String>,
+    pub user_cap_fields: Vec<Vec<String>>,
+    /// Authority the document confers that `main` never receives (a warning).
+    pub over_grant: capabilities::CapSet,
+}
+
+/// Bind a grant document to `main`'s parameters -- the single launch decision
+/// (RFC-0126). `witchy sandbox --grants` launches with the result and
+/// `witchy grants-check` reports it, so a document the checker accepts is exactly
+/// one the launcher accepts. Pure: no secret is resolved and no environment
+/// variable is consumed, so a refused binding touches nothing.
+pub(crate) fn bind_grant_document(
+    linked: &ast::Module,
+    doc: &grants::GrantDoc,
+    grants_path: &str,
+) -> Result<GrantBinding, String> {
     // Cross-check the grant against what a RUN actually exercises — `main`'s own
     // parameter row (`run_grant`), not `analyze().total` (the whole-program union
     // over every public entry point). `total` includes a linked library's `pub fn`s
@@ -165,12 +302,6 @@ pub(crate) fn run_file_grants(
     // exactly what `main` receives — a wrongly-refused, valid grant (BUG-016).
     let needed = capabilities::run_grant(linked);
     let check = grants::cross_check(&doc.cap_set(), &needed);
-    if !check.over_grant.is_empty() {
-        eprintln!(
-            "warning: grant `{grants_path}` over-requests {} \u{2014} the code never exercises it",
-            capabilities::show_caps(&check.over_grant)
-        );
-    }
     if !check.sufficient() {
         return Err(format!(
             "grant `{grants_path}` is insufficient: the code needs {} which the grant withholds",
@@ -204,26 +335,7 @@ pub(crate) fn run_file_grants(
     let mut fetch_origins: Vec<String> = Vec::new();
     let mut env_allow: Option<Vec<String>> = None;
     let mut exec_allow: Option<Vec<String>> = None;
-    let mut exec_child_paths: Vec<std::path::PathBuf> = Vec::new();
-    // Resolve every secret up front, consuming each backing environment variable
-    // before the VM exists — so a guest `Env` cannot read the injected value back
-    // out. Bytes come back keyed BY NAME, so a name is never paired with another
-    // secret's value.
-    let mut resolved_secrets = resolve_secrets_from(&doc)?;
-    let mut named_secrets: Vec<runtime::SecretGrant> = Vec::new();
-    for (name, s) in &doc.secrets {
-        let bytes = resolved_secrets
-            .remove(name)
-            .ok_or_else(|| format!("grant `{grants_path}` secret `{name}` did not resolve"))?;
-        // BUG-146: carry the document's `sealed` modifier through to the runtime
-        // grant — otherwise a grant that declares a signing/TLS key as unrevealable
-        // was silently lowered to a revealable secret (`crypto.reveal` would leak it).
-        named_secrets.push(runtime::SecretGrant {
-            name: name.clone(),
-            bytes,
-            sealed: s.sealed,
-        });
-    }
+    let mut exec_child_paths: Vec<String> = Vec::new();
     if let Some(ast::Item::Function(main)) =
         linked.items.iter().find(|it| matches!(it, ast::Item::Function(f) if f.name == "main"))
     {
@@ -324,11 +436,7 @@ pub(crate) fn run_file_grants(
                     programs.sort();
                     programs.dedup();
                     exec_allow = Some(programs);
-                    exec_child_paths = runtime::resolve_exec_child_paths(
-                        binding.child_paths(),
-                        &std::env::current_dir()
-                            .map_err(|error| format!("cannot determine launch directory: {error}"))?,
-                    )?;
+                    exec_child_paths = binding.child_paths().to_vec();
                 }
                 Some(ast::Type::Named(n, _)) if grantable.contains_key(n.as_str()) => {
                     // RFC-0038: a bare grantable cap — pull each policy field from the
@@ -371,55 +479,7 @@ pub(crate) fn run_file_grants(
             ));
         }
     }
-    // Show exactly what `main` will receive — a reviewable diff — then, unless
-    // pre-accepted (`--accept-grants`) or non-interactive, require confirmation
-    // before handing the authority over (RFC-0013's approval step).
-    eprintln!("grant `{grants_path}` for `{path}` confers:");
-    eprintln!("  capabilities: {}", capabilities::show_caps(&doc.cap_set()));
-    for (name, g) in &doc.dirs {
-        eprintln!("  dir    {name}: {}", g.root);
-    }
-    for (name, g) in &doc.files {
-        eprintln!("  file   {name}: {}", g.path);
-    }
-    for (name, patterns) in &doc.net {
-        eprintln!("  net    {name}: {}", patterns.join(", "));
-    }
-    for (name, origins) in &doc.fetch {
-        eprintln!("  fetch  {name}: {}", origins.join(", "));
-    }
-    for (name, names) in &doc.env {
-        eprintln!("  env    {name}: {}", names.join(", "));
-    }
-    for (name, binding) in &doc.exec {
-        eprintln!("  exec   {name}: {}", binding.programs().join(", "));
-        if !binding.child_paths().is_empty() {
-            eprintln!("    child paths: {}", binding.child_paths().join(", "));
-        }
-    }
-    for (name, s) in &doc.secrets {
-        // (RFC-0060/BUG-610) The reveal policy is part of what is being approved:
-        // a revealable secret can be read into guest memory, a sealed one can
-        // only be consumed by handle. Printing both rows identically hid the
-        // strongest per-secret guarantee at the one point a human decides.
-        eprintln!("  secret {name}: {}{}", s.from, capabilities::secret_reveal_suffix(s.sealed));
-    }
-    if !accept_grants && std::io::stdin().is_terminal() {
-        use std::io::Write;
-        eprint!("Approve and run? [y/N] ");
-        let _ = std::io::stderr().flush();
-        let mut line = String::new();
-        std::io::stdin()
-            .read_line(&mut line)
-            .map_err(|e| format!("reading confirmation: {e}"))?;
-        if !matches!(line.trim().chars().next(), Some('y' | 'Y')) {
-            return Err("grant not approved \u{2014} aborting".to_string());
-        }
-    }
-    // Secrets reach the program by name through the `SecretStore` (`require`/`get`);
-    // the bare root `Secret` (`--signing-key`) is not granted via documents here.
-    run_checked_compiled(
-        &checked,
+    Ok(GrantBinding {
         dir_roots,
         file_grants,
         net_grants,
@@ -427,11 +487,7 @@ pub(crate) fn run_file_grants(
         env_allow,
         exec_allow,
         exec_child_paths,
-        args,
-        None,
-        named_secrets,
         user_cap_fields,
-        true,
-        confinement,
-    )
+        over_grant: check.over_grant,
+    })
 }
