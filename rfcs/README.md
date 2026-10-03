@@ -4,7 +4,26 @@ Start with [RFC-0167: Witchy syntax and semantics](0167-witchy-language-contract
 It is the single target language contract, replacing the separate language
 capstones. Its choices are **accepted**, not fully implemented. The
 [acceptance ledger](0167-acceptance-ledger.md) records the remaining compiler
-and evidence work. Optimization expansion is deferred.
+and evidence work. Opt-mode acceptance is deferred; safe, general normal-mode
+optimization remains in scope.
+
+## Current focus (2026-10-03)
+
+These are work-selection priorities, not completion claims. Recheck each ledger
+and the current compiler route before closing a row.
+
+| Priority | Decision and next evidence |
+|---|---|
+| 1. Normal-mode language and tooling | Close the remaining [RFC-0167 ledger](0167-acceptance-ledger.md) rows with admitted Wasm behavior, source-level expected results, and safety refusals. The accepted contract is not a completion certificate. |
+| 2. Verified compiler output | Reconcile [canonical SafeWIR](0165-safewir-canonical-ir.md), the [object-memory judgment](0162-validated-safewir.md), and [authority validation](0163-authority-validated-codegen.md) against the current executable route. For each optimization, prove its specific behavior-preserving rewrite and recheck the final memory and authority graph. Their older ledgers are evidence inputs, not current-tip certification. |
+| 3. Measured runtime gaps | Use [RFC-0153's effect-safe loop work](0153-effect-safe-range-and-loop-optimization.md) and [RFC-0146's measured program](0146-post-hybrid-performance-program.md) only where matched normal-mode workloads and profiles still show a gap. Preserve [RFC-0143's collection ledger](0143-acceptance-ledger.md) for any remaining representation obligation. Promote generic changes with correctness and performance evidence. |
+| 4. Compile-time cost | Profile before selecting among [arena/interning](0164-compiler-performance-arenas-and-interning.md), [compile std once](0169-compile-std-once.md), and the [protected service](0172-protected-compiler-service.md). These are proposals, not three simultaneous commitments. |
+
+The Glamour, hosted Coven, native-extension, and deferred opt-mode proposals
+remain parked at their stated triggers. Implemented RFCs remain historical
+decision records. The [retirement index](retired-rfcs.md) removes superseded
+and rejected bodies from the working corpus without deleting Git history or
+closing surviving security and runtime obligations.
 
 ## Authority
 

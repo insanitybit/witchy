@@ -14,7 +14,7 @@ tracking: >
 predecessors:
   - "[0013](0013-capability-grant-documents.md) (grant documents — the concrete pre-execution authority statement this RFC compiles)"
   - "[0068](0068-compiled-build-step-grants.md) (build-step grants — the declared authority of third-party build code)"
-  - "[0092](0092-trusted-application-executables.md) (trusted executables — the embedded binding plan the launcher can enforce)"
+  - "[0092](retired-rfcs.md) (trusted executables — the embedded binding plan the launcher can enforce)"
   - "[0102](0102-portable-roots-and-the-fetch-capability.md) (provider doctrine and host menus — this RFC is its enforcement mirror)"
 related:
   - "[0020](0020-rebinding-resistant-http.md) (rebinding-resistant HTTP — cites cap-std/Capsicum; the pinned-dial machinery kernel policy backs up)"

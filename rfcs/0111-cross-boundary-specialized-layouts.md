@@ -14,7 +14,7 @@ related:
   - "[0005](0005-unforgeable-capabilities.md) (capability representation boundary)"
   - "[0016](0016-reference-counted-memory.md) (RC, reuse, and header-elision ladder)"
   - "[0034](0034-closing-the-compute-gap.md) (remaining compute/codegen levers)"
-  - "[0089](0089-functional-in-place.md) (zero-operation unique state kernels)"
+  - "[0089](retired-rfcs.md) (zero-operation unique state kernels)"
 ---
 
 # RFC-0111: Cross-boundary specialized layouts and destination passing

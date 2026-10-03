@@ -136,8 +136,8 @@ no direct commit occurs, so the count is zero there.
 
 ## Functional-in-place state kernels
 
-[RFC-0089](../rfcs/0089-functional-in-place.md) strengthens the ownership and proper-tail-call machinery for a narrow
-class of `mode opt` state machines. A directly self-recursive function with one
+[Retired RFC-0089](../rfcs/retired-rfcs.md) described a narrow optimization of the ownership and proper-tail-call machinery for
+a class of `mode opt` state machines. A directly self-recursive function with one
 `own unique T` parameter and the same `unique T` result may update fields of that
 owner, do scalar computation, and tail-call itself while remaining functional at
 the call boundary. `T` has scalar stored fields and auxiliary parameters are

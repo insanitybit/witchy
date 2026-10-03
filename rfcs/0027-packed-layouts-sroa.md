@@ -52,7 +52,7 @@ program semantics, gated so normal-mode codegen stays simple.
 
 ## Motivation
 
-[RFC-0017](0017-codegen-performance.md) traces witchy's remaining gap to Go/Rust
+[RFC-0017](retired-rfcs.md) traces witchy's remaining gap to Go/Rust
 to one structural choice: the **uniform 8-byte slot with boxed aggregates**. A
 record, tuple, or `List(Point)` element is an i32 pointer to a separate heap
 object. That uniformity buys simple codegen and one equality/format/copy story —
@@ -178,7 +178,7 @@ fn dist(a: Point, b: Point) -> Int:
 
 ## Prior art
 
-- [RFC-0017](0017-codegen-performance.md) §O1 (unboxed/monomorphized layouts) —
+- [RFC-0017](retired-rfcs.md) §O1 (unboxed/monomorphized layouts) —
   this RFC is its concrete proposal.
 - [performance-modes.md](0167-witchy-language-contract.md#6-normal-and-opt-interoperation) "representation tiers" — tiers 1
   (unboxing) and 2 (SROA); this RFC realizes both.

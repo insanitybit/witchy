@@ -1,5 +1,15 @@
 # RFC-0165 acceptance ledger
 
+## Current-route correction, 2026-10-03
+
+The historical B8 row below describes ordinary compilation as a zero-pass
+baseline. Master `237712905` now runs the existing checked, same-block
+redundant-bounds-guard pass in normal mode too. The pass has an independent
+rewrite relation and final SafeWIR revalidation; this change does not supply a
+general behavioral-equivalence proof for future optimizations or close B1/B7's
+semantic limits. Read the older B8 row as evidence for its 2026-09-14 tip, not
+as the current pass-selection policy.
+
 ## Acceptance reconciliation, 2026-09-14
 
 Current master `2b5f853f4` contains the atomic canonical cutover, exact-artifact

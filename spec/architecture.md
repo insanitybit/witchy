@@ -260,7 +260,7 @@ channels lower to a cooperative executor implemented in Witchy (`std/task`;
 memory and one capability grant rather than running as separate VMs - and because
 the scheduler is ordinary witchy code, a concurrent run is byte-identical on both
 backends. See
-[concurrency-design.md](../rfcs/concurrency-design.md).
+[the current concurrency contract](../rfcs/0167-witchy-language-contract.md#7-resources-effects-and-suspension).
 
 Trusted computing base: the lexer-to-codegen pipeline, the runtime host
 functions, and wasmtime itself. Microarchitectural side channels (Spectre
@@ -282,7 +282,7 @@ Tracked honestly rather than hidden:
   is supported in loop bodies, including `while` bodies that carry mutable
   locals across the await; it's still not supported in loop/branch
   conditions or match scrutinees. See
-  [concurrency-design.md](../rfcs/concurrency-design.md).
+  [the current concurrency contract](../rfcs/0167-witchy-language-contract.md#7-resources-effects-and-suspension).
 - The LSP has diagnostics, completion, hover, and expansion-aware document
   symbols. It has no go-to-definition or rename yet.
 - No tracing GC: reclamation is structural (see the memory model above). A

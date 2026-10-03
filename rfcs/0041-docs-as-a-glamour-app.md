@@ -66,7 +66,7 @@ that already runs in the browser ([`web/witchy.wasm`](../web/witchy.wasm) + [`we
 **no server**: the docs are static content served from static hosting; the compiler
 runs in the reader's browser exactly as it does today.
 
-This supersedes [RFC-0019](0019-interactive-documentation.md), which pursued the same
+This supersedes [RFC-0019](retired-rfcs.md), which pursued the same
 runnable-book goal by progressively enhancing mdBook's HTML output. It **keeps
 RFC-0019's genuinely reusable core** — the client-side compiler engine (repaired and
 de-duplicated) and the generated classification/validation manifest — and **replaces
@@ -294,7 +294,7 @@ visible, typed artifact" made literally visible. Theming is the app's own glamou
 - `coven_web_app` (in-repo) — a static, client-side glamour app that already renders
   fetched Markdown docs to real elements: the pattern this generalizes to the whole
   book.
-- [RFC-0019](0019-interactive-documentation.md) (the runnable-book goal + the engine
+- [RFC-0019](retired-rfcs.md) (the runnable-book goal + the engine
   and validation this reuses), [RFC-0007](0007-witchy-wasm-browser-target.md) (browser
   target + deny-by-omission shim), [RFC-0015](0015-secure-web-by-construction.md)
   (compartments; the safe Markdown renderer), `scripts/pg_validate.mjs` (the oracle

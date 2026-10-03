@@ -12,7 +12,7 @@ predecessors:
   - "[0002](0002-user-definable-capabilities.md) (the capability doctrine the compiler's implementation should mirror)"
 related:
   - "[0038](0038-grantable-user-capabilities.md) (grant documents / footprint — the language-level analog of the ambient-authority ledger this RFC introduces)"
-  - "[0092](0092-trusted-application-executables.md) (trusted-exe — a native fs consumer this discipline covers)"
+  - "[0092](retired-rfcs.md) (trusted-exe — a native fs consumer this discipline covers)"
 ---
 
 # RFC-0104: Compiler filesystem-authority discipline — cap-std and lint-gated ambient authority

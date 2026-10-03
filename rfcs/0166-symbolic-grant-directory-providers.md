@@ -153,7 +153,7 @@ standard shell expansion remains compatible).*
 ## Prior Art
 
 - [RFC-0013](0013-capability-grant-documents.md): Capability grant documents.
-- [RFC-0092](0092-trusted-application-executables.md): Trusted application executables.
-- [RFC-0095](0095-grimoire-trusted-application-installation.md): Grimoire application
+- [RFC-0092](retired-rfcs.md): Trusted application executables.
+- [RFC-0095](retired-rfcs.md): Grimoire application
   installation and `$WITCHY_HOME`.
 - WebAssembly System Interface (WASI) filesystem pre-opens.

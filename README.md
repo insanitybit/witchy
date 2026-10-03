@@ -132,7 +132,7 @@ period. The dependable path is deliberately small - language fundamentals,
 capability inspection, check/format/test, independent-expectation to canonical
 interpreter to admitted-WASM parity,
 portable WASM sandboxing, and self-contained
-[`trusted-publisher`](rfcs/0092-trusted-application-executables.md) builds. Everything
+[`trusted-publisher`](rfcs/0157-trusted-publishers-and-executable-state.md) builds. Everything
 else (runes + the Coven registry, the Glamour frontend, the in-browser
 playground, editor tooling) is experimental dogfood.
 [PRODUCT-STATUS.md](PRODUCT-STATUS.md) is the evidence-backed boundary.

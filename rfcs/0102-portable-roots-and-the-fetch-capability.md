@@ -18,7 +18,7 @@ predecessors:
   - "[0040](0040-grantable-caps-on-exported-entrypoints.md) (exported entrypoints — per-platform variance at the root)"
   - "[0057](0057-capability-policy-constructors.md) (policy constructors — the value-policy vocabulary)"
   - "[0091](0091-browser-virtual-capabilities.md) (browser opt-in capability host — per-host providers; the Net deferral this RFC resolves as Fetch)"
-  - "[0092](0092-trusted-application-executables.md) (trusted executables — the binding-plan grant shape Fetch extends)"
+  - "[0092](retired-rfcs.md) (trusted executables — the binding-plan grant shape Fetch extends)"
 related:
   - "[0086](0086-capability-gated-native-extensions.md) (the only third-party door to new primitive authority)"
   - "[0032](0032-multi-core-execution.md) (zero-authority workers; capability transfer to VMs recorded here as future work)"

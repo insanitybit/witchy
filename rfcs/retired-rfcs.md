@@ -1,4 +1,4 @@
-# Retired language RFCs
+# Retired RFCs
 
 The 2026-09-16 consolidation removes 55 obsolete design bodies from the working
 corpus. The single target language contract is [RFC-0167](0167-witchy-language-contract.md).
@@ -75,3 +75,33 @@ removing a roadmap does not close its outstanding implementation obligations.
 | `round6-plan.md` | [Language contract](0167-witchy-language-contract.md#9-deliberate-changes-and-tradeoffs) |
 | `round7-plan.md` | [Language contract](0167-witchy-language-contract.md#9-deliberate-changes-and-tradeoffs) |
 | `impl-plans/0110-execution-plan.md` | [Normal/opt contract](0167-witchy-language-contract.md#6-normal-and-opt-interoperation); [retained evidence and obligations](retained-contract-audit.md#removed-execution-plan) |
+
+## 2026-10-03 focus cleanup
+
+The superseded and rejected bodies below, plus three unaccepted performance
+roadmaps whose measurements and implementation paths were overtaken by later
+work, leave the working corpus. This does not mark a successor's pending
+acceptance rows complete. Their exact text remains available at master commit
+`237712905`:
+
+```sh
+git show 237712905:rfcs/0160-zero-cost-verified-wasm-memory-safety.md
+```
+
+| Removed file | Current home or disposition |
+|---|---|
+| `0017-codegen-performance.md` | [Compute mechanisms](0034-closing-the-compute-gap.md) and [current performance evidence](../spec/performance.md) |
+| `0019-interactive-documentation.md` | [RFC-0041](0041-docs-as-a-glamour-app.md); documentation product work is parked while the compiler is prioritized |
+| `0089-functional-in-place.md` | [RFC-0167 value contract](0167-witchy-language-contract.md#3-owned-values-and-calls); historical kernel evidence remains in tests |
+| `0092-trusted-application-executables.md` | [RFC-0157 trusted publishers](0157-trusted-publishers-and-executable-state.md) |
+| `0095-grimoire-trusted-application-installation.md` | Rejected by [RFC-0157](0157-trusted-publishers-and-executable-state.md) |
+| `0134-codegen-and-compute-optimizations.md` | Earlier performance roadmap; use [RFC-0146](0146-post-hybrid-performance-program.md) and [RFC-0153](0153-effect-safe-range-and-loop-optimization.md) with fresh measurements |
+| `0139-high-roi-compute-and-channel-optimizations.md` | Equivalent lookup and SIMD dictionary work moved into code and [RFC-0143](0143-hybrid-swisstable-collections.md); async design moved to [RFC-0161](0161-typed-resumable-runtime.md); loop bounds to [RFC-0153](0153-effect-safe-range-and-loop-optimization.md). Composite queries and interpolation require new profile evidence before pickup |
+| `0140-wasm-simd-and-relaxed-simd-acceleration.md` | Dictionary control-group SIMD is in the current backend; other vector proposals remain unselected until measured. See [RFC-0143](0143-hybrid-swisstable-collections.md) |
+| `0145-closing-the-remaining-compute-gaps.md` | [RFC-0146](0146-post-hybrid-performance-program.md) |
+| `0152-deterministic-csp-ready-paths.md` | [RFC-0161](0161-typed-resumable-runtime.md), deferred by [RFC-0167 section 7](0167-witchy-language-contract.md#7-resources-effects-and-suspension) |
+| `0152-acceptance-ledger.md` | Historical rows imported into the [RFC-0161 ledger](0161-acceptance-ledger.md); neither is a current normal-mode gate |
+| `0155-authenticated-executable-caches.md` | Rejected by [RFC-0157](0157-trusted-publishers-and-executable-state.md) |
+| `0156-aot-native-trusted-executables.md` | Rejected by [RFC-0157](0157-trusted-publishers-and-executable-state.md) |
+| `0160-zero-cost-verified-wasm-memory-safety.md` | [RFC-0162 SafeWIR](0162-validated-safewir.md) |
+| `concurrency-design.md` | [RFC-0167 section 7](0167-witchy-language-contract.md#7-resources-effects-and-suspension) and its [acceptance ledger](0167-acceptance-ledger.md) |
