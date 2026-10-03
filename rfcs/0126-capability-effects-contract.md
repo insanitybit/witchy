@@ -157,13 +157,16 @@ inside the root blocks the host thread. It discloses nothing, but it is a
 denial of service the host does not yet refuse. Under a policy such an entry is
 `Other` and answers `NotFound`.
 
-`dir.read`, `dir.read_bytes`, `dir.list`, `file.read`, and `env.get_env`
-implement this rule end to end in admitted Wasm. Under an entry policy,
-`dir.list` names exactly the entries `dir.exists` reports. A `File` names no
-path the program supplied, so its messages name none. A `File` read through a
-symlink leaf that fails is `Denied` whatever the target is, and a `File` opened
-under an entry policy never follows its leaf. The remaining `Dir` and `File`
-operations migrate one
+`dir.read`, `dir.read_bytes`, `dir.list`, `dir.subtree`, `dir.read_file`,
+`dir.write_file`, `file.read`, and `env.get_env` implement this rule end to end
+in admitted Wasm. Navigation (`subtree`, `read_file`, `write_file`) follows
+the same classification as `dir.read`. A `write_file` under a policy is not
+judged by what occupies its name, and never follows a leaf. Under an entry
+policy, `dir.list` names exactly the entries `dir.exists` reports. A `File`
+names no path the program supplied, so its messages name none. A `File` read
+through a symlink leaf that fails is `Denied` whatever the target is, and a
+`File` opened under an entry policy never follows its leaf. The remaining
+`Dir` and `File` operations migrate one
 slice at a time.
 
 The cryptographic, networking, filesystem, process, server, environment, and

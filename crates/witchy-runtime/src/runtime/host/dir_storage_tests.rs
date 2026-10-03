@@ -13,7 +13,11 @@ const WAT: &str = r#"(module
   (import "witchy" "dir_write_bytes_at" (func $write (param externref i32 i32 i32 i32)))
   (import "witchy" "dir_read_at" (func $read_text (param externref i32 i32) (result externref)))
   (import "witchy" "dir_response_status" (func $status (param externref) (result i32)))
-  (import "witchy" "dir_read_file" (func $open_file (param externref i32 i32) (result externref)))
+  (import "witchy" "dir_read_file_at" (func $open_file (param externref i32 i32) (result externref)))
+  (import "witchy" "dir_subtree_open_at" (func $open_dir (param externref i32 i32) (result externref)))
+  (import "witchy" "dir_write_file_at" (func $create_file (param externref i32 i32) (result externref)))
+  (import "witchy" "dir_response_take_dir" (func $take_dir (param externref) (result externref)))
+  (import "witchy" "dir_response_take_file" (func $take_file (param externref) (result externref)))
   (import "witchy" "file_read_at" (func $file_read (param externref) (result externref)))
   (import "witchy" "dir_list_at" (func $list (param externref) (result externref)))
   (import "witchy" "file_response_status" (func $file_status (param externref) (result i32)))
@@ -34,6 +38,12 @@ const WAT: &str = r#"(module
   (func (export "status") (param externref) (result i32) local.get 0 call $status)
   (func (export "open_file") (param externref i32 i32) (result externref)
     local.get 0 local.get 1 local.get 2 call $open_file)
+  (func (export "open_dir") (param externref i32 i32) (result externref)
+    local.get 0 local.get 1 local.get 2 call $open_dir)
+  (func (export "create_file") (param externref i32 i32) (result externref)
+    local.get 0 local.get 1 local.get 2 call $create_file)
+  (func (export "take_dir") (param externref) (result externref) local.get 0 call $take_dir)
+  (func (export "take_file") (param externref) (result externref) local.get 0 call $take_file)
   (func (export "file_read") (param externref) (result externref) local.get 0 call $file_read)
   (func (export "list") (param externref) (result externref) local.get 0 call $list)
   (func (export "file_status") (param externref) (result i32) local.get 0 call $file_status)
@@ -370,10 +380,24 @@ pub fn dir_read_at_answers_failures_as_statuses() {
     error(status.call(&mut vm.store, forged).unwrap_err(), "wrong host kind");
 }
 
-fn open_file(vm: &mut Vm, root: Token, path: &str) -> Result<Token> {
+/// A navigation export (`open_file`, `open_dir`, `create_file`) on `path`,
+/// answered as (status, message, response).
+fn navigate(vm: &mut Vm, export: &str, root: Token, path: &str) -> Result<(i32, String, Token)> {
     put(vm, 0, path.as_bytes());
-    vm.instance.get_typed_func::<(Token, i32, i32), Token>(&mut vm.store, "open_file").unwrap()
-        .call(&mut vm.store, (root, 0, path.len() as i32))
+    let response = vm.instance.get_typed_func::<(Token, i32, i32), Token>(&mut vm.store, export).unwrap()
+        .call(&mut vm.store, (root, 0, path.len() as i32))?;
+    let status = vm.instance.get_typed_func::<Token, i32>(&mut vm.store, "status").unwrap()
+        .call(&mut vm.store, response)?;
+    let message = String::from_utf8(payload(vm, response)).unwrap();
+    Ok((status, message, response))
+}
+fn take(vm: &mut Vm, export: &str, response: Token) -> Result<Token> {
+    vm.instance.get_typed_func::<Token, Token>(&mut vm.store, export).unwrap().call(&mut vm.store, response)
+}
+fn open_file(vm: &mut Vm, root: Token, path: &str) -> Result<Token> {
+    let (status, message, response) = navigate(vm, "open_file", root, path)?;
+    assert_eq!(status, 0, "open {path}: {message}");
+    take(vm, "take_file", response)
 }
 /// `file_read_at` on `file`, answered as (status, payload).
 fn read_file(vm: &mut Vm, file: Token) -> Result<(i32, Vec<u8>)> {
@@ -503,4 +527,98 @@ pub fn dir_list_at_lists_only_what_the_grant_observes() {
     let write_only = attenuate(&mut vm, grant, false, true, "");
     let call = vm.instance.get_typed_func::<Token, Token>(&mut vm.store, "list").unwrap();
     error(call.call(&mut vm.store, write_only).unwrap_err(), "does not grant Read");
+}
+
+/// `subtree`, `read_file` and `write_file` answer navigation failures as
+/// statuses (RFC-0126 rule 3) with the same no-oracle rules as `dir.read`:
+/// an escape or policy refusal is Denied whether or not anything is there,
+/// a link leaving the root is Denied whatever its target is, and an entry a
+/// policy cannot see answers like a missing one. Taking from a failed
+/// response, or the wrong capability kind, traps; so does a missing right.
+pub fn dir_navigation_answers_failures_as_statuses() {
+    let outer = tempfile::tempdir().unwrap();
+    let root = outer.path().join("root");
+    std::fs::create_dir(&root).unwrap();
+    std::fs::create_dir(outer.path().join("outside-dir")).unwrap();
+    std::fs::write(outer.path().join("outside.txt"), b"escaped contents").unwrap();
+    std::fs::create_dir(root.join("sub")).unwrap();
+    std::fs::write(root.join("sub/y.txt"), b"hello").unwrap();
+    std::fs::write(root.join("a.txt"), b"hello").unwrap();
+    std::fs::write(root.join("keep.bin"), b"binary").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::symlink;
+        symlink("../outside-dir", root.join("outdir")).unwrap();
+        symlink("../missing-dir", root.join("nodir")).unwrap();
+        symlink("../outside.txt", root.join("out.txt")).unwrap();
+        symlink("../missing.txt", root.join("dangling.txt")).unwrap();
+        symlink("a.txt", root.join("alias.txt")).unwrap();
+        symlink("sub", root.join("subalias")).unwrap();
+    }
+    let (mut vm, grant) = vm_at(&root, true);
+    let text_only = attenuate(&mut vm, grant, true, true, "ext:.txt");
+    let files_only = attenuate(&mut vm, grant, true, true, "kind:file");
+    let mut rows = vec![
+        ("open_dir", grant, "sub", 0), ("open_dir", grant, "missing", 2), ("open_dir", grant, "a.txt", 5),
+        ("open_dir", grant, "..", 1), ("open_dir", grant, "../outside-dir", 1), ("open_dir", grant, "../missing-dir", 1),
+        ("open_dir", grant, "/tmp", 1), ("open_dir", files_only, "sub", 1), ("open_dir", files_only, "missing", 1),
+        ("open_file", grant, "a.txt", 0), ("open_file", grant, "sub/y.txt", 0), ("open_file", grant, "missing.txt", 2),
+        ("open_file", grant, "sub", 3), ("open_file", grant, "../outside.txt", 1), ("open_file", grant, "../missing.txt", 1),
+        ("open_file", text_only, "keep.bin", 1), ("open_file", text_only, "absent.bin", 1),
+        ("open_file", text_only, "nothing.txt", 2), ("open_file", text_only, "keep.bin/x.txt", 2),
+        ("open_file", text_only, "absent.bin/x.txt", 2),
+        ("create_file", grant, "new.txt", 0), ("create_file", grant, "sub", 3), ("create_file", grant, "missing/x.txt", 2),
+        ("create_file", grant, "../outside.txt", 1), ("create_file", grant, "../missing.txt", 1),
+        ("create_file", text_only, "keep.bin", 1), ("create_file", text_only, "absent.bin", 1),
+        // A file the policy hides is not "not a directory": it is invisible.
+        ("open_dir", text_only, "keep.bin", 2), ("open_dir", text_only, "absent.bin", 2),
+        ("open_dir", text_only, "a.txt", 5),
+    ];
+    #[cfg(unix)]
+    rows.extend([
+        ("open_dir", grant, "outdir", 1), ("open_dir", grant, "nodir", 1), ("open_dir", grant, "subalias", 0),
+        ("open_dir", text_only, "subalias", 2), ("open_dir", text_only, "outdir", 2), ("open_dir", text_only, "nodir", 2),
+        ("open_file", grant, "out.txt", 1), ("open_file", grant, "dangling.txt", 1),
+        ("open_file", grant, "outdir/x.txt", 1), ("open_file", grant, "nodir/x.txt", 1),
+        ("open_file", text_only, "alias.txt", 2), ("open_file", text_only, "out.txt", 2), ("open_file", text_only, "dangling.txt", 2),
+        ("create_file", grant, "outdir/x.txt", 1), ("create_file", grant, "nodir/x.txt", 1),
+        ("create_file", text_only, "outdir/x.txt", 2), ("create_file", text_only, "nodir/x.txt", 2),
+    ]);
+    let host = outer.path().to_string_lossy().into_owned();
+    for (export, token, path, status) in rows {
+        let (answer, message, response) = navigate(&mut vm, export, token, path).unwrap();
+        assert_eq!(answer, status, "{export} {path}: {message}");
+        let kind = if export == "open_dir" { "take_dir" } else { "take_file" };
+        if status == 0 {
+            assert!(message.is_empty());
+            take(&mut vm, kind, response).unwrap();
+            continue;
+        }
+        assert!(message.starts_with(&format!("`{path}` ")), "{export} {path}: {message}");
+        assert!(!message.contains(&host) && !message.contains("escaped contents"), "{export} {path}: {message}");
+        error(take(&mut vm, kind, response).unwrap_err(), "carries no");
+    }
+    assert!(!outer.path().join("outside-dir/x.txt").exists() && !outer.path().join("missing.txt").exists());
+    let (_, _, opened) = navigate(&mut vm, "open_dir", grant, "sub").unwrap();
+    error(take(&mut vm, "take_file", opened).unwrap_err(), "carries no File");
+    let read_only = attenuate(&mut vm, grant, true, false, "");
+    error(navigate(&mut vm, "create_file", read_only, "new.txt").unwrap_err(), "does not grant Write");
+    let write_only = attenuate(&mut vm, grant, false, true, "");
+    error(navigate(&mut vm, "open_file", write_only, "a.txt").unwrap_err(), "does not grant Read");
+}
+
+/// A write-only `Dir` links everything `write_file` needs: the response
+/// getters and the File take link under any Dir grant.
+pub fn write_only_dir_links_write_file() {
+    let root = tempfile::tempdir().unwrap();
+    let wat = r#"(module
+      (import "witchy" "dir_write_file_at" (func (param externref i32 i32) (result externref)))
+      (import "witchy" "dir_response_status" (func (param externref) (result i32)))
+      (import "witchy" "dir_response_size" (func (param externref) (result i32)))
+      (import "witchy" "dir_response_into" (func (param externref i32 i32) (result i32)))
+      (import "witchy" "dir_response_take_file" (func (param externref) (result externref)))
+      (memory (export "memory") 1)
+      (func (export "run")))"#;
+    let caps = Capabilities { dir_root: Some(root.path().to_owned()), dir_read: false, dir_write: true, ..Capabilities::none() };
+    Runtime::new().unwrap().spawn(wat, caps, 1).expect("write-only Dir links write_file");
 }

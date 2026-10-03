@@ -363,8 +363,6 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `__witchy_abort` | `(i32, i64, i64, i32)` | runtime diagnostic | none | provided |
 | `dir_exists_at` | `(externref, i32, i32) -> i32` | capability authority | Dir.Read | omitted |
 | `dir_write_at` | `(externref, i32, i32, i32, i32)` | capability authority | Dir.Write | omitted |
-| `dir_subtree_at` | `(externref, i32, i32) -> externref` | capability authority | Dir.grant | omitted |
-| `dir_read_file` | `(externref, i32, i32) -> externref` | capability authority | Dir.Read | omitted |
 | `env_get_at` | `(externref, i32, i32) -> externref` | capability authority | Env | omitted |
 | `env_response_status` | `(externref) -> i32` | capability authority | Env | omitted |
 | `env_response_size` | `(externref) -> i32` | capability authority | Env | omitted |
@@ -403,19 +401,24 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `dir_create_new_at` | `(externref, i32, i32, i32, i32) -> i32` | capability authority | Dir.Write | omitted |
 | `dir_replace_at` | `(externref, i32, i32, i32, i32)` | capability authority | Dir.Write | omitted |
 | `dir_read_bytes_at` | `(externref, i32, i32) -> externref` | capability authority | Dir.Read | omitted |
-| `dir_response_size` | `(externref) -> i32` | capability authority | Dir.Read | omitted |
-| `dir_response_into` | `(externref, i32, i32) -> i32` | capability authority | Dir.Read | omitted |
+| `dir_response_size` | `(externref) -> i32` | capability authority | Dir.grant | omitted |
+| `dir_response_into` | `(externref, i32, i32) -> i32` | capability authority | Dir.grant | omitted |
 | `dir_write_bytes_at` | `(externref, i32, i32, i32, i32)` | capability authority | Dir.Write | omitted |
 | `dir_append_bytes_at` | `(externref, i32, i32, i32, i32)` | capability authority | Dir.Write | omitted |
 | `dir_set_executable_at` | `(externref, i32, i32)` | capability authority | Dir.Write | omitted |
 | `dir_rename_at` | `(externref, i32, i32, i32, i32)` | capability authority | Dir.Write | omitted |
 | `dir_read_at` | `(externref, i32, i32) -> externref` | capability authority | Dir.Read | omitted |
-| `dir_response_status` | `(externref) -> i32` | capability authority | Dir.Read | omitted |
+| `dir_response_status` | `(externref) -> i32` | capability authority | Dir.grant | omitted |
 | `file_read_at` | `(externref) -> externref` | capability authority | File.authority | omitted |
 | `file_response_status` | `(externref) -> i32` | capability authority | File.authority | omitted |
 | `file_response_size` | `(externref) -> i32` | capability authority | File.authority | omitted |
 | `file_response_into` | `(externref, i32, i32) -> i32` | capability authority | File.authority | omitted |
 | `dir_list_at` | `(externref) -> externref` | capability authority | Dir.Read | omitted |
+| `dir_subtree_open_at` | `(externref, i32, i32) -> externref` | capability authority | Dir.Read | omitted |
+| `dir_read_file_at` | `(externref, i32, i32) -> externref` | capability authority | Dir.Read | omitted |
+| `dir_write_file_at` | `(externref, i32, i32) -> externref` | capability authority | Dir.Write | omitted |
+| `dir_response_take_dir` | `(externref) -> externref` | capability authority | Dir.grant | omitted |
+| `dir_response_take_file` | `(externref) -> externref` | capability authority | Dir.grant | omitted |
 | `crypto_sha512_slices` | `(i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |
 | `crypto_sha3_256_slices` | `(i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |
 | `crypto_hmac_sha256_slices` | `(i32, i32, i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |

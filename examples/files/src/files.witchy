@@ -2,8 +2,12 @@
 // before reading a file. Authority flows by passing the capability down, never by
 // ambient access — to read elsewhere you would need a `Dir` for that location.
 fn main(console: Console, root: Dir):
-    let examples = root.subtree("examples")
-    let data = examples.subtree("data")
-    match data.read("greeting.txt"):
+    match read_greeting(root):
         Ok(text) -> console.print(text)
         Err(e) -> console.print("cannot read the greeting: " + show(e))
+
+// Each step narrows the capability; `?` stops at the first one that fails.
+fn read_greeting(root: Dir) -> Result(String, CapError):
+    let examples = root.subtree("examples")?
+    let data = examples.subtree("data")?
+    data.read("greeting.txt")

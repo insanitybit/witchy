@@ -30,7 +30,7 @@ pub fn serve(net: Net[Listen], addr: String) -> Listener:
     net.listen(addr)
 
 fn main(console: Console, root: Dir):
-    let data = root.subtree("examples").subtree("data")
+    let data = (root.subtree("examples") ?? root).subtree("data") ?? root
     // Implicit narrowing: `load` asks for `Dir[Read]`; the full `data` capability
     // narrows automatically at the call — no cast needed.
     console.print("implicit: " + load(data, "greeting.txt"))

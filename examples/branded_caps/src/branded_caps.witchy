@@ -20,10 +20,9 @@ capability ConfigDir from Dir
 // `ConfigDir` is runtime proof the directory is there, captured as a static
 // brand. Public, so `witchy caps` lists it: it takes a raw `Dir` (no refinement).
 pub fn config_dir(root: Dir) -> Option(ConfigDir):
-    if root.exists("data"):
-        Some(ConfigDir(root.subtree("data")))
-    else:
-        None
+    match root.subtree("data"):
+        Ok(data) -> Some(ConfigDir(data))
+        Err(_) -> None
 
 // Reads only from the config dir — the signature requires the brand, and the
 // `Dir` inside is confined to that subtree, so this can touch nothing else.
@@ -34,7 +33,8 @@ pub fn load(c: ConfigDir, name: String) -> Result(String, CapError):
 
 fn main(console: Console, root: Dir):
     // `if let` only proceeds once the directory has been confirmed and branded.
-    if let Some(cfg) = config_dir(root.subtree("examples")):
+    let examples = root.subtree("examples") ?? root
+    if let Some(cfg) = config_dir(examples):
         match load(cfg, "greeting.txt"):
             Ok(text) -> console.print("config says: " + text)
             Err(e) -> console.print("cannot read the greeting: " + show(e))

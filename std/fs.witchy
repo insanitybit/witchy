@@ -36,7 +36,7 @@ pub fn parent_dir(path: String) -> Option(String):
 pub fn collect_files(root: Dir, path: String, rel: String, ext: String) -> Result(List((String, String)), CapError):
     var out = []
     if root.exists(path):
-        for entry in root.subtree(path).list()?:
+        for entry in root.subtree(path)?.list()?:
             // At the root (empty `path`/`rel`) the child is the bare entry name,
             // never "/entry": the confinement resolver rejects absolute-looking
             // paths, so raw concatenation would skip or trap on root-level entries.

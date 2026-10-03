@@ -15,6 +15,13 @@ use super::super::{
 /// Register the root `Dir` grant mint.
 pub(in crate::runtime) fn link_mint_dir(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "mint_dir", host_mint_dir)?;
+    // A response only ever comes from an operation its grant linked, so its
+    // getters link under any Dir grant (a write-only `write_file` needs them).
+    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[3], host_dir_response_size)?;
+    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[4], host_dir_response_into)?;
+    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[10], host_dir_response_status)?;
+    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[19], host_dir_response_take_dir)?;
+    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[20], host_dir_response_take_file)?;
     Ok(())
 }
 
@@ -28,7 +35,6 @@ pub(in crate::runtime) fn link_dir_read(linker: &mut Linker<VmState>) -> Result<
     linker.func_wrap("witchy", "dir_exists", host_dir_exists)?;
     linker.func_wrap("witchy", "dir_is_dir", host_dir_is_dir)?;
     linker.func_wrap("witchy", "dir_open", host_dir_open)?;
-    linker.func_wrap("witchy", "dir_read_file", host_dir_read_file)?;
     // (RFC-0165 slice 42) The canonical route's read family, gated by the SAME
     // `Dir[Read]` grant as its frozen siblings above: a program without the
     // right cannot even link the import.
@@ -36,18 +42,17 @@ pub(in crate::runtime) fn link_dir_read(linker: &mut Linker<VmState>) -> Result<
     linker.func_wrap("witchy", "dir_list_size", host_dir_list_size)?;
     linker.func_wrap("witchy", "dir_exists_at", host_dir_exists_at)?;
     linker.func_wrap("witchy", "dir_is_dir_at", host_dir_is_dir_at)?;
-    linker.func_wrap("witchy", "dir_subtree_at", host_dir_subtree_at)?;
+    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[16], host_dir_subtree_open_at)?;
+    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[17], host_dir_read_file_at)?;
     linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[2], host_dir_read_bytes_at)?;
-    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[3], host_dir_response_size)?;
-    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[4], host_dir_response_into)?;
     linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[9], host_dir_read_at)?;
-    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[10], host_dir_response_status)?;
     Ok(())
 }
 
 /// Register the Dir write family, including `dir.create` navigation to a File
 /// externref (RFC-0012/RFC-0005 stage 2).
 pub(in crate::runtime) fn link_dir_write(linker: &mut Linker<VmState>) -> Result<()> {
+    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[18], host_dir_write_file_at)?;
     linker.func_wrap("witchy", "dir_write", host_dir_write)?;
     linker.func_wrap("witchy", "dir_append", host_dir_append)?;
     linker.func_wrap("witchy", "dir_make_dir", host_dir_make_dir)?;
@@ -402,24 +407,6 @@ fn host_dir_open(
     }).map(Some)
 }
 
-/// `dir_read_file(d, path, path_len) -> File[Read]`: open an existing regular
-/// file under a readable Dir using the canonical raw UTF-8 slice ABI.
-fn host_dir_read_file(
-    mut caller: Caller<'_, VmState>,
-    d: Option<Rooted<ExternRef>>,
-    path_ptr: i32,
-    path_len: i32,
-) -> Result<Option<Rooted<ExternRef>>> {
-    let mem = memory_of(&mut caller)?;
-    let path = read_unsigned_slice_str(mem.data(&caller), path_ptr, path_len, "File path")?;
-    let dir = dir_authority_ref(&caller, d)?;
-    dir_require_read(&dir)?;
-    dir_guard(&dir, &path, false)?;
-    ExternRef::new(&mut caller, FileAuthority {
-        backing: dir_file_backing(&dir, &path, false)?,
-        rights: FsRights::new(true, false),
-    }).map(Some)
-}
 
 /// `dir_create(h, rel) -> File`: like `dir_open` but for a not-yet-existing target
 /// (confined via its parent, like `dir_write`).
@@ -453,31 +440,7 @@ fn host_file_read_len(mut caller: Caller<'_, VmState>, f: Option<Rooted<ExternRe
     Ok(len)
 }
 
-fn read_unsigned_slice_str(data: &[u8], ptr: i32, len: i32, what: &str) -> Result<String> {
-    let (start, len) = checked_unsigned_guest_range(data.len(), ptr, len, what)?;
-    std::str::from_utf8(&data[start..start + len])
-        .map(str::to_owned)
-        .map_err(|error| Error::msg(format!("{what} is not valid UTF-8: {error}")))
-}
 
-fn checked_unsigned_guest_range(
-    data_len: usize,
-    ptr: i32,
-    len: i32,
-    what: &str,
-) -> Result<(usize, usize)> {
-    let start = ptr as u32 as usize;
-    let len = len as u32 as usize;
-    let end = start
-        .checked_add(len)
-        .ok_or_else(|| Error::msg(format!("{what} range overflows wasm32 address space")))?;
-    if end > data_len {
-        return Err(Error::msg(format!(
-            "{what} range [{start}, {end}) exceeds guest memory ({data_len} bytes)"
-        )));
-    }
-    Ok((start, len))
-}
 
 /// `file_write(f, contents)`: write a confined File externref
 /// (RFC-0012/RFC-0005 Stage 2).
@@ -583,26 +546,6 @@ fn host_dir_write_at(
     write_file_backing(&file, contents)
 }
 
-/// `dir_subtree_at(dir, path, path_len) -> Dir`: `dir_subdir`'s semantics over a
-/// checked slice. The result is a fresh host-minted token carrying the narrowed
-/// authority, so a narrowed `Dir` only ever comes from the host.
-fn host_dir_subtree_at(
-    mut caller: Caller<'_, VmState>,
-    d: Option<Rooted<ExternRef>>,
-    path_ptr: i32,
-    path_len: i32,
-) -> Result<Option<Rooted<ExternRef>>> {
-    let mem = memory_of(&mut caller)?;
-    let name = read_slice_str(mem.data(&caller), path_ptr, path_len)?;
-    let dir = dir_authority_ref(&caller, d)?;
-    dir_require_read(&dir)?;
-    dir_guard(&dir, &name, true)?;
-    ExternRef::new(&mut caller, DirAuthority {
-        backing: dir_child_backing(&dir, &name)?,
-        policy: dir.policy,
-        rights: dir.rights,
-    }).map(Some)
-}
 
 /// (RFC-0095) `dir_read_bytes_len(h, rel) -> byte length`: like `dir_read_len` but
 /// reads the confined file's RAW bytes (no UTF-8 validation) — for a binary
@@ -664,6 +607,15 @@ pub(in crate::runtime) struct DirResponse {
     issuer: Arc<()>,
     status: u8,
     bytes: Arc<Vec<u8>>,
+    /// The capability a successful navigation (`subtree`, `read_file`,
+    /// `write_file`) minted, taken by `dir_response_take_dir`/`_file`.
+    minted: Option<Minted>,
+}
+
+#[derive(Clone)]
+enum Minted {
+    Dir(DirAuthority),
+    File(FileAuthority),
 }
 
 fn dir_bytes_length(length: usize) -> Result<i32> {
@@ -727,7 +679,7 @@ fn dir_read_response(
         Err(failure) => (failure.kind.status(), guest_failure(failure.kind, &path).into_bytes()),
     };
     dir_bytes_length(bytes.len())?;
-    let response = DirResponse { issuer: caller.data().registry_issuer.clone(), status, bytes: Arc::new(bytes) };
+    let response = DirResponse { issuer: caller.data().registry_issuer.clone(), status, bytes: Arc::new(bytes), minted: None };
     ExternRef::new(&mut caller, response).map(Some)
 }
 
@@ -748,7 +700,7 @@ fn host_file_read_at(mut caller: Caller<'_, VmState>, f: Option<Rooted<ExternRef
         Err(failure) => (failure.kind.status(), format!("this File {}", failure_reason(failure.kind)).into_bytes()),
     };
     dir_bytes_length(bytes.len())?;
-    let response = DirResponse { issuer: caller.data().registry_issuer.clone(), status, bytes: Arc::new(bytes) };
+    let response = DirResponse { issuer: caller.data().registry_issuer.clone(), status, bytes: Arc::new(bytes), minted: None };
     ExternRef::new(&mut caller, response).map(Some)
 }
 
@@ -825,6 +777,163 @@ fn dir_read_contents(dir: &DirAuthority, rel: &str) -> Result<Vec<u8>, ConfineEr
         } else {
             failure
         })
+}
+
+/// Where a guest path leads under `dir`, decided before the operation runs:
+/// whether any component (leaf or parent) is a symlink or special entry, and
+/// whether every parent is an exactly spelled directory. Each probe resolves
+/// only a prefix's own no-follow identity inside the root.
+fn path_shape(dir: &DirAuthority, rel: &str) -> (bool, bool) {
+    use crate::confine::ConfinedEntryKind;
+    let DirBacking::Fs(base) = &dir.backing;
+    let prefixes: Vec<&str> = std::path::Path::new(rel).ancestors()
+        .filter_map(|prefix| prefix.to_str())
+        .filter(|prefix| !prefix.is_empty())
+        .collect();
+    let through_link = prefixes.iter().any(|prefix| {
+        matches!(base.entry_kind_spelled(prefix), Ok(Some(ConfinedEntryKind::Other)))
+    });
+    let parents_visible = prefixes.iter().skip(1).all(|prefix| {
+        matches!(base.entry_kind_spelled(prefix), Ok(Some(ConfinedEntryKind::Directory)))
+    });
+    (through_link, parents_visible)
+}
+
+/// What a navigation (`subtree`, `read_file`, `write_file`) mints.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Navigation {
+    Subtree,
+    ReadFile,
+    WriteFile,
+}
+
+/// Navigate `dir` to `rel` (RFC-0126 rule 3), with `dir.read`'s rules: an
+/// escape or policy refusal is `Denied` before any filesystem access; under
+/// a policy an entry the policy cannot see answers like a missing one, and a
+/// minted File never follows its leaf; without a policy a failure through a
+/// symlink is `Denied` whatever its target is. A directory where a file is
+/// expected is `NotAFile`; a file where a directory is expected is `Io`.
+fn dir_navigate(dir: &DirAuthority, rel: &str, to: Navigation) -> Result<Minted, ConfineError> {
+    use crate::confine::{ConfinedDir, ConfinedEntryKind};
+    let DirBacking::Fs(base) = &dir.backing;
+    ConfinedDir::check_relative(rel)?;
+    dir_admits_entry(dir, rel, to == Navigation::Subtree)?;
+    let invisible = || ConfineError::new(ConfineErrorKind::NotFound, format!("`{rel}` is not visible"));
+    let not_a_file = || ConfineError::new(ConfineErrorKind::NotAFile, format!("`{rel}` is a directory"));
+    let not_a_dir = || ConfineError::new(ConfineErrorKind::Io, format!("`{rel}` is not a directory"));
+    let file = |backing| Minted::File(FileAuthority {
+        backing,
+        rights: FsRights::new(to == Navigation::ReadFile, to == Navigation::WriteFile),
+    });
+    let (through_link, parents_visible) = path_shape(dir, rel);
+    if !dir.policy.is_empty() {
+        if through_link || !parents_visible {
+            return Err(invisible());
+        }
+        let leaf = base.entry_kind_spelled(rel)?;
+        let admitted_dir = witchy_caps::capabilities::dir_admits(&dir.policy, rel, true);
+        return match (to, leaf) {
+            (Navigation::Subtree, Some(ConfinedEntryKind::Directory)) => Ok(Minted::Dir(DirAuthority {
+                backing: DirBacking::Fs(base.open_dir(rel)?),
+                policy: dir.policy.clone(),
+                rights: dir.rights,
+            })),
+            // A file is visible only when the policy admits it as a file.
+            (Navigation::Subtree, Some(ConfinedEntryKind::File))
+                if witchy_caps::capabilities::dir_admits(&dir.policy, rel, false) => Err(not_a_dir()),
+            (Navigation::Subtree, _) => Err(invisible()),
+            (_, Some(ConfinedEntryKind::Directory)) if admitted_dir => Err(not_a_file()),
+            (Navigation::ReadFile, Some(ConfinedEntryKind::File)) => {
+                Ok(file(FileBacking::Fs(base.file(rel, false)?.without_following())))
+            }
+            (Navigation::ReadFile, _) => Err(invisible()),
+            // A write names a file to create or replace; it is not judged by
+            // what occupies the name, and its writes never follow a leaf.
+            (Navigation::WriteFile, _) => Ok(file(FileBacking::Fs(base.file(rel, false)?.without_following()))),
+        };
+    }
+    let through = |failure: ConfineError| if through_link {
+        ConfineError::denied(format!("`{rel}` is reached through an alias: {failure}"))
+    } else {
+        failure
+    };
+    match to {
+        Navigation::Subtree => {
+            let opened = base.open_dir(rel).map_err(through)?;
+            Ok(Minted::Dir(DirAuthority { backing: DirBacking::Fs(opened), policy: dir.policy.clone(), rights: dir.rights }))
+        }
+        Navigation::ReadFile | Navigation::WriteFile => {
+            let opened = base.file(rel, to == Navigation::ReadFile).map_err(through)?;
+            if base.is_dir(rel).unwrap_or(false) {
+                return Err(not_a_file());
+            }
+            Ok(file(FileBacking::Fs(opened)))
+        }
+    }
+}
+
+/// One navigation answered as a response that carries the minted capability
+/// on success. Rights are checked first and still trap.
+fn dir_navigation_response(
+    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>, path_ptr: i32, path_len: i32, to: Navigation,
+) -> Result<Option<Rooted<ExternRef>>> {
+    let dir = dir_authority_ref(&caller, d)?;
+    if to == Navigation::WriteFile { dir_require_write(&dir)?; } else { dir_require_read(&dir)?; }
+    let memory = memory_of(&mut caller)?;
+    let path = read_slice_str(memory.data(&caller), path_ptr, path_len)?;
+    let (status, bytes, minted) = match dir_navigate(&dir, &path, to) {
+        Ok(minted) => (0, Vec::new(), Some(minted)),
+        Err(failure) => (failure.kind.status(), guest_open_failure(failure.kind, &path).into_bytes(), None),
+    };
+    let response = DirResponse { issuer: caller.data().registry_issuer.clone(), status, bytes: Arc::new(bytes), minted };
+    ExternRef::new(&mut caller, response).map(Some)
+}
+
+/// `dir_subtree_open_at(dir, path) -> response`: `dir.subtree(path)`.
+fn host_dir_subtree_open_at(
+    caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>, path_ptr: i32, path_len: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
+    dir_navigation_response(caller, d, path_ptr, path_len, Navigation::Subtree)
+}
+
+/// `dir_read_file_at(dir, path) -> response`: `dir.read_file(path)`.
+fn host_dir_read_file_at(
+    caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>, path_ptr: i32, path_len: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
+    dir_navigation_response(caller, d, path_ptr, path_len, Navigation::ReadFile)
+}
+
+/// `dir_write_file_at(dir, path) -> response`: `dir.write_file(path)`.
+fn host_dir_write_file_at(
+    caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>, path_ptr: i32, path_len: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
+    dir_navigation_response(caller, d, path_ptr, path_len, Navigation::WriteFile)
+}
+
+/// `dir_response_take_dir(response) -> Dir`: the Dir a successful `subtree`
+/// minted. Any other response traps; the guest takes it only on status 0.
+fn host_dir_response_take_dir(mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<Option<Rooted<ExternRef>>> {
+    match dir_response(&caller, token)?.minted {
+        Some(Minted::Dir(dir)) => ExternRef::new(&mut caller, dir).map(Some),
+        _ => Err(Error::msg("Dir response carries no Dir")),
+    }
+}
+
+/// `dir_response_take_file(response) -> File`: the File a successful
+/// `read_file`/`write_file` minted. Any other response traps.
+fn host_dir_response_take_file(mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<Option<Rooted<ExternRef>>> {
+    match dir_response(&caller, token)?.minted {
+        Some(Minted::File(file)) => ExternRef::new(&mut caller, file).map(Some),
+        _ => Err(Error::msg("Dir response carries no File")),
+    }
+}
+
+/// The guest-visible message of a failed navigation on `rel`.
+fn guest_open_failure(kind: ConfineErrorKind, rel: &str) -> String {
+    match kind {
+        ConfineErrorKind::Io => format!("`{rel}` could not be opened"),
+        _ => guest_failure(kind, rel),
+    }
 }
 
 /// The guest-visible message of a failed `Dir` operation on `rel`. A
@@ -1030,7 +1139,7 @@ fn host_dir_list_at(mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>
         Err(failure) => (failure.kind.status(), format!("this Dir {}", list_failure_reason(failure.kind)).into_bytes()),
     };
     dir_bytes_length(bytes.len())?;
-    let response = DirResponse { issuer: caller.data().registry_issuer.clone(), status, bytes: Arc::new(bytes) };
+    let response = DirResponse { issuer: caller.data().registry_issuer.clone(), status, bytes: Arc::new(bytes), minted: None };
     ExternRef::new(&mut caller, response).map(Some)
 }
 

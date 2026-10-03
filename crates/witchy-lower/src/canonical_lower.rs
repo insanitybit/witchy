@@ -1244,8 +1244,6 @@ pub(crate) fn lower_typed_module_with_borrowed_views(
             let capability_signatures = witchy_wir::canonical_safewir::CapabilityImportSignatures {
                 dir_exists_at: push_import_signature(vec![dir, text], vec![ValueType::Size], None)?,
                 dir_write_at: push_import_signature(vec![dir, text, text], Vec::new(), None)?,
-                dir_subtree_at: push_import_signature(vec![dir, text], vec![dir], None)?,
-                dir_read_file: push_import_signature(vec![dir, text], vec![file], None)?,
             };
             catalog = catalog
                 .with_capability_imports(capability_signatures, string_layout)
@@ -1350,6 +1348,11 @@ if capability_imports.contains("build_out_write_at") {
                     push_import_signature(vec![response], vec![ValueType::Size], None)?,
                     push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
                     push_import_signature(vec![dir], vec![response], None)?,
+                    push_import_signature(vec![dir, text], vec![response], None)?,
+                    push_import_signature(vec![dir, text], vec![response], None)?,
+                    push_import_signature(vec![dir, text], vec![response], None)?,
+                    push_import_signature(vec![response], vec![dir], None)?,
+                    push_import_signature(vec![response], vec![file], None)?,
                 ];
                 catalog = catalog.with_dir_storage_imports(ids, string_layout)
                     .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
@@ -14379,30 +14382,9 @@ impl FunctionLowerer<'_> {
                 });
                 Ok(None)
             }
-            ("__capop.subtree", true, false, [path]) => {
-                let path = self.lower_string_argument(path)?;
-                let import = self.capability_import("dir_subtree_at")?;
-                let narrowed = self.fresh(ValueType::Capability(witchy_wir::canonical_safewir::DIR_CAPABILITY_KIND))?;
-                let path_slice = self.string_slice_argument(path, layout)?;
-                self.push_operation(Operation::HostCall {
-                    destinations: vec![narrowed],
-                    import,
-                    arguments: vec![HostCallArgument::Capability(token), path_slice],
-                });
-                Ok(Some(narrowed))
-            }
-            ("__capop.read_file", true, false, [path]) => {
-                let path = self.lower_string_argument(path)?;
-                let import = self.capability_import("dir_read_file")?;
-                let value = self.fresh(ValueType::Capability(witchy_wir::canonical_safewir::FILE_CAPABILITY_KIND))?;
-                let path_slice = self.string_slice_argument(path, layout)?;
-                self.push_operation(Operation::HostCall {
-                    destinations: vec![value],
-                    import,
-                    arguments: vec![HostCallArgument::Capability(token), path_slice],
-                });
-                Ok(Some(value))
-            }
+            ("__capop.subtree", true, false, [path]) => self.lower_dir_navigate(receiver, token, path, "dir_subtree_open_at").map(Some),
+            ("__capop.read_file", true, false, [path]) => self.lower_dir_navigate(receiver, token, path, "dir_read_file_at").map(Some),
+            ("__capop.write_file", true, false, [path]) => self.lower_dir_navigate(receiver, token, path, "dir_write_file_at").map(Some),
             ("__capop.read", false, true, []) => {
                 let value = self.lower_file_read(token)?;
                 Ok(Some(value))
@@ -21427,8 +21409,8 @@ struct HostImports {
 }
 
 /// The canonical capability imports, in catalog order.
-const CAPABILITY_IMPORTS: [&str; 44] =
-    ["dir_exists_at", "dir_write_at", "dir_subtree_at", "dir_read_file", "build_out_write_at", "dir_is_dir_at", "build_read_at", "build_read_response_size", "build_read_response_into", "build_env_at", "build_response_is_some", "build_exec_run", "build_net_fetch", "net_fetch_at", "fetch_send_at", "fetch_response_size", "fetch_response_into", "fetch_only_at", "clock_now", "clock_now_monotonic", "dir_make_dir_at", "secretstore_lookup_at", "crypto_sign_into", "crypto_public_key_into", "dir_create_new_at", "dir_replace_at", "dir_read_bytes_at", "dir_response_size", "dir_response_into", "dir_write_bytes_at", "dir_append_bytes_at", "dir_set_executable_at", "dir_rename_at", "dir_read_at", "dir_response_status", "file_read_at", "file_response_status", "file_response_size", "file_response_into", "dir_list_at", "env_get_at", "env_response_status", "env_response_size", "env_response_into"];
+const CAPABILITY_IMPORTS: [&str; 47] =
+    ["dir_exists_at", "dir_write_at", "build_out_write_at", "dir_is_dir_at", "build_read_at", "build_read_response_size", "build_read_response_into", "build_env_at", "build_response_is_some", "build_exec_run", "build_net_fetch", "net_fetch_at", "fetch_send_at", "fetch_response_size", "fetch_response_into", "fetch_only_at", "clock_now", "clock_now_monotonic", "dir_make_dir_at", "secretstore_lookup_at", "crypto_sign_into", "crypto_public_key_into", "dir_create_new_at", "dir_replace_at", "dir_read_bytes_at", "dir_response_size", "dir_response_into", "dir_write_bytes_at", "dir_append_bytes_at", "dir_set_executable_at", "dir_rename_at", "dir_read_at", "dir_response_status", "file_read_at", "file_response_status", "file_response_size", "file_response_into", "dir_list_at", "env_get_at", "env_response_status", "env_response_size", "env_response_into", "dir_subtree_open_at", "dir_read_file_at", "dir_write_file_at", "dir_response_take_dir", "dir_response_take_file"];
 
 /// The separator between the names a `dir_list_at` response carries; a file name never
 /// contains it.
@@ -21522,7 +21504,7 @@ fn collect_compiler_imports(module: &witchy_syntax::ast::Module) -> BTreeSet<&'s
 /// `env.get_env`).
 fn is_capability_op(name: &str) -> bool {
     if dir_storage::is_operation(name) { return true; }
-    matches!(name, "__capop.now" | "__capop.now_monotonic" | "__capop.make_dir" | "__capop.only" | "__capop.fetch" | "__capop.send_raw" | "__capop.fetch_build" | "__capop.run_tool" | "__capop.get_build_env" | "__capop.read_build" | "__capop.write_out" | "__capop.read" | "__capop.list" | "__capop.exists" | "__capop.is_dir" | "__capop.write" | "__capop.subtree" | "__capop.read_file" | "__capop.get_env")
+    matches!(name, "__capop.now" | "__capop.now_monotonic" | "__capop.make_dir" | "__capop.only" | "__capop.fetch" | "__capop.send_raw" | "__capop.fetch_build" | "__capop.run_tool" | "__capop.get_build_env" | "__capop.read_build" | "__capop.write_out" | "__capop.read" | "__capop.list" | "__capop.exists" | "__capop.is_dir" | "__capop.write" | "__capop.subtree" | "__capop.read_file" | "__capop.write_file" | "__capop.get_env")
 }
 
 /// The imports the canonical functions' capability operations reach.
@@ -21582,8 +21564,15 @@ fn collect_capability_imports(module: &witchy_syntax::ast::Module, table: &TypeT
                     ("__capop.fetch_build", "BuildNet") => {
                         needed.extend(witchy_wir::canonical_safewir::BUILD_NET_IMPORT_NAMES);
                     }
-                    ("__capop.subtree", "Dir") => { needed.insert("dir_subtree_at"); }
-                    ("__capop.read_file", "Dir") => { needed.insert("dir_read_file"); }
+                    ("__capop.subtree", "Dir") => {
+                        needed.extend(["dir_subtree_open_at", "dir_response_status", "dir_response_size", "dir_response_into", "dir_response_take_dir"]);
+                    }
+                    ("__capop.read_file", "Dir") => {
+                        needed.extend(["dir_read_file_at", "dir_response_status", "dir_response_size", "dir_response_into", "dir_response_take_file"]);
+                    }
+                    ("__capop.write_file", "Dir") => {
+                        needed.extend(["dir_write_file_at", "dir_response_status", "dir_response_size", "dir_response_into", "dir_response_take_file"]);
+                    }
                     ("__capop.read", "File") => {
                         needed.extend(["file_read_at", "file_response_status", "file_response_size", "file_response_into"]);
                     }

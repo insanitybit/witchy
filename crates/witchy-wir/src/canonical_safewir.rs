@@ -577,8 +577,6 @@ pub const BUILD_OUT_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(9)
 pub struct CapabilityImportSignatures {
     pub dir_exists_at: FunctionSignatureId,
     pub dir_write_at: FunctionSignatureId,
-    pub dir_subtree_at: FunctionSignatureId,
-    pub dir_read_file: FunctionSignatureId,
 }
 
 /// Semantic signatures for stateless compiler introspection imports. The
@@ -956,26 +954,6 @@ impl CanonicalAbiCatalog {
                 Vec::new(),
                 HostMutation::ReadOnly,
                 &[AbiImportAuthority::DirWrite],
-            )?,
-            authenticated_capability_import(
-                "dir_subtree_at",
-                &[WasmTy::ExternRef, WasmTy::I32, WasmTy::I32],
-                &[WasmTy::ExternRef],
-                signatures.dir_subtree_at,
-                vec![dir(), read_slice()],
-                vec![HostResultRole::Capability(DIR_CAPABILITY_KIND)],
-                HostMutation::ReadOnly,
-                &[AbiImportAuthority::DirGrant],
-            )?,
-            authenticated_capability_import(
-                "dir_read_file",
-                &[WasmTy::ExternRef, WasmTy::I32, WasmTy::I32],
-                &[WasmTy::ExternRef],
-                signatures.dir_read_file,
-                vec![dir(), read_slice()],
-                vec![HostResultRole::Capability(FILE_CAPABILITY_KIND)],
-                HostMutation::ReadOnly,
-                &[AbiImportAuthority::DirRead],
             )?,
         ];
         for import in imports {
@@ -1820,8 +1798,6 @@ pub mod self_checks {
         CapabilityImportSignatures {
             dir_exists_at: FunctionSignatureId::new(2),
             dir_write_at: FunctionSignatureId::new(3),
-            dir_subtree_at: FunctionSignatureId::new(4),
-            dir_read_file: FunctionSignatureId::new(5),
         }
     }
 

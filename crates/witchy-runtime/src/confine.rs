@@ -605,6 +605,10 @@ impl ConfinedFile {
         #[cfg(not(target_arch = "wasm32"))]
         {
             use std::io::Read;
+            if self.no_follow {
+                return String::from_utf8(self.read_bytes_no_follow()?)
+                    .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error));
+            }
             let mut file = self.open_read_handle()?;
             let mut contents = String::new();
             file.read_to_string(&mut contents)?;

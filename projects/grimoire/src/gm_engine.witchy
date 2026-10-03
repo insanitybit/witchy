@@ -21,7 +21,7 @@ from json import Json
 from semver import Version, Req
 from toml import Toml
 from gm_core import BuildOptions, FootprintError, LockIntegrityError, LockPinError, RecordFootprintError, RegistryRootKeyError, TufError, VendoredRecordError, VersionResolveError
-from gm_core import add_unique, arg, read_text, read_raw, collect_text, list_names, basename, build_exec_child_paths, build_exec_programs, build_footprint, canonical_version, check_path_identity, closure_has, content_hash, conventional_entry, cooling, cooling_remaining, declared_caps, dep_flag_owned, dep_req, dep_source, entry_alias, entry_is_registry, entry_source, exact_record_state, field, first_witchy, flatten_argv, footprint_toml, footprint_values, grant_flags, granted_build_kinds, has_dep, has_flag, has_grants_section, jget, join_path, latest_label, lock_baseline, lock_rune_entries, locked_hash, locked_registry_alias, manifest_upsert_dep, manifest_upsert_precompiled_dep, module_name, module_stem, normalize_path, optional_lock_string, package_owner_flag, parse_origin, parse_vendored_record, pick_version_cooled, pinned_registry_trust, project_data_dir, record_matches_coordinate, record_payload, record_signature_valid, recorded_field, recorded_hash, registry_get, registry_origin, registry_placeholder, registry_post, released_version_records, required_lock_field, required_manifest_coordinate, resp_field, runtime_net_flags, signed_canonical, signed_field, signed_field_int, signed_field_str, signed_valid, snapshot_schema_ok, source_files, strict_footprint, strip_net_flags, target_digest, timestamp_schema_ok, union_all, valid_registry_rootpub, validate_source_files, verified_snapshot_line, verify_record_signature, version_records, version_satisfies, wire
+from gm_core import add_unique, arg, read_text, read_raw, collect_text, list_names, list_dir, basename, build_exec_child_paths, build_exec_programs, build_footprint, canonical_version, check_path_identity, closure_has, content_hash, conventional_entry, cooling, cooling_remaining, declared_caps, dep_flag_owned, dep_req, dep_source, entry_alias, entry_is_registry, entry_source, exact_record_state, field, first_witchy, flatten_argv, footprint_toml, footprint_values, grant_flags, granted_build_kinds, has_dep, has_flag, has_grants_section, jget, join_path, latest_label, lock_baseline, lock_rune_entries, locked_hash, locked_registry_alias, manifest_upsert_dep, manifest_upsert_precompiled_dep, module_name, module_stem, normalize_path, optional_lock_string, package_owner_flag, parse_origin, parse_vendored_record, pick_version_cooled, pinned_registry_trust, project_data_dir, record_matches_coordinate, record_payload, record_signature_valid, recorded_field, recorded_hash, registry_get, registry_origin, registry_placeholder, registry_post, released_version_records, required_lock_field, required_manifest_coordinate, resp_field, runtime_net_flags, signed_canonical, signed_field, signed_field_int, signed_field_str, signed_valid, snapshot_schema_ok, source_files, strict_footprint, strip_net_flags, target_digest, timestamp_schema_ok, union_all, valid_registry_rootpub, validate_source_files, verified_snapshot_line, verify_record_signature, version_records, version_satisfies, wire
 
 pub fn build_project_target(console: Console, runner: Exec, root: Dir, bin: Dir, dir: String, entry: String, deps: List(String), build_flags: List(String), options: BuildOptions) -> Int:
     if options.target == "trusted-publisher":
@@ -374,7 +374,7 @@ pub fn module_in_src(root: Dir, base: String) -> Option(String):
         if !conventional.is_empty() && root.exists(conventional):
             Some(conventional)
         else:
-            match first_witchy(list_names(root.subtree(srcdir))):
+            match first_witchy(list_dir(root, srcdir)):
                 Some(file) -> Some(join_path(srcdir, file))
                 None -> None
 
@@ -443,7 +443,7 @@ pub fn dep_dirs(root: Dir, dir: String) -> Result(List((String, String)), LockIn
     if root.exists(vendor):
         let lockpath = join_path(dir, "witchy.lock")
         let lock = if root.exists(lockpath): read_text(root, lockpath) else: ""
-        for name in list_names(root.subtree(vendor)):
+        for name in list_dir(root, vendor):
             let rune_dir = join_path(vendor, name)
             // BUG-095: only treat a vendored subdir as a real dependency (and thus
             // run its build step) when it carries provenance (coven.json) AND is
@@ -518,7 +518,7 @@ pub fn audit_then_flags(console: Console, root: Dir, dir: String, name: String, 
 
     var generated = []
     var flags = []
-    for f in list_names(root.subtree(gendir)):
+    for f in list_dir(root, gendir):
         if f.ends_with(".witchy"):
             let path = join_path(gendir, f)
             let caps = match footprint_values(compiler.footprint(read_text(root, path)), "total"):
@@ -1044,7 +1044,7 @@ pub fn vendored_runes(root: Dir, dir: String) -> List(String):
     var out = []
     let vendor = join_path(dir, "vendor")
     if root.exists(vendor):
-        for entry in list_names(root.subtree(vendor)):
+        for entry in list_dir(root, vendor):
             let rune_dir = join_path(vendor, entry)
             if root.exists(join_path(rune_dir, "coven.json")):
                 out.push(rune_dir)
@@ -1190,7 +1190,7 @@ pub fn update_vendored(console: Console, net: Net, root: Dir, origin: String, on
     var changed = 0
     var blocked = false
     var failed = false
-    for entry in list_names(root.subtree("vendor")):
+    for entry in list_dir(root, "vendor"):
         if only.is_empty() || entry == only:
             let outcome = update_one(console, net, root, origin, entry, allowed, cooldown, manifest, clock)
             changed = changed + outcome.0
@@ -1888,7 +1888,7 @@ pub fn fetch_registry_rootpub(net: Net, origin: String) -> Result(String, Regist
 pub fn vendor_lock(root: Dir, snapshot_line: String) -> Result(String, VendoredRecordError):
     var out = "# witchy.lock — generated by `grimoire add`. Pins every vendored dependency\n# by content hash. Regenerate with `grimoire add`. Do not edit by hand.\n" + snapshot_line
     if root.exists("vendor"):
-        for entry in list_names(root.subtree("vendor")):
+        for entry in list_dir(root, "vendor"):
             let rune_dir = join_path("vendor", entry)
             if root.exists(join_path(rune_dir, "coven.json")):
                 match vendor_lock_entry(root, entry, rune_dir):
@@ -2180,7 +2180,7 @@ pub fn rune_footprint(root: Dir, dir: String) -> Result(List(String), FootprintE
 pub fn vendored_closure_footprint(root: Dir) -> Result(List(String), FootprintError):
     var out = []
     if root.exists("vendor"):
-        for entry in list_names(root.subtree("vendor")):
+        for entry in list_dir(root, "vendor"):
             let rune_dir = join_path("vendor", entry)
             if root.exists(join_path(rune_dir, "coven.json")):
                 let caps = rune_footprint(root, rune_dir)?

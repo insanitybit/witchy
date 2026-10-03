@@ -240,6 +240,8 @@ mod runtime {
                 #[test] fn dir_read_at_answers_failures_as_statuses() { checks::dir_read_at_answers_failures_as_statuses().check() }
                 #[test] fn file_read_at_answers_failures_as_statuses() { checks::file_read_at_answers_failures_as_statuses().check() }
                 #[test] fn dir_list_at_lists_only_what_the_grant_observes() { checks::dir_list_at_lists_only_what_the_grant_observes().check() }
+                #[test] fn dir_navigation_answers_failures_as_statuses() { checks::dir_navigation_answers_failures_as_statuses().check() }
+                #[test] fn write_only_dir_links_write_file() { checks::write_only_dir_links_write_file().check() }
                 #[test] fn dir_storage_imports_remain_grant_gated() { checks::dir_storage_imports_remain_grant_gated().check() }
                 #[test] fn dir_storage_kind_rights_and_response_issuer_precede_memory() { checks::dir_storage_kind_rights_and_response_issuer_precede_memory().check() }
                 #[test] fn dir_storage_response_preflight_short_capacity_and_exact_prefix() { checks::dir_storage_response_preflight_short_capacity_and_exact_prefix().check() }

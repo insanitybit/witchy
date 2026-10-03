@@ -15,7 +15,11 @@ pub fn load_config(f: File[Read]) -> Result(String, CapError):
 
 fn main(console: Console, root: Dir):
     // Narrow the granted Dir down to this example's data dir, then open ONE file.
-    let data = root.subtree("examples").subtree("file_capability").subtree("data")
-    match load_config(data.read_file("config.txt")):
+    match open_config(root):
         Ok(text) -> console.print("config: " + text)
         Err(e) -> console.print("cannot read the config: " + show(e))
+
+// Narrow to the data dir, open ONE file, and read it; any step may fail.
+fn open_config(root: Dir) -> Result(String, CapError):
+    let data = root.subtree("examples")?.subtree("file_capability")?.subtree("data")?
+    load_config(data.read_file("config.txt")?)

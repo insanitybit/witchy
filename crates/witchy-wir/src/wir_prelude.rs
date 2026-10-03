@@ -368,8 +368,6 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "__witchy_abort" (func $__witchy_abort (param i32 i64 i64 i32)))
   (import "witchy" "dir_exists_at" (func $dir_exists_at_host (param externref i32 i32) (result i32)))
   (import "witchy" "dir_write_at" (func $dir_write_at_host (param externref i32 i32 i32 i32)))
-  (import "witchy" "dir_subtree_at" (func $dir_subtree_at_host (param externref i32 i32) (result externref)))
-  (import "witchy" "dir_read_file" (func $dir_read_file_host (param externref i32 i32) (result externref)))
   (import "witchy" "env_get_at" (func $env_get_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "env_response_status" (func $env_response_status_host (param externref) (result i32)))
   (import "witchy" "env_response_size" (func $env_response_size_host (param externref) (result i32)))
@@ -421,6 +419,11 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "file_response_size" (func $file_response_size_host (param externref) (result i32)))
   (import "witchy" "file_response_into" (func $file_response_into_host (param externref i32 i32) (result i32)))
   (import "witchy" "dir_list_at" (func $dir_list_at_host (param externref) (result externref)))
+  (import "witchy" "dir_subtree_open_at" (func $dir_subtree_open_at_host (param externref i32 i32) (result externref)))
+  (import "witchy" "dir_read_file_at" (func $dir_read_file_at_host (param externref i32 i32) (result externref)))
+  (import "witchy" "dir_write_file_at" (func $dir_write_file_at_host (param externref i32 i32) (result externref)))
+  (import "witchy" "dir_response_take_dir" (func $dir_response_take_dir_host (param externref) (result externref)))
+  (import "witchy" "dir_response_take_file" (func $dir_response_take_file_host (param externref) (result externref)))
   (import "witchy" "crypto_sha512_slices" (func $crypto_sha512_slices_host (param i32 i32 i32 i32) (result i32)))
   (import "witchy" "crypto_sha3_256_slices" (func $crypto_sha3_256_slices_host (param i32 i32 i32 i32) (result i32)))
   (import "witchy" "crypto_hmac_sha256_slices" (func $crypto_hmac_sha256_slices_host (param i32 i32 i32 i32 i32 i32) (result i32)))
@@ -625,6 +628,11 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "file_response_size"
         | "file_response_into"
         | "dir_list_at"
+        | "dir_subtree_open_at"
+        | "dir_read_file_at"
+        | "dir_write_file_at"
+        | "dir_response_take_dir"
+        | "dir_response_take_file"
         | "dir_write_bytes_at"
         | "dir_append_bytes_at"
         | "dir_set_executable_at"
@@ -711,8 +719,6 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "dir_exists_at"
         | "dir_is_dir_at"
         | "dir_write_at"
-        | "dir_subtree_at"
-        | "dir_read_file"
         | "env_get_at"
         | "env_response_status"
         | "env_response_size"
@@ -769,7 +775,8 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         "secretstore_lookup_at" => AUTH_SECRET_STORE,
         "mint_env" | "env_only" | "env_len" | "env_fill" | "env_get_at" | "env_response_status"
         | "env_response_size" | "env_response_into" => AUTH_ENV,
-        "mint_dir" | "dir_subtree_at" => AUTH_DIR_GRANT,
+        "mint_dir" | "dir_response_take_dir" | "dir_response_take_file" | "dir_response_status"
+        | "dir_response_size" | "dir_response_into" => AUTH_DIR_GRANT,
         "dir_read_len"
         | "dir_read_bytes_len"
         | "dir_list_size"
@@ -780,13 +787,13 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "dir_open"
         | "dir_exists_at"
         | "dir_is_dir_at"
-        | "dir_read_file" | "dir_read_bytes_at" | "dir_response_size"
-        | "dir_response_into" | "dir_read_at" | "dir_response_status" | "dir_list_at" => AUTH_DIR_READ,
+        | "dir_read_file_at" | "dir_subtree_open_at" | "dir_read_bytes_at"
+        | "dir_read_at" | "dir_list_at" => AUTH_DIR_READ,
         "dir_write" | "dir_write_bytes" | "dir_append" | "dir_append_bytes" | "dir_set_executable"
         | "dir_make_dir" | "dir_create" | "dir_create_new" | "dir_replace" | "dir_rename"
         | "dir_write_at" | "dir_make_dir_at" | "dir_create_new_at"
         | "dir_replace_at" | "dir_write_bytes_at" | "dir_append_bytes_at"
-        | "dir_set_executable_at" | "dir_rename_at" => AUTH_DIR_WRITE,
+        | "dir_set_executable_at" | "dir_rename_at" | "dir_write_file_at" => AUTH_DIR_WRITE,
         "mint_file" => AUTH_FILE_GRANT,
         "file_read_len" | "file_write" | "file_read_at" | "file_response_status"
         | "file_response_size" | "file_response_into" => AUTH_FILE_AUTHORITY,

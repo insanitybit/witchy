@@ -954,14 +954,9 @@ impl Codegen<'_> {
             }
             // RFC-0012 `dir.read_file`/`dir.write_file` navigate a Dir to a confined
             // File externref (the internal host ops keep their `dir_open`/`dir_create` names).
-            ("read_file", 2) => {
-                let a = self.lower_args(&[&args[0], &args[1]])?;
-                if self.collect_wir { call("dir_open", a) } else { host("dir_open_host", a) }
-            }
-            ("write_file", 2) => {
-                let a = self.lower_args(&[&args[0], &args[1]])?;
-                if self.collect_wir { call("dir_create", a) } else { host("dir_create_host", a) }
-            }
+            // They answer `Result(File, CapError)` (RFC-0126 rule 3); only the
+            // canonical route builds that result.
+            ("read_file", 2) | ("write_file", 2) => return None,
             // `exec(cap, dir, path, args, stdin) -> String`. Both authority
             // handles cross the ABI: Exec carries the program allow-list and Dir
             // confines the executable path.
@@ -1065,11 +1060,9 @@ impl Codegen<'_> {
             // rather than the helper.
             // `dir.subtree(path)` narrows a `Dir` to a subtree; lowered to the
             // `dir_subdir` host op (the internal name is historical).
-            ("subtree", 2) => {
-                self.used_dir_ops.insert("subdir");
-                let a = self.lower_args(&[&args[0], &args[1]])?;
-                if self.collect_wir { call("dir_subdir", a) } else { host("dir_subdir_host", a) }
-            }
+            // It answers `Result(Dir, CapError)`; only the canonical route
+            // builds that result.
+            ("subtree", 2) => return None,
             ("exists", 2) => {
                 self.used_dir_ops.insert("exists");
                 let a = self.lower_args(&[&args[0], &args[1]])?;

@@ -581,7 +581,7 @@ fn admitted_dir_read_exists_write_and_subtree_go_through_bounded_host_calls() {
     std::fs::write(root.join("greeting.txt"), "héllo, dir").expect("seed file");
     std::fs::write(root.join("notes/todo.txt"), "a\nb\n").expect("seed file");
     let output = run_admitted_with_grants(
-        "fn shout(dir: Dir[Read], name: String) -> String:\n    (dir.read(name) ?? \"\").to_upper()\n\nfn main(console: Console, dir: Dir):\n    console.print(dir.read(\"greeting.txt\") ?? \"\")\n    console.print(\"${dir.exists(\"greeting.txt\")} ${dir.exists(\"missing.txt\")} ${(dir.read(\"greeting.txt\") ?? \"\").length()}\")\n    let notes = dir.subtree(\"notes\")\n    console.print(\"${(notes.read(\"todo.txt\") ?? \"\").length()} ${notes.exists(\"todo.txt\")}\")\n    dir.write(\"out.txt\", \"written by main\")\n    console.print(dir.read(\"out.txt\") ?? \"\")\n    console.print(shout(dir as Dir[Read], \"greeting.txt\"))\n",
+        "fn shout(dir: Dir[Read], name: String) -> String:\n    (dir.read(name) ?? \"\").to_upper()\n\nfn main(console: Console, dir: Dir):\n    console.print(dir.read(\"greeting.txt\") ?? \"\")\n    console.print(\"${dir.exists(\"greeting.txt\")} ${dir.exists(\"missing.txt\")} ${(dir.read(\"greeting.txt\") ?? \"\").length()}\")\n    let notes = dir.subtree(\"notes\") ?? dir\n    console.print(\"${(notes.read(\"todo.txt\") ?? \"\").length()} ${notes.exists(\"todo.txt\")}\")\n    dir.write(\"out.txt\", \"written by main\")\n    console.print(dir.read(\"out.txt\") ?? \"\")\n    console.print(shout(dir as Dir[Read], \"greeting.txt\"))\n",
         Capabilities {
             print: true,
             print_int: true,

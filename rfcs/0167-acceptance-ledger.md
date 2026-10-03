@@ -3229,3 +3229,33 @@ names only the requested variable, never a host value or another allow-listed
 name. The runtime check `env_get_at_answers_denied_without_an_existence_oracle`
 pins the same answers at the host boundary. The source tree walker and the
 legacy codegen refuse `get_env` by name.
+
+### 2026-10-03: `dir.subtree`, `dir.read_file`, `dir.write_file` return `CapError` results (RFC-0126 rule 3, row Q partial)
+
+Navigation now answers through a response that carries the minted capability.
+`dir_subtree_open_at`, `dir_read_file_at`, and `dir_write_file_at` each
+perform the navigation once. `dir_response_take_dir` and
+`dir_response_take_file` take the capability on the success path only. A
+failed response, or the wrong kind, traps on take.
+
+The retired `dir_subtree_at` and `dir_read_file` imports are gone.
+`dir.write_file` now lowers to admitted Wasm; it was previously a missing
+binding.
+
+`dir_navigation_answers_failures_as_statuses` pins every navigation against
+the same no-oracle rules as `dir.read`:
+
+- escapes and links leaving the root are `Denied` whether or not the target
+  exists;
+- policy refusals are `Denied` for present and absent names;
+- entries a policy cannot see answer like missing ones;
+- a directory where a file is expected is `NotAFile`;
+- messages carry no host path; and
+- the take and missing-right traps hold.
+
+Admitted transcripts cover a `subtree` that is missing or escapes, and
+`read_file` of a missing or escaping path through `?`.
+
+The source tree walker and the legacy codegen refuse all three by name. The
+nightly legacy policy test keeps only its write-family refusals.
+

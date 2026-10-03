@@ -79,7 +79,7 @@ fn unoptimized() -> ResetOptimization {
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("data")).expect("mkdir");
         std::fs::write(root.join("data").join("greeting.txt"), "hello-branded").expect("seed");
-        let src = "capability ConfigDir from Dir[Read]\n\nfn config_dir(root: Dir[Read]) -> Option(ConfigDir):\n    if root.exists(\"data\"):\n        Some(ConfigDir(root.subtree(\"data\")))\n    else:\n        None\n\nfn load(c: ConfigDir, name: String) -> String:\n    match c:\n        ConfigDir(dir) -> dir.read(name) ?? \"unreadable\"\n\nfn main(console: Console, root: Dir[Read]):\n    match config_dir(root):\n        Some(cfg) -> console.print(load(cfg, \"greeting.txt\"))\n        None -> console.print(\"missing\")\n";
+        let src = "capability ConfigDir from Dir[Read]\n\nfn config_dir(root: Dir[Read]) -> Option(ConfigDir):\n    match root.subtree(\"data\"):\n        Ok(data) -> Some(ConfigDir(data))\n        Err(_) -> None\n\nfn load(c: ConfigDir, name: String) -> String:\n    match c:\n        ConfigDir(dir) -> dir.read(name) ?? \"unreadable\"\n\nfn main(console: Console, root: Dir[Read]):\n    match config_dir(root):\n        Some(cfg) -> console.print(load(cfg, \"greeting.txt\"))\n        None -> console.print(\"missing\")\n";
         let want = vec!["hello-branded".to_string()];
         let checked = witchy::resolve_std_only_checked(src)
             .expect("check branded Dir option");
@@ -148,7 +148,7 @@ fn unoptimized() -> ResetOptimization {
         let src_path = root.join("reader.witchy");
         std::fs::write(
             &src_path,
-            "fn main(console: Console, dir: Dir[Read], args: List(String)) -> Int:\n    let sub = dir.subtree(list.at(args, 0))\n    console.print(\"unreached\")\n    0\n",
+            "fn main(console: Console, dir: Dir, args: List(String)) -> Int:\n    dir.write(list.at(args, 0), \"x\")\n    0\n",
         )
         .unwrap();
         let err = crate::run_file_sandboxed(

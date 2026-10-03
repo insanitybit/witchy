@@ -1859,3 +1859,13 @@ pub fn list_names(dir: Dir[Read]) -> List(String):
         Err(e) ->
             fail(show(e))
             unreachable
+
+// The entry names under `path`: a directory the package manager cannot open
+// or list aborts with its `CapError`.
+pub fn list_dir(root: Dir[Read], path: String) -> List(String):
+    let unreachable: List(String) = []
+    match root.subtree(path):
+        Ok(dir) -> list_names(dir)
+        Err(e) ->
+            fail(show(e))
+            unreachable

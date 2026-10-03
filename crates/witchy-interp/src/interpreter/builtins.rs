@@ -3297,80 +3297,34 @@ impl Interpreter {
                 _ => err("size expects a Dict"),
             },
             // Filesystem capability (cap-std style): attenuate to a subdirectory.
+            // `dir.subtree` answers a `CapError` result (RFC-0126 rule 3); the
+            // frozen walker refuses it rather than emulate that.
             "subtree" => match args {
-                #[cfg(feature = "test-fixtures")]
-                [Value::Dir(DirValue::Fixture(handle), _), Value::Str(name)] => {
-                    match self.invoke_fixture(HostRequest::DirSubdir {
-                        dir: *handle,
-                        name: name.as_str().to_owned(),
-                    })? {
-                        HostResponse::Handle(handle) => Ok(Some(Value::Dir(
-                            DirValue::Fixture(handle),
-                            String::new(),
-                        ))),
-                        other => err(format!(
-                            "internal error: Dir fixture returned {other:?}"
-                        )),
-                    }
-                }
-                // A subtree inherits the parent's entry policy (refinement is monotone).
-                // Opening a sub-directory is a directory traversal (RFC-0011 `kind`): a
-                // `files()` policy forbids it, an `ext`/empty policy does not.
-                [Value::Dir(base, pol), Value::Str(name)] => {
-                    if !witchy_caps::capabilities::dir_admits(pol, name, true) {
-                        return err(format!("`{name}` is not permitted by this Dir capability's entry policy"));
-                    }
-                    Ok(Some(Value::Dir(dir_child_value(base, name)?, pol.clone())))
-                }
-                _ => err("subtree expects a Dir and a name"),
+                [Value::Dir(..), Value::Str(_)] => err(
+                    "`dir.subtree` returns a `CapError` result, which the source interpreter does not \
+                     implement; run the program as admitted Wasm",
+                ),
+                _ => Ok(None),
             },
             // RFC-0012 navigation: a `Dir` opens a confined `File`. `read_file`
             // requires the file to exist; `write_file` allows a not-yet-existing target.
+            // `dir.read_file` answers a `CapError` result (RFC-0126 rule 3); the
+            // frozen walker refuses it rather than emulate that.
             "read_file" => match args {
-                #[cfg(feature = "test-fixtures")]
-                [Value::Dir(DirValue::Fixture(handle), _), Value::Str(rel)] => {
-                    match self.invoke_fixture(HostRequest::DirOpen {
-                        dir: *handle,
-                        path: rel.as_str().to_owned(),
-                    })? {
-                        HostResponse::Handle(handle) => {
-                            Ok(Some(Value::File(FileValue::Fixture(handle))))
-                        }
-                        other => err(format!(
-                            "internal error: Dir fixture returned {other:?}"
-                        )),
-                    }
-                }
-                [Value::Dir(base, pol), Value::Str(rel)] => {
-                    if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
-                        return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
-                    }
-                    Ok(Some(Value::File(dir_file_value_for_policy(base, pol, rel, false)?)))
-                }
-                _ => err("read_file expects a Dir and a relative path"),
+                [Value::Dir(..), Value::Str(_)] => err(
+                    "`dir.read_file` returns a `CapError` result, which the source interpreter does not \
+                     implement; run the program as admitted Wasm",
+                ),
+                _ => Ok(None),
             },
+            // `dir.write_file` answers a `CapError` result (RFC-0126 rule 3); the
+            // frozen walker refuses it rather than emulate that.
             "write_file" => match args {
-                #[cfg(feature = "test-fixtures")]
-                [Value::Dir(DirValue::Fixture(handle), _), Value::Str(rel)] => {
-                    match self.invoke_fixture(HostRequest::DirCreate {
-                        dir: *handle,
-                        path: rel.as_str().to_owned(),
-                    })? {
-                        HostResponse::Handle(handle) => {
-                            Ok(Some(Value::File(FileValue::Fixture(handle))))
-                        }
-                        other => err(format!(
-                            "internal error: Dir fixture returned {other:?}"
-                        )),
-                    }
-                }
-                [Value::Dir(base, pol), Value::Str(rel)] => {
-                    if !witchy_caps::capabilities::dir_admits(pol, rel, false) {
-                        return err(format!("`{rel}` is not permitted by this Dir capability's entry policy"));
-                    }
-                    Ok(Some(Value::File(dir_file_value_for_policy(base, pol, rel, true)?)))
-                }
-                _ => err("write_file expects a Dir and a relative path"),
+                [Value::Dir(..), Value::Str(_)] => err(
+                    "`dir.write_file` returns a `CapError` result, which the source interpreter does not \
+                     implement; run the program as admitted Wasm",
+                ),
+                _ => Ok(None),
             },
             // Spawn a native subprocess. `Exec` is the right to spawn; the
             // executable is named through (and confined to) the `Dir[Read]`, so you

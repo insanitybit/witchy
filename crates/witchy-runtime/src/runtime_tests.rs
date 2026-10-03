@@ -532,7 +532,7 @@ fi
     const DIR_READ_FILE_INVALID_PATH: &str = r#"
         (module
           (import "witchy" "mint_dir" (func $mint_dir (param i32) (result externref)))
-          (import "witchy" "dir_read_file"
+          (import "witchy" "dir_read_file_at"
             (func $dir_read_file (param externref i32 i32) (result externref)))
           (memory (export "memory") 1)
           (data (i32.const 0) "\ff")

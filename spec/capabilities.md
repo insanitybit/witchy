@@ -90,9 +90,11 @@ a language builtin.
 
 A **`File`** is the *leaf* of the same hierarchy ([RFC-0012](../rfcs/retired-rfcs.md)): authority to one
 file, right-typed like `Dir` (`File[Read]`/`File[Write]`). A `Dir` navigates to
-one with `dir.read_file("x.txt") -> File[Read]` (must exist) or `dir.write_file("x.txt")
--> File[Write]` (need not), both rejecting `..`/absolute escape exactly as `read`
-does; then `f.read() -> Result(String, CapError)` / `f.write(data)` operate on the leaf with no path
+one with `dir.read_file("x.txt")` (a `File[Read]`; must exist) or
+`dir.write_file("x.txt")` (a `File[Write]`; need not). Both return
+`Result(File, CapError)` and refuse a `..`/absolute escape as `Denied`, exactly
+as `read` does, and `dir.subtree(path)` returns `Result(Dir, CapError)` the
+same way; then `f.read() -> Result(String, CapError)` / `f.write(data)` operate on the leaf with no path
 argument. `File[Read]` expresses "this one file, read-only" - the least-authority
 form for a single-file need, instead of handing over a whole `Dir`. `main` can
 also receive a `File` **directly**: each `--file <path>` grant fills `main`'s
@@ -176,8 +178,9 @@ fn main(console: Console, dir: Dir):
     console.print(ro.read("config.txt") ?? "")
 
     // Subtree attenuation: a smaller world, not just fewer verbs.
-    let uploads = dir.subtree("uploads")
-    console.print(uploads.read("latest.bin") ?? "")
+    match dir.subtree("uploads"):
+        Ok(uploads) -> console.print(uploads.read("latest.bin") ?? "")
+        Err(e) -> console.print(show(e))
 ```
 
 `Net` narrows the same way, with typed policy values on the `Net` type itself instead of strings:

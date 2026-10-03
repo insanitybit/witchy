@@ -74,6 +74,43 @@ impl FunctionLowerer<'_> {
         Ok(joined[0])
     }
 
+    /// `dir.subtree`, `dir.read_file`, `dir.write_file`: one host navigation
+    /// (`open`), then `Result(Dir|File, CapError)` whose success value is the
+    /// capability the response carries.
+    pub(super) fn lower_dir_navigate(&mut self, receiver: &Expr, token: ValueId, path: &Expr, open: &str) -> Result<ValueId, CanonicalLoweringError> {
+        use witchy_wir::canonical_safewir::{DIR_CAPABILITY_KIND, DIR_RESPONSE_KIND, FILE_CAPABILITY_KIND};
+        use witchy_types::typeck::{ty_to_ast, FileRights, Ty};
+        // The success type is exactly the checked one: the receiver's `Dir`
+        // for `subtree`, the conferred `File[Read]`/`File[Write]` otherwise.
+        let (success, take, kind) = match open {
+            "dir_subtree_open_at" => (self.expression_type(receiver)?, "dir_response_take_dir", DIR_CAPABILITY_KIND),
+            _ => {
+                let read = open == "dir_read_file_at";
+                let file = ty_to_ast(&Ty::File(FileRights { read, write: !read }))
+                    .ok_or(CanonicalLoweringError::UnsupportedExpression("File result type"))?;
+                (file, "dir_response_take_file", FILE_CAPABILITY_KIND)
+            }
+        };
+        let layout = self.string_layout_id()?;
+        let path = self.lower_string_argument(path)?;
+        let path = self.string_slice_argument(path, layout)?;
+        let response = self.fresh(ValueType::Capability(DIR_RESPONSE_KIND))?;
+        let import = self.capability_import(open)?;
+        self.push_operation(Operation::HostCall {
+            destinations: vec![response], import,
+            arguments: vec![HostCallArgument::Capability(token), path],
+        });
+        self.lower_cap_result_with(response, success, "dir", |this, _empty| {
+            let minted = this.fresh(ValueType::Capability(kind))?;
+            let take = this.capability_import(take)?;
+            this.push_operation(Operation::HostCall {
+                destinations: vec![minted], import: take,
+                arguments: vec![HostCallArgument::Capability(response)],
+            });
+            Ok(minted)
+        })
+    }
+
     /// `file.read()`: one host read, then `Result(String, CapError)` from its
     /// response under File authority.
     pub(super) fn lower_file_read(&mut self, token: ValueId) -> Result<ValueId, CanonicalLoweringError> {
