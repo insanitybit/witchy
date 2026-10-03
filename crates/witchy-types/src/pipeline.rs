@@ -1787,7 +1787,7 @@ fn link_checked_source_bundle_route(
                 message: format!("source module `{name}` is not UTF-8: {error}"),
                 location: None,
             }))?;
-            let module = witchy_syntax::parser::parse_module(source).map_err(|error| {
+            let module = parse_source_module(name, source).map_err(|error| {
                 PipelineError::Link(LinkError {
                     message: format!("source module `{name}` failed to parse: {error}"),
                     location: None,
@@ -1823,6 +1823,38 @@ fn link_checked_source_bundle_route(
         })
     })?;
     finish_canonical_source(checked, typed_source, source_bundle_digest, environment)
+}
+
+/// Standard-library source is immutable and appears in every source bundle,
+/// but the authenticated route is intentionally given bytes and reparses them
+/// to bind the source witness. Reuse only an exact bundled source AST here;
+/// user modules still take the ordinary parser path and therefore cannot
+/// inherit a cached tree from a different source or package.
+fn parse_source_module(
+    name: &str,
+    source: &str,
+) -> Result<witchy_syntax::ast::Module, witchy_syntax::parser::ParseError> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    let Some(bundled) = witchy_syntax::linker::bundled_source(name)
+        .filter(|bundled| *bundled == source)
+    else {
+        return witchy_syntax::parser::parse_module(source);
+    };
+    let _ = bundled;
+
+    static CACHE: OnceLock<Mutex<HashMap<String, witchy_syntax::ast::Module>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(module) = cache.lock().expect("bundled source cache poisoned").get(name) {
+        return Ok(module.clone());
+    }
+    let parsed = witchy_syntax::parser::parse_module(source)?;
+    cache
+        .lock()
+        .expect("bundled source cache poisoned")
+        .insert(name.to_owned(), parsed.clone());
+    Ok(parsed)
 }
 
 // Both production source and compiler-owned driver source arrive here only
