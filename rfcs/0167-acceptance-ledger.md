@@ -549,6 +549,16 @@ including empty and packed tuples. The focused 53-case lowering shard and the
 11-case tuple fixture pass. This extends rows H and K but does not close their
 remaining carrier and disposition cases.
 
+Deep normal-mode `must` write-back, 2026-10-03: the same fixture now updates
+`Outer.inner.count` while `Outer.inner.ticket` remains a live `must Ticket`.
+The checker authenticates each nested source field as the exact parser rebuild
+path, and canonical lowering consumes each affine shell before rebuilding it.
+The independent result `792` matches admitted unoptimized Wasm with zero
+canonical heap leaks. A separate `own outer.inner` call in an assignment RHS
+refuses at source checking, including the general direct, function-value, and
+existential call paths. This adds one nested record carrier to rows H and K;
+arbitrary aggregate and collection paths remain open.
+
 Owned-value materialization (production path migrated, 2026-09-26): the
 compiler-known `.owned()` now uses the shared checked storage judgment for
 fresh linear-owner provenance in the checker and no-copy analysis, and

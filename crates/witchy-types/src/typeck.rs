@@ -2967,38 +2967,62 @@ impl Checker {
                 if matches!(base.as_ref(), Expr::Var(base) if base == name))
     }
 
-    fn is_must_preserving_self_update(&self, name: &str, value: &Expr) -> bool {
+    fn is_must_preserving_self_update(&self, name: &str, value: &Expr) -> Option<Vec<(Vec<String>, usize)>> {
         if matches!(value, Expr::Call { name: operation, args }
             if witchy_syntax::intrinsics::canonical_operation_name(operation)
                 == witchy_syntax::intrinsics::LIST_PUSH
                 && matches!(args.first(), Some(Expr::Var(base)) if base == name)) {
-            return true;
+            return Some(Vec::new());
         }
+        let root_type = self.lookup(name)?;
+        let mut paths = Vec::new();
+        self.is_must_preserving_update_path(name, &root_type, value, &[], &mut paths)
+            .then_some(paths)
+    }
+
+    fn is_must_source_path(name: &str, path: &[String], expression: &Expr) -> bool {
+        let Some((field, prefix)) = path.split_last() else {
+            return matches!(expression, Expr::Var(root) if root == name);
+        };
+        matches!(expression, Expr::Field { base, field: actual }
+            if actual == field && Self::is_must_source_path(name, prefix, base))
+    }
+
+    fn is_must_preserving_update_path(&self, name: &str, source: &Ty, value: &Expr,
+        path: &[String], paths: &mut Vec<(Vec<String>, usize)>) -> bool {
         let Expr::RecordUpdate { base, fields, .. } = value else { return false };
-        if !matches!(base.as_ref(), Expr::Var(root) if root == name) || fields.is_empty() {
+        if fields.is_empty() || !Self::is_must_source_path(name, path, base) {
             return false;
         }
-        let Some(root_type) = self.lookup(name) else { return false };
-        match self.resolve(&root_type) {
-            Ty::Tuple(elements) => fields.iter().all(|(field, _)| {
-                field.parse::<usize>().ok().and_then(|index| elements.get(index))
-                    .is_some_and(|ty| !self.ty_carries_must_consume(ty))
-            }),
-            Ty::Named(record, arguments) => {
-                let Some((parameters, declared_fields)) = self.record_fields.get(record.as_ref()) else {
-                    return false;
-                };
-                let substitutions: HashMap<u32, Ty> = parameters.iter().copied()
-                    .zip(arguments.iter().cloned()).collect();
-                fields.iter().all(|(field, _)| {
+        if !path.is_empty() { paths.push((path.to_vec(), base.as_ref() as *const Expr as usize)); }
+        let resolved = self.resolve(source);
+        fields.iter().all(|(field, expression)| {
+            let field_type = match &resolved {
+                Ty::Tuple(elements) => field.parse::<usize>().ok()
+                    .and_then(|index| elements.get(index)).cloned(),
+                Ty::Named(record, arguments) => {
+                    let (parameters, declared_fields) = match self.record_fields.get(record.as_ref()) {
+                        Some(fields) => fields, None => return false,
+                    };
+                    let substitutions: HashMap<u32, Ty> = parameters.iter().copied()
+                        .zip(arguments.iter().cloned()).collect();
                     declared_fields.iter().find(|(name, _)| name == field)
-                        .is_some_and(|(_, field_type)| {
-                            !self.ty_carries_must_consume(&self.subst_vars(field_type, &substitutions))
-                        })
-                })
-            }
-            _ => false,
-        }
+                        .map(|(_, ty)| self.subst_vars(ty, &substitutions))
+                }
+                _ => None,
+            };
+            let Some(field_type) = field_type else { return false };
+            if !self.ty_carries_must_consume(&field_type) { return true; }
+            let mut child_path = path.to_vec();
+            child_path.push(field.clone());
+            self.is_must_preserving_update_path(name, &field_type, expression, &child_path, paths)
+        })
+    }
+
+    fn is_allowed_must_subupdate(&self, expression: &Expr) -> bool {
+        let Expr::RecordUpdate { base, .. } = expression else { return false };
+        self.must_self_update_paths.iter().any(|(_, approved)|
+            *approved == base.as_ref() as *const Expr as usize)
     }
 
     fn is_authorized_borrowed_shell_update(&self, base: &Expr, ty: &Ty) -> bool {
@@ -5840,8 +5864,8 @@ impl Checker {
                             "pure callable cannot assign to `var` parameter `{name}` because that writes back to the caller"
                         ));
                     }
-                    let must_preserving_self_update =
-                        self.is_must_preserving_self_update(name, value);
+                    let must_preserving_paths = self.is_must_preserving_self_update(name, value);
+                    let must_preserving_self_update = must_preserving_paths.is_some();
                     if self.ty_carries_must_consume(&existing)
                         && self.is_live_must_binding(name)
                         && !must_preserving_self_update
@@ -5870,12 +5894,15 @@ impl Checker {
                         self.borrowed_shell_update_target = Some(name.clone());
                     }
                     let saved_must_target = self.must_self_update_target.take();
+                    let saved_must_paths = std::mem::take(&mut self.must_self_update_paths);
                     if must_preserving_self_update {
                         self.must_self_update_target = Some(name.clone());
+                        self.must_self_update_paths = must_preserving_paths.unwrap_or_default();
                     }
                     let inferred = self.infer_expected(value, &existing);
                     self.borrowed_shell_update_target = saved_shell_target;
                     self.must_self_update_target = saved_must_target;
+                    self.must_self_update_paths = saved_must_paths;
                     let vt = inferred?;
                     // Reassignment invalidates stored callback provenance below.
                     // Check the actual RHS after inference, before losing it.
@@ -7102,6 +7129,7 @@ impl Checker {
                         }
                     }
                     Convention::Own => {
+                        self.reject_projected_must_own(arg, &format!("argument {} to `{name}`", i + 1))?;
                         if let Expr::Var(v) = arg {
                             if self.must_self_update_target.as_deref() != Some(v.as_str()) {
                                 self.reject_own_of_borrowed_must(
@@ -7300,6 +7328,7 @@ impl Checker {
                     }
                 }
                 Convention::Own => {
+                    self.reject_projected_must_own(arg, &format!("argument {} to function value `{name}`", index + 1))?;
                     if let Expr::Var(var) = arg {
                         self.reject_own_of_borrowed_must(
                             var,
@@ -7434,6 +7463,7 @@ impl Checker {
                     }
                 }
                 Convention::Own => {
+                    self.reject_projected_must_own(operand, &format!("operand {} to existential `{callee}`", index + 1))?;
                     if let Expr::Var(name) = operand {
                         self.reject_own_of_borrowed_must(
                             name,
@@ -8919,7 +8949,8 @@ impl Checker {
                                 message: format!("tuple has no field `.{field}`"),
                             })?;
                         let expected = elements[index].clone();
-                        if self.ty_carries_must_consume(&expected) {
+                        if self.ty_carries_must_consume(&expected)
+                            && !self.is_allowed_must_subupdate(expression) {
                             return terr(format!(
                                 "tuple update cannot discard must-consume field `.{field}`; consume the whole tuple and reconstruct it after discharging that field"
                             ));
@@ -8981,7 +9012,8 @@ impl Checker {
                         return terr(format!("record `{tyname}` has no field `{fname}`"));
                     };
                     let expected = self.subst_vars(fty, &map);
-                    if self.ty_carries_must_consume(&expected) {
+                    if self.ty_carries_must_consume(&expected)
+                        && !self.is_allowed_must_subupdate(vexpr) {
                         return terr(format!(
                             "record update cannot discard must-consume field `{fname}`; consume the whole record and reconstruct it after discharging that field"
                         ));
@@ -12781,6 +12813,7 @@ fn run_check_selected(
             .collect(),
         borrowed_shell_update_target: None,
         must_self_update_target: None,
+        must_self_update_paths: Vec::new(),
         borrowed_shell_bindings: vec![HashSet::new()],
         explicit_reference_bindings: vec![HashSet::new()],
         frozen_bindings: vec![HashSet::new()],

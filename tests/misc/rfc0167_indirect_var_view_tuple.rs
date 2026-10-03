@@ -282,3 +282,68 @@ fn main() -> Int:
     assert_eq!(vm.output(), vec!["79".to_string()]);
     assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
 }
+
+#[test]
+fn deep_record_field_update_keeps_a_live_must_obligation() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let checked = witchy::resolve_std_only_checked(r#"
+must type Ticket:
+    Ticket(Int)
+
+type Inner:
+    ticket: Ticket
+    count: Int
+
+type Outer:
+    inner: Inner
+    tag: Int
+
+fn finish(own outer: Outer) -> Int:
+    match move outer:
+        Outer(inner, tag) -> match move inner:
+            Inner(ticket, count) -> match move ticket:
+                Ticket(value) -> value * 100 + count * 10 + tag
+
+fn main() -> Int:
+    var outer: Outer = Outer(Inner(Ticket(7), 1), 2)
+    outer.inner.count = 9
+    finish(outer)
+"#).expect("deep update preserves the must obligation");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("deep must write-back admits");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(&artifact,
+        Capabilities { print_int: true, quiet: true, ..Capabilities::none() },
+        128).expect("admitted Wasm instance");
+    vm.run().expect("admitted Wasm execution");
+    assert_eq!(vm.output(), vec!["792".to_string()]);
+    assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+}
+
+#[test]
+fn deep_write_back_does_not_authorize_an_unrelated_projected_consume() {
+    let error = witchy::resolve_std_only_checked(r#"
+must type Ticket:
+    Ticket(Int)
+
+type Inner:
+    ticket: Ticket
+    count: Int
+
+type Outer:
+    inner: Inner
+    tag: Int
+
+fn count(own inner: Inner) -> Int:
+    match move inner:
+        Inner(ticket, value) -> match move ticket:
+            Ticket(_) -> value
+
+fn main() -> Int:
+    var outer: Outer = Outer(Inner(Ticket(7), 1), 2)
+    outer.tag = count(outer.inner)
+    outer.tag
+"#).expect_err("an unrelated own call cannot consume a projected must field");
+    assert!(error.to_string().contains("cannot partially consume"), "{error}");
+}

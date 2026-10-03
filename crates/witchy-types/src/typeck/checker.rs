@@ -124,10 +124,12 @@ pub(super) struct Checker {
     /// and is rejected.
     pub(super) borrowed_shell_update_target: Option<String>,
     /// The assignment target of a checker-recognized mutation that preserves
-    /// every existing must-consume element (currently list push). Its private
-    /// rebuilding intrinsic may temporarily own the list before the assignment
-    /// writes the rebuilt value back to the same borrowed place.
+    /// every existing must-consume element. Its private rebuilding operation
+    /// may temporarily own the root before writing it back to the same place.
     pub(super) must_self_update_target: Option<String>,
+    /// Exact projected bases in the parser's nested self-update spine. A
+    /// projected must value may be read only as the base of that rebuild.
+    pub(super) must_self_update_paths: Vec<(Vec<String>, usize)>,
     /// Mutable locals whose initializer created a checked borrowed shell. This
     /// is deliberately separate from type identity: a borrowed shell received
     /// as an ordinary parameter has no compiler-owned root companions at this
