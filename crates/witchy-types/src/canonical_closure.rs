@@ -249,7 +249,9 @@ impl<'a> Builder<'a> {
                 let Some(source_root) = root.ty.as_ref() else { return (checked, false) };
                 if !canonical_abi::has_storage_qualifier(source_root) { return (checked, false) }
                 let Some(fact) = fact else { return (None, true) };
-                if root.mutable || !fact.place().steps().is_empty()
+                // The binding's current source qualifier is invalidated at
+                // any preceding assignment that cannot prove the same type.
+                if !fact.place().steps().is_empty()
                     || !matches!(place.as_ref(), Expr::Var(name) if name == fact.place().root())
                 {
                     return (None, true);
@@ -270,6 +272,21 @@ impl<'a> Builder<'a> {
             // for every `as` route (notably record width and dyn casts).
             // An erased-HM type match is not authority to mint that target.
             Expr::As { ty, .. } if canonical_abi::has_storage_qualifier(ty) => (None, true),
+            Expr::List(items) if !items.is_empty() => {
+                // Preserve a checked element qualifier through a homogeneous
+                // literal; HM's aggregate type alone has erased its origin.
+                let parts: Vec<_> = items.iter().map(|item| self.source_type_for_expr(item)).collect();
+                if !checked.as_ref().is_some_and(carries_view_syntax)
+                    && parts.iter().all(|(ty, unproved)| !unproved && !ty.as_ref().is_some_and(canonical_abi::has_storage_qualifier))
+                {
+                    return (checked, false);
+                }
+                if parts.iter().any(|(_, unproved)| *unproved) { return (None, true) }
+                let Some(first) = parts.first().and_then(|(ty, _)| ty.as_ref()) else { return (checked, false) };
+                if parts.iter().any(|(ty, _)| ty.as_ref() != Some(first)) { return (None, true) }
+                let source = Type::Named("List".to_string(), vec![first.clone()]);
+                if agrees(&source) { (Some(source), false) } else { (None, true) }
+            }
             Expr::Tuple(items) => {
                 let parts: Vec<_> = items.iter().map(|item| self.source_type_for_expr(item)).collect();
                 if parts.iter().any(|(_, unproved)| *unproved) { return (None, true) }
@@ -503,7 +520,18 @@ impl<'a> Builder<'a> {
                         || matches!(value, Expr::Var(source) if self.resolve(source).is_some_and(|binding| binding.borrowed));
                     self.scopes.last_mut().unwrap().push(Binding { id: ClosureBindingId::new(callable.clone(), vec![ClosureBindingPathStep::Statement(index)], name.clone()), ty: checked, borrowed, mutable: *mutable, unproved_qualifier: annotation_unproved || ty.is_none() && unproved_qualifier });
                 }
-                Stmt::Assign { value, .. } => self.child(value, callable.clone(), path, 0)?,
+                Stmt::Assign { name, value, place_depth } => {
+                    self.child(value, callable.clone(), path, 0)?;
+                    let (source, unproved) = self.source_type_for_expr(value);
+                    if let Some(binding) = self.scopes.iter_mut().rev()
+                        .flat_map(|scope| scope.iter_mut().rev())
+                        .find(|binding| binding.id.name() == name)
+                        && binding.ty.as_ref().is_some_and(carries_view_syntax)
+                        && (*place_depth != 0 || unproved || source.as_ref() != binding.ty.as_ref())
+                    {
+                        binding.unproved_qualifier = true;
+                    }
+                }
                 Stmt::LetPattern { pattern, value } => {
                     self.child(value, callable.clone(), path, 0)?;
                     let (source, unproved) = self.source_type_for_expr(value);

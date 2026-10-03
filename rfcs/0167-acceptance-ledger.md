@@ -269,6 +269,16 @@ and report zero leaks. A tuple view rooted in a region-local binding refuses
 at source checking. Other structural graph families still need their own
 layout proofs.
 
+A synchronous callable may also capture a structural tuple-root view. The
+closure witness now preserves a qualified element through a checked list
+literal and accepts view formation from a mutable root while its current
+source type is proved. A preceding write invalidates that qualifier unless
+its right-hand side proves the same source type. `rfc0167_tuple_view_capture`
+runs `&(Int, String)` and `&(List(&Int), Int)` captures, including an inferred
+mutable root and a qualified assignment before capture, after whole-root
+replacement on admitted Wasm. The independent results are `59`, `239`, `39`,
+and `94`, each with zero leaks.
+
 `rfc0167_frozen_view_replacement` adds a normal-mode row L composition
 witness: a rooted `&frozen Box` keeps the old field value when a `var frozen
 Box` root is replaced, so admitted unoptimized Wasm prints the independently
@@ -2482,9 +2492,9 @@ and owner replacement. The hand-computed result is
 produces `14` in admitted unoptimized Wasm with `Some(0)` canonical heap leaks.
 The same focused target passes 4/4 cases: `&(Int, Bool)` and
 `&(Int, &String)` have no authenticated whole-tuple carrier, a region-born
-tuple root cannot escape, and closure capture of this tuple view remains
-refused. Broader tuple roots and tuple-view captures still need separate
-carrier evidence.
+tuple root cannot escape. At that tip, closure capture still needed separate
+carrier evidence; the later structural tuple capture witness above supersedes
+that limitation.
 
 Resource fallback disposition (bounded source repair, 2026-09-26): `??` now
 rejects a `Result` error whose instantiated stored payload recursively carries

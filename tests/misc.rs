@@ -153,6 +153,8 @@ mod rfc0167_opt_async_factory_relay;
 mod rfc0167_owned_materialization;
 #[path = "misc/rfc0167_tuple_root_view.rs"]
 mod rfc0167_tuple_root_view;
+#[path = "misc/rfc0167_tuple_view_capture.rs"]
+mod rfc0167_tuple_view_capture;
 #[path = "misc/rfc0167_result_list_root_view.rs"]
 mod rfc0167_result_list_root_view;
 #[path = "misc/rfc0167_nested_list_root_view.rs"]
