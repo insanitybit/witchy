@@ -310,8 +310,9 @@ pub(super) struct Checker {
     /// replacement after the old stored obligations have been discharged.
     pub(super) must_borrowed: HashSet<(usize, String)>,
     /// The exact pop intrinsic proved a borrowed must list empty on this
-    /// unguarded None arm. Only its first whole-binding assignment may replace
-    /// the now empty write-back slot.
+    /// unguarded None arm. Only one whole-binding assignment, reached through
+    /// independent straight-line statements, may replace the empty write-back
+    /// slot.
     pub(super) exact_empty_borrowed_must_replacement: Option<(usize, String)>,
     /// Affine callable bindings received through a shared `borrow` parameter.
     /// They may be inspected or forwarded to another borrow, but invocation or

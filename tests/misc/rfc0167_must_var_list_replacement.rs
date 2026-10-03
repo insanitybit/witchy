@@ -30,8 +30,9 @@ fn replace(var tickets: List(Ticket)) -> Int:
     match list.__pop_extract(tickets):
         Some(ticket) -> finish(ticket) + replace(tickets)
         None ->
+            let pause = 0
             tickets = [Ticket(3)]
-            0
+            pause
 
 fn main() -> Int:
     var tickets = [Ticket(1), Ticket(2)]
@@ -50,7 +51,7 @@ fn main() -> Int:
 }
 
 #[test]
-fn exact_empty_proof_cannot_authorize_later_or_repeated_replacement() {
+fn exact_empty_proof_cannot_authorize_repeated_replacement() {
     let prefix = r#"import list
 must type Ticket:
     Ticket(Int)
@@ -64,7 +65,7 @@ fn replace(var tickets: List(Ticket)) -> Int:
 "#;
     for body in [
         "            tickets = [Ticket(3)]\n            tickets = [Ticket(4)]\n            0\n",
-        "            let pause = 0\n            tickets = [Ticket(3)]\n            pause\n",
+        "            let unrelated = 1\n            tickets = [Ticket(3)]\n            tickets = [Ticket(4)]\n            unrelated\n",
     ] {
         let source = format!("{prefix}{body}fn main() -> Int:\n    var tickets = [Ticket(1)]\n    replace(tickets)\n");
         let error = witchy::resolve_std_only_checked(&source)

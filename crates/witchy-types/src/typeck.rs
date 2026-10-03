@@ -371,6 +371,40 @@ fn bare_cap_op_error(name: &str, arity: usize) -> Option<String> {
     }
 }
 
+/// An exact-pop `None` proof remains valid across statements that cannot
+/// access the borrowed list. Restrict the prefix to independent straight-line
+/// statements. Nested bodies are excluded because their assignment targets
+/// are not part of the expression visitor's read set. The first whole-binding
+/// assignment then consumes the proof in the ordinary assignment checker.
+fn exact_empty_replacement_after_independent_prefix(body: &Expr, binding: &str) -> bool {
+    let Expr::Block(block) = body else { return false };
+    for statement in &block.stmts {
+        let value = match statement {
+            Stmt::Assign { name, place_depth: 0, .. } if name == binding => return true,
+            Stmt::Let { name, value, .. } | Stmt::Assign { name, value, .. }
+                if name != binding => value,
+            Stmt::Expr(value) => value,
+            _ => return false,
+        };
+        let mut independent = true;
+        let _: Result<(), ()> = ast::visit::visit_expr(value, &mut |expression| {
+            if matches!(expression, Expr::Var(name) if name == binding)
+                || matches!(expression,
+                    Expr::Lambda { .. } | Expr::If { .. } | Expr::Match { .. }
+                    | Expr::Block(_) | Expr::While { .. } | Expr::For { .. }
+                    | Expr::WhileLet { .. })
+            {
+                independent = false;
+            }
+            Ok(())
+        });
+        if !independent {
+            return false;
+        }
+    }
+    false
+}
+
 impl Checker {
     /// The canonical storage plan of `ty` over this module's definitions,
     /// memoized: the plan depends only on the type and the (fixed) map.
@@ -9598,8 +9632,7 @@ impl Checker {
             {
                 self.consume_must_binding(binding);
                 if self.is_borrowed_must_binding(binding)
-                    && matches!(&arm.body, Expr::Block(block)
-                        if matches!(block.stmts.first(), Some(Stmt::Assign { name, place_depth: 0, .. }) if name == binding))
+                    && exact_empty_replacement_after_independent_prefix(&arm.body, binding)
                 {
                     self.exact_empty_borrowed_must_replacement = self.must_binding_key(binding);
                 }
