@@ -1645,6 +1645,23 @@ impl Checker {
         }
     }
 
+    fn storage_erased_type(source: &ast::Type) -> Option<ast::Type> {
+        match source {
+            ast::Type::Qualified(ast::TypeQual::Frozen | ast::TypeQual::Unique, inner) =>
+                Self::storage_erased_type(inner),
+            ast::Type::Tuple(fields) => Some(ast::Type::Tuple(fields.iter()
+                .map(Self::storage_erased_type).collect::<Option<Vec<_>>>()?)),
+            ast::Type::Named(name, args) => Some(ast::Type::Named(name.clone(), args.iter()
+                .map(Self::storage_erased_type).collect::<Option<Vec<_>>>()?)),
+            ast::Type::Slice(inner) =>
+                Some(ast::Type::Slice(Box::new(Self::storage_erased_type(inner)?))),
+            ast::Type::Qualified(ast::TypeQual::View, inner) =>
+                Some(ast::Type::Qualified(ast::TypeQual::View,
+                    Box::new(Self::storage_erased_type(inner)?))),
+            _ => None,
+        }
+    }
+
     /// Recover only source storage shapes whose qualifiers remain visible
     /// after inference. A `Ty` rendering alone cannot prove that a tuple
     /// element is not frozen, because `Ty` erases that qualifier.
@@ -1652,6 +1669,12 @@ impl Checker {
         let resolved = self.resolve(ty);
         match (expression, &resolved) {
             (Expr::Var(name), _) => self.binding_storage_type(name),
+            (Expr::Call { name, .. }, _)
+                if !self.scopes.iter().any(|scope| scope.contains_key(name)) => {
+                let source = self.fn_storage_result_types.get(name)?;
+                (Self::storage_erased_type(source)? == ty_to_ast(&resolved)?)
+                    .then(|| source.clone())
+            }
             (Expr::Unary { op: UnOp::Move, expr }, _) =>
                 self.inferred_binding_storage_type(expr, &resolved),
             (Expr::Tuple(items), Ty::Tuple(fields)) if items.len() == fields.len() =>
@@ -5996,7 +6019,10 @@ impl Checker {
                     let storage_source = match (decl.as_ref(), initializer_storage) {
                         (Some(declared), Some(initializer)) =>
                             Self::common_storage_type(declared, &initializer),
-                        (Some(declared), _) => Some(declared.clone()),
+                        // A declared plain shape cannot prove what an opaque
+                        // initializer placed inside it. Keep only source
+                        // qualifiers established by the checked expression.
+                        (Some(_), None) => None,
                         (None, inferred) => inferred,
                     };
                     self.define(name.clone(), vt, *mutable);
@@ -13077,6 +13103,7 @@ fn run_check_selected(
         fn_frozen_value_params: HashMap::new(),
         fn_unique_contracts: HashMap::new(),
         fn_source_result_types: HashMap::new(),
+        fn_storage_result_types: HashMap::new(),
         fresh_result_fns: HashSet::new(),
         inferred_owner_bindings: vec![HashSet::new()],
         fn_opt_provenance: HashMap::new(),
@@ -13346,6 +13373,9 @@ fn run_check_selected(
                         frozen_result: f.ret.as_ref().is_some_and(is_frozen_value_type),
                     },
                 );
+                if let Some(result) = &f.ret {
+                    c.fn_storage_result_types.insert(f.name.clone(), result.clone());
+                }
                 if let Some(result) = &f.ret
                     && witchy_canonical_source::storage::affine_storage_shape(
                         result, &c.canonical_definitions,

@@ -426,6 +426,18 @@ replacement retains the frozen child and refuses the later deep write with
 the frozen-mutation diagnostic. Unknown replacement shapes and projected
 record-field aggregates still revoke the proof; row H remains partial.
 
+Direct call result storage, 2026-10-03: source-linked functions now retain
+their declared result source shape separately from the affine-result proof.
+A direct call returning `(Box, Int)` gives an unannotated local enough checked
+storage provenance for a deep `var` write; admitted unoptimized Wasm returns
+the independent result `93` with zero leaks. A direct result carrying an
+outer or nested `frozen Box` cannot be laundered through a plain tuple
+annotation before deep mutation. When the initializer source shape is unknown,
+an annotation alone no longer grants the deep-write proof; an indirect call
+without transported result-source metadata refuses. This closes the direct
+source-linked return shapes tested here, not indirect, generic, or external
+result provenance; row H remains partial.
+
 `rfc0167_frozen_view_replacement` adds a normal-mode row L composition
 witness: a rooted `&frozen Box` keeps the old field value when a `var frozen
 Box` root is replaced, so admitted unoptimized Wasm prints the independently

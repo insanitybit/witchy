@@ -159,6 +159,8 @@ mod rfc0167_tuple_view_capture;
 mod rfc0167_indirect_var_view_tuple;
 #[path = "misc/rfc0167_inferred_tuple_qualifiers.rs"]
 mod rfc0167_inferred_tuple_qualifiers;
+#[path = "misc/rfc0167_call_result_storage.rs"]
+mod rfc0167_call_result_storage;
 #[path = "misc/rfc0167_must_var_list_replacement.rs"]
 mod rfc0167_must_var_list_replacement;
 #[path = "misc/rfc0167_must_result_propagation.rs"]
