@@ -22,12 +22,17 @@ wasm32 playground build, until comptime itself moves to canonical lowering.
 
 ## Distribution: two trust models
 
-The compile artifact is **`app.wasm`**: the program module, importing the
-`"witchy"` capability host and carrying a versioned `witchy.launch` custom
-section with `main`'s source-derived host-capability contract. Imports are the
-executable authority floor - a module cannot call a host op it doesn't import -
-while the launch section preserves declared capability parameters even when
-lowering eliminates every use.
+The compile artifact is **`app.wasm`**: the exact admitted program module,
+importing the `"witchy"` capability host and carrying a versioned
+`witchy.launch` custom section with `main`'s source-derived host-capability
+contract, followed by one trailing `witchy.source.v1` custom section. That
+section holds the SHA-256 of the module bytes before it and the closed source
+inputs that produced them: every loaded source file, observed absences, explicit
+dependencies, and the compiler, standard-library, ABI and optimization
+identities. Imports are the executable authority floor - a module cannot call a
+host op it doesn't import - while the launch section preserves declared
+capability parameters even when lowering eliminates every use. Hosts other than
+`witchy` ignore custom sections.
 
 ```text
                     ┌─────────────────────────┐
@@ -64,17 +69,21 @@ trusted:  target/release/app                           host = embedded Witchy ru
 | native `witchy` / pm / build | wasmtime + `crates/witchy-runtime/src/runtime.rs` |
 | browser | JS - `web/witchy-runtime/` (no wasmtime in a browser) |
 
-- **Portable module.** `witchy emit-wasm app.witchy [-o app.wasm]` produces the
-  binary; `witchy app.wasm` (or `witchy sandbox [--dir <root>] [--net
-  <host:port>]... app.wasm`) runs it. The installed `witchy` binary is the host:
-  it reads the module's `witchy.launch` contract and `witchy.*` imports, unions
-  their requirements, and links those families (Dir/Net at the `--dir`/`--net`
-  roots, default cwd; secrets from `--secret`/
-  `--secret-file`/`--signing-key`), and a module importing an ungranted op fails
-  to instantiate. `precompiled_wasm_runs_like_the_source` checks that a
-  precompiled module runs like its source. Legacy and external wasm modules with
-  no launch section retain import-derived classification; malformed or unknown
-  witchy launch metadata is rejected instead of silently ignored.
+- **Portable module.** `witchy compile app.witchy --out app.wasm` (or `witchy
+  emit-wasm app.witchy [-o app.wasm]`) produces the artifact; `witchy app.wasm`
+  (or `witchy sandbox [--dir <root>] [--net <host:port>]... app.wasm`) runs it.
+  The installed `witchy` binary is the host. It first re-admits the embedded
+  source: it checks and compiles it through the production pipeline and requires
+  the result to equal the shipped module byte for byte. Only then does it read
+  the fresh artifact's `witchy.launch` contract and `witchy.*` imports, union
+  their requirements, and link those families (Dir/Net at the `--dir`/`--net`
+  roots; secrets from `--secret`/`--secret-file`/`--signing-key`). `witchy
+  sandbox` requires an explicit grant for every Dir, File, Net, Fetch, Env and
+  Exec requirement; `witchy app.wasm` defaults a Dir to the cwd. A module
+  importing an ungranted op fails to instantiate. A module with canonical entry
+  metadata but no `witchy.source.v1` section is refused. External Wasm with no
+  Witchy entry metadata retains import-derived classification; malformed or
+  unknown witchy launch metadata is rejected instead of silently ignored.
 - **Browser host.** Ship `app.wasm` + `web/witchy-host.js` as the loader. The
   deny-all capability JS host provides only infrastructure imports and omits every
   capability import, so a capability-using module fails to instantiate
@@ -116,6 +125,15 @@ dependencies still receive authority only when the root passes a capability.
 - **Authority is source-derived and host-mediated.** A program's authority is its
   host-import set plus the footprint from `capabilities::analyze`; wasmtime
   validates the binary module and links only the granted host functions.
+- **Portable bytes are re-admitted, never trusted.** Nothing in
+  `witchy.source.v1` is an admission receipt. The section must be unique, last,
+  canonically encoded and at most 64 MiB; its inputs are bound to the portable
+  format and to this compiler, standard library, ABI and option schema, so a
+  trusted-publisher payload cannot be transplanted. Re-admission reads only the
+  embedded source, and its compile-time evaluation runs in zero-grant sessions
+  under fixed fuel and memory limits. A precompiled external library cannot be
+  linked into portable Wasm. Grants derive from the recompiled artifact, which
+  must equal the shipped module exactly.
 - **Secret bytes never enter guest memory.** The runtime host holds secret
   material - signing keys, revealable value secrets, and TLS private keys - and
   exposes each only through the operations that consume it (by opaque reference

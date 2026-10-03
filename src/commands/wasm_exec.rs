@@ -166,6 +166,20 @@ pub(crate) fn run_wasm_module(
                 .to_string(),
         );
     }
+    // Portable Witchy Wasm is re-admitted from its embedded closed source and
+    // must reproduce the shipped module exactly. Every grant below is derived
+    // from that fresh artifact. Detached canonical bytes carry no admission.
+    let admitted = match witchy::portable_artifact::probe(bytes)? {
+        Some(portable) => Some(crate::source::restore_portable_artifact(&portable)?),
+        None if witchy_wir::canonical_entry_from_wasm(bytes)?.is_some() => {
+            return Err(
+                "canonical Witchy Wasm without embedded source cannot be admitted; rebuild with `witchy compile`"
+                    .to_string(),
+            );
+        }
+        None => None,
+    };
+    let bytes = admitted.as_ref().map_or(bytes, |artifact| artifact.wasm());
     let needs = witchy_imports(bytes)?;
     let declared = artifact::launch_contract(bytes)?.unwrap_or_default();
     let declares = |name: &str| declared.contains_key(name);
@@ -293,7 +307,10 @@ pub(crate) fn run_wasm_module(
         }
         caps.secrets.extend(named_secrets);
     }
-    run_prepared_wasm(bytes, caps, confinement)
+    match &admitted {
+        Some(artifact) => run_admitted_prepared(artifact, caps, confinement),
+        None => run_prepared_wasm(bytes, caps, confinement),
+    }
 }
 
 /// Run the application embedded in this process with only its checked target
@@ -381,13 +398,31 @@ pub(crate) fn run_prepared_wasm(
     // wasm itself (`wasm_main_returns_int`), so pop the trailing line and use it as
     // the process EXIT CODE — matching the source runners (BUG-104). A non-Int `main`
     // leaves its output untouched.
-    let mut lines = vm.output();
-    let exit_code = if wasm_main_returns_int(bytes) {
+    Ok(split_exit_code(vm.output(), bytes))
+}
+
+/// Launch a freshly admitted artifact under host-derived grants.
+fn run_admitted_prepared(
+    artifact: &witchy_wir::AdmittedCanonicalArtifact,
+    caps: runtime::Capabilities,
+    confinement: witchy_confinement::EnforcementMode,
+) -> Result<(Vec<String>, Option<i32>), String> {
+    crate::commands::confinement::arm(&caps, confinement)?;
+    let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
+    let mut vm = rt
+        .spawn_admitted(artifact, caps, RUN_MEMORY_PAGES)
+        .map_err(|e| e.to_string())?;
+    vm.run().map_err(|e| e.root_cause().to_string())?;
+    Ok(split_exit_code(vm.output(), artifact.wasm()))
+}
+
+fn split_exit_code(mut lines: Vec<String>, wasm: &[u8]) -> (Vec<String>, Option<i32>) {
+    let exit_code = if wasm_main_returns_int(wasm) {
         lines.pop().and_then(|s| s.parse::<i32>().ok())
     } else {
         None
     };
-    Ok((lines, exit_code))
+    (lines, exit_code)
 }
 
 
@@ -557,5 +592,43 @@ mod tests {
             error.contains("textual WAT is not an authenticated production artifact"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn portable_wasm_refuses_any_module_its_embedded_source_does_not_reproduce() {
+        use witchy::portable_artifact::{probe, seal};
+        let path = std::env::temp_dir().join(format!("witchy-portable-attacks-{}.witchy", std::process::id()));
+        std::fs::write(&path, "fn main(console: Console):\n    console.print(\"genuine\")\n").unwrap();
+        let wasm = path.with_extension("wasm");
+        crate::emit_wasm_file(path.to_str().unwrap(), wasm.to_str().unwrap()).expect("emit portable wasm");
+        let sealed = std::fs::read(&wasm).unwrap();
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&wasm);
+        let run = |bytes: &[u8]| run_wasm_module(
+            bytes, Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, None, Vec::new(), None,
+            Vec::new(), true, witchy_confinement::EnforcementMode::Disabled,
+        );
+        // Re-admission reads only the embedded source: the original file is gone.
+        assert_eq!(run(&sealed).expect("portable wasm runs").0, ["genuine"]);
+
+        let portable = probe(&sealed).unwrap().unwrap();
+        let mut forged_source = portable.source_inputs.clone();
+        let entry = forged_source.files.iter_mut().find(|file| file.path == forged_source.entry).unwrap();
+        entry.contents = entry.contents.as_ref().map(|source| source.replace("genuine", "forged!"));
+        let mut forged_code = portable.module.to_vec();
+        // Rewrite the first function body's final `end` opcode in place.
+        let body = wasmparser::Parser::new(0).parse_all(portable.module).find_map(|payload| match payload {
+            Ok(wasmparser::Payload::CodeSectionEntry(body)) => Some(body.range()),
+            _ => None,
+        }).expect("a function body");
+        forged_code[body.end - 1] ^= 0x01;
+        for (label, bytes, expected) in [
+            ("source byte", seal(portable.module, &forged_source).unwrap(), "differs from its freshly admitted embedded source"),
+            ("code byte", seal(&forged_code, &portable.source_inputs).unwrap(), "differs from its freshly admitted embedded source"),
+            ("stripped section", portable.module.to_vec(), "without embedded source cannot be admitted"),
+        ] {
+            let error = run(&bytes).expect_err(label);
+            assert!(error.contains(expected), "{label}: {error}");
+        }
     }
 }

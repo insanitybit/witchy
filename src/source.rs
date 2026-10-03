@@ -4,7 +4,7 @@ mod package_inputs;
 mod precompiled_library;
 pub(crate) use package_inputs::{
     capture_packaged_source, capture_project_source, capture_project_source_with_precompiled,
-    project_declares_precompiled_dependencies, restore_packaged_artifact,
+    project_declares_precompiled_dependencies, restore_packaged_artifact, restore_portable_artifact,
 };
 use package_inputs::{AmbientFiles, SourceFiles};
 

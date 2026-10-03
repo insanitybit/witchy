@@ -33,8 +33,17 @@ pub struct SourceInputs {
     pub entry: String,
     pub dependencies: Vec<SourceDependency>,
     pub files: Vec<SourceFile>,
-    pub target_manifest: String,
+    /// The manifest whose target table a trusted-publisher image binds.
+    /// Portable Wasm binds nothing from a manifest and may omit it.
+    pub target_manifest: Option<String>,
 }
+
+/// Domain bytes standing in for the launcher prefix of portable Wasm. A
+/// trusted image digests its real launcher instead, so inputs sealed for one
+/// format never validate in the other.
+pub const PORTABLE_WASM_DOMAIN: &[u8] = b"witchy.portable-wasm.v1";
+
+const VERSION: u32 = 2;
 
 fn bundled_digest() -> [u8; 32] {
     use sha2::{Digest, Sha256};
@@ -77,10 +86,10 @@ impl SourceInputs {
         Ok(paths)
     }
 
-    pub fn captured(entry: String, dependencies: Vec<SourceDependency>, files: Vec<SourceFile>, target_manifest: String) -> Self {
+    pub fn captured(entry: String, dependencies: Vec<SourceDependency>, files: Vec<SourceFile>, target_manifest: Option<String>) -> Self {
         let options = witchy_syntax::opt::active_schema_key();
         Self {
-            version: 1,
+            version: VERSION,
             compiler_version: env!("CARGO_PKG_VERSION").into(),
             launcher_digest: [0; 32],
             bundled_digest: bundled_digest(),
@@ -95,8 +104,8 @@ impl SourceInputs {
     /// Compatibility checks run before any lazy optimization initialization or
     /// source checking. The launcher prefix is the validated envelope's prefix,
     /// never the whole executable (which includes this input payload).
-    pub fn validate(&self, launcher: &[u8]) -> Result<(), String> {
-        if self.version != 1 || self.compiler_version != env!("CARGO_PKG_VERSION")
+    fn validate(&self, launcher: &[u8]) -> Result<(), String> {
+        if self.version != VERSION || self.compiler_version != env!("CARGO_PKG_VERSION")
             || self.launcher_digest != super::digest(launcher)
             || self.bundled_digest != bundled_digest()
             || self.host_abi != super::HOST_ABI
@@ -108,7 +117,7 @@ impl SourceInputs {
             return Err("packaged source compiler/stdlib/ABI/options compatibility mismatch".into());
         }
         validate_path(&self.entry)?;
-        validate_path(&self.target_manifest)?;
+        if let Some(manifest) = &self.target_manifest { validate_path(manifest)?; }
         let mut paths = BTreeSet::new();
         for file in &self.files {
             validate_path(&file.path)?;
@@ -121,12 +130,25 @@ impl SourceInputs {
                 return Err("duplicate or empty closed dependency alias".into());
             }
         }
-        for required in [&self.entry, &self.target_manifest] {
+        for required in std::iter::once(&self.entry).chain(&self.target_manifest) {
             if !self.files.iter().any(|file| &file.path == required && file.contents.is_some()) {
                 return Err(format!("closed package is missing `{required}`"));
             }
         }
         Ok(())
+    }
+
+    /// A trusted-publisher image binds its launch from the target manifest.
+    pub fn validate_trusted(&self, launcher: &[u8]) -> Result<(), String> {
+        self.validate(launcher)?;
+        if self.target_manifest.is_none() {
+            return Err("trusted-publisher closed package has no target manifest".into());
+        }
+        Ok(())
+    }
+
+    pub fn validate_portable(&self) -> Result<(), String> {
+        self.validate(PORTABLE_WASM_DOMAIN)
     }
 
     pub fn configure_options(&self) -> Result<(), String> {

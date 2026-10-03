@@ -343,7 +343,7 @@ fn compile_rejects_unproved_package_owner_assignments_before_emission() {
     assert!(!wasm.exists());
 }
 
-// ---- BUG-104 / BUG-106: output preservation and raw `.wasm` refusal ----
+// ---- BUG-104 / BUG-106: output preservation and portable `.wasm` admission ----
 
 #[test]
 fn source_nil_main_int_output_is_not_eaten_as_exit_code() {
@@ -373,11 +373,20 @@ fn sandbox_wasm_requires_explicit_dir_grant() {
     assert!(String::from_utf8_lossy(&denied.stderr).contains("Dir"));
 
     let granted = run(&["sandbox", "--dir", dir.to_str().unwrap(), wasm.to_str().unwrap()]);
-    assert!(!granted.status.success(), "a capability grant must not authenticate detached raw Wasm");
+    assert_eq!(granted.status.code(), Some(0), "{}", String::from_utf8_lossy(&granted.stderr));
+    assert_eq!(String::from_utf8_lossy(&granted.stdout), "no\n");
+
+    // The module without its embedded source carries no admission; a grant
+    // does not authenticate it.
+    let sealed = std::fs::read(&wasm).unwrap();
+    let detached = dir.join("detached.wasm");
+    std::fs::write(&detached, witchy::portable_artifact::probe(&sealed).unwrap().unwrap().module).unwrap();
+    let refused = run(&["sandbox", "--dir", dir.to_str().unwrap(), detached.to_str().unwrap()]);
+    assert!(!refused.status.success(), "a capability grant must not authenticate detached raw Wasm");
     assert!(
-        String::from_utf8_lossy(&granted.stderr).contains("raw Wasm cannot claim canonical admission"),
+        String::from_utf8_lossy(&refused.stderr).contains("without embedded source cannot be admitted"),
         "{}",
-        String::from_utf8_lossy(&granted.stderr),
+        String::from_utf8_lossy(&refused.stderr),
     );
 }
 

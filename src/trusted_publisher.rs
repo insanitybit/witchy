@@ -651,7 +651,7 @@ pub fn package(template: &[u8], wasm: &[u8], bindings: &[u8], inputs: &SourceInp
         .ok_or_else(|| "cannot package application WASM without `witchy.launch` metadata".to_string())?;
     let mut inputs = inputs.clone();
     inputs.launcher_digest = digest(template);
-    inputs.validate(template)?;
+    inputs.validate_trusted(template)?;
     let inputs = serde_json::to_vec(&inputs).map_err(|error| error.to_string())?;
 
     let wasm_offset = u64::try_from(template.len())
@@ -891,7 +891,7 @@ pub fn probe(image: &[u8]) -> Result<Option<EmbeddedApplication<'_>>, String> {
     require_digest("source inputs", source_inputs, &descriptor[168..200])?;
     let inputs: SourceInputs = serde_json::from_slice(source_inputs)
         .map_err(|error| format!("invalid packaged source inputs: {error}"))?;
-    inputs.validate(launcher)?;
+    inputs.validate_trusted(launcher)?;
     wasmparser::validate(wasm)
         .map_err(|error| format!("trusted-publisher application contains invalid application WASM: {error}"))?;
     let launch = artifact::launch_contract_payload(wasm)?
@@ -940,7 +940,7 @@ mod tests {
         SourceInputs::captured("src/main.witchy".into(), Vec::new(), vec![
             SourceFile { path: "src/main.witchy".into(), contents: Some("fn main() -> ():\n    ()\n".into()) },
             SourceFile { path: "witchy.toml".into(), contents: Some("[rune]\nname = \"fixture\"\nversion = \"1\"\n".into()) },
-        ], "witchy.toml".into())
+        ], Some("witchy.toml".into()))
     }
 
     fn package(template: &[u8], wasm: &[u8], bindings: &[u8]) -> Result<Vec<u8>, String> {

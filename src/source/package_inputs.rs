@@ -185,7 +185,7 @@ fn load_with_precompiled(
 }
 
 pub(crate) fn capture_packaged_source(
-    entry: &str, dependencies: &HashMap<String, PathBuf>, manifest: &str,
+    entry: &str, dependencies: &HashMap<String, PathBuf>, manifest: Option<&str>,
 ) -> Result<(pipeline::CheckedModule, String, SourceInputs), String> {
     let inputs = capture_source_inputs(entry, dependencies, manifest)?;
     let (checked, entry) = recheck_packaged_source(&inputs)?;
@@ -223,7 +223,7 @@ pub(crate) fn capture_project_source(
             .find(|path| path.is_file()).ok_or("project source requires a workspace manifest")?,
     };
     let inputs = capture_source_inputs(entry, dependencies,
-        manifest.to_str().ok_or("non-UTF-8 project manifest")?)?;
+        Some(manifest.to_str().ok_or("non-UTF-8 project manifest")?))?;
     let files = ReplayFiles(&inputs);
     let mut verified = registry::Files::new(&files);
     let mut assert_owner = |path: &str, alias: &str, claim: &ModuleLoadIdentity| -> Result<(), String> {
@@ -301,8 +301,8 @@ pub(crate) fn capture_project_source_with_precompiled(
         return Err(format!("owner assertions for unselected dependencies: {}", extra.join(", ")));
     }
     let inputs = capture_source_inputs_with_precompiled(entry, dependencies,
-        manifest.to_str().ok_or("non-UTF-8 project manifest")?, &precompiled)?;
-    let captured_manifest = inputs.files.iter().find(|file| file.path == inputs.target_manifest)
+        Some(manifest.to_str().ok_or("non-UTF-8 project manifest")?), &precompiled)?;
+    let captured_manifest = inputs.files.iter().find(|file| Some(&file.path) == inputs.target_manifest.as_ref())
         .and_then(|file| file.contents.as_deref());
     if captured_manifest != Some(selected_manifest.as_str()) {
         return Err("closed project capture differs from the manifest that selected precompiled dependencies".into());
@@ -356,7 +356,7 @@ pub(crate) fn project_declares_precompiled_dependencies(
 }
 
 fn capture_source_inputs(
-    entry: &str, dependencies: &HashMap<String, PathBuf>, manifest: &str,
+    entry: &str, dependencies: &HashMap<String, PathBuf>, manifest: Option<&str>,
 ) -> Result<SourceInputs, String> {
     capture_source_inputs_with_precompiled(entry, dependencies, manifest, &HashMap::new())
 }
@@ -364,18 +364,20 @@ fn capture_source_inputs(
 fn capture_source_inputs_with_precompiled(
     entry: &str,
     dependencies: &HashMap<String, PathBuf>,
-    manifest: &str,
+    manifest: Option<&str>,
     precompiled: &HashMap<String, AuthenticatedPrecompiledDependency>,
 ) -> Result<SourceInputs, String> {
     let entry = absolute(Path::new(entry))?;
     let dependencies = dependencies.iter().map(|(alias, path)| Ok((alias.clone(), absolute(path)?)))
         .collect::<Result<HashMap<_, _>, String>>()?;
-    let manifest = absolute(Path::new(manifest))?;
+    let manifest = manifest.map(|manifest| absolute(Path::new(manifest))).transpose()?;
     let files = CaptureFiles::default();
     // This is the ordinary first-loaded resolution algorithm. No source is read
     // a second time after checking; repeated reads use the captured first value.
     let original = load_with_precompiled(&entry, &dependencies, precompiled, &files)?;
-    files.read(&manifest)?.ok_or("packaging manifest is missing")?;
+    if let Some(manifest) = &manifest {
+        files.read(manifest)?.ok_or("packaging manifest is missing")?;
+    }
     let mut dependencies = dependencies.into_iter().map(|(alias, path)| {
         Ok(SourceDependency { alias, path: key(&path)? })
     }).collect::<Result<Vec<_>, String>>()?;
@@ -392,7 +394,8 @@ fn capture_source_inputs_with_precompiled(
         }
     }
     let files = virtual_files.into_iter().map(|(path, contents)| SourceFile { path, contents }).collect();
-    let inputs = SourceInputs::captured(key(&entry)?, dependencies, files, key(&manifest)?);
+    let manifest = manifest.as_deref().map(key).transpose()?;
+    let inputs = SourceInputs::captured(key(&entry)?, dependencies, files, manifest);
     let replay = replay_loaded_inputs_with_precompiled(&inputs, precompiled).map_err(|error| {
         format!("closed package cannot preserve source/manifest resolution: {error}")
     })?;
@@ -402,11 +405,12 @@ fn capture_source_inputs_with_precompiled(
     Ok(inputs)
 }
 
+/// Check closed inputs through the same route ordinary compilation selects.
+/// Every compile-time execution on that route is a zero-grant session under
+/// the fixed `source_limits`, so replayed source acquires no host authority.
 pub(crate) fn recheck_packaged_source(inputs: &SourceInputs) -> Result<(pipeline::CheckedModule, String), String> {
     let (sources, entry, users, owners) = replay_loaded_inputs(inputs)?;
-    let checked = witchy::canonical_comptime::check_source_bundle(
-        sources, &entry, users, owners, witchy::canonical_comptime::source_limits(),
-    )?;
+    let checked = check_loaded_source_bundle(sources, &entry, &inputs.entry, users, owners)?;
     Ok((checked, entry))
 }
 
@@ -427,25 +431,51 @@ fn replay_loaded_inputs_with_precompiled(
     load_with_precompiled(Path::new(&inputs.entry), &dependencies, precompiled, &files)
 }
 
-pub(crate) fn restore_packaged_artifact(
-    application: &witchy::trusted_publisher::OwnedEmbeddedApplication,
-) -> Result<witchy_wir::AdmittedCanonicalArtifact, String> {
-    // load/probe checked the envelope, compiler prefix and all compatibility
-    // fields before this can initialize optimization state or parse source.
-    let inputs = &application.source_inputs;
+/// Fresh production admission of closed source. Nothing in `inputs` is an
+/// admission receipt; every caller compares the result with the bytes it ships.
+fn readmit_closed_source(
+    inputs: &SourceInputs,
+) -> Result<(pipeline::CheckedModule, witchy_wir::AdmittedCanonicalArtifact), String> {
+    // load/probe checked the envelope and all compatibility fields before
+    // this can initialize optimization state or parse source.
     inputs.configure_options()?;
     let (checked, entry) = recheck_packaged_source(inputs)?;
     witchy::enforce_performance_modes(checked.module(), &entry)?;
-    let manifest = ReplayFiles(inputs).read(Path::new(&inputs.target_manifest))?
-        .ok_or("closed target manifest missing")?;
-    let bindings = witchy::trusted_publisher::build_binding_plan(checked.module(), &manifest)?;
-    if bindings != application.bindings { return Err("packaged binding plan differs from freshly checked source and manifest".into()); }
     let artifact = match witchy_lower::codegen::compile_checked_module_artifact(&checked) {
         witchy_lower::codegen::LoweringOutcome::Lowered(artifact) => artifact,
         witchy_lower::codegen::LoweringOutcome::Unsupported(reason) => return Err(reason.to_string()),
         witchy_lower::codegen::LoweringOutcome::Rejected(error) => return Err(error.to_string()),
     };
+    Ok((checked, artifact))
+}
+
+pub(crate) fn restore_packaged_artifact(
+    application: &witchy::trusted_publisher::OwnedEmbeddedApplication,
+) -> Result<witchy_wir::AdmittedCanonicalArtifact, String> {
+    let inputs = &application.source_inputs;
+    let (checked, artifact) = readmit_closed_source(inputs)?;
+    let manifest = inputs.target_manifest.as_deref().ok_or("closed target manifest missing")?;
+    let manifest = ReplayFiles(inputs).read(Path::new(manifest))?
+        .ok_or("closed target manifest missing")?;
+    let bindings = witchy::trusted_publisher::build_binding_plan(checked.module(), &manifest)?;
+    if bindings != application.bindings { return Err("packaged binding plan differs from freshly checked source and manifest".into()); }
     if artifact.wasm() != application.wasm { return Err("packaged Wasm differs from freshly admitted source".into()); }
+    Ok(artifact)
+}
+
+/// Re-admit portable Wasm from its embedded source. The shipped module is
+/// accepted only if fresh admission reproduces it exactly; grants are then
+/// derived from that artifact, never from the section.
+pub(crate) fn restore_portable_artifact(
+    portable: &witchy::portable_artifact::PortableArtifact<'_>,
+) -> Result<witchy_wir::AdmittedCanonicalArtifact, String> {
+    let (_, artifact) = readmit_closed_source(&portable.source_inputs)?;
+    if !artifact.external_imports().is_empty() {
+        return Err("portable Wasm cannot link precompiled external libraries".into());
+    }
+    if artifact.wasm() != portable.module {
+        return Err("portable Wasm differs from its freshly admitted embedded source".into());
+    }
     Ok(artifact)
 }
 
@@ -484,7 +514,7 @@ mod tests {
             } else { app.join("../helper/src/helper.witchy") };
             let dependencies = HashMap::from([("helper".to_owned(), dependency.clone())]);
             let expected = vec!["selected through parent".to_owned()];
-            let (checked, _, inputs) = capture_packaged_source(entry.to_str().unwrap(), &dependencies, manifest.to_str().unwrap()).unwrap();
+            let (checked, _, inputs) = capture_packaged_source(entry.to_str().unwrap(), &dependencies, manifest.to_str()).unwrap();
             for file in &inputs.files { validate_path(&file.path).unwrap(); }
             let artifact = witchy_lower::codegen::compile_checked_module_artifact(&checked).expect_lowered("parent-relative artifact");
             assert!(!artifact.owner_bridges().is_empty());
@@ -498,7 +528,7 @@ mod tests {
                     ("helper".to_owned(), dependency),
                     ("other".to_owned(), app.join("helper/src/helper.witchy")),
                 ]);
-                let error = capture_packaged_source(entry.to_str().unwrap(), &conflicting, manifest.to_str().unwrap()).unwrap_err();
+                let error = capture_packaged_source(entry.to_str().unwrap(), &conflicting, manifest.to_str()).unwrap_err();
                 assert!(error.contains("conflicting observations"), "{error}");
             }
             std::fs::remove_dir_all(&folder.0).unwrap();
@@ -538,7 +568,7 @@ mod tests {
         // Explicit --dep wins over the entry's conflicting sibling.
         std::fs::write(folder.0.join("src/a.witchy"), "invalid source never selected").unwrap();
         let dependencies = ["a", "b"].into_iter().map(|name| (name.to_owned(), folder.0.join(format!("{name}/{name}.witchy")))).collect();
-        let (checked, stem, inputs) = capture_packaged_source(entry.to_str().unwrap(), &dependencies, manifest.to_str().unwrap()).unwrap();
+        let (checked, stem, inputs) = capture_packaged_source(entry.to_str().unwrap(), &dependencies, manifest.to_str()).unwrap();
         assert_eq!(stem, "main");
         assert!(inputs.files.iter().any(|file| file.path.ends_with("a/helper.witchy")));
         assert!(!inputs.files.iter().any(|file| file.path.ends_with("b/helper.witchy") || file.path.ends_with("src/a.witchy")));

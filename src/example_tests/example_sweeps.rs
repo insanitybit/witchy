@@ -86,22 +86,14 @@ use crate::{codegen, interpreter, parser};
     }
 
     #[test]
-    fn detached_wasm_requires_admission_while_the_admitted_artifact_runs() {
-        // Detached Wasm bytes no longer carry canonical admission authority.
-        // Preserve both sides of that boundary: raw distribution fails closed,
-        // while the authenticated artifact produced in-process executes and
-        // matches an independent semantic expectation.
+    fn portable_wasm_is_readmitted_from_its_source_while_detached_bytes_refuse() {
+        // `emit-wasm` output carries its closed source; the runner re-admits
+        // it and runs the fresh artifact. The same module with that section
+        // stripped carries no admission and must refuse before any grant.
         let tmp = std::env::temp_dir().join(format!("witchy_tier1_precompiled_{}.wasm", std::process::id()));
         let out = tmp.to_str().unwrap();
         crate::emit_wasm_file("examples/calc/src/calc.witchy", out).expect("emit-wasm");
-        let error = crate::run_wasm_file(out, Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, None, Vec::new(), None, Vec::new(), false, witchy_confinement::EnforcementMode::Disabled)
-            .expect_err("detached Wasm must not recover admission authority");
-        assert!(error.contains("raw Wasm cannot claim canonical admission"), "{error}");
-
-        let (checked, _) = crate::link_file_checked("examples/calc/src/calc.witchy")
-            .expect("checked calc source");
-        let artifact = codegen::compile_checked_module_artifact(&checked)
-            .expect_lowered("canonical calc admission");
+        let run = |path: &str| crate::run_wasm_file(path, Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, None, Vec::new(), None, Vec::new(), false, witchy_confinement::EnforcementMode::Disabled);
         let expected = [
             "2 + 3 * 4       => 14",
             "(2 + 3) * 4     => 20",
@@ -110,10 +102,13 @@ use crate::{codegen, interpreter, parser};
             "8 / (4 - 4)     => error: division by zero",
             "2 * (3 +        => error: unexpected end of input",
         ].map(str::to_owned);
-        assert_eq!(
-            crate::run_admitted_artifact(&artifact).expect("run admitted calc"),
-            expected,
-        );
+        assert_eq!(run(out).expect("run portable calc").0, expected);
+
+        let sealed = std::fs::read(&tmp).unwrap();
+        let module = witchy::portable_artifact::probe(&sealed).unwrap().expect("embedded source").module;
+        std::fs::write(&tmp, module).unwrap();
+        let error = run(out).expect_err("detached Wasm must not recover admission authority");
+        assert!(error.contains("without embedded source cannot be admitted"), "{error}");
         let _ = std::fs::remove_file(&tmp);
     }
 

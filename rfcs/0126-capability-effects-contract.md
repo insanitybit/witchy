@@ -76,7 +76,10 @@ state.
 Source footprints state what a root entrypoint may demand. Grant documents and
 host launch arguments state what a particular run receives. Launch succeeds
 only when the host grant covers the checked footprint. Precompiled Wasm and
-trusted executables preserve the same binding rule.
+trusted executables preserve the same binding rule. Portable precompiled Wasm
+carries its closed source; the host re-admits that source and requires the
+recompiled module to equal the shipped bytes before it checks any grant.
+Detached module bytes carry no admission and are refused.
 
 ### Tests are not the sandbox
 

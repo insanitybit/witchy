@@ -4,7 +4,7 @@ use witchy::{enforce_performance_modes, trusted_publisher};
 use witchy_syntax::opt;
 use witchy_lower::codegen;
 use witchy_types::pipeline;
-use crate::{link_file_checked, link_file_checked_with_deps};
+use crate::link_file_checked;
 use witchy_types::runtime_type::{ModuleLoadIdentity, PackageCoordinate, PackageSource};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
@@ -160,7 +160,7 @@ pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
                 } else if !dep_owners.is_empty() {
                     return Err("dependency owner assertions require --package-owner".into());
                 } else {
-                    crate::source::capture_packaged_source(&entry, &deps, manifest)?
+                    crate::source::capture_packaged_source(&entry, &deps, Some(manifest))?
                 };
                 enforce_performance_modes(checked.module(), &stem)?;
                 let artifact = match codegen::compile_checked_module_artifact(&checked) {
@@ -168,7 +168,7 @@ pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
                     codegen::LoweringOutcome::Unsupported(reason) => return Err(reason.to_string()),
                     codegen::LoweringOutcome::Rejected(error) => return Err(error.to_string()),
                 };
-                let manifest = inputs.files.iter().find(|file| file.path == inputs.target_manifest)
+                let manifest = inputs.files.iter().find(|file| Some(&file.path) == inputs.target_manifest.as_ref())
                     .and_then(|file| file.contents.as_deref()).ok_or("captured target manifest missing")?;
                 let bindings = trusted_publisher::build_binding_plan(checked.module(), manifest)?;
                 let launcher = std::env::current_exe().map_err(|error| error.to_string())?;
@@ -178,16 +178,15 @@ pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
             if crate::source::project_declares_precompiled_dependencies(&entry, manifest.as_deref())? {
                 return Err("precompiled external libraries may only be launched by authenticated `run-source`, not compiled to a standalone Wasm file".into());
             }
-            let (checked, stem) = if package_owner.is_some() || !dep_owners.is_empty() {
+            // Portable Wasm carries the closed source it was admitted from;
+            // the bytes are compiled from that replay, never a separate load.
+            let (checked, stem, inputs) = if package_owner.is_some() || !dep_owners.is_empty() {
                 let package_owner = package_owner.as_ref().ok_or_else(|| {
                     "authenticated dependency ownership requires --package-owner".to_string()
                 })?;
-                let (checked, stem, _) = crate::source::capture_project_source(
-                    &entry, &deps, None, package_owner, &dep_owners,
-                )?;
-                (checked, stem)
+                crate::source::capture_project_source(&entry, &deps, None, package_owner, &dep_owners)?
             } else {
-                link_file_checked_with_deps(&entry, &deps)?
+                crate::source::capture_packaged_source(&entry, &deps, None)?
             };
             let linked = checked.module();
             enforce_performance_modes(linked, &stem)?;
@@ -198,7 +197,8 @@ pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
                         return Err("--manifest applies only to `--target trusted-publisher`".into());
                     }
                     if let Some(f) = &out {
-                        std::fs::write(f, &bytes)
+                        let sealed = witchy::portable_artifact::seal(&bytes, &inputs)?;
+                        std::fs::write(f, &sealed)
                             .map_err(|e| format!("cannot write `{f}`: {e}"))?;
                     }
                 }
@@ -559,9 +559,9 @@ fn compile_to_development_wasm_cached(
 /// produced module is the Tier-1 distribution artifact: run it with `witchy
 /// <out>` under its source-derived launch contract and imported host families.
 pub(crate) fn emit_wasm_file(path: &str, out: &str) -> Result<(), String> {
-    let (checked, stem) = link_file_checked(path)?;
+    let (checked, stem, inputs) = crate::source::capture_packaged_source(path, &HashMap::new(), None)?;
     enforce_performance_modes(checked.module(), stem.as_str())?;
-    let binary = compile_checked_to_wasm(&checked)?;
+    let binary = witchy::portable_artifact::seal(&compile_checked_to_wasm(&checked)?, &inputs)?;
     std::fs::write(out, &binary).map_err(|e| format!("cannot write `{out}`: {e}"))?;
     Ok(())
 }

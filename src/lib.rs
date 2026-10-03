@@ -55,6 +55,8 @@ pub mod artifact;
 mod capabilities_tests;
 #[cfg(feature = "native")]
 pub mod trusted_publisher;
+#[cfg(feature = "native")]
+pub mod portable_artifact;
 // RFC-0018: runtime values + the capability host live in `witchy-runtime`
 // (wasm-safe); the wasmtime sandbox `runtime` is native-only.
 #[cfg(feature = "native")]
