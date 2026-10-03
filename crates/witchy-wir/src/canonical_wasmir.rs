@@ -177,6 +177,18 @@ struct MemoryAccess {
     index: Option<ValueId>,
 }
 
+impl MemoryAccess {
+    /// Whether the full indexed address is representable before its final
+    /// u32 address-range check, even for the widest possible operands.
+    fn indexed_address_fits_u64(self) -> bool {
+        u64::from(u32::MAX)
+            .checked_mul(u64::from(self.collection.stride))
+            .and_then(|value| value.checked_add(u64::from(self.offset)))
+            .and_then(|value| value.checked_add(u64::from(u32::MAX)))
+            .is_some()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ScalarTerminator {
     Branch { target: crate::canonical_safewir::BlockId, arguments: Vec<ValueId> },

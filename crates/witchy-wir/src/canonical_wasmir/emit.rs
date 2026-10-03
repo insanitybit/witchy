@@ -172,7 +172,12 @@ pub(super) fn emit_projected_address(
             .and_then(|value| value.checked_sub(access.width))
             .ok_or(EncodeError::UnsupportedLayout { function: function.id, operation: "address" })?)
             / access.collection.stride;
-        emit_u32_trap_if_gt(body, layout, function.id, index, maximum)?;
+        // The final address check also rejects an oversized index when the
+        // complete u32 object/index calculation cannot overflow u64. Keep the
+        // separate index guard for unusually large strides where it can.
+        if !access.indexed_address_fits_u64() {
+            emit_u32_trap_if_gt(body, layout, function.id, index, maximum)?;
+        }
         emit_get(body, layout, function.id, access.object)?;
         body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
         emit_get(body, layout, function.id, index)?;

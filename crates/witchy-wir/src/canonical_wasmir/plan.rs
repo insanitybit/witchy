@@ -294,7 +294,9 @@ pub(super) fn push_projected_address_plan(
             .and_then(|value| value.checked_sub(access.width))
             .ok_or(CanonicalAdmissionError::UnsupportedPlan)?
             ) / access.collection.stride;
-        push_u32_trap_if_gt_plan(plan, layout, index, maximum)?;
+        if !access.indexed_address_fits_u64() {
+            push_u32_trap_if_gt_plan(plan, layout, index, maximum)?;
+        }
         push_get(plan, layout, access.object)?;
         plan.push(PlanToken::I64ExtendI32U);
         push_get(plan, layout, index)?;
