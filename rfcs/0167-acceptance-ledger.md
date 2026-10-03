@@ -559,6 +559,16 @@ refuses at source checking, including the general direct, function-value, and
 existential call paths. This adds one nested record carrier to rows H and K;
 arbitrary aggregate and collection paths remain open.
 
+Nested normal-mode view storage, 2026-10-03: `rfc0167_nested_list_root_view`
+now verifies a three-level `&List(List(List(Int)))` snapshot after an inner
+write (independent result `19`) and a `&List(Dict(String, &String))` snapshot
+through replacement, push, and concat (independent result `2454`). Both run
+on admitted unoptimized Wasm with zero canonical heap leaks. The dictionary
+case uses the canonical typed table layout as a list element and retains its
+reference-counted snapshot at sequence stores; an aggregate-shape lookup and
+unique move were incorrect for that storage class. This extends row G's
+recursive collection evidence without closing all view carriers.
+
 Owned-value materialization (production path migrated, 2026-09-26): the
 compiler-known `.owned()` now uses the shared checked storage judgment for
 fresh linear-owner provenance in the checker and no-copy analysis, and

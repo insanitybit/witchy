@@ -611,10 +611,10 @@ pub enum ListElementDisposition {
     MoveOnly,
 }
 
-/// Preparation and ownership transfer for a retained view stored as one
-/// sequence element. A byte-buffer view may denote static storage, so it
-/// must first materialize a fresh owned buffer. Other retained roots keep
-/// their authenticated token and transfer a shared reference.
+/// Preparation and ownership transfer for a reference-counted sequence
+/// element. A byte-buffer view may denote static storage, so it must first
+/// materialize a fresh owned buffer. Retained roots and dictionary snapshots
+/// keep an authenticated shared token at the containing edge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetainedElementTransfer {
     MaterializeOwnedBuffer,
@@ -627,6 +627,8 @@ impl RetainedElementTransfer {
             StoragePlan::RootedView(RootedViewStorage::RetainedRoot(RetainedRootStorage::ByteBuffer(_))) =>
                 Some(Self::MaterializeOwnedBuffer),
             StoragePlan::RootedView(RootedViewStorage::RetainedRoot(_)) =>
+                Some(Self::RetainReference),
+            StoragePlan::Owned(CarrierElement::Dict(_, _)) =>
                 Some(Self::RetainReference),
             _ => None,
         }

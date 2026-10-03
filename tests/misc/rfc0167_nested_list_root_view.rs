@@ -62,6 +62,67 @@ fn main() -> Int:
 }
 
 #[test]
+fn a_three_level_list_view_retains_the_complete_old_graph() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let checked = witchy::resolve_std_only_checked(r#"
+fn relay(rows: &List(List(List(Int)))) -> &List(List(List(Int))):
+    rows
+
+fn main() -> Int:
+    var rows: List(List(List(Int))) = [[[1]], [[2]]]
+    let old = relay(&rows)
+    rows[0][0][0] = 9
+    (*old)[0][0][0] * 10 + rows[0][0][0]
+"#).expect("three-level list view checks");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("three-level list view admits");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(&artifact,
+        Capabilities { print_int: true, quiet: true, ..Capabilities::none() },
+        128).expect("admitted Wasm instance");
+    vm.run().expect("admitted Wasm execution");
+    assert_eq!(vm.output(), vec!["19".to_string()]);
+    assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+}
+
+#[test]
+fn a_list_of_view_bearing_dictionaries_retains_its_old_graph() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let checked = witchy::resolve_std_only_checked(r#"
+fn read(rows: &List(Dict(String, &String))) -> Int:
+    (*((*rows)[0].at("a"))).length()
+
+fn main() -> Int:
+    let a = "aa"
+    let b = "bbbb"
+    let c = "ccccc"
+    var first: Dict(String, &String) = dict.new()
+    let _ = first.insert("a", &a)
+    var rows: List(Dict(String, &String)) = [first]
+    let old = &rows
+    var second: Dict(String, &String) = dict.new()
+    let _ = second.insert("a", &b)
+    rows = [second]
+    var third: Dict(String, &String) = dict.new()
+    let _ = third.insert("a", &c)
+    rows.push(third)
+    let doubled = rows.concat(rows)
+    read(old) * 1000 + read(&rows) * 100 + (*doubled[1].at("a")).length() * 10 + doubled.length()
+"#).expect("list of view-bearing dictionaries checks");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("list of view-bearing dictionaries admits");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(&artifact,
+        Capabilities { print_int: true, quiet: true, ..Capabilities::none() },
+        128).expect("admitted Wasm instance");
+    vm.run().expect("admitted Wasm execution");
+    assert_eq!(vm.output(), vec!["2454".to_string()]);
+    assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+}
+
+#[test]
 fn a_closure_capture_retains_the_nested_list_snapshot() {
     opt::set_for_tests(Some(OptSet::none()));
     let _reset = ResetOptimizationOverride;

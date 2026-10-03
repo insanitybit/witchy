@@ -21974,8 +21974,13 @@ fn list_layout(
         StoragePlan::MoveOnlyOwned(_) => source_value_type(
             &arguments[0], layout_bundle, layouts, closure_layouts, definitions,
         )?,
+        // Dictionaries use a canonical table layout, not a scalar aggregate
+        // shape. Resolve their typed key/value slots through the same source
+        // lookup used at ordinary value and call boundaries.
+        StoragePlan::Owned(CarrierElement::Dict(_, _)) => source_value_type(
+            &arguments[0], layout_bundle, layouts, closure_layouts, definitions,
+        )?,
         StoragePlan::Owned(CarrierElement::Tuple(_)
-            | CarrierElement::Dict(_, _)
             | CarrierElement::Record { .. }
             | CarrierElement::Sum { .. })
         | StoragePlan::AuthenticatedPlace(_) => aggregate_element()?,
