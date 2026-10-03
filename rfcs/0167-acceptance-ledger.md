@@ -278,6 +278,13 @@ aggregate owner family. `&Option(List(&String))` keeps its two-character old
 snapshot after replacement by a three-character string, runs admitted Wasm
 with independent result 23, and reports zero leaks.
 
+`&Dict(String, &String)` also retains a dictionary containing an owned view
+carrier after the original dictionary binding is replaced. The normal-mode
+admitted Wasm witness reads both the old entry count and the two-character
+String through the retained root, returns the independent result 1201, and
+reports zero owned-heap leaks. This establishes that concrete nested graph
+shape; it does not close arbitrary dictionary payloads.
+
 The same checked graph-root identity covers structural tuples, with a distinct
 tuple identity tag and physical GC-owner or retained-Ref correspondence.
 `&(List(&Int), Int)` and `&(List(&String), Int)` retain their old tuples after

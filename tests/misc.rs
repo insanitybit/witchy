@@ -169,6 +169,8 @@ mod rfc0167_must_list_disposition;
 mod rfc0167_option_list_view_boundary;
 #[path = "misc/rfc0167_dict_root_view.rs"]
 mod rfc0167_dict_root_view;
+#[path = "misc/rfc0167_dict_view_root.rs"]
+mod rfc0167_dict_view_root;
 #[path = "misc/rfc0167_dict_hash_contract.rs"]
 mod rfc0167_dict_hash_contract;
 #[path = "misc/rfc0167_dict_equivalent_query.rs"]
