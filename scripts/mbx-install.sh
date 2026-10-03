@@ -30,7 +30,7 @@
 # created when missing or dangling and never flipped to a newer version.
 set -euo pipefail
 
-MBX_VERSION="1.21.0"
+MBX_VERSION="1.22.0"
 
 repo_root="$(cd "$(dirname "$0")/.." && pwd)"
 # Install under the MAIN checkout's state/ so every worktree shares one binary
