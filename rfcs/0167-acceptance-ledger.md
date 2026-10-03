@@ -293,6 +293,12 @@ String through the retained root, returns the independent result 1201, and
 reports zero owned-heap leaks. This establishes that concrete nested graph
 shape; it does not close arbitrary dictionary payloads.
 
+`&Result(Dict(String, &String), String)` composes that dictionary graph with
+an error branch. After replacing the `Ok` root with `Err("bad")`, normal-mode
+admitted Wasm still reads the old two-character view and dictionary count,
+returns the independently calculated 213, and reports zero owned-heap leaks.
+This is one concrete Result payload shape, not an arbitrary carrier proof.
+
 The same checked graph-root identity covers structural tuples, with a distinct
 tuple identity tag and physical GC-owner or retained-Ref correspondence.
 `&(List(&Int), Int)` and `&(List(&String), Int)` retain their old tuples after
