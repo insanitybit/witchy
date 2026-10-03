@@ -9,6 +9,19 @@ tracking: impl/rfc0165-canonical-v1
 
 # RFC-0165: SafeWIR as Witchy's canonical optimizing IR
 
+## Current priority and safety floor
+
+The current delivery priority is normal-mode language semantics in RFC-0167
+and capability grants in RFC-0126. Stronger SafeWIR proofs and additional
+optimization passes are deferred. This does not defer or bypass the existing
+production SafeWIR checker, ownership and bounds rules, host-authority checks,
+or exact executable-artifact admission. Unsupported cases must refuse rather
+than escape through an unchecked backend route.
+
+The evidence recorded here and in the acceptance ledger is bounded. It is not
+a proof of compiler-wide memory safety or general preservation of program
+values, effects, and traps by future optimizations.
+
 ## Summary
 
 The [language contract](0167-witchy-language-contract.md) controls normal/opt

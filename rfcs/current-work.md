@@ -13,11 +13,22 @@ contract. Its [acceptance ledger](0167-acceptance-ledger.md) distinguishes the
 normal-mode milestone from wider and deferred coverage. Keep normal-mode
 ownership, `var` write-back, immutable views, resource disposition, typed
 comptime, and installed check/fmt/compile/run behavior under admitted Wasm.
+Treat `must` as part of the main language's typing and disposition rules.
+Finish the remaining normal-mode ownership and view carrier obligations in the
+ledger; the bounded compiler-tooling milestone does not close the full RFC.
 Refresh evidence on the exact current compiler tip before declaring any row
 closed; historical source-interpreter parity is not an acceptance gate.
 `mode opt`, cross-mode calls and opt-defined types remain deferred.
 
-## 2. Safe, behavior-preserving optimization
+## 2. Capabilities and host grants
+
+[RFC-0167](0167-witchy-language-contract.md) owns the source meaning of typed
+capabilities, effectful calls, delegation, and purity. [RFC-0126](0126-capability-effects-contract.md)
+owns authenticated roots, rights narrowing, footprint and grant binding, and
+host confinement. Keep the normal-mode capability workflow executable end to
+end; extend effectful standard-library coverage only with host-boundary evidence.
+
+## 3. SafeWIR safety floor; stronger work deferred
 
 [RFC-0165](0165-safewir-canonical-ir.md) owns the canonical SafeWIR route, and
 the [schema-1 judgment](0162-safewir-judgment.md) defines a narrower independent
@@ -27,7 +38,10 @@ compiler-wide memory-safety theorem. [RFC-0163](0163-authority-validated-codegen
 remains a proposal for stronger authority and final-code validation; its
 historical ledger cannot substitute for a current implementation audit.
 
-Every new optimization must have (1) a precise allowed rewrite and independent
+Retain existing production checks and artifact admission. Defer stronger proof
+claims and new optimization passes until the language and capability contracts
+settle. Do not bypass a check or treat bounded evidence as compiler-wide memory
+safety. Any later new optimization must have (1) a precise allowed rewrite and independent
 behavior-preservation check covering values, effects, and traps, (2) final
 SafeWIR memory/ownership validation, (3) authenticated host-authority and
 artifact admission, and (4) focused adversarial and matched-workload evidence.
@@ -35,7 +49,7 @@ A final safety check alone cannot prove that an optimization returns the same
 value. The current same-block bounds-guard pass has an exact rewrite relation
 and final validation; any stronger pass needs its own relation.
 
-## 3. Runtime performance: measure first
+## 4. Runtime performance: measure first
 
 Older RFC-0143, RFC-0146, and RFC-0153 benchmark ratios are revision-specific.
 Use the current binary, equivalent Witchy and Go results, paired kernel clocks,
@@ -60,7 +74,7 @@ and SafeWIR checks as promotion gates.
   interning, or a protected compiler service. The old RFC-0164, RFC-0169,
   and RFC-0172 documents were unaccepted proposals, not simultaneous plans.
 
-## 4. Other product proposals
+## 5. Other product proposals
 
 The hosted Coven, Glamour, native-extension, dynamic-code, and expanded effect
 system proposals are parked. Revive one with a new scoped decision when its

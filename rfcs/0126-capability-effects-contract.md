@@ -32,6 +32,21 @@ owns the callable and effect distinction; the security obligations here remain.
 This is Witchy's central effect system. It is not an optional security library,
 an ambient permission lookup, or a convention layered on ordinary handles.
 
+## Current delivery boundary
+
+Capabilities are a core part of the language, not a later extension. RFC-0167
+owns their source-level call and effect semantics. This RFC owns the security
+contract that those semantics depend on: authenticated host roots, monotone
+rights narrowing, checked footprints and grants, and confinement at launch and
+host calls. Current work must preserve those boundaries for normal-mode
+programs and admitted artifacts. A passing source type check alone does not
+establish that a host grant or executable artifact is authentic.
+
+The supported-preview workflow is narrower than a complete audit of every
+effectful standard-library module or host. Promote additional modules only
+with evidence at their actual host boundary. Deferred dynamic code, native
+extensions, and symbolic grant proposals are not required for this delivery.
+
 ## Canonical model
 
 ### Authority is not data

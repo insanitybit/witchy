@@ -34,6 +34,30 @@ or SafeWIR verification.
 Examples below specify the target contract. They are fragments, not claims that
 today's compiler accepts or executes the entire feature matrix.
 
+### Current delivery focus
+
+Finish normal-mode semantics for snapshot values, `own`, `unique`, `var`
+write-back, immutable rooted views, and `must` disposition. `must` is a core
+typing rule: a value cannot be discarded, hidden in an opaque carrier, or left
+live across a path without a checked disposition. Task cancellation needs a
+separate lifecycle design where the current rules cannot prove disposition;
+unsupported cases must refuse. Complete the remaining normal-mode ownership
+and view carrier cases recorded in the acceptance ledger before claiming the
+full contract implemented.
+
+Capabilities and effects are also source-language semantics. This RFC owns the
+meaning of typed capability parameters, effectful calls, delegation, and
+purity. [RFC-0126](0126-capability-effects-contract.md) owns the independently
+reviewable host boundary: authenticated roots, rights narrowing, footprints,
+grants, and confinement. Neither document may silently weaken the other.
+
+The bounded typed `comptime` forms needed by the normal-mode compiler remain
+in scope. Broader generated syntax, region promotion, packed layout, broad
+reflection, and runtime `Dynamic` are not current acceptance gates; existing
+supported cases retain their safety rules and unsupported cases refuse. Internal
+layout validation is still required by SafeWIR. `mode opt` and cross-mode
+matrices remain deferred as specified below.
+
 ### Delivery decision, 2026-09-29: defer opt mode
 
 The current delivery target is the normal-mode language, canonical compiler,
