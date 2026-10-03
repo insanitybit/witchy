@@ -651,6 +651,10 @@ admitted unoptimized Wasm witness returns the independent result `143` with
 zero canonical heap leaks, and the focused source refusals still reject child
 extraction and root escape. This extends row K's nested resource inspection
 evidence; it does not establish general resource views or collection paths.
+The tagged-sum extension runs both `Good(Int)` and `Bad(Int)` beneath a borrowed
+`Box(Ticket)` and then consumes each original box. Admitted unoptimized Wasm
+returns the independent result `4937` with zero canonical heap leaks, covering
+selected variant branches in addition to the nested record path.
 
 Nested normal-mode view storage, 2026-10-03: `rfc0167_nested_list_root_view`
 now verifies a three-level `&List(List(List(Int)))` snapshot after an inner
