@@ -13969,9 +13969,6 @@ impl FunctionLowerer<'_> {
             let index = field.parse::<usize>().ok().filter(|index| *index < items.len())
                 .ok_or_else(|| CanonicalLoweringError::MissingBinding(field.to_owned()))?;
             let value_type = self.field_value_type(&items[index])?;
-            if witchy_canonical_source::storage::affine_storage_shape(&items[index], self.definitions).is_some() {
-                return Err(CanonicalLoweringError::UnsupportedExpression("affine field projection requires consuming pattern"));
-            }
             let object = self.lower_expr(base)?;
             // A tuple carrying a rooted view is an owner-family aggregate;
             // read its slot exactly as a tuple pattern does, so `frame.0` of
@@ -13998,9 +13995,6 @@ impl FunctionLowerer<'_> {
         let field_type = shape.fields.get(index).ok_or_else(|| {
             CanonicalLoweringError::MissingBinding(field.to_owned())
         })?;
-        if witchy_canonical_source::storage::affine_storage_shape(field_type, self.definitions).is_some() {
-            return Err(CanonicalLoweringError::UnsupportedExpression("affine field projection requires consuming pattern"));
-        }
         let value_type = self.field_value_type(field_type)?;
         let object = self.lower_expr(base)?;
         if !matches!(self.values[&object], ValueType::Ref(_) | ValueType::Gc(_)) {

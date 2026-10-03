@@ -655,6 +655,12 @@ The tagged-sum extension runs both `Good(Int)` and `Bad(Int)` beneath a borrowed
 `Box(Ticket)` and then consumes each original box. Admitted unoptimized Wasm
 returns the independent result `4937` with zero canonical heap leaks, covering
 selected variant branches in addition to the nested record path.
+Direct field expressions now use the same temporary affine-child borrow for
+normal-mode scalar reads through a record or tuple containing a `must` field.
+`rfc0167_borrowed_affine_projection` returns the independently calculated
+`4742` and `613` on admitted unoptimized Wasm with zero canonical heap leaks;
+returning the borrowed affine child still refuses. This admits scalar
+inspection without making a persistent resource view or copying the child.
 
 Nested normal-mode view storage, 2026-10-03: `rfc0167_nested_list_root_view`
 now verifies a three-level `&List(List(List(Int)))` snapshot after an inner
