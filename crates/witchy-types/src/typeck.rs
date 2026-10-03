@@ -3098,6 +3098,75 @@ impl Checker {
         is_scalar_ty(&self.resolve(&current))
     }
 
+    /// Rebuild source qualifiers along a checked tuple/list/dictionary place.
+    /// When an indexed element is replaced, joining its old and new source
+    /// shapes describes every element conservatively, including untouched ones.
+    fn storage_after_projected_assignment(
+        &self,
+        root: &str,
+        value: &Expr,
+        place_depth: u32,
+    ) -> Option<ast::Type> {
+        use witchy_canonical_source::access::CheckedPlaceStep as Step;
+
+        let place = witchy_canonical_source::access::checked_assignment_place(root, value, place_depth);
+        if place_depth == 0 || place.steps().len() != place_depth as usize {
+            return None;
+        }
+        let mut leaf = value;
+        for _ in 0..place_depth {
+            leaf = match leaf {
+                Expr::RecordUpdate { fields, .. } if fields.len() == 1 => &fields[0].1,
+                Expr::Call { name, args } if name == intrinsics::LIST_SET_AT && args.len() == 3 => &args[2],
+                Expr::Call { name, args } if name == intrinsics::DICT_INSERT && args.len() == 3 => &args[2],
+                Expr::MethodCall { method, args, .. } if method == "__set_at" && args.len() == 2 => &args[1],
+                _ => return None,
+            };
+        }
+
+        fn rebuild(
+            checker: &Checker,
+            source: &ast::Type,
+            ty: &Ty,
+            steps: &[Step],
+            leaf: &Expr,
+        ) -> Option<ast::Type> {
+            if steps.is_empty() {
+                let new = checker.inferred_binding_storage_type(leaf, ty)?;
+                return Checker::common_storage_type(source, &new);
+            }
+            match (source, checker.resolve(ty), &steps[0]) {
+                (ast::Type::Qualified(qual, inner), ty, _) =>
+                    Some(ast::Type::Qualified(qual.clone(), Box::new(rebuild(checker, inner, &ty, steps, leaf)?))),
+                (ast::Type::Tuple(fields), Ty::Tuple(types), Step::Field(field))
+                    if fields.len() == types.len() => {
+                    let index = field.parse::<usize>().ok()?;
+                    let mut result = fields.clone();
+                    *result.get_mut(index)? = rebuild(checker, fields.get(index)?, types.get(index)?, &steps[1..], leaf)?;
+                    Some(ast::Type::Tuple(result))
+                }
+                (ast::Type::Named(name, args), Ty::List(element), Step::Index(_) | Step::DynamicIndex)
+                    if name.rsplit('.').next() == Some("List") && args.len() == 1 => {
+                    let mut result = args.clone();
+                    result[0] = rebuild(checker, &args[0], element.as_ref(), &steps[1..], leaf)?;
+                    Some(ast::Type::Named(name.clone(), result))
+                }
+                (ast::Type::Named(name, args), Ty::Named(ty_name, ty_args), Step::DynamicIndex)
+                    if name.rsplit('.').next() == Some("Dict") && ty_name.as_ref() == "Dict"
+                        && args.len() == 2 && ty_args.len() == 2 => {
+                    let mut result = args.clone();
+                    result[1] = rebuild(checker, &args[1], &ty_args[1], &steps[1..], leaf)?;
+                    Some(ast::Type::Named(name.clone(), result))
+                }
+                _ => None,
+            }
+        }
+
+        let source = self.binding_storage_type(root)?;
+        let ty = self.lookup(root)?;
+        rebuild(self, &source, &ty, place.steps(), leaf)
+    }
+
     fn exclusive_borrow_targets_frozen_storage(&self, expr: &Expr) -> bool {
         match expr {
             Expr::Var(name) => self.is_frozen_binding(name),
@@ -6146,14 +6215,15 @@ impl Checker {
                     // not merely the erased value type. An assignment may run in
                     // only one branch, so merge the old and replacement shapes
                     // conservatively; a frozen child dominates a plain child.
-                    // A projected write can replace a qualified child; until
-                    // its full source shape is reconstructed, revoke the proof.
+                    // A projected write can replace a qualified child. Retain
+                    // the proof only when the checked place and source shape
+                    // reconstruct the replacement or the leaf is scalar.
                     let replacement_storage = if *place_depth == 0 {
                         self.inferred_binding_storage_type(value, &vt)
                     } else if self.assignment_replaces_scalar(name, value, *place_depth) {
                         self.binding_storage_type(name)
                     } else {
-                        None
+                        self.storage_after_projected_assignment(name, value, *place_depth)
                     };
                     if let Some(scope) = self.scopes.iter().rposition(|scope| scope.contains_key(name)) {
                         let storage = &mut self.binding_storage_types[scope];

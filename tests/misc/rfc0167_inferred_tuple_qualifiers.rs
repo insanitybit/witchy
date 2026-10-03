@@ -100,7 +100,7 @@ fn main() -> Int:
 }
 
 #[test]
-fn replacing_an_aggregate_child_revokes_its_old_storage_proof() {
+fn replacing_an_aggregate_child_with_frozen_storage_updates_its_proof() {
     let error = witchy::resolve_std_only_checked(r#"
 type Box:
     value: Int
@@ -110,6 +110,100 @@ fn main() -> Int:
     pair.0 = item
     pair.0.value = 9
     0
-"#).expect_err("replacing a tuple child cannot reuse the old storage proof");
-    assert!(error.to_string().contains("cannot verify deep assignment place"), "{error}");
+"#).expect_err("replacing a tuple child must retain the frozen replacement proof");
+    assert!(error.to_string().contains("cannot mutate through frozen value"), "{error}");
+}
+
+#[test]
+fn replacing_a_tuple_child_with_known_plain_storage_keeps_deep_write_authorized() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let checked = witchy::resolve_std_only_checked(r#"
+type Box:
+    value: Int
+fn main() -> Int:
+    var pair = (Box(2), 3)
+    pair.0 = Box(5)
+    pair.0.value = 9
+    pair.0.value * 10 + pair.1
+"#).expect("known tuple-child replacement preserves a deep-write proof");
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("projected aggregate replacement admits");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(&artifact,
+        Capabilities { print_int: true, quiet: true, ..Capabilities::none() },
+        128).expect("admitted Wasm instance");
+    vm.run().expect("admitted Wasm execution");
+    assert_eq!(vm.output(), vec!["93".to_string()]);
+    assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+}
+
+#[test]
+fn replacing_a_tuple_child_with_frozen_storage_retains_the_frozen_proof() {
+    let error = witchy::resolve_std_only_checked(r#"
+type Box:
+    value: Int
+fn main() -> Int:
+    let item: frozen Box = Box(1)
+    var pair = (Box(2), 3)
+    pair.0 = item
+    pair.0.value = 9
+    0
+"#).expect_err("frozen child replacement cannot authorize deep mutation");
+    assert!(error.to_string().contains("cannot mutate through frozen value"), "{error}");
+}
+
+#[test]
+fn replacing_an_indexed_child_with_known_storage_keeps_deep_write_authorized() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let checked = witchy::resolve_std_only_checked(r#"
+type Box:
+    value: Int
+fn main() -> Int:
+    var pair = ([Box(2)], 3)
+    pair.0[0] = Box(5)
+    pair.0[0].value = 9
+    pair.0[0].value * 10 + pair.1
+"#).expect("known indexed replacement preserves a deep-write proof");
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("projected indexed replacement admits");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(&artifact,
+        Capabilities { print_int: true, quiet: true, ..Capabilities::none() },
+        128).expect("admitted Wasm instance");
+    vm.run().expect("admitted Wasm execution");
+    assert_eq!(vm.output(), vec!["93".to_string()]);
+    assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+}
+
+#[test]
+fn replacing_an_indexed_child_with_frozen_storage_freezes_deep_writes() {
+    let error = witchy::resolve_std_only_checked(r#"
+type Box:
+    value: Int
+fn main() -> Int:
+    let item: frozen Box = Box(1)
+    var pair = ([Box(2)], 3)
+    pair.0[0] = item
+    pair.0[0].value = 9
+    0
+"#).expect_err("indexed replacement must retain the frozen qualifier");
+    assert!(error.to_string().contains("cannot mutate through frozen value"), "{error}");
+}
+
+#[test]
+fn conditional_projected_replacement_cannot_lend_a_plain_proof_after_join() {
+    let error = witchy::resolve_std_only_checked(r#"
+type Box:
+    value: Int
+fn main() -> Int:
+    let item: frozen Box = Box(1)
+    var pair = (Box(2), 3)
+    if true:
+        pair.0 = item
+    pair.0.value = 9
+    0
+"#).expect_err("conditional projected replacement must retain frozen storage");
+    assert!(error.to_string().contains("cannot mutate through frozen value"), "{error}");
 }

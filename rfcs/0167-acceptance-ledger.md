@@ -415,7 +415,16 @@ through an inferred tuple preserve a live `must` sibling and still return
 `792` on admitted unoptimized Wasm with zero leaks. Replacing `pair.0` with
 an aggregate instead revokes the old proof, and a subsequent deep write
 refuses. This narrows the earlier projected-write limitation; source-shape
-reconstruction for aggregate replacements remains open.
+reconstruction for aggregate replacements remained open at that checkpoint.
+
+Projected aggregate replacements, 2026-10-03: checked tuple and indexed
+list/dictionary assignment paths now rebuild the source qualifier shape at
+the replaced child. A known plain replacement permits a later deep `var`
+write through both `pair.0` and `pair.0[0]`; admitted unoptimized Wasm returns
+the independent result `93` with zero leaks for each path. A frozen alias
+replacement retains the frozen child and refuses the later deep write with
+the frozen-mutation diagnostic. Unknown replacement shapes and projected
+record-field aggregates still revoke the proof; row H remains partial.
 
 `rfc0167_frozen_view_replacement` adds a normal-mode row L composition
 witness: a rooted `&frozen Box` keeps the old field value when a `var frozen
