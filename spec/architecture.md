@@ -53,7 +53,7 @@ typed generated-node IDs, structural AST paths, definition and invocation
 spans, and ordered syntax-hole ancestry. This table is allocated and remapped
 by compiler passes; formatted source is never a node identity.
 
-### Workspace layout ([RFC-0018](../rfcs/0018-compiler-architecture.md))
+### Workspace layout ([RFC-0018](../rfcs/retired-rfcs.md))
 
 The compiler is a **Cargo workspace**: eleven stage-aligned library crates under
 `crates/`, plus the `witchy` root package (the CLI, the wasm-playground
@@ -84,7 +84,7 @@ are the package manager and registry, self-hosted in witchy.
 ## The conformance discipline
 
 Stable observable semantics converge before support
-([RFC-0135](../rfcs/0135-stable-semantics-converge.md)). Independent expected
+([RFC-0135](../rfcs/retired-rfcs.md)). Independent expected
 results adjudicate correctness. Admitted unoptimized Wasm must match those
 expectations, and structural tests independently pin the checker, lowering,
 authority, ownership, and encoder contracts. A silent mismatch is a bug; a loud

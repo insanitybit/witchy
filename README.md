@@ -129,10 +129,10 @@ and its limits.
 
 Pre-1.0 and compatibility-unstable; anything may break without a deprecation
 period. The dependable path is deliberately small - language fundamentals,
-capability inspection, check/format/test, independent-expectation to canonical
-interpreter to admitted-WASM parity,
+capability inspection, check/format/test, independently expected results on
+admitted WASM,
 portable WASM sandboxing, and self-contained
-[`trusted-publisher`](rfcs/0157-trusted-publishers-and-executable-state.md) builds. Everything
+[`trusted-publisher`](PRODUCT-STATUS.md) builds. Everything
 else (runes + the Coven registry, the Glamour frontend, the in-browser
 playground, editor tooling) is experimental dogfood.
 [PRODUCT-STATUS.md](PRODUCT-STATUS.md) is the evidence-backed boundary.

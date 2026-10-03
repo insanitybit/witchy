@@ -130,4 +130,4 @@ the e2e suite drives. What separates it from a production deployment is
 operational, not functional: TLS termination in front of the server, a real
 OIDC issuer and live JWKS discovery (the demo issuer and pinned-key/JWKS inputs
 stand in for it), a TUF root-key ceremony, and backups. See
-[package-manager.md](../rfcs/package-manager.md) §15 for the status table.
+[package-manager.md](../rfcs/retired-rfcs.md) §15 for the status table.

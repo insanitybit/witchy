@@ -2065,7 +2065,7 @@ reserved and always resolve to their canonical compiler-shipped source; a local
 module must use another name. Other imports resolve a sibling `name.witchy`
 file or a package dependency. `pub` items are importable; everything else is
 module-private. Package dependencies ("runes")
-come from the manifest - see [package-manager.md](../rfcs/package-manager.md).
+come from the manifest - see [package-manager.md](../rfcs/retired-rfcs.md).
 
 ## 13. Entry point
 
@@ -2094,7 +2094,7 @@ program ask for exactly one file instead of a whole `Dir`. A **grant document**
 (`--grants app.grants.toml`) enumerates the whole grant as reviewable TOML and is
 cross-checked against the computed footprint - see
 [capabilities.md](capabilities.md) and
-[0013-capability-grant-documents.md](../rfcs/0013-capability-grant-documents.md).
+[0013-capability-grant-documents.md](../rfcs/retired-rfcs.md).
 
 `main` may also receive a library-defined capability when its declaration is
 explicitly `grantable`. The capability must be **bare**: none of its fields may
@@ -2121,7 +2121,7 @@ authority. `witchy caps` therefore reports them on a separate `user caps` axis,
 and adding one to an entrypoint is a footprint widening. The full minting,
 bareness, and exported-root contract is in the **Grantable capabilities** section
 of [capabilities.md](capabilities.md) and
-[RFC-0038](../rfcs/0038-grantable-user-capabilities.md).
+[RFC-0038](../rfcs/retired-rfcs.md).
 
 ### 13.1 The build entrypoint
 
@@ -2149,8 +2149,8 @@ project's *grant*, not the type. `witchy caps` reports the build footprint on it
 own axis, `witchy caps-diff` fails on a build-axis widening, and
 `witchy build-step <file> [--out <dir>] [--read <dir>] [--env K]... [--exec tool]...`
 runs a build step under those confined grants. See
-[build-time-execution-plan.md](../rfcs/build-time-execution-plan.md) for status and
-[package-manager.md](../rfcs/package-manager.md) §7.1 for the full model.
+[build-time-execution-plan.md](../rfcs/retired-rfcs.md) for status and
+[package-manager.md](../rfcs/retired-rfcs.md) §7.1 for the full model.
 
 ### 13.2 User-definable capabilities
 
@@ -2204,7 +2204,7 @@ The fields are private - reached with `match`, never `.field` - so the underlyin
 capability-typed fields, so `Postgres` audits as exactly `Net`: carried policy with
 nothing hidden (the hard, runtime-enforced `Net` plus a soft, library-enforced
 `table` filter, in one unforgeable value). See
-[0002-user-definable-capabilities.md](../rfcs/0002-user-definable-capabilities.md).
+[0002-user-definable-capabilities.md](../rfcs/retired-rfcs.md).
 
 ### 13.3 Narrowing a `Net`'s reach: `only` / `deny`
 
@@ -2231,14 +2231,14 @@ metadata IP, CGNAT) for the one-line SSRF/rebinding guard
 checked against the *resolved* IP, so it's rebinding-safe. TLS isn't a right or a
 policy scheme but a connect-time `tls:` prefix on the address you dial
 (`net.connect("tls:host:443")`); see
-[0003-network-address-scoping.md](../rfcs/0003-network-address-scoping.md) and
-[0009-https-tls-client.md](../rfcs/0009-https-tls-client.md).
+[0003-network-address-scoping.md](../rfcs/retired-rfcs.md) and
+[0009-https-tls-client.md](../rfcs/retired-rfcs.md).
 
 A `Dir` likewise carries an **entry policy** narrowing which entries it may touch:
 `dir.only(Dir.ext(".txt"))` confines it so `read`/`write`/`open` admit only
 matching files (a non-matching name is denied at the access check; a subtree
 inherits the policy) - the filesystem analog of `net.only`. See
-[0011-capability-refinement.md](../rfcs/0011-capability-refinement.md).
+[0011-capability-refinement.md](../rfcs/retired-rfcs.md).
 
 ## 14. Concurrency: async, spawn, and channels
 

@@ -157,7 +157,7 @@ reintroduce the fallible sink-guarding code the model deletes), so older browser
 
 The frontend *is* witchy-compiled WASM: the whole app is a glamour rune (RFC-0008/0015), and the
 optional source highlighter is a second one. Full threat model:
-[RFC-0007](../../rfcs/0007-witchy-wasm-browser-target.md). The load-bearing rules, all upheld:
+[RFC-0007](../../rfcs/retired-rfcs.md). The load-bearing rules, all upheld:
 
 - **Empty root footprint by construction.** The browser host shim implements only the non-capability
   `"witchy"` imports and **denies every capability import** (Net/Dir/Clock/…); a module that needs

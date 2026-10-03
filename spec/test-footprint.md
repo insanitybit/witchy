@@ -13,7 +13,7 @@ Use `--files` when reviewing ownership or a proposed deletion.
   canonical SafeWIR with admitted Wasm. Agreement tells you the two canonical
   executors agree.
   It can't tell you they're right - for that you need an oracle that doesn't
-  come from either one. [RFC-0135](../rfcs/0135-stable-semantics-converge.md)
+  come from either one. [RFC-0135](../rfcs/retired-rfcs.md)
   requires that independent expected result at support; experimental runtime
   work may lead on Wasm with a named interpreter debt.
 - `tests/misc/semantic_conformance.rs` states exact values, rejection

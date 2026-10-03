@@ -113,7 +113,7 @@ confinement, and ABI security remain fail-closed on the canonical route. A
 silent split is always a bug.
 
 Behavior that errors on a supported path must preserve the **same complete diagnostic**
-([RFC-0045](rfcs/0045-compiled-trap-diagnostics.md)): a
+([RFC-0045](rfcs/retired-rfcs.md)): a
 runtime abort (out-of-bounds index, integer division/modulo failure,
 `string.to_int` junk, `NaN` ordering, `fail(msg)`) carries the canonical
 diagnostic text on admitted Wasm via the always-linked, authority-free

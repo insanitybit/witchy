@@ -3,8 +3,8 @@
 This is the user-facing guide to witchy's capability system - what it
 guarantees, how to read and write capability-typed code, and how to audit and
 confine a program. For the design rationale of rights parameters, see
-[capability-rights.md](../rfcs/capability-rights.md); for how packages are gated on
-their footprints, see [package-manager.md](../rfcs/package-manager.md).
+[capability-rights.md](../rfcs/retired-rfcs.md); for how packages are gated on
+their footprints, see [package-manager.md](../rfcs/retired-rfcs.md).
 
 ## The one rule
 
@@ -74,7 +74,7 @@ A `Dir` isn't "the filesystem" - it's one subtree. `dir.read(path)` resolves
 `path` relative to the capability and rejects `..`, absolute paths, and
 symlinks that point outside the subtree. `dir.subtree("sub")` mints a new,
 smaller capability - handing a callee `dir.subtree("uploads")` gives it that
-folder and nothing else. A `Dir` also carries an **entry policy** ([RFC-0011](../rfcs/0011-capability-refinement.md)) in two dimensions:
+folder and nothing else. A `Dir` also carries an **entry policy** ([RFC-0011](../rfcs/retired-rfcs.md)) in two dimensions:
 name-suffix (`dir.only(Dir.ext(".txt"))` - only `.txt` entries) and entry-kind
 (`dir.only(Dir.files())` - only file access, no sub-directory open/create;
 `Dir.dirs()` - the mirror). They AND-compose: `dir.only(Dir.files()).only(Dir.ext(".txt"))`
@@ -85,7 +85,7 @@ file names, not directories), so `kind` is additive. This is the filesystem anal
 `net.only`/`net.deny`; like `Net`, the raw-string form is a `--net`/config grant, not
 a language builtin.
 
-A **`File`** is the *leaf* of the same hierarchy ([RFC-0012](../rfcs/0012-file-capability.md)): authority to one
+A **`File`** is the *leaf* of the same hierarchy ([RFC-0012](../rfcs/retired-rfcs.md)): authority to one
 file, right-typed like `Dir` (`File[Read]`/`File[Write]`). A `Dir` navigates to
 one with `dir.read_file("x.txt") -> File[Read]` (must exist) or `dir.write_file("x.txt")
 -> File[Write]` (need not), both rejecting `..`/absolute escape exactly as `read`
@@ -106,7 +106,7 @@ syscall by the runtime** on both backends, so a narrowed `Net` cannot dial
 elsewhere. Policy patterns are **scheme-agnostic `host:port`**: HTTPS isn't a
 right and not an allowlist scheme but a *connect-time* `tls:` choice on the
 address you dial (`net.connect("tls:github.com:443")`), terminated on the host -
-see [RFC-0009](../rfcs/0009-https-tls-client.md).
+see [RFC-0009](../rfcs/retired-rfcs.md).
 
 **Resolve-once-and-pin.** `connect` resolves a hostname a *single* time: the IP set
 checked against the allowlist is the same set dialed - no code path re-resolves
@@ -137,9 +137,9 @@ http.try_get(fetch, target)
 
 Code which genuinely needs address inspection or raw protocols may still use
 `net.resolve` and `connect_pinned`, but those are no longer part of the portable
-HTTP surface. See [RFC-0020](../rfcs/0020-rebinding-resistant-http.md) for the
+HTTP surface. See [RFC-0020](../rfcs/retired-rfcs.md) for the
 historical socket-level design and
-[RFC-0102](../rfcs/0102-portable-roots-and-the-fetch-capability.md) for Fetch.
+[RFC-0102](../rfcs/retired-rfcs.md) for Fetch.
 
 `Exec` is the right to spawn a native subprocess - the runtime analog of the
 build-time `BuildExec`. It's right-less, and its opaque host value carries an
@@ -156,7 +156,7 @@ footprinted and gated like any other, the `Dir[Read]` confinement and
 argv-only (no shell string) call shape are load-bearing, and almost nothing
 should hold it. It exists chiefly so the self-hosted `witchy` package manager
 can drive the compiler - the same binary's `compile`/`build-step` verbs - as a
-confined subprocess; see [RFC-0004](../rfcs/0004-self-hosted-cli.md).
+confined subprocess; see [RFC-0004](../rfcs/retired-rfcs.md).
 
 ## Narrowing patterns
 

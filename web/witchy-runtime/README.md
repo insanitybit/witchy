@@ -6,7 +6,7 @@ select real or virtual browser providers without adding ambient authority. It is
 the browser analog of the wasmtime host
 in [`crates/witchy-runtime/src/runtime.rs`](../../crates/witchy-runtime/src/runtime.rs), with the capability set fixed to
 empty — the implementation of
-[RFC-0007](../../rfcs/0007-witchy-wasm-browser-target.md). The ABI it targets is
+[RFC-0007](../../rfcs/retired-rfcs.md). The ABI it targets is
 the public contract in [`spec/wasm-abi.md`](../../spec/wasm-abi.md).
 
 This is a *general* witchy-WASM browser runtime, not specific to any one app. It

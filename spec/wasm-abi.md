@@ -129,7 +129,7 @@ A compiled module exports:
 A `pub fn` whose name starts with `export_` and has the shape
 `(String) -> String` is a **JS-callable string export**: the compiler emits a
 stable export wrapper plus a bump allocator so a host (the browser deny-all capability
-shim, the glamour DOM shell - [RFC-0008](../rfcs/0008-frontend-framework-rune.md) can call a Witchy function over data with a
+shim, the glamour DOM shell - [RFC-0008](../rfcs/retired-rfcs.md) can call a Witchy function over data with a
 JSON string in and a JSON string out. These are **exports, not imports**: they
 grant **no** authority - the wrapper only reads/writes guest memory.
 
@@ -475,7 +475,7 @@ a self-contained synchronous implementation needing none.
   corresponding grant is present; it's the reference implementation of every
   signature and the pending-buffer protocol above.
 - **`web/witchy-runtime/witchy-runtime.mjs`** - the JavaScript deny-all capability host
-  ([RFC-0007](../rfcs/0007-witchy-wasm-browser-target.md)). Provides exactly the imports marked `browser: provided` above and
+  ([RFC-0007](../rfcs/retired-rfcs.md)). Provides exactly the imports marked `browser: provided` above and
   omits every capability-authority import by default. Explicit capability
   options add only the selected browser-menu provider imports. In particular,
   an origin-scoped Fetch grant adds `mint_fetch`, `fetch_only`, and
@@ -491,7 +491,7 @@ The spike [`web/witchy-runtime/spike.mjs`](../web/witchy-runtime/spike.mjs) (dri
 its output equals the native interpreter run byte-for-byte, and confirms a
 capability rune is rejected with a `LinkError`.
 
-## Runtime aborts ([RFC-0045](../rfcs/0045-compiled-trap-diagnostics.md))
+## Runtime aborts ([RFC-0045](../rfcs/retired-rfcs.md))
 
 Every runtime abort on the compiled backend - an out-of-bounds `list`/`bytes`
 index, `string.to_int` on junk or overflow, integer division/modulo failure,
@@ -504,7 +504,7 @@ message, not merely on the fact of erroring.
   packed site, returns nothing to the guest, and its only effect is to terminate
   execution with a diagnostic label - an ability the guest already has via
   `unreachable`. Like the checked-heap imports
-  (`heap_register`, [RFC-0023](../rfcs/0023-checked-heap.md)), it's therefore defined unconditionally on
+  (`heap_register`, [RFC-0023](../rfcs/retired-rfcs.md)), it's therefore defined unconditionally on
   every host (the deny-all capability shim included) and is **excluded from the
   capability footprint** (`witchy caps` and the coven widening gate never see it).
 - **Rust message text has one owner** in `crates/witchy-syntax/src/diag.rs`

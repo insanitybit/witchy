@@ -19,11 +19,11 @@ aren't "WASM is slow"; they are specific and addressable:
 | Startup / cold runs | validated optimized-WASM + Cranelift caches exist | **Yes** - warm runs skip Binaryen and native recompilation while still validating cached wasm through Wasmtime's safe API |
 | Allocation-heavy (lists, strings) | **Phase 1 complete** - capacity-growth + ownership-driven in-place mutation (was: OOM trap, copy-per-push O(n²)) | **Yes, done** - GC-free throughput; the 300k-push bench runs in constant memory (see Phase 1 below) |
 | Long-running request loops | arena grows until the cap | **Yes** - arena reset points reclaim in bulk with no pauses |
-| Long-lived, evicting/mutating heaps (caches, indexes, long-lived owned state) | arena alone never reclaims | **In scope via RC** - reference counting ([RFC-0016](../rfcs/0016-reference-counted-memory.md), implemented) is the tier-0 reclamation floor that frees escaping/evicted values; witchy has no shared-mutable pointer graphs to chase, so there's no pointer-cycle tail to concede. |
+| Long-lived, evicting/mutating heaps (caches, indexes, long-lived owned state) | arena alone never reclaims | **In scope via RC** - reference counting ([RFC-0016](../rfcs/retired-rfcs.md), implemented) is the tier-0 reclamation floor that frees escaping/evicted values; witchy has no shared-mutable pointer graphs to chase, so there's no pointer-cycle tail to concede. |
 
 The honest summary: witchy should not add a *tracing GC*. Its
 value semantics + ownership conventions + region-scoped arenas, with reference
-counting as the reclamation floor ([RFC-0016](../rfcs/0016-reference-counted-memory.md)),
+counting as the reclamation floor ([RFC-0016](../rfcs/retired-rfcs.md)),
 are an *Erlang-shaped* memory story that delivers GC-free throughput while
 also serving the long-lived, evicting state - caches, indexes, servers holding
 state - that general-purpose runtimes take for
@@ -62,7 +62,7 @@ calls) are exactly the ones no one optimizes. So conditioning on "this is worth
 optimizing" selects *for* the CPU/allocation-bound case.
 
 witchy sharpens this further: its concurrency scheduler is in-language (the
-deterministic executor of [RFC-0032](../rfcs/0032-multi-core-execution.md)),
+deterministic executor of [RFC-0032](../rfcs/retired-rfcs.md)),
 so poll/wakeup/state-machine overhead is visible witchy code on the hot path,
 not cost buried inside a native runtime. Per-event runtime cost is *more*
 exposed here, not less. This is why the memory model above and the

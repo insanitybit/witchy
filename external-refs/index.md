@@ -10,7 +10,7 @@ keeps this current as refs are added.
   [primary-source notes](compiler-service-2026/notes.md) distinguish persistent
   compiler state, optional hosts, in-flight deduplication, protected cache
   ownership, and trusted native artifact loading.
-  Informed [RFC-0172](../rfcs/0172-protected-compiler-service.md); no Witchy
+  Informed [RFC-0172](../rfcs/current-work.md); no Witchy
   performance result is implied.
 
 ## Knowledge-system design (informed RFC-0001 + the wiki/ design)

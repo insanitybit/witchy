@@ -15,7 +15,7 @@
 //! - the backend column equals `canonical_wasmir::rule_backend`, the one
 //!   place the SafeWIR-to-WasmIR mapping is decided;
 //! - every cited test exists in the file it is attributed to;
-//! - `rfcs/0165-rule-manifest.md` is the rendering of these tables, so the
+//! - `tests/fixtures/safewir-rule-manifest.md` renders these tables, so the
 //!   reviewed document cannot drift from the code.
 
 use super::CanonicalRuleId;
@@ -809,7 +809,7 @@ fn cite(tests: &[TestRef]) -> String {
         .join(", ")
 }
 
-/// The reviewed document: `rfcs/0165-rule-manifest.md`.
+/// The reviewed document: `tests/fixtures/safewir-rule-manifest.md`.
 pub fn render_markdown() -> String {
     let mut out = String::new();
     out.push_str("# RFC-0165 rule manifest (generated)\n\n");
@@ -1025,7 +1025,7 @@ pub mod self_checks {
         let path = std::path::PathBuf::from(
             std::env::var_os("CARGO_MANIFEST_DIR").expect("Cargo sets CARGO_MANIFEST_DIR for tests"),
         )
-        .join("../../rfcs/0165-rule-manifest.md");
+        .join("../../tests/fixtures/safewir-rule-manifest.md");
         let expected = render_markdown();
         if std::env::var_os("WITCHY_BLESS_RULE_MANIFEST").is_some() {
             std::fs::write(&path, &expected).expect("write the rule manifest document");
@@ -1033,7 +1033,7 @@ pub mod self_checks {
         let actual = std::fs::read_to_string(&path).unwrap_or_default();
         assert_eq!(
             actual, expected,
-            "rfcs/0165-rule-manifest.md is stale; regenerate with WITCHY_BLESS_RULE_MANIFEST=1"
+            "tests/fixtures/safewir-rule-manifest.md is stale; regenerate with WITCHY_BLESS_RULE_MANIFEST=1"
         );
     }
 

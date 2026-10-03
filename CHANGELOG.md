@@ -75,7 +75,7 @@ only the requested capability imports and explicit launch roots. The module is
 not authenticated merely because Witchy can execute it; consumers must establish
 the module's provenance separately.
 
-### Trusted-publisher application trust model ([RFC-0157](rfcs/0157-trusted-publishers-and-executable-state.md))
+### Trusted-publisher application trust model ([RFC-0157](rfcs/retired-rfcs.md))
 
 `trusted-publisher` appends compiled application WASM and a checked capability-binding
 plan to the complete Witchy native runtime. The resulting executable needs no

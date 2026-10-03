@@ -1,6 +1,6 @@
 # Compiler service and native-cache prior art
 
-Reviewed 2026-09-26 for [RFC-0172](../../rfcs/0172-protected-compiler-service.md).
+Reviewed 2026-09-26 for [RFC-0172](../../rfcs/current-work.md).
 These are source notes, not evidence of a Witchy implementation or speedup.
 
 - [Mozilla sccache](https://github.com/mozilla/sccache): a compiler-cache tool

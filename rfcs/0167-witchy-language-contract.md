@@ -113,8 +113,7 @@ Single execution, required disposition, and eventual completion are separate
 properties. Resource-owning operations need a checked lifecycle, but that does
 not select a universal must-start Task or remove replayable recipes. Section 12
 records the decisions and migration witnesses required before changing that
-surface. The [implementation handoff](0167-adversarial-review-handoff.md) indexes
-the challenged assumptions and separates current-contract work from deferred
+surface. The [acceptance ledger](0167-acceptance-ledger.md) separates current-contract work from deferred
 language choices. Ordinary-mode usability, opt usability, and performance remain
 claims to establish with representative programs and measurements.
 

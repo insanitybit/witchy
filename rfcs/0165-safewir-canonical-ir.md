@@ -11,10 +11,10 @@ tracking: impl/rfc0165-canonical-v1
 
 ## Summary
 
-Implementation amendment: [one memory model and checked opt boundaries](0165-memory-mode-boundary.md)
-records the 2026-09-04 decisions on normal/opt interoperability, managed read-only
-views, source `unique`, and deferred mutable-reference/region interfaces. It
-supersedes conflicting staging choices below, not safety or tail-call obligations.
+The [language contract](0167-witchy-language-contract.md) controls normal/opt
+interoperability, managed read-only views, source `unique`, and deferred
+interfaces. It supersedes conflicting staging choices below, not safety or
+tail-call obligations. The former 2026-09-04 amendment is recoverable from Git.
 
 SafeWIR becomes the only representation on which Witchy performs semantic or
 memory-affecting optimization. It states language-level types, layouts,
@@ -37,10 +37,11 @@ Implementation is staged. The first production milestone cut over with no
 optional optimization passes. It established useful, runtime-checked SafeWIR
 coverage, checked reference counting with dynamic uniqueness, an executable
 SafeWIR semantics, backend correspondence, and an atomic production cutover.
-Post-cutover milestones may enable individual opt-mode passes only with safety
+Post-cutover milestones may enable individual passes only with safety
 rechecking and pass-specific semantic-preservation evidence. The first such
-pass, same-block redundant bounds-guard elimination, is now enabled only for
-`opt` modules; ordinary mode remains the zero-pass baseline.
+pass, same-block redundant bounds-guard elimination, is now enabled in normal
+mode too. The [ledger](0165-acceptance-ledger.md) records the dated change;
+its 2026-09-14 row describes the original opt-only route.
 
 This RFC supersedes RFC-0162's inference-heavy integration strategy. It retains
 RFC-0162's memory model, kernel-layout work, fail-closed policy, and exact-byte

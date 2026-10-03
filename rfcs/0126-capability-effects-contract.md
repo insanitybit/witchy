@@ -6,15 +6,15 @@ created: 2026-08-19
 superseded-by:
 tracking: "Canonical consolidation RFC. The supported-preview capability journey is shipped; remaining work is promotion of the full effectful stdlib matrix and reconciliation of deferred extension mechanisms, not reconsideration of the capability model."
 predecessors:
-  - "[0002](0002-user-definable-capabilities.md), [0011](0011-capability-refinement.md), [0038](0038-grantable-user-capabilities.md) (user-defined and refined authority)"
-  - "[0003](0003-network-address-scoping.md), [0020](0020-rebinding-resistant-http.md), [0057](0057-capability-policy-constructors.md) (value-level confinement)"
-  - "[0009](0009-https-tls-client.md), [0060](0060-server-tls.md), [0106](0106-native-only-crypto-and-target-availability.md) (effectful stdlib transport and target availability)"
-  - "[0005](0005-unforgeable-capabilities.md), [0103](0103-derived-platform-confinement.md) (compiled representation and outer confinement)"
-  - "[0012](0012-file-capability.md), [0013](0013-capability-grant-documents.md), [0102](0102-portable-roots-and-the-fetch-capability.md), [0121](0121-sealed-secret-rights.md) (root capabilities and grants)"
-  - "[0040](0040-grantable-caps-on-exported-entrypoints.md), [0068](0068-compiled-build-step-grants.md), [0076](0076-capability-ops-are-methods.md), [0077](0077-mockable-capabilities-for-tests.md) (entrypoints, methods, and tests)"
-  - "[0014](0014-remove-capability-firewall.md), [0091](0091-browser-virtual-capabilities.md) (one explicit effect model across hosts)"
+  - "[0002](retired-rfcs.md), [0011](retired-rfcs.md), [0038](retired-rfcs.md) (user-defined and refined authority)"
+  - "[0003](retired-rfcs.md), [0020](retired-rfcs.md), [0057](retired-rfcs.md) (value-level confinement)"
+  - "[0009](retired-rfcs.md), [0060](retired-rfcs.md), [0106](retired-rfcs.md) (effectful stdlib transport and target availability)"
+  - "[0005](retired-rfcs.md), [0103](retired-rfcs.md) (compiled representation and outer confinement)"
+  - "[0012](retired-rfcs.md), [0013](retired-rfcs.md), [0102](retired-rfcs.md), [0121](retired-rfcs.md) (root capabilities and grants)"
+  - "[0040](retired-rfcs.md), [0068](retired-rfcs.md), [0076](retired-rfcs.md), [0077](retired-rfcs.md) (entrypoints, methods, and tests)"
+  - "[0014](retired-rfcs.md), [0091](retired-rfcs.md) (one explicit effect model across hosts)"
 related:
-  - "[0085](0085-capability-bounded-dynamic-code.md), [0086](0086-capability-gated-native-extensions.md) (deferred extension mechanisms)"
+  - "[0085](retired-rfcs.md), [0086](retired-rfcs.md) (deferred extension mechanisms)"
 ---
 
 # RFC-0126: Capabilities and explicit effects as a core language contract
