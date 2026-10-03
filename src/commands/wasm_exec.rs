@@ -612,6 +612,14 @@ mod tests {
         assert_eq!(run(&sealed).expect("portable wasm runs").0, ["genuine"]);
 
         let portable = probe(&sealed).unwrap().unwrap();
+        // Coordinates are relative to the capture root: no host layout ships.
+        let temp = std::env::temp_dir();
+        let host_prefixes = [temp.to_str().unwrap(), env!("CARGO_MANIFEST_DIR")]
+            .map(|prefix| prefix.trim_start_matches('/').trim_end_matches('/').to_owned());
+        assert_eq!(portable.source_inputs.entry, path.file_name().unwrap().to_str().unwrap());
+        for file in &portable.source_inputs.files {
+            assert!(host_prefixes.iter().all(|prefix| !file.path.contains(prefix.as_str())), "{}", file.path);
+        }
         let mut forged_source = portable.source_inputs.clone();
         let entry = forged_source.files.iter_mut().find(|file| file.path == forged_source.entry).unwrap();
         entry.contents = entry.contents.as_ref().map(|source| source.replace("genuine", "forged!"));

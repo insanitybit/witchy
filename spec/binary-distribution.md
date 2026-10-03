@@ -37,9 +37,10 @@ capability parameters even when lowering eliminates every use. Hosts other than
 A portable `.wasm` contains its source: distributing it distributes every
 embedded file. The section holds exactly what the loader read to build the
 program - the source files, the manifests it consulted, and a record of each
-lookup that found nothing - under their host paths with the leading root
-removed. It holds no environment variables, secrets, or files the build did
-not read. `witchy compile --out` and `witchy emit-wasm` print the embedded
+lookup that found nothing - at paths relative to the deepest directory that
+contains every file the build read. Nothing records the build machine's
+directory layout above that root, and no environment variables, secrets, or
+files the build did not read are included. `witchy compile --out` and `witchy emit-wasm` print the embedded
 files and their total size to stderr.
 
 ```text

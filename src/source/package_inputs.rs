@@ -95,6 +95,12 @@ fn key(path: &Path) -> Result<String, String> {
     Ok(key)
 }
 
+/// A directory coordinate, where the empty path is the package's own root.
+fn directory_key(path: &Path) -> Result<String, String> {
+    if path.as_os_str().is_empty() { return Ok(String::new()); }
+    key(path)
+}
+
 #[derive(Default)]
 struct CaptureFiles(RefCell<BTreeMap<PathBuf, Option<String>>>);
 impl SourceFiles for CaptureFiles {
@@ -393,9 +399,28 @@ fn capture_source_inputs_with_precompiled(
             virtual_files.insert(name, contents);
         }
     }
-    let files = virtual_files.into_iter().map(|(path, contents)| SourceFile { path, contents }).collect();
+    // Re-root every coordinate at the closest directory holding all files the
+    // build read, so a package never records the capture machine's layout
+    // above it. Absences above that root are lookups the relative replay never
+    // repeats; the replay comparison below proves the graph is unchanged.
+    let entry = key(&entry)?;
     let manifest = manifest.as_deref().map(key).transpose()?;
-    let inputs = SourceInputs::captured(key(&entry)?, dependencies, files, manifest);
+    let root = capture_root(virtual_files.iter().filter(|(_, contents)| contents.is_some())
+        .map(|(path, _)| path.as_str())
+        .chain([entry.as_str()])
+        .chain(dependencies.iter().map(|dependency| dependency.path.as_str()))
+        .chain(manifest.as_deref()));
+    let rebase = |path: &str| -> Option<String> {
+        if root.is_empty() { return Some(path.to_owned()); }
+        path.strip_prefix(root.as_str()).and_then(|rest| rest.strip_prefix('/')).map(str::to_owned)
+    };
+    let inside = |path: &str| rebase(path).ok_or_else(|| format!("closed package input `{path}` lies outside its capture root"));
+    let files = virtual_files.into_iter().filter_map(|(path, contents)| {
+        rebase(&path).map(|path| SourceFile { path, contents })
+    }).collect();
+    for dependency in &mut dependencies { dependency.path = inside(&dependency.path)?; }
+    let manifest = manifest.as_deref().map(inside).transpose()?;
+    let inputs = SourceInputs::captured(inside(&entry)?, dependencies, files, manifest);
     let replay = replay_loaded_inputs_with_precompiled(&inputs, precompiled).map_err(|error| {
         format!("closed package cannot preserve source/manifest resolution: {error}")
     })?;
@@ -408,6 +433,20 @@ fn capture_source_inputs_with_precompiled(
 /// Check closed inputs through the same route ordinary compilation selects.
 /// Every compile-time execution on that route is a zero-grant session under
 /// the fixed `source_limits`, so replayed source acquires no host authority.
+/// The deepest directory containing every given file coordinate.
+fn capture_root<'a>(paths: impl Iterator<Item = &'a str>) -> String {
+    let mut root: Option<Vec<&str>> = None;
+    for path in paths {
+        let mut parts: Vec<&str> = path.split('/').collect();
+        parts.pop();
+        root = Some(match root {
+            None => parts,
+            Some(root) => root.iter().zip(&parts).take_while(|(a, b)| a == b).map(|(part, _)| *part).collect(),
+        });
+    }
+    root.unwrap_or_default().join("/")
+}
+
 pub(crate) fn recheck_packaged_source(inputs: &SourceInputs) -> Result<(pipeline::CheckedModule, String), String> {
     let (sources, entry, users, owners) = replay_loaded_inputs(inputs)?;
     let checked = check_loaded_source_bundle(sources, &entry, &inputs.entry, users, owners)?;

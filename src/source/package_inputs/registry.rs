@@ -127,7 +127,7 @@ impl<'a> Files<'a> {
         // before registry locks. Consult those captured declarations before
         // interpreting a vendor directory; its spelling is not provenance.
         while let Some(root) = pending.pop() {
-            if !seen.insert(key(&root)?) { continue; }
+            if !seen.insert(directory_key(&root)?) { continue; }
             let Some(contents) = self.raw.read(&root.join("witchy.toml"))? else { continue; };
             let manifest: toml::Value = toml::from_str(&contents).map_err(|error| error.to_string())?;
             let Some(dependencies) = manifest.get("dependencies") else { continue; };
@@ -137,7 +137,7 @@ impl<'a> Files<'a> {
                 let dependency_root = root.join(relative);
                 if name == alias {
                     declared = true;
-                    let coordinate = key(&dependency_root)?;
+                    let coordinate = directory_key(&dependency_root)?;
                     // Compare closed loader coordinates only. Actual bytes and
                     // workspace owners still come from the existing reader;
                     // this does not canonicalize a host filesystem access.

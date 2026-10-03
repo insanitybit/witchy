@@ -67,6 +67,8 @@ fn closed_generated_path_dependency_replay_preserves_owner_and_rejects_forged_cl
     assert_eq!(stem, "main");
     let captured = replay_loaded_inputs(&inputs).expect("captured loader graph");
     let digest = checked.canonical_source().unwrap().source_witness().source_bundle_digest();
+    // Coordinates are relative to the capture root, the fixture folder here.
+    let key = |path: &Path| key(path.strip_prefix(&folder.0).unwrap());
 
     for (path, expected) in [
         (&manifest, consumer_source),
