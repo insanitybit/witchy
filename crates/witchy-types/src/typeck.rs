@@ -9611,11 +9611,21 @@ impl Checker {
     ) -> Result<Ty, TypeError> {
         let st = self.infer(scrutinee)?;
         let scrutinee_opt_proof = self.expression_opt_value_proof(scrutinee);
-        self.transfer_once_match_scrutinee(scrutinee, &st)?;
-        self.transfer_unique_value(scrutinee, &st, "match scrutinee")?;
+        let borrowed_inspection = matches!(scrutinee, Expr::Var(_))
+            && self.inferred_unique_source_type(scrutinee, &st)
+                .or_else(|| ty_to_ast(&self.resolve(&st))).is_some_and(|source|
+                witchy_canonical_source::storage::borrowed_affine_match_shape(
+                    &source, arms, &self.canonical_definitions,
+                ).is_some());
+        if !borrowed_inspection {
+            self.transfer_once_match_scrutinee(scrutinee, &st)?;
+            self.transfer_unique_value(scrutinee, &st, "match scrutinee")?;
+        }
         if self.ty_carries_must_consume(&st) {
-            self.reject_implicit_must_copy(scrutinee, "match scrutinee")?;
-            if self.expression_introduces_must_obligation(scrutinee, &st) {
+            if !borrowed_inspection {
+                self.reject_implicit_must_copy(scrutinee, "match scrutinee")?;
+            }
+            if !borrowed_inspection && self.expression_introduces_must_obligation(scrutinee, &st) {
                 let consuming_aggregate_match = ty_to_ast(&self.resolve(&st)).is_some_and(|source| {
                     witchy_canonical_source::storage::consuming_aggregate_match_shape(
                         &source, arms, &self.canonical_definitions,

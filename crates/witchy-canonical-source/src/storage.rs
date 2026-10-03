@@ -1160,6 +1160,57 @@ pub fn consuming_aggregate_match_shape(
     consuming_aggregate_pattern_shape(ty, &arms[0].pattern, definitions)
 }
 
+/// A match may inspect an affine root without transferring it when every
+/// pattern reads only inline scalar children. The root keeps every owned
+/// child and its disposition obligation throughout the match.
+pub fn borrowed_affine_match_shape(
+    ty: &Type,
+    arms: &[MatchArm],
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Option<ScalarAggregateShape> {
+    fn read_only(
+        ty: &Type,
+        pattern: &Pattern,
+        definitions: &BTreeMap<String, TypeDef>,
+        depth: usize,
+    ) -> bool {
+        if depth > 128 { return false; }
+        if let Pattern::Or(alternatives) = pattern {
+            return !alternatives.is_empty()
+                && alternatives.iter().all(|alternative| read_only(ty, alternative, definitions, depth + 1));
+        }
+        let Some(shape) = scalar_aggregate_shape(ty, definitions) else { return false; };
+        let (args, first_field, arity) = match pattern {
+            Pattern::Ctor { name, args } | Pattern::AnonCtor { tag: name, args } => {
+                let Some((_, variant)) = shape.variant(name) else { return false; };
+                (args, variant.first_field, variant.arity)
+            }
+            Pattern::Tuple(args) if matches!(ty.unqualified(), Type::Tuple(_))
+                && !shape.tagged && shape.variants.len() == 1
+                && shape.variants[0].name.is_empty() => (args, 0, shape.fields.len()),
+            _ => return false,
+        };
+        args.len() == arity && args.iter().enumerate().all(|(offset, argument)| {
+            let field = &shape.fields[first_field + offset];
+            match argument {
+                Pattern::Wildcard | Pattern::Var(_) | Pattern::Int(_) | Pattern::Bool(_)
+                    | Pattern::Duration(_) | Pattern::IntRange { .. } =>
+                    matches!(StoragePlan::classify(field.unqualified(), definitions, |_| Some(0)),
+                        StoragePlan::InlineScalar(_)),
+                Pattern::Ctor { .. } | Pattern::AnonCtor { .. } | Pattern::Tuple(_) | Pattern::Or(_) =>
+                    !StoragePlan::classify(field, definitions, |_| Some(0))
+                        .requires_affine_owner_token()
+                        && read_only(field, argument, definitions, depth + 1),
+                Pattern::Str(_) | Pattern::List { .. } => false,
+            }
+        })
+    }
+    affine_storage_shape(ty, definitions)?;
+    let shape = scalar_aggregate_shape(ty, definitions)?;
+    (!arms.is_empty() && arms.iter().all(|arm| arm.guard.is_none()
+        && read_only(ty, &arm.pattern, definitions, 0))).then_some(shape)
+}
+
 /// One consuming pattern transfers each affine field to exactly one binding.
 /// Irrefutability remains a separate checker obligation for `let` patterns;
 /// match arms additionally require coverage and an unguarded selected arm.

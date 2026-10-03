@@ -263,6 +263,14 @@ canonical call ABI now carries its recursive affine proof through a call with
 an aggregate result, while refusing a result that aliases that borrowed
 parameter. A checked `must Key` witness repeats hits, handles a miss, disposes
 both queries, drains the table, and returns 59 on admitted Wasm with zero leaks.
+Call-scoped `let` inspection now matches a `must Ticket(Int)` without moving its
+root: the callee returns an independent `Option(Int)`, the caller repeats the
+read and consumes the ticket afterward, and admitted Wasm returns 89 with zero
+leaks. The same source and lowering proof permits scalar-only inspection of a
+local affine root. A pattern extracting an affine child or returning the
+borrowed root still refuses. Nested inspection through an affine child remains
+closed at source checking until a non-owning aggregate field carrier is
+authenticated in SafeWIR.
 
 The runtime diagnostic golden migration at merged `0ca522869` checks list bounds,
 user `fail`, and a missing named secret through checked source and admitted

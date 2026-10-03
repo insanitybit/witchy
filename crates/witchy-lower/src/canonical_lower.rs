@@ -7710,10 +7710,15 @@ impl FunctionLowerer<'_> {
             &scrutinee_type, self.definitions,
         ).is_some() || StoragePlan::classify(&scrutinee_type, self.definitions, |_| Some(0))
             .requires_affine_owner_token();
-        let consuming_shape = affine.then(|| witchy_canonical_source::storage::consuming_aggregate_match_shape(
-            &scrutinee_type, arms, self.definitions,
-        )).flatten();
-        if affine && consuming_shape.is_none() {
+        let borrowed_inspection = affine && matches!(scrutinee, Expr::Var(_))
+            && witchy_canonical_source::storage::borrowed_affine_match_shape(
+                &scrutinee_type, arms, self.definitions,
+            ).is_some();
+        let consuming_shape = (affine && !borrowed_inspection).then(||
+            witchy_canonical_source::storage::consuming_aggregate_match_shape(
+                &scrutinee_type, arms, self.definitions,
+            )).flatten();
+        if affine && consuming_shape.is_none() && !borrowed_inspection {
             return Err(CanonicalLoweringError::UnsupportedExpression(
                 "affine aggregate match lacks a consuming pattern proof",
             ));
