@@ -1,0 +1,2 @@
+runner = "nextest"
+state_dir = "state/dtest"

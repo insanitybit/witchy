@@ -255,6 +255,25 @@ compiler source, running `cargo build`, then testing with `witchy foo.witchy`
 runs your **old** code and looks like your change did nothing. Either run
 `./target/debug/witchy …` or `cargo build --release`.
 
+**Use `dtest` for a fast affected-test loop.** The tracked `dtest.toml` keeps
+its mmap index under the ignored `state/dtest` directory. Put the repository's
+Cargo shim first on `PATH` so selected tests still use the build cache, then
+select from the branch point:
+
+```sh
+export PATH="$PWD/scripts/bin:$PATH"
+base="$(git merge-base HEAD master)"
+dtest run --from "$base"
+dtest why <test-substring> --from "$base"
+```
+
+For working-tree edits only, use `dtest run --from HEAD`. The index refreshes
+incrementally and changed Rust tests are always selected. Selection is
+deliberately heuristic, so `dtest` shortens the edit loop but does not replace
+`./scripts/agent-check.sh edit`, the merge queue, or periodic full gates. If it
+is missing, install it from the dtest source checkout with
+`cargo install --path . --locked` while that checkout is your current directory.
+
 **`cargo check -p witchy-runtime` does NOT compile the Wasm kernel.** The
 `runtime` module sits behind that crate's non-default `native` feature, which
 only the root package activates — a package-scoped check reports green without
