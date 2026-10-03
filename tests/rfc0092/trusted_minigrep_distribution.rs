@@ -82,6 +82,10 @@ fn committed_minigrep_builds_and_runs_as_an_installed_trusted_app() {
             .env("PATH", "")
             .args(["nobody", "../search-root/poem.txt"]),
     );
-    assert!(!denied.status.success());
-    assert!(stderr(&denied).contains("`..` escapes the Dir capability"), "{}", stderr(&denied));
+    assert_eq!(denied.status.code(), Some(1), "stderr: {}", stderr(&denied));
+    assert!(
+        stdout(&denied).contains("minigrep: denied: `../search-root/poem.txt` is not covered by this Dir capability"),
+        "{}",
+        stdout(&denied)
+    );
 }

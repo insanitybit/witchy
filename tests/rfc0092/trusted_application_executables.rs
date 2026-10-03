@@ -27,15 +27,18 @@ fn trusted_publisher_application_end_to_end() {
 
 fn main(console: Console, cwd: Dir[Read], root: Dir[Read], env: Env, args: List(String)) -> Int:
     let requested = list.at(args, 0)
-    if requested.starts_with("/"):
-        console.print("absolute:${root.read(requested.strip_prefix("/")) ?? "<unreadable>"}")
-    else:
-        console.print("relative:${cwd.read(requested) ?? "<unreadable>"}")
-    match env.get_env("RFC0092_TEST_LABEL"):
-        Some(label) -> console.print("env:${label}")
-        None -> console.print("env:missing")
-    console.print("argv:${list.join(args, "|")}")
-    23
+    let (label, read) = if requested.starts_with("/"): ("absolute:", root.read(requested.strip_prefix("/"))) else: ("relative:", cwd.read(requested))
+    match read:
+        Err(e) ->
+            console.print(label + show(e))
+            1
+        Ok(text) ->
+            console.print(label + text)
+            match env.get_env("RFC0092_TEST_LABEL"):
+                Some(value) -> console.print("env:${value}")
+                None -> console.print("env:missing")
+            console.print("argv:${list.join(args, "|")}")
+            23
 "#,
     )
     .unwrap();
@@ -100,16 +103,15 @@ fn main(console: Console, cwd: Dir[Read], root: Dir[Read], env: Env, args: List(
             .current_dir(scratch.path())
             .arg(absolute_guest),
     );
-    assert!(!rejected_absolute.status.success());
-    assert!(
-        stderr(&rejected_absolute).contains("absolute paths are not allowed"),
-        "{}",
-        stderr(&rejected_absolute)
+    assert_eq!(rejected_absolute.status.code(), Some(1), "stderr: {}", stderr(&rejected_absolute));
+    assert_eq!(
+        stdout(&rejected_absolute),
+        format!("absolute:denied: `{}` is not covered by this Dir capability\n", absolute_file.display()),
     );
 
     let escaped = run(Command::new(&installed).current_dir(scratch.path()).arg("../outside.txt"));
-    assert!(!escaped.status.success());
-    assert!(stderr(&escaped).contains("`..` escapes the Dir capability"), "{}", stderr(&escaped));
+    assert_eq!(escaped.status.code(), Some(1), "stderr: {}", stderr(&escaped));
+    assert_eq!(stdout(&escaped), "relative:denied: `../outside.txt` is not covered by this Dir capability\n");
 
     // Corruption is diagnosed before main can print its marker.
     let corrupt = scratch.join("installed/bin/corrupt");

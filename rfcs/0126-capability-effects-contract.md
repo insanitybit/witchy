@@ -147,6 +147,11 @@ and gives a fixed reason. It never contains a host-resolved, canonicalized, or
 absolute host path, raw operating-system error text, or another allow-listed
 name. Host diagnostics for traps may keep full detail.
 
+Open: with no entry policy, reading a FIFO (or another blocking special file)
+inside the root blocks the host thread. It discloses nothing, but it is a
+denial of service the host does not yet refuse. Under a policy such an entry is
+`Other` and answers `NotFound`.
+
 `dir.read` implements this rule end to end in admitted Wasm. The remaining
 `Dir`, `File`, and `Env` operations migrate one slice at a time.
 

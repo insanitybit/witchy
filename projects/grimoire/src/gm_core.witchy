@@ -11,6 +11,7 @@ import compiler
 import crypto
 import encoding
 import rights
+import fs
 import error
 import convert
 from http import Response
@@ -1822,3 +1823,20 @@ pub fn field(let manifest: String, path: String) -> String:
     match toml.get(manifest, path):
         Some(v) -> v
         None -> "(none)"
+
+// A file the package manager cannot proceed without: a failed read aborts
+// with its `CapError`, naming the path as given.
+pub fn read_text(root: Dir[Read], path: String) -> String:
+    match root.read(path):
+        Ok(text) -> text
+        Err(e) ->
+            fail(show(e))
+            ""
+
+// `fs.collect_files` for the package manager: a failed read aborts.
+pub fn collect_text(root: Dir, path: String, rel: String, ext: String) -> List((String, String)):
+    match fs.collect_files(root, path, rel, ext):
+        Ok(files) -> files
+        Err(e) ->
+            fail(show(e))
+            []
