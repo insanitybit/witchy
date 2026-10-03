@@ -9581,7 +9581,8 @@ impl FunctionLowerer<'_> {
             return Err(CanonicalLoweringError::UnsupportedExpression("non-integer range bounds"));
         }
         let bounded_list = if !inclusive
-            && matches!(lo, Expr::Int(0))
+            && let Expr::Int(first) = lo
+            && let Ok(first) = u32::try_from(*first)
             && let Expr::Call { name, args } = hi
             && matches!(name.as_str(), "list.length" | "list.__length")
             && let [Expr::Var(root)] = args.as_slice()
@@ -9590,7 +9591,7 @@ impl FunctionLowerer<'_> {
             && self.blocks[self.current.get() as usize].operations.iter().any(|op| matches!(op,
                 Operation::WidenSize { destination, value } if *destination == bound && *value == count))
         {
-            Some(root.as_str())
+            Some((root.as_str(), first))
         } else {
             None
         };
@@ -9608,7 +9609,7 @@ impl FunctionLowerer<'_> {
         inclusive: bool,
         body: &witchy_syntax::ast::Block,
         slice: Option<ValueId>,
-        bounded_list: Option<&str>,
+        bounded_list: Option<(&str, u32)>,
     ) -> Result<(), CanonicalLoweringError> {
         let mut facts = self.snapshot_facts();
         let outer = self.bindings.clone();
@@ -9621,7 +9622,8 @@ impl FunctionLowerer<'_> {
         self.scalarized_loop_rebindings(&mut rebound);
         let mut names = loop_lane_names(&outer, &rebound);
         self.scalarized_loop_lanes(&mut names);
-        let bounded_list_index = bounded_list.and_then(|root| {
+        let bounded_start = bounded_list.map(|(_, first)| first);
+        let bounded_list_index = bounded_list.and_then(|(root, _)| {
             (!names.iter().any(|name| name == root))
                 .then(|| outer.get(root).copied().map(|object| (root.to_string(), object)))
                 .flatten()
@@ -9705,7 +9707,7 @@ impl FunctionLowerer<'_> {
         }
         entry_state.push(start);
         if bounded_list_index.is_some() {
-            entry_state.push(self.push_const_size(0)?);
+            entry_state.push(self.push_const_size(u64::from(bounded_start.expect("bounded list start")))?);
         }
         self.finish_current(Terminator::Branch { target: header, arguments: entry_state })?;
 
@@ -9748,9 +9750,8 @@ impl FunctionLowerer<'_> {
         }
         let counter = header_values[header_values.len() - 1 - usize::from(bounded_list_index.is_some())];
         let condition = self.fresh(ValueType::Bool)?;
-        // Normal mode can reuse the checked header edge as the element bound.
-        // Keep opt mode's established compare shape for its backend lowering.
-        let bounded_size = bounded_list_index.as_ref().filter(|_| !self.opt_mode).map(|(_, object)| {
+        // Reuse the checked header edge as the element bound in either mode.
+        let bounded_size = bounded_list_index.as_ref().map(|(_, object)| {
             (*header_values.last().expect("size lane"), self.list_counts[object])
         });
         self.push_operation(Operation::Compare {
@@ -9782,7 +9783,7 @@ impl FunctionLowerer<'_> {
             advance: LoopAdvance::IntCounter(body_counter),
             bounded_list_index,
             size_counter,
-            bounded_list_condition: size_counter.filter(|_| !self.opt_mode).map(|_| condition),
+            bounded_list_condition: size_counter.map(|_| condition),
         });
         // Bounds were evaluated in the outer scope. The immutable counter has
         // its own scope around the body, just like the checker/interpreter;
