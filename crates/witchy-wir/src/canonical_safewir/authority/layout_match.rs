@@ -26,14 +26,25 @@ pub(crate) fn value_type_matches_source(
         };
         if record_head == Some(true) {
             if let Some(RootedViewStorage::RetainedRoot(RetainedRootStorage::CheckedGraph(plan))) = &storage {
-                let super::super::ValueType::Gc(id) = actual else { return false };
-                let Some(expected) = witchy_canonical_source::aggregates::canonical_owner_aggregate_identity(payload, records) else { return false };
-                return plan.graph.cloneable() && context.owner_families.iter().any(|family| {
-                    family.owner_type == id
-                        && matches!(&family.source,
-                            super::super::closure_owner_contract::OwnerFamilySource::Aggregate(source)
-                                if source == &expected)
-                });
+                if !plan.graph.cloneable() { return false; }
+                return match actual {
+                    super::super::ValueType::Gc(id) => {
+                        let Some(expected) = witchy_canonical_source::aggregates::canonical_owner_aggregate_identity(payload, records) else { return false };
+                        context.owner_families.iter().any(|family| {
+                            family.owner_type == id
+                                && matches!(&family.source,
+                                    super::super::closure_owner_contract::OwnerFamilySource::Aggregate(source)
+                                        if source == &expected)
+                        })
+                    }
+                    super::super::ValueType::Ref(layout) => {
+                        nominal_layout_matches_source_identity(layout, payload, layouts, records)
+                            && record_layout_matches_with_closures(layout, &plan.graph.shape().fields,
+                                aggregate_uses_nullable_owned_fields(payload, records), layouts, records,
+                                closure_layouts, signatures, context)
+                    }
+                    _ => false,
+                };
             }
             let Some(RootedViewStorage::RetainedRoot(RetainedRootStorage::CheckedAggregate(plan))) = storage else { return false };
             let super::super::ValueType::Ref(layout) = actual else { return false };

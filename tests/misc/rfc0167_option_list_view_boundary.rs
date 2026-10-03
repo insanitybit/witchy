@@ -89,6 +89,35 @@ fn main() -> Int:
 }
 
 #[test]
+fn option_root_with_string_views_keeps_its_snapshot() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let checked = witchy::resolve_std_only_checked(r#"
+fn read(view: &Option(List(&String))) -> Int:
+    match *view:
+        Some(xs) -> (*xs[0]).length()
+        None -> 0
+
+fn main() -> Int:
+    let first = "ab"
+    let second = "xyz"
+    var box: Option(List(&String)) = Some([&first])
+    let old = &box
+    box = Some([&second])
+    read(old) * 10 + read(&box)
+"#).expect("nested String views have a checked root");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("nested String views admit");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(&artifact,
+        Capabilities { print_int: true, quiet: true, ..Capabilities::none() }, 128)
+        .expect("admitted Wasm instance");
+    vm.run().expect("admitted Wasm execution");
+    assert_eq!(vm.output(), vec!["23".to_string()]);
+    assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+}
+
+#[test]
 fn nominal_root_with_list_of_views_keeps_its_snapshot() {
     opt::set_for_tests(Some(OptSet::none()));
     let _reset = ResetOptimizationOverride;

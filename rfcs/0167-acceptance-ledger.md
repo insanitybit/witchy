@@ -243,15 +243,23 @@ unoptimized Wasm, and releases its root with zero leaks. A view of
 specialized `RetainedOwnerList` child is outside the ordinary `CarrierElement`
 grammar. The 2026-10-03 graph-root path now classifies a non-packed nominal
 whose stored views have a checked cloneable aggregate graph. Its identity binds
-the nominal ordinal, instantiated source, field types, and variants; lowering
-retains the exact GC owner token, and SafeWIR matches that owner family to the
-checked source aggregate. `&Option(List(&Int))` and a user-record root holding
-`List(&Int)` each preserve an old snapshot after root replacement, produce the
-independent result 29 on admitted unoptimized Wasm, and report zero leaks. A
-region-born root and a must-bearing aggregate still refuse at source checking.
+the nominal ordinal, instantiated source, field types, and variants. The
+`List(&Int)` form retains its exact GC owner token, and SafeWIR matches that
+owner family to the checked source aggregate. `&Option(List(&Int))` and a
+user-record root holding `List(&Int)` each preserve an old snapshot after root
+replacement, produce the independent result 29 on admitted unoptimized Wasm,
+and report zero leaks. A region-born root and a must-bearing aggregate still
+refuse at source checking.
 This proves these nested graph shapes, not every recursive carrier or retained
 resource family. A separate indirect `var List(&Int)` replacement admits and
 executes with the independent old/new snapshot result `2312` and zero leaks.
+
+The graph root also has a retained `Ref` representation when its nested views
+are retained object tokens. SafeWIR matches that representation against the
+checked nominal field layout; the GC representation still requires the exact
+aggregate owner family. `&Option(List(&String))` keeps its two-character old
+snapshot after replacement by a three-character string, runs admitted Wasm
+with independent result 23, and reports zero leaks.
 
 `rfc0167_frozen_view_replacement` adds a normal-mode row L composition
 witness: a rooted `&frozen Box` keeps the old field value when a `var frozen
