@@ -3057,6 +3057,47 @@ impl Checker {
         Ok(false)
     }
 
+    /// A projected write to a scalar leaf cannot change any aggregate
+    /// child's source qualifier. The checked place must be exact; a rebuild
+    /// with an unknown destination never retains this storage proof.
+    fn assignment_replaces_scalar(
+        &self,
+        root: &str,
+        value: &Expr,
+        place_depth: u32,
+    ) -> bool {
+        if place_depth == 0 {
+            return false;
+        }
+        let place = witchy_canonical_source::access::checked_assignment_place(root, value, place_depth);
+        if place.steps().len() != place_depth as usize {
+            return false;
+        }
+        let Some(mut current) = self.lookup(root) else { return false; };
+        for step in place.steps() {
+            current = match (self.resolve(&current), step) {
+                (Ty::Tuple(fields), witchy_canonical_source::access::CheckedPlaceStep::Field(field)) =>
+                    match field.parse::<usize>().ok().and_then(|index| fields.get(index).cloned()) {
+                        Some(field) => field,
+                        None => return false,
+                    },
+                (Ty::Named(record, args), witchy_canonical_source::access::CheckedPlaceStep::Field(field)) => {
+                    let Some((parameters, fields)) = self.record_fields.get(record.as_ref()) else { return false; };
+                    let Some((_, field_ty)) = fields.iter().find(|(name, _)| name == field) else { return false; };
+                    let substitutions: HashMap<u32, Ty> = parameters.iter().copied()
+                        .zip(args.iter().cloned()).collect();
+                    self.subst_vars(field_ty, &substitutions)
+                }
+                (Ty::List(element), witchy_canonical_source::access::CheckedPlaceStep::Index(_)
+                    | witchy_canonical_source::access::CheckedPlaceStep::DynamicIndex) => element.as_ref().clone(),
+                (Ty::Named(name, arguments), witchy_canonical_source::access::CheckedPlaceStep::DynamicIndex)
+                    if name.as_ref() == "Dict" && arguments.len() == 2 => arguments[1].clone(),
+                _ => return false,
+            };
+        }
+        is_scalar_ty(&self.resolve(&current))
+    }
+
     fn exclusive_borrow_targets_frozen_storage(&self, expr: &Expr) -> bool {
         match expr {
             Expr::Var(name) => self.is_frozen_binding(name),
@@ -6107,9 +6148,13 @@ impl Checker {
                     // conservatively; a frozen child dominates a plain child.
                     // A projected write can replace a qualified child; until
                     // its full source shape is reconstructed, revoke the proof.
-                    let replacement_storage = (*place_depth == 0)
-                        .then(|| self.inferred_binding_storage_type(value, &vt))
-                        .flatten();
+                    let replacement_storage = if *place_depth == 0 {
+                        self.inferred_binding_storage_type(value, &vt)
+                    } else if self.assignment_replaces_scalar(name, value, *place_depth) {
+                        self.binding_storage_type(name)
+                    } else {
+                        None
+                    };
                     if let Some(scope) = self.scopes.iter().rposition(|scope| scope.contains_key(name)) {
                         let storage = &mut self.binding_storage_types[scope];
                         let common = storage.get(name).and_then(|old|

@@ -25,6 +25,7 @@ fn finish(own pair: (Inner, Int)) -> Int:
                 Ticket(value) -> value * 100 + count * 10 + extra
 fn main() -> Int:
     var pair = (Inner(Ticket(7), 1), 2)
+    pair.0.count = 5
     pair.0.count = 9
     finish(pair)
 "#).expect("inferred tuple deep update checks");
@@ -96,4 +97,19 @@ fn main() -> Int:
     0
 "#).expect_err("an annotation cannot erase the initializer's frozen storage");
     assert!(error.to_string().contains("cannot mutate through frozen value"), "{error}");
+}
+
+#[test]
+fn replacing_an_aggregate_child_revokes_its_old_storage_proof() {
+    let error = witchy::resolve_std_only_checked(r#"
+type Box:
+    value: Int
+fn main() -> Int:
+    let item: frozen Box = Box(1)
+    var pair = (Box(2), 3)
+    pair.0 = item
+    pair.0.value = 9
+    0
+"#).expect_err("replacing a tuple child cannot reuse the old storage proof");
+    assert!(error.to_string().contains("cannot verify deep assignment place"), "{error}");
 }
