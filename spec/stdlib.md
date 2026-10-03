@@ -498,8 +498,8 @@ The result of a comparison: `a` is `Less` than, `Equal` to, or `Greater` than `b
 
 `==` and `!=`. The minimal equality trait: implement `eq` and `ne` comes free. `Float` is `PartialEq` but NOT `Eq` - `NaN != NaN`, so equality is not reflexive.
 
-- `fn eq(self, other: Self) -> Bool`
-- `fn ne(self, other: Self) -> Bool` _(default)_
+- `fn eq(let self, let other: Self) -> Bool`
+- `fn ne(let self, let other: Self) -> Bool` _(default)_
 
 #### `trait Eq: PartialEq`
 
@@ -559,8 +559,8 @@ The smallest element of `xs`, or `default` when `xs` is empty. As with `maximum`
 
 #### `impl PartialEq for Ordering`
 
-- `fn eq(self, other: Self) -> Bool`
-- `fn ne(self, other: Self) -> Bool`
+- `fn eq(let self, let other: Self) -> Bool`
+- `fn ne(let self, let other: Self) -> Bool`
 
 #### `impl Eq for Ordering`
 
@@ -570,7 +570,7 @@ The smallest element of `xs`, or `default` when `xs` is empty. As with `maximum`
 
 #### `impl PartialEq for Int`
 
-- `fn eq(self, other: Self) -> Bool`
+- `fn eq(let self, let other: Self) -> Bool`
 
 #### `impl Eq for Int`
 
@@ -588,7 +588,7 @@ The smallest element of `xs`, or `default` when `xs` is empty. As with `maximum`
 
 #### `impl PartialEq for Bool`
 
-- `fn eq(self, other: Self) -> Bool`
+- `fn eq(let self, let other: Self) -> Bool`
 
 #### `impl Eq for Bool`
 
@@ -600,7 +600,7 @@ The smallest element of `xs`, or `default` when `xs` is empty. As with `maximum`
 
 Lexicographic ordering by code point - the same order `<` gives on strings, and content-correct in compiled code (both backends compare bytes, not pointers).
 
-- `fn eq(self, other: Self) -> Bool`
+- `fn eq(let self, let other: Self) -> Bool`
 
 #### `impl Eq for String`
 
@@ -620,8 +620,8 @@ Lexicographic ordering by code point - the same order `<` gives on strings, and 
 
 Byte buffers compare by byte contents, matching direct `==` and String's content equality. `Bytes` deliberately has equality but no ordering protocol.
 
-- `fn eq(self, other: Self) -> Bool`
-- `fn ne(self, other: Self) -> Bool`
+- `fn eq(let self, let other: Self) -> Bool`
+- `fn ne(let self, let other: Self) -> Bool`
 
 #### `impl Eq for Bytes`
 
@@ -631,7 +631,7 @@ Byte buffers compare by byte contents, matching direct `==` and String's content
 
 #### `impl PartialEq for Duration`
 
-- `fn eq(self, other: Self) -> Bool`
+- `fn eq(let self, let other: Self) -> Bool`
 
 #### `impl Eq for Duration`
 
@@ -651,7 +651,7 @@ Byte buffers compare by byte contents, matching direct `==` and String's content
 
 `Float` is `PartialEq` + `PartialOrd` only: a `NaN` is unequal to everything (including itself) and unordered, so `Float` is neither `Eq` nor `Ord`. Sort a `List(Float)` with a total wrapper or by comparing a derived key.
 
-- `fn eq(self, other: Self) -> Bool`
+- `fn eq(let self, let other: Self) -> Bool`
 
 #### `impl PartialOrd for Float`
 
@@ -661,7 +661,7 @@ Byte buffers compare by byte contents, matching direct `==` and String's content
 
 Lists compare element-by-element through the element type's `PartialEq` impl.
 
-- `fn eq(self, other: Self) -> Bool`
+- `fn eq(let self, let other: Self) -> Bool`
 
 #### `impl Eq for List(a) where a: Eq`
 
@@ -671,7 +671,7 @@ Lists compare element-by-element through the element type's `PartialEq` impl.
 
 #### `impl PartialEq for Option(a) where a: PartialEq`
 
-- `fn eq(self, other: Self) -> Bool`
+- `fn eq(let self, let other: Self) -> Bool`
 
 #### `impl Eq for Option(a) where a: Eq`
 
@@ -681,7 +681,7 @@ Lists compare element-by-element through the element type's `PartialEq` impl.
 
 #### `impl PartialEq for Result(a, e) where a: PartialEq, e: PartialEq`
 
-- `fn eq(self, other: Self) -> Bool`
+- `fn eq(let self, let other: Self) -> Bool`
 
 #### `impl Eq for Result(a, e) where a: Eq, e: Eq`
 
@@ -691,7 +691,7 @@ Lists compare element-by-element through the element type's `PartialEq` impl.
 
 #### `impl PartialEq for Dict(k, v) where k: Hash, v: PartialEq`
 
-- `fn eq(self, other: Self) -> Bool`
+- `fn eq(let self, let other: Self) -> Bool`
 
 #### `impl Eq for Dict(k, v) where k: Hash, v: Eq`
 
@@ -699,8 +699,8 @@ Lists compare element-by-element through the element type's `PartialEq` impl.
 
 Tuples compare slot-by-slot through each slot's equality protocol. The tuple protocol surface is explicit through arity 8, matching `Show` and `Reflect`.
 
-- `fn eq(self, other: Self) -> Bool`
-- `fn ne(self, other: Self) -> Bool`
+- `fn eq(let self, let other: Self) -> Bool`
+- `fn ne(let self, let other: Self) -> Bool`
 
 #### `impl Eq for (a, b) where a: Eq, b: Eq`
 
@@ -710,8 +710,8 @@ Tuples compare slot-by-slot through each slot's equality protocol. The tuple pro
 
 #### `impl PartialEq for (a, b, c) where a: PartialEq, b: PartialEq, c: PartialEq`
 
-- `fn eq(self, other: Self) -> Bool`
-- `fn ne(self, other: Self) -> Bool`
+- `fn eq(let self, let other: Self) -> Bool`
+- `fn ne(let self, let other: Self) -> Bool`
 
 #### `impl Eq for (a, b, c) where a: Eq, b: Eq, c: Eq`
 
@@ -721,8 +721,8 @@ Tuples compare slot-by-slot through each slot's equality protocol. The tuple pro
 
 #### `impl PartialEq for (a, b, c, d) where a: PartialEq, b: PartialEq, c: PartialEq, d: PartialEq`
 
-- `fn eq(self, other: Self) -> Bool`
-- `fn ne(self, other: Self) -> Bool`
+- `fn eq(let self, let other: Self) -> Bool`
+- `fn ne(let self, let other: Self) -> Bool`
 
 #### `impl Eq for (a, b, c, d) where a: Eq, b: Eq, c: Eq, d: Eq`
 
@@ -732,8 +732,8 @@ Tuples compare slot-by-slot through each slot's equality protocol. The tuple pro
 
 #### `impl PartialEq for (a, b, c, d, e) where a: PartialEq, b: PartialEq, c: PartialEq, d: PartialEq, e: PartialEq`
 
-- `fn eq(self, other: Self) -> Bool`
-- `fn ne(self, other: Self) -> Bool`
+- `fn eq(let self, let other: Self) -> Bool`
+- `fn ne(let self, let other: Self) -> Bool`
 
 #### `impl Eq for (a, b, c, d, e) where a: Eq, b: Eq, c: Eq, d: Eq, e: Eq`
 
@@ -743,8 +743,8 @@ Tuples compare slot-by-slot through each slot's equality protocol. The tuple pro
 
 #### `impl PartialEq for (a, b, c, d, e, f) where a: PartialEq, b: PartialEq, c: PartialEq, d: PartialEq, e: PartialEq, f: PartialEq`
 
-- `fn eq(self, other: Self) -> Bool`
-- `fn ne(self, other: Self) -> Bool`
+- `fn eq(let self, let other: Self) -> Bool`
+- `fn ne(let self, let other: Self) -> Bool`
 
 #### `impl Eq for (a, b, c, d, e, f) where a: Eq, b: Eq, c: Eq, d: Eq, e: Eq, f: Eq`
 
@@ -754,8 +754,8 @@ Tuples compare slot-by-slot through each slot's equality protocol. The tuple pro
 
 #### `impl PartialEq for (a, b, c, d, e, f, g) where a: PartialEq, b: PartialEq, c: PartialEq, d: PartialEq, e: PartialEq, f: PartialEq, g: PartialEq`
 
-- `fn eq(self, other: Self) -> Bool`
-- `fn ne(self, other: Self) -> Bool`
+- `fn eq(let self, let other: Self) -> Bool`
+- `fn ne(let self, let other: Self) -> Bool`
 
 #### `impl Eq for (a, b, c, d, e, f, g) where a: Eq, b: Eq, c: Eq, d: Eq, e: Eq, f: Eq, g: Eq`
 
@@ -765,8 +765,8 @@ Tuples compare slot-by-slot through each slot's equality protocol. The tuple pro
 
 #### `impl PartialEq for (a, b, c, d, e, f, g, h) where a: PartialEq, b: PartialEq, c: PartialEq, d: PartialEq, e: PartialEq, f: PartialEq, g: PartialEq, h: PartialEq`
 
-- `fn eq(self, other: Self) -> Bool`
-- `fn ne(self, other: Self) -> Bool`
+- `fn eq(let self, let other: Self) -> Bool`
+- `fn ne(let self, let other: Self) -> Bool`
 
 #### `impl Eq for (a, b, c, d, e, f, g, h) where a: Eq, b: Eq, c: Eq, d: Eq, e: Eq, f: Eq, g: Eq, h: Eq`
 
@@ -970,9 +970,9 @@ An empty Dict with pre-allocated capacity.
 
 Insert `key` with `val`, returning the displaced value when the key existed. The dictionary performs one semantic key search. A uniquely owned dictionary preserves its hash index and updates or grows geometrically; a shared root is copied before repair so aliases keep their old contents in normal mode. The `unique` receiver makes that cost a checked contract in `mode opt`: a call whose dictionary was aliased or loaned is rejected with the ownership reason.
 
-#### `fn insert_owned(var d: unique Dict(k, v), own key: k, own val: v) -> Option(v) where k: Hash`
+#### `fn insert_owned(var d: unique Dict(k, v), own key: k, own val: v) -> Option((k, v)) where k: Hash`
 
-Transfer an affine key or value into the table. The displaced value, when present, remains the caller's obligation.
+Transfer an affine key or value into the table. On a hit, the unused incoming key and displaced value remain the caller's obligations.
 
 #### `fn get_or(let d: Dict(k, v), key: k, default: v) -> v where k: Hash`
 
@@ -1056,9 +1056,9 @@ The values whose keys satisfy `pred`, in the Dict's iteration order.
 
 Insert `key` with `val`, returning the displaced value when the key existed. The dictionary performs one semantic key search. A uniquely owned dictionary preserves its hash index and updates or grows geometrically; a shared root is copied before repair so aliases keep their old contents in normal mode. The `unique` receiver makes that cost a checked contract in `mode opt`: a call whose dictionary was aliased or loaned is rejected with the ownership reason.
 
-#### `Dict.insert_owned(own key: k, own val: v) -> Option(v)`
+#### `Dict.insert_owned(own key: k, own val: v) -> Option((k, v))`
 
-Transfer an affine key or value into the table. The displaced value, when present, remains the caller's obligation.
+Transfer an affine key or value into the table. On a hit, the unused incoming key and displaced value remain the caller's obligations.
 
 #### `Dict.update(key: k, default: v, f: fn(v) -> v)`
 
@@ -3921,7 +3921,7 @@ The highest version in `versions` that satisfies `req`, or None if none do. Keep
 
 #### `impl PartialEq for Version`
 
-- `fn eq(self, other: Self) -> Bool`
+- `fn eq(let self, let other: Self) -> Bool`
 
 #### `impl Eq for Version`
 
@@ -4219,7 +4219,7 @@ Whether the two sets share no members.
 
 Two sets are equal when they hold exactly the same members, regardless of insertion order or the backing list's layout: `from_list([1, 2, 3])` equals `from_list([3, 2, 1])`. Without this impl, `==` falls back to the derived structural equality of the backing list (order-sensitive on the interpreter, and unresolvable on the compiled backend), which is not set equality.
 
-- `fn eq(self, other: Self) -> Bool`
+- `fn eq(let self, let other: Self) -> Bool`
 
 #### `impl Eq for Set(a) where a: Hash`
 

@@ -312,6 +312,9 @@ pub enum GuardKind {
 pub enum LoadTransfer {
     CopyScalar,
     CloneShared,
+    /// Read a source-proved affine dictionary child only for an immediately
+    /// following non-owning scalar-result call. No reference count changes.
+    BorrowAffine,
     ClonePresent,
     /// Detach the final element of a unique packed list and publish its shorter
     /// count atomically. The element's allocation need not be unique.

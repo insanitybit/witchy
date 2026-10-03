@@ -114,7 +114,7 @@ enum MethodResolution {
 
 /// Build the ordinary function a (possibly defaulted) method lowers to.
 /// `Self` in any annotation refers to the implementing type (so a trait can
-/// write `fn eq(self, other: Self) -> Bool`), and an unannotated receiver
+/// write `fn eq(let self, let other: Self) -> Bool`), and an unannotated receiver
 /// (`self`) takes the implementing type too. Without this, an untyped non-self
 /// parameter would default to i32 in codegen and clash with, e.g., an f64 arg.
 fn method_fn(

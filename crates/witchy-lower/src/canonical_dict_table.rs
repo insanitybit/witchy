@@ -762,13 +762,18 @@ impl FunctionLowerer<'_> {
         self.current = compare_key;
         let cursor = self.block_parameter_values(compare_key);
         let key_value_type = self.field_value_type(key_type)?;
+        let affine_key = witchy_canonical_source::storage::StoragePlan::classify(
+            key_type.unqualified(), self.definitions, |_| Some(0),
+        ).requires_affine_owner_token();
         let element = self.fresh(key_value_type)?;
         self.push_operation(Operation::Dictionary(DictionaryOperation::ReadSlot {
             destination: element,
             dict,
             bucket: cursor[0],
             field: DictionarySlotField::Key,
-            transfer: if matches!(key_value_type, ValueType::Ref(_)) {
+            transfer: if affine_key {
+                witchy_wir::canonical_safewir::LoadTransfer::BorrowAffine
+            } else if matches!(key_value_type, ValueType::Ref(_)) {
                 witchy_wir::canonical_safewir::LoadTransfer::CloneShared
             } else {
                 witchy_wir::canonical_safewir::LoadTransfer::CopyScalar
@@ -788,7 +793,7 @@ impl FunctionLowerer<'_> {
         } else {
             (self.push_compare(ComparisonOperator::Equal, element, key)?, false)
         };
-        if matches!(key_value_type, ValueType::Ref(_)) && !transferred {
+        if matches!(key_value_type, ValueType::Ref(_)) && !transferred && !affine_key {
             self.push_operation(Operation::DropRef { object: element });
         }
         self.finish_current(Terminator::BranchIf {
@@ -985,7 +990,8 @@ impl FunctionLowerer<'_> {
         lookup: (ValueId, ValueId, ValueId, ValueId),
     ) -> Result<(ValueId, Option<ValueId>), CanonicalLoweringError> {
         let (found, empty, tombstone, hash) = lookup;
-        let option_type = Type::Named("Option".into(), vec![value_type.clone()]);
+        let displaced_pair = Type::Tuple(vec![key_type.clone(), value_type.clone()]);
+        let option_type = Type::Named("Option".into(), vec![displaced_pair.clone()]);
         let option_shape = extract.then(|| scalar_aggregate_shape(&option_type, self.definitions)).flatten();
         let mut join_shapes = vec![(self.values[&dict], Some(Ownership::Unique))];
         if extract {
@@ -1017,7 +1023,10 @@ impl FunctionLowerer<'_> {
         }));
         let mut result = vec![dict];
         if let Some(option_shape) = &option_shape {
-            result.push(self.lower_aggregate_for_source(&option_type, option_shape, 0, vec![displaced])?);
+            let pair_shape = scalar_aggregate_shape(&displaced_pair, self.definitions)
+                .ok_or(CanonicalLoweringError::UnsupportedExpression("dict displaced pair shape"))?;
+            let pair = self.lower_aggregate_for_source(&displaced_pair, &pair_shape, 0, vec![key, displaced])?;
+            result.push(self.lower_aggregate_for_source(&option_type, option_shape, 0, vec![pair])?);
         } else if matches!(self.values[&displaced], ValueType::Ref(_)) {
             self.push_operation(Operation::DropRef { object: displaced });
         }

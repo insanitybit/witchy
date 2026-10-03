@@ -1631,6 +1631,9 @@ pub(super) fn emit_instruction(
             let access = resolve_memory_place(function, layouts, place).map_err(EncodeError::Lowering)?;
             emit_typed_load(body, function, layout, access, *destination)?;
             match transfer {
+                LoadTransfer::BorrowAffine => return Err(EncodeError::UnsupportedLayout {
+                    function: function.id, operation: "affine borrow outside dictionary",
+                }),
                 LoadTransfer::CloneShared => emit_clone_ref(body, layout, *destination, *destination, function)?,
                 LoadTransfer::ClonePresent => emit_clone_present(body, layout, *destination, function)?,
                 LoadTransfer::TakeNullableUnique | LoadTransfer::TakeOwnedField => {

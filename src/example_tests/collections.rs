@@ -73,7 +73,7 @@ fn main(let console: Console):
     /// of relying on one-off direct-operator magic.
     #[test]
     fn list_equality_satisfies_partial_eq_bounds_on_both_backends() {
-        let src = "import cmp\nimport testing\n\ntype Key derive(Show, Eq):\n    id: Int\n    cache: Int\n\nimpl PartialEq for Key:\n    fn eq(self, other: Key) -> Bool:\n        self.id == other.id\n\nfn same(x: a, y: a) -> Bool where a: PartialEq:\n    x == y\n\nfn total_same(x: a, y: a) -> Bool where a: Eq:\n    x == y\n\nfn main(console: Console):\n    console.print(\"${same([1, 2, 3], [1, 2, 3])}\")\n    console.print(\"${same([Key(1, 10)], [Key(1, 20)])}\")\n    console.print(\"${total_same([Key(1, 10)], [Key(1, 20)])}\")\n    testing.assert_value_eq([Key(1, 10)], [Key(1, 20)])\n";
+        let src = "import cmp\nimport testing\n\ntype Key derive(Show, Eq):\n    id: Int\n    cache: Int\n\nimpl PartialEq for Key:\n    fn eq(let self, let other: Key) -> Bool:\n        self.id == other.id\n\nfn same(x: a, y: a) -> Bool where a: PartialEq:\n    x == y\n\nfn total_same(x: a, y: a) -> Bool where a: Eq:\n    x == y\n\nfn main(console: Console):\n    console.print(\"${same([1, 2, 3], [1, 2, 3])}\")\n    console.print(\"${same([Key(1, 10)], [Key(1, 20)])}\")\n    console.print(\"${total_same([Key(1, 10)], [Key(1, 20)])}\")\n    testing.assert_value_eq([Key(1, 10)], [Key(1, 20)])\n";
         let expected = ["true", "true", "true"];
         assert_eq!(
             run_linked_on_wasm(&[("main", src)], "main"),
@@ -254,7 +254,7 @@ fn main(let console: Console):
     /// a structural memcmp of differing fields would yield `false` — the tell.)
     #[test]
     fn custom_partial_eq_is_honored_at_every_depth() {
-        let src = "type P:\n    P(Int)\n\nimpl PartialEq for P:\n    fn eq(self, other: P) -> Bool:\n        true\n\nfn main(console: Console):\n    console.print(\"${P(1) == P(2)}\")\n    console.print(\"${[P(1)] == [P(2)]}\")\n    console.print(\"${Some(P(1)) == Some(P(2))}\")\n    console.print(\"${(P(1), 0) == (P(2), 0)}\")\n    var a = dict.new()\n    let _ = dict.insert(a, 1, P(1))\n    var b = dict.new()\n    let _ = dict.insert(b, 1, P(2))\n    console.print(\"${a == b}\")\n";
+        let src = "type P:\n    P(Int)\n\nimpl PartialEq for P:\n    fn eq(let self, let other: P) -> Bool:\n        true\n\nfn main(console: Console):\n    console.print(\"${P(1) == P(2)}\")\n    console.print(\"${[P(1)] == [P(2)]}\")\n    console.print(\"${Some(P(1)) == Some(P(2))}\")\n    console.print(\"${(P(1), 0) == (P(2), 0)}\")\n    var a = dict.new()\n    let _ = dict.insert(a, 1, P(1))\n    var b = dict.new()\n    let _ = dict.insert(b, 1, P(2))\n    console.print(\"${a == b}\")\n";
         let want = vec![
             "true".to_string(), // top-level impl (as before)
             "true".to_string(), // inside a List — NEW: was false
@@ -475,7 +475,7 @@ type Id:
     Id(Int)
 
 impl PartialEq for Id:
-    fn eq(self, other: Self) -> Bool:
+    fn eq(let self, let other: Self) -> Bool:
         match self:
             Id(a) -> match other:
                 Id(b) -> (a == b)

@@ -149,20 +149,35 @@ impl MemoryChecker<'_> {
                         if *transfer != LoadTransfer::CopyScalar { return self.unsupported("Dictionary(hash read transfer)"); }
                     }
                     DictionarySlotField::Key | DictionarySlotField::Value => {
-                        if self.dictionary_affine_child(*dict, *field == DictionarySlotField::Key).is_some() {
+                        let affine_child = self.dictionary_affine_child(*dict, *field == DictionarySlotField::Key);
+                        if affine_child.is_some()
+                            && !(*field == DictionarySlotField::Key
+                                && *transfer == LoadTransfer::BorrowAffine
+                                && self.state.pending_affine_borrow.is_none())
+                        {
                             return self.unsupported("Dictionary(cannot clone affine child)");
                         }
                         let slot = if *field == DictionarySlotField::Key { key } else { value };
                         let ty = self.dictionary_slot_type(slot)?;
                         self.require_type(*destination, ty)?;
                         if let ValueType::Ref(layout) = ty {
-                            if *transfer != LoadTransfer::CloneShared { return self.unsupported("Dictionary(reference read transfer)"); }
+                            if !matches!(transfer, LoadTransfer::CloneShared | LoadTransfer::BorrowAffine) {
+                                return self.unsupported("Dictionary(reference read transfer)");
+                            }
+                            if *transfer == LoadTransfer::BorrowAffine && affine_child.is_none() {
+                                return self.unsupported("Dictionary(borrow requires affine child proof)");
+                            }
                             self.state.objects.insert(*destination, ObjectState {
                                 identity: *destination, owner_generation: 0, layout,
                                 extent: self.parameter_extent(layout)?, ownership: Ownership::Shared,
-                                allocation_class: Some(AllocationClass::ReferenceCounted),
+                                allocation_class: (*transfer == LoadTransfer::CloneShared)
+                                    .then_some(AllocationClass::ReferenceCounted),
                                 shared_immutable: false, initialized_owned_slots: true,
                             });
+                            if let Some(plan) = affine_child {
+                                self.seed_affine_plan(*destination, &plan);
+                                self.state.pending_affine_borrow = Some((*destination, *dict));
+                            }
                         } else if *transfer != LoadTransfer::CopyScalar {
                             return self.unsupported("Dictionary(scalar read transfer)");
                         }

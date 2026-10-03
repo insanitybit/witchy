@@ -244,8 +244,16 @@ table clones cannot duplicate them. Admitted unoptimized Wasm witnesses drain
 replace a proved-empty borrowed `var` dictionary once, and return the
 independently expected values with zero owned-heap leaks. A second replacement
 that would discard the new `Ticket` refuses at source checking. Current
-`PartialEq` requires plain parameters, so a `must` type cannot implement the
-key comparison contract; this witness covers must values with legal keys.
+`PartialEq.eq` now borrows both operands with `let`, allowing a `must` key to
+implement the key comparison contract without copying or consuming it. An
+affine key read from a dictionary slot is a temporary non-owning value that
+must enter the immediately following scalar-result comparison call; SafeWIR
+rejects cloning it, retaining it, or carrying it across a block edge. On an
+equal-key insertion, `insert_owned` returns both the unused incoming key and
+the displaced value as `Option((K, V))`, so neither `must` obligation is
+silently discarded. The custom `must Key` and `must Ticket` witness replaces
+an equal key, explicitly disposes both returned obligations, drains the
+remaining dictionary, and returns 30 on admitted Wasm with zero heap leaks.
 
 The runtime diagnostic golden migration at merged `0ca522869` checks list bounds,
 user `fail`, and a missing named secret through checked source and admitted

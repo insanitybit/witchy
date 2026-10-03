@@ -604,7 +604,7 @@ type Inner packed:
     noise: Int
 
 impl PartialEq for Inner:
-    fn eq(self, other: Inner) -> Bool:
+    fn eq(let self, let other: Inner) -> Bool:
         self.id == other.id
 
 type Outer packed derive(PartialEq):

@@ -12,7 +12,7 @@ type Color:
     Blue
 
 impl PartialEq for Color:
-    fn eq(self, other: Self) -> Bool:
+    fn eq(let self, let other: Self) -> Bool:
         match self:
             Red ->
                 match other:

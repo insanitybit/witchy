@@ -136,6 +136,11 @@ impl<'a> MemoryChecker<'a> {
 
     /// Returns true when this operation belongs to the memory judgment.
     pub(crate) fn check(&mut self, operation: &Operation) -> Result<bool, InitialCheckError> {
+        if self.state.pending_affine_borrow.is_some()
+            && !matches!(operation, Operation::Call { .. })
+        {
+            return self.unsupported("Dictionary(borrowed affine child must enter the next call)");
+        }
         match operation {
             Operation::Dictionary(dictionary) => {
                 self.check_dictionary(dictionary)?;
@@ -1058,8 +1063,16 @@ impl<'a> MemoryChecker<'a> {
             return Ok(());
         };
         match transfer {
+            LoadTransfer::BorrowAffine => return self.unsupported("Load(affine borrow is dictionary-only)"),
             LoadTransfer::ClonePresent | LoadTransfer::TakeLast | LoadTransfer::TakeNullableUnique | LoadTransfer::TakeOwnedField => unreachable!("handled before ordinary reference loads"),
             LoadTransfer::CloneShared => {
+                let affine_child = match (self.state.affine_plans.get(&place.object()), place.projection()) {
+                    (Some(super::super::AffinePhysicalPlan::NullableFields { fields, .. }), Projection::Field { index }) =>
+                        fields.iter().any(|(field, _, _)| field == index),
+                    (Some(super::super::AffinePhysicalPlan::Sequence { .. }), Projection::Element { .. }) => true,
+                    _ => false,
+                };
+                if affine_child { return self.unsupported("Load(cannot clone affine child)"); }
                 if !matches!(stored.ownership, Ownership::Unique | Ownership::Shared)
                     || !Self::is_managed_storage(&stored)
                 {

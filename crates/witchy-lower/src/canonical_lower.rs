@@ -2863,6 +2863,9 @@ fn signature_from_type(
             {
                 ParameterOwnership::Value
             }
+            (ValueType::Ref(_), Convention::Borrow) if affine_owner && scalar_result => {
+                ParameterOwnership::Value
+            }
             (ValueType::Gc(_), Convention::Let | Convention::Borrow)
                 if rooted_gc_view_owner_type(parameter, closure_layouts, definitions).is_some() =>
             {
@@ -12018,6 +12021,13 @@ impl FunctionLowerer<'_> {
                         }
                         ParameterOwnership::Value if matches!(actual, ValueType::Ref(_)) => {
                             let source_type = self.expression_type(argument)?;
+                            if conventions[parameter] == Convention::Borrow
+                                && signature.results.iter().all(|result| is_inline_scalar(*result))
+                                && StoragePlan::classify(source_type.unqualified(), self.definitions, |_| Some(0))
+                                    .requires_affine_owner_token()
+                            {
+                                return Ok(CallArgument::Value(value));
+                            }
                             if rooted_view_inner(&source_type).is_some() {
                                 return Ok(CallArgument::Value(value));
                             }
@@ -17358,8 +17368,8 @@ impl FunctionLowerer<'_> {
         if signature.parameters != vec![self.values[&left], self.values[&right]]
             || signature.results != vec![ValueType::Bool]
             || signature.contract.parameters.len() != 2
-            || self.checked_parameter_conventions.get(&signature_id).map(Vec::as_slice)
-                != Some(&[Convention::Let, Convention::Let])
+            || !matches!(self.checked_parameter_conventions.get(&signature_id).map(Vec::as_slice),
+                Some([Convention::Let, Convention::Let] | [Convention::Borrow, Convention::Borrow]))
         {
             return Err(CanonicalLoweringError::UnsupportedExpression("dict comparator signature"));
         }

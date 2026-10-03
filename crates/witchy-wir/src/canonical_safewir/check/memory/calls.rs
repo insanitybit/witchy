@@ -1,6 +1,13 @@
 use super::*;
 
 impl<'a> MemoryChecker<'a> {
+    pub(crate) fn ensure_no_pending_affine_borrow(&self) -> Result<(), InitialCheckError> {
+        if self.state.pending_affine_borrow.is_some() {
+            return self.unsupported("Dictionary(borrowed affine child crosses a block edge)");
+        }
+        Ok(())
+    }
+
     pub(crate) fn is_borrowed_parameter(&self, value: ValueId) -> bool {
         self.signature.results.iter().all(|result| matches!(result,
             ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit | ValueType::Size | ValueType::V128))
@@ -66,7 +73,10 @@ impl<'a> MemoryChecker<'a> {
                 .and_then(|proof| proof.parameters.get(index))
                 .and_then(Option::as_ref)
             {
-                if ownership != Ownership::Unique {
+                if ownership != Ownership::Unique
+                    && !(contract.ownership == ParameterOwnership::Value
+                        && self.is_borrowed_parameter(parameter.value))
+                {
                     return self.unsupported("Parameter(affine storage requires unique root)");
                 }
                 self.seed_affine_plan(parameter.value, plan);
@@ -272,6 +282,23 @@ impl<'a> MemoryChecker<'a> {
         let projected_bump_write_back =
             authenticated_projected_bump_write_back_parameter(results, parameters);
         let affine_proof = self.affine_abi.and_then(|proofs| proofs.get(&callee_signature.id));
+        let pending_borrow = self.state.pending_affine_borrow;
+        if let Some((borrowed, dict)) = pending_borrow {
+            let borrowed_index = arguments.iter().position(|argument| matches!(argument,
+                CallArgument::Value(value) if *value == borrowed));
+            if borrowed_index.is_none()
+                || arguments.iter().filter(|argument| matches!(argument,
+                    CallArgument::Value(value) if *value == borrowed)).count() != 1
+                || arguments.iter().any(|argument| matches!(argument,
+                    CallArgument::Value(value) | CallArgument::Move(value) if *value == dict))
+                || borrowed_index.and_then(|index| affine_proof
+                    .and_then(|proof| proof.parameters.get(index)).and_then(Option::as_ref))
+                    != self.state.affine_plans.get(&borrowed)
+            {
+                return self.unsupported("Dictionary(borrowed affine key call boundary)");
+            }
+            self.live_object(dict)?;
+        }
         for (parameter_index, (argument, parameter)) in arguments.iter().zip(parameters).enumerate() {
             let value = match argument {
                 CallArgument::Value(value) | CallArgument::Move(value) => *value,
@@ -310,9 +337,20 @@ impl<'a> MemoryChecker<'a> {
                             | ValueType::Unit | ValueType::Size | ValueType::V128))) =>
                 {
                     self.require_complete_value_initialized(*value, "Call(uninitialized borrowed slot)")?;
-                    // The callee may retain a clone. Keep the caller's token
-                    // live, but forget exclusive authority over this storage.
-                    self.share_allocation_tokens(*value)?;
+                    if let Some(plan) = affine_proof.and_then(|proof|
+                        proof.parameters.get(parameter_index)).and_then(Option::as_ref)
+                    {
+                        let borrowed_affine = (pending_borrow.is_some_and(|(borrowed, _)| borrowed == *value)
+                            || self.is_borrowed_parameter(*value))
+                            && self.state.affine_plans.get(value) == Some(plan);
+                        if !borrowed_affine && !self.require_affine_plan(*value, plan)? {
+                            return self.unsupported("Call(borrowed affine argument without recursive proof)");
+                        }
+                    } else {
+                        // An ordinary borrowed read may retain a clone. The
+                        // caller keeps its token but loses exclusive authority.
+                        self.share_allocation_tokens(*value)?;
+                    }
                 }
                 CallArgument::Value(_) => return self.unsupported("Call(Value memory)"),
                 CallArgument::Move(value) => {
@@ -709,6 +747,11 @@ impl<'a> MemoryChecker<'a> {
                 }
                 _ => return self.unsupported("Call(memory result)"),
             }
+        }
+        if let Some((borrowed, _)) = pending_borrow {
+            self.state.pending_affine_borrow = None;
+            self.state.affine_plans.remove(&borrowed);
+            self.state.objects.get_mut(&borrowed).expect("checked borrowed slot").ownership = Ownership::Consumed;
         }
         Ok(())
     }

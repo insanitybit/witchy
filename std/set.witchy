@@ -18,7 +18,7 @@ sealed type Set(a):
 // structural equality of the backing list (order-sensitive on the interpreter,
 // and unresolvable on the compiled backend), which is not set equality.
 impl PartialEq for Set(a) where a: Hash:
-    fn eq(self, other: Self) -> Bool:
+    fn eq(let self, let other: Self) -> Bool:
         subset_of(self, other) && subset_of(other, self)
 
 impl Eq for Set(a) where a: Hash

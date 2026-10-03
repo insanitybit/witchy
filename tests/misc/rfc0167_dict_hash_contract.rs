@@ -14,7 +14,7 @@ type Key:
     cache: Int
 
 impl PartialEq for Key:
-    fn eq(self, other: Self) -> Bool:
+    fn eq(let self, let other: Self) -> Bool:
         self.id == other.id
 
 impl Eq for Key

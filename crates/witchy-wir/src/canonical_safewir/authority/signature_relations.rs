@@ -88,6 +88,11 @@ pub(super) fn candidate_signature_matches_source_inner(
         let affine_owner = witchy_canonical_source::storage::StoragePlan::classify(
             source.unqualified(), records, |_| Some(0),
         ).requires_affine_owner_token();
+        if affine_owner && convention == witchy_syntax::ast::Convention::Borrow
+            && scalar_result && matches!(actual.value_type, super::super::ValueType::Ref(_))
+        {
+            return actual.ownership == super::super::ParameterOwnership::Value;
+        }
         if (affine_owner || matches!(source, witchy_syntax::ast::Type::Qualified(
             witchy_syntax::ast::TypeQual::Unique, _
         ))) && convention == witchy_syntax::ast::Convention::Own {

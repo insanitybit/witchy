@@ -1338,6 +1338,7 @@ fn check_block_flow(
             }
             check_operation(function, operation, signatures, imports, catalog, functions, memory)?;
         }
+        memory.ensure_no_pending_affine_borrow()?;
         if check_dominance {
             check_uses_dominate(
                 function,

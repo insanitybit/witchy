@@ -1271,7 +1271,7 @@ fn record_eq_expr(fields: List(FieldInfo), self_expr: ExprSyntax, other_expr: Ex
         join_binary("&&", terms)
 
 fn derive_partial_eq_source(t: TypeInfo) -> String:
-    let head = "impl PartialEq for " + target_with_params(t) + where_each(t.params, "PartialEq") + ":\n    fn eq(self, other: " + target_with_params(t) + ") -> Bool:\n"
+    let head = "impl PartialEq for " + target_with_params(t) + where_each(t.params, "PartialEq") + ":\n    fn eq(let self, let other: " + target_with_params(t) + ") -> Bool:\n"
     match t.kind:
         TypeRecord -> head + "        " + record_eq_body(t.fields) + "\n"
         _ ->

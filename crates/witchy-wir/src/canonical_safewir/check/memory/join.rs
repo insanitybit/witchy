@@ -480,6 +480,7 @@ impl<'a> MemoryChecker<'a> {
             nullable_absent_slots: self.state.nullable_absent_slots.iter().map(|(container, slot)| {
                 (remap_value(&renames, *container), *slot)
             }).collect(),
+            pending_affine_borrow: None,
             range_states: self
                 .state
                 .range_states
@@ -889,6 +890,7 @@ impl<'a> MemoryChecker<'a> {
             nullable_unique_slots: meet_set(&existing.nullable_unique_slots, &incoming.nullable_unique_slots),
             nullable_present_slots: meet_set(&existing.nullable_present_slots, &incoming.nullable_present_slots),
             affine_plans: meet_map(&existing.affine_plans, &incoming.affine_plans),
+            pending_affine_borrow: None,
             affine_list_roots: meet_set(&existing.affine_list_roots, &incoming.affine_list_roots),
             nullable_absent_slots: meet_set(&existing.nullable_absent_slots, &incoming.nullable_absent_slots),
             initialized_scalar_slots: meet_set(&existing.initialized_scalar_slots, &incoming.initialized_scalar_slots),

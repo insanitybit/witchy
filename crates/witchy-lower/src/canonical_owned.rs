@@ -430,6 +430,11 @@ fn operation_flow(
                 _ => {}
             }
             for value in dictionary.destinations() {
+                if matches!(dictionary, DictionaryOperation::ReadSlot {
+                    destination, transfer: LoadTransfer::BorrowAffine, ..
+                } if *destination == value) {
+                    continue;
+                }
                 if is_reference(function, value) { owned.insert(value); }
             }
         }

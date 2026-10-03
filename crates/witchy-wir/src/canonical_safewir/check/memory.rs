@@ -210,6 +210,9 @@ pub(super) struct MemoryState {
     /// Source-bound recursive ownership shapes, indexed by the current SSA
     /// root. Presence describes expected storage, never initializes a slot.
     affine_plans: CowFacts<SortedMap<ValueId, super::AffinePhysicalPlan>>,
+    /// One non-owning affine dictionary child, valid only for the next call
+    /// in this block. The dictionary root must stay live until that call.
+    pending_affine_borrow: Option<(ValueId, ValueId)>,
     /// Checked move-only list roots whose initialized prefix owns exclusive
     /// child tokens. A physical list shape alone never creates this fact.
     affine_list_roots: CowFacts<SortedSet<ValueId>>,
@@ -310,6 +313,7 @@ impl<'a> MemoryChecker<'a> {
                 nullable_unique_slots: SortedSet::new().into(),
                 nullable_present_slots: SortedSet::new().into(),
                 affine_plans: SortedMap::new().into(),
+                pending_affine_borrow: None,
                 affine_list_roots: SortedSet::new().into(),
                 nullable_absent_slots: SortedSet::new().into(),
                 range_states: SortedMap::new().into(),

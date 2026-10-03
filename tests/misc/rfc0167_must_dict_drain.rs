@@ -60,10 +60,14 @@ fn drain(own tickets: Dict(String, Ticket)) -> Int:
 fn main() -> Int:
     var tickets: Dict(String, Ticket) = dict.new()
     let first = match dict.insert_owned(tickets, "first", Ticket(1)):
-        Some(old) -> finish(old)
+        Some(pair) ->
+            match move pair:
+                (_, old) -> finish(old)
         None -> 0
     let second = match dict.insert_owned(tickets, "second", Ticket(2)):
-        Some(old) -> finish(old)
+        Some(pair) ->
+            match move pair:
+                (_, old) -> finish(old)
         None -> 0
     drain(tickets) + first + second
 "#).expect("must dictionary drain checks");
@@ -85,19 +89,20 @@ fn custom_key_and_must_value_transfer_together() {
     let checked = witchy::resolve_std_only_checked(r#"
 import cmp
 import dict
-type Key:
+must type Key:
     id: Int
 must type Ticket:
     Ticket(Int)
 impl PartialEq for Key:
-    fn eq(self, other: Self) -> Bool:
+    fn eq(let self, let other: Self) -> Bool:
         self.id == other.id
 impl Eq for Key
 impl Hash for Key:
     fn hash(let self) -> Int:
         self.id
-fn finish_key(key: Key) -> Int:
-    key.id
+fn finish_key(own key: Key) -> Int:
+    match move key:
+        Key(id) -> id
 fn finish_ticket(own ticket: Ticket) -> Int:
     match move ticket:
         Ticket(value) -> value
@@ -109,10 +114,17 @@ fn drain(own entries: Dict(Key, Ticket)) -> Int:
         None -> 0
 fn main() -> Int:
     var entries: Dict(Key, Ticket) = dict.new()
-    let displaced = match dict.insert_owned(entries, Key(2), Ticket(3)):
-        Some(ticket) -> finish_ticket(ticket)
+    let first = match dict.insert_owned(entries, Key(2), Ticket(5)):
+        Some(pair) ->
+            match move pair:
+                (key, ticket) -> finish_key(key) + finish_ticket(ticket)
         None -> 0
-    drain(entries) + displaced
+    let displaced = match dict.insert_owned(entries, Key(2), Ticket(3)):
+        Some(pair) ->
+            match move pair:
+                (key, ticket) -> finish_key(key) + finish_ticket(ticket)
+        None -> 0
+    drain(entries) + displaced + first
 "#).expect("affine dictionary key and value check");
     let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
         .expect_lowered("affine dictionary key and value admit");
@@ -121,7 +133,7 @@ fn main() -> Int:
         Capabilities { print_int: true, quiet: true, ..Capabilities::none() },
         128).expect("admitted Wasm instance");
     vm.run().expect("admitted Wasm execution");
-    assert_eq!(vm.output(), vec!["23".to_string()]);
+    assert_eq!(vm.output(), vec!["30".to_string()]);
     assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
 }
 
@@ -150,17 +162,23 @@ fn replace(var tickets: Dict(String, Ticket)) -> Int:
         None ->
             var fresh: Dict(String, Ticket) = dict.new()
             let displaced = match dict.insert_owned(fresh, "new", Ticket(3)):
-                Some(old) -> finish(old)
+                Some(pair) ->
+                    match move pair:
+                        (_, old) -> finish(old)
                 None -> 0
             tickets = move fresh
             displaced
 fn main() -> Int:
     var tickets: Dict(String, Ticket) = dict.new()
     let first = match dict.insert_owned(tickets, "first", Ticket(1)):
-        Some(old) -> finish(old)
+        Some(pair) ->
+            match move pair:
+                (_, old) -> finish(old)
         None -> 0
     let second = match dict.insert_owned(tickets, "second", Ticket(2)):
-        Some(old) -> finish(old)
+        Some(pair) ->
+            match move pair:
+                (_, old) -> finish(old)
         None -> 0
     let old = replace(tickets)
     old * 10 + drain(tickets) + first + second
@@ -193,7 +211,9 @@ fn replace(var entries: Dict(String, Ticket)) -> Int:
         None ->
             var fresh: Dict(String, Ticket) = dict.new()
             let displaced = match dict.insert_owned(fresh, "new", Ticket(3)):
-                Some(old) -> finish(old)
+                Some(pair) ->
+                    match move pair:
+                        (_, old) -> finish(old)
                 None -> 0
             entries = move fresh
             entries = dict.new()

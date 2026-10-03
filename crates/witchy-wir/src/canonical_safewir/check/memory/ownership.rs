@@ -655,6 +655,9 @@ impl<'a> MemoryChecker<'a> {
         destination: ValueId,
         source: ValueId,
     ) -> Result<(), InitialCheckError> {
+        if self.is_borrowed_parameter(source) && self.state.affine_plans.contains_key(&source) {
+            return self.unsupported("CloneRef(borrowed affine root)");
+        }
         let source_type = value_type(self.function, source)?;
         let ValueType::Ref(layout) = source_type else {
             return self.unsupported("CloneRef(scalar)");

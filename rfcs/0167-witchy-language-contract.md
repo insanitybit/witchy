@@ -884,8 +884,10 @@ Reflection is not arbitrary dynamic code loading.
 Standard-library protocols (`Show`, equality/order/hash, `Reflect`, conversions,
 `Deserialize`, and `FromIterator`) have one checked meaning for direct, method,
 generic, and indirect calls. Pure data APIs do not obtain ambient capabilities;
-equality recursively uses `PartialEq`; dictionary keys and set members require
-`Hash`, which refines `Eq`. `Hash.hash(let self) -> Int` is a deterministic
+equality recursively uses `PartialEq`. Its `eq(let self, let other: Self) -> Bool`
+contract observes both operands without consuming them, including `must`
+operands. Dictionary keys and set members require `Hash`, which refines `Eq`.
+`Hash.hash(let self) -> Int` is a deterministic
 content hash: equal keys must return equal hashes, and a key's hash and equality
 must remain stable while it is stored. Collisions are resolved with `Eq`.
 User-defined keys, including records with `derive(Eq)`, need a matching explicit

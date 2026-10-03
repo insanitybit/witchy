@@ -140,7 +140,7 @@ impl<'catalog> Preparation<'catalog> {
             type_params: Vec::new(),
             params: ["left", "right"].into_iter().map(|name| Param {
                 name: name.into(), ty: Some(key.clone()),
-                convention: Convention::Let, default: None,
+                convention: Convention::Borrow, default: None,
             }).collect(),
             ret: Some(Type::Named("Bool".into(), Vec::new())),
             body: Block {
@@ -159,7 +159,7 @@ impl<'catalog> Preparation<'catalog> {
             type_params: Vec::new(),
             params: vec![Param {
                 name: "key".into(), ty: Some(key.clone()),
-                convention: Convention::Let, default: None,
+                convention: Convention::Borrow, default: None,
             }],
             ret: Some(Type::Named("Int".into(), Vec::new())),
             body: Block {

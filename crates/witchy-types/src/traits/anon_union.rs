@@ -471,11 +471,16 @@ fn anon_union_partial_eq_impl(
             name: "eq".to_string(),
             type_params: Vec::new(),
             params: vec![
-                self_param(),
+                Param {
+                    name: "self".to_string(),
+                    ty: Some(Type::Named("Self".to_string(), Vec::new())),
+                    convention: Convention::Borrow,
+                    default: None,
+                },
                 Param {
                     name: "other".to_string(),
                     ty: Some(Type::Named("Self".to_string(), Vec::new())),
-                    convention: Convention::Let,
+                    convention: Convention::Borrow,
                     default: None,
                 },
             ],

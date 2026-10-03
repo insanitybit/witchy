@@ -286,7 +286,7 @@ fn record_equality_impl(t: &TypeDef, trait_name: &str, line: u32) -> Item {
             attributes: Vec::new(), name: "eq".into(), type_params: Vec::new(),
             params: ["self", "other"].into_iter().map(|name| Param {
                 name: name.into(), ty: Some(target.clone()),
-                convention: Convention::Let, default: None,
+                convention: Convention::Borrow, default: None,
             }).collect(),
             ret: Some(Type::Named("Bool".into(), Vec::new())),
             body: Block { stmts: vec![Stmt::Expr(body)], lines: vec![line], region: None },

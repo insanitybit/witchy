@@ -59,7 +59,7 @@ impl From(SemverError) for String:
         semver_error_message(value)
 
 impl PartialEq for Version:
-    fn eq(self, other: Self) -> Bool:
+    fn eq(let self, let other: Self) -> Bool:
         self.major == other.major && self.minor == other.minor && self.patch == other.patch
 
 impl Eq for Version

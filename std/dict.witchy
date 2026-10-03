@@ -36,10 +36,11 @@ pub fn with_capacity(capacity: Int) -> Dict(k, v):
 fn __insert(d: unique Dict(k, v), key: k, val: v) -> Dict(k, v) where k: Hash:
     dict.__insert(d, key, val)
 
-// Select the displaced value and perform the upsert with one semantic key
+// Return the unused incoming key and displaced value on a hit, and perform
+// the upsert with one semantic key
 // search. The ordinary result and repaired dictionary use the uniform `var`
 // ABI's independent result channels.
-fn __insert_extract(var d: Dict(k, v), own key: k, own val: v) -> Option(v) where k: Hash:
+fn __insert_extract(var d: Dict(k, v), own key: k, own val: v) -> Option((k, v)) where k: Hash:
     dict.__insert_extract(d, key, val)
 
 // Insert `key` with `val`, returning the displaced value when the key existed.
@@ -49,11 +50,15 @@ fn __insert_extract(var d: Dict(k, v), own key: k, own val: v) -> Option(v) wher
 // `unique` receiver makes that cost a checked contract in `mode opt`: a call
 // whose dictionary was aliased or loaned is rejected with the ownership reason.
 pub fn insert(var d: unique Dict(k, v), key: k, val: v) -> Option(v) where k: Hash:
-    dict.__insert_extract(d, key, val)
+    match dict.__insert_extract(d, key, val):
+        Some(pair) ->
+            let (_, old) = pair
+            Some(old)
+        None -> None
 
-// Transfer an affine key or value into the table. The displaced value, when
-// present, remains the caller's obligation.
-pub fn insert_owned(var d: unique Dict(k, v), own key: k, own val: v) -> Option(v) where k: Hash:
+// Transfer an affine key or value into the table. On a hit, the unused
+// incoming key and displaced value remain the caller's obligations.
+pub fn insert_owned(var d: unique Dict(k, v), own key: k, own val: v) -> Option((k, v)) where k: Hash:
     dict.__insert_extract(d, key, val)
 
 // The value for `key`, or `default` when absent.
@@ -177,7 +182,7 @@ impl Dict(k, v) where k: Hash:
     pub fn insert(var self: unique Dict(k, v), key: k, val: v) -> Option(v):
         dict.insert(self, key, val)
 
-    pub fn insert_owned(var self: unique Dict(k, v), own key: k, own val: v) -> Option(v):
+    pub fn insert_owned(var self: unique Dict(k, v), own key: k, own val: v) -> Option((k, v)):
         dict.__insert_extract(self, key, val)
 
     pub fn update(var self, key: k, default: v, f: fn(v) -> v):

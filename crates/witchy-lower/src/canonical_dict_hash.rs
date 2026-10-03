@@ -40,8 +40,8 @@ impl FunctionLowerer<'_> {
         if signature.parameters != vec![self.values[&key]]
             || signature.results != vec![ValueType::Int]
             || signature.contract.parameters.len() != 1
-            || self.checked_parameter_conventions.get(&signature_id).map(Vec::as_slice)
-                != Some(&[super::Convention::Let])
+            || !matches!(self.checked_parameter_conventions.get(&signature_id).map(Vec::as_slice),
+                Some([super::Convention::Let] | [super::Convention::Borrow]))
         {
             return Err(CanonicalLoweringError::UnsupportedExpression("dict hash signature"));
         }

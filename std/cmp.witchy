@@ -21,8 +21,8 @@ type Ordering:
 // `Float` is `PartialEq` but NOT `Eq` - `NaN != NaN`, so equality is not
 // reflexive.
 trait PartialEq:
-    fn eq(self, other: Self) -> Bool
-    fn ne(self, other: Self) -> Bool:
+    fn eq(let self, let other: Self) -> Bool
+    fn ne(let self, let other: Self) -> Bool:
         !eq(self, other)
 
 // Total equality: a marker refining `PartialEq` with reflexivity (no `NaN`).
@@ -90,7 +90,7 @@ pub fn reverse(o: Ordering) -> Ordering:
 
 // --- primitive impls ---------------------------------------------------------
 impl PartialEq for Ordering:
-    fn eq(self, other: Self) -> Bool:
+    fn eq(let self, let other: Self) -> Bool:
         match self:
             Less ->
                 match other:
@@ -105,7 +105,7 @@ impl PartialEq for Ordering:
                     Greater -> true
                     _ -> false
 
-    fn ne(self, other: Self) -> Bool:
+    fn ne(let self, let other: Self) -> Bool:
         !eq(self, other)
 
 impl Eq for Ordering
@@ -118,7 +118,7 @@ impl Hash for Ordering:
             Greater -> 2
 
 impl PartialEq for Int:
-    fn eq(self, other: Self) -> Bool:
+    fn eq(let self, let other: Self) -> Bool:
         self == other
 
 impl Eq for Int
@@ -141,7 +141,7 @@ impl Ord for Int:
             Equal
 
 impl PartialEq for Bool:
-    fn eq(self, other: Self) -> Bool:
+    fn eq(let self, let other: Self) -> Bool:
         self == other
 
 impl Eq for Bool
@@ -156,7 +156,7 @@ impl Hash for Bool:
 // Lexicographic ordering by code point - the same order `<` gives on strings, and
 // content-correct in compiled code (both backends compare bytes, not pointers).
 impl PartialEq for String:
-    fn eq(self, other: Self) -> Bool:
+    fn eq(let self, let other: Self) -> Bool:
         self == other
 
 impl Eq for String
@@ -181,7 +181,7 @@ impl Ord for String:
 // Byte buffers compare by byte contents, matching direct `==` and String's
 // content equality. `Bytes` deliberately has equality but no ordering protocol.
 impl PartialEq for Bytes:
-    fn eq(self, other: Self) -> Bool:
+    fn eq(let self, let other: Self) -> Bool:
         let n = bytes.length(self)
         if n != bytes.length(other):
             return false
@@ -192,7 +192,7 @@ impl PartialEq for Bytes:
             i = i + 1
         true
 
-    fn ne(self, other: Self) -> Bool:
+    fn ne(let self, let other: Self) -> Bool:
         !eq(self, other)
 
 impl Eq for Bytes
@@ -202,7 +202,7 @@ impl Hash for Bytes:
         hash_bytes(self)
 
 impl PartialEq for Duration:
-    fn eq(self, other: Self) -> Bool:
+    fn eq(let self, let other: Self) -> Bool:
         self == other
 
 impl Eq for Duration
@@ -228,7 +228,7 @@ impl Ord for Duration:
 // (including itself) and unordered, so `Float` is neither `Eq` nor `Ord`. Sort a
 // `List(Float)` with a total wrapper or by comparing a derived key.
 impl PartialEq for Float:
-    fn eq(self, other: Self) -> Bool:
+    fn eq(let self, let other: Self) -> Bool:
         self == other
 
 impl PartialOrd for Float:
@@ -250,7 +250,7 @@ impl PartialOrd for Float:
 
 // Lists compare element-by-element through the element type's `PartialEq` impl.
 impl PartialEq for List(a) where a: PartialEq:
-    fn eq(self, other: Self) -> Bool:
+    fn eq(let self, let other: Self) -> Bool:
         let n = list.length(self)
         if n != list.length(other):
             return false
@@ -271,7 +271,7 @@ impl Hash for List(a) where a: Hash:
         hash_combine(h, self.length())
 
 impl PartialEq for Option(a) where a: PartialEq:
-    fn eq(self, other: Self) -> Bool:
+    fn eq(let self, let other: Self) -> Bool:
         match self:
             Some(left) ->
                 match other:
@@ -291,7 +291,7 @@ impl Hash for Option(a) where a: Hash:
             Some(value) -> hash_combine(1, value.hash())
 
 impl PartialEq for Result(a, e) where a: PartialEq, e: PartialEq:
-    fn eq(self, other: Self) -> Bool:
+    fn eq(let self, let other: Self) -> Bool:
         match self:
             Ok(left) ->
                 match other:
@@ -311,7 +311,7 @@ impl Hash for Result(a, e) where a: Hash, e: Hash:
             Err(error) -> hash_combine(1, error.hash())
 
 impl PartialEq for Dict(k, v) where k: Hash, v: PartialEq:
-    fn eq(self, other: Self) -> Bool:
+    fn eq(let self, let other: Self) -> Bool:
         if dict.length(self) != dict.length(other):
             return false
         for left_entry in dict.pairs(self):
@@ -332,12 +332,12 @@ impl Eq for Dict(k, v) where k: Hash, v: Eq
 // Tuples compare slot-by-slot through each slot's equality protocol. The tuple
 // protocol surface is explicit through arity 8, matching `Show` and `Reflect`.
 impl PartialEq for (a, b) where a: PartialEq, b: PartialEq:
-    fn eq(self, other: Self) -> Bool:
+    fn eq(let self, let other: Self) -> Bool:
         let (x0, x1) = self
         let (y0, y1) = other
         x0 == y0 && x1 == y1
 
-    fn ne(self, other: Self) -> Bool:
+    fn ne(let self, let other: Self) -> Bool:
         !eq(self, other)
 
 impl Eq for (a, b) where a: Eq, b: Eq
@@ -351,12 +351,12 @@ impl Hash for (a, b) where a: Hash, b: Hash:
         h
 
 impl PartialEq for (a, b, c) where a: PartialEq, b: PartialEq, c: PartialEq:
-    fn eq(self, other: Self) -> Bool:
+    fn eq(let self, let other: Self) -> Bool:
         let (x0, x1, x2) = self
         let (y0, y1, y2) = other
         x0 == y0 && x1 == y1 && x2 == y2
 
-    fn ne(self, other: Self) -> Bool:
+    fn ne(let self, let other: Self) -> Bool:
         !eq(self, other)
 
 impl Eq for (a, b, c) where a: Eq, b: Eq, c: Eq
@@ -371,12 +371,12 @@ impl Hash for (a, b, c) where a: Hash, b: Hash, c: Hash:
         h
 
 impl PartialEq for (a, b, c, d) where a: PartialEq, b: PartialEq, c: PartialEq, d: PartialEq:
-    fn eq(self, other: Self) -> Bool:
+    fn eq(let self, let other: Self) -> Bool:
         let (x0, x1, x2, x3) = self
         let (y0, y1, y2, y3) = other
         x0 == y0 && x1 == y1 && x2 == y2 && x3 == y3
 
-    fn ne(self, other: Self) -> Bool:
+    fn ne(let self, let other: Self) -> Bool:
         !eq(self, other)
 
 impl Eq for (a, b, c, d) where a: Eq, b: Eq, c: Eq, d: Eq
@@ -392,12 +392,12 @@ impl Hash for (a, b, c, d) where a: Hash, b: Hash, c: Hash, d: Hash:
         h
 
 impl PartialEq for (a, b, c, d, e) where a: PartialEq, b: PartialEq, c: PartialEq, d: PartialEq, e: PartialEq:
-    fn eq(self, other: Self) -> Bool:
+    fn eq(let self, let other: Self) -> Bool:
         let (x0, x1, x2, x3, x4) = self
         let (y0, y1, y2, y3, y4) = other
         x0 == y0 && x1 == y1 && x2 == y2 && x3 == y3 && x4 == y4
 
-    fn ne(self, other: Self) -> Bool:
+    fn ne(let self, let other: Self) -> Bool:
         !eq(self, other)
 
 impl Eq for (a, b, c, d, e) where a: Eq, b: Eq, c: Eq, d: Eq, e: Eq
@@ -414,12 +414,12 @@ impl Hash for (a, b, c, d, e) where a: Hash, b: Hash, c: Hash, d: Hash, e: Hash:
         h
 
 impl PartialEq for (a, b, c, d, e, f) where a: PartialEq, b: PartialEq, c: PartialEq, d: PartialEq, e: PartialEq, f: PartialEq:
-    fn eq(self, other: Self) -> Bool:
+    fn eq(let self, let other: Self) -> Bool:
         let (x0, x1, x2, x3, x4, x5) = self
         let (y0, y1, y2, y3, y4, y5) = other
         x0 == y0 && x1 == y1 && x2 == y2 && x3 == y3 && x4 == y4 && x5 == y5
 
-    fn ne(self, other: Self) -> Bool:
+    fn ne(let self, let other: Self) -> Bool:
         !eq(self, other)
 
 impl Eq for (a, b, c, d, e, f) where a: Eq, b: Eq, c: Eq, d: Eq, e: Eq, f: Eq
@@ -437,12 +437,12 @@ impl Hash for (a, b, c, d, e, f) where a: Hash, b: Hash, c: Hash, d: Hash, e: Ha
         h
 
 impl PartialEq for (a, b, c, d, e, f, g) where a: PartialEq, b: PartialEq, c: PartialEq, d: PartialEq, e: PartialEq, f: PartialEq, g: PartialEq:
-    fn eq(self, other: Self) -> Bool:
+    fn eq(let self, let other: Self) -> Bool:
         let (x0, x1, x2, x3, x4, x5, x6) = self
         let (y0, y1, y2, y3, y4, y5, y6) = other
         x0 == y0 && x1 == y1 && x2 == y2 && x3 == y3 && x4 == y4 && x5 == y5 && x6 == y6
 
-    fn ne(self, other: Self) -> Bool:
+    fn ne(let self, let other: Self) -> Bool:
         !eq(self, other)
 
 impl Eq for (a, b, c, d, e, f, g) where a: Eq, b: Eq, c: Eq, d: Eq, e: Eq, f: Eq, g: Eq
@@ -461,12 +461,12 @@ impl Hash for (a, b, c, d, e, f, g) where a: Hash, b: Hash, c: Hash, d: Hash, e:
         h
 
 impl PartialEq for (a, b, c, d, e, f, g, h) where a: PartialEq, b: PartialEq, c: PartialEq, d: PartialEq, e: PartialEq, f: PartialEq, g: PartialEq, h: PartialEq:
-    fn eq(self, other: Self) -> Bool:
+    fn eq(let self, let other: Self) -> Bool:
         let (x0, x1, x2, x3, x4, x5, x6, x7) = self
         let (y0, y1, y2, y3, y4, y5, y6, y7) = other
         x0 == y0 && x1 == y1 && x2 == y2 && x3 == y3 && x4 == y4 && x5 == y5 && x6 == y6 && x7 == y7
 
-    fn ne(self, other: Self) -> Bool:
+    fn ne(let self, let other: Self) -> Bool:
         !eq(self, other)
 
 impl Eq for (a, b, c, d, e, f, g, h) where a: Eq, b: Eq, c: Eq, d: Eq, e: Eq, f: Eq, g: Eq, h: Eq
