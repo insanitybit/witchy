@@ -12,6 +12,7 @@ Usage:
     scripts/gate-test-cost.py --top 40         # deeper tail
     scripts/gate-test-cost.py --trend          # week-over-week regression
     scripts/gate-test-cost.py --workspace-only # ignore scoped landing shards
+    scripts/gate-test-cost.py --jobs 8         # estimate scheduling headroom
     scripts/gate-test-cost.py --log state/merge-queue/logs/gate.log # inspect one named log
     scripts/gate-test-cost.py --budget 5.0     # list tests over a budget
     scripts/gate-test-cost.py --assert-budget 2 # fail if any ordinary test exceeds 2s
@@ -28,6 +29,11 @@ merge-queue.sh) and runs a different test subset each time -- its "over
 budget" set is run-dependent, not a stable enforcement signal. Point this
 at a --full or CI log (the whole workspace, every time) before treating a
 failure as real, and before wiring this into any automated gate.
+
+--jobs is the actual nextest worker count for the selected invocation. Its
+capacity bound uses summed test wall time because each active test occupies a
+worker. Test groups and startup can make the attainable wall time higher than
+this bound; duration rounding can also make it approximate.
 """
 
 import argparse
@@ -178,7 +184,7 @@ def load_exempt(path):
     return names
 
 
-def profile(run, top, budget, exempt=None):
+def profile(run, top, budget, exempt=None, jobs=None):
     tests = sorted(run["tests"], reverse=True)
     test_seconds = sum(d for d, _, _ in tests)
     when = datetime.datetime.fromtimestamp(run["mtime"]).strftime("%Y-%m-%d %H:%M")
@@ -200,6 +206,14 @@ def profile(run, top, budget, exempt=None):
         print(f"overlap    {test_seconds / run['wall']:.1f}x summed-test-time / execution wall")
     else:
         print("overlap    unavailable (incomplete failed invocation)")
+    if jobs is not None and run["wall"]:
+        floor = test_seconds / jobs
+        occupancy = test_seconds / (run["wall"] * jobs)
+        print(f"capacity   {floor:.1f}s minimum at {jobs} jobs; "
+              f"{occupancy:.0%} observed worker occupancy")
+        print(f"headroom   {max(0.0, run['wall'] - floor):.1f}s maximum possible "
+              "scheduling-only reduction at this job count")
+        print("           conditional on unchanged test durations; load can change them")
     print(f"longest    {tests[0][0]:.0f}s single test")
     print()
 
@@ -214,7 +228,8 @@ def profile(run, top, budget, exempt=None):
         print(f"  {offset:2d} from end  {duration:7.1f}s  {binary:26} {name[:64]}")
     print()
 
-    # The tail is what matters: cutting the top few tests moves the whole gate.
+    # Costliest tests show where work accumulates; late completions show the
+    # scheduling tail. The capacity line bounds the payoff from only reordering.
     print(f"--- {top} costliest tests ---")
     for duration, binary, name in tests[:top]:
         print(f"  {duration:7.1f}s  {duration / test_seconds * 100:4.1f}%  {binary:26} {name[:64]}")
@@ -356,6 +371,8 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--top", type=int, default=25, help="how many costliest tests to list")
+    ap.add_argument("--jobs", type=int, default=None,
+                    help="actual nextest job count, for a worker-capacity bound")
     ap.add_argument("--trend", action="store_true", help="week-over-week suite cost")
     ap.add_argument("--workspace-only", action="store_true",
                     help="ignore path-scoped nextest selections and mine full workspace stages")
@@ -373,6 +390,8 @@ def main():
     ap.add_argument("--runs", type=int, default=60,
                     help="how many recent gate logs to mine for --trend")
     args = ap.parse_args()
+    if args.jobs is not None and args.jobs <= 0:
+        ap.error("--jobs must be a positive integer")
 
     if not os.path.isdir(LOG_DIR):
         print(f"no gate logs at {LOG_DIR} — run the merge queue first", file=sys.stderr)
@@ -404,7 +423,7 @@ def main():
         return 0
     budget = args.assert_budget or args.budget
     exempt = load_exempt(args.exempt_file)
-    over = profile(runs[-1], args.top, budget, exempt)
+    over = profile(runs[-1], args.top, budget, exempt, args.jobs)
     if args.assert_budget and over:
         print(
             f"FAIL: {len(over)} tests exceed the {args.assert_budget:.1f}s hard ceiling",

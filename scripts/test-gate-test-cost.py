@@ -34,6 +34,8 @@ def main():
                 "3",
                 "--budget",
                 "50",
+                "--jobs",
+                "2",
             ],
             env=env,
             text=True,
@@ -47,6 +49,8 @@ def main():
         assert "execution  102s wall" in output, output
         assert "test time  102s summed per-test wall (overlaps; not CPU)" in output, output
         assert "overlap    1.0x summed-test-time / execution wall" in output, output
+        assert "capacity   51.0s minimum at 2 jobs; 50% observed worker occupancy" in output, output
+        assert "headroom   51.0s maximum possible scheduling-only reduction" in output, output
         assert "--- final completion tail (2 tests) ---" in output, output
         assert "1 from end" in output and "fixture::bin" in output and "slow" in output, output
         assert "90.0s" not in output, output
