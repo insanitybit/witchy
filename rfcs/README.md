@@ -10,6 +10,7 @@ merge-queue result for that claim.
 | [RFC-0167 ledger](0167-acceptance-ledger.md) | Normal-mode implementation and evidence obligations. |
 | [RFC-0126](0126-capability-effects-contract.md) | Capability and effect contract. |
 | [RFC-0173](0173-opt-mode-contract.md) | Deferred opt-mode proof and cross-mode contract. |
+| [RFC-0174](0174-incremental-compiler-cache.md) | Proposed content-addressed incremental compiler cache. |
 | [RFC-0165](0165-safewir-canonical-ir.md) | Canonical SafeWIR compiler architecture. |
 | [RFC-0165 ledger](0165-acceptance-ledger.md) | Bounded implementation evidence and remaining safety limits. |
 | [SafeWIR judgment](0162-safewir-judgment.md) | Independent schema-1 memory-validation rules. |

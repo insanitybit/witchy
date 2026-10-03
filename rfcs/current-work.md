@@ -52,6 +52,12 @@ and final validation; any stronger pass needs its own relation.
 
 ## 4. Runtime performance: measure first
 
+[RFC-0174](0174-incremental-compiler-cache.md) owns the proposed incremental
+compiler cache. It is a mechanism proposal, not evidence that compilation is
+already incremental. Cache keys, invalidation, authority replay, and matched
+cold/warm/cross-process measurements must be accepted before implementation
+claims are made.
+
 Older RFC-0143, RFC-0146, and RFC-0153 benchmark ratios are revision-specific.
 Use the current binary, equivalent Witchy and Go results, paired kernel clocks,
 and end-to-end wall clocks before selecting work. Do not promote a change from
