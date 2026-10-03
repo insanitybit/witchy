@@ -157,6 +157,8 @@ mod rfc0167_tuple_root_view;
 mod rfc0167_tuple_view_capture;
 #[path = "misc/rfc0167_indirect_var_view_tuple.rs"]
 mod rfc0167_indirect_var_view_tuple;
+#[path = "misc/rfc0167_must_var_list_replacement.rs"]
+mod rfc0167_must_var_list_replacement;
 #[path = "misc/rfc0167_result_list_root_view.rs"]
 mod rfc0167_result_list_root_view;
 #[path = "misc/rfc0167_nested_list_root_view.rs"]

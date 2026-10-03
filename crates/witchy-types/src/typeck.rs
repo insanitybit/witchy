@@ -5875,11 +5875,20 @@ impl Checker {
                             "assignment would overwrite live must-consume value `{name}`; consume the old value before assigning a replacement"
                         ));
                     }
-                    if self.is_borrowed_must_binding(name) && !must_preserving_self_update {
+                    let exact_empty_replacement = self.exact_empty_borrowed_must_replacement
+                        .as_ref().is_some_and(|binding| self.must_binding_key(name).as_ref() == Some(binding))
+                        && *place_depth == 0;
+                    if self.is_borrowed_must_binding(name)
+                        && !must_preserving_self_update
+                        && !exact_empty_replacement
+                    {
                         self.pop();
                         return terr(format!(
                             "assignment would replace borrowed must-consume value `{name}` and erase its caller-owned obligation"
                         ));
+                    }
+                    if exact_empty_replacement {
+                        self.exact_empty_borrowed_must_replacement = None;
                     }
                     if let Some(scope) = self.region_locals.last() {
                         if !scope.contains(name) && !is_scalar_ty(&self.resolve(&existing)) {
@@ -9554,11 +9563,13 @@ impl Checker {
         let before = self.consumed.clone();
         let must_before = self.must_live.clone();
         let once_before = self.once_invoked.clone();
+        let outer_empty_replacement = self.exact_empty_borrowed_must_replacement.take();
         let mut branch_facts = Vec::with_capacity(arms.len());
         let mut result_opt_proof: Option<StoredOptProof> = None;
         let mut fallthrough = (before.clone(), must_before.clone(), once_before.clone());
         let mut fallthrough_reachable = true;
         for arm in arms {
+            self.exact_empty_borrowed_must_replacement = None;
             self.consumed = fallthrough.0.clone();
             self.must_live = fallthrough.1.clone();
             self.once_invoked = fallthrough.2.clone();
@@ -9586,6 +9597,12 @@ impl Checker {
                 && let [Expr::Var(binding)] = args.as_slice()
             {
                 self.consume_must_binding(binding);
+                if self.is_borrowed_must_binding(binding)
+                    && matches!(&arm.body, Expr::Block(block)
+                        if matches!(block.stmts.first(), Some(Stmt::Assign { name, place_depth: 0, .. }) if name == binding))
+                {
+                    self.exact_empty_borrowed_must_replacement = self.must_binding_key(binding);
+                }
             }
             self.remember_pattern_opt_provenance(&arm.pattern, scrutinee_opt_proof.clone());
             if let Expr::Var(binding) = scrutinee
@@ -9633,6 +9650,7 @@ impl Checker {
                 Some(expected) => self.infer_expected(&arm.body, expected)?,
                 None => self.infer(&arm.body)?,
             };
+            self.exact_empty_borrowed_must_replacement = None;
             self.reject_implicit_once_copy(&arm.body, &bt, "match arm result")?;
             if expected.is_some() {
                 self.coerce_arg(result.as_ref().expect("expected match type"), &bt).map_err(|e| TypeError {
@@ -9670,6 +9688,7 @@ impl Checker {
                 &once_before,
                 &branch_facts,
             );
+        self.exact_empty_borrowed_must_replacement = outer_empty_replacement;
         self.record_opt_expression_proof(
             expression,
             result_opt_proof.unwrap_or(StoredOptProof::Unknown),
@@ -10479,6 +10498,7 @@ impl Checker {
         self.loop_exit_scopes.clear();
         self.pending_operands.clear();
         self.must_borrowed.clear();
+        self.exact_empty_borrowed_must_replacement = None;
         self.once_borrowed.clear();
         self.current_storage_obligations.clear();
         self.check_replay_captures = self.replay_capture_scope.contains(&func.name)
@@ -12861,6 +12881,7 @@ fn run_check_selected(
         loop_exit_scopes: Vec::new(),
         pending_operands: Vec::new(),
         must_borrowed: HashSet::new(),
+        exact_empty_borrowed_must_replacement: None,
         once_borrowed: HashSet::new(),
         region_locals: Vec::new(),
         region_promotions: HashMap::new(),

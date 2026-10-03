@@ -210,6 +210,15 @@ lowerer leaves a successor token moved in one match arm to CFG release
 placement, so a return after the join does not drop that token twice. This
 is a bounded list-disposition case, not general task-resource disposition.
 
+An exact-pop `None` arm can now replace the proved-empty write-back slot of
+a borrowed `var List(Ticket)` once, as its first statement. The admitted
+normal-mode Wasm witness drains two old Tickets, writes back a new Ticket,
+then drains that replacement at the caller; the independent result is 33
+with zero owned-heap leaks. A second replacement or a replacement after
+another statement refuses, so this proof cannot authorize discarding a
+later live obligation. The rule remains limited to the exact intrinsic and
+its unguarded `None` arm.
+
 The runtime diagnostic golden migration at merged `0ca522869` checks list bounds,
 user `fail`, and a missing named secret through checked source and admitted
 Wasm, retaining their source-level messages. The direct and nested
