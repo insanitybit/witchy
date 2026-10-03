@@ -31,4 +31,9 @@ fn main(console: Console):
     vm.run().expect("admitted Wasm execution");
     assert_eq!(vm.output(), ["2"]);
     assert_eq!(vm.canonical_heap_leaks().expect("ownership audit"), Some(0));
+
+    let denied = Runtime::batch().expect("runtime")
+        .spawn_admitted(&artifact, Capabilities::none(), 128);
+    let error = denied.err().expect("capturing Console cannot remove its host grant requirement");
+    assert!(error.to_string().contains("witchy::console_print"), "wrong refusal boundary: {error}");
 }

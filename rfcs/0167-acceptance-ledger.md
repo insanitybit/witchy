@@ -2189,6 +2189,11 @@ heap leaks. The 2026-10-03 follow-up gives the light type judgment the same
 tuple-position projection used by the final checker, so the witness directly
 calls `state.0.print` and `state.1.length`. This does not establish all
 capability-bearing aggregates or all receiver expressions.
+The 2026-10-03 grant follow-up launches the same admitted artifact without a
+Console grant and confirms that host import binding refuses `witchy::console_print`
+before guest execution. Closure capture therefore cannot launder this required
+host operation. This is one exact grant boundary, not a general host-authority
+or final-byte proof.
 Adversarial review identified a mixed
 direct-capability/affine shell whose consuming deconstruction cannot transfer
 the capability output; the shared operation judgment now refuses that shell
