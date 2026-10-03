@@ -2185,9 +2185,10 @@ capability-bearing tuple both refuse. The durable
 `rfc0126_capability_closure_aggregate::captured_capability_and_list_keep_their_checked_host_authority`
 witness now checks a normal-mode closure capturing `(Console, List(Int))`:
 admitted unoptimized Wasm prints the independent result `2` with zero canonical
-heap leaks. Its explicit `Console` local is necessary because method lookup on
-an untyped tuple projection still refuses; this witness does not establish that
-broader method-resolution form or all capability-bearing aggregates.
+heap leaks. The 2026-10-03 follow-up gives the light type judgment the same
+tuple-position projection used by the final checker, so the witness directly
+calls `state.0.print` and `state.1.length`. This does not establish all
+capability-bearing aggregates or all receiver expressions.
 Adversarial review identified a mixed
 direct-capability/affine shell whose consuming deconstruction cannot transfer
 the capability output; the shared operation judgment now refuses that shell

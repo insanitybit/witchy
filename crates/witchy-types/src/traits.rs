@@ -1816,6 +1816,12 @@ fn local_expr_type(
         },
         Expr::Field { base, field } => {
             let base_ty = type_of(base)?;
+            if let Ok(index) = field.parse::<usize>() {
+                let Type::Tuple(elements) = base_ty.unqualified() else {
+                    return None;
+                };
+                return elements.get(index).cloned();
+            }
             let Type::Named(owner, args) = base_ty.unqualified() else {
                 return None;
             };

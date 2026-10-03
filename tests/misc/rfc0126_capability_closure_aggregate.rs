@@ -15,9 +15,7 @@ fn captured_capability_and_list_keep_their_checked_host_authority() {
     let source = r#"
 fn main(console: Console):
     let state = (console, [4, 5])
-    let report = fn():
-        let output: Console = state.0
-        output.print("${list.length(state.1)}")
+    let report = fn(): state.0.print("${state.1.length()}")
     report()
 "#;
     let checked = witchy::resolve_std_only_checked(source)
