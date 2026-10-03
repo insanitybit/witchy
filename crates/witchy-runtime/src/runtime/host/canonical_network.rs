@@ -216,8 +216,14 @@ fn recv_bytes_at(mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef
     use std::io::Read;
     let socket = socket_resource_ref(&caller, token)?;
     // `count` is guest-supplied: read in bounded chunks so memory tracks the
-    // bytes actually received, never the claimed count.
-    let want = usize::try_from(count.max(0)).unwrap_or(usize::MAX);
+    // bytes actually received, never the claimed count, and stop at the same
+    // host cap as `recv_all` -- a peer streaming into `recv_bytes(huge)` must
+    // not grow host memory past the guest's own limits. Like EOF or a read
+    // timeout, the cap ends the read short. The response holding the bytes is
+    // an externref the checked caller consumes at once and never stores, so
+    // responses cannot accumulate.
+    let want = usize::try_from(count.max(0)).unwrap_or(usize::MAX)
+        .min(crate::net::MAX_RECV_BYTES as usize);
     let mut bytes = Vec::new();
     let mut chunk = [0u8; 8192];
     let outcome = {
