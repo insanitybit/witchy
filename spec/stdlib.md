@@ -970,6 +970,10 @@ An empty Dict with pre-allocated capacity.
 
 Insert `key` with `val`, returning the displaced value when the key existed. The dictionary performs one semantic key search. A uniquely owned dictionary preserves its hash index and updates or grows geometrically; a shared root is copied before repair so aliases keep their old contents in normal mode. The `unique` receiver makes that cost a checked contract in `mode opt`: a call whose dictionary was aliased or loaned is rejected with the ownership reason.
 
+#### `fn insert_owned(var d: unique Dict(k, v), own key: k, own val: v) -> Option(v) where k: Hash`
+
+Transfer an affine key or value into the table. The displaced value, when present, remains the caller's obligation.
+
 #### `fn get_or(let d: Dict(k, v), key: k, default: v) -> v where k: Hash`
 
 The value for `key`, or `default` when absent.
@@ -990,9 +994,15 @@ Whether `key` is present. The `_key` suffix is deliberate: a Dict contains key/v
 
 #### `fn contains_by(let d: Dict(k, v), query: &q) -> Bool where k: Hash, q: Equivalent(k)`
 
+#### `fn __pop_extract(var d: Dict(k, v)) -> Option((k, v))`
+
+Remove the oldest entry and transfer both the key and value. `None` proves that the write-back dictionary is empty, including its must obligations.
+
 #### `fn remove(var d: unique Dict(k, v), key: k) -> Option(v) where k: Hash`
 
 Remove `key`, returning its old value when present. The dictionary performs one semantic key search. Unique storage moves the old value out and repairs insertion order in place; shared storage uses copy-on-write in normal mode. In `mode opt`, the `unique` receiver rejects a shared or loaned call site instead of silently taking that copy.
+
+#### `fn pop(var d: unique Dict(k, v)) -> Option((k, v))`
 
 #### `fn keys(let d: Dict(k, v)) -> List(k)`
 
@@ -1018,6 +1028,10 @@ Build a Dict from (key, value) pairs; a later pair overrides an earlier one.
 
 The number of entries.
 
+#### `Dict.pop() -> Option((k, v))`
+
+Transfer the oldest entry, including its key, to the caller.
+
 #### `Dict.is_empty() -> Bool`
 
 Whether the dict has no entries.
@@ -1041,6 +1055,10 @@ The values whose keys satisfy `pred`, in the Dict's iteration order.
 #### `Dict.insert(key: k, val: v) -> Option(v)`
 
 Insert `key` with `val`, returning the displaced value when the key existed. The dictionary performs one semantic key search. A uniquely owned dictionary preserves its hash index and updates or grows geometrically; a shared root is copied before repair so aliases keep their old contents in normal mode. The `unique` receiver makes that cost a checked contract in `mode opt`: a call whose dictionary was aliased or loaned is rejected with the ownership reason.
+
+#### `Dict.insert_owned(own key: k, own val: v) -> Option(v)`
+
+Transfer an affine key or value into the table. The displaced value, when present, remains the caller's obligation.
 
 #### `Dict.update(key: k, default: v, f: fn(v) -> v)`
 

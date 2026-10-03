@@ -635,8 +635,10 @@ impl CanonicalWriter {
                         self.u8(4); self.value_id(*displaced); self.value_id(*dict); self.value_id(*bucket);
                         self.value_id(*value); self.store_transfer(*transfer);
                     }
-                    D::RemoveSlot { removed_value, dict, bucket } => {
+                    D::RemoveSlot { removed_key, removed_value, dict, bucket } => {
                         self.u8(5); self.value_id(*removed_value); self.value_id(*dict); self.value_id(*bucket);
+                        self.u8(u8::from(removed_key.is_some()));
+                        if let Some(removed_key) = removed_key { self.value_id(*removed_key); }
                     }
                     D::CloneExact { destination, source, capacity } => {
                         self.u8(6); self.value_id(*destination); self.value_id(*source); self.value_id(*capacity);

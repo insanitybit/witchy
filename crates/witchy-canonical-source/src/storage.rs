@@ -286,6 +286,10 @@ fn stored_arguments_for_catalog(
     match ty {
         Type::Qualified(_, inner) | Type::Slice(inner) => vec![inner.as_ref().clone()],
         Type::Named(name, arguments) => {
+            if matches!(name.as_str(), "List" | "Dict") {
+                return stored_children(ty, definitions).ok().flatten()
+                    .map(StoredChildren::into_types).unwrap_or_default();
+            }
             if let Some(mask) = catalog_mask(name, positions, definitions) {
                 return mask.iter().zip(arguments).filter_map(|(stored, argument)|
                     stored.then_some(argument.clone())).collect();
@@ -575,6 +579,9 @@ pub enum StoragePlan {
     /// released, but cannot be cloned. Each initialized leaf carries its own
     /// affine disposition; no ordinary list read may duplicate it.
     MoveOnlyList(MoveOnlySequencePlan),
+    /// A dictionary whose row graph can move and release but cannot clone.
+    /// Both slot plans are source-bound; table mutation must preserve them.
+    MoveOnlyDict(MoveOnlyDictionaryPlan),
     RootedView(RootedViewStorage),
     AggregateView(ViewCarrierPlan, AggregateGraphPlan),
     Refused(StorageRefusal),
@@ -597,6 +604,21 @@ pub struct MoveOnlySequencePlan {
     source: Type,
     element: Box<StoragePlan>,
     source_key: [u8; 32],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MoveOnlyDictionaryPlan {
+    source: Type,
+    key: Box<StoragePlan>,
+    value: Box<StoragePlan>,
+    source_key: [u8; 32],
+}
+
+impl MoveOnlyDictionaryPlan {
+    pub fn source(&self) -> &Type { &self.source }
+    pub fn key(&self) -> &StoragePlan { &self.key }
+    pub fn value(&self) -> &StoragePlan { &self.value }
+    pub fn source_key(&self) -> [u8; 32] { self.source_key }
 }
 
 impl MoveOnlySequencePlan {
@@ -1180,6 +1202,7 @@ pub enum AffineStorageShape {
     Leaf,
     NullableFields(Vec<(u32, AffineStorageShape)>),
     Sequence(Box<AffineStorageShape>),
+    Mapping { key: Option<Box<AffineStorageShape>>, value: Option<Box<AffineStorageShape>> },
 }
 
 /// A tagged sum has inactive slots; an affine record needs empty slots after
@@ -1235,6 +1258,7 @@ pub fn affine_storage_shape(
         }
         let source = match plan {
             StoragePlan::MoveOnlyList(sequence) => sequence.source(),
+            StoragePlan::MoveOnlyDict(mapping) => mapping.source(),
             StoragePlan::AuthenticatedPlace(graph) | StoragePlan::AggregateView(_, graph) => graph.source(),
             _ => return None,
         };
@@ -1243,6 +1267,15 @@ pub fn affine_storage_shape(
             StoragePlan::MoveOnlyList(sequence) => Some(AffineStorageShape::Sequence(Box::new(
                 walk(sequence.element(), definitions, active, depth + 1, remaining)?,
             ))),
+            StoragePlan::MoveOnlyDict(mapping) => {
+                let key = if mapping.key().requires_affine_owner_token() {
+                    Some(Box::new(walk(mapping.key(), definitions, active, depth + 1, remaining)?))
+                } else { None };
+                let value = if mapping.value().requires_affine_owner_token() {
+                    Some(Box::new(walk(mapping.value(), definitions, active, depth + 1, remaining)?))
+                } else { None };
+                Some(AffineStorageShape::Mapping { key, value })
+            }
             StoragePlan::AuthenticatedPlace(graph) | StoragePlan::AggregateView(_, graph)
                 if graph.movable() && !graph.cloneable() => {
                 let shape = graph.shape();
@@ -1391,7 +1424,7 @@ impl StoragePlan {
             | Self::RetainedOwnerList(_) => true,
             Self::AuthenticatedPlace(plan) | Self::AggregateView(_, plan) | Self::RetainedGraphList(plan)
             | Self::RetainedOpaqueAggregateList(plan) => plan.cloneable(),
-            Self::MoveOnlyOwned(_) | Self::MoveOnlyList(_) | Self::RootedView(_)
+            Self::MoveOnlyOwned(_) | Self::MoveOnlyList(_) | Self::MoveOnlyDict(_) | Self::RootedView(_)
             | Self::Refused(_) => false,
         }
     }
@@ -1412,7 +1445,7 @@ impl StoragePlan {
     /// An affine aggregate has exactly one transferable owner token. The
     /// source graph proves moves and recursive release but supplies no clone.
     pub fn requires_affine_owner_token(&self) -> bool {
-        matches!(self, Self::MoveOnlyOwned(_) | Self::MoveOnlyList(_))
+        matches!(self, Self::MoveOnlyOwned(_) | Self::MoveOnlyList(_) | Self::MoveOnlyDict(_))
             || matches!(self, Self::AuthenticatedPlace(plan) | Self::AggregateView(_, plan)
                 if plan.movable() && !plan.cloneable())
     }
@@ -1432,6 +1465,7 @@ impl StoragePlan {
             Self::AuthenticatedPlace(plan) if plan.movable() => Some(ListElementDisposition::MoveOnly),
             Self::RetainedGraphList(plan) if plan.cloneable() => Some(ListElementDisposition::Cloneable),
             Self::MoveOnlyList(_) => Some(ListElementDisposition::MoveOnly),
+            Self::MoveOnlyDict(_) => Some(ListElementDisposition::MoveOnly),
             Self::MoveOnlyOwned(_) => Some(ListElementDisposition::MoveOnly),
             _ => None,
         }
@@ -1575,6 +1609,25 @@ impl StoragePlan {
                 };
                 return Self::MoveOnlyList(MoveOnlySequencePlan {
                     source: ty.clone(), element: Box::new(child), source_key,
+                });
+            }
+        }
+        if let Type::Named(name, arguments) = ty
+            && name == "Dict"
+            && let [key, value] = arguments.as_slice()
+            && let Some(operations) = graph_storage_operations(
+                ty, definitions, &mut HashSet::new(), 0, &mut 4_096,
+            ).map(GraphOperations::finish)
+            && operations.movable && !operations.cloneable
+        {
+            let key_plan = Self::classify_inner(key, definitions, nominal);
+            let value_plan = Self::classify_inner(value, definitions, nominal);
+            if key_plan.list_element_disposition(key).is_some()
+                && value_plan.list_element_disposition(value).is_some()
+                && let Some(source_key) = (SourceTypeKey { source: ty }).digest()
+            {
+                return Self::MoveOnlyDict(MoveOnlyDictionaryPlan {
+                    source: ty.clone(), key: Box::new(key_plan), value: Box::new(value_plan), source_key,
                 });
             }
         }

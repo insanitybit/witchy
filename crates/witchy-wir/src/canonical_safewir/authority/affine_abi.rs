@@ -199,7 +199,7 @@ fn bind_local_allocations<S: ModuleStage>(
     }
     for (source_type, shape) in affine_types {
         for layout in allocated_layouts.iter().copied() {
-            if matches!(shape, AffineStorageShape::Sequence(_))
+            if matches!(shape, AffineStorageShape::Sequence(_) | AffineStorageShape::Mapping { .. })
                 && !sequence_nominal_matches_source(source_type, layout, layouts, source)
             {
                 continue;
@@ -355,6 +355,29 @@ fn bind_plan(
             AffinePhysicalPlan::Sequence {
                 element: *pointee,
                 child: Box::new(bind_plan(child_source, *pointee, child, layouts, source, catalog)?),
+            }
+        }
+        AffineStorageShape::Mapping { key, value } => {
+            if !sequence_nominal_matches_source(source_type, layout, layouts, source) {
+                return None;
+            }
+            let witchy_canonical_source::storage::StoragePlan::MoveOnlyDict(mapping) =
+                source.storage_plan(source_type.unqualified()) else { return None };
+            let Type::Named(_, children) = mapping.source() else { return None };
+            let [key_source, value_source] = children.as_slice() else { return None };
+            let LayoutKind::CanonicalDictionary { key: key_slot, value: value_slot, .. } = descriptor.kind()
+                else { return None };
+            let bind_child = |shape: &Option<Box<AffineStorageShape>>, child_source: &Type,
+                              slot: crate::layout::LayoutId,
+                              catalog: &mut BTreeMap<crate::layout::LayoutId, AffinePhysicalPlan>| {
+                let shape = shape.as_ref()?;
+                let LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned } =
+                    layouts.get(slot)?.kind() else { return None };
+                Some((*pointee, Box::new(bind_plan(child_source, *pointee, shape, layouts, source, catalog)?)))
+            };
+            AffinePhysicalPlan::Mapping {
+                key: if key.is_some() { Some(bind_child(key, key_source, *key_slot, catalog)?) } else { None },
+                value: if value.is_some() { Some(bind_child(value, value_source, *value_slot, catalog)?) } else { None },
             }
         }
     };

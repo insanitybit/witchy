@@ -77,7 +77,9 @@ pub enum DictionaryOperation {
         value: ValueId,
         transfer: StoreTransfer,
     },
-    RemoveSlot { removed_value: ValueId, dict: ValueId, bucket: ValueId },
+    /// Remove a full row. When `removed_key` is present, transfer both owning
+    /// slots to the caller; otherwise dispose of the key and return the value.
+    RemoveSlot { removed_key: Option<ValueId>, removed_value: ValueId, dict: ValueId, bucket: ValueId },
     /// Copy the exact bucket layout and order, retaining each full-row child.
     /// A lookup result from the source remains valid in the destination.
     CloneExact { destination: ValueId, source: ValueId, capacity: ValueId },
@@ -100,7 +102,8 @@ impl DictionaryOperation {
             Self::ProbeGroup { matching, special, first_event, .. } =>
                 vec![*matching, *special, *first_event],
             Self::ReplaceValue { displaced, .. } => vec![*displaced],
-            Self::RemoveSlot { removed_value, .. } => vec![*removed_value],
+            Self::RemoveSlot { removed_key, removed_value, .. } =>
+                removed_key.iter().copied().chain([*removed_value]).collect(),
             Self::InsertSlot { .. } => Vec::new(),
         }
     }

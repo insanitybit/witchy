@@ -382,6 +382,17 @@ fn write_affine_plan(
             writer.fixed_bytes(element.as_bytes());
             write_affine_plan(writer, child, depth + 1, layouts)?;
         }
+        AffinePhysicalPlan::Mapping { key, value } => {
+            writer.u8(3);
+            for child in [key, value] {
+                writer.u8(u8::from(child.is_some()));
+                if let Some((layout, plan)) = child {
+                    if !layouts.contains(layout) { return None; }
+                    writer.fixed_bytes(layout.as_bytes());
+                    write_affine_plan(writer, plan, depth + 1, layouts)?;
+                }
+            }
+        }
     }
     Some(())
 }

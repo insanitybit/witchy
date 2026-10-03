@@ -8,10 +8,25 @@ use crate::layout::{LayoutId, LayoutKind, PointerSlot, ScalarKind};
 use super::{InitialCheckError, MemoryChecker, ObjectState, value_type};
 
 impl MemoryChecker<'_> {
+    fn dictionary_affine_child(
+        &self, dict: ValueId, key: bool,
+    ) -> Option<super::super::AffinePhysicalPlan> {
+        let super::super::AffinePhysicalPlan::Mapping { key: key_plan, value: value_plan } =
+            self.state.affine_plans.get(&dict)? else { return None };
+        (if key { key_plan } else { value_plan })
+            .as_ref().map(|(_, plan)| plan.as_ref().clone())
+    }
+
     fn dictionary_layout(&self, dict: ValueId) -> Result<(LayoutId, LayoutId, LayoutId), InitialCheckError> {
         let root = self.live_object(dict)?;
         if !root.initialized_owned_slots {
             return self.unsupported("Dictionary(uninitialized table root)");
+        }
+        if let Some(expected @ super::super::AffinePhysicalPlan::Mapping { .. }) =
+            self.affine_abi.and_then(|proofs| proofs.layouts.get(&root.layout))
+            && self.state.affine_plans.get(&dict) != Some(expected)
+        {
+            return self.unsupported("Dictionary(missing source-bound affine table proof)");
         }
         let LayoutKind::CanonicalDictionary { key, value, .. } = self.descriptor(root.layout)?.kind() else {
             return self.unsupported("Dictionary(non-dictionary root)");
@@ -38,24 +53,36 @@ impl MemoryChecker<'_> {
         Ok(())
     }
 
-    fn dictionary_take_result(&mut self, destination: ValueId, slot: LayoutId) -> Result<(), InitialCheckError> {
+    fn dictionary_take_result(
+        &mut self, destination: ValueId, slot: LayoutId,
+        affine_child: Option<super::super::AffinePhysicalPlan>,
+    ) -> Result<(), InitialCheckError> {
         let ty = self.dictionary_slot_type(slot)?;
         self.require_type(destination, ty)?;
         if let ValueType::Ref(layout) = ty {
             let extent = self.parameter_extent(layout)?;
             self.state.objects.insert(destination, ObjectState {
                 identity: destination, owner_generation: 0, layout, extent,
-                ownership: Ownership::Shared,
+                ownership: if affine_child.is_some() { Ownership::Unique } else { Ownership::Shared },
                 allocation_class: Some(AllocationClass::ReferenceCounted),
                 shared_immutable: false, initialized_owned_slots: true,
             });
+            if let Some(plan) = affine_child { self.seed_affine_plan(destination, &plan); }
         }
         Ok(())
     }
 
-    fn dictionary_store_value(&mut self, input: ValueId, slot: LayoutId, transfer: StoreTransfer) -> Result<(), InitialCheckError> {
+    fn dictionary_store_value(
+        &mut self, input: ValueId, slot: LayoutId, transfer: StoreTransfer,
+        affine_child: Option<super::super::AffinePhysicalPlan>,
+    ) -> Result<(), InitialCheckError> {
         let ty = self.dictionary_slot_type(slot)?;
         self.require_type(input, ty)?;
+        if let Some(plan) = &affine_child
+            && (transfer != StoreTransfer::MoveUnique || !self.require_affine_plan(input, plan)?)
+        {
+            return self.unsupported("Dictionary(affine child without recursive move proof)");
+        }
         match ty {
             ValueType::Ref(_) => {
                 let owner = self.live_object(input)?.clone();
@@ -122,6 +149,9 @@ impl MemoryChecker<'_> {
                         if *transfer != LoadTransfer::CopyScalar { return self.unsupported("Dictionary(hash read transfer)"); }
                     }
                     DictionarySlotField::Key | DictionarySlotField::Value => {
+                        if self.dictionary_affine_child(*dict, *field == DictionarySlotField::Key).is_some() {
+                            return self.unsupported("Dictionary(cannot clone affine child)");
+                        }
                         let slot = if *field == DictionarySlotField::Key { key } else { value };
                         let ty = self.dictionary_slot_type(slot)?;
                         self.require_type(*destination, ty)?;
@@ -144,23 +174,33 @@ impl MemoryChecker<'_> {
                 self.dictionary_unique(*dict)?;
                 self.require_type(*bucket, ValueType::Size)?;
                 self.require_type(*hash, ValueType::Int)?;
-                self.dictionary_store_value(*key, key_slot, *key_transfer)?;
-                self.dictionary_store_value(*value, value_slot, *value_transfer)?;
+                self.dictionary_store_value(*key, key_slot, *key_transfer, self.dictionary_affine_child(*dict, true))?;
+                self.dictionary_store_value(*value, value_slot, *value_transfer, self.dictionary_affine_child(*dict, false))?;
             }
             DictionaryOperation::ReplaceValue { displaced, dict, bucket, value, transfer } => {
                 let (_, _, value_slot) = self.dictionary_layout(*dict)?;
                 self.dictionary_unique(*dict)?;
                 self.require_type(*bucket, ValueType::Size)?;
-                self.dictionary_store_value(*value, value_slot, *transfer)?;
-                self.dictionary_take_result(*displaced, value_slot)?;
+                self.dictionary_store_value(*value, value_slot, *transfer, self.dictionary_affine_child(*dict, false))?;
+                self.dictionary_take_result(*displaced, value_slot, self.dictionary_affine_child(*dict, false))?;
             }
-            DictionaryOperation::RemoveSlot { removed_value, dict, bucket } => {
-                let (_, _, value_slot) = self.dictionary_layout(*dict)?;
+            DictionaryOperation::RemoveSlot { removed_key, removed_value, dict, bucket } => {
+                let (_, key_slot, value_slot) = self.dictionary_layout(*dict)?;
                 self.dictionary_unique(*dict)?;
                 self.require_type(*bucket, ValueType::Size)?;
-                self.dictionary_take_result(*removed_value, value_slot)?;
+                if removed_key.is_none() && self.dictionary_affine_child(*dict, true).is_some() {
+                    return self.unsupported("Dictionary(remove would discard affine key)");
+                }
+                if let Some(removed_key) = removed_key {
+                    self.dictionary_take_result(*removed_key, key_slot, self.dictionary_affine_child(*dict, true))?;
+                }
+                self.dictionary_take_result(*removed_value, value_slot, self.dictionary_affine_child(*dict, false))?;
             }
             DictionaryOperation::CloneExact { destination, source, capacity } => {
+                if matches!(self.state.affine_plans.get(source),
+                    Some(super::super::AffinePhysicalPlan::Mapping { .. })) {
+                    return self.unsupported("Dictionary(cannot clone affine table)");
+                }
                 let (layout, _, _) = self.dictionary_layout(*source)?;
                 self.require_type(*capacity, ValueType::Size)?;
                 self.require_ref_type(*destination, layout)?;
@@ -174,6 +214,11 @@ impl MemoryChecker<'_> {
                 self.attach_affine_plan(*destination, layout);
             }
             DictionaryOperation::Rehash { destination, source, capacity, transfer } => {
+                if *transfer == DictionaryRehashTransfer::CloneShared
+                    && matches!(self.state.affine_plans.get(source),
+                        Some(super::super::AffinePhysicalPlan::Mapping { .. })) {
+                    return self.unsupported("Dictionary(cannot clone affine table)");
+                }
                 let (layout, _, _) = self.dictionary_layout(*source)?;
                 self.require_type(*capacity, ValueType::Size)?;
                 self.require_ref_type(*destination, layout)?;

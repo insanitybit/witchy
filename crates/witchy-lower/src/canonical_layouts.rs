@@ -472,7 +472,8 @@ impl LayoutProjection {
     fn visit_type(&mut self, ty: &Type) -> Result<(), CanonicalLayoutError> {
         if matches!(stored_children(ty, &self.definitions), Ok(Some(StoredChildren::Mapping(..))))
             && !matches!(StoragePlan::classify(ty.unqualified(), &self.definitions, |_| Some(0)),
-                StoragePlan::Owned(CarrierElement::Dict(_, _)) | StoragePlan::AuthenticatedPlace(_))
+                StoragePlan::Owned(CarrierElement::Dict(_, _)) | StoragePlan::MoveOnlyDict(_)
+                    | StoragePlan::AuthenticatedPlace(_))
         {
             return Err(CanonicalLayoutError::UnsupportedType(
                 "Dict children lack a recursive checked storage and ownership proof".into(),
@@ -1113,7 +1114,7 @@ fn intern_v1_layout_checked(
     let storage = StoragePlan::classify(&key, definitions, |_| Some(0));
     if affine_storage_shape(&key, definitions).is_some()
         && (scalar_aggregate_shape(&key, definitions).is_some_and(|shape| !shape.packed)
-            || matches!(storage, StoragePlan::MoveOnlyList(_)))
+            || matches!(storage, StoragePlan::MoveOnlyList(_) | StoragePlan::MoveOnlyDict(_)))
         || witchy_canonical_source::storage::retained_child_layout_identity(&key, definitions).is_some()
     {
         if !active.insert(key.clone()) {
@@ -1217,7 +1218,9 @@ fn intern_v1_layout_fields(
                         .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?)
                 } else { None }
             } else if is_byte_buffer_type(child) || matches!(storage,
-                StoragePlan::Owned(_)
+                StoragePlan::Owned(_) | StoragePlan::MoveOnlyOwned(_)
+                | StoragePlan::MoveOnlyList(_) | StoragePlan::MoveOnlyDict(_)
+                | StoragePlan::AuthenticatedPlace(_)
                 | StoragePlan::RootedView(witchy_canonical_source::rooted_view::RootedViewStorage::RetainedRoot(_))) {
                 let pointee = intern_v1_layout_checked(interner, child, definitions, recursive_types, active, closure_layouts)?;
                 Some(interner.intern_runtime_pointer_value_slot(pointee, PointerSlot::Owned)

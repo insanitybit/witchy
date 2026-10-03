@@ -209,6 +209,7 @@ pub enum IntrinsicId {
     DictContainsBy,
     DictRemove,
     DictRemoveExtract,
+    DictPopExtract,
     DictKeys,
     DictValues,
     DictPairs,
@@ -306,6 +307,7 @@ pub enum IntrinsicSignature {
     GenericDictContainsBy,
     GenericDictRemove,
     GenericDictRemoveExtract,
+    GenericDictPopExtract,
     GenericDictKeys,
     GenericDictValues,
     GenericDictPairs,
@@ -840,6 +842,7 @@ pub const DICT_CONTAINS_KEY: &str = "dict.contains_key";
 pub const DICT_CONTAINS_BY: &str = "dict.__contains_by";
 pub const DICT_REMOVE: &str = "dict.__remove";
 pub const DICT_REMOVE_EXTRACT: &str = "dict.__remove_extract";
+pub const DICT_POP_EXTRACT: &str = "dict.__pop_extract";
 pub const DICT_KEYS: &str = "dict.keys";
 pub const DICT_VALUES: &str = "dict.values";
 pub const DICT_PAIRS: &str = "dict.pairs";
@@ -3879,6 +3882,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         private_callers: NO_PRIVATE_CALLERS,
     },
     IntrinsicSpec {
+        id: IntrinsicId::DictPopExtract,
+        name: DICT_POP_EXTRACT,
+        arity: 1,
+        signature: IntrinsicSignature::GenericDictPopExtract,
+        effect: IntrinsicEffect::WriteBack,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &[],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: "dict.pop",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
         id: IntrinsicId::DictKeys,
         name: DICT_KEYS,
         arity: 1,
@@ -4057,6 +4075,7 @@ pub const DICT_OPERATIONS: &[&str] = &[
     DICT_CONTAINS_BY,
     DICT_REMOVE,
     DICT_REMOVE_EXTRACT,
+    DICT_POP_EXTRACT,
     DICT_KEYS,
     DICT_VALUES,
     DICT_PAIRS,
@@ -4091,7 +4110,7 @@ pub fn lookup(name: &str) -> Option<&'static IntrinsicSpec> {
     }
     // A synthesized monomorphized variant (`<base>__<suffix>`) resolves to its
     // base spec.
-    if let Some(canonical) = [LIST_POP_EXTRACT, DICT_INSERT_EXTRACT, DICT_REMOVE_EXTRACT]
+    if let Some(canonical) = [LIST_POP_EXTRACT, DICT_INSERT_EXTRACT, DICT_REMOVE_EXTRACT, DICT_POP_EXTRACT]
         .into_iter()
         .find(|base| {
             name.strip_prefix(base)
@@ -4286,6 +4305,7 @@ pub fn is_dict_operation(name: &str) -> bool {
                 | IntrinsicId::DictContainsBy
                 | IntrinsicId::DictRemove
                 | IntrinsicId::DictRemoveExtract
+                | IntrinsicId::DictPopExtract
                 | IntrinsicId::DictKeys
                 | IntrinsicId::DictValues
                 | IntrinsicId::DictPairs
@@ -4306,6 +4326,10 @@ pub fn is_dict_insert_extract(name: &str) -> bool {
 
 pub fn is_dict_remove_extract(name: &str) -> bool {
     lookup(name).is_some_and(|spec| spec.id == IntrinsicId::DictRemoveExtract)
+}
+
+pub fn is_dict_pop_extract(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::DictPopExtract)
 }
 
 pub fn is_meta_fresh_ident(name: &str) -> bool {

@@ -161,6 +161,8 @@ mod rfc0167_indirect_var_view_tuple;
 mod rfc0167_must_var_list_replacement;
 #[path = "misc/rfc0167_must_result_propagation.rs"]
 mod rfc0167_must_result_propagation;
+#[path = "misc/rfc0167_must_dict_drain.rs"]
+mod rfc0167_must_dict_drain;
 #[path = "misc/rfc0167_result_list_root_view.rs"]
 mod rfc0167_result_list_root_view;
 #[path = "misc/rfc0167_nested_list_root_view.rs"]

@@ -206,7 +206,8 @@ pub(crate) fn value_type_matches_source(
                 CanonicalScalarKind::Bool => super::super::ValueType::Bool,
             }
         }
-        StoragePlan::Owned(witchy_canonical_source::carrier::CarrierElement::Dict(_, _)) => {
+        StoragePlan::Owned(witchy_canonical_source::carrier::CarrierElement::Dict(_, _))
+        | StoragePlan::MoveOnlyDict(_) => {
             matches!(actual, super::super::ValueType::Ref(layout)
                 if layout_matches_source_with_closures(layout, source, layouts, records, closure_layouts, signatures, context))
         }
@@ -563,7 +564,9 @@ fn enqueue_dictionary_slot(
             };
             matches!(descriptor.kind(), LayoutKind::Scalar(actual) if *actual == expected)
         }
-        StoragePlan::Owned(_) | StoragePlan::RootedView(_) => {
+        StoragePlan::Owned(_) | StoragePlan::RootedView(_)
+        | StoragePlan::AuthenticatedPlace(_) | StoragePlan::MoveOnlyOwned(_)
+        | StoragePlan::MoveOnlyList(_) | StoragePlan::MoveOnlyDict(_) => {
             matches!(descriptor.kind(), LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned }
                 if { pending.push((*pointee, source.unqualified().clone())); true })
         }

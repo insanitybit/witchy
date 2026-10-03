@@ -908,9 +908,9 @@ pub(super) fn emit(
             emit_write_control(body, function, local, *dict, local.scratch[11], local.scratch[9])?;
             Ok(())
         }
-        DictionaryOperation::RemoveSlot { removed_value, dict, bucket } => {
+        DictionaryOperation::RemoveSlot { removed_key, removed_value, dict, bucket } => {
             use crate::canonical_safewir::dictionary::DictionarySlotField;
-            let key_drop = key_pointee(function, layouts, *dict)?
+            let key_drop = key_pointee(function, layouts, *dict)?.filter(|_| removed_key.is_none())
                 .map(|pointee| local.memory_helpers.as_ref().and_then(|helpers| helpers.drops.get(&pointee).copied())
                     .ok_or(EncodeError::UnsupportedLayout { function: function.id, operation: "Dictionary key drop" }))
                 .transpose()?;
@@ -925,6 +925,18 @@ pub(super) fn emit(
                 _ => return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Dictionary remove value" }),
             });
             emit_set(body, local, function.id, *removed_value)?;
+            if let Some(removed_key) = removed_key {
+                emit_get_index(body, local.scratch[4]);
+                body.instruction(&wasm_encoder::Instruction::I32Const(16));
+                body.instruction(&wasm_encoder::Instruction::I32Add);
+                body.instruction(&match function.value_types.get(removed_key) {
+                    Some(ValueType::Int) => wasm_encoder::Instruction::I64Load(memarg(8)),
+                    Some(ValueType::Float) => wasm_encoder::Instruction::F64Load(memarg(8)),
+                    Some(ValueType::Size | ValueType::Bool | ValueType::Unit | ValueType::Ref(_)) => wasm_encoder::Instruction::I32Load(memarg(4)),
+                    _ => return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Dictionary remove key" }),
+                });
+                emit_set(body, local, function.id, *removed_key)?;
+            }
             if key_drop.is_some() {
                 emit_get_index(body, local.scratch[4]);
                 body.instruction(&wasm_encoder::Instruction::I32Const(16));
@@ -1178,9 +1190,9 @@ pub(super) fn plan(
             plan_write_control(plan, local, *dict, local.scratch[11], local.scratch[9])?;
             Ok(())
         }
-        DictionaryOperation::RemoveSlot { removed_value, dict, bucket } => {
+        DictionaryOperation::RemoveSlot { removed_key, removed_value, dict, bucket } => {
             use crate::canonical_safewir::dictionary::DictionarySlotField;
-            let key_drop = key_pointee(function, layouts, *dict).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?
+            let key_drop = key_pointee(function, layouts, *dict).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?.filter(|_| removed_key.is_none())
                 .map(|pointee| local.memory_helpers.as_ref().and_then(|helpers| helpers.drops.get(&pointee).copied())
                     .ok_or(CanonicalAdmissionError::UnsupportedPlan)).transpose()?;
             plan_slot_address(plan, local, *dict, *bucket, DictionarySlotField::Value)?;
@@ -1193,6 +1205,17 @@ pub(super) fn plan(
                 _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
             });
             push_set(plan, local, *removed_value)?;
+            if let Some(removed_key) = removed_key {
+                plan.extend([PlanToken::LocalGet(local.scratch[4]), PlanToken::I32Const(16), PlanToken::I32Add]);
+                plan.push(match function.value_types.get(removed_key) {
+                    Some(ValueType::Int) => PlanToken::I64Load { offset: 0, align: 3, memory: 0 },
+                    Some(ValueType::Float) => PlanToken::F64Load { offset: 0, align: 3, memory: 0 },
+                    Some(ValueType::Size | ValueType::Bool | ValueType::Unit | ValueType::Ref(_)) =>
+                        PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
+                    _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
+                });
+                push_set(plan, local, *removed_key)?;
+            }
             if key_drop.is_some() {
                 plan.extend([PlanToken::LocalGet(local.scratch[4]), PlanToken::I32Const(16), PlanToken::I32Add,
                     PlanToken::I32Load { offset: 0, align: 2, memory: 0 }, PlanToken::LocalSet(local.scratch[11])]);

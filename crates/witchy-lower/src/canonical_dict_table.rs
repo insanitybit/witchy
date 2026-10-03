@@ -457,6 +457,14 @@ impl FunctionLowerer<'_> {
                 let (dict, key_type, value_type) = self.lower_dict_table_operand(&args[0])?;
                 let key = self.lower_expr(key)?;
                 let value = self.lower_expr(value)?;
+                for (argument, source_type) in [(&args[1], &key_type), (&args[2], &value_type)] {
+                    if StoragePlan::classify(source_type, self.definitions, |_| Some(0))
+                        .requires_affine_owner_token()
+                        && let Expr::Var(name) = argument
+                    {
+                        self.bindings.remove(name);
+                    }
+                }
                 let (rebuilt, extracted) = self.lower_dict_insert_table(
                     dict, &key_type, &value_type, key, value, true,
                 )?;
@@ -480,6 +488,12 @@ impl FunctionLowerer<'_> {
                 )?;
                 self.bindings.insert(target.clone(), rebuilt);
                 extracted.ok_or(CanonicalLoweringError::UnsupportedExpression("dict remove result"))
+            }
+            ("dict.__pop_extract", [Expr::Var(target)]) => {
+                let (dict, key_type, value_type) = self.lower_dict_table_operand(&args[0])?;
+                let (rebuilt, extracted) = self.lower_dict_pop_table(dict, &key_type, &value_type)?;
+                self.bindings.insert(target.clone(), rebuilt);
+                Ok(extracted)
             }
             ("dict.__remove", [operand, key]) => {
                 let (dict, key_type, value_type) = self.lower_dict_table_operand(operand)?;
@@ -906,6 +920,11 @@ impl FunctionLowerer<'_> {
             return Err(CanonicalLoweringError::UnsupportedExpression("dict table slot type"));
         }
         match expected {
+            ValueType::Ref(_) if StoragePlan::classify(source_type, self.definitions, |_| Some(0))
+                .requires_affine_owner_token() => Ok((
+                value,
+                witchy_wir::canonical_safewir::StoreTransfer::MoveUnique,
+            )),
             ValueType::Ref(_) => Ok((
                 self.owned_for_storage(value, source_type)?,
                 witchy_wir::canonical_safewir::StoreTransfer::MoveUnique,
@@ -1147,6 +1166,7 @@ impl FunctionLowerer<'_> {
         let removed_type = self.field_value_type(value_type)?;
         let removed_value = self.fresh(removed_type)?;
         self.push_operation(Operation::Dictionary(DictionaryOperation::RemoveSlot {
+            removed_key: None,
             removed_value,
             dict,
             bucket,
@@ -1171,6 +1191,79 @@ impl FunctionLowerer<'_> {
         self.bindings = bindings;
         let joined = self.block_parameter_values(join);
         Ok((joined[0], joined.get(1).copied()))
+    }
+
+    fn lower_dict_pop_table(
+        &mut self,
+        dict: ValueId,
+        key_type: &Type,
+        value_type: &Type,
+    ) -> Result<(ValueId, ValueId), CanonicalLoweringError> {
+        let dict = if self.known_shared_value(dict) {
+            self.lower_dict_clone_exact(dict)?
+        } else {
+            dict
+        };
+        let pair_type = Type::Tuple(vec![key_type.clone(), value_type.clone()]);
+        let pair_shape = scalar_aggregate_shape(&pair_type, self.definitions)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("dict pop pair type"))?;
+        let option_type = Type::Named("Option".into(), vec![pair_type.clone()]);
+        let option_shape = scalar_aggregate_shape(&option_type, self.definitions)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("dict pop option type"))?;
+        let head = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::Dictionary(DictionaryOperation::ReadHeader {
+            destination: head, dict, field: DictionaryHeaderField::Head,
+        }));
+        let zero = self.push_const_size(0)?;
+        let nonempty = self.push_compare(ComparisonOperator::NotEqual, head, zero)?;
+        let facts = self.snapshot_facts();
+        let bindings = self.bindings.clone();
+        let hit = self.new_block(&[])?;
+        let miss = self.new_block(&[])?;
+        let join = self.new_block_owned(&[
+            (self.values[&dict], Some(Ownership::Unique)),
+            (self.field_value_type(&option_type)?, Some(Ownership::Unique)),
+        ])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: nonempty, then_target: hit, then_arguments: Vec::new(),
+            else_target: miss, else_arguments: Vec::new(),
+        })?;
+
+        self.current = hit;
+        let one = self.push_const_size(1)?;
+        let bucket = self.push_arithmetic(
+            ValueType::Size, ArithmeticOperator::Subtract, head, one, OverflowBehavior::Wrap,
+        )?;
+        let removed_key = self.fresh(self.field_value_type(key_type)?)?;
+        let removed_value = self.fresh(self.field_value_type(value_type)?)?;
+        self.push_operation(Operation::Dictionary(DictionaryOperation::RemoveSlot {
+            removed_key: Some(removed_key), removed_value, dict, bucket,
+        }));
+        let pair = self.lower_aggregate_moving(
+            &pair_type, &pair_shape, 0, vec![removed_key, removed_value],
+        )?;
+        let present = self.lower_aggregate_for_source(
+            &option_type, &option_shape, 0, vec![pair],
+        )?;
+        self.finish_current(Terminator::Branch {
+            target: join, arguments: vec![dict, present],
+        })?;
+
+        self.current = miss;
+        self.restore_snapshot(facts.clone());
+        let absent = self.lower_aggregate_for_source(
+            &option_type, &option_shape, 1, Vec::new(),
+        )?;
+        self.finish_current(Terminator::Branch {
+            target: join, arguments: vec![dict, absent],
+        })?;
+        self.restore_facts(facts, join);
+        self.current = join;
+        self.bindings = bindings;
+        let joined = self.block_parameter_values(join);
+        self.token_join_parameters.insert(joined[0]);
+        self.token_join_parameters.insert(joined[1]);
+        Ok((joined[0], joined[1]))
     }
 
     fn lower_dict_update_table(

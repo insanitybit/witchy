@@ -6938,7 +6938,11 @@ impl FunctionLowerer<'_> {
             // every arm or none at all.
             let fixed_layout = values.iter().all(|value| {
                 matches!(self.values[value], ValueType::Ref(layout)
-                    if matches!(self.physical_descriptor(layout).map(|descriptor| descriptor.size()), Some(LayoutSize::Fixed(_))))
+                    if matches!(self.physical_descriptor(layout).map(|descriptor| descriptor.size()), Some(LayoutSize::Fixed(_)))
+                        || self.physical_descriptor(layout).is_some_and(|descriptor|
+                            matches!(descriptor.kind(), LayoutKind::CanonicalDictionary { .. })
+                                && matches!(self.layouts.get(layout).map(|layout| layout.kind()),
+                                    Some(LayoutKind::OpaqueNominal { .. }))))
             });
             let mut extents = Vec::with_capacity(values.len());
             let mut family = None;
@@ -10379,6 +10383,16 @@ impl FunctionLowerer<'_> {
                 .filter(|current| !self.blocks.iter().any(|block| block.operations.iter().any(|operation| {
                     matches!(operation, Operation::Call { arguments, .. } | Operation::VarCall { arguments, .. }
                         if arguments.iter().any(|argument| matches!(argument, CallArgument::Move(value) if value == current)))
+                        || matches!(operation, Operation::Dictionary(
+                            witchy_wir::canonical_safewir::dictionary::DictionaryOperation::InsertSlot {
+                                key, key_transfer: witchy_wir::canonical_safewir::StoreTransfer::MoveUnique, ..
+                            }) if key == current)
+                        || matches!(operation, Operation::Dictionary(
+                            witchy_wir::canonical_safewir::dictionary::DictionaryOperation::InsertSlot {
+                                value, value_transfer: witchy_wir::canonical_safewir::StoreTransfer::MoveUnique, ..
+                            } | witchy_wir::canonical_safewir::dictionary::DictionaryOperation::ReplaceValue {
+                                value, transfer: witchy_wir::canonical_safewir::StoreTransfer::MoveUnique, ..
+                            }) if value == current)
                 })))
                 .filter(|parameter| !transferred.contains(parameter))
                 .collect::<Vec<_>>();

@@ -3371,6 +3371,8 @@ impl Checker {
             Ty::View(payload) => self.ty_carries_must_consume(&payload),
             Ty::List(element) => self.ty_carries_must_consume(&element),
             Ty::Tuple(items) => items.iter().any(|item| self.ty_carries_must_consume(item)),
+            Ty::Named(name, arguments) if name.as_ref() == "Dict" =>
+                arguments.iter().any(|item| self.ty_carries_must_consume(item)),
             Ty::Named(name, arguments) | Ty::Dyn(name, arguments) => {
                 self.stored_obligations.must_types.contains(name.as_ref())
                     || self
@@ -4749,6 +4751,13 @@ impl Checker {
                     vec![dict, key],
                     Ty::Named("Option".into(), vec![value].into()),
                 ))
+            }
+            S::GenericDictPopExtract => {
+                let key = self.fresh();
+                let value = self.fresh();
+                let dict = Ty::Named("Dict".into(), vec![key.clone(), value.clone()].into());
+                let pair = Ty::Tuple(vec![key, value].into());
+                Some((vec![dict], Ty::Named("Option".into(), vec![pair].into())))
             }
             S::GenericDictKeys => {
                 let key = self.fresh();
@@ -9640,16 +9649,17 @@ impl Checker {
                 ));
             }
             self.check_pattern(&arm.pattern, &st)?;
-            // The catalogued pop intrinsic writes back the shortened list and
-            // returns `None` exactly when that list is empty. On this arm an
-            // owned list cannot retain a stored must obligation. Require the
+            // Catalogued list and dictionary pop intrinsics write back the
+            // shortened collection and return `None` exactly when it is
+            // empty. On this arm no stored must obligation remains. Require the
             // intrinsic itself, a direct place, and an unguarded None pattern;
             // an ordinary function named `pop` supplies no such proof.
             if arm.guard.is_none()
                 && matches!(&arm.pattern, Pattern::Ctor { name, args }
                     if name.rsplit('.').next() == Some("None") && args.is_empty())
                 && let Expr::Call { name, args } = scrutinee
-                && witchy_syntax::intrinsics::is_list_pop_extract(name)
+                && (witchy_syntax::intrinsics::is_list_pop_extract(name)
+                    || witchy_syntax::intrinsics::is_dict_pop_extract(name))
                 && let [Expr::Var(binding)] = args.as_slice()
             {
                 self.consume_must_binding(binding);

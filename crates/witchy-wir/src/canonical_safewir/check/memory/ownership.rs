@@ -554,6 +554,7 @@ impl<'a> MemoryChecker<'a> {
             super::super::AffinePhysicalPlan::Sequence { .. } => {
                 self.state.affine_list_roots.insert(object);
             }
+            super::super::AffinePhysicalPlan::Mapping { .. } => {}
         }
     }
 
@@ -574,6 +575,7 @@ impl<'a> MemoryChecker<'a> {
                     && (*allow_absent || self.nullable_present_slot_by_identity(object, slot))
             })),
             super::super::AffinePhysicalPlan::Sequence { .. } => self.exclusive_list_elements(object),
+            super::super::AffinePhysicalPlan::Mapping { .. } => Ok(true),
         }
     }
 

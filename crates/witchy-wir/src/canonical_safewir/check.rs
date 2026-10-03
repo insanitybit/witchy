@@ -182,6 +182,10 @@ pub(super) enum AffinePhysicalPlan {
         allow_absent: bool,
     },
     Sequence { element: crate::layout::LayoutId, child: Box<AffinePhysicalPlan> },
+    Mapping {
+        key: Option<(crate::layout::LayoutId, Box<AffinePhysicalPlan>)>,
+        value: Option<(crate::layout::LayoutId, Box<AffinePhysicalPlan>)>,
+    },
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

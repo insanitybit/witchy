@@ -2412,6 +2412,9 @@ fn builtin_arg_liveness(name: &str, argc: usize) -> Option<Vec<bool>> {
     if argc == 1 && intrinsics::is_list_pop_extract(name) {
         return read_all(1);
     }
+    if argc == 1 && intrinsics::is_dict_pop_extract(name) {
+        return read_all(1);
+    }
     if argc == 2 && intrinsics::is_dict_remove_extract(name) {
         return read_all(2);
     }

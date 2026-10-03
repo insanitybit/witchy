@@ -233,6 +233,20 @@ normal-mode admitted Wasm witness also executes the `Ok` path; the independent
 combined result is 153, with zero owned-heap leaks. This proves one nested
 error transfer and disposition route, not every error or deferred owner.
 
+An exact `dict.__pop_extract` now transfers a dictionary's oldest key and
+value together and writes back the remaining table. The normal-mode source
+checker carries `must` obligations through `Dict(K, V)` and treats only the
+intrinsic's unguarded `None` arm as an empty-table disposition proof. The
+canonical layout and SafeWIR route bind a move-only dictionary to its checked
+key and value slots; insertion moves affine children, while slot reads and
+table clones cannot duplicate them. Admitted unoptimized Wasm witnesses drain
+`Dict(String, Ticket)` and `Dict(Key, Ticket)` with a user-defined Hash key,
+replace a proved-empty borrowed `var` dictionary once, and return the
+independently expected values with zero owned-heap leaks. A second replacement
+that would discard the new `Ticket` refuses at source checking. Current
+`PartialEq` requires plain parameters, so a `must` type cannot implement the
+key comparison contract; this witness covers must values with legal keys.
+
 The runtime diagnostic golden migration at merged `0ca522869` checks list bounds,
 user `fail`, and a missing named secret through checked source and admitted
 Wasm, retaining their source-level messages. The direct and nested
@@ -3199,4 +3213,3 @@ names no path.
 
 The admitted Dir transcript lists through `?? []`. The source tree walker and
 legacy codegen refuse `dir.list` by name.
-
