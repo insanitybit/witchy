@@ -261,6 +261,17 @@ impl<'a> MemoryChecker<'a> {
                 };
             }
             let value = remap_value(&renames, original_value);
+            // A dictionary phi carries the table owner, not its predecessor's
+            // count/capacity SSA observations. Those may be reloaded from the
+            // checked header after the join.
+            if (unique_phi_rebases.contains_key(&original_value)
+                || shared_phi_rebases.contains_key(&original_value))
+                && matches!(self.descriptor(state.layout)?.kind(), LayoutKind::CanonicalDictionary { .. })
+                && let Extent::Counted { header_bytes, .. } = state.extent
+            {
+                state.extent = Extent::HeaderPrefix { minimum_bytes: header_bytes };
+                state.owner_generation = JOINED_OWNER_GENERATION;
+            }
             if let Some(identity) = unique_phi_rebases.get(&original_value) {
                 state.identity = *identity;
             }

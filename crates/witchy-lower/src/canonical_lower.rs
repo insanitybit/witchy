@@ -6957,9 +6957,7 @@ impl FunctionLowerer<'_> {
                 matches!(self.values[value], ValueType::Ref(layout)
                     if matches!(self.physical_descriptor(layout).map(|descriptor| descriptor.size()), Some(LayoutSize::Fixed(_)))
                         || self.physical_descriptor(layout).is_some_and(|descriptor|
-                            matches!(descriptor.kind(), LayoutKind::CanonicalDictionary { .. })
-                                && matches!(self.layouts.get(layout).map(|layout| layout.kind()),
-                                    Some(LayoutKind::OpaqueNominal { .. }))))
+                            matches!(descriptor.kind(), LayoutKind::CanonicalDictionary { .. })))
             });
             let mut extents = Vec::with_capacity(values.len());
             let mut family = None;

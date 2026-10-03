@@ -202,6 +202,7 @@ pub enum IntrinsicId {
     DictWithCapacity,
     DictInsert,
     DictInsertExtract,
+    DictInsertValueExtract,
     DictGetOr,
     DictAt,
     DictUpdate,
@@ -300,6 +301,7 @@ pub enum IntrinsicSignature {
     GenericDictWithCapacity,
     GenericDictInsert,
     GenericDictInsertExtract,
+    GenericDictInsertValueExtract,
     GenericDictGetOr,
     GenericDictIndex,
     GenericDictUpdate,
@@ -437,6 +439,7 @@ impl IntrinsicSignature {
         match self {
             Self::GenericDictInsert
             | Self::GenericDictInsertExtract
+            | Self::GenericDictInsertValueExtract
             | Self::GenericDictGetOr
             | Self::GenericDictIndex
             | Self::GenericDictUpdate
@@ -835,6 +838,7 @@ pub const DICT_NEW: &str = "dict.new";
 pub const DICT_WITH_CAPACITY: &str = "dict.with_capacity";
 pub const DICT_INSERT: &str = "dict.__insert";
 pub const DICT_INSERT_EXTRACT: &str = "dict.__insert_extract";
+pub const DICT_INSERT_VALUE_EXTRACT: &str = "dict.__insert_value_extract";
 pub const DICT_GET_OR: &str = "dict.get_or";
 pub const DICT_AT: &str = "dict.at";
 pub const DICT_UPDATE: &str = "dict.__update";
@@ -3777,6 +3781,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         private_callers: NO_PRIVATE_CALLERS,
     },
     IntrinsicSpec {
+        id: IntrinsicId::DictInsertValueExtract,
+        name: DICT_INSERT_VALUE_EXTRACT,
+        arity: 3,
+        signature: IntrinsicSignature::GenericDictInsertValueExtract,
+        effect: IntrinsicEffect::WriteBack,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["dict_insert_extract"],
+        dynamic_wir_helpers: true,
+        wir_host_call: None,
+        diagnostic_name: "dict.insert",
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
         id: IntrinsicId::DictGetOr,
         name: DICT_GET_OR,
         arity: 3,
@@ -4068,6 +4087,7 @@ pub const DICT_OPERATIONS: &[&str] = &[
     DICT_WITH_CAPACITY,
     DICT_INSERT,
     DICT_INSERT_EXTRACT,
+    DICT_INSERT_VALUE_EXTRACT,
     DICT_GET_OR,
     DICT_AT,
     DICT_UPDATE,
@@ -4110,7 +4130,7 @@ pub fn lookup(name: &str) -> Option<&'static IntrinsicSpec> {
     }
     // A synthesized monomorphized variant (`<base>__<suffix>`) resolves to its
     // base spec.
-    if let Some(canonical) = [LIST_POP_EXTRACT, DICT_INSERT_EXTRACT, DICT_REMOVE_EXTRACT, DICT_POP_EXTRACT]
+    if let Some(canonical) = [LIST_POP_EXTRACT, DICT_INSERT_EXTRACT, DICT_INSERT_VALUE_EXTRACT, DICT_REMOVE_EXTRACT, DICT_POP_EXTRACT]
         .into_iter()
         .find(|base| {
             name.strip_prefix(base)
@@ -4298,6 +4318,7 @@ pub fn is_dict_operation(name: &str) -> bool {
                 | IntrinsicId::DictWithCapacity
                 | IntrinsicId::DictInsert
                 | IntrinsicId::DictInsertExtract
+                | IntrinsicId::DictInsertValueExtract
                 | IntrinsicId::DictGetOr
                 | IntrinsicId::DictAt
                 | IntrinsicId::DictUpdate
@@ -4321,7 +4342,12 @@ pub fn is_secretstore_operation(name: &str) -> bool {
 }
 
 pub fn is_dict_insert_extract(name: &str) -> bool {
-    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::DictInsertExtract)
+    lookup(name).is_some_and(|spec| matches!(spec.id,
+        IntrinsicId::DictInsertExtract | IntrinsicId::DictInsertValueExtract))
+}
+
+pub fn is_dict_insert_value_extract(name: &str) -> bool {
+    lookup(name).is_some_and(|spec| spec.id == IntrinsicId::DictInsertValueExtract)
 }
 
 pub fn is_dict_remove_extract(name: &str) -> bool {

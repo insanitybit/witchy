@@ -9,6 +9,32 @@ impl Drop for ResetOptimizationOverride {
 }
 
 #[test]
+fn ordinary_owned_insert_returns_the_unused_key_and_old_value() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let checked = witchy::resolve_std_only_checked(r#"
+import dict
+fn main() -> Int:
+    var d: Dict(String, String) = dict.new()
+    let _ = dict.insert_owned(d, "a", "one")
+    match dict.insert_owned(d, "a", "TWO"):
+        Some(pair) ->
+            match move pair:
+                (key, old) -> (if key == "a": 10 else: 0) + (if old == "one": 1 else: 0)
+        None -> 0
+"#).expect("ordinary pair insert checks");
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("ordinary pair insert admits");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(&artifact,
+        Capabilities { print_int: true, quiet: true, ..Capabilities::none() },
+        128).expect("admitted Wasm instance");
+    vm.run().expect("admitted Wasm execution");
+    assert_eq!(vm.output(), vec!["11".to_string()]);
+    assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+}
+
+#[test]
 fn dictionary_pop_transfers_both_row_slots() {
     opt::set_for_tests(Some(OptSet::none()));
     let _reset = ResetOptimizationOverride;

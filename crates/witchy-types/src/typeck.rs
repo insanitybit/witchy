@@ -4699,6 +4699,12 @@ impl Checker {
                     Ty::Named("Option".into(), vec![Ty::Tuple(vec![key, value].into())].into()),
                 ))
             }
+            S::GenericDictInsertValueExtract => {
+                let key = self.fresh();
+                let value = self.fresh();
+                let dict = Ty::Named("Dict".into(), vec![key.clone(), value.clone()].into());
+                Some((vec![dict, key, value.clone()], Ty::Named("Option".into(), vec![value].into())))
+            }
             S::GenericDictGetOr => {
                 let key = self.fresh();
                 let value = self.fresh();

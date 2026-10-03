@@ -27,19 +27,19 @@ fn main(console: Console):
         // (RFC-0050 Part 2) A bare `module.fn` in value position is a first-class
         // function value: the linker eta-expands `list.length` to a lambda of its
         // full declared arity. Exercised three ways the RFC's parity clause pins —
-        // passed to `map`, bound with `let`, and stored in a record field — all
-        // through the ordinary lambda path. `list.length` is generic
-        // (`List(a) -> Int`), so this also proves RFC-0046's fixpoint infers
+        // wrapped for `map`'s owning callback, bound with `let`, and stored in a
+        // borrowed record field — all through the ordinary lambda path.
+        // `list.length` is generic (`fn(let List(a)) -> Int`), so this also proves RFC-0046's fixpoint infers
         // the eta-lambda's type-var parameter.
         let client = r#"
 import list
 
 type Box:
-    op: fn(List(Int)) -> Int
+    op: fn(let List(Int)) -> Int
 
 fn main(console: Console):
     let xs = [[1, 2], [3], [4, 5, 6]]
-    let ys = list.map(xs, list.length)
+    let ys = list.map(xs, fn(xs: List(Int)): list.length(xs))
     console.print("${ys}")
     let f = list.length
     console.print("${f([9, 9, 9, 9])}")

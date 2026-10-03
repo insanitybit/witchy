@@ -466,17 +466,27 @@ impl FunctionLowerer<'_> {
                     }
                 }
                 let (rebuilt, extracted) = self.lower_dict_insert_table(
-                    dict, &key_type, &value_type, key, value, true,
+                    dict, &key_type, &value_type, key, value, true, true,
                 )?;
                 self.bindings.insert(target.clone(), rebuilt);
                 extracted.ok_or(CanonicalLoweringError::UnsupportedExpression("dict insert result"))
+            }
+            ("dict.__insert_value_extract", [Expr::Var(target), key, value]) => {
+                let (dict, key_type, value_type) = self.lower_dict_table_operand(&args[0])?;
+                let key = self.lower_expr(key)?;
+                let value = self.lower_expr(value)?;
+                let (rebuilt, extracted) = self.lower_dict_insert_table(
+                    dict, &key_type, &value_type, key, value, true, false,
+                )?;
+                self.bindings.insert(target.clone(), rebuilt);
+                extracted.ok_or(CanonicalLoweringError::UnsupportedExpression("dict insert value result"))
             }
             ("dict.__insert", [operand, key, value]) => {
                 let (dict, key_type, value_type) = self.lower_dict_table_operand(operand)?;
                 let key = self.lower_expr(key)?;
                 let value = self.lower_expr(value)?;
                 let (rebuilt, _) = self.lower_dict_insert_table(
-                    dict, &key_type, &value_type, key, value, false,
+                    dict, &key_type, &value_type, key, value, false, false,
                 )?;
                 Ok(rebuilt)
             }
@@ -969,6 +979,7 @@ impl FunctionLowerer<'_> {
         key: ValueId,
         value: ValueId,
         extract: bool,
+        return_key: bool,
     ) -> Result<(ValueId, Option<ValueId>), CanonicalLoweringError> {
         let dict = if self.known_shared_value(dict) {
             self.lower_dict_clone_exact(dict)?
@@ -976,7 +987,7 @@ impl FunctionLowerer<'_> {
             dict
         };
         let lookup = self.lower_dict_find_table(dict, key, key_type)?;
-        self.lower_dict_insert_table_found(dict, key_type, value_type, key, value, extract, lookup)
+        self.lower_dict_insert_table_found(dict, key_type, value_type, key, value, extract, return_key, lookup)
     }
 
     fn lower_dict_insert_table_found(
@@ -987,11 +998,14 @@ impl FunctionLowerer<'_> {
         key: ValueId,
         value: ValueId,
         extract: bool,
+        return_key: bool,
         lookup: (ValueId, ValueId, ValueId, ValueId),
     ) -> Result<(ValueId, Option<ValueId>), CanonicalLoweringError> {
         let (found, empty, tombstone, hash) = lookup;
         let displaced_pair = Type::Tuple(vec![key_type.clone(), value_type.clone()]);
-        let option_type = Type::Named("Option".into(), vec![displaced_pair.clone()]);
+        let option_type = Type::Named("Option".into(), vec![
+            if return_key { displaced_pair.clone() } else { value_type.clone() }
+        ]);
         let option_shape = extract.then(|| scalar_aggregate_shape(&option_type, self.definitions)).flatten();
         let mut join_shapes = vec![(self.values[&dict], Some(Ownership::Unique))];
         if extract {
@@ -1023,10 +1037,12 @@ impl FunctionLowerer<'_> {
         }));
         let mut result = vec![dict];
         if let Some(option_shape) = &option_shape {
-            let pair_shape = scalar_aggregate_shape(&displaced_pair, self.definitions)
-                .ok_or(CanonicalLoweringError::UnsupportedExpression("dict displaced pair shape"))?;
-            let pair = self.lower_aggregate_for_source(&displaced_pair, &pair_shape, 0, vec![key, displaced])?;
-            result.push(self.lower_aggregate_for_source(&option_type, option_shape, 0, vec![pair])?);
+            let payload = if return_key {
+                let pair_shape = scalar_aggregate_shape(&displaced_pair, self.definitions)
+                    .ok_or(CanonicalLoweringError::UnsupportedExpression("dict displaced pair shape"))?;
+                self.lower_aggregate_for_source(&displaced_pair, &pair_shape, 0, vec![key, displaced])?
+            } else { displaced };
+            result.push(self.lower_aggregate_for_source(&option_type, option_shape, 0, vec![payload])?);
         } else if matches!(self.values[&displaced], ValueType::Ref(_)) {
             self.push_operation(Operation::DropRef { object: displaced });
         }
@@ -1339,7 +1355,7 @@ impl FunctionLowerer<'_> {
             return Err(CanonicalLoweringError::UnsupportedExpression("dict.update callback result"));
         };
         let (rebuilt, _) = self.lower_dict_insert_table_found(
-            dict, key_type, value_type, key, *updated, false, lookup,
+            dict, key_type, value_type, key, *updated, false, false, lookup,
         )?;
         Ok(rebuilt)
     }

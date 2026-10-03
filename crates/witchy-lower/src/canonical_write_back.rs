@@ -1960,7 +1960,7 @@ impl FunctionLowerer<'_> {
                         return Err(CanonicalLoweringError::UnsupportedExpression("dict table type"));
                     };
                     let (rebuilt, _) = self.lower_dict_insert_table(
-                        current, key_type, value_type, *key, replacement, false,
+                        current, key_type, value_type, *key, replacement, false, false,
                     )?;
                     return Ok(rebuilt);
                 }
