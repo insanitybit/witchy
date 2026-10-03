@@ -339,6 +339,9 @@ pub fn build_binding_plan(module: &ast::Module, manifest: &str) -> Result<Vec<u8
                     }
                     RawNetBinding::Allow { addresses } => addresses,
                 };
+                if let Some(error) = allow.iter().find_map(|a| witchy_caps::capabilities::net_pattern_error(a)) {
+                    return Err(format!("trusted-publisher `net.{}`: {error}", parameter.name));
+                }
                 net.push(NetPlan { name: parameter.name.clone(), allow });
             }
             "Exec" => {

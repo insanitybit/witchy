@@ -106,7 +106,7 @@ pub(crate) fn run_file_sandboxed(
         &checked,
         dir_roots,
         file_grants,
-        net_allow,
+        vec![net_allow],
         fetch_origins,
         None,
         None,
@@ -194,9 +194,13 @@ pub(crate) fn run_file_grants(
         })
         .collect();
     let mut user_cap_fields: Vec<Vec<String>> = Vec::new();
-    let mut net_allow: Vec<String> = doc.net.values().flatten().cloned().collect();
-    net_allow.sort();
-    net_allow.dedup();
+    // One allowlist per `Net` parameter, bound by name like every other entry --
+    // never the union of all `[net]` entries, which would hand each parameter the
+    // addresses reviewed for another.
+    let mut net_grants: Vec<Vec<String>> = Vec::new();
+    // Every document entry must bind to a `main` parameter: an unbound entry is
+    // shown in the approval text below but granted to nothing.
+    let mut bound: std::collections::BTreeSet<(&str, &str)> = std::collections::BTreeSet::new();
     let mut fetch_origins: Vec<String> = Vec::new();
     let mut env_allow: Option<Vec<String>> = None;
     let mut exec_allow: Option<Vec<String>> = None;
@@ -226,7 +230,7 @@ pub(crate) fn run_file_grants(
         for p in &main.params {
             match &p.ty {
                 Some(ast::Type::Named(n, _)) if n == "File" => {
-                    let g = doc.files.get(&p.name).ok_or_else(|| {
+                    let g = { bound.insert(("files", p.name.as_str())); doc.files.get(&p.name) }.ok_or_else(|| {
                         format!("grant `{grants_path}` has no `[files].{}` for `main` parameter `{}`", p.name, p.name)
                     })?;
                     let declared = grant_fs_rights(&format!("[files].{}", p.name), &g.rights)?;
@@ -238,7 +242,7 @@ pub(crate) fn run_file_grants(
                     file_grants.push(std::path::PathBuf::from(&g.path));
                 }
                 Some(ast::Type::Named(n, _)) if n == "Dir" => {
-                    let g = doc.dirs.get(&p.name).ok_or_else(|| {
+                    let g = { bound.insert(("dirs", p.name.as_str())); doc.dirs.get(&p.name) }.ok_or_else(|| {
                         format!("grant `{grants_path}` has no `[dirs].{}` for `main` parameter `{}`", p.name, p.name)
                     })?;
                     let declared = grant_fs_rights(&format!("[dirs].{}", p.name), &g.rights)?;
@@ -249,6 +253,19 @@ pub(crate) fn run_file_grants(
                     require_exact_fs_rights(&format!("[dirs].{}", p.name), declared, required)?;
                     dir_roots.push(std::path::PathBuf::from(&g.root));
                 }
+                Some(ast::Type::Named(n, _)) if n == "Net" => {
+                    bound.insert(("net", p.name.as_str()));
+                    let patterns = doc.net.get(&p.name).ok_or_else(|| {
+                        format!(
+                            "grant `{grants_path}` has no `[net].{}` for `main` parameter `{}`",
+                            p.name, p.name
+                        )
+                    })?;
+                    let mut patterns = patterns.clone();
+                    patterns.sort();
+                    patterns.dedup();
+                    net_grants.push(patterns);
+                }
                 Some(ast::Type::Named(n, _)) if n == "Fetch" => {
                     if !fetch_origins.is_empty() {
                         return Err(
@@ -256,7 +273,7 @@ pub(crate) fn run_file_grants(
                                 .to_string(),
                         );
                     }
-                    let origins = doc.fetch.get(&p.name).ok_or_else(|| {
+                    let origins = { bound.insert(("fetch", p.name.as_str())); doc.fetch.get(&p.name) }.ok_or_else(|| {
                         format!(
                             "grant `{grants_path}` has no `[fetch].{}` for `main` parameter `{}`",
                             p.name, p.name
@@ -279,7 +296,7 @@ pub(crate) fn run_file_grants(
                                 .to_string(),
                         );
                     }
-                    let names = doc.env.get(&p.name).ok_or_else(|| {
+                    let names = { bound.insert(("env", p.name.as_str())); doc.env.get(&p.name) }.ok_or_else(|| {
                         format!(
                             "grant `{grants_path}` has no `[env].{}` for `main` parameter `{}`",
                             p.name, p.name
@@ -297,7 +314,7 @@ pub(crate) fn run_file_grants(
                                 .to_string(),
                         );
                     }
-                    let binding = doc.exec.get(&p.name).ok_or_else(|| {
+                    let binding = { bound.insert(("exec", p.name.as_str())); doc.exec.get(&p.name) }.ok_or_else(|| {
                         format!(
                             "grant `{grants_path}` has no `[exec].{}` for `main` parameter `{}`",
                             p.name, p.name
@@ -316,7 +333,7 @@ pub(crate) fn run_file_grants(
                 Some(ast::Type::Named(n, _)) if grantable.contains_key(n.as_str()) => {
                     // RFC-0038: a bare grantable cap — pull each policy field from the
                     // `[user_caps]` entry in the cap's declared field order.
-                    let uc = doc.user_caps.get(&p.name).ok_or_else(|| {
+                    let uc = { bound.insert(("user_caps", p.name.as_str())); doc.user_caps.get(&p.name) }.ok_or_else(|| {
                         format!("grant `{grants_path}` has no `[user_caps].{}` for `main` parameter `{}` (type `{n}`)", p.name, p.name)
                     })?;
                     let t = grantable[n.as_str()];
@@ -337,6 +354,23 @@ pub(crate) fn run_file_grants(
             }
         }
     }
+    let sections = [
+        ("files", doc.files.keys().collect::<Vec<_>>()),
+        ("dirs", doc.dirs.keys().collect()),
+        ("net", doc.net.keys().collect()),
+        ("fetch", doc.fetch.keys().collect()),
+        ("env", doc.env.keys().collect()),
+        ("exec", doc.exec.keys().collect()),
+        ("user_caps", doc.user_caps.keys().collect()),
+    ];
+    for (section, names) in sections {
+        if let Some(name) = names.into_iter().find(|name| !bound.contains(&(section, name.as_str()))) {
+            return Err(format!(
+                "grant `{grants_path}` entry `[{section}].{name}` binds no `main` parameter of that \
+                 capability -- remove it, or rename it to the parameter it is for"
+            ));
+        }
+    }
     // Show exactly what `main` will receive — a reviewable diff — then, unless
     // pre-accepted (`--accept-grants`) or non-interactive, require confirmation
     // before handing the authority over (RFC-0013's approval step).
@@ -348,8 +382,8 @@ pub(crate) fn run_file_grants(
     for (name, g) in &doc.files {
         eprintln!("  file   {name}: {}", g.path);
     }
-    if !net_allow.is_empty() {
-        eprintln!("  net:   {}", net_allow.join(", "));
+    for (name, patterns) in &doc.net {
+        eprintln!("  net    {name}: {}", patterns.join(", "));
     }
     for (name, origins) in &doc.fetch {
         eprintln!("  fetch  {name}: {}", origins.join(", "));
@@ -388,7 +422,7 @@ pub(crate) fn run_file_grants(
         &checked,
         dir_roots,
         file_grants,
-        net_allow,
+        net_grants,
         fetch_origins,
         env_allow,
         exec_allow,

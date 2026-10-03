@@ -135,13 +135,13 @@ pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
                 enforce_performance_modes(linked.checked.module(), &linked.entry)?;
                 let (lines, code) = if linked.external_libraries.is_empty() {
                     super::execution::run_checked_compiled(
-                        &linked.checked, dir_roots, Vec::new(), net_allow, Vec::new(),
+                        &linked.checked, dir_roots, Vec::new(), vec![net_allow], Vec::new(),
                         None, None, Vec::new(), launch_args, None, Vec::new(), Vec::new(),
                         true, witchy_confinement::EnforcementMode::BestEffort,
                     )?
                 } else {
                     super::execution::run_precompiled_checked_compiled(
-                        &linked, dir_roots, Vec::new(), net_allow, Vec::new(),
+                        &linked, dir_roots, Vec::new(), vec![net_allow], Vec::new(),
                         None, None, Vec::new(), launch_args, None, Vec::new(), Vec::new(),
                         true, witchy_confinement::EnforcementMode::BestEffort,
                     )?

@@ -757,7 +757,7 @@ fn run_tests_in_module(
                     &checked,
                     policy.grants.dir_roots.clone(),
                     Vec::new(),
-                    policy.grants.net_allow.clone(),
+                    vec![policy.grants.net_allow.clone()],
                     Vec::new(),
                     None,
                     None,

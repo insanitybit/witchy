@@ -822,6 +822,57 @@ fn grant_document_rejects_a_misspelled_secret_modifier() {
     assert!(!stderr.contains("hunter2"), "{stderr}");
 }
 
+// ---- RFC-0126: a grant document binds each entry to its own `main` parameter ----
+
+#[test]
+fn grant_document_binds_each_net_parameter_to_its_own_entry() {
+    // Each `Net` parameter receives exactly its same-named `[net]` entry. Before,
+    // every parameter received the union of all entries, so `public` could reach
+    // the address reviewed only for `admin`.
+    let dir = workdir("grant-net-per-parameter");
+    // Deriving a `Fetch` checks the origin against the `Net` allowlist without
+    // opening a connection, so it observes the binding offline.
+    let derive_from = |receiver: &str| {
+        write(
+            &dir,
+            &format!("{receiver}.witchy"),
+            &format!(
+                "fn main(console: Console, public: Net, admin: Net):\n    let f = {receiver}.fetch(\"http://10.0.0.5:22\")\n    console.print(\"derived\")\n"
+            ),
+        )
+    };
+    let (admin_prog, prog) = (derive_from("admin"), derive_from("public"));
+    let grants = write(
+        &dir,
+        "g.toml",
+        "[net]\npublic = [\"example.com:443\"]\nadmin = [\"10.0.0.5:22\"]\n",
+    );
+    let out = run(&["sandbox", "--grants", &grants, "--accept-grants", &admin_prog]);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("derived"), "admin holds its own entry: {stdout}{}", String::from_utf8_lossy(&out.stderr));
+    let out = run(&["sandbox", "--grants", &grants, "--accept-grants", &prog]);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "public must not hold admin's address");
+    assert!(stderr.contains("`http://10.0.0.5:22` is not granted"), "{stderr}");
+
+    // An entry no `main` parameter binds is shown for approval but granted to
+    // nothing, so it is rejected; so is a malformed entry.
+    for (body, expected) in [
+        (
+            "[net]\npublic = [\"example.com:443\"]\nadmin = [\"10.0.0.5:22\"]\nspare = [\"a:1\"]\n",
+            "`[net].spare` binds no `main` parameter",
+        ),
+        ("[net]\npublic = [\"example.com\"]\nadmin = [\"10.0.0.5:22\"]\n", "no `:port`"),
+    ] {
+        let grants = write(&dir, "bad.toml", body);
+        let out = run(&["sandbox", "--grants", &grants, "--accept-grants", &prog]);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(!out.status.success(), "{body}");
+        assert!(stderr.contains(expected), "{body}: {stderr}");
+        assert!(!String::from_utf8_lossy(&out.stdout).contains("derived"), "refused before running");
+    }
+}
+
 // ---- an env-injected secret must not remain readable as an env variable ----
 
 #[test]

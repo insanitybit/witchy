@@ -173,7 +173,7 @@ pub(crate) fn execute_file_exit(
         &checked,
         Vec::new(),
         Vec::new(),
-        net_allow,
+        vec![net_allow],
         fetch_origins,
         None,
         None,

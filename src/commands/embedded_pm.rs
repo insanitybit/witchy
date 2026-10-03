@@ -227,7 +227,7 @@ fn run_embedded_program(
     args: Vec<String>,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     commands::execution::run_checked_compiled(
-        checked, dir_roots, Vec::new(), net_allow, Vec::new(),
+        checked, dir_roots, Vec::new(), vec![net_allow], Vec::new(),
         None, None, Vec::new(), args, None, Vec::new(), Vec::new(),
         false, witchy_confinement::EnforcementMode::Disabled,
     )

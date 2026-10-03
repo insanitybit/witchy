@@ -20,7 +20,7 @@ pub(crate) fn run_checked_compiled(
     checked: &witchy_types::pipeline::CheckedModule,
     dir_roots: Vec<std::path::PathBuf>,
     file_grants: Vec<std::path::PathBuf>,
-    net_allow: Vec<String>,
+    net_grants: Vec<Vec<String>>,
     fetch_origins: Vec<String>,
     env_allow: Option<Vec<String>>,
     exec_allow: Option<Vec<String>>,
@@ -42,7 +42,7 @@ pub(crate) fn run_checked_compiled(
         CompiledWasm::Admitted(artifact),
         dir_roots,
         file_grants,
-        net_allow,
+        net_grants,
         fetch_origins,
         env_allow,
         exec_allow,
@@ -64,7 +64,7 @@ pub(crate) fn run_precompiled_checked_compiled(
     linked: &PrecompiledCheckedModule,
     dir_roots: Vec<std::path::PathBuf>,
     file_grants: Vec<std::path::PathBuf>,
-    net_allow: Vec<String>,
+    net_grants: Vec<Vec<String>>,
     fetch_origins: Vec<String>,
     env_allow: Option<Vec<String>>,
     exec_allow: Option<Vec<String>>,
@@ -86,7 +86,7 @@ pub(crate) fn run_precompiled_checked_compiled(
         CompiledWasm::AdmittedWithExternalLibraries(artifact, linked.external_libraries.clone()),
         dir_roots,
         file_grants,
-        net_allow,
+        net_grants,
         fetch_origins,
         env_allow,
         exec_allow,
@@ -108,7 +108,7 @@ pub(crate) fn run_checked_test_driver_compiled(
     checked: &witchy_types::pipeline::CheckedTestDriverModule,
     dir_roots: Vec<std::path::PathBuf>,
     file_grants: Vec<std::path::PathBuf>,
-    net_allow: Vec<String>,
+    net_grants: Vec<Vec<String>>,
     fetch_origins: Vec<String>,
     env_allow: Option<Vec<String>>,
     exec_allow: Option<Vec<String>>,
@@ -130,7 +130,7 @@ pub(crate) fn run_checked_test_driver_compiled(
         CompiledWasm::Admitted(wasm),
         dir_roots,
         file_grants,
-        net_allow,
+        net_grants,
         fetch_origins,
         env_allow,
         exec_allow,
@@ -158,7 +158,7 @@ fn run_compiled(
     wasm: CompiledWasm,
     dir_roots: Vec<std::path::PathBuf>,
     file_grants: Vec<std::path::PathBuf>,
-    net_allow: Vec<String>,
+    net_grants: Vec<Vec<String>>,
     fetch_origins: Vec<String>,
     env_allow: Option<Vec<String>>,
     exec_allow: Option<Vec<String>>,
@@ -265,7 +265,12 @@ fn run_compiled(
         caps.file_rights = file_param_rights;
     }
     if let Some(rights) = grant.get("Net") {
-        caps.net_allow = Some(net_allow);
+        // One allowlist per `Net` parameter of `main`, in declaration order: a
+        // document binds each parameter to its own `[net]` entry, and a flag-built
+        // grant passes one shared list.
+        let mut grants = net_grants.into_iter();
+        caps.net_allow = Some(grants.next().unwrap_or_default());
+        caps.net_grants = grants.collect();
         caps.net_connect = rights.contains("Connect");
         caps.net_listen = rights.contains("Listen");
     }
