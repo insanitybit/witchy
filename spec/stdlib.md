@@ -2355,11 +2355,11 @@ The witchy standard list library. Importing it grants no root authority, and its
 
 An empty list with pre-allocated capacity.
 
-#### `fn length(xs: List(a)) -> Int`
+#### `fn length(let xs: List(a)) -> Int`
 
 The number of elements.
 
-#### `fn at(xs: List(a), index: Int) -> a`
+#### `fn at(let xs: List(a), index: Int) -> a`
 
 The element at `index` (0-based). Out of bounds is a runtime error on every backend.
 

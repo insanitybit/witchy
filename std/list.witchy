@@ -27,12 +27,12 @@ pub fn with_capacity(capacity: Int) -> List(a):
     list.with_capacity(capacity)
 
 // The number of elements.
-pub fn length(xs: List(a)) -> Int:
+pub fn length(let xs: List(a)) -> Int:
     list.length(xs)
 
 // The element at `index` (0-based). Out of bounds is a runtime error on
 // every backend.
-pub fn at(xs: List(a), index: Int) -> a:
+pub fn at(let xs: List(a), index: Int) -> a:
     list.at(xs, index)
 
 // Compiler primitive used by the public move-in/move-out operation below.
@@ -304,7 +304,7 @@ impl List(a):
     pub fn is_empty(self) -> Bool:
         list.length(self) == 0
 
-    pub fn at(self, index: Int) -> a:
+    pub fn at(let self, index: Int) -> a:
         list.at(self, index)
 
     pub fn slice(self, start: Int, end: Int) -> List(a):

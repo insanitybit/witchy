@@ -39,3 +39,33 @@ fn main() -> Int:
     assert_eq!(vm.output(), vec!["3".to_string()]);
     assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
 }
+
+#[test]
+fn borrowed_list_read_cannot_duplicate_a_must_element() {
+    let source = r#"
+import list
+must type Ticket:
+    Ticket(Int)
+
+fn finish(own ticket: Ticket) -> Int:
+    match move ticket:
+        Ticket(value) -> value
+
+fn drain(own tickets: List(Ticket)) -> Int:
+    match list.__pop_extract(tickets):
+        Some(ticket) -> finish(ticket) + drain(tickets)
+        None -> 0
+
+fn main() -> Int:
+    var tickets = [Ticket(1)]
+    let duplicate = list.at(tickets, 0)
+    finish(duplicate) + drain(tickets)
+"#;
+    if let Ok(checked) = witchy::resolve_std_only_checked(source) {
+        assert!(matches!(
+            witchy::codegen::compile_checked_module_artifact(&checked),
+            witchy::codegen::LoweringOutcome::Unsupported(_)
+                | witchy::codegen::LoweringOutcome::Rejected(_)
+        ), "reading a must element must refuse before admission");
+    }
+}

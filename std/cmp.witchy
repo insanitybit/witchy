@@ -256,7 +256,7 @@ impl PartialEq for List(a) where a: PartialEq:
             return false
         var i = 0
         while i < n:
-            if !(list.at(self, i) == list.at(other, i)):
+            if !(self[i] == other[i]):
                 return false
             i = i + 1
         true
