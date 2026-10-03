@@ -80,6 +80,7 @@ pub const COMPILER_STD_NAMES: &[&str] = &[
     "dict.__contains_by",
     "dict.__insert",
     "dict.__insert_extract",
+    "dict.__insert_value_extract",
     "dict.__insert_extract__String__Int",
     "dict.__pop_extract",
     "dict.__remove",
