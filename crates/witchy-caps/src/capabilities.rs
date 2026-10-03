@@ -239,9 +239,6 @@ fn host_eq(left: &str, right: &str) -> bool {
     }
 }
 
-/// Split `host:port` on the LAST colon (so a bracketed IPv6 `[::1]:80` keeps its
-/// host intact). A pattern with no port part has an empty port (matches nothing
-/// but an empty target — callers always pass `host:port`).
 /// Why `pattern` is not a well-formed `Net` allowlist entry, or `None` when it is.
 /// The grammar is the one `address_admits` matches: an optional `!` deny prefix,
 /// then `host:port`, where `port` is `*` or a `u16` and `host` is `*`, a name, an
@@ -258,8 +255,19 @@ pub fn net_pattern_error(pattern: &str) -> Option<String> {
     if port != "*" && port.parse::<u16>().is_err() {
         return Some(format!("`{pattern}` has port `{port}`, which is not `*` or 0-65535"));
     }
-    if host.chars().any(|c| c.is_whitespace() || c == '!') {
-        return Some(format!("`{pattern}` has an invalid host `{host}`"));
+    if host.chars().any(|c| c.is_whitespace() || c == '!') || (host.contains('*') && host != "*") {
+        return Some(format!("`{pattern}` has an invalid host `{host}` (only a bare `*` is a wildcard)"));
+    }
+    if (host.starts_with('[') || host.ends_with(']')) && parse_ipv6_cidr(host).is_none() {
+        let bare = host.strip_prefix('[').and_then(|h| h.strip_suffix(']'));
+        if !bare.is_some_and(|ip| ip.parse::<std::net::Ipv6Addr>().is_ok() || parse_ipv6_cidr(ip).is_some()) {
+            return Some(format!("`{pattern}` has a malformed bracketed IPv6 host `{host}`"));
+        }
+    } else if host.contains(':')
+        && host.parse::<std::net::Ipv6Addr>().is_err()
+        && parse_ipv6_cidr(host).is_none()
+    {
+        return Some(format!("`{pattern}` has a host `{host}` with a stray `:` (bracket IPv6 as `[::1]:80`)"));
     }
     if host.contains('/') && parse_ipv4_cidr(host).is_none() && parse_ipv6_cidr(host).is_none() {
         return Some(format!("`{pattern}` has a malformed CIDR block `{host}`"));
@@ -267,6 +275,9 @@ pub fn net_pattern_error(pattern: &str) -> Option<String> {
     None
 }
 
+/// Split `host:port` on the LAST colon (so a bracketed IPv6 `[::1]:80` keeps its
+/// host intact). A pattern with no port part has an empty port (matches nothing
+/// but an empty target — callers always pass `host:port`).
 fn split_host_port(s: &str) -> (&str, &str) {
     match s.rsplit_once(':') {
         Some((h, p)) => (h, p),

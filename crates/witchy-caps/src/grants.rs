@@ -535,6 +535,10 @@ mod tests {
             ("[net]\nn = [\"github.com:https\"]\n", "port `https`"),
             ("[net]\nn = [\":443\"]\n", "empty host"),
             ("[net]\nn = [\"10.0.0.0/40:*\"]\n", "malformed CIDR"),
+            ("[net]\nn = [\"*.example.com:443\"]\n", "only a bare `*`"),
+            ("[net]\nn = [\"[::1:80\"]\n", "malformed bracketed IPv6"),
+            ("[net]\nn = [\"a:b:80\"]\n", "stray `:`"),
+            ("[net]\nn = [\"[fe80::/10]:*\"]\n", "malformed"),
             ("[env]\ne = [\"A=B\"]\n", "not an environment variable name"),
             ("[exec]\nx = [\"\"]\n", "empty program"),
             ("[secrets]\ns = { from = \"file:/etc/key\" }\n", "expected `env:VAR`"),
@@ -546,7 +550,7 @@ mod tests {
         }
         // The documented forms, including deny entries and CIDR blocks, still parse.
         GrantDoc::parse(
-            "[net]\nn = [\"github.com:443\", \"*:*\", \"10.0.0.0/8:*\", \"[::1]:80\", \"!169.254.0.0/16:*\"]\n",
+            "[net]\nn = [\"github.com:443\", \"*:*\", \"10.0.0.0/8:*\", \"[::1]:80\", \"[fe80::]/10:*\", \"::/0:*\", \"!169.254.0.0/16:*\"]\n",
         )
         .expect("well-formed Net patterns");
     }

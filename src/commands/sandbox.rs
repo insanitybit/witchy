@@ -179,8 +179,8 @@ pub(crate) fn run_file_grants(
     }
 
     // Bind each `Dir`/`File` `main` parameter to its same-named document entry, in
-    // declaration order (the positional grant the runtime expects). `Net` is one
-    // allowlist (all `[net]` addresses); secrets are named and host-resolved.
+    // declaration order (the positional grant the runtime expects). `Net` binds the
+    // same way, one allowlist per parameter; secrets are named and host-resolved.
     let mut dir_roots: Vec<std::path::PathBuf> = Vec::new();
     let mut file_grants: Vec<std::path::PathBuf> = Vec::new();
     // RFC-0038: grantable-cap params, in declaration order, each field pulled from
