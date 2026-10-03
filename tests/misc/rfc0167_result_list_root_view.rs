@@ -55,3 +55,33 @@ fn main() -> Int:
         .expect("region-born Result root must be refused");
     assert!(error.contains("region-born"), "region refusal identifies the root: {error}");
 }
+
+#[test]
+fn result_root_with_list_of_string_views_keeps_its_snapshot() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let checked = witchy::resolve_std_only_checked(r#"
+fn read(v: &Result(List(&String), String)) -> Int:
+    match *v:
+        Ok(xs) -> (*xs[0]).length() * 10 + xs.length()
+        Err(s) -> s.length()
+
+fn main() -> Int:
+    let text = "ab"
+    var r: Result(List(&String), String) = Ok([&text])
+    let old = &r
+    r = Err("bad")
+    read(old) * 10 + read(&r)
+"#).expect("Result List of String views checks");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("Result graph root admits");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(
+        &artifact,
+        Capabilities { print_int: true, quiet: true, ..Capabilities::none() },
+        128,
+    ).expect("admitted Wasm instance");
+    vm.run().expect("admitted Wasm execution");
+    assert_eq!(vm.output(), vec!["213".to_string()]);
+    assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+}

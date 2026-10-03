@@ -132,8 +132,9 @@ full RFC or its deferred opt and cross-mode contract.
 Merged normal-mode row N witnesses retain old `Result(List(Int), String)` and
 `&(List(String), Result(Int, String))` roots through owner replacement, including
 a closure-captured view. Their independently calculated admitted-Wasm results
-are 43 and 2713, with zero owned-heap leaks. Region-born roots and a nested
-`List(&Int)` child without an authenticated carrier refuse at checking. A lazy
+are 43 and 2713, with zero owned-heap leaks. Region-born roots refuse at
+checking. At that checkpoint, a nested `List(&Int)` child also lacked an
+authenticated carrier; later graph-root work broadened the supported forms. A lazy
 `Task` captures a two-element list view before the owner grows and yields 22
 across two awaits, with zero leaks; capture of a unique owner into a replayable
 recipe refuses. `must Ticket` disposition before and after `await` executes 79
@@ -145,6 +146,12 @@ callback remains in the parent VM with zero worker imports and launches;
 its ordered output and zero-leak audit pass. The browser host exposes the
 import pair but refuses execution until it can authenticate admitted worker
 descriptors there.
+
+`&Result(List(&String), String)` now retains the `Ok` list and its nested
+String view after the root is replaced by `Err("bad")`. A normal-mode admitted
+Wasm witness reads both arms, returns the independently calculated 213, and
+reports zero owned-heap leaks. This establishes the concrete nested Result
+graph; it is not a proof of every error payload or aggregate carrier.
 
 The RFC-0080 owned-expression and fresh-identifier tests now authenticate
 their comptime expansion through the checked source bundle and assert their
