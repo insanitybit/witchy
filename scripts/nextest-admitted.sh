@@ -109,4 +109,19 @@ fi
 # prepended scripts/bin to PATH. The shim owns the MBX policy and still finds
 # the caller's real cargo (or a hermetic test double) on PATH.
 filtered[0]="$root/scripts/bin/cargo"
+# An explicit `--test <binary>` whose every test is deferred admits zero tests.
+# Cargo has still compiled that binary (a misspelled one fails at target
+# lookup), so an empty admitted selection is a compile check, not a failure:
+# the edit loop must not refuse a change that touches only a deferred family.
+explicit_test_target=false
+no_tests_flag=false
+for arg in "${filtered[@]}"; do
+    case "$arg" in
+        --test | --test=*) explicit_test_target=true ;;
+        --no-tests | --no-tests=*) no_tests_flag=true ;;
+    esac
+done
+if [ "$explicit_test_target" = true ] && [ "$no_tests_flag" = false ]; then
+    filtered+=(--no-tests=warn)
+fi
 exec "${filtered[@]}" -E "$policy"
