@@ -8,7 +8,7 @@ pub(in crate::runtime) mod canonical_exec;
 use crate::confine::{ConfineError, ConfineErrorKind};
 
 use super::super::{
-    confine, fill_slice, memory_of, read_slice_str, read_wbytes, read_wstr, read_wstr_list,
+    confine, memory_of, read_slice_str, read_wbytes, read_wstr, read_wstr_list,
     DirAuthority, DirBacking, ExecAuthority, FileAuthority, FileBacking, FsRights, VmState,
 };
 
@@ -27,13 +27,13 @@ pub(in crate::runtime) fn link_dir_read(linker: &mut Linker<VmState>) -> Result<
     linker.func_wrap("witchy", "dir_read_bytes_len", host_dir_read_bytes_len)?;
     linker.func_wrap("witchy", "dir_exists", host_dir_exists)?;
     linker.func_wrap("witchy", "dir_is_dir", host_dir_is_dir)?;
-    linker.func_wrap("witchy", "dir_list_size", host_dir_list_size)?;
     linker.func_wrap("witchy", "dir_open", host_dir_open)?;
     linker.func_wrap("witchy", "dir_read_file", host_dir_read_file)?;
     // (RFC-0165 slice 42) The canonical route's read family, gated by the SAME
     // `Dir[Read]` grant as its frozen siblings above: a program without the
     // right cannot even link the import.
-    linker.func_wrap("witchy", "dir_list_into", host_dir_list_into)?;
+    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[15], host_dir_list_at)?;
+    linker.func_wrap("witchy", "dir_list_size", host_dir_list_size)?;
     linker.func_wrap("witchy", "dir_exists_at", host_dir_exists_at)?;
     linker.func_wrap("witchy", "dir_is_dir_at", host_dir_is_dir_at)?;
     linker.func_wrap("witchy", "dir_subtree_at", host_dir_subtree_at)?;
@@ -694,7 +694,7 @@ fn dir_response(caller: &Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) 
 }
 
 fn host_dir_read_bytes_at(
-    mut caller: Caller<'_, VmState>, dir: Option<Rooted<ExternRef>>, path_ptr: i32, path_len: i32,
+    caller: Caller<'_, VmState>, dir: Option<Rooted<ExternRef>>, path_ptr: i32, path_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
     dir_read_response(caller, dir, path_ptr, path_len, false)
 }
@@ -704,7 +704,7 @@ fn host_dir_read_bytes_at(
 /// traps; a request the grant does not cover, and every filesystem failure,
 /// is the response's status and message (RFC-0126 rule 3).
 fn host_dir_read_at(
-    mut caller: Caller<'_, VmState>, dir: Option<Rooted<ExternRef>>, path_ptr: i32, path_len: i32,
+    caller: Caller<'_, VmState>, dir: Option<Rooted<ExternRef>>, path_ptr: i32, path_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
     dir_read_response(caller, dir, path_ptr, path_len, true)
 }
@@ -1016,42 +1016,64 @@ fn host_dir_is_dir(
     Ok(ok as i32)
 }
 
-/// `dir_list_into(dir, out, out_cap) -> byte length`: the admitted entry names
-/// (sorted, the same policy filter as `dir_list_size`) joined by NUL, written
-/// through a bounded guest slice; the guest splits
-/// them. A name cannot contain NUL, so the separator is unambiguous.
-fn host_dir_list_into(
-    mut caller: Caller<'_, VmState>,
-    d: Option<Rooted<ExternRef>>,
-    out_ptr: i32,
-    out_cap: i32,
-) -> Result<i32> {
+/// `dir_list_at(dir) -> response`: the admitted entry names, sorted and
+/// NUL-joined (a name cannot contain NUL), read once (RFC-0126 rule 3). A
+/// missing right or forged token traps; a directory that cannot be listed is
+/// the response's status and a fixed message. Under an entry policy the
+/// listing names exactly the entries `dir.exists` reports, so it never
+/// reveals an alias or other entry the policy keeps invisible.
+fn host_dir_list_at(mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>) -> Result<Option<Rooted<ExternRef>>> {
     let dir = dir_authority_ref(&caller, d)?;
     dir_require_read(&dir)?;
-    let names = admitted_entry_names(&dir)?;
-    let payload = names.join("\0");
-    fill_slice(&mut caller, out_ptr, out_cap, payload.as_bytes(), "directory listing")
+    let (status, bytes) = match visible_entry_names(&dir) {
+        Ok(names) => (0, names.join("\0").into_bytes()),
+        Err(failure) => (failure.kind.status(), format!("this Dir {}", list_failure_reason(failure.kind)).into_bytes()),
+    };
+    dir_bytes_length(bytes.len())?;
+    let response = DirResponse { issuer: caller.data().registry_issuer.clone(), status, bytes: Arc::new(bytes) };
+    ExternRef::new(&mut caller, response).map(Some)
 }
 
-/// The directory's entry names the grant's policy admits, sorted.
-fn admitted_entry_names(dir: &DirAuthority) -> Result<Vec<String>> {
-    Ok(match &dir.backing {
-        DirBacking::Fs(base) => base.entries().map_err(|e| {
-            Error::msg(format!("list failed for `{}`: {e}", base.display_path().display()))
-        })?.into_iter().filter(|name| {
-            let is_dir = base.is_dir(name).unwrap_or(false);
-            witchy_caps::capabilities::dir_admits(&dir.policy, name, is_dir)
-        }).collect(),
-    })
+/// The fixed guest-visible reason a listing failed.
+fn list_failure_reason(kind: ConfineErrorKind) -> &'static str {
+    match kind {
+        ConfineErrorKind::NotFound => "was not found",
+        ConfineErrorKind::Denied => "cannot be listed under its capability",
+        ConfineErrorKind::NotAFile | ConfineErrorKind::AlreadyExists | ConfineErrorKind::Io => "could not be listed",
+    }
 }
 
-/// `dir_list_size(h) -> bytes`: read the directory NOW (sorted names, matching
-/// the interpreter), stage the listing, and report the total byte size of the
-/// witchy `List(String)` structure the guest must reserve.
+/// The names `dir.list()` answers. Without a policy every entry, including a
+/// symlink (its name only; reading through it is `Denied` when it leaves the
+/// root). Under a policy exactly the files and directories the policy admits,
+/// judged on their no-follow kinds from the one directory read, so the
+/// listing names what `dir.exists` reports and never an alias. Directory
+/// reads spell names exactly, so no case-folded alias can appear. A name that
+/// is not UTF-8 makes the directory unlistable (`Io`).
+fn visible_entry_names(dir: &DirAuthority) -> Result<Vec<String>, ConfineError> {
+    use crate::confine::ConfinedEntryKind;
+    let DirBacking::Fs(base) = &dir.backing;
+    let entries = base.entry_kinds().map_err(|error| ConfineError::new(
+        ConfineErrorKind::of_io(&error),
+        format!("list failed for `{}`: {error}", base.display_path().display()),
+    ))?;
+    Ok(entries.into_iter().filter_map(|(name, kind)| {
+        let admitted = dir.policy.is_empty() || match kind {
+            ConfinedEntryKind::File => witchy_caps::capabilities::dir_admits(&dir.policy, &name, false),
+            ConfinedEntryKind::Directory => witchy_caps::capabilities::dir_admits(&dir.policy, &name, true),
+            ConfinedEntryKind::Other => false,
+        };
+        admitted.then_some(name)
+    }).collect())
+}
+
+/// `dir_list_size(h) -> bytes`: the legacy staged listing, kept only so the
+/// complete ordinary ABI still links. It stages the same names `dir.list()`
+/// answers and traps where `dir_list_at` would answer a status.
 fn host_dir_list_size(mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>) -> Result<i32> {
     let dir = dir_authority_ref(&caller, d)?;
     dir_require_read(&dir)?;
-    let names = admitted_entry_names(&dir)?;
+    let names = confine(visible_entry_names(&dir))?;
     let size = 4 + 8 * names.len() + names.iter().map(|n| 4 + n.len()).sum::<usize>();
     caller.data_mut().pending_list = Some(names);
     Ok(size as i32)

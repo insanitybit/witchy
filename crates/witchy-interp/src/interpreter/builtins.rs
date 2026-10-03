@@ -3873,52 +3873,14 @@ impl Interpreter {
             },
             // List the immediate entries of the Dir capability's own directory, as
             // sorted names (deterministic — `read_dir` order is OS-dependent).
+            // `dir.list` answers `Result(List(String), CapError)` (RFC-0126
+            // rule 3); the frozen walker refuses it rather than emulate that.
             "list" => match args {
-                #[cfg(feature = "test-fixtures")]
-                [Value::Dir(DirValue::Fixture(handle), pol)] => {
-                    match self.invoke_fixture(HostRequest::DirList { dir: *handle })? {
-                        HostResponse::Strings(names) => {
-                            let mut admitted = Vec::new();
-                            for name in names {
-                                let is_dir = match self.invoke_fixture(HostRequest::DirIsDir {
-                                    dir: *handle,
-                                    path: name.clone(),
-                                })? {
-                                    HostResponse::Bool(value) => value,
-                                    other => return err(format!(
-                                        "internal error: Dir fixture returned {other:?}"
-                                    )),
-                                };
-                                if witchy_caps::capabilities::dir_admits(pol, &name, is_dir) {
-                                    admitted.push(Value::str(name));
-                                }
-                            }
-                            Ok(Some(Value::list(admitted)))
-                        }
-                        other => err(format!(
-                            "internal error: Dir fixture returned {other:?}"
-                        )),
-                    }
-                }
-                [Value::Dir(base, pol)] => {
-                    let names: Vec<String> = match base {
-                        DirValue::Fs(base) => base.entries().map_err(|error| RuntimeError {
-                            message: format!(
-                                "list failed for `{}`: {error}",
-                                base.display_path().display()
-                            ),
-                        })?.into_iter().filter(|name| {
-                            let is_dir = base.is_dir(name).unwrap_or(false);
-                            witchy_caps::capabilities::dir_admits(pol, name, is_dir)
-                        }).collect(),
-                        #[cfg(feature = "test-fixtures")]
-                        DirValue::Fixture(_) => {
-                            return err("internal error: fixture Dir bypassed fixture dispatch");
-                        }
-                    };
-                    Ok(Some(Value::list(names.into_iter().map(Value::str).collect())))
-                }
-                _ => err("list expects a Dir"),
+                [Value::Dir(..)] => err(
+                    "`dir.list` returns a `CapError` result, which the source interpreter does not \
+                     implement; run the program as admitted Wasm",
+                ),
+                _ => Ok(None),
             },
             // Create a subdirectory within the Dir capability's subtree, confined
             // like `write` (idempotent — succeeds if it already exists). Creating a

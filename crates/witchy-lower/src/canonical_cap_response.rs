@@ -46,6 +46,18 @@ impl FunctionLowerer<'_> {
     /// value (`T` is `String` or `Bytes`, both byte buffers) or the failure
     /// message.
     pub(super) fn lower_cap_result(&mut self, response: ValueId, success: &str, family: &str) -> Result<ValueId, CanonicalLoweringError> {
+        self.lower_cap_result_with(response, Type::Named(success.into(), Vec::new()), family, |_, payload| Ok(payload))
+    }
+
+    /// `lower_cap_result` whose success value is `success` built from the
+    /// payload by `convert` on the success path only.
+    pub(super) fn lower_cap_result_with(
+        &mut self,
+        response: ValueId,
+        success: Type,
+        family: &str,
+        convert: impl FnOnce(&mut Self, ValueId) -> Result<ValueId, CanonicalLoweringError>,
+    ) -> Result<ValueId, CanonicalLoweringError> {
         if self.values[&response] != ValueType::Capability(DIR_RESPONSE_KIND) {
             return Err(CanonicalLoweringError::UnsupportedExpression("capability response token"));
         }
@@ -56,7 +68,7 @@ impl FunctionLowerer<'_> {
             arguments: vec![HostCallArgument::Capability(response)],
         });
         let text = self.lower_response_payload(response, family)?;
-        let value = Type::Named(success.into(), Vec::new());
+        let value = success;
         let error = Type::Named(CAP_ERROR_TYPE.into(), Vec::new());
         let result = Type::Named("Result".into(), vec![value, error.clone()]);
         let result_shape = scalar_aggregate_shape(&result, self.definitions)
@@ -69,7 +81,8 @@ impl FunctionLowerer<'_> {
         let zero = self.push_const_size(0)?;
         let succeeded = self.push_compare(ComparisonOperator::Equal, status, zero)?;
         self.lower_conditional_branches(succeeded, affine, |this| {
-            let value = this.lower_aggregate_for_source(&result, &result_shape, ok, vec![text])?;
+            let success = convert(this, text)?;
+            let value = this.lower_aggregate_for_source(&result, &result_shape, ok, vec![success])?;
             Ok(Some(this.detach_bound_result(value, affine)?))
         }, |this| {
             let failure = this.lower_cap_error(status, text, &error, &error_shape, 0)?;

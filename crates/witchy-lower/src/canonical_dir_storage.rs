@@ -22,6 +22,58 @@ impl FunctionLowerer<'_> {
         self.lower_cap_result(response, "String", "dir")
     }
 
+    /// `dir.list()`: one host listing, then `Result(List(String), CapError)`.
+    pub(super) fn lower_dir_list(&mut self, token: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let response = self.fresh(ValueType::Capability(witchy_wir::canonical_safewir::DIR_RESPONSE_KIND))?;
+        let list = self.capability_import("dir_list_at")?;
+        self.push_operation(Operation::HostCall {
+            destinations: vec![response], import: list,
+            arguments: vec![HostCallArgument::Capability(token)],
+        });
+        let list_type = Type::Named("List".into(), vec![Type::Named("String".into(), Vec::new())]);
+        self.lower_cap_result_with(response, list_type, "dir", |this, names| this.lower_listing(names))
+    }
+
+    /// The NUL-separated names of a listing as a `List(String)`; an empty
+    /// payload is the empty list (a split would yield one empty name).
+    fn lower_listing(&mut self, names: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let list_type = Type::Named("List".into(), vec![Type::Named("String".into(), Vec::new())]);
+        let (list_layout_id, _, _, _) = list_layout(&list_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
+        let length = self.string_length_of(names)?;
+        let zero = self.push_const_size(0)?;
+        let empty = self.push_compare(ComparisonOperator::Equal, length, zero)?;
+        let facts = self.snapshot_facts();
+        let none_block = self.new_block(&[])?;
+        let split_block = self.new_block(&[])?;
+        let join = self.new_block_owned(&[
+            (ValueType::Ref(list_layout_id), Some(Ownership::Unique)),
+            (ValueType::Size, None),
+            (ValueType::Size, None),
+        ])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: empty,
+            then_target: none_block,
+            then_arguments: Vec::new(),
+            else_target: split_block,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = none_block;
+        let nothing = self.push_empty_value(&list_type)?;
+        let (lanes, _) = self.accumulator_lanes(nothing)?;
+        self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
+        self.current = split_block;
+        self.restore_snapshot(facts.clone());
+        let separator = self.lower_string_literal(DIRECTORY_LISTING_SEPARATOR)?;
+        let pieces = self.lower_string_split(names, separator)?;
+        let (lanes, _) = self.accumulator_lanes(pieces)?;
+        self.finish_current(Terminator::Branch { target: join, arguments: lanes })?;
+        self.restore_facts(facts, join);
+        self.current = join;
+        let joined = self.block_parameter_values(join);
+        self.track_accumulator_lanes(&joined);
+        Ok(joined[0])
+    }
+
     /// `file.read()`: one host read, then `Result(String, CapError)` from its
     /// response under File authority.
     pub(super) fn lower_file_read(&mut self, token: ValueId) -> Result<ValueId, CanonicalLoweringError> {

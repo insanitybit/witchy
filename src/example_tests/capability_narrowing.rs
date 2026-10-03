@@ -44,10 +44,9 @@ use crate::{interpreter, parser, typeck};
             let linked = crate::pipeline::link(mods, "main").expect("link");
             interpreter::run_module(linked, &tmp, Vec::new())
         };
-        // `list` enumerates a subdir's entries in sorted (deterministic) order.
-        let out = run("fn main(console: Console, root: Dir):\n    console.print(list.join(root.subtree(\"store\").list(), \",\"))\n")
-            .expect("run");
-        assert_eq!(out, vec!["alpha,bravo"]);
+        // `list` answers `Result(List(String), CapError)`, which only admitted
+        // Wasm builds; `capabilities::dir_capability_compiles_to_wasm_and_confines`
+        // pins its sorted listing.
         // `make_dir` creates a confined subdirectory.
         run("fn main(console: Console, root: Dir):\n    root.make_dir(\"fresh\")\n").expect("run");
         assert!(tmp.join("fresh").is_dir(), "make_dir should have created the directory");

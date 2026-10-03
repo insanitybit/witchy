@@ -3182,3 +3182,21 @@ writes on the legacy backends. The installed trusted-application test runs
 A File opened under an entry policy reads without following its leaf. A link
 swapped in later answers `Denied`, which the File host test pins.
 
+### 2026-10-03: `dir.list` returns `Result(List(String), CapError)` (RFC-0126 rule 3, row Q partial)
+
+`dir.list` makes one host call, `dir_list_at`, which answers with a response
+carrying the NUL-joined sorted names. The retired `dir_list_into` import is
+gone. Under an entry policy the listing now names exactly what `dir.exists`
+reports. It no longer reveals an in-root alias whose name the policy admits.
+A directory the host refuses to list is `Denied` with a fixed message that
+names no path.
+
+`dir_list_at_lists_only_what_the_grant_observes` pins:
+
+- the unfiltered, `ext:` and `kind:file` listings;
+- a refused listing; and
+- the missing-right trap.
+
+The admitted Dir transcript lists through `?? []`. The source tree walker and
+legacy codegen refuse `dir.list` by name.
+

@@ -573,7 +573,6 @@ pub const BUILD_OUT_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(9)
 /// authenticated about the imports themselves.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CapabilityImportSignatures {
-    pub dir_list_into: FunctionSignatureId,
     pub dir_exists_at: FunctionSignatureId,
     pub dir_write_at: FunctionSignatureId,
     pub dir_subtree_at: FunctionSignatureId,
@@ -944,18 +943,6 @@ impl CanonicalAbiCatalog {
         let size = || vec![HostResultRole::Value(ValueType::Size)];
 
         let imports = vec![
-            // The directory's admitted entry names, NUL-separated, into a
-            // guest buffer (the guest splits them).
-            authenticated_capability_import(
-                "dir_list_into",
-                &[WasmTy::ExternRef, WasmTy::I32, WasmTy::I32],
-                &[WasmTy::I32],
-                signatures.dir_list_into,
-                vec![dir(), write_slice()],
-                size(),
-                HostMutation::WriteBuffers,
-                &[AbiImportAuthority::DirRead],
-            )?,
             authenticated_capability_import(
                 "dir_exists_at",
                 &[WasmTy::ExternRef, WasmTy::I32, WasmTy::I32],
@@ -1857,7 +1844,6 @@ pub mod self_checks {
 
     fn signatures() -> CapabilityImportSignatures {
         CapabilityImportSignatures {
-            dir_list_into: FunctionSignatureId::new(2),
             dir_exists_at: FunctionSignatureId::new(2),
             dir_write_at: FunctionSignatureId::new(3),
             dir_subtree_at: FunctionSignatureId::new(4),

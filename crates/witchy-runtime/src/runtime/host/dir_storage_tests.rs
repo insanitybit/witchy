@@ -15,6 +15,7 @@ const WAT: &str = r#"(module
   (import "witchy" "dir_response_status" (func $status (param externref) (result i32)))
   (import "witchy" "dir_read_file" (func $open_file (param externref i32 i32) (result externref)))
   (import "witchy" "file_read_at" (func $file_read (param externref) (result externref)))
+  (import "witchy" "dir_list_at" (func $list (param externref) (result externref)))
   (import "witchy" "file_response_status" (func $file_status (param externref) (result i32)))
   (import "witchy" "file_response_size" (func $file_size (param externref) (result i32)))
   (import "witchy" "file_response_into" (func $file_copy (param externref i32 i32) (result i32)))
@@ -34,6 +35,7 @@ const WAT: &str = r#"(module
   (func (export "open_file") (param externref i32 i32) (result externref)
     local.get 0 local.get 1 local.get 2 call $open_file)
   (func (export "file_read") (param externref) (result externref) local.get 0 call $file_read)
+  (func (export "list") (param externref) (result externref) local.get 0 call $list)
   (func (export "file_status") (param externref) (result i32) local.get 0 call $file_status)
   (func (export "file_size") (param externref) (result i32) local.get 0 call $file_size)
   (func (export "file_copy") (param externref i32 i32) (result i32)
@@ -446,4 +448,59 @@ pub fn file_read_at_answers_failures_as_statuses() {
         .call(&mut vm.store, files["ok.txt"]).unwrap();
     let copy = vm.instance.get_typed_func::<(Token, i32, i32), i32>(&mut vm.store, "file_copy").unwrap();
     assert!(copy.call(&mut vm.store, (response, 65535, 2)).is_err(), "an out-of-range copy must trap");
+}
+
+/// `dir_list_at` on `dir`, answered as (status, NUL-split names or message).
+fn list(vm: &mut Vm, dir: Token) -> (i32, Vec<String>) {
+    let response = vm.instance.get_typed_func::<Token, Token>(&mut vm.store, "list").unwrap()
+        .call(&mut vm.store, dir).unwrap();
+    let status = vm.instance.get_typed_func::<Token, i32>(&mut vm.store, "status").unwrap()
+        .call(&mut vm.store, response).unwrap();
+    let bytes = payload(vm, response);
+    let text = String::from_utf8(bytes).unwrap();
+    let names = if text.is_empty() { Vec::new() } else { text.split('\0').map(str::to_owned).collect() };
+    (status, names)
+}
+
+/// `dir.list()` answers the sorted names a grant can observe (RFC-0126 rule
+/// 3). Under an entry policy it lists exactly what `dir.exists` reports: no
+/// alias, no case-folded spelling, no directory a `files()` handle cannot
+/// open. A directory the host refuses to list is a status with a fixed
+/// message that names no path; a missing Read right still traps.
+pub fn dir_list_at_lists_only_what_the_grant_observes() {
+    let (root, mut vm, grant) = setup(true);
+    std::fs::write(root.path().join("b.txt"), b"b").unwrap();
+    std::fs::write(root.path().join("a.bin"), b"a").unwrap();
+    std::fs::create_dir(root.path().join("sub")).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink("a.bin", root.path().join("alias.txt")).unwrap();
+    let text_only = attenuate(&mut vm, grant, true, false, "ext:.txt");
+    let files_only = attenuate(&mut vm, grant, true, false, "kind:file");
+    let all: Vec<&str> = if cfg!(unix) { vec!["a.bin", "alias.txt", "b.txt", "sub"] } else { vec!["a.bin", "b.txt", "sub"] };
+    assert_eq!(list(&mut vm, grant), (0, all.iter().map(|n| n.to_string()).collect()));
+    assert_eq!(list(&mut vm, text_only), (0, vec!["b.txt".to_string(), "sub".to_string()]));
+    assert_eq!(list(&mut vm, files_only), (0, vec!["a.bin".to_string(), "b.txt".to_string()]));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let locked = root.path().join("sub");
+        let opened = crate::confine::ConfinedDir::open_ambient(root.path()).unwrap().open_dir("sub").unwrap();
+        let sub = Some(ExternRef::new(&mut vm.store, DirAuthority {
+            backing: DirBacking::Fs(opened),
+            policy: String::new(),
+            rights: FsRights { read: true, write: false },
+        }).unwrap());
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let refused = list(&mut vm, sub);
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755)).unwrap();
+        // Running as root bypasses permission bits; then the listing succeeds.
+        if refused.0 != 0 {
+            assert_eq!(refused, (1, vec!["this Dir cannot be listed under its capability".to_string()]));
+        } else {
+            assert_eq!(refused, (0, Vec::new()), "only root bypasses the refusal; sub is empty");
+        }
+    }
+    let write_only = attenuate(&mut vm, grant, false, true, "");
+    let call = vm.instance.get_typed_func::<Token, Token>(&mut vm.store, "list").unwrap();
+    error(call.call(&mut vm.store, write_only).unwrap_err(), "does not grant Read");
 }

@@ -380,6 +380,42 @@ impl ConfinedDir {
         }
     }
 
+    /// Immediate UTF-8 entry names with their no-follow kinds, sorted. One
+    /// directory read; a symlink or special entry is `Other`.
+    pub fn entry_kinds(&self) -> std::io::Result<Vec<(String, ConfinedEntryKind)>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut entries = self
+                .inner
+                .entries()?
+                .map(|entry| {
+                    let entry = entry?;
+                    let name = entry.file_name().into_string().map_err(|_| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            "directory entry name is not valid UTF-8",
+                        )
+                    })?;
+                    let file_type = entry.file_type()?;
+                    let kind = if file_type.is_file() {
+                        ConfinedEntryKind::File
+                    } else if file_type.is_dir() {
+                        ConfinedEntryKind::Directory
+                    } else {
+                        ConfinedEntryKind::Other
+                    };
+                    Ok((name, kind))
+                })
+                .collect::<std::io::Result<Vec<_>>>()?;
+            entries.sort_by(|a, b| a.0.cmp(&b.0));
+            Ok(entries)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Err(unsupported())
+        }
+    }
+
     /// Create one confined directory path, idempotently.
     pub fn make_dir(&self, rel: &str) -> Result<(), ConfineError> {
         let path = Path::new(rel);

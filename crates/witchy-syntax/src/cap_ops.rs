@@ -201,7 +201,7 @@ pub const OPS: &[CapOp] = &[
     op!("read", File, [], String?, "file.read()"),
     op!("write", File, [String], Nil, "file.write(data)"),
     op!("only", Dir, [DirPolicy], SameReceiver, "cap.only(policy)"),
-    op!("list", Dir, [], ListString, "dir.list()"),
+    op!("list", Dir, [], ListString?, "dir.list()"),
     op!("read", Dir, [String], String?, "dir.read(path)"),
     op!("exists", Dir, [String], Bool, "dir.exists(path)"),
     op!("is_dir", Dir, [String], Bool, "dir.is_dir(path)"),

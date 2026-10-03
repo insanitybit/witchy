@@ -100,7 +100,7 @@ use crate::{codegen, interpreter, parser, typeck};
         std::fs::write(root.join("a.txt"), "alpha").expect("seed a");
         std::fs::write(root.join("sub/b.txt"), "beta").expect("seed b");
 
-        let src = format!("{SHOW_DIR_READ}fn main(console: Console, dir: Dir):\n    console.print(shown(dir.read(\"a.txt\")))\n    console.print(\"${{dir.exists(\"a.txt\")}}\")\n    console.print(\"${{dir.exists(\"missing.txt\")}}\")\n    let sub = dir.subtree(\"sub\")\n    console.print(shown(sub.read(\"b.txt\")))\n    dir.write(\"out.txt\", \"written\")\n    console.print(shown(dir.read(\"out.txt\")))\n    dir.make_dir(\"made\")\n    console.print(\"${{dir.is_dir(\"made\")}}\")\n    for name in dir.list():\n        console.print(\"entry: \" + name)\n");
+        let src = format!("{SHOW_DIR_READ}fn main(console: Console, dir: Dir):\n    console.print(shown(dir.read(\"a.txt\")))\n    console.print(\"${{dir.exists(\"a.txt\")}}\")\n    console.print(\"${{dir.exists(\"missing.txt\")}}\")\n    let sub = dir.subtree(\"sub\")\n    console.print(shown(sub.read(\"b.txt\")))\n    dir.write(\"out.txt\", \"written\")\n    console.print(shown(dir.read(\"out.txt\")))\n    dir.make_dir(\"made\")\n    console.print(\"${{dir.is_dir(\"made\")}}\")\n    for name in dir.list() ?? []:\n        console.print(\"entry: \" + name)\n");
         let want = [
             "ok: alpha", "true", "false", "ok: beta", "ok: written", "true",
             "entry: a.txt", "entry: made", "entry: out.txt", "entry: sub",
@@ -273,15 +273,13 @@ use crate::{codegen, interpreter, parser, typeck};
         let hidden = "550e8400-e29b-41d4-a716-446655440000.key";
         std::fs::write(root.join(hidden), "secret").expect("seed secret");
         let root_str = root.to_str().expect("utf8 root").to_string();
-        let src = "fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    console.print(\"${d.exists(\"550e8400-e29b-41d4-a716-446655440000.key\")}\")\n    console.print(\"${d.is_dir(\"private-dir\")}\")\n    let files = dir.only(Dir.files())\n    console.print(\"${files.exists(\"private-dir\")}\")\n    console.print(\"${files.is_dir(\"private-dir\")}\")\n    let dirs = dir.only(Dir.dirs())\n    console.print(\"${dirs.exists(\"public.txt\")}\")\n    for name in d.list():\n        console.print(name)\n";
+        let src = "fn main(console: Console, dir: Dir):\n    let d = dir.only(Dir.ext(\".txt\"))\n    console.print(\"${d.exists(\"550e8400-e29b-41d4-a716-446655440000.key\")}\")\n    console.print(\"${d.is_dir(\"private-dir\")}\")\n    let files = dir.only(Dir.files())\n    console.print(\"${files.exists(\"private-dir\")}\")\n    console.print(\"${files.is_dir(\"private-dir\")}\")\n    let dirs = dir.only(Dir.dirs())\n    console.print(\"${dirs.exists(\"public.txt\")}\")\n";
         let expected = vec![
             "false".to_string(),
             "true".to_string(),
             "false".to_string(),
             "false".to_string(),
             "false".to_string(),
-            "private-dir".to_string(),
-            "public.txt".to_string(),
         ];
 
         assert_eq!(

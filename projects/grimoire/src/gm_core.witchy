@@ -1849,3 +1849,13 @@ pub fn read_raw(root: Dir[Read], path: String) -> Bytes:
         Err(e) ->
             fail(show(e))
             unreachable
+
+// A directory the package manager must list: a failed listing aborts with its
+// `CapError`.
+pub fn list_names(dir: Dir[Read]) -> List(String):
+    let unreachable: List(String) = []
+    match dir.list():
+        Ok(names) -> names
+        Err(e) ->
+            fail(show(e))
+            unreachable

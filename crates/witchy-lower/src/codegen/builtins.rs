@@ -970,10 +970,9 @@ impl Codegen<'_> {
             ("exec", 5) => {
                 call("exec", self.lower_args(&[&args[0], &args[1], &args[2], &args[3], &args[4]])?)
             }
-            ("list", 1) => {
-                self.used_dir_ops.insert("list");
-                call("dir_list", self.lower_args(&[&args[0]])?)
-            }
+            // `dir.list` answers `Result(List(String), CapError)`; only the
+            // canonical route builds that result.
+            ("list", 1) => return None,
             // (RFC-0032) Intercept `vm.par_map(xs, f)` (monomorphized to
             // `vm.par_map__T__T`) over SCALAR element types, when `f` is a TOP-LEVEL
             // function reference: the host runs the map across OS-thread worker VMs and

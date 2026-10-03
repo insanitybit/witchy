@@ -361,7 +361,6 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `heap_unregister` | `(i32)` | runtime diagnostic | none | omitted |
 | `heap_frontier` | `(i32)` | runtime diagnostic | none | omitted |
 | `__witchy_abort` | `(i32, i64, i64, i32)` | runtime diagnostic | none | provided |
-| `dir_list_into` | `(externref, i32, i32) -> i32` | capability authority | Dir.Read | omitted |
 | `dir_exists_at` | `(externref, i32, i32) -> i32` | capability authority | Dir.Read | omitted |
 | `dir_write_at` | `(externref, i32, i32, i32, i32)` | capability authority | Dir.Write | omitted |
 | `dir_subtree_at` | `(externref, i32, i32) -> externref` | capability authority | Dir.grant | omitted |
@@ -414,6 +413,7 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `file_response_status` | `(externref) -> i32` | capability authority | File.authority | omitted |
 | `file_response_size` | `(externref) -> i32` | capability authority | File.authority | omitted |
 | `file_response_into` | `(externref, i32, i32) -> i32` | capability authority | File.authority | omitted |
+| `dir_list_at` | `(externref) -> externref` | capability authority | Dir.Read | omitted |
 | `crypto_sha512_slices` | `(i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |
 | `crypto_sha3_256_slices` | `(i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |
 | `crypto_hmac_sha256_slices` | `(i32, i32, i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |
