@@ -6,9 +6,8 @@
 //! Only types reaching a retired non-rooted reference (lifetime / `&mut`
 //! carriers, spellable only by the migration grammar) stay closed to normal
 //! importers; `witchy-syntax`'s linker and type_resolve unit tests pin that
-//! refusal. A `var` PARAMETER of a view-bearing record links and type-checks
-//! but canonical lowering has no write-back lane for opaque owner families
-//! yet; that refusal stays loud and is pinned below.
+//! refusal. A `var` parameter of a view-bearing record also has a checked
+//! write-back lane through canonical lowering.
 //!
 //! Independent hand-computed expectation, admitted unoptimized Wasm, zero leaks.
 
@@ -87,6 +86,55 @@ fn main() -> Int:
     assert_admitted_wasm(&checked, 21);
 }
 
+#[test]
+fn an_indirect_var_parameter_writes_back_a_view_bearing_record() {
+    let checked = witchy::resolve_std_only_checked(r#"
+type H:
+    v: &Int
+
+fn bump(var h: H, other: &Int):
+    h = H(v: other)
+
+fn main() -> Int:
+    let a = 1
+    let b = 2
+    var h = H(v: &a)
+    let before = h
+    let change = bump
+    change(h, &b)
+    (*h.v) * 100 + (*before.v) * 10 + a
+"#)
+    .expect("indirect `var` may name a view-bearing record");
+    assert_admitted_wasm(&checked, 211);
+}
+
+#[test]
+fn an_indirect_var_parameter_writes_back_a_nested_view_record() {
+    let checked = witchy::resolve_std_only_checked(r#"
+type H:
+    v: Option(&Int)
+
+fn bump(var h: H, other: &Int):
+    h = H(v: Some(other))
+
+fn read(h: H) -> Int:
+    match h.v:
+        Some(item) -> *item
+        None -> 0
+
+fn main() -> Int:
+    let a = 1
+    let b = 2
+    var h = H(v: Some(&a))
+    let before = h
+    let change = bump
+    change(h, &b)
+    read(h) * 100 + read(before) * 10 + a
+"#)
+    .expect("indirect `var` may name a record holding a nested view");
+    assert_admitted_wasm(&checked, 211);
+}
+
 const FAST: &str = r#"mode opt
 
 type Holder:
@@ -155,4 +203,25 @@ fn main() -> Int:
     first * 10 + *h.value
 "#);
     assert_admitted_wasm(&checked, 74);
+}
+
+#[test]
+fn normal_indirect_var_rebinds_an_opt_defined_view_record() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let checked = checked_graph(r#"from fast import Holder, make
+
+fn retarget(var h: Holder, other: &Int):
+    h = Holder(value: other)
+
+fn main() -> Int:
+    let a = 4
+    let b = 7
+    var h: Holder = make(&a)
+    let before = h
+    let change = retarget
+    change(h, &b)
+    *h.value * 100 + *before.value * 10 + a
+"#);
+    assert_admitted_wasm(&checked, 744);
 }

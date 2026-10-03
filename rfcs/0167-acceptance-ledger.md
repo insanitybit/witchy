@@ -293,6 +293,13 @@ region-born `&Int` written into an outer `Option(&Int)` through the indirect
 call is refused during source checking. This covers these two carrier forms,
 not arbitrary nested view aggregates or full row H acceptance.
 
+The same row now has admitted-Wasm, zero-leak indirect `var` write-back
+witnesses for a local record containing `&Int`, a record containing
+`Option(&Int)`, and an opt-defined record used by a normal caller. Each retains
+the old record as a readable snapshot after the caller's binding changes.
+These concrete nested and cross-mode carriers pass; recursive, generic, and
+open callable carriers remain unproved.
+
 Until a path has a valid implementation and proof, its compiler behavior must
 refuse rather than silently weaken ownership, resource disposition, or
 authority rules. Historical evidence below records what was tested; it does
