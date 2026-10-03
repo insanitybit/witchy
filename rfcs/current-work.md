@@ -8,7 +8,7 @@ The full historical plans and evidence remain in Git at this checkpoint:
 
 ## 1. Normal-mode language and compiler workflow
 
-[RFC-0167](0167-witchy-language-contract.md) is the sole target source-language
+[RFC-0167](0167-witchy-language-contract.md) is the normal-mode source-language
 contract. Its [acceptance ledger](0167-acceptance-ledger.md) distinguishes the
 normal-mode milestone from wider and deferred coverage. Keep normal-mode
 ownership, `var` write-back, immutable views, resource disposition, typed
@@ -18,7 +18,8 @@ Finish the remaining normal-mode ownership and view carrier obligations in the
 ledger; the bounded compiler-tooling milestone does not close the full RFC.
 Refresh evidence on the exact current compiler tip before declaring any row
 closed; historical source-interpreter parity is not an acceptance gate.
-`mode opt`, cross-mode calls and opt-defined types remain deferred.
+`mode opt`, cross-mode calls and opt-defined types remain deferred under
+[RFC-0173](0173-opt-mode-contract.md).
 
 ## 2. Capabilities and host grants
 

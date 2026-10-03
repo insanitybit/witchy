@@ -4,6 +4,9 @@ Baseline: `418a69b9ca75ae70fae5e96f797057e161f93aeb` (2026-09-16).
 The RFC records the normal-mode delivery target and the deferred opt-mode design,
 not an implementation closeout. Rows below retain their evidence and historical
 status; a deferred row is not a current milestone gate or a completed contract.
+RFC-0173 now owns the opt-specific and cross-mode design extracted from section
+6; this ledger retains its historical opt evidence without promoting those rows
+into the current normal-mode milestone.
 Existing tests and historical reports remain useful evidence inputs, not blanket
 proof of this new contract. Optimization expansion is outside this cut;
 preserving the facts and representation freedom it requires is inside it.

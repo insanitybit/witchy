@@ -66,7 +66,7 @@ fn rfc_bodies() -> Vec<(String, String)> {
     out.sort();
     // A deliberate retirement changes the corpus size. Pin the live design
     // anchors instead of a historical count so a wrong checkout still fails.
-    for required in ["0126-capability-effects-contract.md", "0163-authority-validated-codegen.md", "0165-safewir-canonical-ir.md", "0167-witchy-language-contract.md"] {
+    for required in ["0126-capability-effects-contract.md", "0163-authority-validated-codegen.md", "0165-safewir-canonical-ir.md", "0167-witchy-language-contract.md", "0173-opt-mode-contract.md"] {
         assert!(out.iter().any(|(name, _)| name == required), "missing live RFC {required}");
     }
     out

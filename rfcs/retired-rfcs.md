@@ -17,7 +17,8 @@ retain a retired number as a historical name.
 
 | Historical topic | Current authority |
 |---|---|
-| Source syntax, ownership, views, resources, async, comptime, normal/opt boundary | [RFC-0167](0167-witchy-language-contract.md) and its [ledger](0167-acceptance-ledger.md) |
+| Normal source syntax, ownership, views, resources, async, and comptime | [RFC-0167](0167-witchy-language-contract.md) and its [ledger](0167-acceptance-ledger.md) |
+| Deferred opt mode and cross-mode calls | [RFC-0173](0173-opt-mode-contract.md); historical evidence remains in the RFC-0167 ledger |
 | Capabilities, effect grants, confinement, and delegation | [RFC-0126](0126-capability-effects-contract.md), current [capabilities spec](../spec/capabilities.md), and source/tests |
 | SafeWIR validation, layouts, memory, ownership, canonical compiler route | [RFC-0165](0165-safewir-canonical-ir.md), [schema-1 judgment](0162-safewir-judgment.md), and the [ledger](0165-acceptance-ledger.md) |
 | Authority-validated code generation | [RFC-0163 proposal](0163-authority-validated-codegen.md); no completion claim |
