@@ -2,11 +2,12 @@ path	line	category	callee	parameter	root
 benchmarks/dict_count.witchy	9	expression-position-mutator	dict.insert__Int__Int	-	-
 examples/dice/src/dice.witchy	14	expression-position-mutator	prng.Rng__next_below	-	-
 std/dict.witchy	37	auxiliary-result-discard	dict.insert	-	-
-std/dict.witchy	43	auxiliary-result-discard	dict.__insert_extract	-	-
-std/dict.witchy	110	auxiliary-result-discard	dict.__pop_extract	-	-
-std/dict.witchy	102	auxiliary-result-discard	dict.remove	-	-
-std/dict.witchy	105	auxiliary-result-discard	dict.__remove_extract	-	-
-std/dict.witchy	121	auxiliary-result-discard	dict.__pop_extract	-	-
+std/dict.witchy	44	auxiliary-result-discard	dict.__insert_extract	-	-
+std/dict.witchy	48	auxiliary-result-discard	dict.__insert_value_extract	-	-
+std/dict.witchy	115	auxiliary-result-discard	dict.__pop_extract	-	-
+std/dict.witchy	107	auxiliary-result-discard	dict.remove	-	-
+std/dict.witchy	110	auxiliary-result-discard	dict.__remove_extract	-	-
+std/dict.witchy	126	auxiliary-result-discard	dict.__pop_extract	-	-
 book/src/cookbook-collections.md#block-2	10	expression-position-mutator	Set__insert__String	-	-
 book/src/mutating-methods.md#block-1	7	expression-position-mutator	main.take_last	-	-
 book/src/mutating-methods.md#block-1	12	expression-position-mutator	dict.insert__String__Int	-	-
@@ -20,10 +21,10 @@ witchy-files	3
 markdown-blocks	7
 checked	10
 rejected	0
-var-declarations	5
-resolved-var-calls	19
+var-declarations	6
+resolved-var-calls	20
 mechanical-self-reassignment	0
 expression-position-mutator	9
 immutable-var-argument	0
 temporary-var-argument	0
-auxiliary-result-discard	7
+auxiliary-result-discard	8
