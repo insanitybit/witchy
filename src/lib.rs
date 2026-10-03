@@ -244,7 +244,7 @@ fn resolve_std_sources_from_entry(
                     name: name.clone(),
                 }
             })?;
-            let parsed = witchy_syntax::parser::parse_module(source).map_err(|error| {
+            let parsed = cached_bundled_module(&name, source).map_err(|error| {
                 ResolveStdError::Parse {
                     module: name.clone(),
                     error,
@@ -255,6 +255,31 @@ fn resolve_std_sources_from_entry(
         }
     }
     Ok(sources)
+}
+
+/// Bundled modules are immutable for the lifetime of the compiler.  The
+/// source resolver needs their ASTs to discover the transitive import closure,
+/// while the authenticated source pipeline subsequently parses the same bytes
+/// for linking.  Keep the discovery parse across compilations so repeated
+/// test/REPL inputs do not pay for parsing the standard library every time.
+fn cached_bundled_module(
+    name: &str,
+    source: &str,
+) -> Result<witchy_syntax::ast::Module, witchy_syntax::parser::ParseError> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    static CACHE: OnceLock<Mutex<HashMap<String, witchy_syntax::ast::Module>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    if let Some(module) = cache.lock().expect("bundled module cache poisoned").get(name) {
+        return Ok(module.clone());
+    }
+    let parsed = witchy_syntax::parser::parse_module(source)?;
+    cache
+        .lock()
+        .expect("bundled module cache poisoned")
+        .insert(name.to_owned(), parsed.clone());
+    Ok(parsed)
 }
 
 /// Whether a linked function originated in the entry file. The linker keeps the
