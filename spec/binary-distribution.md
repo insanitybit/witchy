@@ -137,7 +137,9 @@ dependencies still receive authority only when the root passes a capability.
   `witchy.source.v1` is an admission receipt. The section must be unique, last,
   canonically encoded and at most 64 MiB; its inputs are bound to the portable
   format and to this compiler, standard library, ABI and option schema, so a
-  trusted-publisher payload cannot be transplanted. Re-admission reads only the
+  trusted-publisher payload cannot be transplanted. They may select only the
+  debug or the release optimization profile; any other pass mask is refused
+  before recompilation. Re-admission reads only the
   embedded source, and its compile-time evaluation runs in zero-grant sessions
   under fixed fuel and memory limits. A precompiled external library cannot be
   linked into portable Wasm. Grants derive from the recompiled artifact, which

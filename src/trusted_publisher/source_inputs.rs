@@ -45,6 +45,9 @@ pub const PORTABLE_WASM_DOMAIN: &[u8] = b"witchy.portable-wasm.v1";
 
 const VERSION: u32 = 2;
 
+/// Every registered pass: the default/`--release` profile. `--debug` is zero.
+pub fn release_opt_mask() -> u32 { (1u32 << witchy_syntax::opt::Opt::ALL.len()) - 1 }
+
 fn bundled_digest() -> [u8; 32] {
     use sha2::{Digest, Sha256};
     let mut hash = Sha256::new();
@@ -147,8 +150,18 @@ impl SourceInputs {
         Ok(())
     }
 
+    /// Portable inputs come from an untrusted file, so they may select only
+    /// the optimization profiles `witchy compile` itself produces (`--debug`
+    /// and the default/`--release` set), never an arbitrary pass mask.
     pub fn validate_portable(&self) -> Result<(), String> {
-        self.validate(PORTABLE_WASM_DOMAIN)
+        self.validate(PORTABLE_WASM_DOMAIN)?;
+        if self.opt_mask != 0 && self.opt_mask != release_opt_mask() {
+            return Err(format!(
+                "portable Wasm selects optimization mask {:#x}, which is neither the debug nor the release profile",
+                self.opt_mask,
+            ));
+        }
+        Ok(())
     }
 
     pub fn configure_options(&self) -> Result<(), String> {

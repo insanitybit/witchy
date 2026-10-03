@@ -154,10 +154,18 @@ mod tests {
         let section = &sealed[MODULE.len()..];
         let mut trusted = inputs();
         trusted.launcher_digest = Sha256::digest(b"some native launcher").into();
-        let mut transplanted = MODULE.to_vec();
-        let mut data = Sha256::digest(MODULE).to_vec();
-        data.extend(serde_json::to_vec(&trusted).unwrap());
-        transplanted.extend(custom(SECTION_NAME, &data));
+        let raw = |inputs: &SourceInputs| {
+            let mut data = Sha256::digest(MODULE).to_vec();
+            data.extend(serde_json::to_vec(inputs).unwrap());
+            [MODULE, &custom(SECTION_NAME, &data)[..]].concat()
+        };
+        let transplanted = raw(&trusted);
+        // A partial pass mask (here: release minus one pass) is no profile
+        // `witchy compile` emits; the consumer refuses it before recompiling.
+        let mut partial = inputs();
+        partial.launcher_digest = Sha256::digest(PORTABLE_WASM_DOMAIN).into();
+        partial.opt_mask = crate::trusted_publisher::source_inputs::release_opt_mask() & !1;
+        let partial = raw(&partial);
         // Flip the payload byte of an ordinary custom section inside the prefix.
         let mut mutated = seal(&[MODULE, &custom("note", b"a")[..]].concat(), &inputs()).unwrap();
         mutated[MODULE.len() + 7] ^= 1;
@@ -168,6 +176,7 @@ mod tests {
             ("not last", [&sealed[..], &custom("trailer", b"")[..]].concat(), "must be the last section"),
             ("prefix mutated", mutated, "digest does not match"),
             ("trusted inputs transplanted", transplanted, "compatibility mismatch"),
+            ("arbitrary optimization mask", partial, "neither the debug nor the release profile"),
             ("oversized", oversized, "limit"),
         ] {
             let error = probe(&bytes).expect_err(label);
