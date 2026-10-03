@@ -55,6 +55,8 @@ pub(crate) fn run_wasm_file(
     file_grants: Vec<std::path::PathBuf>,
     net_allow: Vec<String>,
     fetch_origins: Vec<String>,
+    env_allow: Option<Vec<String>>,
+    exec_allow: Option<Vec<String>>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
     named_secrets: Vec<runtime::SecretGrant>,
@@ -62,7 +64,7 @@ pub(crate) fn run_wasm_file(
     confinement: witchy_confinement::EnforcementMode,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
-    run_wasm_module(&bytes, dir_roots, file_grants, net_allow, fetch_origins, args, signing_key, named_secrets, strict_dir, confinement)
+    run_wasm_module(&bytes, dir_roots, file_grants, net_allow, fetch_origins, env_allow, exec_allow, args, signing_key, named_secrets, strict_dir, confinement)
 }
 
 /// Detect, from a compiled wasm program, whether its `main` returns an `Int` — so
@@ -142,6 +144,8 @@ pub(crate) fn run_wasm_module(
     file_grants: Vec<std::path::PathBuf>,
     net_allow: Vec<String>,
     fetch_origins: Vec<String>,
+    env_allow: Option<Vec<String>>,
+    exec_allow: Option<Vec<String>>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
     named_secrets: Vec<runtime::SecretGrant>,
@@ -209,11 +213,27 @@ pub(crate) fn run_wasm_module(
     if imports_authority(Authority::Rand) || declares("Rand") {
         caps.rand = true;
     }
+    // A strict/announced launch names what `Env` may read and what `Exec` may
+    // run, exactly as it names the `Dir` root (BUG-106): an unnamed grant is the
+    // whole host environment or every program on the host. Only the dev
+    // `witchy <app.wasm>` path keeps the coarse grant.
     if imports_authority(Authority::Env) || declares("Env") {
+        if strict_dir && env_allow.is_none() {
+            return Err(
+                "this module requires `Env`, but no variable names were granted (use `--env <NAME>`)".to_string(),
+            );
+        }
         caps.env = true;
+        caps.env_allow = env_allow;
     }
     if imports_authority(Authority::Exec) || declares("Exec") {
+        if strict_dir && exec_allow.is_none() {
+            return Err(
+                "this module requires `Exec`, but no programs were granted (use `--exec <PROGRAM>`)".to_string(),
+            );
+        }
         caps.exec = true;
+        caps.exec_allow = exec_allow;
     }
     // A Fetch host import does not imply a root Fetch grant: `Net[Connect,
     // Tcp].fetch(...)` deliberately mints a bounded Fetch inside the program.
@@ -524,6 +544,8 @@ mod tests {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            None,
+            None,
             Vec::new(),
             None,
             Vec::new(),

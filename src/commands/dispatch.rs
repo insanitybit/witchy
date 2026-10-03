@@ -650,6 +650,10 @@ pub(crate) fn run() -> wasmtime::Result<()> {
         let mut file_grants: Vec<std::path::PathBuf> = Vec::new();
         let mut net_allow: Vec<String> = Vec::new();
         let mut fetch_origins: Vec<String> = Vec::new();
+        // `None` until a flag names one: the strict launch then refuses an
+        // `Env`/`Exec` `main` rather than granting the coarse capability.
+        let mut env_allow: Option<Vec<String>> = None;
+        let mut exec_allow: Option<Vec<String>> = None;
         let mut signing_key: Option<[u8; 32]> = None;
         let mut named_secrets: Vec<runtime::SecretGrant> = Vec::new();
         let mut grants_doc: Option<String> = None;
@@ -714,6 +718,20 @@ pub(crate) fn run() -> wasmtime::Result<()> {
                         std::process::exit(1);
                     }
                 },
+                "--env" if path.is_none() => match argv.next() {
+                    Some(name) => env_allow.get_or_insert_with(Vec::new).push(name),
+                    None => {
+                        eprintln!("--env needs an environment variable name");
+                        std::process::exit(1);
+                    }
+                },
+                "--exec" if path.is_none() => match argv.next() {
+                    Some(program) => exec_allow.get_or_insert_with(Vec::new).push(program),
+                    None => {
+                        eprintln!("--exec needs a program name");
+                        std::process::exit(1);
+                    }
+                },
                 "--signing-key" if path.is_none() => match argv.next() {
                     Some(file) => match load_signing_seed(&file) {
                         Ok(seed) => signing_key = Some(seed),
@@ -749,7 +767,7 @@ pub(crate) fn run() -> wasmtime::Result<()> {
             }
         }
         let Some(path) = path else {
-            eprintln!("usage: witchy sandbox [--confine <best-effort|required>] [--grants <doc.toml> [--accept-grants] | [--dir <root>] [--file <path>]... [--net <host:port>]... [--fetch <scheme://host:port>]... [--signing-key <seed-file>] [--secret name=value] [--secret-file name=path]] <file.witchy> [args...]");
+            eprintln!("usage: witchy sandbox [--confine <best-effort|required>] [--grants <doc.toml> [--accept-grants] | [--dir <root>] [--file <path>]... [--net <host:port>]... [--fetch <scheme://host:port>]... [--env <NAME>]... [--exec <PROGRAM>]... [--signing-key <seed-file>] [--secret name=value] [--secret-file name=path]] <file.witchy> [args...]");
             std::process::exit(1);
         };
         // A precompiled `.wasm` runs directly (authority from its launch metadata
@@ -770,9 +788,9 @@ pub(crate) fn run() -> wasmtime::Result<()> {
         } else if path.ends_with(".wasm") {
             // `sandbox` is the strict path: a `Dir`-importing artifact needs an
             // explicit `--dir` (BUG-106), just like the source form.
-            commands::wasm_exec::run_wasm_file(&path, dir_roots, file_grants, net_allow, fetch_origins, prog_args, signing_key, named_secrets, true, confinement)
+            commands::wasm_exec::run_wasm_file(&path, dir_roots, file_grants, net_allow, fetch_origins, env_allow, exec_allow, prog_args, signing_key, named_secrets, true, confinement)
         } else {
-            commands::sandbox::run_file_sandboxed(&path, dir_roots, file_grants, net_allow, fetch_origins, prog_args, signing_key, named_secrets, confinement)
+            commands::sandbox::run_file_sandboxed(&path, dir_roots, file_grants, net_allow, fetch_origins, env_allow, exec_allow, prog_args, signing_key, named_secrets, confinement)
         };
         match result {
             Ok((lines, exit_code)) => {
@@ -1116,7 +1134,7 @@ pub(crate) fn run() -> wasmtime::Result<()> {
             Some(path) if path.ends_with(".wasm") => {
                 // Dev run: default a `Dir` to the cwd (not strict) — the convenience
                 // the source `witchy <file>` run keeps.
-                match commands::wasm_exec::run_wasm_file(path, Vec::new(), Vec::new(), net_allow, fetch_origins, prog_args, signing_key, named_secrets, false, witchy_confinement::EnforcementMode::Disabled) {
+                match commands::wasm_exec::run_wasm_file(path, Vec::new(), Vec::new(), net_allow, fetch_origins, None, None, prog_args, signing_key, named_secrets, false, witchy_confinement::EnforcementMode::Disabled) {
                     Ok((lines, code)) => {
                         for line in lines {
                             println!("{line}");

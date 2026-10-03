@@ -157,6 +157,8 @@ fn unoptimized() -> ResetOptimization {
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            None,
+            None,
             vec!["../secret.txt".to_string()],
             None,
             Vec::new(),

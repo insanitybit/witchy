@@ -74,6 +74,8 @@ pub(crate) fn run_file_sandboxed(
     file_grants: Vec<std::path::PathBuf>,
     net_allow: Vec<String>,
     fetch_origins: Vec<String>,
+    env_allow: Option<Vec<String>>,
+    exec_allow: Option<Vec<String>>,
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
     named_secrets: Vec<runtime::SecretGrant>,
@@ -93,6 +95,19 @@ pub(crate) fn run_file_sandboxed(
     // named `--secret` populates a `SecretStore`, not the bare `Secret`.
     // Requiring `--signing-key` specifically stops a named value from being
     // revealed as the root key.
+    // `sandbox` names what `Env` may read and what `Exec` may run, exactly as it
+    // names the `Dir` root: an unnamed grant would be the whole host environment
+    // or every program on the host, announced only as `Env`/`Exec`.
+    if grant.contains_key("Env") && env_allow.is_none() {
+        return Err(format!(
+            "`{path}` needs `Env`, but no variable names were granted (use `--env <NAME>`)"
+        ));
+    }
+    if grant.contains_key("Exec") && exec_allow.is_none() {
+        return Err(format!(
+            "`{path}` needs `Exec`, but no programs were granted (use `--exec <PROGRAM>`)"
+        ));
+    }
     if grant.contains_key("Secret") && signing_key.is_none() {
         return Err(format!(
             "`{path}` needs a root `Secret` (the signing key), but none was granted — provide `--signing-key <seed-file>` (a named `--secret`/`--secret-file` populates a `SecretStore`, not the bare `Secret`)"
@@ -108,8 +123,8 @@ pub(crate) fn run_file_sandboxed(
         file_grants,
         vec![net_allow],
         fetch_origins,
-        None,
-        None,
+        env_allow,
+        exec_allow,
         Vec::new(),
         args,
         signing_key,

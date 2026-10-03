@@ -31,7 +31,7 @@ USAGE:
                                                   audit web project, target, ABI, and reproducibility
     witchy dev [--host 127.0.0.1] [--port 3000] [directory]
                                                   run the integrated Glamour development loop
-    witchy sandbox [--confine <best-effort|required>] [--dir <root>] [--net <addr>]... [--fetch <origin>]... <file.witchy> [args...]
+    witchy sandbox [--confine <best-effort|required>] [--dir <root>] [--net <addr>]... [--fetch <origin>]... [--env <NAME>]... [--exec <program>]... <file.witchy> [args...]
                                                   compile and run in a VM granted exactly its footprint
     witchy emit-wat <file.witchy>                 print the compiled WebAssembly text (the module sandbox runs)
     witchy expand  <file.witchy>                  print canonical source after comptime/tag expansion

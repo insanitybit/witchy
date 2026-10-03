@@ -874,7 +874,8 @@ fn yes(b: Bool) -> String:
     }
 
     /// The sandbox grants exactly the computed footprint: a program combining
-    /// argv, Env, and a read-only Dir (minigrep's shape) runs confined, and its
+    /// argv, an `Env` narrowed to the named `PATH`, and a read-only Dir
+    /// (minigrep's shape) runs confined, and its
     /// Int-returning `main` becomes the exit code rather than an output line.
     #[test]
     fn sandbox_grants_full_footprint() {
@@ -895,6 +896,8 @@ fn yes(b: Bool) -> String:
             Vec::new(),
             Vec::new(),
             Vec::new(),
+            Some(vec!["PATH".to_string()]),
+            None,
             vec!["data.txt".to_string()],
             None,
             Vec::new(),

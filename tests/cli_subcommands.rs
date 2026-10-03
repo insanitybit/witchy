@@ -822,6 +822,61 @@ fn grant_document_rejects_a_misspelled_secret_modifier() {
     assert!(!stderr.contains("hunter2"), "{stderr}");
 }
 
+// ---- RFC-0126: `sandbox` names what Env may read and what Exec may run ----
+
+#[test]
+fn sandbox_requires_named_env_and_exec_grants() {
+    // The strict launch used to hand an `Env` the whole host environment and an
+    // `Exec` every program on the host, announced only as `Env`/`Exec`. Like a
+    // `Dir` root, both must now be named.
+    let dir = workdir("sandbox-env-exec-named");
+    let reads = |name: &str| {
+        write(
+            &dir,
+            &format!("{name}.witchy"),
+            &format!("fn main(console: Console, env: Env):\n    console.print(env.get_env(\"{name}\") ?? \"unset\")\n"),
+        )
+    };
+    let (env_prog, unnamed_prog) = (reads("WITCHY_NAMED"), reads("WITCHY_UNNAMED"));
+    let exec_prog = write(
+        &dir,
+        "x.witchy",
+        "fn main(console: Console, tools: Dir[Read], runner: Exec):\n    console.print(\"ran\")\n",
+    );
+    let sandbox = |extra: &[&str], prog: &str| {
+        Command::new(BIN)
+            .arg("sandbox")
+            .args(extra)
+            .arg(prog)
+            .env("WITCHY_NAMED", "named-value")
+            .env("WITCHY_UNNAMED", "unnamed-value")
+            .output()
+            .expect("spawn")
+    };
+
+    let out = sandbox(&[], &env_prog);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "an unnamed Env is refused");
+    assert!(stderr.contains("use `--env <NAME>`"), "{stderr}");
+
+    let out = sandbox(&["--env", "WITCHY_NAMED"], &env_prog);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "named-value\n");
+    // A name outside the grant is a denial, distinct from an unset variable.
+    let out = sandbox(&["--env", "WITCHY_NAMED"], &unnamed_prog);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "an unnamed variable is denied, not read");
+    assert!(stderr.contains("`WITCHY_UNNAMED` is not in this Env grant's allow-list"), "{stderr}");
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("unnamed-value"));
+
+    let tools = dir.to_str().expect("utf-8 temp dir");
+    let out = sandbox(&["--dir", tools], &exec_prog);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "an unnamed Exec is refused");
+    assert!(stderr.contains("use `--exec <PROGRAM>`"), "{stderr}");
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("ran"), "refused before running");
+}
+
 // ---- RFC-0126: a grant document binds each entry to its own `main` parameter ----
 
 #[test]

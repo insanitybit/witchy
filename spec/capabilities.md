@@ -485,7 +485,7 @@ Static checking keeps *your* code honest. To run code you don't trust, compile
 it to WebAssembly and let the VM boundary enforce the grant:
 
 ```sh
-witchy sandbox [--dir <root>] [--net <host:port>]... program.witchy
+witchy sandbox [--dir <root>] [--net <host:port>]... [--env <NAME>]... [--exec <program>]... program.witchy
 ```
 
 The sandbox computes the program's footprint, shows it, and instantiates the
@@ -500,6 +500,10 @@ call**. The enforcement is structural, not a runtime permission check:
   rights, and entry policy; the paths never enter guest memory, so a module
   cannot forge or widen one, and every resolution runs the same
   `..`/absolute/symlink confinement as the interpreter.
+- `Env` and `Exec` are granted by name: `--env NAME` allowlists each variable
+  `Env` may read and `--exec PROGRAM` each program `Exec` may run. A program
+  whose `main` takes either is refused unless at least one is named, and reading
+  an unnamed variable is a runtime denial, not an unset value.
 - Memory is capped; a scheduler can preempt a runaway guest at loop back-edges.
 - Concurrency stays *inside* the single VM: `async`/`await`, `spawn`, and
   channels lower to a cooperative executor written in witchy (`std/task`, with

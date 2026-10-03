@@ -94,7 +94,7 @@ use crate::{codegen, interpreter, parser};
         let tmp = std::env::temp_dir().join(format!("witchy_tier1_precompiled_{}.wasm", std::process::id()));
         let out = tmp.to_str().unwrap();
         crate::emit_wasm_file("examples/calc/src/calc.witchy", out).expect("emit-wasm");
-        let error = crate::run_wasm_file(out, Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, Vec::new(), false, witchy_confinement::EnforcementMode::Disabled)
+        let error = crate::run_wasm_file(out, Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, None, Vec::new(), None, Vec::new(), false, witchy_confinement::EnforcementMode::Disabled)
             .expect_err("detached Wasm must not recover admission authority");
         assert!(error.contains("raw Wasm cannot claim canonical admission"), "{error}");
 
