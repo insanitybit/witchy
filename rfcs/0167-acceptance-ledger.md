@@ -279,6 +279,15 @@ mutable root and a qualified assignment before capture, after whole-root
 replacement on admitted Wasm. The independent results are `59`, `239`, `39`,
 and `94`, each with zero leaks.
 
+`rfc0167_indirect_var_view_tuple` composes normal-mode `var` write-back with
+retained graph-root views. An indirect call and a generic call replace a
+`(List(&Int), Int)` parameter while a view retains the old tuple; projected
+field writes on a nominal record storing `List(&Int)` preserve the same
+snapshot. Each executes as admitted unoptimized Wasm with the independently
+calculated result `2379` and zero leaks. A region-born view passed through
+the indirect tuple write-back refuses at source checking. These witnesses
+establish the stated call and storage shapes, not all `var` aliases.
+
 `rfc0167_frozen_view_replacement` adds a normal-mode row L composition
 witness: a rooted `&frozen Box` keeps the old field value when a `var frozen
 Box` root is replaced, so admitted unoptimized Wasm prints the independently
