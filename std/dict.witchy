@@ -92,7 +92,7 @@ pub fn update(var d: Dict(k, v), key: k, default: v, f: fn(v) -> v) where k: Has
 
 // Whether `key` is present. The `_key` suffix is deliberate: a Dict contains
 // key/value pairs, so bare `contains` would be ambiguous between keys and values.
-pub fn contains_key(let d: Dict(k, v), key: k) -> Bool where k: Hash:
+pub fn contains_key(let d: Dict(k, v), let key: k) -> Bool where k: Hash:
     dict.contains_key(d, key)
 
 // Query by a borrowed value with a checked hash/equivalence contract.
@@ -217,7 +217,7 @@ impl Dict(k, v) where k: Hash:
     // Whether `key` is present. The `_key` suffix is deliberate: a Dict
     // contains key/value pairs, so bare `contains` would be ambiguous between
     // keys and values.
-    pub fn contains_key(let self, key: k) -> Bool:
+    pub fn contains_key(let self, let key: k) -> Bool:
         dict.contains_key(self, key)
 
     // A new Dict with every value passed through `f` (keys unchanged).

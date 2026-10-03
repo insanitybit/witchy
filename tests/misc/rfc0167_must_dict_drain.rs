@@ -164,6 +164,62 @@ fn main() -> Int:
 }
 
 #[test]
+fn must_key_membership_borrows_without_disposing_either_owner() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let checked = witchy::resolve_std_only_checked(r#"
+import cmp
+import dict
+must type Key:
+    id: Int
+must type Ticket:
+    Ticket(Int)
+impl PartialEq for Key:
+    fn eq(let self, let other: Self) -> Bool:
+        self.id == other.id
+impl Eq for Key
+impl Hash for Key:
+    fn hash(let self) -> Int:
+        self.id
+fn finish_key(own key: Key) -> Int:
+    match move key:
+        Key(id) -> id
+fn finish_ticket(own ticket: Ticket) -> Int:
+    match move ticket:
+        Ticket(value) -> value
+fn drain(own entries: Dict(Key, Ticket)) -> Int:
+    match dict.__pop_extract(entries):
+        Some(pair) ->
+            match move pair:
+                (key, ticket) -> finish_key(key) * 10 + finish_ticket(ticket) + drain(entries)
+        None -> 0
+fn main() -> Int:
+    var entries: Dict(Key, Ticket) = dict.new()
+    let first = match dict.insert_owned(entries, Key(2), Ticket(3)):
+        Some(pair) ->
+            match move pair:
+                (key, ticket) -> finish_key(key) + finish_ticket(ticket)
+        None -> 0
+    let query = Key(2)
+    let found = dict.contains_key(entries, query) && entries.contains_key(query)
+    let query_score = finish_key(query)
+    let missing = Key(4)
+    let absent = dict.contains_key(entries, missing)
+    let missing_score = finish_key(missing)
+    first + (if found: 10 else: 0) + (if absent: 100 else: 0) + query_score + missing_score + drain(entries)
+"#).expect("must key membership checks without consuming either owner");
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("must key membership admits");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(&artifact,
+        Capabilities { print_int: true, quiet: true, ..Capabilities::none() },
+        128).expect("admitted Wasm instance");
+    vm.run().expect("admitted Wasm execution");
+    assert_eq!(vm.output(), vec!["39".to_string()]);
+    assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+}
+
+#[test]
 fn exact_empty_dictionary_can_replace_borrowed_var_once() {
     opt::set_for_tests(Some(OptSet::none()));
     let _reset = ResetOptimizationOverride;

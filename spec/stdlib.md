@@ -988,7 +988,7 @@ The value for `key`, or a runtime error when absent. This is the read half of th
 
 #### `fn update(var d: Dict(k, v), key: k, default: v, f: fn(v) -> v) where k: Hash`
 
-#### `fn contains_key(let d: Dict(k, v), key: k) -> Bool where k: Hash`
+#### `fn contains_key(let d: Dict(k, v), let key: k) -> Bool where k: Hash`
 
 Whether `key` is present. The `_key` suffix is deliberate: a Dict contains key/value pairs, so bare `contains` would be ambiguous between keys and values.
 
@@ -1082,7 +1082,7 @@ The value for `key`, inserting `default` first when the key is absent - the key 
 
 The value for `key`, or a runtime error when absent. This is the read half of the `d[key]` subscript surface; use `get`/`get_or` when absence is ordinary.
 
-#### `Dict.contains_key(key: k) -> Bool`
+#### `Dict.contains_key(let key: k) -> Bool`
 
 Whether `key` is present. The `_key` suffix is deliberate: a Dict contains key/value pairs, so bare `contains` would be ambiguous between keys and values.
 
