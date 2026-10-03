@@ -9,7 +9,7 @@ build/test traps, and the merge-queue protocol.
 
 **CRITICAL REMINDERS**:
 - **Always use isolated worktrees** (`.claude/worktrees/<name>`). **Never** edit the shared `master` checkout.
-- **Language contract versus implementation**. Start design work at `rfcs/0167-witchy-language-contract.md` and its acceptance ledger. It is a proposed target, not proof that the compiler implements every form. Check current source/tests for executable behavior; retired RFCs are indexed in `rfcs/retired-rfcs.md`.
+- **Language contract versus implementation**. Start design work at `rfcs/0167-witchy-language-contract.md` and its acceptance ledger. It is an accepted target, not proof that the compiler implements every form. Check current source/tests for executable behavior; retired RFCs are indexed in `rfcs/retired-rfcs.md`.
 
 Everything below is the **detail behind that briefing** — the exact paths, RFC
 numbers, and hard-won specifics that the briefing states as rules. It doesn't
@@ -94,7 +94,7 @@ repeat the rules; consult it when you're working inside one of these areas.
 - **Stale-doc example:** the old `derive(Json)` never existed (use
   `derive(Reflect)` + `json.stringify`). That's how a wrong *prose* claim slips
   past a build that only executes code blocks.
-- **RFC status lifecycle** for `rfcs/NNNN-slug.md` is defined by RFC-0001.
+- **RFC status lifecycle** for `rfcs/NNNN-slug.md` is defined by `rfcs/README.md`.
 
 ## The gate in detail
 
