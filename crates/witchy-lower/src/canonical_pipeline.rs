@@ -93,8 +93,8 @@ fn source_uses_opt(source: &CanonicalCheckedSource) -> bool {
 }
 
 fn use_bounds_guard_pass(source: &CanonicalCheckedSource) -> bool {
-    source_uses_opt(source)
-        && witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::BoundsElide)
+    !source_uses_opt(source)
+        || witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::BoundsElide)
 }
 
 fn validate_unoptimized_checked_source(
@@ -159,7 +159,11 @@ fn validate_checked_source_inner(
                 if std::env::var_os("WIRDIAG").is_some() { eprintln!("WIRBAIL borrowed-view-check: {error:?}"); }
             }
             if let Ok(checked) = checked_attempt {
-                let final_attempt = validate_final(checked, &source.view());
+                // This checked pass removes only a later identical Size guard
+                // in the same block. Its independent rewrite checker and final
+                // validation must both succeed before the result is admitted.
+                let final_attempt = run_checked_pass(checked, PassId::SameBlockBoundsGuards)
+                    .validate_final(&source.view());
                 if let Err(error) = &final_attempt {
                     if std::env::var_os("WIRDIAG").is_some() { eprintln!("WIRBAIL borrowed-view-final: {error:?}"); }
                 }
@@ -185,8 +189,8 @@ fn validate_checked_source_inner(
             }
         }
     } else {
-        // Ordinary mode remains the zero-pass baseline. The final validator
-        // consumes and rechecks this exact sealed graph; functions whose
+        // The final validator consumes and rechecks this exact sealed graph;
+        // functions whose
         // checker inputs are byte-identical to the initial pass replay their
         // admitted verdict from the per-function memo (`check::cache`).
         validate_final(checked, &source.view()).map_err(CanonicalPipelineError::FinalValidation)
