@@ -72,6 +72,23 @@ pub(crate) fn value_type_matches_source(
                     layout, payload, layouts, records, closure_layouts, signatures, context,
                 );
             }
+            Some(RootedViewStorage::RetainedRoot(RetainedRootStorage::CheckedGraph(plan))) => {
+                if !plan.graph.cloneable() { return false; }
+                return match actual {
+                    super::super::ValueType::Gc(id) => {
+                        let Some(expected) = witchy_canonical_source::aggregates::canonical_owner_aggregate_identity(payload, records) else { return false };
+                        context.owner_families.iter().any(|family| {
+                            family.owner_type == id
+                                && matches!(&family.source,
+                                    super::super::closure_owner_contract::OwnerFamilySource::Aggregate(source)
+                                        if source == &expected)
+                        })
+                    }
+                    super::super::ValueType::Ref(layout) => layout_matches_source_with_closures(
+                        layout, payload, layouts, records, closure_layouts, signatures, context),
+                    _ => false,
+                };
+            }
             Some(RootedViewStorage::RetainedRoot(RetainedRootStorage::Sequence(carrier))) => {
                 // The source view proof establishes the recursive carrier;
                 // validate its exact list root and children through the same

@@ -261,6 +261,14 @@ aggregate owner family. `&Option(List(&String))` keeps its two-character old
 snapshot after replacement by a three-character string, runs admitted Wasm
 with independent result 23, and reports zero leaks.
 
+The same checked graph-root identity covers structural tuples, with a distinct
+tuple identity tag and physical GC-owner or retained-Ref correspondence.
+`&(List(&Int), Int)` and `&(List(&String), Int)` retain their old tuples after
+replacement, run on admitted Wasm with independent results `1122` and `23`,
+and report zero leaks. A tuple view rooted in a region-local binding refuses
+at source checking. Other structural graph families still need their own
+layout proofs.
+
 `rfc0167_frozen_view_replacement` adds a normal-mode row L composition
 witness: a rooted `&frozen Box` keeps the old field value when a `var frozen
 Box` root is replaced, so admitted unoptimized Wasm prints the independently

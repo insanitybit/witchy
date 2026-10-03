@@ -118,6 +118,76 @@ fn main() -> Int:
 }
 
 #[test]
+fn tuple_root_with_list_of_views_keeps_its_snapshot() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let checked = witchy::resolve_std_only_checked(r#"
+fn read(view: &(List(&Int), Int)) -> Int:
+    let pair = *view
+    *(pair.0[0]) * 10 + pair.1
+
+fn main() -> Int:
+    let a = 1
+    let b = 2
+    var pair: (List(&Int), Int) = ([&a], 1)
+    let old = &pair
+    pair = ([&b], 2)
+    read(old) * 100 + read(&pair)
+"#).expect("tuple nested-view root checks");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("tuple nested-view root admits");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(&artifact,
+        Capabilities { print_int: true, quiet: true, ..Capabilities::none() }, 128)
+        .expect("admitted Wasm instance");
+    vm.run().expect("admitted Wasm execution");
+    assert_eq!(vm.output(), vec!["1122".to_string()]);
+    assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+}
+
+#[test]
+fn tuple_root_with_string_views_keeps_its_snapshot() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let checked = witchy::resolve_std_only_checked(r#"
+fn read(view: &(List(&String), Int)) -> Int:
+    let pair = *view
+    (*pair.0[0]).length()
+
+fn main() -> Int:
+    let a = "ab"
+    let b = "xyz"
+    var pair: (List(&String), Int) = ([&a], 1)
+    let old = &pair
+    pair = ([&b], 2)
+    read(old) * 10 + read(&pair)
+"#).expect("tuple String-view root checks");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("tuple String-view root admits");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(&artifact,
+        Capabilities { print_int: true, quiet: true, ..Capabilities::none() }, 128)
+        .expect("admitted Wasm instance");
+    vm.run().expect("admitted Wasm execution");
+    assert_eq!(vm.output(), vec!["23".to_string()]);
+    assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+}
+
+#[test]
+fn tuple_graph_cannot_return_a_region_born_view_root() {
+    let error = witchy::resolve_std_only_checked(r#"
+fn main() -> Int:
+    let old = region -> &(List(&Int), Int):
+        let n = 5
+        let pair: (List(&Int), Int) = ([&n], 1)
+        &pair
+    *(*old).0[0]
+"#).expect_err("region-born tuple view must not escape");
+    assert!(error.to_string().contains("cannot copy out region-born reference `pair` from `region:`"),
+        "refusal names the region-born tuple root: {error}");
+}
+
+#[test]
 fn nominal_root_with_list_of_views_keeps_its_snapshot() {
     opt::set_for_tests(Some(OptSet::none()));
     let _reset = ResetOptimizationOverride;

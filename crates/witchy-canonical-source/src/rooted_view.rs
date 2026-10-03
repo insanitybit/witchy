@@ -37,28 +37,34 @@ pub enum RetainedRootStorage {
     CheckedGraph(GraphRootPlan),
 }
 
-/// A nominal root whose nested view fields use the checked aggregate graph
-/// operation proof rather than the ordinary `CarrierElement` grammar.
+/// A heap aggregate root whose nested view fields use the checked aggregate
+/// graph operation proof rather than the ordinary `CarrierElement` grammar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GraphRootPlan {
     pub graph: AggregateGraphPlan,
-    ordinal: u32,
+    ordinal: Option<u32>,
 }
 
 impl GraphRootPlan {
     fn classify(payload: &Type, definitions: &BTreeMap<String, TypeDef>,
         nominal: impl Fn(&str) -> Option<u32>) -> Option<Self> {
-        let Type::Named(name, _) = payload else { return None };
-        if !definitions.contains_key(name) { return None; }
+        let ordinal = match payload {
+            Type::Named(name, _) if definitions.contains_key(name) => Some(nominal(name)?),
+            Type::Tuple(_) => None,
+            _ => return None,
+        };
         if !matches!(crate::aggregates::contains_stored_view(payload, definitions), Some(true)) {
             return None;
         }
         let graph = AggregateGraphPlan::classify(payload, definitions)?;
-        graph.cloneable().then_some(Self { graph, ordinal: nominal(name)? })
+        graph.cloneable().then_some(Self { graph, ordinal })
     }
 
     fn append_identity_bytes(&self, bytes: &mut Vec<u8>) -> Option<()> {
-        bytes.extend_from_slice(&self.ordinal.to_le_bytes());
+        match self.ordinal {
+            Some(ordinal) => { bytes.push(1); bytes.extend_from_slice(&ordinal.to_le_bytes()); }
+            None => bytes.push(0),
+        }
         bytes.extend_from_slice(&self.graph.source_key());
         let shape = self.graph.shape();
         bytes.extend_from_slice(&u32::try_from(shape.fields.len()).ok()?.to_le_bytes());
@@ -212,6 +218,11 @@ impl RootedViewStorage {
             return Some(Self::RetainedRoot(RetainedRootStorage::CheckedGraph(
                 GraphRootPlan::classify(payload, definitions, nominal)?,
             )));
+        }
+        if matches!(payload, Type::Tuple(_)) {
+            if let Some(plan) = GraphRootPlan::classify(payload, definitions, nominal) {
+                return Some(Self::RetainedRoot(RetainedRootStorage::CheckedGraph(plan)));
+            }
         }
         if let Some(element) = CarrierElement::from_list_root_payload_type_with_definitions(
             payload, definitions,

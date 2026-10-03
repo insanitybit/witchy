@@ -44,15 +44,12 @@ fn main() -> Int:
 }
 
 #[test]
-fn tuple_view_with_nested_list_of_views_requires_an_authenticated_carrier() {
-    let error = witchy::resolve_std_only_checked(r#"
+fn tuple_view_with_nested_list_of_views_has_an_authenticated_graph_carrier() {
+    witchy::resolve_std_only_checked(r#"
 fn main() -> Int:
     let n = 1
     let p: (List(&Int), Result(Int, String)) = ([&n], Ok(1))
     let v = &p
     0
-"#).err().map(|error| error.to_string())
-        .expect("nested view payload without a storage carrier must refuse");
-    assert!(error.contains("without an authenticated storage carrier"),
-        "checked refusal must name the carrier invariant: {error}");
+"#).expect("nested view payload has a checked graph carrier");
 }
