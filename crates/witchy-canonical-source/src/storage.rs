@@ -797,6 +797,14 @@ fn graph_storage_operations(
                     Some(all.with(child(field, active, remaining)?))
                 });
             }
+            // A tuple's carrier shape cannot certify the operations of its
+            // instantiated stored fields. This also handles the empty and
+            // packed tuples that have no heap aggregate shape.
+            if let Type::Tuple(fields) = ty {
+                return fields.iter().try_fold(GraphOperations::COPY, |all, field| {
+                    Some(all.with(child(field, active, remaining)?))
+                });
+            }
             if let Some(element) = CarrierElement::from_checked_type(ty) {
                 return Some(if matches!(element.ownership(), crate::carrier::CarrierOwnership::Copy
                     | crate::carrier::CarrierOwnership::RetainCloneRelease) {
@@ -1580,6 +1588,16 @@ impl StoragePlan {
             return AggregateGraphPlan::classify(ty, definitions)
                 .map(|graph| Self::AggregateView(plan, graph))
                 .unwrap_or(Self::Refused(StorageRefusal::UnprovedOwnership));
+        }
+        // A positional aggregate may look like an ordinary carrier even when
+        // one stored child has a move-only obligation. Classify that graph
+        // before the copyable carrier grammar so its parent and child agree
+        // on consuming extraction and reconstruction.
+        if matches!(ty.unqualified(), Type::Tuple(_))
+            && let Some(graph) = AggregateGraphPlan::classify(ty, definitions)
+            && graph.movable() && !graph.cloneable()
+        {
+            return Self::AuthenticatedPlace(graph);
         }
         match CarrierElement::from_checked_type_with_definitions(ty, definitions) {
             Some(CarrierElement::Scalar(kind)) if kind != CanonicalScalarKind::Unit => {

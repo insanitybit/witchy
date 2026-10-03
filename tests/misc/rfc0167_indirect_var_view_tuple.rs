@@ -220,3 +220,65 @@ fn main() -> Int:
     assert_eq!(vm.output(), vec!["69".to_string()]);
     assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
 }
+
+#[test]
+fn tuple_field_update_keeps_a_live_must_obligation() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let checked = witchy::resolve_std_only_checked(r#"
+must type Ticket:
+    Ticket(Int)
+
+fn finish(own pair: (Ticket, Int)) -> Int:
+    match move pair:
+        (ticket, count) -> match move ticket:
+            Ticket(value) -> value * 10 + count
+
+fn main() -> Int:
+    var pair: (Ticket, Int) = (Ticket(7), 1)
+    pair.1 = 9
+    finish(pair)
+"#).expect("updating a non-must tuple field preserves the must obligation");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("must tuple field update admits");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(&artifact,
+        Capabilities { print_int: true, quiet: true, ..Capabilities::none() },
+        128).expect("admitted Wasm instance");
+    vm.run().expect("admitted Wasm execution");
+    assert_eq!(vm.output(), vec!["79".to_string()]);
+    assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+}
+
+#[test]
+fn record_field_update_keeps_a_live_must_obligation() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let checked = witchy::resolve_std_only_checked(r#"
+must type Ticket:
+    Ticket(Int)
+
+type Box:
+    ticket: Ticket
+    count: Int
+
+fn finish(own box: Box) -> Int:
+    match move box:
+        Box(ticket, count) -> match move ticket:
+            Ticket(value) -> value * 10 + count
+
+fn main() -> Int:
+    var box: Box = Box(Ticket(7), 1)
+    box.count = 9
+    finish(box)
+"#).expect("updating a non-must record field preserves the must obligation");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("must record field update admits");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(&artifact,
+        Capabilities { print_int: true, quiet: true, ..Capabilities::none() },
+        128).expect("admitted Wasm instance");
+    vm.run().expect("admitted Wasm execution");
+    assert_eq!(vm.output(), vec!["79".to_string()]);
+    assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+}

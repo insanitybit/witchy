@@ -537,6 +537,18 @@ coverage.
 
 ## Exact-tip evidence checkpoint
 
+Normal-mode `must` write-back, 2026-10-03: `rfc0167_indirect_var_view_tuple`
+now admits a projected `var` assignment to a non-`must` field of either a
+tuple or a named record while a sibling `must Ticket` remains live. Each
+program returns the independently expected `79` on admitted unoptimized Wasm
+with zero canonical heap leaks. A projected assignment that would overwrite
+the `must` field still refuses at source checking. The consuming write-back
+path moves unchanged affine fields from the old shell before rebuilding it;
+tuple storage classification now derives operations from instantiated fields,
+including empty and packed tuples. The focused 53-case lowering shard and the
+11-case tuple fixture pass. This extends rows H and K but does not close their
+remaining carrier and disposition cases.
+
 Owned-value materialization (production path migrated, 2026-09-26): the
 compiler-known `.owned()` now uses the shared checked storage judgment for
 fresh linear-owner provenance in the checker and no-copy analysis, and

@@ -1945,6 +1945,23 @@ impl FunctionLowerer<'_> {
                 let shape = scalar_aggregate_shape(source, self.definitions)
                     .filter(|shape| !shape.tagged)
                     .ok_or_else(|| CanonicalLoweringError::UnsupportedType(source.clone()))?;
+                if witchy_canonical_source::storage::affine_storage_shape(source, self.definitions).is_some() {
+                    if shape.packed || shape.variants.len() != 1 {
+                        return Err(CanonicalLoweringError::UnsupportedExpression("affine write-back source shape"));
+                    }
+                    let expected = self.field_value_type(&shape.fields[*index])?;
+                    if self.values[&replacement] != expected {
+                        return Err(CanonicalLoweringError::UnsupportedExpression("projected write-back result type"));
+                    }
+                    let selected = (0..shape.fields.len()).map(|slot| slot != *index).collect::<Vec<_>>();
+                    let old_fields = self.take_consuming_aggregate_fields(current, source, 0, &shape, &selected)?;
+                    let values = old_fields.into_iter().enumerate().map(|(slot, old)| {
+                        if slot == *index { Ok(replacement) } else {
+                            old.ok_or(CanonicalLoweringError::UnsupportedExpression("missing reconstructed write-back field"))
+                        }
+                    }).collect::<Result<Vec<_>, _>>()?;
+                    return self.lower_aggregate_for_source(source, &shape, 0, values);
+                }
                 let mut fields = Vec::with_capacity(shape.fields.len());
                 for (slot, source_type) in shape.fields.iter().enumerate() {
                     let ty = self.field_value_type(source_type)?;

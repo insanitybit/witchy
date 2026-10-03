@@ -2968,10 +2968,37 @@ impl Checker {
     }
 
     fn is_must_preserving_self_update(&self, name: &str, value: &Expr) -> bool {
-        matches!(value, Expr::Call { name: operation, args }
+        if matches!(value, Expr::Call { name: operation, args }
             if witchy_syntax::intrinsics::canonical_operation_name(operation)
                 == witchy_syntax::intrinsics::LIST_PUSH
-                && matches!(args.first(), Some(Expr::Var(base)) if base == name))
+                && matches!(args.first(), Some(Expr::Var(base)) if base == name)) {
+            return true;
+        }
+        let Expr::RecordUpdate { base, fields, .. } = value else { return false };
+        if !matches!(base.as_ref(), Expr::Var(root) if root == name) || fields.is_empty() {
+            return false;
+        }
+        let Some(root_type) = self.lookup(name) else { return false };
+        match self.resolve(&root_type) {
+            Ty::Tuple(elements) => fields.iter().all(|(field, _)| {
+                field.parse::<usize>().ok().and_then(|index| elements.get(index))
+                    .is_some_and(|ty| !self.ty_carries_must_consume(ty))
+            }),
+            Ty::Named(record, arguments) => {
+                let Some((parameters, declared_fields)) = self.record_fields.get(record.as_ref()) else {
+                    return false;
+                };
+                let substitutions: HashMap<u32, Ty> = parameters.iter().copied()
+                    .zip(arguments.iter().cloned()).collect();
+                fields.iter().all(|(field, _)| {
+                    declared_fields.iter().find(|(name, _)| name == field)
+                        .is_some_and(|(_, field_type)| {
+                            !self.ty_carries_must_consume(&self.subst_vars(field_type, &substitutions))
+                        })
+                })
+            }
+            _ => false,
+        }
     }
 
     fn is_authorized_borrowed_shell_update(&self, base: &Expr, ty: &Ty) -> bool {

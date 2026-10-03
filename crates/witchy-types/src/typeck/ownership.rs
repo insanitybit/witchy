@@ -26,13 +26,19 @@ impl Checker {
             return Ok(());
         }
         if let Some((root, projected)) = self.affine_place(expression) {
-            self.reject_own_of_borrowed_must(&root, context)?;
+            let preserving_self_update = !projected
+                && self.must_self_update_target.as_deref() == Some(root.as_str());
+            if !preserving_self_update {
+                self.reject_own_of_borrowed_must(&root, context)?;
+            }
             if projected {
                 return terr(format!(
                     "{context} cannot partially consume `{root}` because its aggregate carries a must-consume obligation; transfer the whole value to an `own` operation"
                 ));
             }
-            self.reject_implicit_must_copy(expression, context)?;
+            if !preserving_self_update {
+                self.reject_implicit_must_copy(expression, context)?;
+            }
             self.transfer_owned_argument_binding(&root);
         }
         Ok(())
