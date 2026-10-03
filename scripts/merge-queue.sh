@@ -172,6 +172,15 @@ gate_dtest_elapsed_ms=""
 gate_dtest_changed_files=""
 gate_dtest_changed_definitions=""
 gate_dtest_selected_tests=""
+gate_dtest_index_ms=""
+gate_dtest_index_git_ms=""
+gate_dtest_index_graph_ms=""
+gate_dtest_selection_ms=""
+gate_dtest_partitions=""
+gate_dtest_overlay_hits=""
+gate_dtest_overlay_entries=""
+gate_dtest_overlay_compacted=""
+gate_dtest_target_narrowed="false"
 gate_dtest_reason=""
 # A function run_gate polls between monitor ticks; when it succeeds the gate
 # is killed and reports `yielded`. Only the idle master canary sets it.
@@ -520,6 +529,15 @@ record_attempt() { # event branch start prepared locked gate-start gate-end fini
     [ -n "${gate_dtest_changed_files:-}" ] && selection+=(dtest_changed_files "$gate_dtest_changed_files")
     [ -n "${gate_dtest_changed_definitions:-}" ] && selection+=(dtest_changed_definitions "$gate_dtest_changed_definitions")
     [ -n "${gate_dtest_selected_tests:-}" ] && selection+=(dtest_selected_tests "$gate_dtest_selected_tests")
+    [ -n "${gate_dtest_index_ms:-}" ] && selection+=(dtest_index_ms "$gate_dtest_index_ms")
+    [ -n "${gate_dtest_index_git_ms:-}" ] && selection+=(dtest_index_git_ms "$gate_dtest_index_git_ms")
+    [ -n "${gate_dtest_index_graph_ms:-}" ] && selection+=(dtest_index_graph_ms "$gate_dtest_index_graph_ms")
+    [ -n "${gate_dtest_selection_ms:-}" ] && selection+=(dtest_selection_ms "$gate_dtest_selection_ms")
+    [ -n "${gate_dtest_partitions:-}" ] && selection+=(dtest_partitions "$gate_dtest_partitions")
+    [ -n "${gate_dtest_overlay_hits:-}" ] && selection+=(dtest_overlay_hits "$gate_dtest_overlay_hits")
+    [ -n "${gate_dtest_overlay_entries:-}" ] && selection+=(dtest_overlay_entries "$gate_dtest_overlay_entries")
+    [ -n "${gate_dtest_overlay_compacted:-}" ] && selection+=(dtest_overlay_compacted "$gate_dtest_overlay_compacted")
+    selection+=(dtest_target_narrowed "${gate_dtest_target_narrowed:-false}")
     [ -n "${gate_dtest_reason:-}" ] && selection+=(dtest_reason "$gate_dtest_reason")
 
     # RFC-0159 E. `reason` already carries the failing stage and failure line,
@@ -2652,6 +2670,15 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     gate_dtest_changed_files=""
     gate_dtest_changed_definitions=""
     gate_dtest_selected_tests=""
+    gate_dtest_index_ms=""
+    gate_dtest_index_git_ms=""
+    gate_dtest_index_graph_ms=""
+    gate_dtest_selection_ms=""
+    gate_dtest_partitions=""
+    gate_dtest_overlay_hits=""
+    gate_dtest_overlay_entries=""
+    gate_dtest_overlay_compacted=""
+    gate_dtest_target_narrowed="false"
     gate_dtest_reason=""
     local branch change_id submitted_sha attempt_id
     branch="$(jq -r .branch "$f")"
@@ -3077,20 +3104,32 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     # This deliberately does not narrow WORKSPACE: dtest is heuristic, and a
     # broad/unknown path remains the conservative escape hatch. Any dtest
     # absence, error, or malformed output leaves the legacy selection intact.
-    local dtest_helper="$gate_wt/scripts/dtest-gate-selection.sh" dtest_json=""
+    local dtest_helper="$gate_wt/scripts/dtest-gate-selection.sh" dtest_json="" dtest_values="" dtest_target_args=""
     if [ -n "$nextest_args" ] && [ -n "$changed" ] \
         && printf '%s\n' "$changed" | grep -cE '\.rs$' >/dev/null \
         && [ -x "$dtest_helper" ]; then
         dtest_json="$("$dtest_helper" "$gate_wt" "$base" HEAD 2>/dev/null || true)"
-        gate_dtest_status="$(jq -r '.status // "fallback"' <<<"$dtest_json" 2>/dev/null || echo fallback)"
-        gate_dtest_elapsed_ms="$(jq -r '.elapsed_ms // empty' <<<"$dtest_json" 2>/dev/null || true)"
-        gate_dtest_changed_files="$(jq -r '.changed_files // empty' <<<"$dtest_json" 2>/dev/null || true)"
-        gate_dtest_changed_definitions="$(jq -r '.changed_definitions // empty' <<<"$dtest_json" 2>/dev/null || true)"
-        gate_dtest_selected_tests="$(jq -r '.selected_tests // empty' <<<"$dtest_json" 2>/dev/null || true)"
-        gate_dtest_reason="$(jq -r '.reason // empty' <<<"$dtest_json" 2>/dev/null || true)"
+        if dtest_values="$(jq -r '[.status // "fallback", .elapsed_ms // "", .changed_files // "", .changed_definitions // "", .selected_tests // "", .index_ms // "", .index_git_ms // "", .index_graph_ms // "", .selection_ms // "", .partitions // "", .overlay_hits // "", .overlay_entries // "", .overlay_compacted // "", .expression // "", .target_args // "", .reason // ""] | map(tostring) | join("\u001f")' <<<"$dtest_json" 2>/dev/null)"; then
+            IFS=$'\x1f' read -r gate_dtest_status gate_dtest_elapsed_ms \
+                gate_dtest_changed_files gate_dtest_changed_definitions \
+                gate_dtest_selected_tests gate_dtest_index_ms gate_dtest_index_git_ms \
+                gate_dtest_index_graph_ms gate_dtest_selection_ms gate_dtest_partitions \
+                gate_dtest_overlay_hits gate_dtest_overlay_entries gate_dtest_overlay_compacted \
+                nextest_expr dtest_target_args gate_dtest_reason <<<"$dtest_values"
+        else
+            gate_dtest_status="fallback"
+            gate_dtest_reason="invalid dtest helper output"
+        fi
         case "$gate_dtest_status" in
             selected)
-                nextest_expr="$(jq -r '.expression' <<<"$dtest_json")"
+                if [ -z "$nextest_extra" ]; then
+                    case "$dtest_target_args" in
+                        -p\ *\ --test\ *)
+                            nextest_args="$dtest_target_args"
+                            gate_dtest_target_narrowed="true"
+                            ;;
+                    esac
+                fi
                 gate_test_selector="dtest"
                 ;;
             empty)

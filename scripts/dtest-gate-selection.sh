@@ -21,35 +21,47 @@ if [ -z "$dtest_bin" ] || [ ! -x "$dtest_bin" ]; then
     exit 0
 fi
 
-started="$(python3 -c 'import time; print(time.monotonic_ns() // 1000000)')"
 selection=""
-if ! selection="$($dtest_bin --workspace "$root" select --from "$from" --to "$to" --json 2>/dev/null)"; then
-    elapsed="$(( $(python3 -c 'import time; print(time.monotonic_ns() // 1000000)') - started ))"
-    jq -cn --argjson elapsed_ms "$elapsed" \
-        '{status:"fallback", reason:"dtest selection failed", elapsed_ms:$elapsed_ms}'
+if ! selection="$($dtest_bin --workspace "$root" select --from "$from" --to "$to" \
+    --assume-clean --json --compact 2>/dev/null)"; then
+    echo '{"status":"fallback","reason":"dtest selection failed"}'
     exit 0
 fi
-elapsed="$(( $(python3 -c 'import time; print(time.monotonic_ns() // 1000000)') - started ))"
 
 if ! jq -e '
     (.changed_files|type)=="number" and
     (.changed_definitions|type)=="number" and
     (.tests|type)=="array" and
-    all(.tests[]; (.name|type)=="string" and (.package|type)=="string")
+    all(.tests[]; (.name|type)=="string" and (.package|type)=="string") and
+    (.partitions|type)=="array" and
+    (.timings.index.elapsed_ms|type)=="number" and
+    (.timings.selection.elapsed_ms|type)=="number"
 ' >/dev/null 2>&1 <<<"$selection"; then
-    jq -cn --argjson elapsed_ms "$elapsed" \
-        '{status:"fallback", reason:"invalid dtest output", elapsed_ms:$elapsed_ms}'
+    echo '{"status":"fallback","reason":"invalid dtest output"}'
     exit 0
 fi
 
-jq -cn --argjson selection "$selection" --argjson elapsed_ms "$elapsed" '
+jq -cn --argjson selection "$selection" '
     ($selection.tests | map(.package) | unique) as $packages
     | ($selection.tests | map("test(=" + .name + ")") | join(" or ")) as $expression
+    | ($selection.partitions | if length == 1 then .[0] else null end) as $partition
     | {status:(if ($selection.tests|length)==0 then "empty" else "selected" end),
-       elapsed_ms:$elapsed_ms,
+       elapsed_ms:$selection.timings.total_ms,
+       index_ms:$selection.timings.index.elapsed_ms,
+       index_git_ms:$selection.timings.index.git_ms,
+       index_graph_ms:$selection.timings.index.graph_ms,
+       overlay_hits:$selection.timings.index.overlay_hits,
+       overlay_entries:$selection.timings.index.overlay_entries,
+       overlay_compacted:$selection.timings.index.overlay_compacted,
+       selection_ms:$selection.timings.selection.elapsed_ms,
        changed_files:$selection.changed_files,
        changed_definitions:$selection.changed_definitions,
        selected_tests:($selection.tests|length),
+       partitions:($selection.partitions|length),
+       target_args:(if $partition != null and ($partition.package|type)=="string"
+                       and ($partition.binary|type)=="string"
+                    then "-p " + $partition.package + " --test " + $partition.binary
+                    else "" end),
        packages:$packages,
        expression:$expression}
 '
