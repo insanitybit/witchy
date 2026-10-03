@@ -434,9 +434,20 @@ the independent result `93` with zero leaks. A direct result carrying an
 outer or nested `frozen Box` cannot be laundered through a plain tuple
 annotation before deep mutation. When the initializer source shape is unknown,
 an annotation alone no longer grants the deep-write proof; an indirect call
-without transported result-source metadata refuses. This closes the direct
+without transported result-source metadata refused at that checkpoint. This closes the direct
 source-linked return shapes tested here, not indirect, generic, or external
 result provenance; row H remains partial.
+
+Local function-value result storage, 2026-10-03: a checked function alias now
+carries its declared result's source qualifiers through local bindings and
+indirect calls. A plain `(Box, Int)` result admits the same deep `var` write
+as a direct call and returns `93` on admitted unoptimized Wasm with zero
+leaks. A nested frozen result refuses mutation even through a plain tuple
+annotation. Mutable and conditional callable rebinding join old and new
+result shapes conservatively, so the plain proof cannot survive a possible
+frozen result. This covers local named-function aliases and checked calls;
+lambda bodies, generic specialization, and external callable metadata still
+need separate evidence, so row H remains partial.
 
 `rfc0167_frozen_view_replacement` adds a normal-mode row L composition
 witness: a rooted `&frozen Box` keeps the old field value when a `var frozen

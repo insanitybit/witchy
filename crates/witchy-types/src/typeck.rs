@@ -1662,6 +1662,33 @@ impl Checker {
         }
     }
 
+    fn callable_storage_result_type(&self, name: &str) -> Option<ast::Type> {
+        for (scope, results) in self.scopes.iter().zip(&self.callable_storage_result_types).rev() {
+            if scope.contains_key(name) {
+                return results.get(name).cloned();
+            }
+        }
+        self.fn_storage_result_types.get(name).cloned()
+    }
+
+    fn callable_storage_result_for_expr(&self, expression: &Expr) -> Option<ast::Type> {
+        match expression {
+            Expr::Var(name) => self.callable_storage_result_type(name),
+            Expr::As { expr, ty } => {
+                let ast::Type::Fn(_, result, _, _) = ty.unqualified() else { return None; };
+                Self::common_storage_type(result, &self.callable_storage_result_for_expr(expr)?)
+            }
+            _ => None,
+        }
+    }
+
+    fn checked_callable_storage_result(&self, expression: &Expr, ty: &Ty) -> Option<ast::Type> {
+        let Ty::Fn(_, result, ..) = self.resolve(ty) else { return None; };
+        let source = self.callable_storage_result_for_expr(expression)?;
+        (Self::storage_erased_type(&source)? == ty_to_ast(&self.resolve(&result))?)
+            .then_some(source)
+    }
+
     /// Recover only source storage shapes whose qualifiers remain visible
     /// after inference. A `Ty` rendering alone cannot prove that a tuple
     /// element is not frozen, because `Ty` erases that qualifier.
@@ -1669,11 +1696,15 @@ impl Checker {
         let resolved = self.resolve(ty);
         match (expression, &resolved) {
             (Expr::Var(name), _) => self.binding_storage_type(name),
-            (Expr::Call { name, .. }, _)
-                if !self.scopes.iter().any(|scope| scope.contains_key(name)) => {
-                let source = self.fn_storage_result_types.get(name)?;
-                (Self::storage_erased_type(source)? == ty_to_ast(&resolved)?)
+            (Expr::Call { name, .. }, _) => {
+                let source = self.callable_storage_result_type(name)?;
+                (Self::storage_erased_type(&source)? == ty_to_ast(&resolved)?)
                     .then(|| source.clone())
+            }
+            (Expr::Apply { func, .. }, _) => {
+                let source = self.callable_storage_result_for_expr(func)?;
+                (Self::storage_erased_type(&source)? == ty_to_ast(&resolved)?)
+                    .then_some(source)
             }
             (Expr::Unary { op: UnOp::Move, expr }, _) =>
                 self.inferred_binding_storage_type(expr, &resolved),
@@ -3531,6 +3562,7 @@ impl Checker {
         self.unique_binding_types.push(HashMap::new());
         self.binding_storage_types.push(HashMap::new());
         self.callable_unique_contracts.push(HashMap::new());
+        self.callable_storage_result_types.push(HashMap::new());
         self.callable_opt_provenance.push(HashMap::new());
         self.container_opt_provenance.push(HashMap::new());
     }
@@ -3555,6 +3587,7 @@ impl Checker {
         self.unique_binding_types.pop();
         self.binding_storage_types.pop();
         self.callable_unique_contracts.pop();
+        self.callable_storage_result_types.pop();
         self.callable_opt_provenance.pop();
         self.container_opt_provenance.pop();
     }
@@ -6010,6 +6043,7 @@ impl Checker {
                     // outer name that may carry opt callback provenance.
                     let value_opt_proof = self.expression_opt_value_proof(value);
                     let value_opt_callable = self.expression_opt_callable_contract(value);
+                    let callable_result_source = self.checked_callable_storage_result(value, &vt);
                     if *mutable {
                         // Mutable bindings discard positive origin facts. They
                         // must not also discard a callable's entry obligations.
@@ -6026,6 +6060,11 @@ impl Checker {
                         (None, inferred) => inferred,
                     };
                     self.define(name.clone(), vt, *mutable);
+                    if let Some(result) = callable_result_source {
+                        self.callable_storage_result_types.last_mut()
+                            .expect("callable result source tracks type scopes")
+                            .insert(name.clone(), result);
+                    }
                     if let Some(declared) = storage_source {
                         self.binding_storage_types.last_mut().expect("storage types track scopes")
                             .insert(name.clone(), declared);
@@ -6259,6 +6298,19 @@ impl Checker {
                         match common {
                             Some(source) => { storage.insert(name.clone(), source); }
                             None => { storage.remove(name); }
+                        }
+                    }
+                    let replacement_result = (*place_depth == 0)
+                        .then(|| self.checked_callable_storage_result(value, &vt))
+                        .flatten();
+                    if let Some(scope) = self.scopes.iter().rposition(|scope| scope.contains_key(name)) {
+                        let results = &mut self.callable_storage_result_types[scope];
+                        let common = results.get(name).and_then(|old|
+                            replacement_result.as_ref().and_then(|new|
+                                Self::common_storage_type(old, new)));
+                        match common {
+                            Some(result) => { results.insert(name.clone(), result); }
+                            None => { results.remove(name); }
                         }
                     }
                     self.reinitialize_binding(name); // reassignment re-initializes
@@ -10824,6 +10876,7 @@ impl Checker {
         self.unique_binding_types = vec![HashMap::new()];
         self.binding_storage_types = vec![HashMap::new()];
         self.callable_unique_contracts = vec![HashMap::new()];
+        self.callable_storage_result_types = vec![HashMap::new()];
         self.callable_opt_provenance = vec![HashMap::new()];
         self.container_opt_provenance = vec![HashMap::new()];
         self.opt_expression_proofs.clear();
@@ -13185,6 +13238,7 @@ fn run_check_selected(
         checked_storage_declared_types: HashSet::new(),
         affine_expression_types: HashMap::new(),
         callable_unique_contracts: vec![HashMap::new()],
+        callable_storage_result_types: vec![HashMap::new()],
         callable_opt_provenance: vec![HashMap::new()],
         container_opt_provenance: vec![HashMap::new()],
         opt_expression_proofs: HashMap::new(),

@@ -173,6 +173,9 @@ pub(super) struct Checker {
     /// parameter and result facts rather than silently repairing aliases in
     /// opt.
     pub(super) callable_unique_contracts: Vec<HashMap<String, UniqueCallableContract>>,
+    /// Declared result storage shapes carried by checked local function values.
+    /// These are source qualifiers, not the erased `Ty::Fn` identity.
+    pub(super) callable_storage_result_types: Vec<HashMap<String, ast::Type>>,
     /// Source-level opt callable provenance for local function-value aliases.
     /// This is deliberately separate from `Ty::Fn`: the ordinary function ABI
     /// remains usable by normal callers, while opt higher-order entries demand
