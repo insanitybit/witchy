@@ -5,7 +5,7 @@ research and development surface. It is a product-claim boundary, not a feature
 freeze: experimental work may continue and may merge without becoming part of
 the supported story automatically.
 
-Evidence snapshot: `ce13254592d6b41821d64ae2c6fe9e5bd0ca7b17`.
+Evidence snapshot: `23c84602ee4eda82757c09d7701e32eda3e93114`.
 The snapshot records current evidence; it is not a compatibility promise.
 `Supported preview` identifies the intended dependable component contract; it
 does not by itself declare the whole project ready for broad public presentation.
@@ -36,8 +36,8 @@ The primary Witchy story is one end-to-end capability workflow:
 3. Run it with explicitly bounded authority.
 4. Observe missing grants and confinement escapes fail loudly.
 5. Compile the same program to portable WebAssembly and run it in the sandbox.
-6. Use `parity` to compare the canonical SafeWIR interpreter with admitted
-   unoptimized-Wasm behavior.
+6. Check the program's expected behavior on admitted unoptimized Wasm and
+   exercise missing-grant and ownership refusals at their actual boundaries.
 7. For a deliberately trusted application, build a self-contained
    `trusted-publisher` with checked root bindings.
 
@@ -53,13 +53,12 @@ adjacent work, not prerequisites for it.
 | `witchy <file.witchy>` | Supported preview | Runnable examples and installed-archive smoke exercise direct source execution and non-zero failures. |
 | `witchy check` | Supported preview | The release smoke accepts valid source and rejects invalid source; compiler tests cover diagnostics and backend acceptance. |
 | `witchy fmt` / `fmt --check` | Supported preview | Formatter round-trip tests cover repository sources and documentation examples; installed smoke proves check, rejection, rewrite, and re-check. |
-| `witchy test` | Supported preview | Plain tests have zero real authority; deterministic fixture plans run through canonical SafeWIR-interpreter/admitted-Wasm state machines with transcript parity and JSON CI evidence; explicit owned integration tests may receive Dir/Net grants. Dependency escalation, malformed plans, backend divergence, and CLI outcomes have focused coverage. |
+| `witchy test` | Supported preview | Plain tests have zero real authority and run on admitted Wasm; explicit owned integration tests may receive Dir/Net grants. Checked fixture construction, malformed plans, grant refusal, and CLI outcomes have focused coverage. Historical interpreter comparisons are not a current gate. |
 | `witchy caps`, `caps-diff`, `grants-check` | Supported preview | Capability tests and executable examples cover footprint reporting, widening rejection, rights precision, malformed grants, and over-request rejection. These tools report demanded authority; they do not prove that trusted host/runtime code is defect-free. |
 | `witchy sandbox` | Supported preview | E2E tests cover explicit Dir/File/Net/Secret grants, deny-by-omission, precompiled WASM, malformed inputs, and escape rejection. The documented filesystem symlink race remains a limitation. |
 | `witchy compile --target wasm` | Supported preview | Installed smoke compiles a fresh program to portable WASM and runs the resulting bytes through the same distributed sandbox host. |
 | `witchy emit-wasm` | Supported preview | Alternate direct spelling for emitting the portable binary artifact. It shares the compiler and precompiled-sandbox evidence with `compile --target wasm`; the duplicate spelling is not a separate product surface. |
-| `witchy parity` | Supported preview | The fail-closed example sweep, diagnostic parity tests, and seeded-divergence positive control prove that the checker detects observable backend disagreement. It is a compiler-verification command, not an application workflow step. |
-| `witchy emit-wat` | Supported preview | It renders the same module used by the compiled sandbox path and is covered by parity-sensitive compiler tests. It is an inspection tool, not a separate backend. |
+| `witchy emit-wat` | Supported preview | It renders the admitted module used by the compiled sandbox path. It is an inspection tool, not a separate backend. |
 | Single-rune `new`, `init`, `build`, and `run` | Supported preview | Hermetic project tests and installed smoke create, build, run, and test temporary local projects without reading compiler inputs from the checkout. Multi-rune dependency behavior is classified separately. |
 | `witchy --release build --target trusted-publisher` | Supported preview | RFC-0092 tests and installed smoke cover checked bindings, source deletion, empty-`PATH` execution, argv preservation, Dir confinement, and corruption rejection. Running the result is a whole-artifact trust decision, not sandboxing of its trusted root. |
 | `witchy expand`, `which`, and `doc` | Experimental | Implemented and tested as authoring/inspection tools, but not required by the primary journey and not yet subjected to a curated first-user workflow. |
@@ -75,21 +74,21 @@ adjacent work, not prerequisites for it.
 
 | Surface | Maturity | Product boundary |
 |---|---|---|
-| Core values, functions, records/ADTs, pattern matching, errors, modules, generics, traits, and `let`/`var`/`own` conventions | Supported preview | Exercised across the runnable book, examples, formatter round trips, type-checking tests, and independent-expectation/canonical-interpreter/admitted-Wasm differential tests. Compatibility remains intentionally unstable before 1.0. |
+| Core values, functions, records/ADTs, pattern matching, errors, modules, generics, traits, and `let`/`var`/`own` conventions | Supported preview | Exercised by checked source, formatter round trips, and admitted-Wasm programs with independent expected results and focused refusals. RFC-0167's broader ownership and view matrix remains open; compatibility is intentionally unstable before 1.0. |
 | Typed host capabilities, rights narrowing, footprint inspection, and explicit sandbox grants | Supported preview | This is Witchy's defining product surface. The guarantee is confined to the documented compiler/runtime/host trust boundary; it is not a claim of general memory safety or independent security review. |
-| Canonical SafeWIR interpreter and admitted-Wasm agreement | Supported preview | Independent expected results, canonical interpreter execution, and admitted unoptimized-Wasm execution are differential-gated, with a positive control proving the gate can fail. |
+| Canonical SafeWIR and admitted-Wasm production route | Supported preview | Checked source lowers through SafeWIR validation and exact-artifact admission before execution. Existing witnesses cover selected values, effects, traps, ownership, and host grants; they do not prove compiler-wide memory safety or all optimization equivalence. |
 | Portable WASM guest execution | Supported preview | The separately installed Witchy host remains trusted; the guest receives only explicitly bound host capabilities. |
 | `trusted-publisher` | Supported preview | Self-contained publisher application artifact with checked embedded bindings and corruption detection. Embedded digests validate integrity but do not authenticate a publisher. Publisher applications use the ordinary executable-cache policy. |
 | Standard-library APIs used by the supported journey and curated examples | Supported preview | Documentation freshness and executable examples cover this subset. This status does not silently promote every std module. |
-| Bounded async tasks, typed channels, and structured concurrency ([language contract](rfcs/0167-witchy-language-contract.md#7-resources-effects-and-suspension)) | Supported preview | Deterministic scheduling, typed carriers, structured task obligations, backend parity, one-time resumable state, and the sustained compiled memory gates are covered by the RFC acceptance matrix. This promotes bounded workflows and measured carrier shapes; it does not promise that a logically unbounded channel provides infinite storage. |
+| Bounded async tasks, typed channels, and structured concurrency ([language contract](rfcs/0167-witchy-language-contract.md#7-resources-effects-and-suspension)) | Supported preview | Selected deterministic schedules, typed carriers, and one-time resumable states have admitted-Wasm evidence. A live `must` obligation across cancellation still requires a proved disposition or a checked refusal; resource-bearing spawned tasks remain outside this bounded workflow. |
 | Parallel worker VMs ([language contract](rfcs/0167-witchy-language-contract.md#7-resources-effects-and-suspension)) | Experimental | Core destination. True parallelism is distinct from deterministic cooperative tasks and crosses owned serialization and capability boundaries. Its cost and availability need a curated workflow separate from `chan` examples. |
 | Generators and lazy iterators ([language contract](rfcs/0167-witchy-language-contract.md#7-resources-effects-and-suspension)) | Supported preview | `Iter`, `gen fn`, `yield`, adapters, collection, diagnostics, tooling, and the installed examples are covered by the RFC acceptance matrix. Every accepted suspension shape resumes an owned frame with one-time effects and bounded live state; a residual nested yielding CFG fails at its source declaration instead of selecting replay semantics. |
-| Static reflection ([language contract](rfcs/0167-witchy-language-contract.md#8-regions-layout-reflection-and-libraries)) | Experimental | Core destination. `Reflect`, `Mirror`, derives, structural JSON encoding, docs, and backend parity are implemented. It is retained language surface awaiting an installed curated workflow and limitation review. |
+| Static reflection ([language contract](rfcs/0167-witchy-language-contract.md#8-regions-layout-reflection-and-libraries)) | Experimental | `Reflect`, `Mirror`, derives, and structural JSON encoding have selected admitted-Wasm evidence. A broader installed workflow and limitation review remain open. |
 | `comptime`, typed quotation, derives, and tagged literals ([language contract](rfcs/0167-witchy-language-contract.md#8-regions-layout-reflection-and-libraries)) | Experimental | Core destination. Structured syntax, hygiene, provenance, deterministic zero-capability evaluation, expansion tooling, and generated-code checking are implemented. Raw source compatibility paths still need an explicit public policy. |
-| `region:` ([language contract](rfcs/0167-witchy-language-contract.md#8-regions-layout-reflection-and-libraries)) | Experimental | Core destination. Lexical regions, conservative copy-out, Wasm reclamation, counters, docs, and parity are implemented. Promotion promises those semantics, not future destination inference. |
-| `mode opt`, explicit references, and ownership/layout contracts ([language contract](rfcs/0167-witchy-language-contract.md#3-owned-values-and-calls)) | Experimental | Canonical lowering supports selected shared-reference and value-boundary shapes, not the complete language matrix. Mutable references, broad unique forms, and indirect/aggregate boundaries still need production-route evidence. The new contract has explicit adoption and implementation gaps; historical frontend or backend tests are not full acceptance. |
+| `region:` ([language contract](rfcs/0167-witchy-language-contract.md#8-regions-layout-reflection-and-libraries)) | Experimental | Lexical regions and conservative copy-out have selected admitted-Wasm evidence. Broader promotion and allocation claims remain deferred. |
+| `mode opt` and its cross-mode contracts ([language contract](rfcs/0167-witchy-language-contract.md#6-normal-and-opt-interoperation)) | Experimental | Deferred as a delivery target. Selected implemented paths may remain, but opt proof, callback, task, and cross-mode matrices are not complete. Normal-mode `own`, `unique`, `var`, and immutable rooted views remain in scope independently. |
 | Existential trait values and other recently landed semantic extensions | Experimental | Implementation evidence may exist, but a new semantic feature does not become a front-page commitment merely by merging. |
-| Runtime `Dynamic` values ([language contract](rfcs/0167-witchy-language-contract.md#8-regions-layout-reflection-and-libraries)) | Experimental | Core destination. Authenticated descriptors, owned payloads, checked decode, public field and registered method access, trait queries, capability accounting, tooling, and backend parity are implemented. The explicit dynamic boundary remains outside the supported preview until its standalone workflow and limitations are curated. |
+| Runtime `Dynamic` values ([language contract](rfcs/0167-witchy-language-contract.md#8-regions-layout-reflection-and-libraries)) | Experimental | Authenticated descriptors, owned payloads, checked decode, public field and registered method access, trait queries, and capability accounting have selected evidence. The explicit dynamic boundary remains outside the supported preview until its workflow and limitations are curated. |
 | Multi-package dependency resolution and remote package lifecycle | Experimental | Local single-rune workflows are supported separately. Remote identity, update, vendor, build-step, and registry behavior form a larger contract. |
 | Coven, trusted publishing, and Coven Web | Experimental | No public service, availability promise, independent audit, or supported distribution contract is implied. |
 | Glamour, browser applications, playground, and the docs application | Experimental | These provide dogfood and executable documentation evidence. They are not yet promised as a supported general frontend platform. |
@@ -105,8 +104,9 @@ conditions are met:
    independently usable artifact.
 2. Failure behavior is explicit: invalid inputs, missing authority, corruption,
    and boundary escapes are rejected for the intended reason.
-3. Independent expected results agree with the canonical SafeWIR interpreter and
-   admitted unoptimized Wasm on the accepted path.
+3. Admitted unoptimized Wasm matches independently established expected results
+   on the accepted path, with focused negative checks for ownership, authority,
+   and artifact admission. A retired interpreter is not a required oracle.
 4. The primary documentation and CLI help agree with actual behavior.
 5. At least one small, curated example demonstrates why the feature is useful.
 6. Known limitations and the trusted boundary are stated without global safety
