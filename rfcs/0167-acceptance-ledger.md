@@ -244,6 +244,15 @@ view-bearing child has no authenticated storage carrier. This checked refusal
 does not establish nested view ownership. Admitting that shape needs a
 recursive root-carrier and retain/release plan.
 
+The 2026-10-03 classifier probe confirmed the specific gap: `List(&Int)` has
+the specialized `RetainedOwnerList` storage plan, but the enclosing Option
+root identity requires `CarrierElement`, whose retained-view grammar excludes
+the scalar-cell `&Int` element. Removing the outer stored-view guard alone
+still refuses at source checking. The guard remains in place until that
+recursive identity and physical ownership relation are implemented. A
+separate indirect `var List(&Int)` replacement does admit and execute with
+the independently expected old/new snapshot result `2312` and zero leaks.
+
 `rfc0167_frozen_view_replacement` adds a normal-mode row L composition
 witness: a rooted `&frozen Box` keeps the old field value when a `var frozen
 Box` root is replaced, so admitted unoptimized Wasm prints the independently

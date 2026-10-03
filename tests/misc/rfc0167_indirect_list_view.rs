@@ -89,3 +89,34 @@ fn main() -> Int:
         "refusal names the region write-back rule: {error}"
     );
 }
+
+#[test]
+fn an_indirect_var_list_call_rebinds_without_changing_the_old_views() {
+    let source = r#"
+fn replace(var vs: List(&Int), a: &Int, b: &Int):
+    vs = [a, b]
+
+fn sum(vs: List(&Int)) -> Int:
+    *(vs[0]) * 10 + *(vs[1])
+
+fn main() -> Int:
+    let a = 1
+    let b = 2
+    let c = 3
+    var vs: List(&Int) = [&a, &b]
+    let before = vs
+    let change = replace
+    change(vs, &b, &c)
+    sum(vs) * 100 + sum(before)
+"#;
+    let checked = witchy::resolve_std_only_checked(source).expect("view-list write-back checks");
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("view-list write-back admits");
+    let mut runtime = witchy::runtime::Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(&artifact,
+        witchy::runtime::Capabilities { print_int: true, quiet: true, ..witchy::runtime::Capabilities::none() },
+        128).expect("admitted Wasm instance");
+    vm.run().expect("admitted Wasm execution");
+    assert_eq!(vm.output(), vec!["2312".to_string()]);
+    assert_eq!(vm.canonical_heap_leaks().expect("heap audit"), Some(0));
+}
