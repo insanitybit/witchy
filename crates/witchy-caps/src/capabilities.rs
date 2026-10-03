@@ -242,6 +242,31 @@ fn host_eq(left: &str, right: &str) -> bool {
 /// Split `host:port` on the LAST colon (so a bracketed IPv6 `[::1]:80` keeps its
 /// host intact). A pattern with no port part has an empty port (matches nothing
 /// but an empty target — callers always pass `host:port`).
+/// Why `pattern` is not a well-formed `Net` allowlist entry, or `None` when it is.
+/// The grammar is the one `address_admits` matches: an optional `!` deny prefix,
+/// then `host:port`, where `port` is `*` or a `u16` and `host` is `*`, a name, an
+/// IP, or an IPv4/IPv6 CIDR block. A malformed entry matches nothing at run time,
+/// so a host-facing document rejects it rather than granting a dead address.
+pub fn net_pattern_error(pattern: &str) -> Option<String> {
+    let body = pattern.strip_prefix('!').unwrap_or(pattern);
+    let Some((host, port)) = body.rsplit_once(':') else {
+        return Some(format!("`{pattern}` has no `:port` (write `host:443` or `host:*`)"));
+    };
+    if host.is_empty() {
+        return Some(format!("`{pattern}` has an empty host"));
+    }
+    if port != "*" && port.parse::<u16>().is_err() {
+        return Some(format!("`{pattern}` has port `{port}`, which is not `*` or 0-65535"));
+    }
+    if host.chars().any(|c| c.is_whitespace() || c == '!') {
+        return Some(format!("`{pattern}` has an invalid host `{host}`"));
+    }
+    if host.contains('/') && parse_ipv4_cidr(host).is_none() && parse_ipv6_cidr(host).is_none() {
+        return Some(format!("`{pattern}` has a malformed CIDR block `{host}`"));
+    }
+    None
+}
+
 fn split_host_port(s: &str) -> (&str, &str) {
     match s.rsplit_once(':') {
         Some((h, p)) => (h, p),

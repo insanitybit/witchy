@@ -33,11 +33,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::Deserialize;
 
 use crate::capabilities::{CapSet, Rights};
+use witchy_cap_model::CapabilityKind;
 use witchy_cap_model::process_env::ThreadCheck;
 
 /// A parsed grant document: the capabilities the host will hand to `main`, keyed
 /// by the `main` parameter name they bind to.
 #[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GrantDoc {
     #[serde(default)]
     pub files: BTreeMap<String, FileGrant>,
@@ -71,6 +73,7 @@ pub struct GrantDoc {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct FileGrant {
     pub path: String,
     #[serde(default)]
@@ -78,6 +81,7 @@ pub struct FileGrant {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DirGrant {
     pub root: String,
     #[serde(default)]
@@ -168,9 +172,73 @@ pub struct UserCapGrant {
 }
 
 impl GrantDoc {
-    /// Parse a grant document from TOML.
+    /// Parse and validate a grant document from TOML.
+    ///
+    /// Parsing fails closed (RFC-0126): an unknown section or key, an unknown or
+    /// duplicated right, or an entry the host could not enforce as written is a
+    /// parse error naming the entry. None of these may be dropped silently -- a
+    /// misspelled `right = [...]` or `[dir]` would otherwise be reviewed as one
+    /// grant and launched as another.
     pub fn parse(src: &str) -> Result<GrantDoc, String> {
-        toml::from_str(src).map_err(|e| format!("grant document is not valid TOML: {e}"))
+        let doc: GrantDoc =
+            toml::from_str(src).map_err(|e| format!("grant document is not valid TOML: {e}"))?;
+        doc.validate()?;
+        Ok(doc)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        for (name, file) in &self.files {
+            let label = format!("[files].{name}");
+            non_empty(&label, "path", &file.path)?;
+            check_rights(&label, CapabilityKind::File, &file.rights)?;
+        }
+        for (name, dir) in &self.dirs {
+            let label = format!("[dirs].{name}");
+            non_empty(&label, "root", &dir.root)?;
+            check_rights(&label, CapabilityKind::Dir, &dir.rights)?;
+        }
+        for (name, patterns) in &self.net {
+            for pattern in patterns {
+                if let Some(error) = crate::capabilities::net_pattern_error(pattern) {
+                    return Err(format!("grant `[net].{name}`: {error}"));
+                }
+            }
+        }
+        for (name, origins) in &self.fetch {
+            for origin in origins {
+                non_empty(&format!("[fetch].{name}"), "origin", origin)?;
+            }
+        }
+        for (name, variables) in &self.env {
+            for variable in variables {
+                if variable.is_empty() || variable.contains(['=', '\0']) {
+                    return Err(format!(
+                        "grant `[env].{name}` names `{variable}`, which is not an environment \
+                         variable name"
+                    ));
+                }
+            }
+        }
+        for (name, exec) in &self.exec {
+            for program in exec.programs() {
+                non_empty(&format!("[exec].{name}"), "program", program)?;
+            }
+            for path in exec.child_paths() {
+                non_empty(&format!("[exec].{name}"), "child-path", path)?;
+            }
+        }
+        for (name, secret) in &self.secrets {
+            if secret_provider_variable(&secret.from).is_none() {
+                return Err(format!(
+                    "grant `[secrets].{name}` has provider `{}`; expected `env:VAR`",
+                    secret.from
+                ));
+            }
+        }
+        for (name, cap) in &self.user_caps {
+            non_empty(&format!("[user_caps].{name}"), "type", &cap.cap_type)?;
+        }
+        Ok(())
     }
 
     /// The capability footprint this grant CONFERS — the same `CapSet` shape as a
@@ -181,10 +249,10 @@ impl GrantDoc {
     pub fn cap_set(&self) -> CapSet {
         let mut cs = CapSet::new();
         if !self.files.is_empty() {
-            cs.insert("File", collect_rights(self.files.values().flat_map(|f| &f.rights)));
+            cs.insert("File", collect_rights(CapabilityKind::File, self.files.values().flat_map(|f| &f.rights)));
         }
         if !self.dirs.is_empty() {
-            cs.insert("Dir", collect_rights(self.dirs.values().flat_map(|d| &d.rights)));
+            cs.insert("Dir", collect_rights(CapabilityKind::Dir, self.dirs.values().flat_map(|d| &d.rights)));
         }
         if !self.net.is_empty() {
             // The doc gives addresses, not verbs; confer `Net` at full verbs (the
@@ -334,18 +402,35 @@ pub fn reject_secret_env_overlap<'a>(
     Ok(())
 }
 
-/// Canonicalize a declared right string to the static name the footprint uses.
-fn right_name(s: &str) -> Option<&'static str> {
-    match s {
-        "Read" => Some("Read"),
-        "Write" => Some("Write"),
-        "Exec" => Some("Exec"),
-        _ => None,
+fn non_empty(label: &str, field: &str, value: &str) -> Result<(), String> {
+    if value.is_empty() {
+        return Err(format!("grant `{label}` has an empty {field}"));
     }
+    Ok(())
 }
 
-fn collect_rights<'a>(rights: impl Iterator<Item = &'a String>) -> Rights {
-    rights.filter_map(|r| right_name(r)).collect()
+/// Every declared right must be one `kind` actually has, named once. The shared
+/// capability model owns that vocabulary, so a document cannot confer a right the
+/// type system and the host do not know (`File[Exec]`, `Dir[write]`).
+fn check_rights(label: &str, kind: CapabilityKind, rights: &[String]) -> Result<(), String> {
+    for (index, right) in rights.iter().enumerate() {
+        if kind.right(right).is_none() {
+            let known: Vec<&str> = kind.rights().iter().map(|r| r.name()).collect();
+            return Err(format!(
+                "grant `{label}` names unknown right `{right}` (expected one of {})",
+                known.join(", ")
+            ));
+        }
+        if rights[..index].contains(right) {
+            return Err(format!("grant `{label}` names right `{right}` twice"));
+        }
+    }
+    Ok(())
+}
+
+/// The footprint names of already-validated rights.
+fn collect_rights<'a>(kind: CapabilityKind, rights: impl Iterator<Item = &'a String>) -> Rights {
+    rights.filter_map(|r| kind.right(r)).map(|r| r.name()).collect()
 }
 
 /// The result of cross-checking a grant against a program's computed footprint.
@@ -433,6 +518,37 @@ mod tests {
         assert_eq!(doc.fetch["api"], vec!["https://api.github.com"]);
         assert_eq!(doc.env["runtime"], vec!["HOME", "LANG"]);
         assert_eq!(doc.secrets["gh"].from, "env:GITHUB_OAUTH");
+    }
+
+    /// RFC-0126: a grant entry the host could not enforce as reviewed is a parse
+    /// error naming it -- never silently dropped, narrowed, or widened.
+    #[test]
+    fn malformed_grant_entries_fail_closed() {
+        let cases: &[(&str, &str)] = &[
+            ("[dir]\nd = { root = \".\", rights = [\"Read\"] }\n", "unknown field `dir`"),
+            ("[files]\nc = { path = \"c\", right = [\"Read\"] }\n", "unknown field `right`"),
+            ("[dirs]\nd = { root = \".\", rights = [\"write\"] }\n", "unknown right `write`"),
+            ("[files]\nc = { path = \"c\", rights = [\"Exec\"] }\n", "unknown right `Exec`"),
+            ("[dirs]\nd = { root = \".\", rights = [\"Read\", \"Read\"] }\n", "twice"),
+            ("[dirs]\nd = { root = \"\", rights = [\"Read\"] }\n", "empty root"),
+            ("[net]\nn = [\"github.com\"]\n", "no `:port`"),
+            ("[net]\nn = [\"github.com:https\"]\n", "port `https`"),
+            ("[net]\nn = [\":443\"]\n", "empty host"),
+            ("[net]\nn = [\"10.0.0.0/40:*\"]\n", "malformed CIDR"),
+            ("[env]\ne = [\"A=B\"]\n", "not an environment variable name"),
+            ("[exec]\nx = [\"\"]\n", "empty program"),
+            ("[secrets]\ns = { from = \"file:/etc/key\" }\n", "expected `env:VAR`"),
+            ("[secrets]\ns = { from = \"env:\" }\n", "expected `env:VAR`"),
+        ];
+        for (src, expected) in cases {
+            let error = GrantDoc::parse(src).expect_err(src);
+            assert!(error.contains(expected), "{src:?}: expected {expected:?} in {error}");
+        }
+        // The documented forms, including deny entries and CIDR blocks, still parse.
+        GrantDoc::parse(
+            "[net]\nn = [\"github.com:443\", \"*:*\", \"10.0.0.0/8:*\", \"[::1]:80\", \"!169.254.0.0/16:*\"]\n",
+        )
+        .expect("well-formed Net patterns");
     }
 
     #[test]
