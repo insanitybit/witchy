@@ -12637,10 +12637,11 @@ impl FunctionLowerer<'_> {
                 self.lower_record_literal(expression, name, fields, spread.as_deref(), None)
             }
             Expr::RecordUpdate { base, fields, .. } => {
-                let Type::Named(name, _) = self.expression_type(expression)?.unqualified().clone() else {
-                    return Err(CanonicalLoweringError::UnsupportedExpression("record update type"));
-                };
-                self.lower_record_literal(expression, &name, fields, Some(base), None)
+                match self.expression_type(expression)?.unqualified().clone() {
+                    Type::Named(name, _) => self.lower_record_literal(expression, &name, fields, Some(base), None),
+                    Type::Tuple(_) => self.lower_tuple_update(expression, base, fields, None),
+                    _ => Err(CanonicalLoweringError::UnsupportedExpression("aggregate update type")),
+                }
             }
             Expr::Try(inner) => self.lower_try(inner),
             // `as` narrows a capability or ascribes an alias; at the value
@@ -12764,10 +12765,11 @@ impl FunctionLowerer<'_> {
                 self.lower_record_literal(expression, name, fields, spread.as_deref(), Some(&declared)),
             Expr::List(items) => self.lower_list_literal(expression, items, Some(&declared)),
             Expr::RecordUpdate { base, fields, .. } => {
-                let Type::Named(name, _) = declared.unqualified() else {
-                    return Err(CanonicalLoweringError::UnsupportedExpression("affine record update type"));
-                };
-                self.lower_record_literal(expression, name, fields, Some(base), Some(declared))
+                match declared.unqualified() {
+                    Type::Named(name, _) => self.lower_record_literal(expression, name, fields, Some(base), Some(declared)),
+                    Type::Tuple(_) => self.lower_tuple_update(expression, base, fields, Some(declared)),
+                    _ => Err(CanonicalLoweringError::UnsupportedExpression("affine aggregate update type")),
+                }
             }
             _ => {
                 let value = self.lower_expr(expression)?;
@@ -13324,6 +13326,70 @@ impl FunctionLowerer<'_> {
         self.restore_facts(facts, join);
         self.current = join;
         Ok(result)
+    }
+
+    /// Rebuild a tuple after evaluating numeric field overrides in source
+    /// order. The old shell supplies unchanged fields through its checked
+    /// aggregate plan, so a live view continues to observe that old shell.
+    fn lower_tuple_update(
+        &mut self,
+        expression: &Expr,
+        base: &Expr,
+        fields: &[(String, Expr)],
+        declared_storage: Option<&Type>,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let source_type = declared_storage.cloned()
+            .unwrap_or(self.expression_storage_type(expression)?);
+        if !matches!(source_type.unqualified(), Type::Tuple(_)) {
+            return Err(CanonicalLoweringError::UnsupportedExpression("tuple update source type"));
+        }
+        let base_type = self.expression_storage_type(base)?;
+        if base_type != source_type {
+            return Err(CanonicalLoweringError::UnsupportedExpression("tuple update source qualifier drift"));
+        }
+        let shape = scalar_aggregate_shape(&source_type, self.definitions)
+            .filter(|shape| !shape.tagged && !shape.packed && shape.variants.len() == 1)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("tuple update shape"))?;
+        let mut overrides = Vec::with_capacity(fields.len());
+        for (field, expression) in fields {
+            let index = field.parse::<usize>().ok()
+                .filter(|index| *index < shape.fields.len())
+                .ok_or_else(|| CanonicalLoweringError::MissingBinding(field.clone()))?;
+            if overrides.iter().any(|(other, _)| *other == index) {
+                return Err(CanonicalLoweringError::UnsupportedExpression("duplicate tuple update field"));
+            }
+            let field_type = &shape.fields[index];
+            let value = self.lower_expr_for_storage(expression, Some(field_type))?;
+            let affine = witchy_canonical_source::storage::affine_storage_shape(
+                field_type, self.definitions,
+            ).is_some();
+            let value = if affine && self.is_static_string(value) {
+                self.clone_string_for_storage(value)?
+            } else if affine {
+                value
+            } else if matches!(self.values[&value], ValueType::Ref(_) | ValueType::Gc(_)) {
+                self.clone_reference_token(value)?
+            } else { value };
+            overrides.push((index, value));
+        }
+        if witchy_canonical_source::storage::affine_storage_shape(&base_type, self.definitions).is_some() {
+            return self.lower_consuming_record_reconstruction(
+                base, &base_type, &source_type, &shape, &overrides,
+            );
+        }
+        let root = self.lower_expr(base)?;
+        let mut values = Vec::with_capacity(shape.fields.len());
+        for (index, field_type) in shape.fields.iter().enumerate() {
+            if let Some((_, value)) = overrides.iter().find(|(field, _)| *field == index) {
+                values.push(*value);
+            } else {
+                let value_type = self.field_value_type(field_type)?;
+                values.push(self.load_source_aggregate_field(
+                    root, &source_type, 0, index, index, value_type,
+                )?);
+            }
+        }
+        self.lower_aggregate_for_source(&source_type, &shape, 0, values)
     }
 
     /// A named-field record literal, with the fields not named taken from the

@@ -1173,7 +1173,7 @@ impl Parser {
                     }
                 }
                 Some(Tok::Dot)
-                    if matches!(self.toks.get(i + 1).map(|t| &t.kind), Some(Tok::Ident(_))) =>
+                    if matches!(self.toks.get(i + 1).map(|t| &t.kind), Some(Tok::Ident(_) | Tok::Int(_))) =>
                 {
                     i += 2;
                 }

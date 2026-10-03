@@ -2886,8 +2886,18 @@ impl Checker {
             return Err(());
         }
         let mut current = self.lookup(root).map(|ty| self.resolve(&ty)).ok_or(())?;
-        for step in place.steps() {
+        for (depth, step) in place.steps().iter().enumerate() {
             match (self.resolve(&current), step) {
+                (Ty::Tuple(fields), witchy_canonical_source::access::CheckedPlaceStep::Field(field)) => {
+                    // Replacing a whole tuple element is lawful even when its
+                    // payload is frozen. A deeper write needs source-qualifier
+                    // evidence for that element, which this erased Ty lacks.
+                    if depth + 1 != place.steps().len() {
+                        return Err(());
+                    }
+                    let index = field.parse::<usize>().map_err(|_| ())?;
+                    current = fields.get(index).cloned().ok_or(())?;
+                }
                 (Ty::Named(record, args), witchy_canonical_source::access::CheckedPlaceStep::Field(field)) => {
                     if self
                         .frozen_record_fields
@@ -8871,6 +8881,39 @@ impl Checker {
                     self.reject_borrowed_nominal_runtime_ty(&bt, "record spread/update")?;
                 }
                 let resolved = self.resolve(&bt);
+                if let Ty::Tuple(elements) = &resolved {
+                    if name.is_some() {
+                        return terr("a tuple field update cannot name a record constructor");
+                    }
+                    for (field, expression) in fields {
+                        let index = field.parse::<usize>().ok()
+                            .filter(|index| *index < elements.len())
+                            .ok_or_else(|| TypeError {
+                                message: format!("tuple has no field `.{field}`"),
+                            })?;
+                        let expected = elements[index].clone();
+                        if self.ty_carries_must_consume(&expected) {
+                            return terr(format!(
+                                "tuple update cannot discard must-consume field `.{field}`; consume the whole tuple and reconstruct it after discharging that field"
+                            ));
+                        }
+                        let actual = self.infer_expected(expression, &expected)?;
+                        self.transfer_unique_value(expression, &expected,
+                            &format!("update of tuple field `.{field}`"))?;
+                        self.reject_implicit_once_copy(expression, &expected,
+                            &format!("update of tuple field `.{field}`"))?;
+                        if !self.existential_coercion(&expected, &actual)? {
+                            self.unify(&expected, &actual).map_err(|error| TypeError {
+                                message: format!("update of tuple field `.{field}`: {}", error.message),
+                            })?;
+                        }
+                    }
+                    for binding in base_dispositions {
+                        self.must_live.remove(&binding);
+                    }
+                    self.transfer_consuming_aggregate_operand(base, &bt, "tuple update")?;
+                    return Ok(resolved);
+                }
                 let (base_tyname, base_args) = match &resolved {
                     Ty::Named(n, a) => (n.clone(), a.clone()),
                     other => {

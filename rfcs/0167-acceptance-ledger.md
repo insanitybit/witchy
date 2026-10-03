@@ -288,6 +288,17 @@ calculated result `2379` and zero leaks. A region-born view passed through
 the indirect tuple write-back refuses at source checking. These witnesses
 establish the stated call and storage shapes, not all `var` aliases.
 
+Numeric tuple fields now take the same `var` place-assignment path as named
+record fields: `pair.0 = value` and `pair.0 += value` parse, check the field
+index and value type, and rebuild the tuple through its checked aggregate
+storage plan. An indirect `var` call updates both fields of a
+`(List(&Int), Int)` while a retained view keeps the old tuple; admitted Wasm
+produces the independent result `2379` with zero leaks. A scalar tuple
+compound update produces `69`. Out-of-range fields, a deep write through a
+tuple child without source qualifier proof, and overwriting a live `must`
+tuple root all refuse. This establishes whole-element replacement; deeper
+tuple-element mutation still needs source qualifier evidence.
+
 `rfc0167_frozen_view_replacement` adds a normal-mode row L composition
 witness: a rooted `&frozen Box` keeps the old field value when a `var frozen
 Box` root is replaced, so admitted unoptimized Wasm prints the independently
