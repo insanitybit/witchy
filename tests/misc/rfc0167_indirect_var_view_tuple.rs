@@ -196,6 +196,55 @@ fn main() -> Int:
     pair.0.value = 3
     pair.1
 "#).expect_err("deep tuple field mutation needs source qualifier proof");
+    assert!(error.to_string().contains("cannot mutate through frozen value"), "{error}");
+}
+
+#[test]
+fn deep_tuple_field_assignment_preserves_a_must_sibling() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let checked = witchy::resolve_std_only_checked(r#"
+must type Ticket:
+    Ticket(Int)
+type Inner:
+    ticket: Ticket
+    count: Int
+fn update(var pair: (Inner, Int)):
+    pair.0.count = 9
+fn finish(own pair: (Inner, Int)) -> Int:
+    match move pair:
+        (inner, extra) -> match move inner:
+            Inner(ticket, count) -> match move ticket:
+                Ticket(value) -> value * 100 + count * 10 + extra
+fn main() -> Int:
+    var pair: (Inner, Int) = (Inner(Ticket(7), 1), 2)
+    pair.0.count = 5
+    update(pair)
+    finish(pair)
+"#).expect("deep tuple update checks");
+    let artifact = codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("deep tuple update admits");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(&artifact,
+        Capabilities { print_int: true, quiet: true, ..Capabilities::none() },
+        128).expect("admitted Wasm instance");
+    vm.run().expect("admitted Wasm execution");
+    assert_eq!(vm.output(), vec!["792".to_string()]);
+    assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+}
+
+#[test]
+fn shadowed_tuple_without_source_qualifiers_cannot_inherit_outer_write_proof() {
+    let error = witchy::resolve_std_only_checked(r#"
+type Box:
+    value: Int
+fn main() -> Int:
+    var pair: (Box, Int) = (Box(1), 2)
+    if true:
+        var pair = (Box(3), 4)
+        pair.0.value = 5
+    0
+"#).expect_err("a shadowed tuple has no inherited source qualifier proof");
     assert!(error.to_string().contains("cannot verify deep assignment place"), "{error}");
 }
 

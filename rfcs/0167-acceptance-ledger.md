@@ -380,7 +380,18 @@ produces the independent result `2379` with zero leaks. A scalar tuple
 compound update produces `69`. Out-of-range fields, a deep write through a
 tuple child without source qualifier proof, and overwriting a live `must`
 tuple root all refuse. This establishes whole-element replacement; deeper
-tuple-element mutation still needs source qualifier evidence.
+tuple-element mutation requires source qualifier evidence.
+
+Deep tuple `var` writes, 2026-10-03: type checking now retains the exact
+declared storage type for scoped locals and parameters when checking a nested
+assignment place. A local write followed by `var` parameter write-back through
+`pair.0.count` preserves a live `must` sibling in element zero and returns the
+independent result `792` on admitted
+unoptimized Wasm with zero canonical heap leaks. A `frozen` tuple child still
+refuses, now with a precise frozen-mutation diagnostic, and an unannotated
+shadow binding cannot inherit its outer binding's source proof. This closes
+the declared non-frozen tuple path; inferred and unresolved source qualifiers
+remain fail closed, so row H is still partial.
 
 `rfc0167_frozen_view_replacement` adds a normal-mode row L composition
 witness: a rooted `&frozen Box` keeps the old field value when a `var frozen

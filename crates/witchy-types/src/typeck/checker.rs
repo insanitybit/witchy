@@ -158,6 +158,9 @@ pub(super) struct Checker {
     /// Original declared types for bindings carrying unique storage. Pattern
     /// extraction needs these because `Ty` has already erased nested qualifiers.
     pub(super) unique_binding_types: Vec<HashMap<String, ast::Type>>,
+    /// Declared storage types retain field qualifiers erased by `Ty` for
+    /// checked deep assignments through tuple and record paths.
+    pub(super) declared_binding_types: Vec<HashMap<String, ast::Type>>,
     /// Checked local ascriptions whose recursive affine storage plan must
     /// remain visible to the canonical layout and SafeWIR authority stages.
     pub(super) checked_storage_declared_types: HashSet<ast::Type>,

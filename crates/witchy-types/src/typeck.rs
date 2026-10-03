@@ -1618,6 +1618,12 @@ impl Checker {
             .find_map(|types| types.get(name).cloned())
     }
 
+    fn declared_binding_type(&self, name: &str) -> Option<ast::Type> {
+        self.scopes.iter().zip(&self.declared_binding_types).rev()
+            .find_map(|(scope, types)| scope.contains_key(name).then(|| types.get(name).cloned()))
+            .flatten()
+    }
+
 
     fn remember_callable_unique_contract(&mut self, name: String, contract: UniqueCallableContract) {
         self.callable_unique_contracts
@@ -2934,17 +2940,18 @@ impl Checker {
             return Err(());
         }
         let mut current = self.lookup(root).map(|ty| self.resolve(&ty)).ok_or(())?;
+        let mut declared = self.declared_binding_type(root);
         for (depth, step) in place.steps().iter().enumerate() {
             match (self.resolve(&current), step) {
                 (Ty::Tuple(fields), witchy_canonical_source::access::CheckedPlaceStep::Field(field)) => {
-                    // Replacing a whole tuple element is lawful even when its
-                    // payload is frozen. A deeper write needs source-qualifier
-                    // evidence for that element, which this erased Ty lacks.
-                    if depth + 1 != place.steps().len() {
-                        return Err(());
-                    }
                     let index = field.parse::<usize>().map_err(|_| ())?;
                     current = fields.get(index).cloned().ok_or(())?;
+                    if depth + 1 != place.steps().len() {
+                        let source = declared.as_ref().ok_or(())?;
+                        let ast::Type::Tuple(items) = source.unqualified() else { return Err(()); };
+                        let child = items.get(index).cloned().ok_or(())?;
+                        declared = Some(child);
+                    }
                 }
                 (Ty::Named(record, args), witchy_canonical_source::access::CheckedPlaceStep::Field(field)) => {
                     if self
@@ -2962,16 +2969,38 @@ impl Checker {
                         .zip(args.iter().cloned())
                         .collect();
                     current = self.subst_vars(field_ty, &substitutions);
+                    declared = declared.and_then(|source| {
+                        let ast::Type::Named(source_record, source_args) = source.unqualified() else { return None; };
+                        let source_field = self.unique_source_record_fields.get(source_record)?.get(field)?;
+                        let source_params = self.unique_source_record_params.get(source_record)?;
+                        let bindings = source_params.iter().cloned().zip(source_args.iter().cloned()).collect();
+                        Some(Self::substitute_unique_source_type(source_field, &bindings))
+                    });
                 }
                 (Ty::List(element), witchy_canonical_source::access::CheckedPlaceStep::Index(_)
                     | witchy_canonical_source::access::CheckedPlaceStep::DynamicIndex) => {
                     current = element.as_ref().clone();
+                    declared = declared.and_then(|source| match source.unqualified() {
+                        ast::Type::Named(name, args) if name.rsplit('.').next() == Some("List")
+                            && args.len() == 1 => Some(args[0].clone()),
+                        _ => None,
+                    });
                 }
                 (Ty::Named(name, arguments), witchy_canonical_source::access::CheckedPlaceStep::DynamicIndex)
                     if name.as_ref() == "Dict" && arguments.len() == 2 => {
                     current = arguments[1].clone();
+                    declared = declared.and_then(|source| match source.unqualified() {
+                        ast::Type::Named(name, args) if name.rsplit('.').next() == Some("Dict")
+                            && args.len() == 2 => Some(args[1].clone()),
+                        _ => None,
+                    });
                 }
                 _ => return Err(()),
+            }
+            if depth + 1 != place.steps().len()
+                && declared.as_ref().is_some_and(is_frozen_value_type)
+            {
+                return Ok(true);
             }
         }
         Ok(false)
@@ -3316,6 +3345,7 @@ impl Checker {
         self.unique_storage_bindings.push(HashSet::new());
         self.inferred_owner_bindings.push(HashSet::new());
         self.unique_binding_types.push(HashMap::new());
+        self.declared_binding_types.push(HashMap::new());
         self.callable_unique_contracts.push(HashMap::new());
         self.callable_opt_provenance.push(HashMap::new());
         self.container_opt_provenance.push(HashMap::new());
@@ -3339,6 +3369,7 @@ impl Checker {
         self.unique_storage_bindings.pop();
         self.inferred_owner_bindings.pop();
         self.unique_binding_types.pop();
+        self.declared_binding_types.pop();
         self.callable_unique_contracts.pop();
         self.callable_opt_provenance.pop();
         self.container_opt_provenance.pop();
@@ -5801,6 +5832,10 @@ impl Checker {
                         self.reject_opt_callable_erasure(value, &format!("mutable binding `{name}`"))?;
                     }
                     self.define(name.clone(), vt, *mutable);
+                    if let Some(declared) = decl {
+                        self.declared_binding_types.last_mut().expect("declared types track scopes")
+                            .insert(name.clone(), declared.clone());
+                    }
                     let binding_ty = self.lookup(name).expect("new binding retains its type");
                     self.mark_must_consume_binding(name, &binding_ty);
                     if decl.as_ref().is_some_and(is_frozen_value_type)
@@ -10569,6 +10604,7 @@ impl Checker {
         self.opt_viewed_roots.clear();
         self.inferred_owner_bindings = vec![HashSet::new()];
         self.unique_binding_types = vec![HashMap::new()];
+        self.declared_binding_types = vec![HashMap::new()];
         self.callable_unique_contracts = vec![HashMap::new()];
         self.callable_opt_provenance = vec![HashMap::new()];
         self.container_opt_provenance = vec![HashMap::new()];
@@ -10673,6 +10709,10 @@ impl Checker {
                 ty.clone(),
                 param.convention.binds_mutable(),
             );
+            if let Some(declared) = &param.ty {
+                self.declared_binding_types.last_mut().expect("declared types track scopes")
+                    .insert(param.name.clone(), declared.clone());
+            }
             if self.current_opt_callable {
                 // The declaration is the checked entry boundary: callers must
                 // supply provenance before this local becomes callable.
@@ -12922,6 +12962,7 @@ fn run_check_selected(
         unique_storage_bindings: vec![HashSet::new()],
         opt_viewed_roots: HashSet::new(),
         unique_binding_types: vec![HashMap::new()],
+        declared_binding_types: vec![HashMap::new()],
         checked_storage_declared_types: HashSet::new(),
         affine_expression_types: HashMap::new(),
         callable_unique_contracts: vec![HashMap::new()],
