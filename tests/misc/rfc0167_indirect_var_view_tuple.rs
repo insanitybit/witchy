@@ -234,18 +234,19 @@ fn main() -> Int:
 }
 
 #[test]
-fn shadowed_tuple_without_source_qualifiers_cannot_inherit_outer_write_proof() {
+fn shadowed_frozen_tuple_cannot_inherit_outer_write_proof() {
     let error = witchy::resolve_std_only_checked(r#"
 type Box:
     value: Int
 fn main() -> Int:
     var pair: (Box, Int) = (Box(1), 2)
     if true:
-        var pair = (Box(3), 4)
+        let item: frozen Box = Box(3)
+        var pair = (item, 4)
         pair.0.value = 5
     0
-"#).expect_err("a shadowed tuple has no inherited source qualifier proof");
-    assert!(error.to_string().contains("cannot verify deep assignment place"), "{error}");
+"#).expect_err("a shadowed tuple must use its own frozen qualifier proof");
+    assert!(error.to_string().contains("cannot mutate through frozen value"), "{error}");
 }
 
 #[test]

@@ -393,6 +393,21 @@ shadow binding cannot inherit its outer binding's source proof. This closes
 the declared non-frozen tuple path; inferred and unresolved source qualifiers
 remain fail closed, so row H is still partial.
 
+Inferred tuple storage, 2026-10-03: the checker now reconstructs source
+qualifiers through checked tuple and nonempty homogeneous list literals,
+scoped variable aliases, and non-generic constructors. An unannotated tuple
+containing a live `must` sibling admits a deep scalar `var` write and returns
+`792` on admitted unoptimized Wasm with zero canonical heap leaks. A frozen
+element from an alias refuses that write; shadowed bindings use their own
+source proof. An explicit plain tuple annotation cannot erase a known frozen
+initializer element. Whole-root reassignment joins the old and new source
+shapes, retaining frozen children when either side is frozen. Projected writes
+currently revoke the proof, since their
+replacement's source shape is not yet reconstructed. This prevents a frozen
+value assigned after initialization, including through conditional control
+flow, from borrowing a stale plain-storage proof. Calls, generic constructors,
+and unresolved source shapes remain fail closed; row H remains partial.
+
 `rfc0167_frozen_view_replacement` adds a normal-mode row L composition
 witness: a rooted `&frozen Box` keeps the old field value when a `var frozen
 Box` root is replaced, so admitted unoptimized Wasm prints the independently

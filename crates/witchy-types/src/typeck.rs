@@ -1618,10 +1618,61 @@ impl Checker {
             .find_map(|types| types.get(name).cloned())
     }
 
-    fn declared_binding_type(&self, name: &str) -> Option<ast::Type> {
-        self.scopes.iter().zip(&self.declared_binding_types).rev()
+    fn binding_storage_type(&self, name: &str) -> Option<ast::Type> {
+        self.scopes.iter().zip(&self.binding_storage_types).rev()
             .find_map(|(scope, types)| scope.contains_key(name).then(|| types.get(name).cloned()))
             .flatten()
+    }
+
+    fn common_storage_type(declared: &ast::Type, initializer: &ast::Type) -> Option<ast::Type> {
+        if declared == initializer {
+            return Some(declared.clone());
+        }
+        match (declared, initializer) {
+            (ast::Type::Qualified(ast::TypeQual::Frozen, inner), other)
+            | (other, ast::Type::Qualified(ast::TypeQual::Frozen, inner))
+                if inner.as_ref() == other =>
+                    Some(ast::Type::Qualified(ast::TypeQual::Frozen, inner.clone())),
+            (ast::Type::Tuple(left), ast::Type::Tuple(right)) if left.len() == right.len() =>
+                Some(ast::Type::Tuple(left.iter().zip(right).map(|(a, b)|
+                    Self::common_storage_type(a, b)).collect::<Option<Vec<_>>>()?)),
+            (ast::Type::Named(left_name, left_args), ast::Type::Named(right_name, right_args))
+                if left_name == right_name && left_args.len() == right_args.len() =>
+                    Some(ast::Type::Named(left_name.clone(), left_args.iter().zip(right_args)
+                        .map(|(a, b)| Self::common_storage_type(a, b))
+                        .collect::<Option<Vec<_>>>()?)),
+            _ => None,
+        }
+    }
+
+    /// Recover only source storage shapes whose qualifiers remain visible
+    /// after inference. A `Ty` rendering alone cannot prove that a tuple
+    /// element is not frozen, because `Ty` erases that qualifier.
+    fn inferred_binding_storage_type(&self, expression: &Expr, ty: &Ty) -> Option<ast::Type> {
+        let resolved = self.resolve(ty);
+        match (expression, &resolved) {
+            (Expr::Var(name), _) => self.binding_storage_type(name),
+            (Expr::Unary { op: UnOp::Move, expr }, _) =>
+                self.inferred_binding_storage_type(expr, &resolved),
+            (Expr::Tuple(items), Ty::Tuple(fields)) if items.len() == fields.len() =>
+                Some(ast::Type::Tuple(items.iter().zip(fields.iter()).map(|(item, field)|
+                    self.inferred_binding_storage_type(item, field)).collect::<Option<Vec<_>>>()?)),
+            (Expr::List(items), Ty::List(element)) if !items.is_empty() => {
+                let mut sources = items.iter().map(|item|
+                    self.inferred_binding_storage_type(item, element));
+                let first = sources.next()??;
+                sources.all(|source| source.as_ref() == Some(&first))
+                    .then_some(ast::Type::Named("List".into(), vec![first]))
+            }
+            (Expr::Ctor { .. } | Expr::Record { .. }, Ty::Named(name, args)) if args.is_empty() =>
+                Some(ast::Type::Named(name.to_string(), Vec::new())),
+            (Expr::Int(_), Ty::Int)
+            | (Expr::Float(_), Ty::Float)
+            | (Expr::Duration(_), Ty::Duration)
+            | (Expr::Str(_), Ty::String)
+            | (Expr::Bool(_), Ty::Bool) => ty_to_ast(&resolved),
+            _ => None,
+        }
     }
 
 
@@ -2940,7 +2991,7 @@ impl Checker {
             return Err(());
         }
         let mut current = self.lookup(root).map(|ty| self.resolve(&ty)).ok_or(())?;
-        let mut declared = self.declared_binding_type(root);
+        let mut declared = self.binding_storage_type(root);
         for (depth, step) in place.steps().iter().enumerate() {
             match (self.resolve(&current), step) {
                 (Ty::Tuple(fields), witchy_canonical_source::access::CheckedPlaceStep::Field(field)) => {
@@ -3345,7 +3396,7 @@ impl Checker {
         self.unique_storage_bindings.push(HashSet::new());
         self.inferred_owner_bindings.push(HashSet::new());
         self.unique_binding_types.push(HashMap::new());
-        self.declared_binding_types.push(HashMap::new());
+        self.binding_storage_types.push(HashMap::new());
         self.callable_unique_contracts.push(HashMap::new());
         self.callable_opt_provenance.push(HashMap::new());
         self.container_opt_provenance.push(HashMap::new());
@@ -3369,7 +3420,7 @@ impl Checker {
         self.unique_storage_bindings.pop();
         self.inferred_owner_bindings.pop();
         self.unique_binding_types.pop();
-        self.declared_binding_types.pop();
+        self.binding_storage_types.pop();
         self.callable_unique_contracts.pop();
         self.callable_opt_provenance.pop();
         self.container_opt_provenance.pop();
@@ -5831,10 +5882,17 @@ impl Checker {
                         // must not also discard a callable's entry obligations.
                         self.reject_opt_callable_erasure(value, &format!("mutable binding `{name}`"))?;
                     }
+                    let initializer_storage = self.inferred_binding_storage_type(value, &vt);
+                    let storage_source = match (decl.as_ref(), initializer_storage) {
+                        (Some(declared), Some(initializer)) =>
+                            Self::common_storage_type(declared, &initializer),
+                        (Some(declared), _) => Some(declared.clone()),
+                        (None, inferred) => inferred,
+                    };
                     self.define(name.clone(), vt, *mutable);
-                    if let Some(declared) = decl {
-                        self.declared_binding_types.last_mut().expect("declared types track scopes")
-                            .insert(name.clone(), declared.clone());
+                    if let Some(declared) = storage_source {
+                        self.binding_storage_types.last_mut().expect("storage types track scopes")
+                            .insert(name.clone(), declared);
                     }
                     let binding_ty = self.lookup(name).expect("new binding retains its type");
                     self.mark_must_consume_binding(name, &binding_ty);
@@ -6042,6 +6100,25 @@ impl Checker {
                         && !self.callable_purity_widening(&existing, &vt)
                     {
                         self.unify(&existing, &vt)?;
+                    }
+                    // This source shape is a permission to inspect deep storage,
+                    // not merely the erased value type. An assignment may run in
+                    // only one branch, so merge the old and replacement shapes
+                    // conservatively; a frozen child dominates a plain child.
+                    // A projected write can replace a qualified child; until
+                    // its full source shape is reconstructed, revoke the proof.
+                    let replacement_storage = (*place_depth == 0)
+                        .then(|| self.inferred_binding_storage_type(value, &vt))
+                        .flatten();
+                    if let Some(scope) = self.scopes.iter().rposition(|scope| scope.contains_key(name)) {
+                        let storage = &mut self.binding_storage_types[scope];
+                        let common = storage.get(name).and_then(|old|
+                            replacement_storage.as_ref().and_then(|new|
+                                Self::common_storage_type(old, new)));
+                        match common {
+                            Some(source) => { storage.insert(name.clone(), source); }
+                            None => { storage.remove(name); }
+                        }
                     }
                     self.reinitialize_binding(name); // reassignment re-initializes
                     // Only a whole-binding reassignment replaces the root's
@@ -10604,7 +10681,7 @@ impl Checker {
         self.opt_viewed_roots.clear();
         self.inferred_owner_bindings = vec![HashSet::new()];
         self.unique_binding_types = vec![HashMap::new()];
-        self.declared_binding_types = vec![HashMap::new()];
+        self.binding_storage_types = vec![HashMap::new()];
         self.callable_unique_contracts = vec![HashMap::new()];
         self.callable_opt_provenance = vec![HashMap::new()];
         self.container_opt_provenance = vec![HashMap::new()];
@@ -10710,7 +10787,7 @@ impl Checker {
                 param.convention.binds_mutable(),
             );
             if let Some(declared) = &param.ty {
-                self.declared_binding_types.last_mut().expect("declared types track scopes")
+                self.binding_storage_types.last_mut().expect("storage types track scopes")
                     .insert(param.name.clone(), declared.clone());
             }
             if self.current_opt_callable {
@@ -12962,7 +13039,7 @@ fn run_check_selected(
         unique_storage_bindings: vec![HashSet::new()],
         opt_viewed_roots: HashSet::new(),
         unique_binding_types: vec![HashMap::new()],
-        declared_binding_types: vec![HashMap::new()],
+        binding_storage_types: vec![HashMap::new()],
         checked_storage_declared_types: HashSet::new(),
         affine_expression_types: HashMap::new(),
         callable_unique_contracts: vec![HashMap::new()],

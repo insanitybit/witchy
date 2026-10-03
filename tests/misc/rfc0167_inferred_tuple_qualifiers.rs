@@ -50,6 +50,50 @@ fn main() -> Int:
     pair.0.value = 9
     0
 "#).expect_err("inferred tuple must retain the frozen element's qualifier");
-    assert!(error.to_string().contains("frozen")
-        || error.to_string().contains("cannot verify deep assignment place"), "{error}");
+    assert!(error.to_string().contains("cannot mutate through frozen value"), "{error}");
+}
+
+#[test]
+fn inferred_tuple_rebinding_cannot_reuse_stale_plain_storage_proof() {
+    let error = witchy::resolve_std_only_checked(r#"
+type Box:
+    value: Int
+fn main() -> Int:
+    let item: frozen Box = Box(1)
+    var pair = (Box(2), 3)
+    pair = (item, 4)
+    pair.0.value = 9
+    0
+"#).expect_err("rebinding must invalidate the old tuple field proof");
+    assert!(error.to_string().contains("cannot mutate through frozen value"), "{error}");
+}
+
+#[test]
+fn conditional_rebinding_cannot_restore_a_plain_storage_proof() {
+    let error = witchy::resolve_std_only_checked(r#"
+type Box:
+    value: Int
+fn main() -> Int:
+    let item: frozen Box = Box(1)
+    var pair = (Box(2), 3)
+    if true:
+        pair = (item, 4)
+    pair.0.value = 9
+    0
+"#).expect_err("a conditional replacement must revoke the prior deep-write proof");
+    assert!(error.to_string().contains("cannot mutate through frozen value"), "{error}");
+}
+
+#[test]
+fn plain_tuple_annotation_cannot_erase_a_frozen_initializer_element() {
+    let error = witchy::resolve_std_only_checked(r#"
+type Box:
+    value: Int
+fn main() -> Int:
+    let item: frozen Box = Box(1)
+    var pair: (Box, Int) = (item, 2)
+    pair.0.value = 9
+    0
+"#).expect_err("an annotation cannot erase the initializer's frozen storage");
+    assert!(error.to_string().contains("cannot mutate through frozen value"), "{error}");
 }
