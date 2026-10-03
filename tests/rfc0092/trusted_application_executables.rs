@@ -125,7 +125,8 @@ fn main(console: Console, cwd: Dir[Read], root: Dir[Read], env: Env, args: List(
     assert!(stderr(&rejected).contains("digest mismatch"), "{}", stderr(&rejected));
 
     // The identical source remains a portable consumer-hosted module: without
-    // explicit roots it fails closed; with the two consumer grants it runs.
+    // explicit roots it fails closed; with the consumer grants (two roots and
+    // the named Env variable) it runs.
     let portable = scratch.join("portable.wasm");
     let compiled = run(Command::new(BIN).args([
         "compile",
@@ -134,7 +135,13 @@ fn main(console: Console, cwd: Dir[Read], root: Dir[Read], env: Env, args: List(
         portable.to_str().unwrap(),
     ]));
     assert!(compiled.status.success(), "{}", stderr(&compiled));
-    let denied = run(Command::new(BIN).args(["sandbox", portable.to_str().unwrap(), "inside.txt"]));
+    let denied = run(Command::new(BIN).args([
+        "sandbox",
+        "--env",
+        "RFC0092_TEST_LABEL",
+        portable.to_str().unwrap(),
+        "inside.txt",
+    ]));
     assert!(!denied.status.success());
     assert!(stderr(&denied).contains("no subtree was granted"), "{}", stderr(&denied));
     let granted = run(Command::new(BIN).current_dir(scratch.path()).args([
@@ -143,6 +150,8 @@ fn main(console: Console, cwd: Dir[Read], root: Dir[Read], env: Env, args: List(
         ".",
         "--dir",
         "/",
+        "--env",
+        "RFC0092_TEST_LABEL",
         portable.to_str().unwrap(),
         "inside.txt",
     ]));
