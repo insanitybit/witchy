@@ -1357,6 +1357,7 @@ if capability_imports.contains("build_out_write_at") {
                     push_import_signature(vec![dir, text, text], vec![response], None)?,
                     push_import_signature(vec![response], vec![ValueType::Size], None)?,
                     push_import_signature(vec![file, text], vec![response], None)?,
+                    push_import_signature(vec![dir, text], vec![dir], None)?,
                 ];
                 catalog = catalog.with_dir_storage_imports(ids, string_layout)
                     .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
@@ -13919,7 +13920,7 @@ impl FunctionLowerer<'_> {
         Ok(destination)
     }
 
-    fn lower_record_field(&mut self, base: &Expr, field: &str) -> Result<ValueId, CanonicalLoweringError> {
+    pub(super) fn lower_record_field(&mut self, base: &Expr, field: &str) -> Result<ValueId, CanonicalLoweringError> {
         if let Expr::Var(root) = base
             && let Some((lane, _)) = self.scalarized_field(root, field)
         {
@@ -14321,6 +14322,7 @@ impl FunctionLowerer<'_> {
         let is_file = receiver_kind == witchy_wir::canonical_safewir::FILE_CAPABILITY_KIND;
         match (name, is_dir, is_file, &arguments[1..]) {
             ("__capop.make_dir", true, false, [path]) => self.lower_dir_effect(token, "dir_make_dir_at", &[path]).map(Some),
+            ("__capop.only", true, false, [policy]) => self.lower_dir_only(token, policy).map(Some),
             ("__capop.only", false, false, [origins])
                 if receiver_kind == witchy_wir::canonical_safewir::FETCH_CAPABILITY_KIND => {
                 self.lower_fetch_only(token, origins).map(Some)
@@ -21397,8 +21399,8 @@ struct HostImports {
 }
 
 /// The canonical capability imports, in catalog order.
-const CAPABILITY_IMPORTS: [&str; 50] =
-    ["dir_exists_at", "dir_write_at", "build_out_write_at", "dir_is_dir_at", "build_read_at", "build_read_response_size", "build_read_response_into", "build_env_at", "build_response_is_some", "build_exec_run", "build_net_fetch", "net_fetch_at", "fetch_send_at", "fetch_response_size", "fetch_response_into", "fetch_only_at", "clock_now", "clock_now_monotonic", "dir_make_dir_at", "secretstore_lookup_at", "crypto_sign_into", "crypto_public_key_into", "dir_create_new_at", "dir_replace_at", "dir_read_bytes_at", "dir_response_size", "dir_response_into", "dir_write_bytes_at", "dir_append_bytes_at", "dir_set_executable_at", "dir_rename_at", "dir_read_at", "dir_response_status", "file_read_at", "file_response_status", "file_response_size", "file_response_into", "dir_list_at", "env_get_at", "env_response_status", "env_response_size", "env_response_into", "dir_subtree_open_at", "dir_read_file_at", "dir_write_file_at", "dir_response_take_dir", "dir_response_take_file", "dir_append_at", "dir_response_flag", "file_write_at"];
+const CAPABILITY_IMPORTS: [&str; 51] =
+    ["dir_exists_at", "dir_write_at", "build_out_write_at", "dir_is_dir_at", "build_read_at", "build_read_response_size", "build_read_response_into", "build_env_at", "build_response_is_some", "build_exec_run", "build_net_fetch", "net_fetch_at", "fetch_send_at", "fetch_response_size", "fetch_response_into", "fetch_only_at", "clock_now", "clock_now_monotonic", "dir_make_dir_at", "secretstore_lookup_at", "crypto_sign_into", "crypto_public_key_into", "dir_create_new_at", "dir_replace_at", "dir_read_bytes_at", "dir_response_size", "dir_response_into", "dir_write_bytes_at", "dir_append_bytes_at", "dir_set_executable_at", "dir_rename_at", "dir_read_at", "dir_response_status", "file_read_at", "file_response_status", "file_response_size", "file_response_into", "dir_list_at", "env_get_at", "env_response_status", "env_response_size", "env_response_into", "dir_subtree_open_at", "dir_read_file_at", "dir_write_file_at", "dir_response_take_dir", "dir_response_take_file", "dir_append_at", "dir_response_flag", "file_write_at", "dir_only_at"];
 
 /// The separator between the names a `dir_list_at` response carries; a file name never
 /// contains it.
@@ -21554,6 +21556,7 @@ fn collect_capability_imports(module: &witchy_syntax::ast::Module, table: &TypeT
                     ("__capop.fetch_build", "BuildNet") => {
                         needed.extend(witchy_wir::canonical_safewir::BUILD_NET_IMPORT_NAMES);
                     }
+                    ("__capop.only", "Dir") => { needed.insert("dir_only_at"); }
                     ("__capop.subtree", "Dir") => {
                         needed.extend(["dir_subtree_open_at", "dir_response_status", "dir_response_size", "dir_response_into", "dir_response_take_dir"]);
                     }

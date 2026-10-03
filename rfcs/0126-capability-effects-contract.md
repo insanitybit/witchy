@@ -174,6 +174,8 @@ follows a leaf. Under an entry policy, `dir.list` names exactly the entries
 messages name none. A `File` read through a symlink leaf that fails is
 `Denied` whatever the target is, and a `File` opened under an entry policy
 never follows its leaf.
+`dir.only(policy)` narrows the entry policy those rules consult. It cannot
+widen and cannot fail, so it returns `Dir` rather than a `Result`.
 
 The cryptographic, networking, filesystem, process, server, environment, and
 secret modules are retained features. Pure hashing, verification, and encoding

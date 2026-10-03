@@ -7,7 +7,7 @@ use super::*;
 /// payload (the contents, or the failure message), each read back without
 /// touching the filesystem again.
 pub const DIR_RESPONSE_KIND: CapabilityKindId = CapabilityKindId::new(22);
-pub const DIR_STORAGE_IMPORT_NAMES: [&str; 24] = [
+pub const DIR_STORAGE_IMPORT_NAMES: [&str; 25] = [
     "dir_create_new_at", "dir_replace_at", "dir_read_bytes_at",
     "dir_response_size", "dir_response_into", "dir_write_bytes_at",
     "dir_append_bytes_at", "dir_set_executable_at", "dir_rename_at",
@@ -17,11 +17,12 @@ pub const DIR_STORAGE_IMPORT_NAMES: [&str; 24] = [
     "dir_subtree_open_at", "dir_read_file_at", "dir_write_file_at",
     "dir_response_take_dir", "dir_response_take_file",
     "dir_append_at", "dir_response_flag", "file_write_at",
+    "dir_only_at",
 ];
 
 impl CanonicalAbiCatalog {
     pub fn with_dir_storage_imports(
-        mut self, signatures: [FunctionSignatureId; 24], byte_layout: LayoutId,
+        mut self, signatures: [FunctionSignatureId; 25], byte_layout: LayoutId,
     ) -> Result<Self, String> {
         use crate::wir_prelude::{AbiImportAuthority, WasmTy::*};
         let dir = HostParameterRole::Capability(DIR_CAPABILITY_KIND);
@@ -139,6 +140,12 @@ impl CanonicalAbiCatalog {
                 &[ExternRef, I32, I32], &[ExternRef], signatures[23],
                 vec![HostParameterRole::Capability(FILE_CAPABILITY_KIND), buffer(AccessMode::Read)],
                 vec![HostResultRole::Capability(DIR_RESPONSE_KIND)], HostMutation::ReadOnly, &[AbiImportAuthority::FileAuthority])?,
+            // `dir.only(policy)`: narrowing never widens and never fails, so
+            // any Dir may narrow itself and the result is the Dir itself.
+            authenticated_capability_import(DIR_STORAGE_IMPORT_NAMES[24],
+                &[ExternRef, I32, I32], &[ExternRef], signatures[24],
+                vec![dir.clone(), buffer(AccessMode::Read)],
+                vec![HostResultRole::Capability(DIR_CAPABILITY_KIND)], HostMutation::ReadOnly, &[AbiImportAuthority::DirGrant])?,
         ];
         for import in imports { self.imports.insert(import.id, import); }
         Ok(self)

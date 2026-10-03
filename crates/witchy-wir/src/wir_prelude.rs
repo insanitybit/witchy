@@ -427,6 +427,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "dir_append_at" (func $dir_append_at_host (param externref i32 i32 i32 i32) (result externref)))
   (import "witchy" "dir_response_flag" (func $dir_response_flag_host (param externref) (result i32)))
   (import "witchy" "file_write_at" (func $file_write_at_host (param externref i32 i32) (result externref)))
+  (import "witchy" "dir_only_at" (func $dir_only_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "crypto_sha512_slices" (func $crypto_sha512_slices_host (param i32 i32 i32 i32) (result i32)))
   (import "witchy" "crypto_sha3_256_slices" (func $crypto_sha3_256_slices_host (param i32 i32 i32 i32) (result i32)))
   (import "witchy" "crypto_hmac_sha256_slices" (func $crypto_hmac_sha256_slices_host (param i32 i32 i32 i32 i32 i32) (result i32)))
@@ -639,6 +640,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "dir_append_at"
         | "dir_response_flag"
         | "file_write_at"
+        | "dir_only_at"
         | "dir_write_bytes_at"
         | "dir_append_bytes_at"
         | "dir_set_executable_at"
@@ -782,7 +784,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         "mint_env" | "env_only" | "env_len" | "env_fill" | "env_get_at" | "env_response_status"
         | "env_response_size" | "env_response_into" => AUTH_ENV,
         "mint_dir" | "dir_response_take_dir" | "dir_response_take_file" | "dir_response_status"
-        | "dir_response_size" | "dir_response_into" | "dir_response_flag" => AUTH_DIR_GRANT,
+        | "dir_response_size" | "dir_response_into" | "dir_response_flag" | "dir_only_at" => AUTH_DIR_GRANT,
         "dir_read_len"
         | "dir_read_bytes_len"
         | "dir_list_size"

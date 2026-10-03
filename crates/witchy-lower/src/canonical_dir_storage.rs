@@ -74,6 +74,23 @@ impl FunctionLowerer<'_> {
         Ok(joined[0])
     }
 
+    /// `dir.only(policy)`: the receiver with its entry policy narrowed by the
+    /// sealed `DirPolicy`'s pattern. Narrowing only shrinks what the Dir can
+    /// see and cannot fail, so the result is a `Dir`, not a `Result`.
+    pub(super) fn lower_dir_only(&mut self, token: ValueId, policy: &Expr) -> Result<ValueId, CanonicalLoweringError> {
+        use witchy_wir::canonical_safewir::DIR_CAPABILITY_KIND;
+        let layout = self.string_layout_id()?;
+        let pattern = self.lower_record_field(policy, "pattern")?;
+        let pattern = self.string_slice_argument(pattern, layout)?;
+        let narrowed = self.fresh(ValueType::Capability(DIR_CAPABILITY_KIND))?;
+        let import = self.capability_import("dir_only_at")?;
+        self.push_operation(Operation::HostCall {
+            destinations: vec![narrowed], import,
+            arguments: vec![HostCallArgument::Capability(token), pattern],
+        });
+        Ok(narrowed)
+    }
+
     /// `dir.subtree`, `dir.read_file`, `dir.write_file`: one host navigation
     /// (`open`), then `Result(Dir|File, CapError)` whose success value is the
     /// capability the response carries.

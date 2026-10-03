@@ -260,6 +260,11 @@ pub fn dir_only(current: &str, refine: &str) -> String {
     if current.is_empty() {
         return refine.to_string();
     }
+    // A row `group` cannot place (the deny-all sentinel, or anything malformed)
+    // would be dropped and so lifted by a further refinement: keep denying.
+    if current.split('\n').any(|pattern| !pattern.contains(':')) {
+        return DIR_DENY_ALL.to_string();
+    }
     let current = group(current);
     let mut narrowed = BTreeSet::new();
     for (dimension, patterns) in &current {
@@ -591,6 +596,10 @@ mod tests {
             false
         ));
         assert!(!dir_admits(&dir_only("", "garbled"), "anything", true));
+        // Deny-all stays deny-all: a further refinement never lifts it.
+        let none = dir_only("ext:.txt", "ext:.md");
+        assert!(!dir_admits(&dir_only(&none, "ext:.txt"), "note.txt", false));
+        assert!(!dir_admits(&dir_only(&dir_only("kind:file", "kind:dir"), "ext:.txt"), "note.txt", false));
         assert!(dir_admits("ext:.txt", "nested", true));
         assert!(!dir_admits("kind:file", "nested", true));
     }

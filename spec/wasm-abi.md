@@ -422,6 +422,7 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `dir_append_at` | `(externref, i32, i32, i32, i32) -> externref` | capability authority | Dir.Write | omitted |
 | `dir_response_flag` | `(externref) -> i32` | capability authority | Dir.grant | omitted |
 | `file_write_at` | `(externref, i32, i32) -> externref` | capability authority | File.authority | omitted |
+| `dir_only_at` | `(externref, i32, i32) -> externref` | capability authority | Dir.grant | omitted |
 | `crypto_sha512_slices` | `(i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |
 | `crypto_sha3_256_slices` | `(i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |
 | `crypto_hmac_sha256_slices` | `(i32, i32, i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |

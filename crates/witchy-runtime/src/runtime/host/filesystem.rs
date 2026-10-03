@@ -22,6 +22,8 @@ pub(in crate::runtime) fn link_mint_dir(linker: &mut Linker<VmState>) -> Result<
     linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[10], host_dir_response_status)?;
     linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[22], host_dir_response_flag)?;
     linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[19], host_dir_response_take_dir)?;
+    // Narrowing never widens, so it links under any Dir grant.
+    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[24], host_dir_only_at)?;
     linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[20], host_dir_response_take_file)?;
     Ok(())
 }
@@ -359,6 +361,20 @@ fn host_dir_only(
         policy: narrowed,
         rights: dir.rights,
     }).map(Some)
+}
+
+/// `dir_only_at(d, policy) -> Dir`: `dir.only(policy)`, a Dir whose entry
+/// policy is the current one narrowed by `policy`. Refinement only shrinks (a
+/// malformed or disjoint one denies everything), so it needs no right and never
+/// fails; the rights and backing are the receiver's.
+fn host_dir_only_at(
+    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>, policy_ptr: i32, policy_len: i32,
+) -> Result<Option<Rooted<ExternRef>>> {
+    let dir = dir_authority_ref(&caller, d)?;
+    let memory = memory_of(&mut caller)?;
+    let refine = read_slice_str(memory.data(&caller), policy_ptr, policy_len)?;
+    let policy = witchy_caps::capabilities::dir_only(&dir.policy, &refine);
+    ExternRef::new(&mut caller, DirAuthority { policy, ..dir }).map(Some)
 }
 
 /// Look up a direct `--file` grant by ordinal while minting the root `File`

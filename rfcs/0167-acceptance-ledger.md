@@ -3312,3 +3312,21 @@ The source tree walker and the legacy codegen refuse the family by name. The
 package manager keeps its aborting behavior through `gm_core` helpers
 (`write_or_fail`, `path_exists`, `claim`, ...), and `fs.ensure_dir` returns
 `Result((), CapError)`.
+
+### 2026-10-03: `dir.only(policy)` lowers to admitted Wasm (RFC-0011, RFC-0126 rule 3)
+
+`dir.only(policy)` lowers through the new `dir_only_at(dir, pattern) -> Dir`
+import, which links under any `Dir` grant. Narrowing intersects the receiver's
+entry policy with the sealed `DirPolicy` pattern: it never widens, and a
+disjoint or malformed refinement denies everything, so `only` cannot fail and
+still returns `Dir`. The receiver's rights and root are unchanged, and no right
+is needed to narrow (the legacy `dir_only` demanded `Read`). `dir_only` in
+`witchy-cap-model` now keeps a deny-all policy deny-all: a further refinement
+used to drop the sentinel and lift it.
+
+`dir_only_entry_policy_confines_in_admitted_wasm` runs the host policy classes
+end to end: a name the policy refuses is `Denied` present or absent, an entry
+or alias the grant cannot see is `NotFound` for reads and writes and
+`Ok(false)` for probes, escapes are `Denied`, visible entries work, and chained
+and disjoint narrowing compose. The legacy `dir_only` import stays only for the
+frozen backends.

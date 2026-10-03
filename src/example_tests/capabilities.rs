@@ -126,9 +126,8 @@ use crate::{codegen, interpreter, parser, typeck};
             rows.push(("dir", "link-out.txt", denied("link-out.txt")));
             rows.push(("dir", "link-missing.txt", denied("link-missing.txt")));
         }
-        // Policy refusals (present or absent, aliases) are pinned at the host by
-        // `dir_read_at_answers_failures_as_statuses`: `dir.only` does not lower
-        // to admitted Wasm yet.
+        // Policy refusals run end to end in
+        // `dir_only_entry_policy_confines_in_admitted_wasm`.
         let mut body = String::from("fn main(console: Console, dir: Dir):\n");
         for (receiver, path, _) in &rows {
             body.push_str(&format!("    console.print(shown({receiver}.read(\"{path}\")))\n"));
@@ -164,16 +163,72 @@ use crate::{codegen, interpreter, parser, typeck};
         let _ = std::fs::remove_dir_all(&base);
     }
 
-    // RFC-0011 `kind:`/`ext:` entry policies on every Dir operation, including
-    // links and case-folded aliases that would reach a refused file, are pinned
-    // at the host: `dir_storage_*`, `dir_installer_*`, and the
-    // `dir_*_answers_failures_as_statuses` checks (`dir.only` does not lower to
-    // admitted Wasm, and the legacy backends refuse `CapError` operations).
-
-    // Under an entry policy, `exists`/`is_dir` answer `Ok(false)` for an
-    // entry the grant cannot see and `Denied` for a refused name: pinned at
-    // the host by `dir_write_family_answers_failures_as_statuses` and the
-    // `dir_is_dir_slices_*` checks (`dir.only` does not lower to admitted Wasm).
+    /// RFC-0011 entry policies through `dir.only(...)` in admitted Wasm. A name
+    /// the policy refuses is `Denied` present or absent, an entry it cannot see
+    /// answers like a missing one (`NotFound`, or `Ok(false)` from a probe), an
+    /// escape is `Denied`, and a visible entry works. Narrowing composes and
+    /// never widens: a disjoint refinement denies everything. Every class
+    /// (aliases, case folds, each write) is pinned at the host by
+    /// `dir_read_at_answers_failures_as_statuses` and
+    /// `dir_write_family_answers_failures_as_statuses`.
+    #[test]
+    fn dir_only_entry_policy_confines_in_admitted_wasm() {
+        let base = std::env::temp_dir().join(format!("witchy_wasm_dir_only_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let root = base.join("root");
+        std::fs::create_dir_all(root.join("sub")).expect("mkdir");
+        std::fs::write(root.join("a.txt"), "alpha").expect("seed a");
+        std::fs::write(root.join("keep.bin"), "binary").expect("seed bin");
+        std::fs::write(root.join("sub/y.txt"), "hello").expect("seed y");
+        std::fs::write(base.join("outside.txt"), "escaped contents").expect("seed outside");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("keep.bin", root.join("alias.txt")).expect("alias");
+        let denied = |path: &str| format!("denied: `{path}` is not covered by this Dir capability");
+        let missing = |path: &str| format!("missing: `{path}` was not found");
+        let unwritable = |path: &str| format!("missing: `{path}` was not found (or its parent was not)");
+        // (expression, expected): one program evaluates every row.
+        let mut rows: Vec<(String, String)> = vec![
+            ("shown(text.read(\"a.txt\"))".into(), "ok: alpha".into()),
+            ("shown(text.read(\"sub/y.txt\"))".into(), "ok: hello".into()),
+            ("shown(text.read(\"keep.bin\"))".into(), denied("keep.bin")),
+            ("shown(text.read(\"absent.bin\"))".into(), denied("absent.bin")),
+            ("shown(text.read(\"../outside.txt\"))".into(), denied("../outside.txt")),
+            ("shown(text.read(\"keep.bin/x.txt\"))".into(), missing("keep.bin/x.txt")),
+            ("shown(files.read(\"sub\"))".into(), missing("sub")),
+            ("shown(both.read(\"a.txt\"))".into(), "ok: alpha".into()),
+            ("shown(both.read(\"keep.bin\"))".into(), denied("keep.bin")),
+            ("shown(none.read(\"a.txt\"))".into(), denied("a.txt")),
+            ("shown(none.only(Dir.ext(\".txt\")).read(\"a.txt\"))".into(), denied("a.txt")),
+            ("done(text.write(\"new.txt\", \"x\"))".into(), "ok".into()),
+            ("done(text.write(\"new.bin\", \"x\"))".into(), denied("new.bin")),
+            ("done(text.write(\"../escape.txt\", \"x\"))".into(), denied("../escape.txt")),
+            ("done(files.write(\"sub\", \"x\"))".into(), unwritable("sub")),
+            ("probed(text.exists(\"a.txt\"))".into(), "true".into()),
+            ("probed(text.exists(\"keep.bin\"))".into(), "false".into()),
+            ("probed(text.exists(\"../outside.txt\"))".into(), denied("../outside.txt")),
+            ("probed(files.is_dir(\"sub\"))".into(), "false".into()),
+        ];
+        if cfg!(unix) {
+            rows.push(("shown(text.read(\"alias.txt\"))".into(), missing("alias.txt")));
+            rows.push(("done(text.write(\"alias.txt\", \"x\"))".into(), unwritable("alias.txt")));
+        }
+        let mut src = format!("{SHOW_DIR_READ}fn done(r: Result((), CapError)) -> String:\n    match r:\n        Ok(_) -> \"ok\"\n        Err(e) -> shown(Err(e))\n\nfn probed(r: Result(Bool, CapError)) -> String:\n    match r:\n        Ok(found) -> \"${{found}}\"\n        Err(e) -> shown(Err(e))\n\n");
+        src.push_str("fn main(console: Console, dir: Dir):\n    let text = dir.only(Dir.ext(\".txt\"))\n    let files = dir.only(Dir.files())\n    let both = files.only(Dir.ext(\".txt\"))\n    let none = text.only(Dir.ext(\".bin\"))\n");
+        for (expression, _) in &rows {
+            src.push_str(&format!("    console.print({expression})\n"));
+        }
+        let out = run_admitted_dir(&src, &root).expect("a policy refusal is a value");
+        let want: Vec<String> = rows.iter().map(|(_, want)| want.clone()).collect();
+        assert_eq!(out, want);
+        assert_eq!(std::fs::read_to_string(root.join("keep.bin")).expect("keep.bin"), "binary", "a hidden file was written");
+        assert!(!root.join("new.bin").exists() && !base.join("escape.txt").exists());
+        let host = base.to_str().expect("utf8 base");
+        for line in &out {
+            assert!(!line.contains(host), "a guest message disclosed a host path: {line}");
+            assert!(!line.contains("escaped contents") && !line.contains("binary"), "a guest message carried a hidden file: {line}");
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
 
     /// RFC-0011: `dir.subtree(path)` narrows a `Dir` to a subtree, chained
     /// `.subtree(...).subtree(...)` alike, and the same `..` confinement holds
