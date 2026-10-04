@@ -12074,9 +12074,8 @@ impl FunctionLowerer<'_> {
                         }
                         ParameterOwnership::Value if matches!(actual, ValueType::Ref(_)) => {
                             let source_type = self.expression_type(argument)?;
-                            if conventions[parameter] == Convention::Borrow
-                                && StoragePlan::classify(source_type.unqualified(), self.definitions, |_| Some(0))
-                                    .requires_affine_owner_token()
+                            if StoragePlan::classify(source_type.unqualified(), self.definitions, |_| Some(0))
+                                .requires_affine_owner_token()
                             {
                                 return Ok(CallArgument::Value(value));
                             }

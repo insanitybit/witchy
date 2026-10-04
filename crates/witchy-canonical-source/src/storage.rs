@@ -1193,6 +1193,8 @@ pub fn borrowed_affine_match_shape(
         args.len() == arity && args.iter().enumerate().all(|(offset, argument)| {
             let field = &shape.fields[first_field + offset];
             match argument {
+                Pattern::Var(_) if StoragePlan::classify(field.unqualified(), definitions, |_| Some(0))
+                    .requires_affine_owner_token() => true,
                 Pattern::Wildcard | Pattern::Var(_) | Pattern::Int(_) | Pattern::Bool(_)
                     | Pattern::Duration(_) | Pattern::IntRange { .. } =>
                     matches!(StoragePlan::classify(field.unqualified(), definitions, |_| Some(0)),

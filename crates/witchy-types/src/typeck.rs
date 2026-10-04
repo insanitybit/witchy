@@ -10261,6 +10261,23 @@ impl Checker {
             {
                 self.authorize_unique_pattern_storage(&arm.pattern, &declared);
             }
+            if borrowed_inspection {
+                let affine_children = self.scopes.last().expect("match pattern scope")
+                    .iter().filter_map(|(name, (ty, _))| {
+                        let affine = self.ty_carries_must_consume(ty)
+                            || self.unique_binding_type(name).is_some();
+                        affine.then(|| (name.clone(), self.ty_carries_must_consume(ty)))
+                    }).collect::<Vec<_>>();
+                for (name, carries_must) in affine_children {
+                    if !carries_must {
+                        return terr(format!(
+                            "borrowed match cannot bind unique child `{name}` without a checked call-scoped borrow"
+                        ));
+                    }
+                    self.consume_must_binding(&name);
+                    self.mark_borrowed_must_binding(&name);
+                }
+            }
             let mut guard_completes = true;
             if let Some(guard) = &arm.guard {
                 let guard_before = self.consumed.clone();
@@ -10300,6 +10317,12 @@ impl Checker {
                 Some(expected) => self.infer_expected(&arm.body, expected)?,
                 None => self.infer(&arm.body)?,
             };
+            if self.ty_carries_must_consume(&bt)
+                && self.affine_place_root(&arm.body)
+                    .is_some_and(|name| self.is_borrowed_must_binding(&name))
+            {
+                return terr("match arm cannot return a borrowed must-consume child");
+            }
             let arm_storage = self.inferred_binding_storage_type(&arm.body, &bt);
             self.exact_empty_borrowed_must_replacement = None;
             self.reject_implicit_once_copy(&arm.body, &bt, "match arm result")?;
@@ -12019,6 +12042,7 @@ impl TypedModule {
 fn derive_proper_tail_manifest(module: &Module, table: &TypeTable) -> Result<ProperTailSiteManifest, ProperTailManifestError> {
     let mut keys = Vec::new();
     let shadowed_parameters = HashSet::default();
+    let pattern_bindings = HashSet::default();
     let functions = module.items.iter().filter_map(|item| match item {
         Item::Function(function) => Some((function.name.as_str(), function)),
         _ => None,
@@ -12028,14 +12052,14 @@ fn derive_proper_tail_manifest(module: &Module, table: &TypeTable) -> Result<Pro
         match item_def {
             Item::Function(function) => {
                 let callable = ProperTailCallableId { item, method: None, lambda_path: Vec::new() };
-                let caller = TailCaller { callable: &callable, params: &function.params, ret: function.ret.as_ref(), functions: &functions, table, checked_signature: table.functions.get(function.name.as_str()), shadowed_parameters: &shadowed_parameters };
+                let caller = TailCaller { callable: &callable, params: &function.params, ret: function.ret.as_ref(), functions: &functions, table, checked_signature: table.functions.get(function.name.as_str()), shadowed_parameters: &shadowed_parameters, pattern_bindings: &pattern_bindings };
                 collect_callable(&function.body, &caller, &mut keys)?;
             }
             Item::Impl(definition) => {
                 for (method, function) in definition.methods.iter().enumerate() {
                     let method = u32::try_from(method).map_err(|_| ProperTailManifestError::PathOverflow)?;
                     let callable = ProperTailCallableId { item, method: Some(method), lambda_path: Vec::new() };
-                    let caller = TailCaller { callable: &callable, params: &function.params, ret: function.ret.as_ref(), functions: &functions, table, checked_signature: table.functions.get(function.name.as_str()), shadowed_parameters: &shadowed_parameters };
+                    let caller = TailCaller { callable: &callable, params: &function.params, ret: function.ret.as_ref(), functions: &functions, table, checked_signature: table.functions.get(function.name.as_str()), shadowed_parameters: &shadowed_parameters, pattern_bindings: &pattern_bindings };
                     collect_callable(&function.body, &caller, &mut keys)?;
                 }
             }
@@ -12044,7 +12068,7 @@ fn derive_proper_tail_manifest(module: &Module, table: &TypeTable) -> Result<Pro
                     let Some(body) = &signature.default else { continue };
                     let method = u32::try_from(method).map_err(|_| ProperTailManifestError::PathOverflow)?;
                     let callable = ProperTailCallableId { item, method: Some(method), lambda_path: Vec::new() };
-                    let caller = TailCaller { callable: &callable, params: &signature.params, ret: signature.ret.as_ref(), functions: &functions, table, checked_signature: None, shadowed_parameters: &shadowed_parameters };
+                    let caller = TailCaller { callable: &callable, params: &signature.params, ret: signature.ret.as_ref(), functions: &functions, table, checked_signature: None, shadowed_parameters: &shadowed_parameters, pattern_bindings: &pattern_bindings };
                     collect_callable(body, &caller, &mut keys)?;
                 }
             }
@@ -12083,6 +12107,9 @@ struct TailCaller<'a> {
     /// binding at this site.
     /// Assignment preserves a binding; declarations and patterns replace it.
     shadowed_parameters: &'a HashSet<String>,
+    /// A pattern local may name a call-scoped borrow of an affine field. The
+    /// enclosing frame must remain live until such a call returns.
+    pattern_bindings: &'a HashSet<String>,
 }
 
 /// A plain direct `&mut T` parameter is a hidden write-back lane in the
@@ -12332,7 +12359,12 @@ fn collect_expr(
     keys: &mut Vec<ProperTailSiteKey>,
 ) -> Result<(), ProperTailManifestError> {
     path.push(ProperTailPathStep::Node(expr_kind(expr)));
-    if tail && direct_tail_envelope_is_forwarded(expr, *caller)
+    let borrows_pattern_local = match expr {
+        Expr::Call { args, .. } | Expr::Apply { args, .. } => args.iter().any(|arg|
+            matches!(arg, Expr::Var(name) if caller.pattern_bindings.contains(name))),
+        _ => false,
+    };
+    if tail && !borrows_pattern_local && direct_tail_envelope_is_forwarded(expr, *caller)
         && !compiler_known_owned_tail(expr, caller.table)
     {
         if let Some(dispatch) = proper_tail_dispatch(expr) {
@@ -12406,7 +12438,11 @@ fn collect_expr(
             for (index, arm) in arms.iter().enumerate() {
                 let mut shadowed = caller.shadowed_parameters.clone();
                 shadow_tail_pattern(&arm.pattern, caller.params, &mut shadowed);
-                let arm_caller = TailCaller { shadowed_parameters: &shadowed, ..*caller };
+                let mut pattern_bindings = caller.pattern_bindings.clone();
+                let mut names = Vec::new();
+                witchy_syntax::ast::pattern_binds(&arm.pattern, &mut names);
+                pattern_bindings.extend(names);
+                let arm_caller = TailCaller { shadowed_parameters: &shadowed, pattern_bindings: &pattern_bindings, ..*caller };
                 path.push(ProperTailPathStep::Arm(u32::try_from(index).map_err(|_| ProperTailManifestError::PathOverflow)?));
                 if let Some(guard) = &arm.guard {
                     path.push(ProperTailPathStep::Guard);
@@ -12423,6 +12459,7 @@ fn collect_expr(
         Expr::Lambda { params, ret, body, .. } => {
             let nested = ProperTailCallableId { lambda_path: path.clone(), ..caller.callable.clone() };
             let shadowed_parameters = HashSet::default();
+            let pattern_bindings = HashSet::default();
             let nested_caller = TailCaller {
                 callable: &nested,
                 params,
@@ -12431,6 +12468,7 @@ fn collect_expr(
                 table: caller.table,
                 checked_signature: caller.table.type_of(expr),
                 shadowed_parameters: &shadowed_parameters,
+                pattern_bindings: &pattern_bindings,
             };
             path.push(ProperTailPathStep::Child(0));
             collect_block(body, &nested_caller, true, path, keys)?;

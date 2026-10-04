@@ -304,6 +304,28 @@ impl<'a> MemoryChecker<'a> {
             authenticated_projected_bump_write_back_parameter(results, parameters);
         let affine_proof = self.affine_abi.and_then(|proofs| proofs.get(&callee_signature.id));
         let pending_borrow = self.state.pending_affine_borrow;
+        let pending_field = self.state.pending_affine_field_borrow.last().copied();
+        if let Some((borrowed, parent)) = pending_field {
+            let borrowed_index = arguments.iter().position(|argument| matches!(argument,
+                CallArgument::Value(value) if *value == borrowed));
+            if borrowed_index.is_none()
+                || arguments.iter().filter(|argument| matches!(argument,
+                    CallArgument::Value(value) if *value == borrowed)).count() != 1
+                || arguments.iter().any(|argument| matches!(argument,
+                    CallArgument::Value(value) | CallArgument::Move(value)
+                        if self.same_allocation(*value, parent) || self.state.pending_affine_field_borrow.iter()
+                            .any(|(ancestor, _)| value == ancestor && *value != borrowed)))
+                || !results.iter().all(|result| matches!(result,
+                    ResultContract::Value(ValueType::Int | ValueType::Float | ValueType::Bool
+                        | ValueType::Unit | ValueType::Size | ValueType::V128)))
+                || borrowed_index.and_then(|index| affine_proof
+                    .and_then(|proof| proof.parameters.get(index)).and_then(Option::as_ref))
+                    != self.state.affine_plans.get(&borrowed)
+            {
+                return self.unsupported("Call(borrowed affine field boundary)");
+            }
+            self.live_object(parent)?;
+        }
         if let Some((borrowed, dict)) = pending_borrow {
             let borrowed_index = arguments.iter().position(|argument| matches!(argument,
                 CallArgument::Value(value) if *value == borrowed));
@@ -369,6 +391,7 @@ impl<'a> MemoryChecker<'a> {
                         proof.parameters.get(parameter_index)).and_then(Option::as_ref)
                     {
                         let borrowed_affine = (pending_borrow.is_some_and(|(borrowed, _)| borrowed == *value)
+                            || pending_field.is_some_and(|(borrowed, _)| borrowed == *value)
                             || self.is_borrowed_parameter(*value))
                             && self.state.affine_plans.get(value) == Some(plan);
                         if !borrowed_affine && !self.require_affine_plan(*value, plan)? {
@@ -780,6 +803,9 @@ impl<'a> MemoryChecker<'a> {
             self.state.pending_affine_borrow = None;
             self.state.affine_plans.remove(&borrowed);
             self.state.objects.get_mut(&borrowed).expect("checked borrowed slot").ownership = Ownership::Consumed;
+        }
+        if pending_field.is_some() {
+            self.finish_affine_field_borrow();
         }
         Ok(())
     }

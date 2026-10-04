@@ -141,7 +141,9 @@ impl<'a> MemoryChecker<'a> {
                 if self.state.pending_affine_field_borrow.iter().any(|(borrowed, _)| place.object() == *borrowed)
                     && ((*transfer == LoadTransfer::CopyScalar && !place.value_type().is_memory_bearing())
                         || *transfer == LoadTransfer::BorrowAffine));
-            if !borrowed_field_read {
+            if !borrowed_field_read
+                && !matches!(operation, Operation::Call { .. } | Operation::VarCall { .. })
+            {
                 self.finish_affine_field_borrow();
             }
         }

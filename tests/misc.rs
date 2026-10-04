@@ -181,6 +181,8 @@ mod rfc0167_must_result_propagation;
 mod rfc0167_must_borrow_sum;
 #[path = "misc/rfc0167_must_borrow_guard.rs"]
 mod rfc0167_must_borrow_guard;
+#[path = "misc/rfc0167_must_borrow_child_call.rs"]
+mod rfc0167_must_borrow_child_call;
 #[path = "misc/rfc0167_borrowed_affine_projection.rs"]
 mod rfc0167_borrowed_affine_projection;
 #[path = "misc/rfc0167_must_dict_drain.rs"]
