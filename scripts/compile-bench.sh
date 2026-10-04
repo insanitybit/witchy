@@ -62,7 +62,7 @@ export LC_ALL=C
 } > "$output/metadata.txt"
 printf 'round\tvariant\tcpu_s\twall_s\n' > "$output/samples.tsv"
 workloads=(
-    'real:check:projects/grimoire/src/gm_core.witchy'
+    'real:check:benchmarks/compile_real_program.witchy'
     'stdlib:check:std/json.witchy'
     'corpus:emit-wat:tests/rfc0165/corpus/025-aggregates_with_string_payloads_construct_match_and_propagate.witchy'
     'async:emit-wat:benchmarks/compile_async.witchy'

@@ -191,8 +191,10 @@ callee chain) are how you enumerate the other contexts.
 4. **`crates/witchy-caps/src/capabilities.rs` + sealing/narrowing in typeck +
    `crates/witchy-runtime/src/confine.rs`** — capability bypass, sealing escape,
    footprint truth.
-5. **`projects/coven` + `projects/grimoire`** — signature verification, caps-diff /
-   footprint evasion, trusted-publishing.
+5. **The compiler's input boundary** (`src/source/package_inputs*`,
+   `src/source/precompiled_library.rs`) — what explicit `--dep`, `--dep-owner`
+   and `--precompiled` selections can claim, and that a library's bundle binds
+   its owner. Registry verification itself lives in `../grimoire`/`../coven`.
 
 ## Output
 

@@ -7,8 +7,7 @@ this file explains the WHY and the invariants that are not obvious from
 reading it. Companion pieces: `scripts/check.sh` (the gate),
 `scripts/worktree-warm.sh` + `worktree-create.sh` (warm build caches),
 `scripts/test-for-paths.sh` (focused pre-submit checks),
-`scripts/worktree-status.sh` (dashboard), `scripts/warm-witchy-caches.sh`
-(embedded-program cache warmer), `.config/nextest.toml` (test groups,
+`scripts/worktree-status.sh` (dashboard), `.config/nextest.toml` (test groups,
 timeouts, setup script), and the agent-facing protocol in CLAUDE.md
 ("Concurrent agents") and AGENTS.md.
 

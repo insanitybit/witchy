@@ -57,7 +57,7 @@ fn project_source_rejects_forged_owner_claims_and_registry_relabeling() {
     let result = child(&dir, "run-source").args(["--", "argument"]).output().unwrap();
     assert_eq!(result.status.code(), Some(1));
     assert!(result.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&result.stderr).contains("workspace relabeling is forbidden"));
+    assert!(String::from_utf8_lossy(&result.stderr).contains("is not a path dependency"));
 }
 
 #[test]

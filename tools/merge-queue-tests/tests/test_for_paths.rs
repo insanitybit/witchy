@@ -839,9 +839,7 @@ fn packaged_source_surfaces_run_the_unsafe_input_probe_first() {
         "rfcs/0165-acceptance-ledger.md",
         "src/source.rs",
         "src/source/package_inputs.rs",
-        "src/source/package_inputs/registry.rs",
-        "src/source/package_inputs/registry_replay_tests.rs",
-        "src/source/package_inputs/registry_verify.witchy",
+        "src/source/package_inputs/ownership.rs",
         "src/trusted_publisher/source_inputs.rs",
     ]);
     assert_eq!(
@@ -922,7 +920,6 @@ fn broad_rfc0165_edit_checks_share_the_landing_admission_policy() {
         "crates/witchy-runtime/src/runtime/host/crypto.rs",
         "crates/witchy-wir/src/canonical_safewir/crypto.rs",
         "src/commands/compile.rs",
-        "projects/grimoire/src/grimoire.witchy",
         "Cargo.lock",
     ]);
     for command in &commands {

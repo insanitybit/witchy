@@ -76,10 +76,11 @@ are tracked in the [architecture and redundancy ledger](architecture-ledger.md).
 | `witchy-runtime` | `value`, `native`, `net`, `confine`, `runtime` *(native-only)* | The runtime `Value` (shared by interpreter + host), native-function registry (FFI-as-capability), runtime adapters over shared confinement policy, and the Wasmtime sandbox (capability-gated host functions, memory caps, epoch preemption). The non-`runtime` modules are wasm-safe; `runtime` sits behind the `native` feature. |
 | `witchy-interp` | `interpreter`, `comptime`, `tagged`, `pipeline` | A frozen source tree walker retained temporarily for compile-time `comptime:` / `tag"…"` evaluation and build evaluation, plus the task-shaped checked-link service that injects the compile-time expander. It is neither a production runtime nor a semantic oracle; linker/tooling services are being separated from it. |
 | `witchy-caps` | `capabilities`, `grants` | The footprint analyzer (`witchy caps`, `caps-diff`) - recomputed from source, never trusted metadata - and grant-document (`--grants` TOML) parsing + cross-check (`witchy grants-check`). |
-| `witchy` *(root package)* | `main`, `cli`, `source`, `lib` (the wasm-playground `cdylib`), `lsp`, `idp` | The composition package: browser entrypoints, diagnostics LSP, trusted-publishing IdP *test* simulator, and native CLI orchestration. `cli` owns help/version presentation and shared flag/secret decoding; `source` owns native project discovery, bundled lookup, dependency-aware file loading/linking, and source expansion. Dispatch and command execution remain concentrated in `main.rs` and are tracked in the architecture ledger rather than described here as already thin. |
+| `witchy` *(root package)* | `main`, `cli`, `source`, `lib` (the wasm-playground `cdylib`), `lsp` | The composition package: browser entrypoints, diagnostics LSP, and native CLI orchestration. `cli` owns help/version presentation and shared flag/secret decoding; `source` owns native project discovery, bundled lookup, dependency-aware file loading/linking, and source expansion. Dispatch and command execution remain concentrated in `main.rs` and are tracked in the architecture ledger rather than described here as already thin. |
 
-`std/` is the standard library, written in witchy; `projects/grimoire`, `projects/coven`
-are the package manager and registry, self-hosted in witchy.
+`std/` is the standard library, written in witchy. The package manager
+(grimoire) and the registry (coven) are separate projects that drive this
+compiler.
 
 ## The conformance discipline
 

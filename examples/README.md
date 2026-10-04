@@ -152,9 +152,8 @@ lockfiles, and capability manifests — built and run through the package manage
 - **report**, **config**, **wordfreq** — data pipelines exercising Dir/JSON/text
   processing across rune boundaries
 
-The package manager itself is also written in witchy: see
-[`projects/grimoire`](../projects/grimoire) (the client) and
-[`projects/coven`](../projects/coven) (the registry server).
+The package manager (grimoire) and the registry (coven) are written in witchy
+too, as their own projects beside this repository.
 
 ## Complete rune inventory
 

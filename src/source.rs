@@ -4,7 +4,7 @@ mod package_inputs;
 mod precompiled_library;
 pub(crate) use package_inputs::{
     capture_packaged_source, capture_project_source, capture_project_source_with_precompiled,
-    project_declares_precompiled_dependencies, restore_packaged_artifact, restore_portable_artifact,
+    restore_packaged_artifact, restore_portable_artifact,
 };
 use package_inputs::{AmbientFiles, SourceFiles};
 
@@ -1135,8 +1135,8 @@ pub(crate) fn linked_has_main(linked: &ast::Module) -> bool {
 }
 
 #[cfg(test)]
-#[path = "../tests/support/precompiled_registry.rs"]
-mod precompiled_registry_fixture;
+#[path = "../tests/support/precompiled_library.rs"]
+mod precompiled_library_fixture;
 
 #[cfg(test)]
 mod tests {
@@ -1149,8 +1149,8 @@ mod tests {
         DeclarationKind, ModuleLoadIdentity, PackageCoordinate, PackageSource,
     };
 
-    use super::precompiled_registry_fixture::{
-        PrecompiledRegistryFixture, scalar_map_wasm, sha256_hex, signed_scalar_sidecar,
+    use super::precompiled_library_fixture::{
+        PrecompiledLibraryFixture, scalar_map_wasm, sha256_hex, signed_scalar_sidecar,
         unique_dir,
     };
 
@@ -1361,207 +1361,62 @@ mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    fn load_fixture(fixture: &PrecompiledRegistryFixture) -> Result<super::PrecompiledCheckedModule, String> {
-        capture_project_source_with_precompiled(
+    fn load_fixture(
+        fixture: &PrecompiledLibraryFixture,
+        dependencies: &std::collections::HashMap<String, std::path::PathBuf>,
+        claims: &std::collections::HashMap<String, ModuleLoadIdentity>,
+        libraries: &std::collections::HashMap<String, std::path::PathBuf>,
+    ) -> String {
+        match capture_project_source_with_precompiled(
             fixture.root.join("src/main.witchy").to_str().unwrap(),
-            &std::collections::HashMap::new(),
+            dependencies,
             Some(fixture.root.join("witchy.toml").to_str().unwrap()),
             &fixture.entry_claim(),
-            &std::collections::HashMap::new(),
-        )
-    }
-
-    #[test]
-    fn locked_precompiled_project_resolves_and_launches_the_authenticated_external_library() {
-        let fixture = PrecompiledRegistryFixture::new();
-        let loaded = load_fixture(&fixture).expect("locked precompiled dependency resolves");
-        assert_eq!(loaded.external_libraries.len(), 1);
-        let artifact = witchy_lower::codegen::compile_checked_module_artifact(&loaded.checked)
-            .expect_lowered("locked precompiled dependency lowers");
-        assert_eq!(artifact.external_imports().len(), 1);
-        let mut runtime = witchy_runtime::runtime::Runtime::batch().unwrap();
-        let mut vm = runtime.spawn_admitted_with_external_libraries(
-            &artifact,
-            witchy_runtime::runtime::Capabilities {
-                print: true, print_int: true, quiet: true, ..Default::default()
-            },
-            16,
-            &loaded.external_libraries,
-        ).expect("launch receives the exact library authenticated by the resolver");
-        vm.run().unwrap();
-        assert_eq!(vm.output(), ["15"]);
-        assert_eq!(vm.canonical_heap_leaks().unwrap(), Some(0));
-    }
-
-    #[test]
-    fn locked_precompiled_project_refuses_tamper_missing_oversize_and_source_overlap() {
-        let cases = ["manifest", "sidecar", "missing", "oversize", "v2", "wrong-kind", "version", "missing-version", "bad-version", "zero-size", "zero-sidecar-size", "non-registry", "lock-hash", "lock-kind", "lock-module", "lock-digest", "overlap"];
-        for case in cases {
-            let fixture = PrecompiledRegistryFixture::new();
-            match case {
-                "manifest" => std::fs::write(
-                    fixture.root.join("vendor/external_math/coven-artifact.json"),
-                    "{\"version\":3,\"artifacts\":{},\"libraries\":{}}",
-                ).unwrap(),
-                "sidecar" => std::fs::write(
-                    fixture.root.join("vendor/external_math/artifacts/src/math.opt"), b"tampered",
-                ).unwrap(),
-                "missing" => std::fs::remove_file(
-                    fixture.root.join("vendor/external_math/artifacts/src/math.wasm"),
-                ).unwrap(),
-                "oversize" => {
-                    let (wasm, wasm_size, sidecar, _) = fixture.artifact_fields();
-                    fixture.replace_signed_artifact_manifest(
-                        serde_json::json!({"version": 3, "artifacts": {}, "libraries": {
-                            "src/math": {"kind": "precompiled", "wasm_sha256": wasm.clone(), "wasm_size": wasm_size,
-                                "opt_callable_export_sha256": sidecar.clone(), "opt_callable_export_size": 1024 * 1024 + 1},
-                        }}),
-                        format!("v3\nlibrary|src/math|precompiled|{wasm}|{wasm_size}|{sidecar}|{}", 1024 * 1024 + 1),
-                    );
-                }
-                "v2" => {
-                    let (wasm, _, sidecar, _) = fixture.artifact_fields();
-                    fixture.replace_signed_artifact_manifest(
-                        serde_json::json!({"version": 2, "artifacts": {}, "libraries": {
-                            "src/math": {"wasm_sha256": wasm.clone(), "opt_callable_export_sha256": sidecar.clone()},
-                        }}),
-                        format!("v2\nlibrary|src/math|{wasm}|{sidecar}"),
-                    );
-                }
-                "wrong-kind" => {
-                    let (wasm, wasm_size, sidecar, sidecar_size) = fixture.artifact_fields();
-                    fixture.replace_signed_artifact_manifest(
-                        serde_json::json!({"version": 3, "artifacts": {}, "libraries": {
-                            "src/math": {"kind": "application", "wasm_sha256": wasm.clone(), "wasm_size": wasm_size,
-                                "opt_callable_export_sha256": sidecar.clone(), "opt_callable_export_size": sidecar_size},
-                        }}),
-                        format!("v3\nlibrary|src/math|application|{wasm}|{wasm_size}|{sidecar}|{sidecar_size}"),
-                    );
-                }
-                "version" => std::fs::write(
-                    fixture.root.join("witchy.toml"),
-                    "[rune]\nname=\"app\"\nversion=\"1.0.0\"\n[dependencies]\nexternal_math={version=\"^2.0.0\",kind=\"precompiled\",module=\"src/math\"}\n",
-                ).unwrap(),
-                "missing-version" => std::fs::write(
-                    fixture.root.join("witchy.toml"),
-                    "[rune]\nname=\"app\"\nversion=\"1.0.0\"\n[dependencies]\nexternal_math={kind=\"precompiled\",module=\"src/math\"}\n",
-                ).unwrap(),
-                "bad-version" => std::fs::write(
-                    fixture.root.join("witchy.toml"),
-                    "[rune]\nname=\"app\"\nversion=\"1.0.0\"\n[dependencies]\nexternal_math={version=\"not-a-requirement\",kind=\"precompiled\",module=\"src/math\"}\n",
-                ).unwrap(),
-                "non-registry" => std::fs::write(
-                    fixture.root.join("witchy.toml"),
-                    "[rune]\nname=\"app\"\nversion=\"1.0.0\"\n[dependencies]\nexternal_math={version=\"1.0.0\",kind=\"precompiled\",module=\"src/math\",source=\"elsewhere\"}\n",
-                ).unwrap(),
-                "lock-hash" => fixture.add_spurious_lock_hash(),
-                "zero-size" => {
-                    let (wasm, _, sidecar, sidecar_size) = fixture.artifact_fields();
-                    fixture.replace_signed_artifact_manifest(
-                        serde_json::json!({"version": 3, "artifacts": {}, "libraries": {
-                            "src/math": {"kind": "precompiled", "wasm_sha256": wasm.clone(), "wasm_size": 0,
-                                "opt_callable_export_sha256": sidecar.clone(), "opt_callable_export_size": sidecar_size},
-                        }}),
-                        format!("v3\nlibrary|src/math|precompiled|{wasm}|0|{sidecar}|{sidecar_size}"),
-                    );
-                }
-                "zero-sidecar-size" => {
-                    let (wasm, wasm_size, sidecar, _) = fixture.artifact_fields();
-                    fixture.replace_signed_artifact_manifest(
-                        serde_json::json!({"version": 3, "artifacts": {}, "libraries": {
-                            "src/math": {"kind": "precompiled", "wasm_sha256": wasm.clone(), "wasm_size": wasm_size,
-                                "opt_callable_export_sha256": sidecar.clone(), "opt_callable_export_size": 0},
-                        }}),
-                        format!("v3\nlibrary|src/math|precompiled|{wasm}|{wasm_size}|{sidecar}|0"),
-                    );
-                }
-                "lock-kind" => fixture.replace_lock_selection("source", "src/math", &fixture.signed_artifact_digest()),
-                "lock-module" => fixture.replace_lock_selection("precompiled", "src/other", &fixture.signed_artifact_digest()),
-                "lock-digest" => fixture.replace_lock_selection("precompiled", "src/math", "sha256:deadbeef"),
-                "overlap" => {
-                    let source = fixture.root.join("external_math.witchy");
-                    std::fs::write(&source, "pub fn map(value: Int) -> Int:\n    value\n").unwrap();
-                    let error = match capture_project_source_with_precompiled(
-                        fixture.root.join("src/main.witchy").to_str().unwrap(),
-                        &std::collections::HashMap::from([("external_math".into(), source)]),
-                        Some(fixture.root.join("witchy.toml").to_str().unwrap()),
-                        &fixture.entry_claim(),
-                        &std::collections::HashMap::new(),
-                    ) {
-                        Ok(_) => panic!("one alias cannot select source and precompiled input"),
-                        Err(error) => error,
-                    };
-                    assert!(error.contains("both source and precompiled"), "{error}");
-                    continue;
-                }
-                _ => unreachable!(),
-            }
-            let error = match load_fixture(&fixture) {
-                Ok(_) => panic!("tampered registry precompiled input must fail closed"),
-                Err(error) => error,
-            };
-            let expected = match case {
-                "manifest" => "precompiled artifact manifest differs from locked signed digest",
-                "sidecar" => "precompiled registry export-signature sidecar differs from signed size",
-                "missing" => "cannot inspect precompiled registry input",
-                "oversize" => "artifact size `opt_callable_export_size=1048577` is outside its fixed signed limit",
-                "v2" => "requires a v3 signed artifact manifest",
-                "wrong-kind" => "library kind `application` is not supported",
-                "version" => "lock version does not satisfy its manifest requirement",
-                "missing-version" => "requires a non-empty registry version requirement",
-                "bad-version" => "precompiled dependency has malformed version requirement",
-                "non-registry" => "precompiled dependency `external_math` must select the Coven registry",
-                "lock-hash" => "precompiled registry lock must not carry a source hash",
-                "zero-size" => "artifact size `wasm_size=0` is outside its fixed signed limit",
-                "zero-sidecar-size" => "artifact size `opt_callable_export_size=0` is outside its fixed signed limit",
-                "lock-kind" => "registry lock kind does not select a precompiled dependency",
-                "lock-module" => "registry lock module differs from its precompiled dependency declaration",
-                "lock-digest" => "registry lock artifact digest differs from the signed record",
-                _ => unreachable!(),
-            };
-            assert!(error.contains(expected), "{case}: expected `{expected}`, got `{error}`");
+            claims,
+            libraries,
+        ) {
+            Ok(_) => panic!("the selection must be refused"),
+            Err(error) => error,
         }
     }
 
-    #[cfg(unix)]
+    /// The compiler takes precompiled libraries and their owners only as
+    /// explicit, well-formed selections, and loads no vendored registry
+    /// package as source: it would otherwise load under the consumer's own
+    /// workspace identity.
     #[test]
-    fn locked_precompiled_project_rejects_vendor_artifact_symlinks() {
-        let fixture = PrecompiledRegistryFixture::new();
-        let wasm = fixture.root.join("vendor/external_math/artifacts/src/math.wasm");
-        let replacement = fixture.root.join("replacement.wasm");
-        std::fs::rename(&wasm, &replacement).unwrap();
-        std::os::unix::fs::symlink(&replacement, &wasm).unwrap();
-        let error = match load_fixture(&fixture) {
-            Ok(_) => panic!("precompiled vendor artifacts must not cross symlinks"),
-            Err(error) => error,
-        };
-        assert!(error.contains("must not cross a symlink"), "{error}");
-    }
+    fn precompiled_and_registry_selections_fail_closed_before_checking() {
+        use std::collections::HashMap;
+        let fixture = PrecompiledLibraryFixture::new();
+        let none: HashMap<String, std::path::PathBuf> = HashMap::new();
+        let no_claims: HashMap<String, ModuleLoadIdentity> = HashMap::new();
+        let claims = fixture.owner_claims();
+        let wasm = fixture.root.join("lib/math.wasm");
+        for (alias, expected) in [("../math", "one safe path component"), ("list", "reserved toolchain module")] {
+            let error = load_fixture(&fixture, &none, &HashMap::from([(alias.to_owned(), claims["external_math"].clone())]),
+                &HashMap::from([(alias.to_owned(), wasm.clone())]));
+            assert!(error.contains(expected), "{alias}: {error}");
+        }
+        assert!(load_fixture(&fixture, &none, &no_claims, &fixture.libraries()).contains("needs --dep-owner"));
+        let workspace_owner = HashMap::from([("external_math".to_owned(), fixture.entry_claim())]);
+        assert!(load_fixture(&fixture, &none, &workspace_owner, &fixture.libraries()).contains("owned by a registry package"));
+        let overlap = HashMap::from([("external_math".to_owned(), fixture.root.join("src/main.witchy"))]);
+        assert!(load_fixture(&fixture, &overlap, &claims, &fixture.libraries()).contains("both source and precompiled"));
+        std::fs::remove_file(fixture.root.join("lib/math.opt")).unwrap();
+        assert!(load_fixture(&fixture, &none, &claims, &fixture.libraries()).contains("is missing"));
 
-    #[cfg(unix)]
-    #[test]
-    fn locked_precompiled_project_rejects_unsafe_alias_and_vendor_ancestor() {
-        let fixture = PrecompiledRegistryFixture::new();
-        std::fs::write(
-            fixture.root.join("witchy.toml"),
-            "[rune]\nname=\"app\"\nversion=\"1.0.0\"\n[dependencies]\n\"../external_math\"={version=\"1.0.0\",kind=\"precompiled\",module=\"src/math\"}\n",
+        let fixture = PrecompiledLibraryFixture::new();
+        std::fs::write(fixture.root.join("src/main.witchy"),
+            "import helper\nfn main(console: Console):\n    console.print(helper.message())\n").unwrap();
+        std::fs::create_dir_all(fixture.root.join("vendor/helper/src")).unwrap();
+        std::fs::write(fixture.root.join("vendor/helper/src/helper.witchy"),
+            "pub fn message() -> String:\n    \"vendored\"\n").unwrap();
+        let workspace_helper = ModuleLoadIdentity::new(
+            PackageCoordinate::new(PackageSource::Workspace, "app", "1.0.0").unwrap(), ["helper"],
         ).unwrap();
-        let error = match load_fixture(&fixture) {
-            Ok(_) => panic!("a path-shaped precompiled alias must fail before vendor access"),
-            Err(error) => error,
-        };
-        assert!(error.contains("must be one safe path component"), "{error}");
-
-        let fixture = PrecompiledRegistryFixture::new();
-        let vendor = fixture.root.join("vendor");
-        let replacement = fixture.root.join("vendor-real");
-        std::fs::rename(&vendor, &replacement).unwrap();
-        std::os::unix::fs::symlink(&replacement, &vendor).unwrap();
-        let error = match load_fixture(&fixture) {
-            Ok(_) => panic!("a precompiled vendor ancestor must not be a symlink"),
-            Err(error) => error,
-        };
-        assert!(error.contains("must be a real directory"), "{error}");
+        let helper = HashMap::from([("helper".to_owned(), fixture.root.join("vendor/helper/src/helper.witchy"))]);
+        let error = load_fixture(&fixture, &helper, &HashMap::from([("helper".to_owned(), workspace_helper)]), &none);
+        assert!(error.contains("vendored registry package"), "{error}");
     }
 
     fn wrongly_typed_scalar_map_wasm() -> Vec<u8> {

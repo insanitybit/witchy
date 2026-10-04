@@ -8,7 +8,7 @@ use witchy::trusted_publisher::source_inputs::{SourceDependency, SourceFile, Sou
 #[path = "package_inputs/generated.rs"]
 mod generated;
 
-mod registry;
+mod ownership;
 
 #[cfg(test)]
 #[path = "package_inputs/generated_replay_tests.rs"]
@@ -16,20 +16,13 @@ mod generated_replay_tests;
 
 pub(super) trait SourceFiles {
     fn read(&self, path: &Path) -> Result<Option<String>, String>;
-    /// Binary registry artifacts are deliberately outside `SourceInputs`: an
-    /// embedded/trusted-publisher image must replay only source, never acquire
-    /// an external Wasm library from a mutable package directory.
-    fn read_bounded_bytes(&self, path: &Path, _limit: usize) -> Result<Option<Vec<u8>>, String> {
-        let _ = path;
-        Err("this source reader cannot load precompiled registry artifacts".into())
-    }
     fn closed_package(&self) -> bool { false }
     fn registry_source_paths(&self, _root: &Path) -> Result<Vec<PathBuf>, String> {
         Err("registry source census requires closed capture/replay".into())
     }
     fn authenticate_module(&self, _path: &Path, owner: &ModuleLoadIdentity, _source: &str) -> Result<(), String> {
         if self.closed_package() && matches!(owner.package().source(), PackageSource::Registry(_)) {
-            return Err("registry module lacks independently verified source membership".into());
+            return Err("registry source modules are resolved by the package manager".into());
         }
         Ok(())
     }
@@ -43,29 +36,6 @@ impl SourceFiles for AmbientFiles {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(format!("cannot read `{}`: {error}", path.display())),
         }
-    }
-    fn read_bounded_bytes(&self, path: &Path, limit: usize) -> Result<Option<Vec<u8>>, String> {
-        match std::fs::metadata(path) {
-            Ok(metadata) if metadata.len() > limit as u64 => {
-                return Err(format!("precompiled artifact `{}` exceeds its authenticated size limit", path.display()));
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(format!("cannot inspect `{}`: {error}", path.display())),
-        }
-        use std::io::Read;
-        let mut file = match std::fs::File::open(path) {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(format!("cannot read `{}`: {error}", path.display())),
-        };
-        let mut contents = Vec::with_capacity(limit.saturating_add(1));
-        file.by_ref().take(limit.saturating_add(1) as u64).read_to_end(&mut contents)
-            .map_err(|error| format!("cannot read `{}`: {error}", path.display()))?;
-        if contents.len() > limit {
-            return Err(format!("precompiled artifact `{}` exceeds its authenticated size limit", path.display()));
-        }
-        Ok(Some(contents))
     }
 }
 
@@ -113,35 +83,6 @@ impl SourceFiles for CaptureFiles {
         Ok(contents)
     }
     fn closed_package(&self) -> bool { true }
-    fn registry_source_paths(&self, root: &Path) -> Result<Vec<PathBuf>, String> {
-        fn collect(files: &CaptureFiles, directory: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
-            let metadata = std::fs::symlink_metadata(directory).map_err(|error| error.to_string())?;
-            if metadata.file_type().is_symlink() || !metadata.is_dir() {
-                return Err("registry source tree requires real directories, not symlinks".into());
-            }
-            let mut entries = std::fs::read_dir(directory).map_err(|error| error.to_string())?
-                .map(|entry| entry.map(|entry| entry.path()).map_err(|error| error.to_string()))
-                .collect::<Result<Vec<_>, _>>()?;
-            entries.sort();
-            for path in entries {
-                let metadata = std::fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
-                if metadata.file_type().is_symlink() {
-                    return Err("registry source symlink cannot be replayed as signed file membership".into());
-                }
-                if metadata.is_dir() { collect(files, &path, out)?; }
-                else if path.extension().and_then(|extension| extension.to_str()) == Some("witchy") {
-                    if !metadata.is_file() { return Err("registry source is not a regular file".into()); }
-                    files.read(&path)?.ok_or("registry source disappeared during capture")?;
-                    out.push(path);
-                }
-            }
-            Ok(())
-        }
-        let mut paths = Vec::new();
-        collect(self, &root.join("src"), &mut paths)?;
-        paths.sort();
-        Ok(paths)
-    }
 }
 
 struct ReplayFiles<'a>(&'a SourceInputs);
@@ -153,9 +94,6 @@ impl SourceFiles for ReplayFiles<'_> {
             .ok_or_else(|| format!("closed package omitted loader lookup `{name}`"))
     }
     fn closed_package(&self) -> bool { true }
-    fn registry_source_paths(&self, root: &Path) -> Result<Vec<PathBuf>, String> {
-        self.0.registry_source_paths(&key(root)?).map(|paths| paths.into_iter().map(PathBuf::from).collect())
-    }
 }
 
 fn load(
@@ -172,7 +110,7 @@ fn load_with_precompiled(
 ) -> Result<(Vec<(String, Vec<u8>)>, String, UserModuleSet, AuthenticatedModuleOwners), String> {
     let entry_path = path;
     let stem = path.file_stem().and_then(|stem| stem.to_str()).ok_or("invalid package entry")?;
-    let mut verified = registry::Files::new(files);
+    let mut verified = ownership::Files::new(files);
     let owner = verified.module_owner(path, stem, path)?;
     let owners = dependencies.iter().map(|(alias, path)| {
         Ok((alias.clone(), verified.module_owner(path, alias, entry_path)?))
@@ -231,7 +169,7 @@ pub(crate) fn capture_project_source(
     let inputs = capture_source_inputs(entry, dependencies,
         Some(manifest.to_str().ok_or("non-UTF-8 project manifest")?))?;
     let files = ReplayFiles(&inputs);
-    let mut verified = registry::Files::new(&files);
+    let mut verified = ownership::Files::new(&files);
     let mut assert_owner = |path: &str, alias: &str, claim: &ModuleLoadIdentity| -> Result<(), String> {
         let actual = verified.module_owner(Path::new(path), alias, Path::new(&inputs.entry))?;
         // The existing project resolver spells a root module `foo`, whereas
@@ -257,38 +195,47 @@ pub(crate) fn capture_project_source(
     Ok((checked, entry, inputs))
 }
 
-/// The `run-source`-only project route for explicit locked precompiled
-/// dependencies. Ordinary sources still follow the closed capture/replay path;
-/// the separately authenticated binary blobs remain live launch inputs and are
-/// never serializable `SourceInputs`.
+/// The `run-source` project route with precompiled libraries the caller
+/// selected: `alias -> lib.wasm`, its export-signature bundle at `lib.opt`,
+/// owned by the caller's `--dep-owner` for that alias. Resolving and verifying
+/// where a library came from is the package manager's job; the compiler checks
+/// that the Wasm matches its bundle and the bundle names that owner. Ordinary
+/// sources still follow the closed capture/replay path.
 pub(crate) fn capture_project_source_with_precompiled(
     entry: &str,
     dependencies: &HashMap<String, PathBuf>,
     manifest: Option<&str>,
     entry_claim: &ModuleLoadIdentity,
     claims: &HashMap<String, ModuleLoadIdentity>,
+    libraries: &HashMap<String, PathBuf>,
 ) -> Result<PrecompiledCheckedModule, String> {
-    let manifest = match manifest {
-        Some(path) => absolute(Path::new(path))?,
-        None => Path::new(entry).parent().into_iter().flat_map(Path::ancestors)
-            .map(|directory| directory.join("witchy.toml"))
-            .find(|path| path.is_file()).ok_or("project source requires a workspace manifest")?,
-    };
-    let selected_manifest = AmbientFiles.read(&manifest)?
-        .ok_or("project source manifest disappeared during precompiled dependency resolution")?;
-    let mut registry = registry::Files::new(&AmbientFiles);
-    let precompiled = registry.precompiled_dependencies(&manifest)?;
-    if AmbientFiles.read(&manifest)?.as_deref() != Some(selected_manifest.as_str()) {
-        return Err("project manifest changed during precompiled dependency resolution".into());
-    }
-    if precompiled.is_empty() {
-        let (checked, entry, _) = capture_project_source(entry, dependencies,
-            manifest.to_str(), entry_claim, claims)?;
+    if libraries.is_empty() {
+        let (checked, entry, _) = capture_project_source(entry, dependencies, manifest, entry_claim, claims)?;
         return Ok(PrecompiledCheckedModule { checked, entry, external_libraries: Vec::new() });
     }
-    if let Some(alias) = dependencies.keys().find(|alias| precompiled.contains_key(*alias)) {
-        return Err(format!("dependency `{alias}` cannot be both source and precompiled"));
+    let mut source_claims = claims.clone();
+    let mut precompiled = HashMap::new();
+    for (alias, wasm_path) in libraries {
+        precompiled_alias(alias)?;
+        if dependencies.contains_key(alias) {
+            return Err(format!("dependency `{alias}` cannot be both source and precompiled"));
+        }
+        let owner = source_claims.remove(alias)
+            .ok_or_else(|| format!("precompiled library `{alias}` needs --dep-owner"))?;
+        // A library is published by a registry package, never the toolchain
+        // or the consumer's own workspace.
+        if !matches!(owner.package().source(), PackageSource::Registry(_)) {
+            return Err(format!("precompiled library `{alias}` must be owned by a registry package"));
+        }
+        let wasm = read_bounded_bytes(wasm_path, 64 * 1024 * 1024)?
+            .ok_or_else(|| format!("precompiled library `{alias}` is missing `{}`", wasm_path.display()))?;
+        let sidecar_path = wasm_path.with_extension("opt");
+        let sidecar = read_bounded_bytes(&sidecar_path, 1024 * 1024)?
+            .ok_or_else(|| format!("precompiled library `{alias}` is missing `{}`", sidecar_path.display()))?;
+        let library = precompiled_library::PrecompiledLibrary::from_bytes(owner, wasm, &sidecar)?;
+        precompiled.insert(alias.clone(), AuthenticatedPrecompiledDependency { library });
     }
+    let claims = &source_claims;
     for claim in std::iter::once(entry_claim).chain(claims.values()) {
         if !matches!(claim.package().source(), PackageSource::Workspace | PackageSource::Registry(_)) {
             return Err("source replay does not yet support custom/registry owner assignments; resolver provenance must be retained, not relabeled".into());
@@ -306,15 +253,16 @@ pub(crate) fn capture_project_source_with_precompiled(
     if !extra.is_empty() {
         return Err(format!("owner assertions for unselected dependencies: {}", extra.join(", ")));
     }
+    let manifest = match manifest {
+        Some(path) => PathBuf::from(path),
+        None => Path::new(entry).parent().into_iter().flat_map(Path::ancestors)
+            .map(|directory| directory.join("witchy.toml"))
+            .find(|path| path.is_file()).ok_or("project source requires a workspace manifest")?,
+    };
     let inputs = capture_source_inputs_with_precompiled(entry, dependencies,
         Some(manifest.to_str().ok_or("non-UTF-8 project manifest")?), &precompiled)?;
-    let captured_manifest = inputs.files.iter().find(|file| Some(&file.path) == inputs.target_manifest.as_ref())
-        .and_then(|file| file.contents.as_deref());
-    if captured_manifest != Some(selected_manifest.as_str()) {
-        return Err("closed project capture differs from the manifest that selected precompiled dependencies".into());
-    }
     let files = ReplayFiles(&inputs);
-    let mut verified = registry::Files::new(&files);
+    let mut verified = ownership::Files::new(&files);
     let mut assert_owner = |path: &str, alias: &str, claim: &ModuleLoadIdentity| -> Result<(), String> {
         let actual = verified.module_owner(Path::new(path), alias, Path::new(&inputs.entry))?;
         let module_matches = claim.module_path() == actual.module_path()
@@ -335,30 +283,44 @@ pub(crate) fn capture_project_source_with_precompiled(
     checked_precompiled_source_bundle(sources, entry, users, owners, &precompiled)
 }
 
-/// This is a mode guard only. It never produces library authority; the
-/// authenticated resolver above remains the only constructor for that.
-pub(crate) fn project_declares_precompiled_dependencies(
-    entry: &str,
-    manifest: Option<&str>,
-) -> Result<bool, String> {
-    let manifest = match manifest {
-        Some(path) => Some(PathBuf::from(path)),
-        None => Path::new(entry).parent().into_iter().flat_map(Path::ancestors)
-            .map(|directory| directory.join("witchy.toml"))
-            .find(|path| path.is_file()),
-    };
-    let Some(manifest) = manifest else { return Ok(false); };
-    let source = AmbientFiles.read(&manifest)?.ok_or("project source manifest missing")?;
-    let manifest: toml::Value = toml::from_str(&source).map_err(|error| error.to_string())?;
-    let Some(dependencies) = manifest.get("dependencies") else { return Ok(false); };
-    let dependencies = dependencies.as_table().ok_or("project dependencies must be a table")?;
-    for (alias, dependency) in dependencies {
-        if let Some(kind) = dependency.as_table().and_then(|table| table.get("kind")) {
-            let kind = kind.as_str().ok_or_else(|| format!("dependency `{alias}` kind must be a string"))?;
-            if kind == "precompiled" { return Ok(true); }
-        }
+/// A precompiled alias is one safe module name that no toolchain module uses.
+fn precompiled_alias(alias: &str) -> Result<(), String> {
+    let mut components = Path::new(alias).components();
+    if alias.is_empty() || alias.contains(['/', '\\'])
+        || !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some()
+    {
+        return Err(format!("precompiled library alias `{alias}` must be one safe path component"));
     }
-    Ok(false)
+    if witchy_syntax::linker::STD_MODULES.contains(&alias)
+        || witchy_syntax::linker::PLAYGROUND_MODULES.contains(&alias)
+    {
+        return Err(format!("precompiled library `{alias}` conflicts with a reserved toolchain module"));
+    }
+    Ok(())
+}
+
+fn read_bounded_bytes(path: &Path, limit: usize) -> Result<Option<Vec<u8>>, String> {
+    match std::fs::metadata(path) {
+        Ok(metadata) if metadata.len() > limit as u64 => {
+            return Err(format!("precompiled artifact `{}` exceeds its size limit", path.display()));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("cannot inspect `{}`: {error}", path.display())),
+    }
+    use std::io::Read;
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("cannot read `{}`: {error}", path.display())),
+    };
+    let mut contents = Vec::with_capacity(limit.saturating_add(1));
+    file.by_ref().take(limit.saturating_add(1) as u64).read_to_end(&mut contents)
+        .map_err(|error| format!("cannot read `{}`: {error}", path.display()))?;
+    if contents.len() > limit {
+        return Err(format!("precompiled artifact `{}` exceeds its size limit", path.display()));
+    }
+    Ok(Some(contents))
 }
 
 fn capture_source_inputs(

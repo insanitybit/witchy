@@ -13,8 +13,8 @@ fn manifest_dir() -> std::path::PathBuf {
 #[path = "support/temp_dir.rs"]
 mod temp_dir;
 
-#[path = "support/precompiled_registry.rs"]
-mod precompiled_registry;
+#[path = "support/precompiled_library.rs"]
+mod precompiled_library;
 
 
 #[path = "misc/rfc0165_packaged_source.rs"]

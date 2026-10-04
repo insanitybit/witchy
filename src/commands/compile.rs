@@ -23,6 +23,7 @@ pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
         let mut dep_owners: std::collections::HashMap<String, ModuleLoadIdentity> =
             std::collections::HashMap::new();
         let mut package_owner: Option<ModuleLoadIdentity> = None;
+        let mut libraries: HashMap<String, std::path::PathBuf> = HashMap::new();
         let mut out: Option<String> = None;
         let mut target = "wasm".to_string();
         let mut manifest: Option<String> = None;
@@ -54,6 +55,14 @@ pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
                         eprintln!("--dep needs name=path");
                         std::process::exit(1);
                     }
+                },
+                "--precompiled" if source_run => match argv.next().as_deref().and_then(|s| s.split_once('=')) {
+                    Some((alias, path)) => {
+                        if libraries.insert(alias.to_string(), std::path::PathBuf::from(path)).is_some() {
+                            return Err(wasmtime::Error::msg(format!("duplicate precompiled library `{alias}`")));
+                        }
+                    }
+                    None => return Err(wasmtime::Error::msg("--precompiled needs alias=path/to/lib.wasm")),
                 },
                 "--package-owner" => match parse_module_owner(&mut argv, "--package-owner") {
                     Ok(owner) if package_owner.is_none() => package_owner = Some(owner),
@@ -130,7 +139,7 @@ pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
                 }
                 let claim = package_owner.as_ref().ok_or("run-source requires the resolver's workspace owner assertion")?;
                 let linked = crate::source::capture_project_source_with_precompiled(
-                    &entry, &deps, manifest.as_deref(), claim, &dep_owners,
+                    &entry, &deps, manifest.as_deref(), claim, &dep_owners, &libraries,
                 )?;
                 enforce_performance_modes(linked.checked.module(), &linked.entry)?;
                 let (lines, code) = if linked.external_libraries.is_empty() {
@@ -152,9 +161,6 @@ pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
             if target == "trusted-publisher" {
                 let output = out.as_ref().ok_or("`--target trusted-publisher` requires `--out <executable>`")?;
                 let manifest = manifest.as_ref().ok_or("`--target trusted-publisher` requires `--manifest <witchy.toml>`")?;
-                if crate::source::project_declares_precompiled_dependencies(&entry, Some(manifest))? {
-                    return Err("trusted-publisher output cannot embed precompiled external libraries".into());
-                }
                 let (checked, stem, inputs) = if let Some(claim) = &package_owner {
                     crate::source::capture_project_source(&entry, &deps, Some(manifest), claim, &dep_owners)?
                 } else if !dep_owners.is_empty() {
@@ -174,9 +180,6 @@ pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
                 let launcher = std::env::current_exe().map_err(|error| error.to_string())?;
                 trusted_publisher::package_file(&launcher, std::path::Path::new(output), artifact.wasm(), &bindings, &inputs)?;
                 return Ok(());
-            }
-            if crate::source::project_declares_precompiled_dependencies(&entry, manifest.as_deref())? {
-                return Err("precompiled external libraries may only be launched by authenticated `run-source`, not compiled to a standalone Wasm file".into());
             }
             // Portable Wasm carries the closed source it was admitted from;
             // the bytes are compiled from that replay, never a separate load.

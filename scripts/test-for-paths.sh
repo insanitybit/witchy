@@ -905,7 +905,7 @@ for p in "${paths[@]}"; do
             corpus_impact=1
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'"
             ;;
-        projects/grimoire/* | projects/coven/* | projects/coven-web/* | projects/glamour/* | projects/docs/*)
+        projects/glamour/* | projects/docs/*)
             # Consumers of the compiler: untested here. Keep the witchy fmt
             # gate, which still covers projects/**/src/*.witchy.
             add "find projects -type f -path '*/src/*.witchy' -exec \"\${CARGO_TARGET_DIR:-target}/debug/witchy\" fmt --check {} +" ;;

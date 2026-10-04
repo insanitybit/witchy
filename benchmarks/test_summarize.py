@@ -69,7 +69,6 @@ class DriverTests(unittest.TestCase):
         inputs = set(result.stdout.splitlines())
         self.assertIn("build.rs", inputs)
         self.assertIn("menus/native.toml", inputs)
-        self.assertIn("projects/grimoire/src/grimoire.witchy", inputs)
         self.assertIn("web/witchy-runtime/witchy-runtime.mjs", inputs)
 
     def test_explicit_stale_binary_is_rejected_before_timing(self):

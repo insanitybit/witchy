@@ -1,9 +1,9 @@
 //! Authenticated input for a separately compiled library.
 //!
-//! This is intentionally not an ordinary `--dep` source file.  The caller must
-//! already have verified the registry-signed record and v2 manifest; this
-//! boundary verifies their exact artifact commitments before a decoded export
-//! can be offered to a future linker/lowering import target.
+//! This is intentionally not an ordinary `--dep` source file. The package
+//! manager selects the library and verifies where it came from; this boundary
+//! checks the Wasm against its export-signature bundle, and the bundle against
+//! the claimed owner, before a decoded export can reach the linker.
 
 use sha2::{Digest, Sha256};
 use witchy_types::opt_callable_export::{OptCallableExport, OptCallableExportSidecar};
@@ -21,10 +21,19 @@ pub(crate) struct PrecompiledLibrary {
 }
 
 impl PrecompiledLibrary {
-    /// Authenticate the two separately fetched artifact files against digests
-    /// extracted from a verified signed manifest.  No raw Wasm section,
-    /// package-local source input, import-site declaration, or file name is
-    /// authority here.
+    /// A library the caller selected. The compiler holds no signed manifest
+    /// for it, so the digests are the bytes' own; `verify` still checks the
+    /// bundle names `owner` and every export it declares.
+    pub(crate) fn from_bytes(owner: ModuleLoadIdentity, wasm: Vec<u8>, export_signature_bundle: &[u8]) -> Result<Self, String> {
+        let hex = |bytes: &[u8]| -> String { Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect() };
+        let wasm_sha256 = hex(&wasm);
+        let sidecar_sha256 = hex(export_signature_bundle);
+        Self::verify(owner, wasm, export_signature_bundle, &wasm_sha256, &sidecar_sha256)
+    }
+
+    /// Authenticate the two artifact files against expected digests. No raw
+    /// Wasm section, package-local source input, import-site declaration, or
+    /// file name is authority here.
     pub(crate) fn verify(
         owner: ModuleLoadIdentity,
         wasm: Vec<u8>,
