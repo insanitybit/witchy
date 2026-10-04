@@ -1248,63 +1248,57 @@ pub(crate) fn lower_typed_module_with_borrowed_views(
                 });
                 Ok::<_, CanonicalLoweringError>(id)
             };
-            let dir_response = ValueType::Capability(witchy_wir::canonical_safewir::DIR_RESPONSE_KIND);
+            let response = ValueType::Capability(witchy_wir::canonical_safewir::CAP_RESPONSE_KIND);
             let capability_signatures = witchy_wir::canonical_safewir::CapabilityImportSignatures {
-                dir_exists_at: push_import_signature(vec![dir, text], vec![dir_response], None)?,
-                dir_write_at: push_import_signature(vec![dir, text, text], vec![dir_response], None)?,
+                dir_exists_at: push_import_signature(vec![dir, text], vec![response], None)?,
+                dir_write_at: push_import_signature(vec![dir, text, text], vec![response], None)?,
             };
             catalog = catalog
                 .with_capability_imports(capability_signatures, string_layout)
                 .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
             if witchy_wir::canonical_safewir::ENV_IMPORT_NAMES.iter().any(|name| capability_imports.contains(name)) {
-                let response = ValueType::Capability(witchy_wir::canonical_safewir::ENV_RESPONSE_KIND);
-                let ids = [
-                    push_import_signature(vec![env, text], vec![response], None)?,
-                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
-                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
-                    push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
-                ];
+                let ids = [push_import_signature(vec![env, text], vec![response], None)?];
                 catalog = catalog.with_env_imports(ids, string_layout)
                     .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
             }
             if witchy_wir::canonical_safewir::NET_RESPONSE_IMPORT_NAMES.iter().any(|name| capability_imports.contains(name)) {
                 let net = ValueType::Capability(witchy_wir::canonical_safewir::NET_CAPABILITY_KIND);
-                let response = ValueType::Capability(witchy_wir::canonical_safewir::NET_RESPONSE_KIND);
                 let ids = [
                     push_import_signature(vec![net, text], vec![response], None)?,
                     push_import_signature(vec![net, text], vec![net], None)?,
-                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
-                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
-                    push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
-                    push_import_signature(vec![response], vec![net], None)?,
-                    push_import_signature(vec![response], vec![ValueType::Capability(witchy_wir::canonical_safewir::SOCKET_CAPABILITY_KIND)], None)?,
-                    push_import_signature(vec![response], vec![ValueType::Capability(witchy_wir::canonical_safewir::LISTENER_CAPABILITY_KIND)], None)?,
                 ];
                 catalog = catalog.with_net_response_imports(ids, string_layout)
                     .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
             }
             if witchy_wir::canonical_safewir::SECRET_RESPONSE_IMPORT_NAMES.iter().any(|name| capability_imports.contains(name)) {
                 let secret = ValueType::Capability(witchy_wir::canonical_safewir::SECRET_CAPABILITY_KIND);
-                let response = ValueType::Capability(witchy_wir::canonical_safewir::SECRET_RESPONSE_KIND);
-                let ids = [
-                    push_import_signature(vec![secret], vec![response], None)?,
-                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
-                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
-                    push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
-                ];
-                catalog = catalog.with_secret_response_imports(ids, string_layout)
+                let ids = [push_import_signature(vec![secret], vec![response], None)?];
+                catalog = catalog.with_secret_response_imports(ids)
                     .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
             }
             if capability_imports.contains(witchy_wir::canonical_safewir::NET_LISTEN_TLS_IMPORT) {
                 let net = ValueType::Capability(witchy_wir::canonical_safewir::NET_CAPABILITY_KIND);
                 let secret = ValueType::Capability(witchy_wir::canonical_safewir::SECRET_CAPABILITY_KIND);
-                let response = ValueType::Capability(witchy_wir::canonical_safewir::NET_RESPONSE_KIND);
                 let signature = push_import_signature(vec![net, text, text, secret], vec![response], None)?;
                 catalog = catalog.with_net_listen_tls_import(signature, string_layout)
                     .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
             }
+            if witchy_wir::canonical_safewir::CAP_RESPONSE_IMPORT_NAMES.iter().any(|name| capability_imports.contains(name)) {
+                let mut ids = vec![
+                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
+                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
+                    push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
+                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
+                ];
+                for kind in witchy_wir::canonical_safewir::CAP_RESPONSE_TAKE_KINDS {
+                    ids.push(push_import_signature(vec![response], vec![ValueType::Capability(kind)], None)?);
+                }
+                let ids = ids.try_into().expect("one signature per response getter");
+                catalog = catalog.with_cap_response_imports(ids, string_layout)
+                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+            }
             if capability_imports.contains("dir_is_dir_at") {
-                let signature = push_import_signature(vec![dir, text], vec![dir_response], None)?;
+                let signature = push_import_signature(vec![dir, text], vec![response], None)?;
                 catalog = catalog.with_dir_is_dir_import(signature, string_layout)
                     .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
             }
@@ -1374,31 +1368,21 @@ if capability_imports.contains("build_out_write_at") {
                     .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
             }
             if witchy_wir::canonical_safewir::DIR_STORAGE_IMPORT_NAMES.iter().any(|name| capability_imports.contains(name)) {
-                let response = ValueType::Capability(witchy_wir::canonical_safewir::DIR_RESPONSE_KIND);
                 let ids = [
                     push_import_signature(vec![dir, text, text], vec![response], None)?,
                     push_import_signature(vec![dir, text, text], vec![response], None)?,
                     push_import_signature(vec![dir, text], vec![response], None)?,
-                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
-                    push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
                     push_import_signature(vec![dir, text, text], vec![response], None)?,
                     push_import_signature(vec![dir, text, text], vec![response], None)?,
                     push_import_signature(vec![dir, text], vec![response], None)?,
                     push_import_signature(vec![dir, text, text], vec![response], None)?,
                     push_import_signature(vec![dir, text], vec![response], None)?,
-                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
                     push_import_signature(vec![file], vec![response], None)?,
-                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
-                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
-                    push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
                     push_import_signature(vec![dir], vec![response], None)?,
                     push_import_signature(vec![dir, text], vec![response], None)?,
                     push_import_signature(vec![dir, text], vec![response], None)?,
                     push_import_signature(vec![dir, text], vec![response], None)?,
-                    push_import_signature(vec![response], vec![dir], None)?,
-                    push_import_signature(vec![response], vec![file], None)?,
                     push_import_signature(vec![dir, text, text], vec![response], None)?,
-                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
                     push_import_signature(vec![file, text], vec![response], None)?,
                     push_import_signature(vec![dir, text], vec![dir], None)?,
                 ];
@@ -1412,7 +1396,7 @@ if capability_imports.contains("build_out_write_at") {
                 let optional = ValueType::NullableCapability(witchy_wir::canonical_safewir::SECRET_CAPABILITY_KIND);
                 let ids = [
                     push_import_signature(vec![clock], vec![ValueType::Int], None)?,
-                    push_import_signature(vec![dir, text], vec![dir_response], None)?,
+                    push_import_signature(vec![dir, text], vec![response], None)?,
                     push_import_signature(vec![store, text], vec![optional], None)?,
                     push_import_signature(vec![secret, text, text], vec![ValueType::Size], Some(2))?,
                     push_import_signature(vec![secret, text], vec![ValueType::Size], Some(1))?,
@@ -21444,8 +21428,8 @@ struct HostImports {
 }
 
 /// The canonical capability imports, in catalog order.
-const CAPABILITY_IMPORTS: [&str; 64] =
-    ["dir_exists_at", "dir_write_at", "build_out_write_at", "dir_is_dir_at", "build_read_at", "build_read_response_size", "build_read_response_into", "build_env_at", "build_response_is_some", "build_exec_run", "build_net_fetch", "net_fetch_at", "fetch_send_at", "fetch_response_size", "fetch_response_into", "fetch_only_at", "clock_now", "clock_now_monotonic", "dir_make_dir_at", "secretstore_lookup_at", "crypto_sign_into", "crypto_public_key_into", "dir_create_new_at", "dir_replace_at", "dir_read_bytes_at", "dir_response_size", "dir_response_into", "dir_write_bytes_at", "dir_append_bytes_at", "dir_set_executable_at", "dir_rename_at", "dir_read_at", "dir_response_status", "file_read_at", "file_response_status", "file_response_size", "file_response_into", "dir_list_at", "env_get_at", "env_response_status", "env_response_size", "env_response_into", "net_only_at", "net_deny_at", "net_response_status", "net_response_size", "net_response_into", "net_response_take_net", "net_response_take_socket", "net_response_take_listener", "dir_subtree_open_at", "dir_read_file_at", "dir_write_file_at", "dir_response_take_dir", "dir_response_take_file", "dir_append_at", "dir_response_flag", "file_write_at", "dir_only_at", "secret_reveal_at", "secret_response_status", "secret_response_size", "secret_response_into", "net_listen_tls_at"];
+const CAPABILITY_IMPORTS: [&str; 52] =
+    ["dir_exists_at", "dir_write_at", "build_out_write_at", "dir_is_dir_at", "build_read_at", "build_read_response_size", "build_read_response_into", "build_env_at", "build_response_is_some", "build_exec_run", "build_net_fetch", "net_fetch_at", "fetch_send_at", "fetch_response_size", "fetch_response_into", "fetch_only_at", "clock_now", "clock_now_monotonic", "dir_make_dir_at", "secretstore_lookup_at", "crypto_sign_into", "crypto_public_key_into", "dir_create_new_at", "dir_replace_at", "dir_read_bytes_at", "dir_write_bytes_at", "dir_append_bytes_at", "dir_set_executable_at", "dir_rename_at", "dir_read_at", "file_read_at", "dir_list_at", "env_get_at", "net_only_at", "net_deny_at", "dir_subtree_open_at", "dir_read_file_at", "dir_write_file_at", "dir_append_at", "file_write_at", "dir_only_at", "secret_reveal_at", "net_listen_tls_at", "cap_response_status", "cap_response_size", "cap_response_into", "cap_response_flag", "cap_response_take_dir", "cap_response_take_file", "cap_response_take_net", "cap_response_take_socket", "cap_response_take_listener"];
 
 /// The separator between the names a `dir_list_at` response carries; a file name never
 /// contains it.
@@ -21562,36 +21546,36 @@ fn collect_capability_imports(module: &witchy_syntax::ast::Module, table: &TypeT
                 match (name.as_str(), receiver) {
                     ("__capop.now", "Clock") => { needed.insert("clock_now"); }
                     ("__capop.now_monotonic", "Clock") => { needed.insert("clock_now_monotonic"); }
-                    ("__capop.make_dir", "Dir") => { needed.extend(["dir_make_dir_at", "dir_response_status", "dir_response_size", "dir_response_into"]); }
-                    ("__capop.create_new", "Dir") => { needed.extend(["dir_create_new_at", "dir_response_status", "dir_response_size", "dir_response_into"]); }
-                    ("__capop.replace", "Dir") => { needed.extend(["dir_replace_at", "dir_response_status", "dir_response_size", "dir_response_into"]); }
+                    ("__capop.make_dir", "Dir") => { needed.extend(["dir_make_dir_at", "cap_response_status", "cap_response_size", "cap_response_into"]); }
+                    ("__capop.create_new", "Dir") => { needed.extend(["dir_create_new_at", "cap_response_status", "cap_response_size", "cap_response_into"]); }
+                    ("__capop.replace", "Dir") => { needed.extend(["dir_replace_at", "cap_response_status", "cap_response_size", "cap_response_into"]); }
                     ("__capop.read_bytes", "Dir") => {
-                        needed.extend(["dir_read_bytes_at", "dir_response_status", "dir_response_size", "dir_response_into"]);
+                        needed.extend(["dir_read_bytes_at", "cap_response_status", "cap_response_size", "cap_response_into"]);
                     }
-                    ("__capop.write_bytes", "Dir") => { needed.extend(["dir_write_bytes_at", "dir_response_status", "dir_response_size", "dir_response_into"]); }
-                    ("__capop.append_bytes", "Dir") => { needed.extend(["dir_append_bytes_at", "dir_response_status", "dir_response_size", "dir_response_into"]); }
-                    ("__capop.set_executable", "Dir") => { needed.extend(["dir_set_executable_at", "dir_response_status", "dir_response_size", "dir_response_into"]); }
-                    ("__capop.rename", "Dir") => { needed.extend(["dir_rename_at", "dir_response_status", "dir_response_size", "dir_response_into"]); }
+                    ("__capop.write_bytes", "Dir") => { needed.extend(["dir_write_bytes_at", "cap_response_status", "cap_response_size", "cap_response_into"]); }
+                    ("__capop.append_bytes", "Dir") => { needed.extend(["dir_append_bytes_at", "cap_response_status", "cap_response_size", "cap_response_into"]); }
+                    ("__capop.set_executable", "Dir") => { needed.extend(["dir_set_executable_at", "cap_response_status", "cap_response_size", "cap_response_into"]); }
+                    ("__capop.rename", "Dir") => { needed.extend(["dir_rename_at", "cap_response_status", "cap_response_size", "cap_response_into"]); }
                     ("__capop.only", "Fetch") => { needed.insert("fetch_only_at"); }
                     ("__capop.fetch", "Net") => { needed.insert("net_fetch_at"); }
                     ("__capop.only", "Net") => {
-                        needed.extend(["net_only_at", "net_response_status", "net_response_size", "net_response_into", "net_response_take_net"]);
+                        needed.extend(["net_only_at", "cap_response_status", "cap_response_size", "cap_response_into", "cap_response_take_net"]);
                     }
                     ("__capop.deny", "Net") => { needed.insert("net_deny_at"); }
                     ("__capop.send_raw", "Fetch") => {
                         needed.extend(["fetch_send_at", "fetch_response_size", "fetch_response_into"]);
                     }
                     ("__capop.read", "Dir") => {
-                        needed.extend(["dir_read_at", "dir_response_status", "dir_response_size", "dir_response_into"]);
+                        needed.extend(["dir_read_at", "cap_response_status", "cap_response_size", "cap_response_into"]);
                     }
                     ("__capop.list", "Dir") => {
-                        needed.extend(["dir_list_at", "dir_response_status", "dir_response_size", "dir_response_into"]);
+                        needed.extend(["dir_list_at", "cap_response_status", "cap_response_size", "cap_response_into"]);
                     }
-                    ("__capop.exists", "Dir") => { needed.extend(["dir_exists_at", "dir_response_status", "dir_response_size", "dir_response_into", "dir_response_flag"]); }
-                    ("__capop.is_dir", "Dir") => { needed.extend(["dir_is_dir_at", "dir_response_status", "dir_response_size", "dir_response_into", "dir_response_flag"]); }
-                    ("__capop.write", "Dir") => { needed.extend(["dir_write_at", "dir_response_status", "dir_response_size", "dir_response_into"]); }
-                    ("__capop.append", "Dir") => { needed.extend(["dir_append_at", "dir_response_status", "dir_response_size", "dir_response_into"]); }
-                    ("__capop.write", "File") => { needed.extend(["file_write_at", "file_response_status", "file_response_size", "file_response_into"]); }
+                    ("__capop.exists", "Dir") => { needed.extend(["dir_exists_at", "cap_response_status", "cap_response_size", "cap_response_into", "cap_response_flag"]); }
+                    ("__capop.is_dir", "Dir") => { needed.extend(["dir_is_dir_at", "cap_response_status", "cap_response_size", "cap_response_into", "cap_response_flag"]); }
+                    ("__capop.write", "Dir") => { needed.extend(["dir_write_at", "cap_response_status", "cap_response_size", "cap_response_into"]); }
+                    ("__capop.append", "Dir") => { needed.extend(["dir_append_at", "cap_response_status", "cap_response_size", "cap_response_into"]); }
+                    ("__capop.write", "File") => { needed.extend(["file_write_at", "cap_response_status", "cap_response_size", "cap_response_into"]); }
                     ("__capop.write_out", "BuildOut") => { needed.insert("build_out_write_at"); }
                     ("__capop.read_build", "BuildRead") => {
                         needed.extend(witchy_wir::canonical_safewir::BUILD_READ_IMPORT_NAMES);
@@ -21607,19 +21591,19 @@ fn collect_capability_imports(module: &witchy_syntax::ast::Module, table: &TypeT
                     }
                     ("__capop.only", "Dir") => { needed.insert("dir_only_at"); }
                     ("__capop.subtree", "Dir") => {
-                        needed.extend(["dir_subtree_open_at", "dir_response_status", "dir_response_size", "dir_response_into", "dir_response_take_dir"]);
+                        needed.extend(["dir_subtree_open_at", "cap_response_status", "cap_response_size", "cap_response_into", "cap_response_take_dir"]);
                     }
                     ("__capop.read_file", "Dir") => {
-                        needed.extend(["dir_read_file_at", "dir_response_status", "dir_response_size", "dir_response_into", "dir_response_take_file"]);
+                        needed.extend(["dir_read_file_at", "cap_response_status", "cap_response_size", "cap_response_into", "cap_response_take_file"]);
                     }
                     ("__capop.write_file", "Dir") => {
-                        needed.extend(["dir_write_file_at", "dir_response_status", "dir_response_size", "dir_response_into", "dir_response_take_file"]);
+                        needed.extend(["dir_write_file_at", "cap_response_status", "cap_response_size", "cap_response_into", "cap_response_take_file"]);
                     }
                     ("__capop.read", "File") => {
-                        needed.extend(["file_read_at", "file_response_status", "file_response_size", "file_response_into"]);
+                        needed.extend(["file_read_at", "cap_response_status", "cap_response_size", "cap_response_into"]);
                     }
                     ("__capop.get_env", "Env") => {
-                        needed.extend(witchy_wir::canonical_safewir::ENV_IMPORT_NAMES);
+                        needed.extend(["env_get_at", "cap_response_status", "cap_response_size", "cap_response_into"]);
                     }
                     _ => {}
                 }

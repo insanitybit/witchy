@@ -6,28 +6,23 @@
 //! payload is the value or the denial message (RFC-0126 rule 3).
 use super::*;
 use witchy_syntax::cap_ops::{CAP_ERROR_TYPE, CAP_ERROR_VARIANTS};
-use witchy_wir::canonical_safewir::ENV_RESPONSE_KIND;
+use witchy_wir::canonical_safewir::CAP_RESPONSE_KIND;
 
 impl FunctionLowerer<'_> {
     pub(super) fn lower_env_get(&mut self, token: ValueId, name: &Expr) -> Result<ValueId, CanonicalLoweringError> {
         let layout = self.string_layout_id()?;
         let name = self.lower_string_argument(name)?;
         let name = self.string_slice_argument(name, layout)?;
-        let response = self.fresh(ValueType::Capability(ENV_RESPONSE_KIND))?;
+        let response = self.fresh(ValueType::Capability(CAP_RESPONSE_KIND))?;
         let lookup = self.capability_import("env_get_at")?;
         self.push_operation(Operation::HostCall {
             destinations: vec![response], import: lookup,
             arguments: vec![HostCallArgument::Capability(token), name],
         });
-        let status = self.fresh(ValueType::Size)?;
-        let status_import = self.capability_import("env_response_status")?;
-        self.push_operation(Operation::HostCall {
-            destinations: vec![status], import: status_import,
-            arguments: vec![HostCallArgument::Capability(response)],
-        });
+        let status = self.lower_response_status(response)?;
         // Both reads consult the one snapshot; an unset answer's payload is
         // empty and unused.
-        let text = self.lower_env_response_payload(response, layout)?;
+        let text = self.lower_response_payload(response)?;
         let string = Type::Named("String".into(), Vec::new());
         let option = Type::Named("Option".into(), vec![string]);
         let error = Type::Named(CAP_ERROR_TYPE.into(), Vec::new());
@@ -68,36 +63,5 @@ impl FunctionLowerer<'_> {
             })?.ok_or(CanonicalLoweringError::UnsupportedExpression("divergent Env result"))?;
             Ok(Some(this.detach_bound_result(value, affine)?))
         })?.ok_or(CanonicalLoweringError::UnsupportedExpression("divergent Env result"))
-    }
-
-    /// The response payload copied into a fresh guest string, its published
-    /// length guarded by the buffer's own capacity.
-    fn lower_env_response_payload(
-        &mut self, response: ValueId, layout: witchy_wir::layout::LayoutId,
-    ) -> Result<ValueId, CanonicalLoweringError> {
-        let size = self.fresh(ValueType::Size)?;
-        let size_import = self.capability_import("env_response_size")?;
-        self.push_operation(Operation::HostCall {
-            destinations: vec![size], import: size_import,
-            arguments: vec![HostCallArgument::Capability(response)],
-        });
-        let zero = self.push_const_size(0)?;
-        let output = self.alloc_bytes(zero, size)?;
-        let required = self.fresh(ValueType::Size)?;
-        let copy = self.capability_import("env_response_into")?;
-        self.push_operation(Operation::HostCall {
-            destinations: vec![required], import: copy,
-            arguments: vec![HostCallArgument::Capability(response), HostCallArgument::Buffer {
-                place: witchy_wir::canonical_safewir::Place::projected(output,
-                    Projection::Slice { start: zero, length: size }, ValueType::Ref(layout), AccessMode::Write),
-                extent: HostBufferExtent::Slice,
-            }],
-        });
-        let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, required, size)?;
-        self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
-        self.push_operation(Operation::UpdateCount { object: output, count: required });
-        self.string_lengths.insert(output, required);
-        self.string_capacities.insert(output, size);
-        Ok(output)
     }
 }

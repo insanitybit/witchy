@@ -3,36 +3,18 @@
 //! The host reads the secret once. A host-sealed secret or the signing key is
 //! the response's `Denied` status, not a trap; a forged or wrong-kind token
 //! still traps.
-use std::sync::Arc;
-
 use wasmtime::{Caller, Error, ExternRef, Linker, Result, Rooted};
 
-use super::super::{memory_of, VmState};
+use super::super::VmState;
+use super::cap_response::respond;
 use super::secret::secret_material_ref;
 
 /// `CapError::Denied`'s status: its variant ordinal plus one.
 const DENIED: u8 = 1;
 
-/// Private immutable reveal result, not a `Secret`. Neither an integer kind
-/// nor bytes supplied by the guest can construct one. `status` is 0 with the
-/// revealed bytes, or `DENIED` with a fixed refusal message.
-#[derive(Clone)]
-pub(in crate::runtime) struct SecretResponse {
-    issuer: Arc<()>,
-    status: u8,
-    bytes: Arc<Vec<u8>>,
-}
-
 pub(in crate::runtime) fn link_canonical(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "secret_reveal_at", host_secret_reveal_at)?;
-    linker.func_wrap("witchy", "secret_response_status", host_secret_response_status)?;
-    linker.func_wrap("witchy", "secret_response_size", host_secret_response_size)?;
-    linker.func_wrap("witchy", "secret_response_into", host_secret_response_into)?;
     Ok(())
-}
-
-fn length(bytes: usize) -> Result<i32> {
-    i32::try_from(bytes).map_err(|_| Error::msg("Secret response exceeds the guest ABI size limit"))
 }
 
 /// The status and payload revealing `key` answers. The refusal messages are
@@ -68,49 +50,8 @@ fn host_secret_reveal_at(
                 "fixture crypto.reveal returned unexpected response {response:?}"
             ))),
         };
-        length(bytes.len())?;
-        let response = SecretResponse { issuer: caller.data().registry_issuer.clone(), status: 0, bytes: Arc::new(bytes) };
-        return ExternRef::new(&mut caller, response).map(Some);
+        return respond(&mut caller, 0, bytes, None);
     }
     let (status, bytes) = reveal(&caller, key)?;
-    length(bytes.len())?;
-    let response = SecretResponse { issuer: caller.data().registry_issuer.clone(), status, bytes: Arc::new(bytes) };
-    ExternRef::new(&mut caller, response).map(Some)
-}
-
-fn secret_response(caller: &Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<SecretResponse> {
-    let token = token.ok_or_else(|| Error::msg("Secret response is null"))?;
-    let data = token.data(caller)?.ok_or_else(|| Error::msg("Secret response has no host data"))?;
-    let response = data.downcast_ref::<SecretResponse>()
-        .ok_or_else(|| Error::msg("Secret response has wrong host kind"))?;
-    if !Arc::ptr_eq(&caller.data().registry_issuer, &response.issuer) {
-        return Err(Error::msg("Secret response belongs to another instance"));
-    }
-    Ok(response.clone())
-}
-
-fn host_secret_response_status(caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<i32> {
-    Ok(i32::from(secret_response(&caller, token)?.status))
-}
-
-fn host_secret_response_size(caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<i32> {
-    length(secret_response(&caller, token)?.bytes.len())
-}
-
-/// Copy the whole payload when `capacity` holds it and answer its length
-/// either way; a short buffer is left untouched.
-fn host_secret_response_into(
-    mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>, out_ptr: i32, capacity: i32,
-) -> Result<i32> {
-    let bytes = secret_response(&caller, token)?.bytes;
-    let required = length(bytes.len())?;
-    let start = usize::try_from(out_ptr).map_err(|_| Error::msg("negative Secret response pointer"))?;
-    let room = usize::try_from(capacity).map_err(|_| Error::msg("negative Secret response capacity"))?;
-    let memory = memory_of(&mut caller)?;
-    let end = start.checked_add(room).filter(|end| *end <= memory.data_size(&caller))
-        .ok_or_else(|| Error::msg("Secret response buffer lies outside guest memory"))?;
-    if end - start >= bytes.len() {
-        memory.write(&mut caller, start, bytes.as_slice())?;
-    }
-    Ok(required)
+    respond(&mut caller, status, bytes, None)
 }

@@ -7,17 +7,30 @@
 //! filesystem again (RFC-0126 rule 3).
 use super::*;
 use witchy_syntax::cap_ops::{CAP_ERROR_TYPE, CAP_ERROR_VARIANTS};
-use witchy_wir::canonical_safewir::{DIR_RESPONSE_KIND, NET_RESPONSE_KIND, SECRET_RESPONSE_KIND};
+use witchy_wir::canonical_safewir::CAP_RESPONSE_KIND;
 
 impl FunctionLowerer<'_> {
+    /// The response's status, read from its snapshot.
+    pub(super) fn lower_response_status(&mut self, response: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        if !matches!(self.values[&response], ValueType::Capability(kind) if kind == CAP_RESPONSE_KIND) {
+            return Err(CanonicalLoweringError::UnsupportedExpression("capability response token"));
+        }
+        let status = self.fresh(ValueType::Size)?;
+        let import = self.capability_import("cap_response_status")?;
+        self.push_operation(Operation::HostCall {
+            destinations: vec![status], import,
+            arguments: vec![HostCallArgument::Capability(response)],
+        });
+        Ok(status)
+    }
+
     /// The response payload copied into a fresh guest byte buffer (a `String`
-    /// or `Bytes`). `family` (`dir` or `file`) names the response imports the
-    /// operation's authority links. The published length is the copy's
-    /// answer under the buffer's own capacity guard.
-    pub(super) fn lower_response_payload(&mut self, response: ValueId, family: &str) -> Result<ValueId, CanonicalLoweringError> {
+    /// or `Bytes`). The published length is the copy's answer under the
+    /// buffer's own capacity guard.
+    pub(super) fn lower_response_payload(&mut self, response: ValueId) -> Result<ValueId, CanonicalLoweringError> {
         let layout = self.string_layout_id()?;
         let size = self.fresh(ValueType::Size)?;
-        let size_import = self.capability_import(&format!("{family}_response_size"))?;
+        let size_import = self.capability_import("cap_response_size")?;
         self.push_operation(Operation::HostCall {
             destinations: vec![size], import: size_import,
             arguments: vec![HostCallArgument::Capability(response)],
@@ -25,7 +38,7 @@ impl FunctionLowerer<'_> {
         let zero = self.push_const_size(0)?;
         let output = self.alloc_bytes(zero, size)?;
         let required = self.fresh(ValueType::Size)?;
-        let copy = self.capability_import(&format!("{family}_response_into"))?;
+        let copy = self.capability_import("cap_response_into")?;
         self.push_operation(Operation::HostCall {
             destinations: vec![required], import: copy,
             arguments: vec![HostCallArgument::Capability(response), HostCallArgument::Buffer {
@@ -45,8 +58,8 @@ impl FunctionLowerer<'_> {
     /// `Result(T, CapError)` from a response whose payload is the success
     /// value (`T` is `String` or `Bytes`, both byte buffers) or the failure
     /// message.
-    pub(super) fn lower_cap_result(&mut self, response: ValueId, success: &str, family: &str) -> Result<ValueId, CanonicalLoweringError> {
-        self.lower_cap_result_with(response, Type::Named(success.into(), Vec::new()), family, |_, payload| Ok(payload))
+    pub(super) fn lower_cap_result(&mut self, response: ValueId, success: &str) -> Result<ValueId, CanonicalLoweringError> {
+        self.lower_cap_result_with(response, Type::Named(success.into(), Vec::new()), |_, payload| Ok(payload))
     }
 
     /// `lower_cap_result` whose success value is `success` built from the
@@ -55,19 +68,10 @@ impl FunctionLowerer<'_> {
         &mut self,
         response: ValueId,
         success: Type,
-        family: &str,
         convert: impl FnOnce(&mut Self, ValueId) -> Result<ValueId, CanonicalLoweringError>,
     ) -> Result<ValueId, CanonicalLoweringError> {
-        if !matches!(self.values[&response], ValueType::Capability(kind) if kind == DIR_RESPONSE_KIND || kind == NET_RESPONSE_KIND || kind == SECRET_RESPONSE_KIND) {
-            return Err(CanonicalLoweringError::UnsupportedExpression("capability response token"));
-        }
-        let status = self.fresh(ValueType::Size)?;
-        let status_import = self.capability_import(&format!("{family}_response_status"))?;
-        self.push_operation(Operation::HostCall {
-            destinations: vec![status], import: status_import,
-            arguments: vec![HostCallArgument::Capability(response)],
-        });
-        let text = self.lower_response_payload(response, family)?;
+        let status = self.lower_response_status(response)?;
+        let text = self.lower_response_payload(response)?;
         let value = success;
         let error = Type::Named(CAP_ERROR_TYPE.into(), Vec::new());
         let result = Type::Named("Result".into(), vec![value, error.clone()]);
@@ -120,5 +124,22 @@ impl FunctionLowerer<'_> {
             let value = this.lower_cap_error(status, message, error, shape, ordinal + 1)?;
             Ok(Some(this.detach_bound_result(value, affine)?))
         })?.ok_or(CanonicalLoweringError::UnsupportedExpression("divergent CapError"))
+    }
+}
+
+impl FunctionLowerer<'_> {
+    /// The capability of `kind` a successful response minted, taken by the
+    /// getter for that kind.
+    pub(super) fn lower_response_take(&mut self, response: ValueId, kind: witchy_wir::canonical_safewir::CapabilityKindId) -> Result<ValueId, CanonicalLoweringError> {
+        use witchy_wir::canonical_safewir::{CAP_RESPONSE_IMPORT_NAMES, CAP_RESPONSE_TAKE_KINDS};
+        let index = CAP_RESPONSE_TAKE_KINDS.iter().position(|taken| *taken == kind)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("capability a response cannot carry"))?;
+        let minted = self.fresh(ValueType::Capability(kind))?;
+        let import = self.capability_import(CAP_RESPONSE_IMPORT_NAMES[4 + index])?;
+        self.push_operation(Operation::HostCall {
+            destinations: vec![minted], import,
+            arguments: vec![HostCallArgument::Capability(response)],
+        });
+        Ok(minted)
     }
 }

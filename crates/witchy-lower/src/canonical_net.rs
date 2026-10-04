@@ -4,7 +4,7 @@
 //! back as `Result(T, CapError)` (RFC-0126 rule 3): the response mints the
 //! `Socket` or `Listener`, or carries the received text or resolved addresses.
 use super::*;
-use witchy_wir::canonical_safewir::{NET_CAPABILITY_KIND, LISTENER_CAPABILITY_KIND, SOCKET_CAPABILITY_KIND, NET_IMPORT_NAMES, NET_RESPONSE_KIND};
+use witchy_wir::canonical_safewir::{NET_CAPABILITY_KIND, LISTENER_CAPABILITY_KIND, SOCKET_CAPABILITY_KIND, NET_IMPORT_NAMES, CAP_RESPONSE_KIND};
 
 fn operation(name: &str) -> Option<(usize, witchy_wir::canonical_safewir::CapabilityKindId, usize)> {
     Some(match name {
@@ -29,8 +29,8 @@ fn answers_response(index: usize) -> bool { !matches!(index, 6 | 7) }
 
 /// The response getters a fallible Net operation reads.
 pub(super) const RESPONSE_IMPORTS: [&str; 5] = [
-    "net_response_status", "net_response_size", "net_response_into",
-    "net_response_take_socket", "net_response_take_listener",
+    "cap_response_status", "cap_response_size", "cap_response_into",
+    "cap_response_take_socket", "cap_response_take_listener",
 ];
 
 pub(super) fn is_operation(name: &str) -> bool { operation(name).is_some() || name == LISTEN_TLS }
@@ -79,7 +79,7 @@ pub(super) fn catalog(catalog: CanonicalAbiCatalog, signatures: &mut Vec<Functio
     let net = ValueType::Capability(NET_CAPABILITY_KIND);
     let listener = ValueType::Capability(LISTENER_CAPABILITY_KIND);
     let socket = ValueType::Capability(SOCKET_CAPABILITY_KIND);
-    let response = ValueType::Capability(NET_RESPONSE_KIND);
+    let response = ValueType::Capability(CAP_RESPONSE_KIND);
     let text = ValueType::Ref(layout);
     let shapes = [
         (vec![net, text], vec![response]),
@@ -140,32 +140,24 @@ impl FunctionLowerer<'_> {
             self.push_operation(Operation::HostCall { destinations: Vec::new(), import, arguments });
             return Ok(None);
         }
-        let response = self.fresh(ValueType::Capability(NET_RESPONSE_KIND))?;
+        let response = self.fresh(ValueType::Capability(CAP_RESPONSE_KIND))?;
         self.push_operation(Operation::HostCall { destinations: vec![response], import, arguments });
         let checked = |ty: Ty| ty_to_ast(&ty).ok_or(CanonicalLoweringError::UnsupportedExpression("Net result type"));
         let value = match index {
             0 | 1 | 9 => {
-                let (success, minted, take) = if index == 0 {
-                    (checked(Ty::Listener)?, LISTENER_CAPABILITY_KIND, "net_response_take_listener")
+                let (success, minted) = if index == 0 {
+                    (checked(Ty::Listener)?, LISTENER_CAPABILITY_KIND)
                 } else {
-                    (checked(Ty::Socket)?, SOCKET_CAPABILITY_KIND, "net_response_take_socket")
+                    (checked(Ty::Socket)?, SOCKET_CAPABILITY_KIND)
                 };
-                self.lower_cap_result_with(response, success, "net", |this, _empty| {
-                    let value = this.fresh(ValueType::Capability(minted))?;
-                    let take = this.capability_import(take)?;
-                    this.push_operation(Operation::HostCall {
-                        destinations: vec![value], import: take,
-                        arguments: vec![HostCallArgument::Capability(response)],
-                    });
-                    Ok(value)
-                })?
+                self.lower_cap_result_with(response, success, |this, _empty| this.lower_response_take(response, minted))?
             }
-            2 | 5 => self.lower_cap_result_with(response, checked(Ty::Unit)?, "net", |this, _| this.push_zero(ValueType::Unit))?,
+            2 | 5 => self.lower_cap_result_with(response, checked(Ty::Unit)?, |this, _| this.push_zero(ValueType::Unit))?,
             10 => {
                 let list = Type::Named("List".into(), vec![Type::Named("String".into(), Vec::new())]);
-                self.lower_cap_result_with(response, list, "net", |this, addresses| this.lower_listing(addresses))?
+                self.lower_cap_result_with(response, list, |this, addresses| this.lower_listing(addresses))?
             }
-            _ => self.lower_cap_result(response, "String", "net")?,
+            _ => self.lower_cap_result(response, "String")?,
         };
         Ok(Some(value))
     }
@@ -191,19 +183,11 @@ impl FunctionLowerer<'_> {
             return Err(CanonicalLoweringError::UnsupportedExpression("TLS key must be an authenticated Secret"));
         }
         let import = self.capability_import(witchy_wir::canonical_safewir::NET_LISTEN_TLS_IMPORT)?;
-        let response = self.fresh(ValueType::Capability(NET_RESPONSE_KIND))?;
+        let response = self.fresh(ValueType::Capability(CAP_RESPONSE_KIND))?;
         self.push_operation(Operation::HostCall { destinations: vec![response], import, arguments: vec![
             HostCallArgument::Capability(token), address, certificate, HostCallArgument::Capability(key),
         ] });
         let success = ty_to_ast(&Ty::Listener).ok_or(CanonicalLoweringError::UnsupportedExpression("Net result type"))?;
-        self.lower_cap_result_with(response, success, "net", |this, _empty| {
-            let value = this.fresh(ValueType::Capability(LISTENER_CAPABILITY_KIND))?;
-            let take = this.capability_import("net_response_take_listener")?;
-            this.push_operation(Operation::HostCall {
-                destinations: vec![value], import: take,
-                arguments: vec![HostCallArgument::Capability(response)],
-            });
-            Ok(value)
-        })
+        self.lower_cap_result_with(response, success, |this, _empty| this.lower_response_take(response, LISTENER_CAPABILITY_KIND))
     }
 }

@@ -85,14 +85,16 @@ mod fetch;
 pub use fetch::{FETCH_CAPABILITY_KIND, FETCH_RESPONSE_KIND, FETCH_IMPORT_NAMES};
 mod registry_hosts;
 pub use registry_hosts::{CLOCK_CAPABILITY_KIND, SECRET_STORE_CAPABILITY_KIND, SECRET_CAPABILITY_KIND, REGISTRY_HOST_IMPORT_NAMES};
+mod cap_response;
+pub use cap_response::{CAP_RESPONSE_KIND, CAP_RESPONSE_IMPORT_NAMES, CAP_RESPONSE_TAKE_KINDS};
 mod dir_storage;
-pub use dir_storage::{DIR_RESPONSE_KIND, DIR_STORAGE_IMPORT_NAMES};
+pub use dir_storage::DIR_STORAGE_IMPORT_NAMES;
 mod env_response;
-pub use env_response::{ENV_RESPONSE_KIND, ENV_IMPORT_NAMES};
+pub use env_response::ENV_IMPORT_NAMES;
 mod net_response;
-pub use net_response::{NET_RESPONSE_KIND, NET_RESPONSE_IMPORT_NAMES, NET_LISTEN_TLS_IMPORT};
+pub use net_response::{NET_RESPONSE_IMPORT_NAMES, NET_LISTEN_TLS_IMPORT};
 mod secret_response;
-pub use secret_response::{SECRET_RESPONSE_KIND, SECRET_RESPONSE_IMPORT_NAMES};
+pub use secret_response::SECRET_RESPONSE_IMPORT_NAMES;
 pub(crate) mod build_read;
 pub use build_read::{BUILD_READ_CAPABILITY_KIND, BUILD_READ_RESPONSE_KIND, BUILD_READ_IMPORT_NAMES};
 pub use build_read::{BUILD_ENV_CAPABILITY_KIND, BUILD_ENV_IMPORT_NAMES};
@@ -982,7 +984,7 @@ impl CanonicalAbiCatalog {
                 &[WasmTy::ExternRef],
                 signatures.dir_exists_at,
                 vec![dir(), read_slice()],
-                vec![HostResultRole::Capability(DIR_RESPONSE_KIND)],
+                vec![HostResultRole::Capability(CAP_RESPONSE_KIND)],
                 HostMutation::ReadOnly,
                 &[AbiImportAuthority::DirRead],
             )?,
@@ -992,7 +994,7 @@ impl CanonicalAbiCatalog {
                 &[WasmTy::ExternRef],
                 signatures.dir_write_at,
                 vec![dir(), read_slice(), read_slice()],
-                vec![HostResultRole::Capability(DIR_RESPONSE_KIND)],
+                vec![HostResultRole::Capability(CAP_RESPONSE_KIND)],
                 HostMutation::ReadOnly,
                 &[AbiImportAuthority::DirWrite],
             )?,

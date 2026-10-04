@@ -1,12 +1,12 @@
 use wasmtime::{Caller, Error, ExternRef, Linker, Result, Rooted};
 use std::sync::Arc;
-use witchy_wir::canonical_safewir::DIR_STORAGE_IMPORT_NAMES;
 
 #[path = "exec.rs"]
 pub(in crate::runtime) mod canonical_exec;
 
 use crate::confine::{ConfineError, ConfineErrorKind};
 
+use super::cap_response::{self, Minted};
 use super::super::{
     confine, memory_of, read_slice_str, read_wstr, read_wstr_list,
     DirAuthority, DirBacking, ExecAuthority, FileAuthority, FileBacking, FsRights, VmState,
@@ -15,16 +15,8 @@ use super::super::{
 /// Register the root `Dir` grant mint.
 pub(in crate::runtime) fn link_mint_dir(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "mint_dir", host_mint_dir)?;
-    // A response only ever comes from an operation its grant linked, so its
-    // getters link under any Dir grant (a write-only `write_file` needs them).
-    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[3], host_dir_response_size)?;
-    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[4], host_dir_response_into)?;
-    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[10], host_dir_response_status)?;
-    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[22], host_dir_response_flag)?;
-    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[19], host_dir_response_take_dir)?;
     // Narrowing never widens, so it links under any Dir grant.
-    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[24], host_dir_only_at)?;
-    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[20], host_dir_response_take_file)?;
+    linker.func_wrap("witchy", "dir_only_at", host_dir_only_at)?;
     Ok(())
 }
 
@@ -32,28 +24,28 @@ pub(in crate::runtime) fn link_mint_dir(linker: &mut Linker<VmState>) -> Result<
 /// the right cannot even link the import.
 pub(in crate::runtime) fn link_dir_read(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "dir_only", host_dir_only)?;
-    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[15], host_dir_list_at)?;
+    linker.func_wrap("witchy", "dir_list_at", host_dir_list_at)?;
     linker.func_wrap("witchy", "dir_exists_at", host_dir_exists_at)?;
     linker.func_wrap("witchy", "dir_is_dir_at", host_dir_is_dir_at)?;
-    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[16], host_dir_subtree_open_at)?;
-    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[17], host_dir_read_file_at)?;
-    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[2], host_dir_read_bytes_at)?;
-    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[9], host_dir_read_at)?;
+    linker.func_wrap("witchy", "dir_subtree_open_at", host_dir_subtree_open_at)?;
+    linker.func_wrap("witchy", "dir_read_file_at", host_dir_read_file_at)?;
+    linker.func_wrap("witchy", "dir_read_bytes_at", host_dir_read_bytes_at)?;
+    linker.func_wrap("witchy", "dir_read_at", host_dir_read_at)?;
     Ok(())
 }
 
 /// Register the Dir write family under a `Dir[Write]` grant.
 pub(in crate::runtime) fn link_dir_write(linker: &mut Linker<VmState>) -> Result<()> {
-    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[18], host_dir_write_file_at)?;
-    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[21], host_dir_append_at)?;
+    linker.func_wrap("witchy", "dir_write_file_at", host_dir_write_file_at)?;
+    linker.func_wrap("witchy", "dir_append_at", host_dir_append_at)?;
     linker.func_wrap("witchy", "dir_append_bytes_at", host_dir_append_bytes_at)?;
     linker.func_wrap("witchy", "dir_set_executable_at", host_dir_set_executable_at)?;
     linker.func_wrap("witchy", "dir_rename_at", host_dir_rename_at)?;
     linker.func_wrap("witchy", "dir_write_at", host_dir_write_at)?;
     linker.func_wrap("witchy", "dir_make_dir_at", host_dir_make_dir_at)?;
-    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[0], host_dir_create_new_at)?;
-    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[1], host_dir_replace_at)?;
-    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[5], host_dir_write_bytes_at)?;
+    linker.func_wrap("witchy", "dir_create_new_at", host_dir_create_new_at)?;
+    linker.func_wrap("witchy", "dir_replace_at", host_dir_replace_at)?;
+    linker.func_wrap("witchy", "dir_write_bytes_at", host_dir_write_bytes_at)?;
     Ok(())
 }
 
@@ -63,18 +55,9 @@ pub(in crate::runtime) fn link_file_read(linker: &mut Linker<VmState>) -> Result
     Ok(())
 }
 
-/// Register the File response getters, linked whenever any File operation is:
-/// a response only comes from an operation its grant linked.
-pub(in crate::runtime) fn link_file_responses(linker: &mut Linker<VmState>) -> Result<()> {
-    linker.func_wrap("witchy", "file_response_status", host_dir_response_status)?;
-    linker.func_wrap("witchy", "file_response_size", host_dir_response_size)?;
-    linker.func_wrap("witchy", "file_response_into", host_dir_response_into)?;
-    Ok(())
-}
-
 /// Register the File write leaf op (RFC-0012).
 pub(in crate::runtime) fn link_file_write(linker: &mut Linker<VmState>) -> Result<()> {
-    linker.func_wrap("witchy", DIR_STORAGE_IMPORT_NAMES[23], host_file_write_at)?;
+    linker.func_wrap("witchy", "file_write_at", host_file_write_at)?;
     Ok(())
 }
 
@@ -349,28 +332,6 @@ pub mod metadata_tests;
 
 
 
-/// Private immutable read result, not a Dir or an entry grant. Neither an
-/// integer kind nor bytes supplied by the guest can construct this authority.
-/// `status` 0 carries the contents; any other is a `CapError` status
-/// (`ConfineErrorKind::status`) carrying the failure message.
-#[derive(Clone)]
-pub(in crate::runtime) struct DirResponse {
-    issuer: Arc<()>,
-    status: u8,
-    bytes: Arc<Vec<u8>>,
-    /// The capability a successful navigation (`subtree`, `read_file`,
-    /// `write_file`) minted, taken by `dir_response_take_dir`/`_file`.
-    minted: Option<Minted>,
-    /// A predicate response's answer (`exists`, `is_dir`).
-    flag: bool,
-}
-
-#[derive(Clone)]
-enum Minted {
-    Dir(DirAuthority),
-    File(FileAuthority),
-}
-
 fn dir_bytes_length(length: usize) -> Result<i32> {
     i32::try_from(length).map_err(|_| Error::msg("Dir response exceeds the guest ABI size limit"))
 }
@@ -381,21 +342,6 @@ fn dir_storage_range(ptr: i32, length: i32, limit: usize) -> Result<std::ops::Ra
     let end = start.checked_add(length).filter(|end| *end <= limit)
         .ok_or_else(|| Error::msg("Dir storage slice lies outside guest memory"))?;
     Ok(start..end)
-}
-
-fn dir_response_bytes(caller: &Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<Arc<Vec<u8>>> {
-    dir_response(caller, token).map(|response| response.bytes)
-}
-
-fn dir_response(caller: &Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<DirResponse> {
-    let token = token.ok_or_else(|| Error::msg("Dir response is null"))?;
-    let data = token.data(caller)?.ok_or_else(|| Error::msg("Dir response has no host data"))?;
-    let response = data.downcast_ref::<DirResponse>()
-        .ok_or_else(|| Error::msg("Dir response has wrong host kind"))?;
-    if !Arc::ptr_eq(&caller.data().registry_issuer, &response.issuer) {
-        return Err(Error::msg("Dir response belongs to another instance"));
-    }
-    Ok(response.clone())
 }
 
 fn host_dir_read_bytes_at(
@@ -432,8 +378,7 @@ fn dir_read_response(
         Err(failure) => (failure.kind.status(), guest_failure(failure.kind, &path).into_bytes()),
     };
     dir_bytes_length(bytes.len())?;
-    let response = DirResponse { issuer: caller.data().registry_issuer.clone(), status, bytes: Arc::new(bytes), minted: None, flag: false };
-    ExternRef::new(&mut caller, response).map(Some)
+    cap_response::respond(&mut caller, status, bytes, None)
 }
 
 /// `file_read_at(file) -> response`: `file.read()` as one confined read
@@ -453,8 +398,7 @@ fn host_file_read_at(mut caller: Caller<'_, VmState>, f: Option<Rooted<ExternRef
         Err(failure) => (failure.kind.status(), format!("this File {}", failure_reason(failure.kind)).into_bytes()),
     };
     dir_bytes_length(bytes.len())?;
-    let response = DirResponse { issuer: caller.data().registry_issuer.clone(), status, bytes: Arc::new(bytes), minted: None, flag: false };
-    ExternRef::new(&mut caller, response).map(Some)
+    cap_response::respond(&mut caller, status, bytes, None)
 }
 
 /// `dir.read` and `dir.read_bytes`'s classification (RFC-0126 rule 3). The guest can branch on
@@ -638,8 +582,7 @@ fn dir_navigation_response(
         Ok(minted) => (0, Vec::new(), Some(minted)),
         Err(failure) => (failure.kind.status(), guest_open_failure(failure.kind, &path).into_bytes(), None),
     };
-    let response = DirResponse { issuer: caller.data().registry_issuer.clone(), status, bytes: Arc::new(bytes), minted, flag: false };
-    ExternRef::new(&mut caller, response).map(Some)
+    cap_response::respond(&mut caller, status, bytes, minted)
 }
 
 /// `dir_subtree_open_at(dir, path) -> response`: `dir.subtree(path)`.
@@ -661,24 +604,6 @@ fn host_dir_write_file_at(
     caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>, path_ptr: i32, path_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
     dir_navigation_response(caller, d, path_ptr, path_len, Navigation::WriteFile)
-}
-
-/// `dir_response_take_dir(response) -> Dir`: the Dir a successful `subtree`
-/// minted. Any other response traps; the guest takes it only on status 0.
-fn host_dir_response_take_dir(mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<Option<Rooted<ExternRef>>> {
-    match dir_response(&caller, token)?.minted {
-        Some(Minted::Dir(dir)) => ExternRef::new(&mut caller, dir).map(Some),
-        _ => Err(Error::msg("Dir response carries no Dir")),
-    }
-}
-
-/// `dir_response_take_file(response) -> File`: the File a successful
-/// `read_file`/`write_file` minted. Any other response traps.
-fn host_dir_response_take_file(mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<Option<Rooted<ExternRef>>> {
-    match dir_response(&caller, token)?.minted {
-        Some(Minted::File(file)) => ExternRef::new(&mut caller, file).map(Some),
-        _ => Err(Error::msg("Dir response carries no File")),
-    }
 }
 
 /// Where a write may land (RFC-0126 rule 3). An escape or a name the policy
@@ -754,8 +679,7 @@ fn dir_effect_response(
         Ok(flag) => (0, Vec::new(), flag),
         Err(failure) => (failure.kind.status(), guest_write_failure(failure.kind, rel).into_bytes(), false),
     };
-    let response = DirResponse { issuer: caller.data().registry_issuer.clone(), status, bytes: Arc::new(bytes), minted: None, flag };
-    ExternRef::new(caller, response).map(Some)
+    cap_response::respond_flag(caller, status, bytes, flag)
 }
 
 /// The guest-visible message of a failed write-family operation on `rel`.
@@ -1003,13 +927,7 @@ fn dir_probe_response(
         Ok(flag) => (0, Vec::new(), flag),
         Err(failure) => (failure.kind.status(), guest_failure(failure.kind, &rel).into_bytes(), false),
     };
-    let response = DirResponse { issuer: caller.data().registry_issuer.clone(), status, bytes: Arc::new(bytes), minted: None, flag };
-    ExternRef::new(&mut *caller, response).map(Some)
-}
-
-/// `dir_response_flag(response) -> i32`: a predicate response's answer.
-fn host_dir_response_flag(caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<i32> {
-    Ok(i32::from(dir_response(&caller, token)?.flag))
+    cap_response::respond_flag(caller, status, bytes, flag)
 }
 
 /// `file_write_at(file, data) -> response`: `file.write(data)` (RFC-0126
@@ -1034,8 +952,7 @@ fn host_file_write_at(
             (kind.status(), format!("this File {reason}").into_bytes())
         }
     };
-    let response = DirResponse { issuer: caller.data().registry_issuer.clone(), status, bytes: Arc::new(bytes), minted: None, flag: false };
-    ExternRef::new(&mut caller, response).map(Some)
+    cap_response::respond(&mut caller, status, bytes, None)
 }
 
 /// The guest-visible message of a failed navigation on `rel`.
@@ -1068,29 +985,6 @@ fn failure_reason(kind: ConfineErrorKind) -> &'static str {
         ConfineErrorKind::AlreadyExists => "already exists",
         ConfineErrorKind::Io => "could not be read",
     }
-}
-
-fn host_dir_response_status(caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<i32> {
-    Ok(i32::from(dir_response(&caller, token)?.status))
-}
-
-fn host_dir_response_size(caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<i32> {
-    dir_bytes_length(dir_response_bytes(&caller, token)?.len())
-}
-
-fn host_dir_response_into(
-    mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>, out_ptr: i32, capacity: i32,
-) -> Result<i32> {
-    let bytes = dir_response_bytes(&caller, token)?;
-    let required = dir_bytes_length(bytes.len())?;
-    let memory = memory_of(&mut caller)?;
-    let output = dir_storage_range(out_ptr, capacity, memory.data_size(&caller))?;
-    // Preflight even an empty or short buffer in full. No partial copy, state
-    // consumption, or guest-visible pointer into another instance's memory.
-    if output.len() >= bytes.len() {
-        memory.write(&mut caller, output.start, bytes.as_slice())?;
-    }
-    Ok(required)
 }
 
 #[cfg(feature = "self-checks")]
@@ -1164,8 +1058,7 @@ fn host_dir_list_at(mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>
         Err(failure) => (failure.kind.status(), format!("this Dir {}", list_failure_reason(failure.kind)).into_bytes()),
     };
     dir_bytes_length(bytes.len())?;
-    let response = DirResponse { issuer: caller.data().registry_issuer.clone(), status, bytes: Arc::new(bytes), minted: None, flag: false };
-    ExternRef::new(&mut caller, response).map(Some)
+    cap_response::respond(&mut caller, status, bytes, None)
 }
 
 /// The fixed guest-visible reason a listing failed.

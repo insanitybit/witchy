@@ -2680,6 +2680,7 @@ pub(crate) fn link_capability_imports(
     host::secret::link_canonical(linker)?;
     host::crypto::link_canonical_keyed(linker)?;
     host::secret_response::link_canonical(linker)?;
+    host::cap_response::link(linker)?;
     // Linking the fixture ABI grants no provider or token. Its handler checks
     // the private fixture session before reading guest memory or producing output.
     host::console::link_fixture_console(linker)?;
@@ -2737,9 +2738,6 @@ pub(crate) fn link_capability_imports(
     }
     if (has_real_dir && dir_write) || direct_file_write {
         host::filesystem::link_file_write(linker)?;
-    }
-    if has_readable_dir || direct_file_read || (has_real_dir && dir_write) || direct_file_write {
-        host::filesystem::link_file_responses(linker)?;
     }
     // (RFC-0005 Stage 2) The `run` wrapper mints each `--file` `main` param as an
     // `externref` via `mint_file`; only reachable when a direct File grant exists.

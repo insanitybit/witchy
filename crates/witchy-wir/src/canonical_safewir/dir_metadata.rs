@@ -11,7 +11,7 @@ impl CanonicalAbiCatalog {
             vec![HostParameterRole::Capability(DIR_CAPABILITY_KIND),
                 HostParameterRole::Buffer { value_type: ValueType::Ref(string_layout),
                     access: AccessMode::Read, extent: HostBufferExtent::Slice }],
-            vec![HostResultRole::Capability(DIR_RESPONSE_KIND)], HostMutation::ReadOnly,
+            vec![HostResultRole::Capability(CAP_RESPONSE_KIND)], HostMutation::ReadOnly,
             &[AbiImportAuthority::DirRead])?;
         self.imports.insert(import.id, import);
         Ok(self)

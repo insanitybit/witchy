@@ -22,7 +22,7 @@ impl CanonicalAbiCatalog {
         let read = || HostParameterRole::Buffer {
             value_type: ValueType::Ref(string_layout), access: AccessMode::Read, extent: HostBufferExtent::Slice,
         };
-        let response = || vec![HostResultRole::Capability(NET_RESPONSE_KIND)];
+        let response = || vec![HostResultRole::Capability(CAP_RESPONSE_KIND)];
         let socket = || cap(SOCKET_CAPABILITY_KIND);
         let declarations = [
             (vec![ExternRef, I32, I32], vec![ExternRef], vec![cap(NET_CAPABILITY_KIND), read()], response(), AbiImportAuthority::NetListen),

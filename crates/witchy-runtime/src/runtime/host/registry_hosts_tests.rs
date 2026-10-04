@@ -11,7 +11,7 @@ const WAT: &str = r#"(module
   (import "witchy" "crypto_public_key_into" (func $pk (param externref i32 i32) (result i32)))
   (import "witchy" "crypto_reveal_len" (func $reveal (param externref) (result i32)))
   (import "witchy" "dir_make_dir_at" (func $mkdir (param externref i32 i32) (result externref)))
-  (import "witchy" "dir_response_status" (func $status (param externref) (result i32)))
+  (import "witchy" "cap_response_status" (func $status (param externref) (result i32)))
   (memory (export "memory") 1)
   (func (export "run"))
   (func (export "now") (param externref) (result i64) local.get 0 call $now)

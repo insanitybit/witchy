@@ -8,8 +8,8 @@ const WAT: &str = r#"(module
   (import "witchy" "dir_create_new_at" (func $create (param externref i32 i32 i32 i32) (result externref)))
   (import "witchy" "dir_replace_at" (func $replace (param externref i32 i32 i32 i32) (result externref)))
   (import "witchy" "dir_read_bytes_at" (func $read (param externref i32 i32) (result externref)))
-  (import "witchy" "dir_response_size" (func $size (param externref) (result i32)))
-  (import "witchy" "dir_response_into" (func $copy (param externref i32 i32) (result i32)))
+  (import "witchy" "cap_response_size" (func $size (param externref) (result i32)))
+  (import "witchy" "cap_response_into" (func $copy (param externref i32 i32) (result i32)))
   (import "witchy" "dir_write_bytes_at" (func $write (param externref i32 i32 i32 i32) (result externref)))
   (import "witchy" "dir_write_at" (func $write_text (param externref i32 i32 i32 i32) (result externref)))
   (import "witchy" "dir_append_at" (func $append_text (param externref i32 i32 i32 i32) (result externref)))
@@ -19,19 +19,19 @@ const WAT: &str = r#"(module
   (import "witchy" "dir_set_executable_at" (func $set_executable (param externref i32 i32) (result externref)))
   (import "witchy" "dir_exists_at" (func $exists (param externref i32 i32) (result externref)))
   (import "witchy" "dir_is_dir_at" (func $is_dir (param externref i32 i32) (result externref)))
-  (import "witchy" "dir_response_flag" (func $flag (param externref) (result i32)))
+  (import "witchy" "cap_response_flag" (func $flag (param externref) (result i32)))
   (import "witchy" "dir_read_at" (func $read_text (param externref i32 i32) (result externref)))
-  (import "witchy" "dir_response_status" (func $status (param externref) (result i32)))
+  (import "witchy" "cap_response_status" (func $status (param externref) (result i32)))
   (import "witchy" "dir_read_file_at" (func $open_file (param externref i32 i32) (result externref)))
   (import "witchy" "dir_subtree_open_at" (func $open_dir (param externref i32 i32) (result externref)))
   (import "witchy" "dir_write_file_at" (func $create_file (param externref i32 i32) (result externref)))
-  (import "witchy" "dir_response_take_dir" (func $take_dir (param externref) (result externref)))
-  (import "witchy" "dir_response_take_file" (func $take_file (param externref) (result externref)))
+  (import "witchy" "cap_response_take_dir" (func $take_dir (param externref) (result externref)))
+  (import "witchy" "cap_response_take_file" (func $take_file (param externref) (result externref)))
   (import "witchy" "file_read_at" (func $file_read (param externref) (result externref)))
   (import "witchy" "dir_list_at" (func $list (param externref) (result externref)))
-  (import "witchy" "file_response_status" (func $file_status (param externref) (result i32)))
-  (import "witchy" "file_response_size" (func $file_size (param externref) (result i32)))
-  (import "witchy" "file_response_into" (func $file_copy (param externref i32 i32) (result i32)))
+  (import "witchy" "cap_response_status" (func $file_status (param externref) (result i32)))
+  (import "witchy" "cap_response_size" (func $file_size (param externref) (result i32)))
+  (import "witchy" "cap_response_into" (func $file_copy (param externref i32 i32) (result i32)))
   (memory (export "memory") 1)
   (func (export "run"))
   (func (export "create") (param externref i32 i32 i32 i32) (result externref)
@@ -227,7 +227,7 @@ pub fn dir_storage_kind_rights_and_response_issuer_precede_memory() {
     let (_root, mut vm, grant) = setup(false);
     let read_only = attenuate(&mut vm, grant, true, false, "");
     let write_only = attenuate(&mut vm, grant, false, true, "");
-    let forged = Some(ExternRef::new(&mut vm.store, witchy_wir::canonical_safewir::DIR_RESPONSE_KIND.get()).unwrap());
+    let forged = Some(ExternRef::new(&mut vm.store, witchy_wir::canonical_safewir::CAP_RESPONSE_KIND.get()).unwrap());
     for operation in ["create", "replace", "write"] {
         for (token, message) in [(None, "null"), (forged, "wrong host data"), (read_only, "does not grant Write")] {
             let args = (token, -1, -1, -1, -1);
@@ -245,7 +245,7 @@ pub fn dir_storage_kind_rights_and_response_issuer_precede_memory() {
     let (other_root, mut other, other_grant) = setup(true);
     std::fs::write(other_root.path().join("bytes"), b"foreign").unwrap();
     let response = read_path(&mut other, other_grant, "bytes").unwrap();
-    let foreign = response.data(&other.store).unwrap().unwrap().downcast_ref::<DirResponse>().unwrap().clone();
+    let foreign = response.data(&other.store).unwrap().unwrap().downcast_ref::<cap_response::CapResponse>().unwrap().clone();
     let foreign = Some(ExternRef::new(&mut vm.store, foreign).unwrap());
     error(size(&mut vm, foreign).unwrap_err(), "another instance");
     error(copy(&mut vm, foreign, -1, -1).unwrap_err(), "another instance");
@@ -401,7 +401,7 @@ pub fn dir_read_at_answers_failures_as_statuses() {
     }
     let write_only = attenuate(&mut vm, grant, false, true, "");
     error(read_text(&mut vm, write_only, "a.txt").unwrap_err(), "does not grant Read");
-    let forged = Some(ExternRef::new(&mut vm.store, witchy_wir::canonical_safewir::DIR_RESPONSE_KIND.get()).unwrap());
+    let forged = Some(ExternRef::new(&mut vm.store, witchy_wir::canonical_safewir::CAP_RESPONSE_KIND.get()).unwrap());
     let status = vm.instance.get_typed_func::<Token, i32>(&mut vm.store, "status").unwrap();
     error(status.call(&mut vm.store, forged).unwrap_err(), "wrong host kind");
 }
@@ -639,10 +639,10 @@ pub fn write_only_dir_links_write_file() {
     let root = tempfile::tempdir().unwrap();
     let wat = r#"(module
       (import "witchy" "dir_write_file_at" (func (param externref i32 i32) (result externref)))
-      (import "witchy" "dir_response_status" (func (param externref) (result i32)))
-      (import "witchy" "dir_response_size" (func (param externref) (result i32)))
-      (import "witchy" "dir_response_into" (func (param externref i32 i32) (result i32)))
-      (import "witchy" "dir_response_take_file" (func (param externref) (result externref)))
+      (import "witchy" "cap_response_status" (func (param externref) (result i32)))
+      (import "witchy" "cap_response_size" (func (param externref) (result i32)))
+      (import "witchy" "cap_response_into" (func (param externref i32 i32) (result i32)))
+      (import "witchy" "cap_response_take_file" (func (param externref) (result externref)))
       (memory (export "memory") 1)
       (func (export "run")))"#;
     let caps = Capabilities { dir_root: Some(root.path().to_owned()), dir_read: false, dir_write: true, ..Capabilities::none() };

@@ -340,9 +340,15 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "dir_exists_at" (func $dir_exists_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "dir_write_at" (func $dir_write_at_host (param externref i32 i32 i32 i32) (result externref)))
   (import "witchy" "env_get_at" (func $env_get_at_host (param externref i32 i32) (result externref)))
-  (import "witchy" "env_response_status" (func $env_response_status_host (param externref) (result i32)))
-  (import "witchy" "env_response_size" (func $env_response_size_host (param externref) (result i32)))
-  (import "witchy" "env_response_into" (func $env_response_into_host (param externref i32 i32) (result i32)))
+  (import "witchy" "cap_response_status" (func $cap_response_status_host (param externref) (result i32)))
+  (import "witchy" "cap_response_size" (func $cap_response_size_host (param externref) (result i32)))
+  (import "witchy" "cap_response_into" (func $cap_response_into_host (param externref i32 i32) (result i32)))
+  (import "witchy" "cap_response_flag" (func $cap_response_flag_host (param externref) (result i32)))
+  (import "witchy" "cap_response_take_dir" (func $cap_response_take_dir_host (param externref) (result externref)))
+  (import "witchy" "cap_response_take_file" (func $cap_response_take_file_host (param externref) (result externref)))
+  (import "witchy" "cap_response_take_net" (func $cap_response_take_net_host (param externref) (result externref)))
+  (import "witchy" "cap_response_take_socket" (func $cap_response_take_socket_host (param externref) (result externref)))
+  (import "witchy" "cap_response_take_listener" (func $cap_response_take_listener_host (param externref) (result externref)))
   (import "witchy" "console_print" (func $console_print_host (param externref i32 i32)))
   (import "witchy" "regex_match_spans_into" (func $regex_match_spans_into_host (param i32 i32 i32 i32 i32 i32) (result i32)))
   (import "witchy" "net_listen_at" (func $net_listen_at_host (param externref i32 i32) (result externref)))
@@ -356,17 +362,8 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "net_connect_at" (func $net_connect_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "net_only_at" (func $net_only_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "net_deny_at" (func $net_deny_at_host (param externref i32 i32) (result externref)))
-  (import "witchy" "net_response_status" (func $net_response_status_host (param externref) (result i32)))
-  (import "witchy" "net_response_size" (func $net_response_size_host (param externref) (result i32)))
-  (import "witchy" "net_response_into" (func $net_response_into_host (param externref i32 i32) (result i32)))
-  (import "witchy" "net_response_take_net" (func $net_response_take_net_host (param externref) (result externref)))
-  (import "witchy" "net_response_take_socket" (func $net_response_take_socket_host (param externref) (result externref)))
-  (import "witchy" "net_response_take_listener" (func $net_response_take_listener_host (param externref) (result externref)))
   (import "witchy" "secret_reveal_at" (func $secret_reveal_at_host (param externref) (result externref)))
   (import "witchy" "net_listen_tls_at" (func $net_listen_tls_at_host (param externref i32 i32 i32 i32 externref) (result externref)))
-  (import "witchy" "secret_response_status" (func $secret_response_status_host (param externref) (result i32)))
-  (import "witchy" "secret_response_size" (func $secret_response_size_host (param externref) (result i32)))
-  (import "witchy" "secret_response_into" (func $secret_response_into_host (param externref i32 i32) (result i32)))
   (import "witchy" "__witchy_abort_at" (func $__witchy_abort_at (param i32 i32 i32 i32 i32)))
   (import "witchy" "__witchy_list_bounds_at" (func $__witchy_list_bounds_at (param i64 i32 i32 i32 i32)))
   (import "witchy" "__witchy_bytes_bounds_at" (func $__witchy_bytes_bounds_at (param i64 i32 i32 i32 i32)))
@@ -392,26 +389,17 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "dir_create_new_at" (func $dir_create_new_at_host (param externref i32 i32 i32 i32) (result externref)))
   (import "witchy" "dir_replace_at" (func $dir_replace_at_host (param externref i32 i32 i32 i32) (result externref)))
   (import "witchy" "dir_read_bytes_at" (func $dir_read_bytes_at_host (param externref i32 i32) (result externref)))
-  (import "witchy" "dir_response_size" (func $dir_response_size_host (param externref) (result i32)))
-  (import "witchy" "dir_response_into" (func $dir_response_into_host (param externref i32 i32) (result i32)))
   (import "witchy" "dir_write_bytes_at" (func $dir_write_bytes_at_host (param externref i32 i32 i32 i32) (result externref)))
   (import "witchy" "dir_append_bytes_at" (func $dir_append_bytes_at_host (param externref i32 i32 i32 i32) (result externref)))
   (import "witchy" "dir_set_executable_at" (func $dir_set_executable_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "dir_rename_at" (func $dir_rename_at_host (param externref i32 i32 i32 i32) (result externref)))
   (import "witchy" "dir_read_at" (func $dir_read_at_host (param externref i32 i32) (result externref)))
-  (import "witchy" "dir_response_status" (func $dir_response_status_host (param externref) (result i32)))
   (import "witchy" "file_read_at" (func $file_read_at_host (param externref) (result externref)))
-  (import "witchy" "file_response_status" (func $file_response_status_host (param externref) (result i32)))
-  (import "witchy" "file_response_size" (func $file_response_size_host (param externref) (result i32)))
-  (import "witchy" "file_response_into" (func $file_response_into_host (param externref i32 i32) (result i32)))
   (import "witchy" "dir_list_at" (func $dir_list_at_host (param externref) (result externref)))
   (import "witchy" "dir_subtree_open_at" (func $dir_subtree_open_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "dir_read_file_at" (func $dir_read_file_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "dir_write_file_at" (func $dir_write_file_at_host (param externref i32 i32) (result externref)))
-  (import "witchy" "dir_response_take_dir" (func $dir_response_take_dir_host (param externref) (result externref)))
-  (import "witchy" "dir_response_take_file" (func $dir_response_take_file_host (param externref) (result externref)))
   (import "witchy" "dir_append_at" (func $dir_append_at_host (param externref i32 i32 i32 i32) (result externref)))
-  (import "witchy" "dir_response_flag" (func $dir_response_flag_host (param externref) (result i32)))
   (import "witchy" "file_write_at" (func $file_write_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "dir_only_at" (func $dir_only_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "crypto_sha512_slices" (func $crypto_sha512_slices_host (param i32 i32 i32 i32) (result i32)))
@@ -609,22 +597,13 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "dir_create_new_at"
         | "dir_replace_at"
         | "dir_read_bytes_at"
-        | "dir_response_size"
-        | "dir_response_into"
-        | "dir_response_status"
         | "dir_read_at"
         | "file_read_at"
-        | "file_response_status"
-        | "file_response_size"
-        | "file_response_into"
         | "dir_list_at"
         | "dir_subtree_open_at"
         | "dir_read_file_at"
         | "dir_write_file_at"
-        | "dir_response_take_dir"
-        | "dir_response_take_file"
         | "dir_append_at"
-        | "dir_response_flag"
         | "file_write_at"
         | "dir_only_at"
         | "dir_write_bytes_at"
@@ -677,17 +656,8 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "net_deny"
         | "net_only_at"
         | "net_deny_at"
-        | "net_response_status"
-        | "net_response_size"
-        | "net_response_into"
-        | "net_response_take_net"
-        | "net_response_take_socket"
-        | "net_response_take_listener"
         | "secret_reveal_at"
         | "net_listen_tls_at"
-        | "secret_response_status"
-        | "secret_response_size"
-        | "secret_response_into"
         | "net_send_line"
         | "net_send_bytes"
         | "net_close"
@@ -706,10 +676,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "dir_exists_at"
         | "dir_is_dir_at"
         | "dir_write_at"
-        | "env_get_at"
-        | "env_response_status"
-        | "env_response_size"
-        | "env_response_into" => C::CapabilityAuthority,
+        | "env_get_at" => C::CapabilityAuthority,
 
         "args_size" | "user_cap_field_len" => C::LaunchInput,
 
@@ -742,6 +709,11 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "vm_par_map_bytes_write"
         | "vm_with_dir_run"
         | "vm_serve_run"
+        // A capability response's getters read the snapshot an authorized
+        // operation issued; they exercise no authority of their own.
+        | "cap_response_status" | "cap_response_size" | "cap_response_into" | "cap_response_flag"
+        | "cap_response_take_dir" | "cap_response_take_file" | "cap_response_take_net"
+        | "cap_response_take_socket" | "cap_response_take_listener"
         | "exec_response_size" | "exec_response_into"
         | "fetch_response_size" | "fetch_response_into"
         | "build_read_response_size" | "build_read_response_into"
@@ -759,12 +731,10 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
     let authorities = match name {
         "console_read_len" => AUTH_CONSOLE_READ,
         "crypto.sign" | "crypto.public_key" | "crypto_sign_into" | "crypto_public_key_into" | "secretstore_lookup" | "crypto_reveal_len" | "mint_secret"
-        | "secret_reveal_at" | "secret_response_status" | "secret_response_size" | "secret_response_into" => AUTH_SECRET,
+        | "secret_reveal_at" => AUTH_SECRET,
         "secretstore_lookup_at" => AUTH_SECRET_STORE,
-        "mint_env" | "env_only" | "env_get_at" | "env_response_status"
-        | "env_response_size" | "env_response_into" => AUTH_ENV,
-        "mint_dir" | "dir_response_take_dir" | "dir_response_take_file" | "dir_response_status"
-        | "dir_response_size" | "dir_response_into" | "dir_response_flag" | "dir_only_at" => AUTH_DIR_GRANT,
+        "mint_env" | "env_only" | "env_get_at" => AUTH_ENV,
+        "mint_dir" | "dir_only_at" => AUTH_DIR_GRANT,
         "dir_only"
         | "dir_exists_at"
         | "dir_is_dir_at"
@@ -774,11 +744,8 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "dir_replace_at" | "dir_write_bytes_at" | "dir_append_bytes_at"
         | "dir_set_executable_at" | "dir_rename_at" | "dir_write_file_at" | "dir_append_at" => AUTH_DIR_WRITE,
         "mint_file" => AUTH_FILE_GRANT,
-        "file_read_at" | "file_write_at" | "file_response_status"
-        | "file_response_size" | "file_response_into" => AUTH_FILE_AUTHORITY,
-        "mint_net" | "net_only_at" | "net_deny_at" | "net_response_status" | "net_response_size"
-        | "net_response_into" | "net_response_take_net" | "net_response_take_socket"
-        | "net_response_take_listener" => AUTH_NET_GRANT,
+        "file_read_at" | "file_write_at" => AUTH_FILE_AUTHORITY,
+        "mint_net" | "net_only_at" | "net_deny_at" => AUTH_NET_GRANT,
         "mint_fetch" => AUTH_FETCH_GRANT,
         "fetch_only" | "fetch_only_at" | "fetch_send_at" => AUTH_FETCH,
         "net_fetch_at" => AUTH_NET_CONNECT,

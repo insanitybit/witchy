@@ -31,7 +31,7 @@ pub(super) fn collect_imports(module: &witchy_syntax::ast::Module) -> (BTreeSet<
             if let Expr::Call { name, .. } = expression && let Some(import) = host_import(name) {
                 imports.insert(import);
                 if import == "secret_reveal_at" {
-                    imports.extend(["secret_response_status", "secret_response_size", "secret_response_into"]);
+                    imports.extend(["cap_response_status", "cap_response_size", "cap_response_into"]);
                 }
                 requires_secret |= is_require(name);
             }
@@ -64,11 +64,11 @@ impl FunctionLowerer<'_> {
         if spec.id == IntrinsicId::CryptoReveal {
             // One host read answers `Result(String, CapError)`: a host-sealed
             // secret or the signing key is `Denied` (RFC-0126 rule 3).
-            let response = self.fresh(ValueType::Capability(witchy_wir::canonical_safewir::SECRET_RESPONSE_KIND))?;
+            let response = self.fresh(ValueType::Capability(witchy_wir::canonical_safewir::CAP_RESPONSE_KIND))?;
             let import = self.capability_import("secret_reveal_at")?;
             self.push_operation(Operation::HostCall { destinations: vec![response], import,
                 arguments: vec![HostCallArgument::Capability(token)] });
-            return self.lower_cap_result(response, "String", "secret");
+            return self.lower_cap_result(response, "String");
         }
         let layout = self.string_layout_id()?;
         if is_store {

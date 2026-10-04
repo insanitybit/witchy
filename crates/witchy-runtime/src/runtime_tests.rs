@@ -608,7 +608,7 @@ fi
           (import "witchy" "print" (func $print (param i32 i32)))
           (import "witchy" "mint_dir" (func $mint_dir (param i32) (result externref)))
           (import "witchy" "dir_exists_at" (func $dir_exists_at (param externref i32 i32) (result externref)))
-          (import "witchy" "dir_response_flag" (func $dir_response_flag (param externref) (result i32)))
+          (import "witchy" "cap_response_flag" (func $dir_response_flag (param externref) (result i32)))
           (import "witchy" "fill_pending" (func $fill_pending (param i32)))
           (import "witchy" "vm_with_dir_run"
             (func $vm_with_dir_run (param externref i32 i32) (result i32)))

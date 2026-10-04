@@ -67,9 +67,6 @@ pub(in crate::runtime) fn link_env(linker: &mut Linker<VmState>) -> Result<()> {
     // The canonical route's Env lookup, under the SAME `Env` grant as its
     // frozen siblings: an ungranted program cannot link it.
     linker.func_wrap("witchy", ENV_IMPORT_NAMES[0], host_env_get_at)?;
-    linker.func_wrap("witchy", ENV_IMPORT_NAMES[1], host_env_response_status)?;
-    linker.func_wrap("witchy", ENV_IMPORT_NAMES[2], host_env_response_size)?;
-    linker.func_wrap("witchy", ENV_IMPORT_NAMES[3], host_env_response_into)?;
     Ok(())
 }
 
@@ -172,17 +169,6 @@ const ENV_UNSET: u8 = 1;
 /// `env_get_at`'s answer for a name outside the grant's allow-list.
 const ENV_DENIED: u8 = 2;
 
-/// Private immutable lookup result, not an `Env` grant. Neither an integer
-/// kind nor bytes supplied by the guest can construct one. `status` is
-/// `ENV_SET` with the value, `ENV_UNSET` with no payload, or `ENV_DENIED`
-/// with the denial message.
-#[derive(Clone)]
-pub(in crate::runtime) struct EnvResponse {
-    issuer: Arc<()>,
-    status: u8,
-    bytes: Arc<Vec<u8>>,
-}
-
 /// The status and payload `env_get_at` answers for `name`. The allow-list is
 /// consulted before the environment, so a denied name answers identically
 /// whether or not the host sets it. The denial message is guest-visible data:
@@ -198,10 +184,6 @@ fn env_lookup(env: &EnvAuthority, name: &str) -> (u8, Vec<u8>) {
     }
 }
 
-fn env_bytes_length(length: usize) -> Result<i32> {
-    i32::try_from(length).map_err(|_| Error::msg("Env response exceeds the guest ABI size limit"))
-}
-
 /// `env_get_at(env, name, name_len) -> response`: look `name` up once. A
 /// forged or wrong-kind token traps; a name the grant does not cover is the
 /// response's `Denied` status, not a trap.
@@ -215,46 +197,7 @@ fn host_env_get_at(
     let mem = memory_of(&mut caller)?;
     let name = read_slice_str(mem.data(&caller), name_ptr, name_len)?;
     let (status, bytes) = env_lookup(&env, &name);
-    env_bytes_length(bytes.len())?;
-    let response = EnvResponse { issuer: caller.data().registry_issuer.clone(), status, bytes: Arc::new(bytes) };
-    ExternRef::new(&mut caller, response).map(Some)
-}
-
-fn env_response(caller: &Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<EnvResponse> {
-    let token = token.ok_or_else(|| Error::msg("Env response is null"))?;
-    let data = token.data(caller)?.ok_or_else(|| Error::msg("Env response has no host data"))?;
-    let response = data.downcast_ref::<EnvResponse>()
-        .ok_or_else(|| Error::msg("Env response has wrong host kind"))?;
-    if !Arc::ptr_eq(&caller.data().registry_issuer, &response.issuer) {
-        return Err(Error::msg("Env response belongs to another instance"));
-    }
-    Ok(response.clone())
-}
-
-fn host_env_response_status(caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<i32> {
-    Ok(i32::from(env_response(&caller, token)?.status))
-}
-
-fn host_env_response_size(caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> Result<i32> {
-    env_bytes_length(env_response(&caller, token)?.bytes.len())
-}
-
-/// Copy the whole payload when `capacity` holds it and answer its length
-/// either way; a short buffer is left untouched.
-fn host_env_response_into(
-    mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>, out_ptr: i32, capacity: i32,
-) -> Result<i32> {
-    let bytes = env_response(&caller, token)?.bytes;
-    let required = env_bytes_length(bytes.len())?;
-    let start = usize::try_from(out_ptr).map_err(|_| Error::msg("negative Env response pointer"))?;
-    let length = usize::try_from(capacity).map_err(|_| Error::msg("negative Env response capacity"))?;
-    let memory = memory_of(&mut caller)?;
-    let end = start.checked_add(length).filter(|end| *end <= memory.data_size(&caller))
-        .ok_or_else(|| Error::msg("Env response buffer lies outside guest memory"))?;
-    if end - start >= bytes.len() {
-        memory.write(&mut caller, start, bytes.as_slice())?;
-    }
-    Ok(required)
+    super::cap_response::respond(&mut caller, status, bytes, None)
 }
 
 #[cfg(feature = "self-checks")]
@@ -268,9 +211,9 @@ pub mod tests {
         (module
           (import "witchy" "mint_env" (func $mint_env (result externref)))
           (import "witchy" "env_get_at" (func $get (param externref i32 i32) (result externref)))
-          (import "witchy" "env_response_status" (func $status (param externref) (result i32)))
-          (import "witchy" "env_response_size" (func $size (param externref) (result i32)))
-          (import "witchy" "env_response_into" (func $copy (param externref i32 i32) (result i32)))
+          (import "witchy" "cap_response_status" (func $status (param externref) (result i32)))
+          (import "witchy" "cap_response_size" (func $size (param externref) (result i32)))
+          (import "witchy" "cap_response_into" (func $copy (param externref i32 i32) (result i32)))
           (memory (export "memory") 1)
           (global $status (export "status") (mut i32) (i32.const -1))
           (global $length (export "length") (mut i32) (i32.const -1))

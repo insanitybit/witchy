@@ -5,7 +5,7 @@
 //! an endpoint the receiver does not already admit is a `Denied` response;
 //! subtraction only ever removes endpoints, so it cannot fail.
 use super::*;
-use witchy_wir::canonical_safewir::{NET_CAPABILITY_KIND, NET_RESPONSE_KIND};
+use witchy_wir::canonical_safewir::{NET_CAPABILITY_KIND, CAP_RESPONSE_KIND};
 
 impl FunctionLowerer<'_> {
     /// The policy's pattern as a read slice. `NetPolicy` is sealed, so only
@@ -25,21 +25,13 @@ impl FunctionLowerer<'_> {
     pub(super) fn lower_net_only(&mut self, receiver: &Expr, token: ValueId, policy: &Expr) -> Result<ValueId, CanonicalLoweringError> {
         let success = self.expression_type(receiver)?;
         let pattern = self.net_policy_slice(policy)?;
-        let response = self.fresh(ValueType::Capability(NET_RESPONSE_KIND))?;
+        let response = self.fresh(ValueType::Capability(CAP_RESPONSE_KIND))?;
         let import = self.capability_import("net_only_at")?;
         self.push_operation(Operation::HostCall {
             destinations: vec![response], import,
             arguments: vec![HostCallArgument::Capability(token), pattern],
         });
-        self.lower_cap_result_with(response, success, "net", |this, _empty| {
-            let narrowed = this.fresh(ValueType::Capability(NET_CAPABILITY_KIND))?;
-            let take = this.capability_import("net_response_take_net")?;
-            this.push_operation(Operation::HostCall {
-                destinations: vec![narrowed], import: take,
-                arguments: vec![HostCallArgument::Capability(response)],
-            });
-            Ok(narrowed)
-        })
+        self.lower_cap_result_with(response, success, |this, _empty| this.lower_response_take(response, NET_CAPABILITY_KIND))
     }
 
     pub(super) fn lower_net_deny(&mut self, token: ValueId, policy: &Expr) -> Result<ValueId, CanonicalLoweringError> {

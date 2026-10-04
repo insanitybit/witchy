@@ -187,7 +187,7 @@ spelled it.
 - `net.only(policy)` returns `Result(Net, CapError)`. A policy endpoint the
   receiver does not already admit is `Err(Denied(..))`. Endpoints the receiver
   denies stay denied, so `net.deny(p).only(p)` is `Denied`. One host call,
-  `net_only_at`, answers with a response; `net_response_take_net` takes the
+  `net_only_at`, answers with a response; `cap_response_take_net` takes the
   narrowed `Net` on success.
 - `net.deny(policy)` returns `Net`. Subtraction only removes endpoints, so it
   cannot fail.
@@ -224,6 +224,16 @@ right, so a `Secret[Seal]` is rejected at check time. A secret the host sealed
 message that carries no key material. By-handle operations (`crypto.sign`,
 `crypto.public_key`, `net.listen_tls`) accept sealed secrets and do not reveal
 them.
+
+### One response shape
+
+Every rule-3 operation above answers the same immutable capability response,
+whatever capability issued it: a status, a payload, a predicate answer, and on
+success the capability the operation minted. One family of getters reads it
+back (`cap_response_status`, `_size`, `_into`, `_flag`, and
+`_take_{dir,file,net,socket,listener}`). The getters exercise no authority; the
+operation that issued the response carries it, so a new fallible operation adds
+only its own issuing import. A take of a kind the response does not carry traps.
 
 The cryptographic, networking, filesystem, process, server, environment, and
 secret modules are retained features. Pure hashing, verification, and encoding

@@ -80,12 +80,18 @@ operation is one host call that answers an authenticated Net response:
 and an address read slice; `net_accept_at` takes a Listener; `net_send_at` and
 `net_send_line_at` take a Socket and a UTF-8 read slice; `net_recv_line_at`,
 `net_recv_all_at` and `net_recv_bytes_at` take a Socket (the last with an Int
-byte count). `net_response_status` selects `Ok` or the `CapError` variant,
-`net_response_size`/`net_response_into` copy the payload (received text,
-NUL-joined resolved addresses, or the failure message) into a checked write
-slice, and `net_response_take_socket`/`net_response_take_listener` take what a
-successful operation minted; a take on any other response traps. The browser
-host omits these imports.
+byte count). The browser host omits these imports.
+
+Every fallible `Dir`, `File`, `Env`, `Net` and `Secret` operation answers the
+same capability response, read by one family of authority-free getters:
+`cap_response_status` selects `Ok` or the `CapError` variant,
+`cap_response_size`/`cap_response_into` copy the payload (contents, received
+text, NUL-joined names or addresses, or the failure message) into a checked
+write slice, `cap_response_flag` reads a predicate's answer, and
+`cap_response_take_{dir,file,net,socket,listener}` take the capability a
+successful operation minted; a take of any other kind traps. The getters are
+internal services: the operation that issued the response carries the
+authority.
 
 ## Import inclusion is tree-shaken
 
@@ -344,9 +350,15 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `dir_exists_at` | `(externref, i32, i32) -> externref` | capability authority | Dir.Read | omitted |
 | `dir_write_at` | `(externref, i32, i32, i32, i32) -> externref` | capability authority | Dir.Write | omitted |
 | `env_get_at` | `(externref, i32, i32) -> externref` | capability authority | Env | omitted |
-| `env_response_status` | `(externref) -> i32` | capability authority | Env | omitted |
-| `env_response_size` | `(externref) -> i32` | capability authority | Env | omitted |
-| `env_response_into` | `(externref, i32, i32) -> i32` | capability authority | Env | omitted |
+| `cap_response_status` | `(externref) -> i32` | internal/toolchain service | none | omitted |
+| `cap_response_size` | `(externref) -> i32` | internal/toolchain service | none | omitted |
+| `cap_response_into` | `(externref, i32, i32) -> i32` | internal/toolchain service | none | omitted |
+| `cap_response_flag` | `(externref) -> i32` | internal/toolchain service | none | omitted |
+| `cap_response_take_dir` | `(externref) -> externref` | internal/toolchain service | none | omitted |
+| `cap_response_take_file` | `(externref) -> externref` | internal/toolchain service | none | omitted |
+| `cap_response_take_net` | `(externref) -> externref` | internal/toolchain service | none | omitted |
+| `cap_response_take_socket` | `(externref) -> externref` | internal/toolchain service | none | omitted |
+| `cap_response_take_listener` | `(externref) -> externref` | internal/toolchain service | none | omitted |
 | `console_print` | `(externref, i32, i32)` | non-authority infrastructure | none | omitted |
 | `regex_match_spans_into` | `(i32, i32, i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |
 | `net_listen_at` | `(externref, i32, i32) -> externref` | capability authority | Net.Listen | omitted |
@@ -360,17 +372,8 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `net_connect_at` | `(externref, i32, i32) -> externref` | capability authority | Net.Connect | omitted |
 | `net_only_at` | `(externref, i32, i32) -> externref` | capability authority | Net.grant | omitted |
 | `net_deny_at` | `(externref, i32, i32) -> externref` | capability authority | Net.grant | omitted |
-| `net_response_status` | `(externref) -> i32` | capability authority | Net.grant | omitted |
-| `net_response_size` | `(externref) -> i32` | capability authority | Net.grant | omitted |
-| `net_response_into` | `(externref, i32, i32) -> i32` | capability authority | Net.grant | omitted |
-| `net_response_take_net` | `(externref) -> externref` | capability authority | Net.grant | omitted |
-| `net_response_take_socket` | `(externref) -> externref` | capability authority | Net.grant | omitted |
-| `net_response_take_listener` | `(externref) -> externref` | capability authority | Net.grant | omitted |
 | `secret_reveal_at` | `(externref) -> externref` | capability authority | Secret | omitted |
 | `net_listen_tls_at` | `(externref, i32, i32, i32, i32, externref) -> externref` | capability authority | Net.Listen, Secret | omitted |
-| `secret_response_status` | `(externref) -> i32` | capability authority | Secret | omitted |
-| `secret_response_size` | `(externref) -> i32` | capability authority | Secret | omitted |
-| `secret_response_into` | `(externref, i32, i32) -> i32` | capability authority | Secret | omitted |
 | `__witchy_abort_at` | `(i32, i32, i32, i32, i32)` | runtime diagnostic | none | omitted |
 | `__witchy_list_bounds_at` | `(i64, i32, i32, i32, i32)` | runtime diagnostic | none | omitted |
 | `__witchy_bytes_bounds_at` | `(i64, i32, i32, i32, i32)` | runtime diagnostic | none | omitted |
@@ -396,26 +399,17 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `dir_create_new_at` | `(externref, i32, i32, i32, i32) -> externref` | capability authority | Dir.Write | omitted |
 | `dir_replace_at` | `(externref, i32, i32, i32, i32) -> externref` | capability authority | Dir.Write | omitted |
 | `dir_read_bytes_at` | `(externref, i32, i32) -> externref` | capability authority | Dir.Read | omitted |
-| `dir_response_size` | `(externref) -> i32` | capability authority | Dir.grant | omitted |
-| `dir_response_into` | `(externref, i32, i32) -> i32` | capability authority | Dir.grant | omitted |
 | `dir_write_bytes_at` | `(externref, i32, i32, i32, i32) -> externref` | capability authority | Dir.Write | omitted |
 | `dir_append_bytes_at` | `(externref, i32, i32, i32, i32) -> externref` | capability authority | Dir.Write | omitted |
 | `dir_set_executable_at` | `(externref, i32, i32) -> externref` | capability authority | Dir.Write | omitted |
 | `dir_rename_at` | `(externref, i32, i32, i32, i32) -> externref` | capability authority | Dir.Write | omitted |
 | `dir_read_at` | `(externref, i32, i32) -> externref` | capability authority | Dir.Read | omitted |
-| `dir_response_status` | `(externref) -> i32` | capability authority | Dir.grant | omitted |
 | `file_read_at` | `(externref) -> externref` | capability authority | File.authority | omitted |
-| `file_response_status` | `(externref) -> i32` | capability authority | File.authority | omitted |
-| `file_response_size` | `(externref) -> i32` | capability authority | File.authority | omitted |
-| `file_response_into` | `(externref, i32, i32) -> i32` | capability authority | File.authority | omitted |
 | `dir_list_at` | `(externref) -> externref` | capability authority | Dir.Read | omitted |
 | `dir_subtree_open_at` | `(externref, i32, i32) -> externref` | capability authority | Dir.Read | omitted |
 | `dir_read_file_at` | `(externref, i32, i32) -> externref` | capability authority | Dir.Read | omitted |
 | `dir_write_file_at` | `(externref, i32, i32) -> externref` | capability authority | Dir.Write | omitted |
-| `dir_response_take_dir` | `(externref) -> externref` | capability authority | Dir.grant | omitted |
-| `dir_response_take_file` | `(externref) -> externref` | capability authority | Dir.grant | omitted |
 | `dir_append_at` | `(externref, i32, i32, i32, i32) -> externref` | capability authority | Dir.Write | omitted |
-| `dir_response_flag` | `(externref) -> i32` | capability authority | Dir.grant | omitted |
 | `file_write_at` | `(externref, i32, i32) -> externref` | capability authority | File.authority | omitted |
 | `dir_only_at` | `(externref, i32, i32) -> externref` | capability authority | Dir.grant | omitted |
 | `crypto_sha512_slices` | `(i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |

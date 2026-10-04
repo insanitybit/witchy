@@ -3531,3 +3531,19 @@ tests `dependency_footprint_does_not_widen_the_trusted_root`,
 `fixed_file_and_named_secret_providers_resolve_only_at_startup` and
 `committed_minigrep_builds_and_runs_as_an_installed_trusted_app` leave the
 RFC-0165 deferred list (the slow ones stay nightly).
+
+### 2026-10-04: one capability response for every rule-3 operation (RFC-0126 rule 3)
+
+The Dir/File, Env, Net and Secret response families (kinds 22-25, each with
+its own status/size/into getters, plus Dir's flag and takes and Net's takes)
+are one `CAP_RESPONSE_KIND` read by one getter family:
+`cap_response_{status,size,into,flag}` and
+`cap_response_take_{dir,file,net,socket,listener}`. The getters are
+authority-free internal services, linked unconditionally; each issuing import
+keeps its own authority. The runtime keeps one `CapResponse` (status, payload,
+flag, minted capability) behind `cap_response::{respond, fail, respond_flag}`,
+and lowering reads it through `lower_response_status`/`_payload`/`_take` with no
+per-family import names. Env's duplicate payload reader is gone. The Exec,
+Fetch, build-read and VM-service responses keep their own protocols. Evidence:
+the existing Dir/File/Env/Net/Secret runtime self-checks and example tests over
+the renamed imports; `spec/wasm-abi.md` regenerated.

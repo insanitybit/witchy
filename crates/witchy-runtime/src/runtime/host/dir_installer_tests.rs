@@ -8,7 +8,7 @@ const WAT: &str = r#"(module
   (import "witchy" "dir_append_bytes_at" (func $append (param externref i32 i32 i32 i32) (result externref)))
   (import "witchy" "dir_set_executable_at" (func $chmod (param externref i32 i32) (result externref)))
   (import "witchy" "dir_rename_at" (func $rename (param externref i32 i32 i32 i32) (result externref)))
-  (import "witchy" "dir_response_status" (func $status (param externref) (result i32)))
+  (import "witchy" "cap_response_status" (func $status (param externref) (result i32)))
   (memory (export "memory") 1)
   (func (export "run"))
   (func (export "append") (param externref i32 i32 i32 i32) (result i32)

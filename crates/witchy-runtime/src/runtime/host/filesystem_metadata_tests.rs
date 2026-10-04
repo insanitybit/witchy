@@ -5,8 +5,8 @@ type Token = Option<Rooted<ExternRef>>;
 const WAT: &str = r#"(module
   (import "witchy" "mint_dir" (func $mint (param i32) (result externref)))
   (import "witchy" "dir_is_dir_at" (func $query (param externref i32 i32) (result externref)))
-  (import "witchy" "dir_response_status" (func $status (param externref) (result i32)))
-  (import "witchy" "dir_response_flag" (func $flag (param externref) (result i32)))
+  (import "witchy" "cap_response_status" (func $status (param externref) (result i32)))
+  (import "witchy" "cap_response_flag" (func $flag (param externref) (result i32)))
   (memory (export "memory") 1)
   (export "mint" (func $mint))
   (func (export "query") (param externref i32 i32) (result externref)
