@@ -483,6 +483,14 @@ the frozen-mutation diagnostic. Source parameter bindings must be complete;
 unknown argument shapes and callable origins without source contracts remain
 fail closed. Row H remains partial for those paths and wider compositions.
 
+Branch result storage, 2026-10-04: the checker joins source qualifiers from
+every completing `if` or `match` arm before using an inferred aggregate as a
+deep `var` assignment root. Plain tuple results from both forms admit nested
+field writes; one admitted unoptimized Wasm witness returns the independent
+`9385` with zero canonical heap leaks. A frozen `Box` in either kind of arm
+keeps the result frozen and refuses the same write. Arms whose source shape
+cannot be recovered still fail closed; row H remains partial.
+
 `rfc0167_frozen_view_replacement` adds a normal-mode row L composition
 witness: a rooted `&frozen Box` keeps the old field value when a `var frozen
 Box` root is replaced, so admitted unoptimized Wasm prints the independently
