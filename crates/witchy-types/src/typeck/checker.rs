@@ -176,6 +176,9 @@ pub(super) struct Checker {
     /// Declared result storage shapes carried by checked local function values.
     /// These are source qualifiers, not the erased `Ty::Fn` identity.
     pub(super) callable_storage_result_types: Vec<HashMap<String, ast::Type>>,
+    /// Generic source parameter templates transported with local function
+    /// values. Result specialization uses these only with a checked origin.
+    pub(super) callable_storage_parameter_types: Vec<HashMap<String, (Vec<ast::Type>, Vec<String>)>>,
     /// Source-level opt callable provenance for local function-value aliases.
     /// This is deliberately separate from `Ty::Fn`: the ordinary function ABI
     /// remains usable by normal callers, while opt higher-order entries demand

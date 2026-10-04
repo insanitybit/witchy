@@ -459,7 +459,19 @@ admitted unoptimized Wasm with zero leaks. `wrap(frozen Box)`, both argument
 orders of `choose[a](a, a) -> a`, and a nested `List(a)` result refuse deep
 mutation with the frozen diagnostic. Unknown argument source shapes remain
 without a proof. Generic function-value specialization, broader argument
-expressions, and external callable metadata remain open; row H is partial.
+expressions, and external callable metadata remained open at that checkpoint;
+row H is partial.
+
+Generic function-value result storage, 2026-10-04: a local alias of a checked
+generic function now carries its source parameter templates with its result
+shape. Calling `let make = wrap` specializes that shape from the checked
+argument just as a direct call does. A plain `Box` result permits a deep
+`var` write and returns the independent `93` on admitted unoptimized Wasm
+with zero leaks; a frozen argument refuses the same write with the frozen
+diagnostic. Callable rebinding keeps a template only when the old and new
+templates agree, and result qualifiers still join conservatively. This
+covers local named-function aliases; lambda-origin templates, trait dispatch,
+and external callable metadata remain open, so row H is partial.
 
 `rfc0167_frozen_view_replacement` adds a normal-mode row L composition
 witness: a rooted `&frozen Box` keeps the old field value when a `var frozen

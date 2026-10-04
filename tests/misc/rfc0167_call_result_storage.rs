@@ -220,3 +220,46 @@ fn main() -> Int:
 "#).expect_err("nested generic result must retain a frozen element");
     assert!(error.to_string().contains("cannot mutate through frozen value"), "{error}");
 }
+
+#[test]
+fn generic_function_value_specializes_a_plain_result() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let checked = witchy::resolve_std_only_checked(r#"
+type Box:
+    value: Int
+fn wrap[a](value: a) -> (a, Int):
+    (value, 3)
+fn main() -> Int:
+    let make = wrap
+    var pair = make(Box(2))
+    pair.0.value = 9
+    pair.0.value * 10 + pair.1
+"#).expect("generic function value retains result storage provenance");
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("generic function value admits");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(&artifact,
+        Capabilities { print_int: true, quiet: true, ..Capabilities::none() },
+        128).expect("admitted Wasm instance");
+    vm.run().expect("admitted Wasm execution");
+    assert_eq!(vm.output(), vec!["93".to_string()]);
+    assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+}
+
+#[test]
+fn generic_function_value_retains_a_frozen_argument_in_its_result() {
+    let error = witchy::resolve_std_only_checked(r#"
+type Box:
+    value: Int
+fn wrap[a](value: a) -> (a, Int):
+    (value, 3)
+fn main() -> Int:
+    let item: frozen Box = Box(1)
+    let make = wrap
+    var pair: (Box, Int) = make(item)
+    pair.0.value = 9
+    0
+"#).expect_err("generic function value must retain frozen result storage");
+    assert!(error.to_string().contains("cannot mutate through frozen value"), "{error}");
+}

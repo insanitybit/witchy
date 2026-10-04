@@ -1671,6 +1671,25 @@ impl Checker {
         self.fn_storage_result_types.get(name).cloned()
     }
 
+    fn callable_storage_parameters(&self, name: &str) -> Option<(Vec<ast::Type>, Vec<String>)> {
+        for (scope, parameters) in self.scopes.iter().zip(&self.callable_storage_parameter_types).rev() {
+            if scope.contains_key(name) {
+                return parameters.get(name).cloned();
+            }
+        }
+        self.fn_storage_parameter_types.get(name).cloned()
+    }
+
+    fn callable_storage_parameters_for_expr(
+        &self,
+        expression: &Expr,
+    ) -> Option<(Vec<ast::Type>, Vec<String>)> {
+        match expression {
+            Expr::Var(name) => self.callable_storage_parameters(name),
+            _ => None,
+        }
+    }
+
     fn callable_storage_result_for_expr(&self, expression: &Expr) -> Option<ast::Type> {
         match expression {
             Expr::Var(name) => self.callable_storage_result_type(name),
@@ -1683,10 +1702,11 @@ impl Checker {
     }
 
     fn checked_callable_storage_result(&self, expression: &Expr, ty: &Ty) -> Option<ast::Type> {
-        let Ty::Fn(_, result, ..) = self.resolve(ty) else { return None; };
-        let source = self.callable_storage_result_for_expr(expression)?;
-        (Self::storage_erased_type(&source)? == ty_to_ast(&self.resolve(&result))?)
-            .then_some(source)
+        let Ty::Fn(..) = self.resolve(ty) else { return None; };
+        // The origin expression, rather than `Ty::Fn`, supplies this source
+        // contract. Generic results still contain source type parameters here;
+        // their checked arguments are substituted only at the eventual call.
+        self.callable_storage_result_for_expr(expression)
     }
 
     fn argument_storage_type(&self, expression: &Expr) -> Option<ast::Type> {
@@ -1757,17 +1777,14 @@ impl Checker {
         if Self::storage_erased_type(&source)? == expected {
             return Some(source);
         }
-        if self.scopes.iter().any(|scope| scope.contains_key(name)) {
-            return None;
-        }
-        let (templates, parameters) = self.fn_storage_parameter_types.get(name)?;
+        let (templates, parameters) = self.callable_storage_parameters(name)?;
         if templates.len() != args.len() {
             return None;
         }
         let mut bindings = HashMap::new();
         for (template, argument) in templates.iter().zip(args) {
             let actual = self.argument_storage_type(argument)?;
-            Self::bind_storage_source_parameters(template, &actual, parameters, &mut bindings)?;
+            Self::bind_storage_source_parameters(template, &actual, &parameters, &mut bindings)?;
         }
         let specialized = Self::substitute_unique_source_type(&source, &bindings);
         (Self::storage_erased_type(&specialized)? == expected).then_some(specialized)
@@ -1781,6 +1798,10 @@ impl Checker {
         match (expression, &resolved) {
             (Expr::Var(name), _) => self.binding_storage_type(name),
             (Expr::Call { name, args }, _) => self.checked_call_storage_result(name, args, &resolved),
+            (Expr::Apply { func, args }, _) if matches!(func.as_ref(), Expr::Var(_)) => {
+                let Expr::Var(name) = func.as_ref() else { unreachable!() };
+                self.checked_call_storage_result(name, args, &resolved)
+            }
             (Expr::Apply { func, .. }, _) => {
                 let source = self.callable_storage_result_for_expr(func)?;
                 (Self::storage_erased_type(&source)? == ty_to_ast(&resolved)?)
@@ -3643,6 +3664,7 @@ impl Checker {
         self.binding_storage_types.push(HashMap::new());
         self.callable_unique_contracts.push(HashMap::new());
         self.callable_storage_result_types.push(HashMap::new());
+        self.callable_storage_parameter_types.push(HashMap::new());
         self.callable_opt_provenance.push(HashMap::new());
         self.container_opt_provenance.push(HashMap::new());
     }
@@ -3668,6 +3690,7 @@ impl Checker {
         self.binding_storage_types.pop();
         self.callable_unique_contracts.pop();
         self.callable_storage_result_types.pop();
+        self.callable_storage_parameter_types.pop();
         self.callable_opt_provenance.pop();
         self.container_opt_provenance.pop();
     }
@@ -6124,6 +6147,8 @@ impl Checker {
                     let value_opt_proof = self.expression_opt_value_proof(value);
                     let value_opt_callable = self.expression_opt_callable_contract(value);
                     let callable_result_source = self.checked_callable_storage_result(value, &vt);
+                    let callable_parameter_source = callable_result_source.as_ref().and_then(|_|
+                        self.callable_storage_parameters_for_expr(value));
                     if *mutable {
                         // Mutable bindings discard positive origin facts. They
                         // must not also discard a callable's entry obligations.
@@ -6144,6 +6169,11 @@ impl Checker {
                         self.callable_storage_result_types.last_mut()
                             .expect("callable result source tracks type scopes")
                             .insert(name.clone(), result);
+                    }
+                    if let Some(parameters) = callable_parameter_source {
+                        self.callable_storage_parameter_types.last_mut()
+                            .expect("callable source parameters track type scopes")
+                            .insert(name.clone(), parameters);
                     }
                     if let Some(declared) = storage_source {
                         self.binding_storage_types.last_mut().expect("storage types track scopes")
@@ -6383,6 +6413,9 @@ impl Checker {
                     let replacement_result = (*place_depth == 0)
                         .then(|| self.checked_callable_storage_result(value, &vt))
                         .flatten();
+                    let replacement_parameters = (*place_depth == 0)
+                        .then(|| self.callable_storage_parameters_for_expr(value))
+                        .flatten();
                     if let Some(scope) = self.scopes.iter().rposition(|scope| scope.contains_key(name)) {
                         let results = &mut self.callable_storage_result_types[scope];
                         let common = results.get(name).and_then(|old|
@@ -6391,6 +6424,10 @@ impl Checker {
                         match common {
                             Some(result) => { results.insert(name.clone(), result); }
                             None => { results.remove(name); }
+                        }
+                        let parameters = &mut self.callable_storage_parameter_types[scope];
+                        if parameters.get(name) != replacement_parameters.as_ref() {
+                            parameters.remove(name);
                         }
                     }
                     self.reinitialize_binding(name); // reassignment re-initializes
@@ -10957,6 +10994,7 @@ impl Checker {
         self.binding_storage_types = vec![HashMap::new()];
         self.callable_unique_contracts = vec![HashMap::new()];
         self.callable_storage_result_types = vec![HashMap::new()];
+        self.callable_storage_parameter_types = vec![HashMap::new()];
         self.callable_opt_provenance = vec![HashMap::new()];
         self.container_opt_provenance = vec![HashMap::new()];
         self.opt_expression_proofs.clear();
@@ -13320,6 +13358,7 @@ fn run_check_selected(
         affine_expression_types: HashMap::new(),
         callable_unique_contracts: vec![HashMap::new()],
         callable_storage_result_types: vec![HashMap::new()],
+        callable_storage_parameter_types: vec![HashMap::new()],
         callable_opt_provenance: vec![HashMap::new()],
         container_opt_provenance: vec![HashMap::new()],
         opt_expression_proofs: HashMap::new(),
