@@ -3279,6 +3279,15 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     if [ "$queue_infra" -eq 1 ] && diff_is_queue_infra_only "$changed"; then
         queue_infra_only=1
     fi
+    # Queue-infrastructure-only gates run their isolated fixture shard rather
+    # than check.sh's product nextest command, so dtest is intentionally not
+    # invoked even when the changed queue fixture is Rust. Record that as a
+    # skip, not as a failed dtest selection/fallback.
+    if [ "$queue_infra_only" -eq 1 ]; then
+        gate_dtest_status="skipped_queue_infra"
+        gate_dtest_reason="queue-infra-only gate bypasses dtest"
+        gate_test_selector="legacy"
+    fi
 
     gate_attempt=$((gate_attempt + 1))
     local log; log="$logs/$(date +%Y%m%d-%H%M%S)-$(branch_key "$branch")-$$-$gate_attempt.log"

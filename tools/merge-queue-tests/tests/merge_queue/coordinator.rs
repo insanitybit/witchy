@@ -600,6 +600,13 @@ fn queue_script_batch_is_queue_infra_only_not_workspace_nextest() {
         stderr.contains("queue-infra-only=1"),
         "gating note did not mark queue-infra-only: {stderr}",
     );
+    let merged = fixture
+        .journal()
+        .into_iter()
+        .find(|event| event["event"] == "merged" && event["branch"] == "a")
+        .expect("queue-infra-only gate should be journaled as merged");
+    assert_eq!(merged["dtest_status"], "skipped_queue_infra");
+    assert_eq!(merged["dtest_reason"], "queue-infra-only gate bypasses dtest");
 }
 
 #[test]
