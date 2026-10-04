@@ -10268,6 +10268,16 @@ impl Checker {
                 self.unify(&Ty::Bool, &gt)
                     .map_err(|e| TypeError { message: format!("match guard: {}", e.message) })?;
                 self.reject_affine_match_guard_consumption(&guard_before, outer_scope_count)?;
+                if borrowed_inspection
+                    && let Expr::Var(root) = scrutinee
+                    && let Some(binding) = self.must_binding_key(root)
+                    && self.consumed.contains(&binding)
+                    && !guard_before.contains(&binding)
+                {
+                    return terr(format!(
+                        "match guard cannot consume borrowed affine root `{root}` before fallthrough"
+                    ));
+                }
                 guard_completes = expr_can_complete(guard);
                 // A failed pattern skips the guard, but a false guard has
                 // already performed its transfers. Join those distinct

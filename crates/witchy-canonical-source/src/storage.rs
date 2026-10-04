@@ -1205,8 +1205,8 @@ pub fn borrowed_affine_match_shape(
     }
     affine_storage_shape(ty, definitions)?;
     let shape = scalar_aggregate_shape(ty, definitions)?;
-    (!arms.is_empty() && arms.iter().all(|arm| arm.guard.is_none()
-        && read_only(ty, &arm.pattern, definitions, 0))).then_some(shape)
+    (!arms.is_empty() && arms.iter().all(|arm|
+        read_only(ty, &arm.pattern, definitions, 0))).then_some(shape)
 }
 
 /// One consuming pattern transfers each affine field to exactly one binding.

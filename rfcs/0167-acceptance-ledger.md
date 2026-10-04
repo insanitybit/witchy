@@ -267,10 +267,19 @@ Call-scoped `let` inspection now matches a `must Ticket(Int)` without moving its
 root: the callee returns an independent `Option(Int)`, the caller repeats the
 read and consumes the ticket afterward, and admitted Wasm returns 89 with zero
 leaks. The same source and lowering proof permits scalar-only inspection of a
-local affine root. A pattern extracting an affine child or returning the
-borrowed root still refuses. Nested inspection through an affine child remains
-closed at source checking until a non-owning aggregate field carrier is
-authenticated in SafeWIR.
+local affine root, including nested scalar fields beneath an affine child; the
+admitted nested-sum witness returns 4937 with zero leaks. A pattern binding an
+affine child or returning the borrowed root still refuses. Retaining a
+non-scalar borrowed child requires an authenticated non-owning aggregate field
+carrier in SafeWIR.
+
+Borrowed affine matches now permit guarded scalar-only patterns. A guard can
+read a nested scalar and fall through to another arm without transferring the
+root; a guard that transfers the root refuses at source checking. The focused
+admitted unoptimized Wasm witness exercises both true and false guards,
+repeated inspection, later explicit disposition, the independent result 43710,
+and zero owned-heap leaks. This extends borrowed inspection only; a retained
+non-scalar child still needs the carrier described above.
 
 The runtime diagnostic golden migration at merged `0ca522869` checks list bounds,
 user `fail`, and a missing named secret through checked source and admitted
