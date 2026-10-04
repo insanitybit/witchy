@@ -12062,6 +12062,10 @@ fn derive_proper_tail_manifest(module: &Module, table: &TypeTable) -> Result<Pro
     let mut keys = Vec::new();
     let shadowed_parameters = HashSet::default();
     let pattern_bindings = HashSet::default();
+    let definitions = module.items.iter().filter_map(|item| match item {
+        Item::Type(definition) => Some((definition.name.clone(), definition.clone())),
+        _ => None,
+    }).collect::<std::collections::BTreeMap<_, _>>();
     let functions = module.items.iter().filter_map(|item| match item {
         Item::Function(function) => Some((function.name.as_str(), function)),
         _ => None,
@@ -12071,14 +12075,14 @@ fn derive_proper_tail_manifest(module: &Module, table: &TypeTable) -> Result<Pro
         match item_def {
             Item::Function(function) => {
                 let callable = ProperTailCallableId { item, method: None, lambda_path: Vec::new() };
-                let caller = TailCaller { callable: &callable, params: &function.params, ret: function.ret.as_ref(), functions: &functions, table, checked_signature: table.functions.get(function.name.as_str()), shadowed_parameters: &shadowed_parameters, pattern_bindings: &pattern_bindings };
+                let caller = TailCaller { callable: &callable, params: &function.params, ret: function.ret.as_ref(), functions: &functions, table, definitions: &definitions, checked_signature: table.functions.get(function.name.as_str()), shadowed_parameters: &shadowed_parameters, pattern_bindings: &pattern_bindings };
                 collect_callable(&function.body, &caller, &mut keys)?;
             }
             Item::Impl(definition) => {
                 for (method, function) in definition.methods.iter().enumerate() {
                     let method = u32::try_from(method).map_err(|_| ProperTailManifestError::PathOverflow)?;
                     let callable = ProperTailCallableId { item, method: Some(method), lambda_path: Vec::new() };
-                    let caller = TailCaller { callable: &callable, params: &function.params, ret: function.ret.as_ref(), functions: &functions, table, checked_signature: table.functions.get(function.name.as_str()), shadowed_parameters: &shadowed_parameters, pattern_bindings: &pattern_bindings };
+                    let caller = TailCaller { callable: &callable, params: &function.params, ret: function.ret.as_ref(), functions: &functions, table, definitions: &definitions, checked_signature: table.functions.get(function.name.as_str()), shadowed_parameters: &shadowed_parameters, pattern_bindings: &pattern_bindings };
                     collect_callable(&function.body, &caller, &mut keys)?;
                 }
             }
@@ -12087,7 +12091,7 @@ fn derive_proper_tail_manifest(module: &Module, table: &TypeTable) -> Result<Pro
                     let Some(body) = &signature.default else { continue };
                     let method = u32::try_from(method).map_err(|_| ProperTailManifestError::PathOverflow)?;
                     let callable = ProperTailCallableId { item, method: Some(method), lambda_path: Vec::new() };
-                    let caller = TailCaller { callable: &callable, params: &signature.params, ret: signature.ret.as_ref(), functions: &functions, table, checked_signature: None, shadowed_parameters: &shadowed_parameters, pattern_bindings: &pattern_bindings };
+                    let caller = TailCaller { callable: &callable, params: &signature.params, ret: signature.ret.as_ref(), functions: &functions, table, definitions: &definitions, checked_signature: None, shadowed_parameters: &shadowed_parameters, pattern_bindings: &pattern_bindings };
                     collect_callable(body, &caller, &mut keys)?;
                 }
             }
@@ -12121,6 +12125,7 @@ struct TailCaller<'a> {
     ret: Option<&'a ast::Type>,
     functions: &'a HashMap<&'a str, &'a Function>,
     table: &'a TypeTable,
+    definitions: &'a std::collections::BTreeMap<String, ast::TypeDef>,
     checked_signature: Option<&'a Ty>,
     /// Hidden write-back parameter spellings shadowed by a nearer lexical
     /// binding at this site.
@@ -12380,7 +12385,12 @@ fn collect_expr(
     path.push(ProperTailPathStep::Node(expr_kind(expr)));
     let borrows_pattern_local = match expr {
         Expr::Call { args, .. } | Expr::Apply { args, .. } => args.iter().any(|arg|
-            matches!(arg, Expr::Var(name) if caller.pattern_bindings.contains(name))),
+            matches!(arg, Expr::Var(name) if caller.pattern_bindings.contains(name))
+                && caller.table.affine_expression_type(arg).cloned()
+                    .or_else(|| caller.table.type_of(arg).and_then(ty_to_ast))
+                    .is_some_and(|source| witchy_canonical_source::storage::StoragePlan::classify(
+                        source.unqualified(), caller.definitions, |_| Some(0),
+                    ).requires_affine_owner_token())),
         _ => false,
     };
     if tail && !borrows_pattern_local && direct_tail_envelope_is_forwarded(expr, *caller)
@@ -12485,6 +12495,7 @@ fn collect_expr(
                 ret: ret.as_ref(),
                 functions: caller.functions,
                 table: caller.table,
+                definitions: caller.definitions,
                 checked_signature: caller.table.type_of(expr),
                 shadowed_parameters: &shadowed_parameters,
                 pattern_bindings: &pattern_bindings,
