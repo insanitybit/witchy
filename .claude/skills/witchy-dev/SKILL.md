@@ -273,13 +273,16 @@ deliberately heuristic, so `dtest` shortens the edit loop but does not replace
 `./scripts/agent-check.sh edit`, the merge queue, or periodic full gates. If it
 is missing, install it from the dtest source checkout with
 `cargo install --path . --locked` while that checkout is your current directory.
-The merge queue also uses dtest to narrow the existing audited package/target
-selection for Rust edits. It falls back to that selection on any dtest error
-and retains workspace routes, native feature partitions, queue fixtures, and
-full CI. A single affected integration-test binary is passed to nextest as an
-explicit Cargo target, avoiding unrelated linking and discovery. Clean queue
-worktrees use compact output and skip redundant dirty-tree discovery. Inspect
-selection, Git, graph, target-narrowing, and gate timings with
+The merge queue also uses `dtest run` to select and launch nextest directly for
+eligible Rust edits. It falls back to the mapper's audited package/target
+selection on any selection error or empty result and retains workspace routes,
+native feature partitions, queue fixtures, and full CI. Dtest writes a
+versioned post-selection report for telemetry, but the gate no longer parses
+JSON to construct the runner command. The mapper's validated package, target,
+feature, and secondary-partition policy remains authoritative; within eligible
+single-partition routes dtest adds one combined exact-test filter and launches
+one nextest process. Clean queue worktrees skip redundant dirty-tree discovery.
+Inspect selection, Git, graph, and gate timings with
 `./scripts/gate-report.sh --since 24h` or its `--json` form.
 
 **`cargo check -p witchy-runtime` does NOT compile the Wasm kernel.** The

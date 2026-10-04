@@ -685,6 +685,30 @@ if cargo nextest --version >/dev/null 2>&1; then
         fi
     fi
 
+    # The merge coordinator can hand the committed base directly to dtest.
+    # Dtest then owns selection and nextest execution in one process while the
+    # mapper retains the audited Cargo target scope. The report is post-run
+    # telemetry and is not a control protocol.
+    # Keep the legacy command above intact as the fail-safe when selection
+    # fails or the heuristic reaches no tests.
+    dtest_cmd=()
+    if [ -n "${WITCHY_GATE_DTEST_FROM:-}" ] \
+        && [ -n "${WITCHY_GATE_DTEST_REPORT:-}" ] \
+        && [ "$main_queue_only" -eq 0 ] \
+        && [ "${#test_cmd_extra[@]}" -eq 0 ] \
+        && command -v dtest >/dev/null 2>&1; then
+        dtest_cmd=(dtest --workspace . run
+            --from "$WITCHY_GATE_DTEST_FROM" --to HEAD --assume-clean
+            --caller-scope --ignore-config-runner-args
+            --quiet --report "$WITCHY_GATE_DTEST_REPORT")
+        [ -z "$main_expr" ] || dtest_cmd+=(--filter-expr "$main_expr")
+        # Reuse the mapper's validated Cargo target and feature scope, dropping
+        # only the `cargo nextest run` executable prefix. Dtest contributes the
+        # exact-test expression and launches this as one nextest process.
+        dtest_cmd+=(-- "${nextest_cmd[@]:3}")
+        [ "$explicit_targets_only" -eq 0 ] || dtest_cmd+=(--no-tests=warn)
+    fi
+
     # Gate only: the pure SafeWIR and lowerer-only routes resolve a different
     # feature graph for every compiler crate from cap-model up. The former says
     # `--no-default-features` explicitly; the Cargo shim isolates the latter
@@ -769,6 +793,27 @@ fi
 run_product_tests() {
     if [ "${#test_cmd_extra[@]}" -gt 0 ]; then
         "${test_cmd_extra[@]}" || return "$?"
+    fi
+    if [ "${#dtest_cmd[@]}" -gt 0 ]; then
+        rm -f "$WITCHY_GATE_DTEST_REPORT"
+        local dtest_status=0 selected_tests=""
+        "${dtest_cmd[@]}" || dtest_status=$?
+        if [ -s "$WITCHY_GATE_DTEST_REPORT" ]; then
+            selected_tests="$(jq -er '
+                select(.schema == 1 and (.tests|type) == "array")
+                | .tests | length
+            ' "$WITCHY_GATE_DTEST_REPORT" 2>/dev/null || true)"
+            if [ -n "$selected_tests" ] && [ "$selected_tests" -gt 0 ]; then
+                return "$dtest_status"
+            fi
+            if [ -z "$selected_tests" ] && [ "$dtest_status" -ne 0 ]; then
+                echo "check.sh: dtest produced an invalid report after runner failure" >&2
+                return "$dtest_status"
+            fi
+            echo "check.sh: dtest selected no tests; using audited legacy selection" >&2
+        else
+            echo "check.sh: dtest selection failed; using audited legacy selection" >&2
+        fi
     fi
     if [ -z "$queue_overlap_dir" ]; then
         "${test_cmd[@]}"

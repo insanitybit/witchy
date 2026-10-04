@@ -182,6 +182,8 @@ gate_dtest_overlay_entries=""
 gate_dtest_overlay_compacted=""
 gate_dtest_target_narrowed="false"
 gate_dtest_reason=""
+gate_dtest_from=""
+gate_dtest_report=""
 # A function run_gate polls between monitor ticks; when it succeeds the gate
 # is killed and reports `yielded`. Only the idle master canary sets it.
 gate_yield_probe=""
@@ -1292,7 +1294,7 @@ classify_touches() { # classify_touches <newline-separated-paths>
         'confinement:^crates/witchy-confinement/' \
         'std:^std/' \
         'docs:^(rfcs|book|spec|docs|wiki)/' \
-        'queue-infra:^(scripts/(merge-queue|check|gate-report|dtest-gate-selection|test-dtest-gate-selection|test-for-paths|agent-check|test-agent-check-qos|submit-with-presubmit|test-submit-with-presubmit)\.sh|tools/merge-queue-tests/)' \
+        'queue-infra:^(scripts/(merge-queue|check|gate-report|test-for-paths|agent-check|test-agent-check-qos|submit-with-presubmit|test-submit-with-presubmit)\.sh|tools/merge-queue-tests/)' \
         ; do
         name="${pair%%:*}"
         pattern="${pair#*:}"
@@ -1387,8 +1389,8 @@ COST_TOOL_PATHS='^scripts/(gate-test-cost|test-gate-test-cost)\.py$'
 # The product nextest invocation parses and exercises `.config/nextest.toml`.
 # It cannot change queue process/lock behavior, so do not append the unrelated
 # queue fixture suite merely because test scheduling changed.
-QUEUE_INFRA_PATHS='^(\.mbx\.toml|scripts/(check|gate-report|merge-queue|dtest-gate-selection|test-dtest-gate-selection|nextest-list-wrapper|state-paths|test-for-paths|test-impact|worktree-status|worktree-warm)\.(sh|py)|tools/merge-queue-tests/)'
-QUEUE_INFRA_CORE_PATHS='^(\.mbx\.toml|scripts/(merge-queue|state-paths|check|dtest-gate-selection|test-dtest-gate-selection|test-for-paths|test-impact|gate-report)\.(sh|py)|tools/merge-queue-tests/)'
+QUEUE_INFRA_PATHS='^(\.mbx\.toml|scripts/(check|gate-report|merge-queue|nextest-list-wrapper|state-paths|test-for-paths|test-impact|worktree-status|worktree-warm)\.(sh|py)|tools/merge-queue-tests/)'
+QUEUE_INFRA_CORE_PATHS='^(\.mbx\.toml|scripts/(merge-queue|state-paths|check|test-for-paths|test-impact|gate-report)\.(sh|py)|tools/merge-queue-tests/)'
 
 # Docs-safe path set, matching check.sh's WITCHY_GATE_SCOPE=docs classifier.
 # RFCs have lightweight cross-link/status contracts in repo-tests; docs scope
@@ -1576,8 +1578,9 @@ run_gate() { # run_gate <log> [fuzz-mode] [gate-scope] [queue-infra] [queue-infr
     if command -v caffeinate >/dev/null 2>&1; then
         gate_awake=(caffeinate -i)
     fi
-    rm -f "$progress_file"
-    ( cd "$gate_wt" && exec "${gate_awake[@]}" env -u CARGO_INCREMENTAL PATH="$gate_wt/scripts/bin:$PATH" "CARGO_TARGET_DIR=$cargo_target_dir" CARGO_PROFILE_TEST_STRIP=symbols RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" "WITCHY_GATE_QUEUE_INFRA_ONLY=$queue_infra_only" "WITCHY_GATE_CENSUS_PROOF_SHA=$census_proof_sha" "WITCHY_GATE_UNGATED=$ungated" "WITCHY_GATE_PREFLIGHT_EXPR=$gate_preflight_expr" "WITCHY_GATE_PREFLIGHT_NEXTEST=$gate_preflight_nextest" "WITCHY_GATE_SKIP_SWEEPS=$skip_sweeps" "WITCHY_GATE_SKIP_BOOK=$skip_book" "WITCHY_GATE_NEXTEST=$nextest_args" "WITCHY_GATE_NEXTEST_EXPR=$nextest_expr" "WITCHY_GATE_NEXTEST_EXTRA=$nextest_extra" "WITCHY_GATE_SKIP_RUST_CLASS=$skip_rust_class" "WITCHY_GATE_SKIP_COMPILE=$skip_compile" "WITCHY_GATE_SKIP_WASM=$skip_wasm" "WITCHY_GATE_SKIP_FMT=$skip_fmt" "WITCHY_GATE_CHECK_PACKAGES=$check_packages" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
+    gate_dtest_report="${log}.dtest.json"
+    rm -f "$progress_file" "$gate_dtest_report"
+    ( cd "$gate_wt" && exec "${gate_awake[@]}" env -u CARGO_INCREMENTAL PATH="$gate_wt/scripts/bin:$PATH" "CARGO_TARGET_DIR=$cargo_target_dir" CARGO_PROFILE_TEST_STRIP=symbols RUSTC_WRAPPER= CARGO_BUILD_RUSTC_WRAPPER= NEXTEST_STATUS_LEVEL=pass "WITCHY_GATE_PROGRESS_FILE=$progress_file" "WITCHY_GATE_FUZZ=$fuzz_mode" "WITCHY_GATE_SCOPE=$gate_scope" "WITCHY_GATE_QUEUE_INFRA=$queue_infra" "WITCHY_GATE_QUEUE_INFRA_ONLY=$queue_infra_only" "WITCHY_GATE_CENSUS_PROOF_SHA=$census_proof_sha" "WITCHY_GATE_UNGATED=$ungated" "WITCHY_GATE_PREFLIGHT_EXPR=$gate_preflight_expr" "WITCHY_GATE_PREFLIGHT_NEXTEST=$gate_preflight_nextest" "WITCHY_GATE_SKIP_SWEEPS=$skip_sweeps" "WITCHY_GATE_SKIP_BOOK=$skip_book" "WITCHY_GATE_NEXTEST=$nextest_args" "WITCHY_GATE_NEXTEST_EXPR=$nextest_expr" "WITCHY_GATE_NEXTEST_EXTRA=$nextest_extra" "WITCHY_GATE_DTEST_FROM=$gate_dtest_from" "WITCHY_GATE_DTEST_REPORT=$gate_dtest_report" "WITCHY_GATE_SKIP_RUST_CLASS=$skip_rust_class" "WITCHY_GATE_SKIP_COMPILE=$skip_compile" "WITCHY_GATE_SKIP_WASM=$skip_wasm" "WITCHY_GATE_SKIP_FMT=$skip_fmt" "WITCHY_GATE_CHECK_PACKAGES=$check_packages" bash -c "$selected_gate_cmd" ) >"$log" 2>&1 &
     local gpid=$!
     active_gate_pgid="$gpid"
     if [ "$holding_lock" -eq 1 ] \
@@ -2680,6 +2683,8 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     gate_dtest_overlay_compacted=""
     gate_dtest_target_narrowed="false"
     gate_dtest_reason=""
+    gate_dtest_from=""
+    gate_dtest_report=""
     local branch change_id submitted_sha attempt_id
     branch="$(jq -r .branch "$f")"
     change_id="$(jq -r '.change_id // empty' "$f")"
@@ -3098,48 +3103,16 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
             ;;
     esac
 
-    # Narrow the mapper's already-audited package/target scope to the exact
-    # tests reached by dtest. The mapper continues to own Cargo feature graphs,
-    # secondary partitions, queue fixtures, and fail-safe workspace routes.
-    # This deliberately does not narrow WORKSPACE: dtest is heuristic, and a
-    # broad/unknown path remains the conservative escape hatch. Any dtest
-    # absence, error, or malformed output leaves the legacy selection intact.
-    local dtest_helper="$gate_wt/scripts/dtest-gate-selection.sh" dtest_json="" dtest_values="" dtest_target_args=""
+    # Let dtest select and launch nextest inside check.sh. The mapper still
+    # owns the conservative fallback, non-Rust/workspace routes, secondary
+    # feature partitions, queue fixtures, and package checks. A report is read
+    # only after the gate for telemetry; it no longer controls execution.
     if [ -n "$nextest_args" ] && [ -n "$changed" ] \
         && printf '%s\n' "$changed" | grep -cE '\.rs$' >/dev/null \
-        && [ -x "$dtest_helper" ]; then
-        dtest_json="$("$dtest_helper" "$gate_wt" "$base" HEAD 2>/dev/null || true)"
-        if dtest_values="$(jq -r '[.status // "fallback", .elapsed_ms // "", .changed_files // "", .changed_definitions // "", .selected_tests // "", .index_ms // "", .index_git_ms // "", .index_graph_ms // "", .selection_ms // "", .partitions // "", .overlay_hits // "", .overlay_entries // "", .overlay_compacted // "", .expression // "", .target_args // "", .reason // ""] | map(tostring) | join("\u001f")' <<<"$dtest_json" 2>/dev/null)"; then
-            IFS=$'\x1f' read -r gate_dtest_status gate_dtest_elapsed_ms \
-                gate_dtest_changed_files gate_dtest_changed_definitions \
-                gate_dtest_selected_tests gate_dtest_index_ms gate_dtest_index_git_ms \
-                gate_dtest_index_graph_ms gate_dtest_selection_ms gate_dtest_partitions \
-                gate_dtest_overlay_hits gate_dtest_overlay_entries gate_dtest_overlay_compacted \
-                nextest_expr dtest_target_args gate_dtest_reason <<<"$dtest_values"
-        else
-            gate_dtest_status="fallback"
-            gate_dtest_reason="invalid dtest helper output"
-        fi
-        case "$gate_dtest_status" in
-            selected)
-                if [ -z "$nextest_extra" ]; then
-                    case "$dtest_target_args" in
-                        -p\ *\ --test\ *)
-                            nextest_args="$dtest_target_args"
-                            gate_dtest_target_narrowed="true"
-                            ;;
-                    esac
-                fi
-                gate_test_selector="dtest"
-                ;;
-            empty)
-                # nextest fails an empty package selection unless every mapper
-                # route is an explicit target. Retain the legacy expression;
-                # an empty heuristic result must not turn a green gate red.
-                gate_dtest_reason="no affected tests; retained legacy selection"
-                ;;
-            *) gate_dtest_status="fallback" ;;
-        esac
+        && [ -z "$nextest_extra" ]; then
+        gate_dtest_status="pending"
+        gate_dtest_from="$base"
+        gate_test_selector="dtest"
     elif [ -z "$nextest_args" ]; then
         gate_dtest_status="skipped_workspace"
         gate_dtest_reason="legacy mapper required workspace"
@@ -3272,6 +3245,39 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         "$skip_book" "$nextest_args" "$nextest_expr" \
         "$skip_rust_class" "$skip_compile" "$skip_wasm" "$check_packages" \
         "$skip_fmt" "$nextest_extra"
+    if [ "$gate_dtest_status" = "pending" ]; then
+        local dtest_values=""
+        if [ -s "$gate_dtest_report" ] \
+            && dtest_values="$(jq -er '
+                select(.schema == 1 and (.tests|type) == "array"
+                    and (.partitions|type) == "array")
+                | [.timings.total_ms, .changed_files, .changed_definitions,
+                   (.tests|length), .timings.index.elapsed_ms,
+                   .timings.index.git_ms, .timings.index.graph_ms,
+                   .timings.selection.elapsed_ms, (.partitions|length),
+                   .timings.index.overlay_hits, .timings.index.overlay_entries,
+                   .timings.index.overlay_compacted, false]
+                | map(tostring) | join("\u001f")
+            ' "$gate_dtest_report" 2>/dev/null)"; then
+            IFS=$'\x1f' read -r gate_dtest_elapsed_ms gate_dtest_changed_files \
+                gate_dtest_changed_definitions gate_dtest_selected_tests \
+                gate_dtest_index_ms gate_dtest_index_git_ms gate_dtest_index_graph_ms \
+                gate_dtest_selection_ms gate_dtest_partitions gate_dtest_overlay_hits \
+                gate_dtest_overlay_entries gate_dtest_overlay_compacted \
+                gate_dtest_target_narrowed <<<"$dtest_values"
+            if [ "$gate_dtest_selected_tests" -gt 0 ]; then
+                gate_dtest_status="selected"
+            else
+                gate_dtest_status="empty"
+                gate_dtest_reason="no affected tests; used legacy selection"
+                gate_test_selector="legacy"
+            fi
+        else
+            gate_dtest_status="fallback"
+            gate_dtest_reason="dtest selection failed; used legacy selection"
+            gate_test_selector="legacy"
+        fi
+    fi
     local gate_finished; gate_finished="$(date +%s)"
     gate_load_end="$(load1)"
     local gate_took=$((gate_finished - gate_started))
