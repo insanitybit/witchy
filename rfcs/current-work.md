@@ -8,16 +8,15 @@ The full historical plans and evidence remain in Git at this checkpoint:
 
 ## 1. Normal-mode language and compiler workflow
 
-[RFC-0167](0167-witchy-language-contract.md) is the normal-mode source-language
-contract. Its [acceptance ledger](0167-acceptance-ledger.md) distinguishes the
-normal-mode milestone from wider and deferred coverage. Keep normal-mode
-ownership, `var` write-back, immutable views, resource disposition, typed
-comptime, and installed check/fmt/compile/run behavior under admitted Wasm.
-Treat `must` as part of the main language's typing and disposition rules.
-Finish the remaining normal-mode ownership and view carrier obligations in the
-ledger; the bounded compiler-tooling milestone does not close the full RFC.
-Refresh evidence on the exact current compiler tip before declaring any row
-closed; historical source-interpreter parity is not an acceptance gate.
+[RFC-0167](0167-witchy-language-contract.md) defines normal-mode source
+semantics. Its bounded compiler-tooling milestone is complete, with gates and
+limits in the [acceptance ledger](0167-acceptance-ledger.md). Preserve the
+checked ownership, `var` write-back, immutable views, `must` disposition,
+typed comptime, and installed check/fmt/compile/run behavior under admitted
+Wasm. Historical partial rows are not a mandate to implement every carrier.
+Accept a later extension only for one concrete user-visible program with a
+reusable ownership proof across the checker, lowerer, and SafeWIR, plus
+admitted Wasm evidence. Historical source-interpreter parity is not a gate.
 `mode opt`, cross-mode calls and opt-defined types remain deferred under
 [RFC-0173](0173-opt-mode-contract.md).
 

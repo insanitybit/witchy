@@ -1,23 +1,22 @@
 ---
 rfc: 0167
 title: "Witchy syntax and semantics: one language contract"
-status: accepted
+status: implemented
 created: 2026-09-16
 superseded-by:
-tracking: "Normal-mode language contract is the current delivery target; opt mode and its dependent features are deferred. Milestones and evidence are tracked in 0167-acceptance-ledger.md."
+tracking: "The bounded normal-mode compiler-tooling milestone is complete. Its gates and limits are recorded in 0167-acceptance-ledger.md; opt and cross-mode work belongs to RFC-0173."
 ---
 
 # RFC-0167: Witchy syntax and semantics
 
 ## Decision and authority
 
-This is the normal-mode target language contract. It selects the surviving
-syntax, including shared ownership rules. RFC-0173 owns deferred opt-specific
-rules. There are no alternative spellings or unspecified choices to resolve by
-consulting retired proposals.
-`accepted` fixes these source choices as the target for implementation. It does
-not mean the compiler implements them; the acceptance ledger remains the sole
-closeout record.
+This is the normal-mode language contract. Its `implemented` status applies to
+the bounded compiler-tooling milestone below, not every source form described
+in this document. The acceptance ledger records the executable evidence and
+limits. RFC-0173 owns deferred opt-specific and cross-mode rules. There are no
+alternative spellings or unspecified choices to resolve by consulting retired
+proposals.
 
 The [acceptance ledger](0167-acceptance-ledger.md) distinguishes inherited
 behavior, intentional changes, and unimplemented coverage. Current executable
@@ -36,14 +35,18 @@ today's compiler accepts or executes the entire feature matrix.
 
 ### Current delivery focus
 
-Finish normal-mode semantics for snapshot values, `own`, `unique`, `var`
-write-back, immutable rooted views, and `must` disposition. `must` is a core
-typing rule: a value cannot be discarded, hidden in an opaque carrier, or left
-live across a path without a checked disposition. Task cancellation needs a
-separate lifecycle design where the current rules cannot prove disposition;
-unsupported cases must refuse. Complete the remaining normal-mode ownership
-and view carrier cases recorded in the acceptance ledger before claiming the
-full contract implemented.
+The bounded normal-mode compiler-tooling milestone is complete. Its admitted
+programs cover snapshot values, `own`, `unique`, `var` write-back, immutable
+rooted views, and `must` disposition. `must` remains a core typing rule: a value
+cannot be discarded, hidden in an opaque carrier, or left live across a path
+without a checked disposition. Unsupported ownership and view forms must
+refuse; a resource-bearing Task that needs cancellation disposition awaits a
+separate lifecycle design. Historical partial ledger rows do not extend this
+milestone into an open-ended carrier matrix.
+
+Any later normal-mode extension needs one concrete user-visible program and a
+reusable ownership proof through the checker, lowerer, and SafeWIR, with
+admitted Wasm evidence. It must state which previously refused form it admits.
 
 Capabilities and effects are also source-language semantics. This RFC owns the
 meaning of typed capability parameters, effectful calls, delegation, and
@@ -100,9 +103,9 @@ following ambiguities before acceptance:
   formed; and
 - `frozen` never grants copyability or erases affine or `must` obligations.
 
-No unresolved objection remains from that review. Rows B-Q still require
-current production-route implementation and evidence; this status change does
-not close any of them.
+No unresolved objection remained from that review. The historical B-Q matrix
+records wider implementation and evidence limits; the bounded normal-mode
+milestone below has since closed.
 
 ### Composition clarification, 2026-09-25
 
@@ -169,12 +172,10 @@ move to the canonical route or runtime-neutral code. The whole book, example,
 fixture, and external-consumer corpus is not a closeout gate for this milestone.
 
 The selected ownership, view, and resource rules remain the normal-mode language
-contract. The normal/opt boundary and its dependent proof matrix are deferred.
-Wider memory-safety and optimization-readiness matrices are verified after
-compiler tooling is ready. This staging grants no permissive
-fallback: an unproved ownership, disposition, or authority path must refuse
-until implemented and checked. Passing the tooling milestone does not mark the
-full RFC implementation complete.
+contract, with support limited to checked and admitted forms. The normal/opt
+boundary and its dependent proof matrix belong to RFC-0173. Wider memory-safety
+and optimization-readiness matrices are separate work. An unproved ownership,
+disposition, or authority path must refuse until implemented and checked.
 
 The source tree-walking interpreter is frozen at this decision. It receives no
 new language semantics, including immutable rooted views, and its output is not

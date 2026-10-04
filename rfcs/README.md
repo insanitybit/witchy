@@ -6,8 +6,8 @@ merge-queue result for that claim.
 
 | Document | Purpose |
 |---|---|
-| [RFC-0167](0167-witchy-language-contract.md) | Normal-mode source-language contract and shared value semantics; current delivery priority. |
-| [RFC-0167 ledger](0167-acceptance-ledger.md) | Normal-mode implementation and evidence obligations. |
+| [RFC-0167](0167-witchy-language-contract.md) | Normal-mode source-language contract; bounded compiler-tooling milestone complete. |
+| [RFC-0167 ledger](0167-acceptance-ledger.md) | Milestone evidence, limits, and historical wider coverage. |
 | [RFC-0126](0126-capability-effects-contract.md) | Capability and effect contract. |
 | [RFC-0173](0173-opt-mode-contract.md) | Deferred opt-mode proof and cross-mode contract. |
 | [RFC-0174](0174-incremental-compiler-cache.md) | Proposed content-addressed incremental compiler cache. |

@@ -1,9 +1,10 @@
 # RFC-0167 implementation and adoption ledger
 
 Baseline: `418a69b9ca75ae70fae5e96f797057e161f93aeb` (2026-09-16).
-The RFC records the normal-mode delivery target and the deferred opt-mode design,
-not an implementation closeout. Rows below retain their evidence and historical
-status; a deferred row is not a current milestone gate or a completed contract.
+The bounded normal-mode compiler-tooling milestone is complete. Rows below
+retain their evidence and historical status; a partial row is not an open task
+for this milestone or a claim of support for every form. A deferred row is not
+a current milestone gate or a completed contract.
 RFC-0173 now owns the opt-specific and cross-mode design extracted from section
 6; this ledger retains its historical opt evidence without promoting those rows
 into the current normal-mode milestone.
@@ -126,8 +127,11 @@ milestone has evidence for each of its four gates:
 | O | Installed `check`, `fmt`, compile, and run pass the exact normal CLI witness above. | Wider book, example, and external-consumer migration is later work. |
 | Q, production | `cargo tree -p witchy -e normal` has no `witchy-interp` edge; remaining `src/` walker imports are test-gated. Production comptime, build, linker, and tooling services use checked source and admitted Wasm or runtime-neutral code. | The frozen walker is still a workspace member and dev dependency for historical tests. Full test/support deletion remains the wider row Q end state. |
 
-These bounded gates close the normal-mode compiler-tooling milestone, not the
-full RFC or its deferred opt and cross-mode contract.
+These bounded gates close the RFC-0167 normal-mode compiler-tooling milestone.
+The historical rows below record wider forms, not remaining completion criteria.
+Opt and cross-mode work belongs to RFC-0173. Any later normal-mode extension
+must name one concrete user-visible program, add a reusable ownership proof
+across the checker, lowerer, and SafeWIR, and show admitted Wasm evidence.
 
 Merged normal-mode row N witnesses retain old `Result(List(Int), String)` and
 `&(List(String), Result(Int, String))` roots through owner replacement, including
@@ -592,10 +596,11 @@ These two checks preserve the normal-mode safety boundary and a data-only
 positive case without relying on source-interpreter parity. They do not prove
 the deferred spawned-handle lifecycle.
 
-This milestone does not close the full RFC. Rows E, G, H, K, L, and P retain
-their normal-mode safety obligations; wider proofs and opt-dependent parts are
-deferred. Rows I and J retain their existing evidence but their opt and
-cross-mode matrices are outside the current milestone.
+The later bounded milestone closeout above supersedes this historical scope
+note. Rows E, G, H, K, L, and P still record limits on admitted normal-mode
+forms; they do not make every wider carrier a completion gate. Existing safety
+checks remain required. Rows I and J retain their existing evidence, while
+their opt and cross-mode matrices belong to RFC-0173.
 
 Normal-mode row H checkpoint (2026-10-03): an indirect function-value call
 with a `var Option(&Int)` parameter now admits the same checked GC write-back
