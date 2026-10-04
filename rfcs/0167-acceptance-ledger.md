@@ -268,10 +268,9 @@ root: the callee returns an independent `Option(Int)`, the caller repeats the
 read and consumes the ticket afterward, and admitted Wasm returns 89 with zero
 leaks. The same source and lowering proof permits scalar-only inspection of a
 local affine root, including nested scalar fields beneath an affine child; the
-admitted nested-sum witness returns 4937 with zero leaks. A pattern binding an
-affine child or returning the borrowed root still refuses. Retaining a
-non-scalar borrowed child requires an authenticated non-owning aggregate field
-carrier in SafeWIR.
+admitted nested-sum witness returns 4937 with zero leaks. Returning the
+borrowed root still refuses. A non-scalar child can be borrowed for the
+checked call-scoped route below; retaining it beyond that call remains open.
 
 Borrowed affine matches now permit guarded scalar-only patterns. A guard can
 read a nested scalar and fall through to another arm without transferring the
@@ -279,7 +278,18 @@ root; a guard that transfers the root refuses at source checking. The focused
 admitted unoptimized Wasm witness exercises both true and false guards,
 repeated inspection, later explicit disposition, the independent result 43710,
 and zero owned-heap leaks. This extends borrowed inspection only; a retained
-non-scalar child still needs the carrier described above.
+non-scalar child still needs a longer-lived carrier.
+
+A borrowed match may now bind an affine child for one checked scalar-result
+`let` call. The lowerer keeps a direct call on a pattern local in the current
+frame, rather than tail-calling across the parent's lifetime. SafeWIR matches
+the temporary field pointer to its source-proved recursive affine plan,
+requires the call's matching parameter proof, bars parent aliases as other
+arguments, and expires the child after the call. The focused normal-mode
+admitted unoptimized Wasm witness inspects the same child twice, then consumes
+its parent, returning the independent 887 with zero owned-heap leaks. Source
+checking rejects a borrowed child returned from the match. A retained child
+carrier and calls with non-scalar results remain outside this proof.
 
 The runtime diagnostic golden migration at merged `0ca522869` checks list bounds,
 user `fail`, and a missing named secret through checked source and admitted
