@@ -143,3 +143,80 @@ fn main() -> Int:
 "#).expect_err("conditional callable rebinding must join result storage");
     assert!(error.to_string().contains("cannot mutate through frozen value"), "{error}");
 }
+
+#[test]
+fn plain_generic_result_proves_deep_tuple_storage() {
+    opt::set_for_tests(Some(OptSet::none()));
+    let _reset = ResetOptimizationOverride;
+    let checked = witchy::resolve_std_only_checked(r#"
+type Box:
+    value: Int
+fn wrap[a](value: a) -> (a, Int):
+    (value, 3)
+fn main() -> Int:
+    var pair = wrap(Box(2))
+    pair.0.value = 9
+    pair.0.value * 10 + pair.1
+"#).expect("generic result retains the checked plain argument shape");
+    let artifact = witchy::codegen::compile_checked_module_artifact(&checked)
+        .expect_lowered("generic result storage admits");
+    let mut runtime = Runtime::batch().expect("runtime");
+    let mut vm = runtime.spawn_admitted(&artifact,
+        Capabilities { print_int: true, quiet: true, ..Capabilities::none() },
+        128).expect("admitted Wasm instance");
+    vm.run().expect("admitted Wasm execution");
+    assert_eq!(vm.output(), vec!["93".to_string()]);
+    assert_eq!(vm.canonical_heap_leaks().expect("canonical heap audit"), Some(0));
+}
+
+#[test]
+fn frozen_generic_argument_cannot_hide_in_plain_result_annotation() {
+    let error = witchy::resolve_std_only_checked(r#"
+type Box:
+    value: Int
+fn wrap[a](value: a) -> (a, Int):
+    (value, 3)
+fn main() -> Int:
+    let item: frozen Box = Box(1)
+    var pair: (Box, Int) = wrap(item)
+    pair.0.value = 9
+    0
+"#).expect_err("generic result must retain the argument's frozen qualifier");
+    assert!(error.to_string().contains("cannot mutate through frozen value"), "{error}");
+}
+
+#[test]
+fn repeated_generic_parameter_joins_frozen_argument_in_either_position() {
+    for call in ["choose(Box(2), item)", "choose(item, Box(2))"] {
+        let source = format!(r#"
+type Box:
+    value: Int
+fn choose[a](left: a, right: a) -> a:
+    right
+fn main() -> Int:
+    let item: frozen Box = Box(1)
+    var pair = ({call}, 3)
+    pair.0.value = 9
+    0
+"#);
+        let error = witchy::resolve_std_only_checked(&source)
+            .expect_err("every binding of a result parameter must retain frozen storage");
+        assert!(error.to_string().contains("cannot mutate through frozen value"), "{error}");
+    }
+}
+
+#[test]
+fn nested_generic_list_result_retains_a_frozen_element() {
+    let error = witchy::resolve_std_only_checked(r#"
+type Box:
+    value: Int
+fn wrap_list[a](value: List(a)) -> (List(a), Int):
+    (value, 3)
+fn main() -> Int:
+    let item: frozen Box = Box(1)
+    var pair = wrap_list([item])
+    pair.0[0].value = 9
+    0
+"#).expect_err("nested generic result must retain a frozen element");
+    assert!(error.to_string().contains("cannot mutate through frozen value"), "{error}");
+}

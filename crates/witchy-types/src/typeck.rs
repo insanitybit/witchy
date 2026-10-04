@@ -1689,6 +1689,90 @@ impl Checker {
             .then_some(source)
     }
 
+    fn argument_storage_type(&self, expression: &Expr) -> Option<ast::Type> {
+        match expression {
+            Expr::Var(name) => self.binding_storage_type(name),
+            Expr::Unary { op: UnOp::Move, expr } => self.argument_storage_type(expr),
+            Expr::Ctor { name, .. } => {
+                let (_, result) = self.ctor_sigs.get(name)?;
+                self.inferred_binding_storage_type(expression, result)
+            }
+            Expr::Tuple(items) => Some(ast::Type::Tuple(items.iter()
+                .map(|item| self.argument_storage_type(item)).collect::<Option<Vec<_>>>()?)),
+            Expr::List(items) if !items.is_empty() => {
+                let mut sources = items.iter().map(|item| self.argument_storage_type(item));
+                let first = sources.next()??;
+                let element = sources.try_fold(first, |common, source|
+                    Self::common_storage_type(&common, &source?))?;
+                Some(ast::Type::Named("List".into(), vec![element]))
+            }
+            Expr::Int(_) => Some(ast::Type::Named("Int".into(), Vec::new())),
+            Expr::Float(_) => Some(ast::Type::Named("Float".into(), Vec::new())),
+            Expr::Bool(_) => Some(ast::Type::Named("Bool".into(), Vec::new())),
+            Expr::Str(_) => Some(ast::Type::Named("String".into(), Vec::new())),
+            Expr::Duration(_) => Some(ast::Type::Named("Duration".into(), Vec::new())),
+            _ => None,
+        }
+    }
+
+    fn bind_storage_source_parameters(
+        template: &ast::Type,
+        actual: &ast::Type,
+        parameters: &[String],
+        bindings: &mut HashMap<String, ast::Type>,
+    ) -> Option<()> {
+        match (template, actual) {
+            (ast::Type::Named(name, args), source)
+                if args.is_empty() && parameters.contains(name) => {
+                let joined = match bindings.get(name) {
+                    Some(previous) => Self::common_storage_type(previous, source)?,
+                    None => source.clone(),
+                };
+                bindings.insert(name.clone(), joined);
+                Some(())
+            }
+            (ast::Type::Named(left, left_args), ast::Type::Named(right, right_args))
+                if left == right && left_args.len() == right_args.len() => {
+                for (expected, found) in left_args.iter().zip(right_args) {
+                    Self::bind_storage_source_parameters(expected, found, parameters, bindings)?;
+                }
+                Some(())
+            }
+            (ast::Type::Tuple(left), ast::Type::Tuple(right)) if left.len() == right.len() => {
+                for (expected, found) in left.iter().zip(right) {
+                    Self::bind_storage_source_parameters(expected, found, parameters, bindings)?;
+                }
+                Some(())
+            }
+            (ast::Type::Qualified(left, expected), ast::Type::Qualified(right, found))
+                if left == right =>
+                Self::bind_storage_source_parameters(expected, found, parameters, bindings),
+            _ => None,
+        }
+    }
+
+    fn checked_call_storage_result(&self, name: &str, args: &[Expr], ty: &Ty) -> Option<ast::Type> {
+        let source = self.callable_storage_result_type(name)?;
+        let expected = ty_to_ast(&self.resolve(ty))?;
+        if Self::storage_erased_type(&source)? == expected {
+            return Some(source);
+        }
+        if self.scopes.iter().any(|scope| scope.contains_key(name)) {
+            return None;
+        }
+        let (templates, parameters) = self.fn_storage_parameter_types.get(name)?;
+        if templates.len() != args.len() {
+            return None;
+        }
+        let mut bindings = HashMap::new();
+        for (template, argument) in templates.iter().zip(args) {
+            let actual = self.argument_storage_type(argument)?;
+            Self::bind_storage_source_parameters(template, &actual, parameters, &mut bindings)?;
+        }
+        let specialized = Self::substitute_unique_source_type(&source, &bindings);
+        (Self::storage_erased_type(&specialized)? == expected).then_some(specialized)
+    }
+
     /// Recover only source storage shapes whose qualifiers remain visible
     /// after inference. A `Ty` rendering alone cannot prove that a tuple
     /// element is not frozen, because `Ty` erases that qualifier.
@@ -1696,11 +1780,7 @@ impl Checker {
         let resolved = self.resolve(ty);
         match (expression, &resolved) {
             (Expr::Var(name), _) => self.binding_storage_type(name),
-            (Expr::Call { name, .. }, _) => {
-                let source = self.callable_storage_result_type(name)?;
-                (Self::storage_erased_type(&source)? == ty_to_ast(&resolved)?)
-                    .then(|| source.clone())
-            }
+            (Expr::Call { name, args }, _) => self.checked_call_storage_result(name, args, &resolved),
             (Expr::Apply { func, .. }, _) => {
                 let source = self.callable_storage_result_for_expr(func)?;
                 (Self::storage_erased_type(&source)? == ty_to_ast(&resolved)?)
@@ -13157,6 +13237,7 @@ fn run_check_selected(
         fn_unique_contracts: HashMap::new(),
         fn_source_result_types: HashMap::new(),
         fn_storage_result_types: HashMap::new(),
+        fn_storage_parameter_types: HashMap::new(),
         fresh_result_fns: HashSet::new(),
         inferred_owner_bindings: vec![HashSet::new()],
         fn_opt_provenance: HashMap::new(),
@@ -13429,6 +13510,12 @@ fn run_check_selected(
                 );
                 if let Some(result) = &f.ret {
                     c.fn_storage_result_types.insert(f.name.clone(), result.clone());
+                }
+                if let Some(parameters) = f.params.iter().map(|parameter| parameter.ty.clone())
+                    .collect::<Option<Vec<_>>>() {
+                    c.fn_storage_parameter_types.insert(
+                        f.name.clone(), (parameters, f.type_params.clone()),
+                    );
                 }
                 if let Some(result) = &f.ret
                     && witchy_canonical_source::storage::affine_storage_shape(

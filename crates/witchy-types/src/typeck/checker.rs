@@ -220,6 +220,9 @@ pub(super) struct Checker {
     /// Declared result source shapes for direct calls. Unlike the affine-only
     /// result map, this also retains frozen fields in ordinary aggregates.
     pub(super) fn_storage_result_types: HashMap<String, ast::Type>,
+    /// Source parameter templates and generic names for checked direct-call
+    /// result qualifier specialization.
+    pub(super) fn_storage_parameter_types: HashMap<String, (Vec<ast::Type>, Vec<String>)>,
     /// (RFC-0167) Named functions whose every result is freshly allocated
     /// storage, inferred from their bodies by `infer_fresh_result_fns`. A
     /// `unique` result cannot be declared on the canonical route yet, so

@@ -447,7 +447,19 @@ annotation. Mutable and conditional callable rebinding join old and new
 result shapes conservatively, so the plain proof cannot survive a possible
 frozen result. This covers local named-function aliases and checked calls;
 lambda bodies, generic specialization, and external callable metadata still
-need separate evidence, so row H remains partial.
+needed separate evidence at that checkpoint, so row H remained partial.
+
+Generic direct-call result storage, 2026-10-03: the checker now binds a
+source-linked function's declared type parameters from checked argument
+storage and substitutes them into its declared result shape. Repeated
+parameter bindings join conservatively, so a frozen argument in either
+position keeps a frozen result even when the erased value type is the same.
+`wrap(Box(2))` admits a deep `var` write and returns the independent `93` on
+admitted unoptimized Wasm with zero leaks. `wrap(frozen Box)`, both argument
+orders of `choose[a](a, a) -> a`, and a nested `List(a)` result refuse deep
+mutation with the frozen diagnostic. Unknown argument source shapes remain
+without a proof. Generic function-value specialization, broader argument
+expressions, and external callable metadata remain open; row H is partial.
 
 `rfc0167_frozen_view_replacement` adds a normal-mode row L composition
 witness: a rooted `&frozen Box` keeps the old field value when a `var frozen
