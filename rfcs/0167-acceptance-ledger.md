@@ -289,10 +289,11 @@ arguments, and expires the child after the call. The focused normal-mode
 admitted unoptimized Wasm witness inspects the same child twice, then consumes
 its parent, returning the independent 887 with zero owned-heap leaks. Source
 checking rejects a borrowed child returned from the match, and refuses a
-consuming pattern on a plain affine root without an explicit `move`; the
-focused unique-list child case cannot silently extract from a `let` root.
-A retained child
-carrier and calls with non-scalar results remain outside this proof.
+consuming pattern on a borrowed affine `let` or `var` parameter; the focused
+unique-list child case cannot silently extract from a `let` root. Owned local
+roots and `own` parameters retain their existing consuming-match behavior.
+A retained child carrier and calls with non-scalar results remain outside this
+proof.
 
 The runtime diagnostic golden migration at merged `0ca522869` checks list bounds,
 user `fail`, and a missing named secret through checked source and admitted

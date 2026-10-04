@@ -3804,6 +3804,8 @@ impl Checker {
         self.must_live.retain(|(binding_scope, _)| *binding_scope != scope);
         self.must_borrowed
             .retain(|(binding_scope, _)| *binding_scope != scope);
+        self.affine_borrowed_parameters
+            .retain(|(binding_scope, _)| *binding_scope != scope);
         self.once_borrowed
             .retain(|(binding_scope, _)| *binding_scope != scope);
         self.scopes.pop();
@@ -10176,7 +10178,9 @@ impl Checker {
                 witchy_canonical_source::storage::borrowed_affine_match_shape(
                     &source, arms, &self.canonical_definitions,
                 ).is_some());
-        if !borrowed_inspection && matches!(scrutinee, Expr::Var(_))
+        if !borrowed_inspection
+            && matches!(scrutinee, Expr::Var(name) if self.must_binding_key(name)
+                .is_some_and(|binding| self.affine_borrowed_parameters.contains(&binding)))
             && self.inferred_unique_source_type(scrutinee, &st)
                 .or_else(|| ty_to_ast(&self.resolve(&st))).is_some_and(|source|
                     witchy_canonical_source::storage::affine_storage_shape(
@@ -11285,6 +11289,12 @@ impl Checker {
                 ty.clone(),
                 param.convention.binds_mutable(),
             );
+            if matches!(param.convention, Convention::Borrow | Convention::Var)
+                && (self.ty_carries_unique_storage(ty) || self.ty_carries_must_consume(ty))
+                && let Some(binding) = self.must_binding_key(&param.name)
+            {
+                self.affine_borrowed_parameters.insert(binding);
+            }
             if let Some(declared) = &param.ty {
                 self.binding_storage_types.last_mut().expect("storage types track scopes")
                     .insert(param.name.clone(), declared.clone());
@@ -13600,6 +13610,7 @@ fn run_check_selected(
         loop_exit_scopes: Vec::new(),
         pending_operands: Vec::new(),
         must_borrowed: HashSet::new(),
+        affine_borrowed_parameters: HashSet::new(),
         exact_empty_borrowed_must_replacement: None,
         once_borrowed: HashSet::new(),
         region_locals: Vec::new(),

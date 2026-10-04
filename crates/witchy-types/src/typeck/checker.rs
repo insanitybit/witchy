@@ -329,6 +329,7 @@ pub(super) struct Checker {
     /// `own` boundary. An exact-pop empty proof permits one immediate `var`
     /// replacement after the old stored obligations have been discharged.
     pub(super) must_borrowed: HashSet<(usize, String)>,
+    pub(super) affine_borrowed_parameters: HashSet<(usize, String)>,
     /// The exact pop intrinsic proved a borrowed must list empty on this
     /// unguarded None arm. Only one whole-binding assignment, reached through
     /// statements that cannot access the binding, may replace the empty
