@@ -281,7 +281,10 @@ versioned post-selection report for telemetry, but the gate no longer parses
 JSON to construct the runner command. The mapper's validated package, target,
 feature, and secondary-partition policy remains authoritative; within eligible
 single-partition routes dtest adds one combined exact-test filter and launches
-one nextest process. Clean queue worktrees skip redundant dirty-tree discovery.
+one nextest process, replacing broad Cargo selectors with the exact package and
+test binary when possible. Exact-name filters are bounded; an oversized list
+falls back conservatively to the mapper's filter and scope rather than risking
+the process argument limit. Clean queue worktrees skip redundant dirty-tree discovery.
 Inspect selection, Git, graph, and gate timings with
 `./scripts/gate-report.sh --since 24h` or its `--json` form.
 

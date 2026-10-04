@@ -699,7 +699,7 @@ if cargo nextest --version >/dev/null 2>&1; then
         && command -v dtest >/dev/null 2>&1; then
         dtest_cmd=(dtest --workspace . run
             --from "$WITCHY_GATE_DTEST_FROM" --to HEAD --assume-clean
-            --caller-scope --ignore-config-runner-args
+            --caller-scope --narrow-single-partition --ignore-config-runner-args
             --quiet --report "$WITCHY_GATE_DTEST_REPORT")
         [ -z "$main_expr" ] || dtest_cmd+=(--filter-expr "$main_expr")
         # Reuse the mapper's validated Cargo target and feature scope, dropping

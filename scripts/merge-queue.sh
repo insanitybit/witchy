@@ -181,6 +181,10 @@ gate_dtest_overlay_hits=""
 gate_dtest_overlay_entries=""
 gate_dtest_overlay_compacted=""
 gate_dtest_target_narrowed="false"
+gate_dtest_exact_filter=""
+gate_dtest_filter_bytes=""
+gate_dtest_required_filter_bytes=""
+gate_dtest_commands=""
 gate_dtest_reason=""
 gate_dtest_from=""
 gate_dtest_report=""
@@ -540,6 +544,10 @@ record_attempt() { # event branch start prepared locked gate-start gate-end fini
     [ -n "${gate_dtest_overlay_entries:-}" ] && selection+=(dtest_overlay_entries "$gate_dtest_overlay_entries")
     [ -n "${gate_dtest_overlay_compacted:-}" ] && selection+=(dtest_overlay_compacted "$gate_dtest_overlay_compacted")
     selection+=(dtest_target_narrowed "${gate_dtest_target_narrowed:-false}")
+    [ -n "${gate_dtest_exact_filter:-}" ] && selection+=(dtest_exact_filter "$gate_dtest_exact_filter")
+    [ -n "${gate_dtest_filter_bytes:-}" ] && selection+=(dtest_filter_bytes "$gate_dtest_filter_bytes")
+    [ -n "${gate_dtest_required_filter_bytes:-}" ] && selection+=(dtest_required_filter_bytes "$gate_dtest_required_filter_bytes")
+    [ -n "${gate_dtest_commands:-}" ] && selection+=(dtest_commands "$gate_dtest_commands")
     [ -n "${gate_dtest_reason:-}" ] && selection+=(dtest_reason "$gate_dtest_reason")
 
     # RFC-0159 E. `reason` already carries the failing stage and failure line,
@@ -2682,6 +2690,10 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     gate_dtest_overlay_entries=""
     gate_dtest_overlay_compacted=""
     gate_dtest_target_narrowed="false"
+    gate_dtest_exact_filter=""
+    gate_dtest_filter_bytes=""
+    gate_dtest_required_filter_bytes=""
+    gate_dtest_commands=""
     gate_dtest_reason=""
     gate_dtest_from=""
     gate_dtest_report=""
@@ -3250,13 +3262,20 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         if [ -s "$gate_dtest_report" ] \
             && dtest_values="$(jq -er '
                 select(.schema == 1 and (.tests|type) == "array"
-                    and (.partitions|type) == "array")
+                    and (.partitions|type) == "array"
+                    and (.run.target_narrowed|type) == "boolean"
+                    and (.run.exact_filter|type) == "boolean"
+                    and (.run.filter_bytes|type) == "number"
+                    and (.run.required_filter_bytes|type) == "number"
+                    and (.run.commands|type) == "number")
                 | [.timings.total_ms, .changed_files, .changed_definitions,
                    (.tests|length), .timings.index.elapsed_ms,
                    .timings.index.git_ms, .timings.index.graph_ms,
                    .timings.selection.elapsed_ms, (.partitions|length),
                    .timings.index.overlay_hits, .timings.index.overlay_entries,
-                   .timings.index.overlay_compacted, false]
+                   .timings.index.overlay_compacted,
+                   .run.target_narrowed, .run.exact_filter,
+                   .run.filter_bytes, .run.required_filter_bytes, .run.commands]
                 | map(tostring) | join("\u001f")
             ' "$gate_dtest_report" 2>/dev/null)"; then
             IFS=$'\x1f' read -r gate_dtest_elapsed_ms gate_dtest_changed_files \
@@ -3264,7 +3283,9 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
                 gate_dtest_index_ms gate_dtest_index_git_ms gate_dtest_index_graph_ms \
                 gate_dtest_selection_ms gate_dtest_partitions gate_dtest_overlay_hits \
                 gate_dtest_overlay_entries gate_dtest_overlay_compacted \
-                gate_dtest_target_narrowed <<<"$dtest_values"
+                gate_dtest_target_narrowed gate_dtest_exact_filter \
+                gate_dtest_filter_bytes gate_dtest_required_filter_bytes \
+                gate_dtest_commands <<<"$dtest_values"
             if [ "$gate_dtest_selected_tests" -gt 0 ]; then
                 gate_dtest_status="selected"
             else
