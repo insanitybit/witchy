@@ -1732,6 +1732,8 @@ impl Checker {
                 Expr::Var(name) => self.call_storage_result_from_arguments(name, args),
                 _ => None,
             },
+            Expr::Block(_) | Expr::If { .. } | Expr::Match { .. } =>
+                self.scoped_expression_storage_type(expression),
             Expr::Ctor { name, .. } => {
                 let (_, result) = self.ctor_sigs.get(name)?;
                 self.inferred_binding_storage_type(expression, result)
@@ -1847,20 +1849,8 @@ impl Checker {
             }
             (Expr::Unary { op: UnOp::Move, expr }, _) =>
                 self.inferred_binding_storage_type(expr, &resolved),
-            (Expr::Block(block), _) => self.inferred_block_storage_type(block),
-            (Expr::If { then_block, else_block: Some(else_block), .. }, _) => {
-                let then_source = self.inferred_block_storage_type(then_block)?;
-                let else_source = self.inferred_block_storage_type(else_block)?;
-                Self::common_storage_type(&then_source, &else_source)
-            }
-            (Expr::Match { arms, .. }, _) if !arms.is_empty() => {
-                let mut sources = arms.iter().map(|arm|
-                    self.match_arm_storage_result_types
-                        .get(&(&arm.body as *const Expr as usize)).cloned().flatten());
-                let first = sources.next()??;
-                sources.try_fold(first, |common, source|
-                    Self::common_storage_type(&common, &source?))
-            }
+            (Expr::Block(_) | Expr::If { .. } | Expr::Match { .. }, _) =>
+                self.scoped_expression_storage_type(expression),
             (Expr::Tuple(items), Ty::Tuple(fields)) if items.len() == fields.len() =>
                 Some(ast::Type::Tuple(items.iter().zip(fields.iter()).map(|(item, field)|
                     self.inferred_binding_storage_type(item, field)).collect::<Option<Vec<_>>>()?)),
@@ -1885,6 +1875,26 @@ impl Checker {
     fn inferred_block_storage_type(&self, block: &Block) -> Option<ast::Type> {
         self.block_storage_result_types
             .get(&(block as *const Block as usize)).cloned().flatten()
+    }
+
+    fn scoped_expression_storage_type(&self, expression: &Expr) -> Option<ast::Type> {
+        match expression {
+            Expr::Block(block) => self.inferred_block_storage_type(block),
+            Expr::If { then_block, else_block: Some(else_block), .. } => {
+                let then_source = self.inferred_block_storage_type(then_block)?;
+                let else_source = self.inferred_block_storage_type(else_block)?;
+                Self::common_storage_type(&then_source, &else_source)
+            }
+            Expr::Match { arms, .. } if !arms.is_empty() => {
+                let mut sources = arms.iter().map(|arm|
+                    self.match_arm_storage_result_types
+                        .get(&(&arm.body as *const Expr as usize)).cloned().flatten());
+                let first = sources.next()??;
+                sources.try_fold(first, |common, source|
+                    Self::common_storage_type(&common, &source?))
+            }
+            _ => None,
+        }
     }
 
 

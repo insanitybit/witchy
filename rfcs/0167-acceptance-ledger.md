@@ -494,6 +494,14 @@ cannot borrow the proof from a plain outer binding with the same name;
 focused `if` and `match` shadowing regressions pin that refusal. Arms whose
 source shape cannot be recovered still fail closed; row H remains partial.
 
+Branch expressions as generic arguments, 2026-10-04: generic result
+specialization now reads the same checked `if` and `match` storage facts
+captured at scope exit as inferred `var` bindings. Plain branch arguments
+admit deep result writes and return the independent `9383` on admitted unoptimized Wasm
+with zero canonical heap leaks. A frozen `if` arm and a shadowed frozen
+match-arm local both refuse deep mutation after generic substitution. Missing
+arm facts still fail closed; row H remains partial for other argument forms.
+
 `rfc0167_frozen_view_replacement` adds a normal-mode row L composition
 witness: a rooted `&frozen Box` keeps the old field value when a `var frozen
 Box` root is replaced, so admitted unoptimized Wasm prints the independently
