@@ -180,9 +180,11 @@ Wasm), `witchy caps <file>`
 ## 2. Architecture and code organization
 
 **The compiler is a Cargo workspace**: eleven stage-aligned crates under
-`crates/` plus the `witchy` root package. Build, lint, and test the **whole
-thing** — `cargo nextest run --workspace`, `cargo clippy --workspace
---all-targets`. The root lib re-exports every crate's modules, so
+`crates/` plus the `witchy` root package. For the normal edit loop, use
+`dtest run --from "$(git merge-base HEAD master)"` to select affected tests
+(details and limits are in §3); reserve `cargo nextest run --workspace` for
+explicit full-suite validation, merge-queue gates, and CI. The root lib
+re-exports every crate's modules, so
 `crate::{ast,typeck,codegen,…}` paths still resolve from the binary — **but new
 code belongs in the owning crate.**
 
