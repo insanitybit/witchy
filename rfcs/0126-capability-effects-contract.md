@@ -46,6 +46,9 @@ The supported-preview workflow is narrower than a complete audit of every
 effectful standard-library module or host. Promote additional modules only
 with evidence at their actual host boundary. Deferred dynamic code, native
 extensions, and symbolic grant proposals are not required for this delivery.
+The browser's old opt-in `Dir` and `Env` providers still use a retired host ABI;
+canonical browser compilation refuses those operations at target checking.
+Restoring them requires a current-ABI browser provider and an end-to-end run.
 
 ## Canonical model
 

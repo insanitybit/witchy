@@ -442,12 +442,56 @@ pub fn compile_source(src: &str) -> Result<Vec<u8>, String> {
             return Err(format!("cannot compile to WASM: {error}"));
         }
     };
+    reject_unavailable_browser_capability_imports(&bytes)?;
     // Canonical admission already emitted and authenticated `witchy.launch`.
     Ok(bytes)
 }
 
+/// The browser's old in-memory Dir and page Env providers still speak the
+/// retired staged-buffer ABI. Refuse canonical modules that reach them at the
+/// browser compilation boundary, before JavaScript tries to link the module.
+fn reject_unavailable_browser_capability_imports(bytes: &[u8]) -> Result<(), String> {
+    let mut unavailable = std::collections::BTreeSet::new();
+    for payload in wasmparser::Parser::new(0).parse_all(bytes) {
+        let payload = payload.map_err(|error| format!("invalid browser WASM: {error}"))?;
+        let wasmparser::Payload::ImportSection(section) = payload else { continue };
+        for import in section.into_imports() {
+            let import = import.map_err(|error| format!("invalid browser WASM import: {error}"))?;
+            if import.module != "witchy" || !matches!(import.ty, wasmparser::TypeRef::Func(_)) {
+                continue;
+            }
+            let name = import.name;
+            let family = if name == "mint_dir" || name == "mint_file"
+                || name.starts_with("dir_") || name.starts_with("file_") {
+                Some("Dir/File")
+            } else if name == "mint_env" || name.starts_with("env_") {
+                Some("Env")
+            } else {
+                None
+            };
+            if let Some(family) = family { unavailable.insert(family); }
+        }
+    }
+    if unavailable.is_empty() { return Ok(()); }
+    Err(format!(
+        "browser target does not provide the current {} capability ABI",
+        unavailable.into_iter().collect::<Vec<_>>().join(" or "),
+    ))
+}
+
 #[cfg(test)]
 mod canonical_source_witness_tests {
+    #[test]
+    fn browser_compilation_refuses_current_dir_and_env_capability_abi() {
+        for (source, family) in [
+            ("fn main(dir: Dir) -> Int:\n    match dir.read(\"a.txt\"):\n        Ok(_) -> 1\n        Err(_) -> 0\n", "Dir/File"),
+            ("fn main(env: Env) -> Int:\n    match env.get_env(\"COLOR\"):\n        Ok(_) -> 1\n        Err(_) -> 0\n", "Env"),
+        ] {
+            let error = super::compile_source(source).expect_err("unsupported browser provider must refuse at compilation");
+            assert!(error.contains(&format!("browser target does not provide the current {family} capability ABI")), "{error}");
+        }
+    }
+
     #[test]
     fn browser_resolver_refuses_unadmitted_compile_time_blocks() {
         let error = super::resolve_std_only_checked(

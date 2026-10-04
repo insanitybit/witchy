@@ -198,9 +198,10 @@ output), `fill_pending` / `write_pending_list` (the string bridge),
 diagnostics. The exported `WITCHY_BROWSER_IMPORTS` list is checked against both
 the compiler catalog and the actual JavaScript import object.
 
-**Opt-in providers:** real browser `Clock`; immutable page-supplied `Env`;
-per-run in-memory `Dir`; real browser `Fetch`, constrained to explicit origins;
-page-supplied `SecretStore`; and fresh sequential VM instances. Fetch sends no
+**Opt-in providers:** real browser `Clock`; real browser `Fetch`, constrained to
+explicit origins; page-supplied `SecretStore`; and fresh sequential VM instances.
+The old page-supplied `Env` and in-memory `Dir` providers use a retired host
+ABI. Canonical browser compilation refuses them until they are migrated. Fetch sends no
 credentials, refuses redirects, and bounds buffered responses. Fetch,
 SecretStore signing, and VM creation use WebAssembly JSPI to suspend and resume
 the guest around asynchronous platform calls.

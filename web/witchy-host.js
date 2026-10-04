@@ -658,6 +658,18 @@ export async function runCompiledWitchy(wasm, binary, opts = {}) {
       .filter((entry) => entry.module === "witchy")
       .map((entry) => entry.name),
   );
+  const unavailableCapability = [...importedWitchyNames].find((name) =>
+    name === "mint_dir" || name === "mint_file" || name === "mint_env"
+    || name.startsWith("dir_") || name.startsWith("file_")
+    || name.startsWith("env_"),
+  );
+  if (unavailableCapability) {
+    return {
+      ok: false,
+      text: `browser target does not provide witchy::${unavailableCapability}`,
+      stats: {},
+    };
+  }
   const runtimeFamilies = [
     ["clock", WITCHY_CLOCK_IMPORTS],
     ["console", WITCHY_CONSOLE_IMPORTS],

@@ -450,10 +450,9 @@ function runeHash(paths, contents) {
 //
 //   * Clock  — real browser wall/monotonic time on the existing `now`/
 //              `now_monotonic` i64 ABI (no virtualization needed).
-//   * Env    — EMPTY by default; a page may supply an immutable string map.
-//              An absent name reads back as unset (`env_len` -> -1), exactly
-//              like the native host's unset variable.
-//   * Dir    — a per-run IN-MEMORY tree. Path normalization and `..`/absolute
+//   * Env    — legacy staged-buffer provider; canonical Env operations are
+//              refused until this provider uses the current response ABI.
+//   * Dir    — legacy per-run IN-MEMORY tree. Path normalization and `..`/absolute
 //              confinement, the entry-policy guard (`dir_only`/`dir_admits`),
 //              read/write/append/list/subtree/exists/is_dir/open/create and the
 //              File handles they mint all mirror the native `Dir` semantics in
@@ -2161,6 +2160,12 @@ export async function instantiate(wasmBytes, opts = {}) {
     }
   }
 
+  for (const imported of WebAssembly.Module.imports(module)) {
+    if (imported.module === "witchy" && imported.kind === "function"
+        && !Object.prototype.hasOwnProperty.call(witchy, imported.name)) {
+      throw new Error(`browser target does not provide witchy::${imported.name}`);
+    }
+  }
   instance = new WebAssembly.Instance(module, { witchy });
   memory = instance.exports.memory;
 
