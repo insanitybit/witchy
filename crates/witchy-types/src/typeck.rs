@@ -1624,6 +1624,20 @@ impl Checker {
             .flatten()
     }
 
+    fn remember_scoped_storage_result(
+        results: &mut HashMap<usize, Option<ast::Type>>,
+        site: usize,
+        source: Option<ast::Type>,
+    ) {
+        let joined = match results.get(&site) {
+            Some(Some(previous)) => source.as_ref()
+                .and_then(|next| Self::common_storage_type(previous, next)),
+            Some(None) => None,
+            None => source,
+        };
+        results.insert(site, joined);
+    }
+
     fn common_storage_type(declared: &ast::Type, initializer: &ast::Type) -> Option<ast::Type> {
         if declared == initializer {
             return Some(declared.clone());
@@ -1833,15 +1847,16 @@ impl Checker {
             }
             (Expr::Unary { op: UnOp::Move, expr }, _) =>
                 self.inferred_binding_storage_type(expr, &resolved),
-            (Expr::Block(block), _) => self.inferred_block_storage_type(block, &resolved),
+            (Expr::Block(block), _) => self.inferred_block_storage_type(block),
             (Expr::If { then_block, else_block: Some(else_block), .. }, _) => {
-                let then_source = self.inferred_block_storage_type(then_block, &resolved)?;
-                let else_source = self.inferred_block_storage_type(else_block, &resolved)?;
+                let then_source = self.inferred_block_storage_type(then_block)?;
+                let else_source = self.inferred_block_storage_type(else_block)?;
                 Self::common_storage_type(&then_source, &else_source)
             }
             (Expr::Match { arms, .. }, _) if !arms.is_empty() => {
                 let mut sources = arms.iter().map(|arm|
-                    self.inferred_binding_storage_type(&arm.body, &resolved));
+                    self.match_arm_storage_result_types
+                        .get(&(&arm.body as *const Expr as usize)).cloned().flatten());
                 let first = sources.next()??;
                 sources.try_fold(first, |common, source|
                     Self::common_storage_type(&common, &source?))
@@ -1867,9 +1882,9 @@ impl Checker {
         }
     }
 
-    fn inferred_block_storage_type(&self, block: &Block, ty: &Ty) -> Option<ast::Type> {
-        let Stmt::Expr(result) = block.stmts.last()? else { return None; };
-        self.inferred_binding_storage_type(result, ty)
+    fn inferred_block_storage_type(&self, block: &Block) -> Option<ast::Type> {
+        self.block_storage_result_types
+            .get(&(block as *const Block as usize)).cloned().flatten()
     }
 
 
@@ -6709,6 +6724,15 @@ impl Checker {
         if let Some(Stmt::Expr(expression)) = block.stmts.last() {
             self.transfer_unique_value(expression, &ty, "block result")?;
         }
+        let storage = match block.stmts.last() {
+            Some(Stmt::Expr(expression)) => self.inferred_binding_storage_type(expression, &ty),
+            _ => None,
+        };
+        Self::remember_scoped_storage_result(
+            &mut self.block_storage_result_types,
+            block as *const Block as usize,
+            storage,
+        );
         self.reject_live_must_in_current_scope()?;
         let proof = self.block_opt_value_proof(block);
         self.opt_expression_proofs.insert(block as *const Block as usize, proof);
@@ -10196,6 +10220,7 @@ impl Checker {
                 Some(expected) => self.infer_expected(&arm.body, expected)?,
                 None => self.infer(&arm.body)?,
             };
+            let arm_storage = self.inferred_binding_storage_type(&arm.body, &bt);
             self.exact_empty_borrowed_must_replacement = None;
             self.reject_implicit_once_copy(&arm.body, &bt, "match arm result")?;
             if expected.is_some() {
@@ -10219,6 +10244,11 @@ impl Checker {
                     None => proof,
                 });
             }
+            Self::remember_scoped_storage_result(
+                &mut self.match_arm_storage_result_types,
+                &arm.body as *const Expr as usize,
+                arm_storage,
+            );
             self.pop();
             branch_facts.push((
                 arm_completes,
@@ -11035,6 +11065,8 @@ impl Checker {
         self.inferred_owner_bindings = vec![HashSet::new()];
         self.unique_binding_types = vec![HashMap::new()];
         self.binding_storage_types = vec![HashMap::new()];
+        self.block_storage_result_types.clear();
+        self.match_arm_storage_result_types.clear();
         self.callable_unique_contracts = vec![HashMap::new()];
         self.callable_storage_result_types = vec![HashMap::new()];
         self.callable_storage_parameter_types = vec![HashMap::new()];
@@ -13397,6 +13429,8 @@ fn run_check_selected(
         opt_viewed_roots: HashSet::new(),
         unique_binding_types: vec![HashMap::new()],
         binding_storage_types: vec![HashMap::new()],
+        block_storage_result_types: HashMap::new(),
+        match_arm_storage_result_types: HashMap::new(),
         checked_storage_declared_types: HashSet::new(),
         affine_expression_types: HashMap::new(),
         callable_unique_contracts: vec![HashMap::new()],

@@ -488,8 +488,11 @@ every completing `if` or `match` arm before using an inferred aggregate as a
 deep `var` assignment root. Plain tuple results from both forms admit nested
 field writes; one admitted unoptimized Wasm witness returns the independent
 `9385` with zero canonical heap leaks. A frozen `Box` in either kind of arm
-keeps the result frozen and refuses the same write. Arms whose source shape
-cannot be recovered still fail closed; row H remains partial.
+keeps the result frozen and refuses the same write. Arm result shapes are
+captured before their lexical scopes close, so an arm-local frozen binding
+cannot borrow the proof from a plain outer binding with the same name;
+focused `if` and `match` shadowing regressions pin that refusal. Arms whose
+source shape cannot be recovered still fail closed; row H remains partial.
 
 `rfc0167_frozen_view_replacement` adds a normal-mode row L composition
 witness: a rooted `&frozen Box` keeps the old field value when a `var frozen

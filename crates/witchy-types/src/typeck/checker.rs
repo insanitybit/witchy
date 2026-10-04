@@ -162,6 +162,10 @@ pub(super) struct Checker {
     /// checked deep assignments through tuple and record paths. Some come
     /// from declarations; exact inferred constructor shapes may also supply them.
     pub(super) binding_storage_types: Vec<HashMap<String, ast::Type>>,
+    /// Source qualifier results captured before a block or match arm's lexical
+    /// scope closes. `None` records an unresolved path and revokes older proof.
+    pub(super) block_storage_result_types: HashMap<usize, Option<ast::Type>>,
+    pub(super) match_arm_storage_result_types: HashMap<usize, Option<ast::Type>>,
     /// Checked local ascriptions whose recursive affine storage plan must
     /// remain visible to the canonical layout and SafeWIR authority stages.
     pub(super) checked_storage_declared_types: HashSet<ast::Type>,

@@ -70,3 +70,39 @@ fn main() -> Int:
 "#).expect_err("a frozen match arm must keep the result frozen");
     assert!(error.to_string().contains("cannot mutate through frozen value"), "{error}");
 }
+
+#[test]
+fn shadowed_if_arm_cannot_borrow_outer_plain_storage_proof() {
+    let error = witchy::resolve_std_only_checked(r#"
+type Box:
+    value: Int
+fn main() -> Int:
+    let item = Box(2)
+    var pair = if true:
+        let item: frozen Box = Box(1)
+        (item, 3)
+    else:
+        (item, 4)
+    pair.0.value = 9
+    0
+"#).expect_err("the arm-local frozen binding must win over its plain shadow");
+    assert!(error.to_string().contains("cannot mutate through frozen value"), "{error}");
+}
+
+#[test]
+fn shadowed_match_arm_cannot_borrow_outer_plain_storage_proof() {
+    let error = witchy::resolve_std_only_checked(r#"
+type Box:
+    value: Int
+fn main() -> Int:
+    let item = Box(2)
+    var pair = match false:
+        false ->
+            let item: frozen Box = Box(1)
+            (item, 3)
+        _ -> (item, 4)
+    pair.0.value = 9
+    0
+"#).expect_err("the match-arm frozen binding must win over its plain shadow");
+    assert!(error.to_string().contains("cannot mutate through frozen value"), "{error}");
+}
