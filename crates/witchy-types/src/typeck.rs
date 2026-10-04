@@ -3348,7 +3348,7 @@ impl Checker {
         is_scalar_ty(&self.resolve(&current))
     }
 
-    /// Rebuild source qualifiers along a checked tuple/list/dictionary place.
+    /// Rebuild source qualifiers along a checked tuple/record/list/dictionary place.
     /// When an indexed element is replaced, joining its old and new source
     /// shapes describes every element conservatively, including untouched ones.
     fn storage_after_projected_assignment(
@@ -3394,6 +3394,38 @@ impl Checker {
                     let mut result = fields.clone();
                     *result.get_mut(index)? = rebuild(checker, fields.get(index)?, types.get(index)?, &steps[1..], leaf)?;
                     Some(ast::Type::Tuple(result))
+                }
+                (ast::Type::Named(name, args), Ty::Named(ty_name, ty_args), Step::Field(field))
+                    if name == ty_name.as_ref() => {
+                    let source_fields = checker.unique_source_record_fields.get(name)?;
+                    let template = source_fields.get(field)?;
+                    let source_params = checker.unique_source_record_params.get(name)?;
+                    let (type_params, fields) = checker.record_fields.get(name)?;
+                    if args.len() != source_params.len() || ty_args.len() != type_params.len() {
+                        return None;
+                    }
+                    let (_, field_ty) = fields.iter().find(|(name, _)| name == field)?;
+                    let type_bindings: HashMap<u32, Ty> = type_params.iter().copied()
+                        .zip(ty_args.iter().cloned()).collect();
+                    let field_ty = checker.subst_vars(field_ty, &type_bindings);
+                    let source_bindings: HashMap<String, ast::Type> = source_params.iter()
+                        .cloned().zip(args.iter().cloned()).collect();
+                    let old_field = Checker::substitute_unique_source_type(template, &source_bindings);
+                    let rebuilt = rebuild(checker, &old_field, &field_ty, &steps[1..], leaf)?;
+                    let mut updated_bindings = HashMap::new();
+                    Checker::bind_storage_source_parameters(
+                        template, &rebuilt, source_params, &mut updated_bindings,
+                    )?;
+                    let mut result = args.clone();
+                    for (parameter, argument) in source_params.iter().zip(&mut result) {
+                        if let Some(updated) = updated_bindings.get(parameter) {
+                            *argument = Checker::common_storage_type(argument, updated)?;
+                        }
+                    }
+                    let result_bindings: HashMap<String, ast::Type> = source_params.iter()
+                        .cloned().zip(result.iter().cloned()).collect();
+                    (Checker::substitute_unique_source_type(template, &result_bindings) == rebuilt)
+                        .then_some(ast::Type::Named(name.clone(), result))
                 }
                 (ast::Type::Named(name, args), Ty::List(element), Step::Index(_) | Step::DynamicIndex)
                     if name.rsplit('.').next() == Some("List") && args.len() == 1 => {

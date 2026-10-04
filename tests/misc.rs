@@ -171,6 +171,8 @@ mod rfc0167_branch_argument_storage;
 mod rfc0167_generic_constructor_storage;
 #[path = "misc/rfc0167_list_storage_join.rs"]
 mod rfc0167_list_storage_join;
+#[path = "misc/rfc0167_record_projection_storage.rs"]
+mod rfc0167_record_projection_storage;
 #[path = "misc/rfc0167_must_var_list_replacement.rs"]
 mod rfc0167_must_var_list_replacement;
 #[path = "misc/rfc0167_must_result_propagation.rs"]
