@@ -2675,6 +2675,7 @@ pub(crate) fn link_capability_imports(
     host::clock_env_rand::link_canonical_clock(linker)?;
     host::secret::link_canonical(linker)?;
     host::crypto::link_canonical_keyed(linker)?;
+    host::secret_response::link_canonical(linker)?;
     // Linking the fixture ABI grants no provider or token. Its handler checks
     // the private fixture session before reading guest memory or producing output.
     host::console::link_fixture_console(linker)?;

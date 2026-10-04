@@ -395,6 +395,8 @@ fn require_capability_data<T: CaptureAuthority>(state: &T, data: &dyn std::any::
             data.is::<super::super::ListenerResource>(),
         id if id == witchy_wir::canonical_safewir::NET_RESPONSE_KIND.get() =>
             data.is::<super::network::policy::NetResponse>(),
+        id if id == witchy_wir::canonical_safewir::SECRET_RESPONSE_KIND.get() =>
+            data.is::<super::secret_response::SecretResponse>(),
         id if id == witchy_wir::canonical_safewir::EXEC_CAPABILITY_KIND.get() =>
             data.is::<super::super::ExecAuthority>(),
         _ => false,

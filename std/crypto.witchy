@@ -83,9 +83,9 @@ pub fn public_key(key: Secret[Seal]) -> String:
 // (tokens, passwords) that must be handed to an external sink. Needs the `Reveal`
 // right, so a `Secret[Seal]` is rejected at check time. Signing keys (granted with
 // `--signing-key`) and secrets granted `sealed` (`--secret-file name=path,sealed`,
-// e.g. a TLS private key) are sealed by the host and refused at run time too.
-pub fn reveal(key: Secret[Reveal]) -> String:
-    ""
+// e.g. a TLS private key) are sealed by the host: revealing one is `Err(Denied)`.
+pub fn reveal(key: Secret[Reveal]) -> Result(String, CapError):
+    Ok("")
 
 // Verify an ECDSA P-256 / SHA-256 signature - WebAuthn "ES256" (COSE alg -7).
 // `public_key` is the hex SEC1 uncompressed point (`04 || x || y`); `signature` is

@@ -800,19 +800,13 @@ pub fn serve_n(net: Net[Listen, Tcp], addr: String, app: Router, n: Int):
 // `Router`, and `Request`/`Response` are unchanged - TLS is transparent above the
 // accepted connection.
 pub fn serve_tls(net: Net[Listen, Tcp], addr: String, cert_pem: String, key: Secret[Seal], app: Router):
-    let server = net.listen_tls(addr, cert_pem, key)
-    server.serve_pool()
-    let handler = handler_of(app)
-    var running = true
-    while running:
-        handle_one(server, handler)
+    match net.listen_tls(addr, cert_pem, key):
+        Ok(server) -> serve_on(server, app, true, -1)
+        Err(e) -> fail("server: cannot listen: " + e.message())
 
 // Serve exactly `n` HTTPS requests then return - `serve_tls`'s one-shot/test twin
 // (the TLS handling and key discipline of `serve_tls`, the loop shape of `serve_n`).
 pub fn serve_tls_n(net: Net[Listen, Tcp], addr: String, cert_pem: String, key: Secret[Seal], app: Router, n: Int):
-    let server = net.listen_tls(addr, cert_pem, key)
-    let handler = handler_of(app)
-    var i = 0
-    while i < n:
-        handle_one(server, handler)
-        i = i + 1
+    match net.listen_tls(addr, cert_pem, key):
+        Ok(server) -> serve_on(server, app, false, n)
+        Err(e) -> fail("server: cannot listen: " + e.message())

@@ -362,6 +362,11 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "net_response_take_net" (func $net_response_take_net_host (param externref) (result externref)))
   (import "witchy" "net_response_take_socket" (func $net_response_take_socket_host (param externref) (result externref)))
   (import "witchy" "net_response_take_listener" (func $net_response_take_listener_host (param externref) (result externref)))
+  (import "witchy" "secret_reveal_at" (func $secret_reveal_at_host (param externref) (result externref)))
+  (import "witchy" "net_listen_tls_at" (func $net_listen_tls_at_host (param externref i32 i32 i32 i32 externref) (result externref)))
+  (import "witchy" "secret_response_status" (func $secret_response_status_host (param externref) (result i32)))
+  (import "witchy" "secret_response_size" (func $secret_response_size_host (param externref) (result i32)))
+  (import "witchy" "secret_response_into" (func $secret_response_into_host (param externref i32 i32) (result i32)))
   (import "witchy" "__witchy_abort_at" (func $__witchy_abort_at (param i32 i32 i32 i32 i32)))
   (import "witchy" "__witchy_list_bounds_at" (func $__witchy_list_bounds_at (param i64 i32 i32 i32 i32)))
   (import "witchy" "__witchy_bytes_bounds_at" (func $__witchy_bytes_bounds_at (param i64 i32 i32 i32 i32)))
@@ -678,6 +683,11 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "net_response_take_net"
         | "net_response_take_socket"
         | "net_response_take_listener"
+        | "secret_reveal_at"
+        | "net_listen_tls_at"
+        | "secret_response_status"
+        | "secret_response_size"
+        | "secret_response_into"
         | "net_send_line"
         | "net_send_bytes"
         | "net_close"
@@ -748,7 +758,8 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
 
     let authorities = match name {
         "console_read_len" => AUTH_CONSOLE_READ,
-        "crypto.sign" | "crypto.public_key" | "crypto_sign_into" | "crypto_public_key_into" | "secretstore_lookup" | "crypto_reveal_len" | "mint_secret" => AUTH_SECRET,
+        "crypto.sign" | "crypto.public_key" | "crypto_sign_into" | "crypto_public_key_into" | "secretstore_lookup" | "crypto_reveal_len" | "mint_secret"
+        | "secret_reveal_at" | "secret_response_status" | "secret_response_size" | "secret_response_into" => AUTH_SECRET,
         "secretstore_lookup_at" => AUTH_SECRET_STORE,
         "mint_env" | "env_only" | "env_get_at" | "env_response_status"
         | "env_response_size" | "env_response_into" => AUTH_ENV,
@@ -786,7 +797,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         "net_send_at" | "net_send_line_at" | "net_recv_line_at" | "net_recv_bytes_at" | "net_recv_all_at"
         | "net_resolve_at" => AUTH_NET_CONNECT,
         "net_listen" | "net_listen_at" | "net_accept" | "net_accept_at" | "serve_pool" => AUTH_NET_LISTEN,
-        "net_listen_tls" => AUTH_NET_LISTEN_SECRET,
+        "net_listen_tls" | "net_listen_tls_at" => AUTH_NET_LISTEN_SECRET,
         "now" | "now_monotonic" | "clock_now" | "clock_now_monotonic" => AUTH_CLOCK,
         "rand_u64" => AUTH_RAND,
         "exec_run_at" => AUTH_EXEC_DIR,

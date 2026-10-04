@@ -7,6 +7,7 @@ use super::*;
 /// (received text, resolved addresses, or the failure message), and on success
 /// the `Net`, `Socket` or `Listener` it minted.
 pub const NET_RESPONSE_KIND: CapabilityKindId = CapabilityKindId::new(24);
+pub const NET_LISTEN_TLS_IMPORT: &str = "net_listen_tls_at";
 pub const NET_RESPONSE_IMPORT_NAMES: [&str; 8] = [
     "net_only_at", "net_deny_at", "net_response_status", "net_response_size",
     "net_response_into", "net_response_take_net", "net_response_take_socket",
@@ -57,6 +58,26 @@ impl CanonicalAbiCatalog {
                 vec![HostResultRole::Capability(LISTENER_CAPABILITY_KIND)], HostMutation::ReadOnly, grant)?,
         ];
         for import in imports { self.imports.insert(import.id, import); }
+        Ok(self)
+    }
+
+    /// `net_listen_tls_at(net, addr, cert_pem, key) -> response`: the key is
+    /// an opaque `Secret` (sealed ones included), so its bytes never enter
+    /// guest memory. Binding needs both the Listen right and the Secret.
+    pub fn with_net_listen_tls_import(
+        mut self, signature: FunctionSignatureId, string_layout: LayoutId,
+    ) -> Result<Self, String> {
+        use crate::wir_prelude::{AbiImportAuthority, WasmTy::*};
+        let read = || HostParameterRole::Buffer {
+            value_type: ValueType::Ref(string_layout), access: AccessMode::Read, extent: HostBufferExtent::Slice,
+        };
+        let import = authenticated_capability_import(NET_LISTEN_TLS_IMPORT,
+            &[ExternRef, I32, I32, I32, I32, ExternRef], &[ExternRef], signature,
+            vec![HostParameterRole::Capability(NET_CAPABILITY_KIND), read(), read(),
+                HostParameterRole::Capability(SECRET_CAPABILITY_KIND)],
+            vec![HostResultRole::Capability(NET_RESPONSE_KIND)], HostMutation::ReadOnly,
+            &[AbiImportAuthority::NetListen, AbiImportAuthority::Secret])?;
+        self.imports.insert(import.id, import);
         Ok(self)
     }
 }

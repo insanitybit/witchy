@@ -1157,6 +1157,10 @@ pub(crate) fn lower_typed_module_with_borrowed_views(
     // RFC-0165 Net import registration (Net track).
     let net_imports = net::collect_imports(typed.module());
     if net::needs_responses(&net_imports) { capability_imports.extend(net::RESPONSE_IMPORTS); }
+    if net::uses_listen_tls(typed.module()) {
+        capability_imports.insert(witchy_wir::canonical_safewir::NET_LISTEN_TLS_IMPORT);
+        capability_imports.extend(net::RESPONSE_IMPORTS);
+    }
     let exec_needed = exec::is_needed(typed.module());
     let crypto_needed = crypto::is_needed(typed.module());
     if crypto_needed || exec_needed || prints || floats || !abort_sites.is_empty() || !capability_imports.is_empty() || !compiler_imports.is_empty() || regex_spans || !net_imports.is_empty() || !service_sites.is_empty() || !par_map_sites.is_empty() {
@@ -1277,6 +1281,26 @@ pub(crate) fn lower_typed_module_with_borrowed_views(
                     push_import_signature(vec![response], vec![ValueType::Capability(witchy_wir::canonical_safewir::LISTENER_CAPABILITY_KIND)], None)?,
                 ];
                 catalog = catalog.with_net_response_imports(ids, string_layout)
+                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+            }
+            if witchy_wir::canonical_safewir::SECRET_RESPONSE_IMPORT_NAMES.iter().any(|name| capability_imports.contains(name)) {
+                let secret = ValueType::Capability(witchy_wir::canonical_safewir::SECRET_CAPABILITY_KIND);
+                let response = ValueType::Capability(witchy_wir::canonical_safewir::SECRET_RESPONSE_KIND);
+                let ids = [
+                    push_import_signature(vec![secret], vec![response], None)?,
+                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
+                    push_import_signature(vec![response], vec![ValueType::Size], None)?,
+                    push_import_signature(vec![response, text], vec![ValueType::Size], Some(1))?,
+                ];
+                catalog = catalog.with_secret_response_imports(ids, string_layout)
+                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+            }
+            if capability_imports.contains(witchy_wir::canonical_safewir::NET_LISTEN_TLS_IMPORT) {
+                let net = ValueType::Capability(witchy_wir::canonical_safewir::NET_CAPABILITY_KIND);
+                let secret = ValueType::Capability(witchy_wir::canonical_safewir::SECRET_CAPABILITY_KIND);
+                let response = ValueType::Capability(witchy_wir::canonical_safewir::NET_RESPONSE_KIND);
+                let signature = push_import_signature(vec![net, text, text, secret], vec![response], None)?;
+                catalog = catalog.with_net_listen_tls_import(signature, string_layout)
                     .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
             }
             if capability_imports.contains("dir_is_dir_at") {
@@ -21438,8 +21462,8 @@ struct HostImports {
 }
 
 /// The canonical capability imports, in catalog order.
-const CAPABILITY_IMPORTS: [&str; 59] =
-    ["dir_exists_at", "dir_write_at", "build_out_write_at", "dir_is_dir_at", "build_read_at", "build_read_response_size", "build_read_response_into", "build_env_at", "build_response_is_some", "build_exec_run", "build_net_fetch", "net_fetch_at", "fetch_send_at", "fetch_response_size", "fetch_response_into", "fetch_only_at", "clock_now", "clock_now_monotonic", "dir_make_dir_at", "secretstore_lookup_at", "crypto_sign_into", "crypto_public_key_into", "dir_create_new_at", "dir_replace_at", "dir_read_bytes_at", "dir_response_size", "dir_response_into", "dir_write_bytes_at", "dir_append_bytes_at", "dir_set_executable_at", "dir_rename_at", "dir_read_at", "dir_response_status", "file_read_at", "file_response_status", "file_response_size", "file_response_into", "dir_list_at", "env_get_at", "env_response_status", "env_response_size", "env_response_into", "net_only_at", "net_deny_at", "net_response_status", "net_response_size", "net_response_into", "net_response_take_net", "net_response_take_socket", "net_response_take_listener", "dir_subtree_open_at", "dir_read_file_at", "dir_write_file_at", "dir_response_take_dir", "dir_response_take_file", "dir_append_at", "dir_response_flag", "file_write_at", "dir_only_at"];
+const CAPABILITY_IMPORTS: [&str; 64] =
+    ["dir_exists_at", "dir_write_at", "build_out_write_at", "dir_is_dir_at", "build_read_at", "build_read_response_size", "build_read_response_into", "build_env_at", "build_response_is_some", "build_exec_run", "build_net_fetch", "net_fetch_at", "fetch_send_at", "fetch_response_size", "fetch_response_into", "fetch_only_at", "clock_now", "clock_now_monotonic", "dir_make_dir_at", "secretstore_lookup_at", "crypto_sign_into", "crypto_public_key_into", "dir_create_new_at", "dir_replace_at", "dir_read_bytes_at", "dir_response_size", "dir_response_into", "dir_write_bytes_at", "dir_append_bytes_at", "dir_set_executable_at", "dir_rename_at", "dir_read_at", "dir_response_status", "file_read_at", "file_response_status", "file_response_size", "file_response_into", "dir_list_at", "env_get_at", "env_response_status", "env_response_size", "env_response_into", "net_only_at", "net_deny_at", "net_response_status", "net_response_size", "net_response_into", "net_response_take_net", "net_response_take_socket", "net_response_take_listener", "dir_subtree_open_at", "dir_read_file_at", "dir_write_file_at", "dir_response_take_dir", "dir_response_take_file", "dir_append_at", "dir_response_flag", "file_write_at", "dir_only_at", "secret_reveal_at", "secret_response_status", "secret_response_size", "secret_response_into", "net_listen_tls_at"];
 
 /// The separator between the names a `dir_list_at` response carries; a file name never
 /// contains it.

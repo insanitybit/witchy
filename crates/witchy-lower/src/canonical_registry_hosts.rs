@@ -10,6 +10,7 @@ fn host_import(name: &str) -> Option<&'static str> {
         IntrinsicId::SecretStoreGet | IntrinsicId::SecretStoreRequire => Some("secretstore_lookup_at"),
         IntrinsicId::CryptoSign => Some("crypto_sign_into"),
         IntrinsicId::CryptoPublicKey => Some("crypto_public_key_into"),
+        IntrinsicId::CryptoReveal => Some("secret_reveal_at"),
         _ => None,
     }
 }
@@ -29,6 +30,9 @@ pub(super) fn collect_imports(module: &witchy_syntax::ast::Module) -> (BTreeSet<
         witchy_syntax::ast::visit::visit_block::<()>(&function.body, &mut |expression| {
             if let Expr::Call { name, .. } = expression && let Some(import) = host_import(name) {
                 imports.insert(import);
+                if import == "secret_reveal_at" {
+                    imports.extend(["secret_response_status", "secret_response_size", "secret_response_into"]);
+                }
                 requires_secret |= is_require(name);
             }
             Ok(())
@@ -43,7 +47,7 @@ impl FunctionLowerer<'_> {
     ) -> Result<ValueId, CanonicalLoweringError> {
         let spec = intrinsics::lookup(name).filter(|_| is_intrinsic(name))
             .ok_or_else(|| CanonicalLoweringError::MissingBinding(name.to_owned()))?;
-        let expected = if spec.id == IntrinsicId::CryptoPublicKey { 1 } else { 2 };
+        let expected = if matches!(spec.id, IntrinsicId::CryptoPublicKey | IntrinsicId::CryptoReveal) { 1 } else { 2 };
         if arguments.len() != expected {
             return Err(CanonicalLoweringError::CallArityMismatch {
                 callee: name.to_owned(), expected, actual: arguments.len(),
@@ -56,6 +60,15 @@ impl FunctionLowerer<'_> {
         let kind = if is_store { SECRET_STORE_CAPABILITY_KIND } else { SECRET_CAPABILITY_KIND };
         if self.values.get(&token) != Some(&ValueType::Capability(kind)) {
             return Err(CanonicalLoweringError::UnsupportedExpression("registry capability kind"));
+        }
+        if spec.id == IntrinsicId::CryptoReveal {
+            // One host read answers `Result(String, CapError)`: a host-sealed
+            // secret or the signing key is `Denied` (RFC-0126 rule 3).
+            let response = self.fresh(ValueType::Capability(witchy_wir::canonical_safewir::SECRET_RESPONSE_KIND))?;
+            let import = self.capability_import("secret_reveal_at")?;
+            self.push_operation(Operation::HostCall { destinations: vec![response], import,
+                arguments: vec![HostCallArgument::Capability(token)] });
+            return self.lower_cap_result(response, "String", "secret");
         }
         let layout = self.string_layout_id()?;
         if is_store {

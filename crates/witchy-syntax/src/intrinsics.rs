@@ -286,7 +286,8 @@ pub enum IntrinsicSignature {
     SealedSecretToString,
     /// (RFC-0121) Reading a secret's bytes: needs the `Reveal` right, so a
     /// `Secret[Seal]` is a check-time error (`crypto.reveal`).
-    RevealSecretToString,
+    /// `Secret[Reveal] -> Result(String, CapError)` (RFC-0126 rule 3).
+    RevealSecret,
     IntToString,
     IntToFloat,
     FloatToInt,
@@ -341,7 +342,6 @@ impl IntrinsicSignature {
                 | Self::ListStringListStringToString
                 | Self::SealedSecretStringToString
                 | Self::SealedSecretToString
-                | Self::RevealSecretToString
                 | Self::IntToString
         )
     }
@@ -3122,7 +3122,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         id: IntrinsicId::CryptoReveal,
         name: CRYPTO_REVEAL,
         arity: 1,
-        signature: IntrinsicSignature::RevealSecretToString,
+        signature: IntrinsicSignature::RevealSecret,
         effect: IntrinsicEffect::Pure,
         capability_effect: CapabilityEffect::UsesSecret,
         lowering: IntrinsicLowering::Builtin,

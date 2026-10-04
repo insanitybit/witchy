@@ -32,6 +32,7 @@ fn require_net_right(granted: bool, verb: &str) -> Result<()> {
 
 pub(super) fn link_listen(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "net_listen_at", listen_at)?;
+    linker.func_wrap("witchy", "net_listen_tls_at", listen_tls_at)?;
     linker.func_wrap("witchy", "net_accept_at", accept_at)?;
     Ok(())
 }
@@ -117,6 +118,48 @@ fn resolve_at(mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>,
         }
         Err(AdmitFailure::Denied(_)) => fail(&mut caller, DENIED, format!("`{host}` is not permitted by this Net capability")),
         Err(AdmitFailure::Unresolved(_)) => fail(&mut caller, IO, format!("`{host}`: name resolution failed")),
+    }
+}
+
+/// `net_listen_tls_at(net, addr, cert_pem, key) -> response`: `listen_at`
+/// serving TLS. The key is an opaque `Secret`, sealed ones included, so its
+/// bytes never enter guest memory. An address the grant does not admit is
+/// `Denied` before the certificate is parsed or a socket opened; an unusable
+/// certificate or key is `Io` with a fixed reason.
+fn listen_tls_at(
+    mut caller: Caller<'_, VmState>,
+    token: Option<Rooted<ExternRef>>,
+    address_ptr: i32, address_len: i32,
+    cert_ptr: i32, cert_len: i32,
+    key: Option<Rooted<ExternRef>>,
+) -> Result<Option<Rooted<ExternRef>>> {
+    let net = net_authority_ref(&caller, token)?;
+    require_net_right(caller.data().caps.net_listen, "Listen")?;
+    let key = secret_material_ref(&caller, key)?.bytes;
+    let address = slice_text(&mut caller, address_ptr, address_len)?;
+    let certificate = slice_text(&mut caller, cert_ptr, cert_len)?;
+    if let Some(entry) = caller.data().worker_listener.clone()
+        && worker_listener_matches(&entry, &net.allow, &address, true)
+    {
+        let (listener, tls) = entry;
+        return respond(&mut caller, 0, Vec::new(), Some(Minted::Listener(ListenerResource { listener, tls })));
+    }
+    let targets = match admit(&net, &address, &address) {
+        Ok(targets) => targets,
+        Err((status, message)) => return fail(&mut caller, status, message),
+    };
+    let Ok(config) = crate::net::server_tls_config(&certificate, &key) else {
+        return fail(&mut caller, IO, format!("`{address}`: invalid TLS certificate or key"));
+    };
+    match std::net::TcpListener::bind(targets.as_slice()) {
+        Ok(listener) => {
+            let listener = ListenerResource { listener: Arc::new(listener), tls: Some(config) };
+            respond(&mut caller, 0, Vec::new(), Some(Minted::Listener(listener)))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {
+            fail(&mut caller, ALREADY_EXISTS, format!("`{address}` is already in use"))
+        }
+        Err(error) => fail(&mut caller, IO, format!("`{address}`: {}", reason(&error))),
     }
 }
 

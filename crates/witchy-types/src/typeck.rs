@@ -4988,8 +4988,9 @@ impl Checker {
             }
             // `reveal` asks for the full set, so a `Secret[Seal]` argument fails to
             // coerce and the diagnostic names the rights mismatch.
-            S::RevealSecretToString => {
-                Some((vec![Ty::Secret(SecretRights::full())], Ty::String))
+            // A host-sealed secret or the signing key is `Denied` at run time.
+            S::RevealSecret => {
+                Some((vec![Ty::Secret(SecretRights::full())], Self::cap_result(Ty::String)))
             }
             S::IntToString => Some((vec![Ty::Int], Ty::String)),
             S::IntToFloat => Some((vec![Ty::Int], Ty::Float)),

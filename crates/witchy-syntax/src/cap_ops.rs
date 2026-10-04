@@ -224,7 +224,7 @@ pub const OPS: &[CapOp] = &[
         "listen_tls",
         Net,
         [String, String, Secret],
-        Listener,
+        Listener?,
         "net.listen_tls(addr, cert_pem, key)"
     ),
     op!("only", Net, [NetPolicy], SameReceiver?, "cap.only(policy)"),

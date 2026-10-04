@@ -898,9 +898,9 @@ Sign `message` with a `Secret` capability (the host grants it; it cannot be forg
 
 The hex Ed25519 public key for a `Secret` - what verifiers check against. By-handle, so `Secret[Seal]` suffices.
 
-#### `fn reveal(key: Secret[Reveal]) -> String`
+#### `fn reveal(key: Secret[Reveal]) -> Result(String, CapError)`
 
-Reveal a `Secret`'s raw bytes as a string - for revealable value secrets (tokens, passwords) that must be handed to an external sink. Needs the `Reveal` right, so a `Secret[Seal]` is rejected at check time. Signing keys (granted with `--signing-key`) and secrets granted `sealed` (`--secret-file name=path,sealed`, e.g. a TLS private key) are sealed by the host and refused at run time too.
+Reveal a `Secret`'s raw bytes as a string - for revealable value secrets (tokens, passwords) that must be handed to an external sink. Needs the `Reveal` right, so a `Secret[Seal]` is rejected at check time. Signing keys (granted with `--signing-key`) and secrets granted `sealed` (`--secret-file name=path,sealed`, e.g. a TLS private key) are sealed by the host: revealing one is `Err(Denied)`.
 
 #### `fn ecdsa_p256_verify(public_key: String, message: String, signature: String) -> Result(Bool, VerifyError)`
 

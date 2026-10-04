@@ -441,7 +441,6 @@ impl Codegen<'_> {
             (intrinsics::CRYPTO_SHA256_BYTES, 1),
             (intrinsics::CRYPTO_SIGN, 2),
             (intrinsics::CRYPTO_PUBLIC_KEY, 1),
-            (intrinsics::CRYPTO_REVEAL, 1),
             (intrinsics::CRYPTO_RUNE_HASH, 2),
             (intrinsics::CRYPTO_ECDSA_P256_VERIFY_STATUS, 3),
             (intrinsics::CRYPTO_RSA_PKCS1_SHA256_VERIFY_STATUS, 3),

@@ -7,7 +7,7 @@
 //! filesystem again (RFC-0126 rule 3).
 use super::*;
 use witchy_syntax::cap_ops::{CAP_ERROR_TYPE, CAP_ERROR_VARIANTS};
-use witchy_wir::canonical_safewir::{DIR_RESPONSE_KIND, NET_RESPONSE_KIND};
+use witchy_wir::canonical_safewir::{DIR_RESPONSE_KIND, NET_RESPONSE_KIND, SECRET_RESPONSE_KIND};
 
 impl FunctionLowerer<'_> {
     /// The response payload copied into a fresh guest byte buffer (a `String`
@@ -58,7 +58,7 @@ impl FunctionLowerer<'_> {
         family: &str,
         convert: impl FnOnce(&mut Self, ValueId) -> Result<ValueId, CanonicalLoweringError>,
     ) -> Result<ValueId, CanonicalLoweringError> {
-        if !matches!(self.values[&response], ValueType::Capability(kind) if kind == DIR_RESPONSE_KIND || kind == NET_RESPONSE_KIND) {
+        if !matches!(self.values[&response], ValueType::Capability(kind) if kind == DIR_RESPONSE_KIND || kind == NET_RESPONSE_KIND || kind == SECRET_RESPONSE_KIND) {
             return Err(CanonicalLoweringError::UnsupportedExpression("capability response token"));
         }
         let status = self.fresh(ValueType::Size)?;

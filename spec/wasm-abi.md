@@ -366,6 +366,11 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `net_response_take_net` | `(externref) -> externref` | capability authority | Net.grant | omitted |
 | `net_response_take_socket` | `(externref) -> externref` | capability authority | Net.grant | omitted |
 | `net_response_take_listener` | `(externref) -> externref` | capability authority | Net.grant | omitted |
+| `secret_reveal_at` | `(externref) -> externref` | capability authority | Secret | omitted |
+| `net_listen_tls_at` | `(externref, i32, i32, i32, i32, externref) -> externref` | capability authority | Net.Listen, Secret | omitted |
+| `secret_response_status` | `(externref) -> i32` | capability authority | Secret | omitted |
+| `secret_response_size` | `(externref) -> i32` | capability authority | Secret | omitted |
+| `secret_response_into` | `(externref, i32, i32) -> i32` | capability authority | Secret | omitted |
 | `__witchy_abort_at` | `(i32, i32, i32, i32, i32)` | runtime diagnostic | none | omitted |
 | `__witchy_list_bounds_at` | `(i64, i32, i32, i32, i32)` | runtime diagnostic | none | omitted |
 | `__witchy_bytes_bounds_at` | `(i64, i32, i32, i32, i32)` | runtime diagnostic | none | omitted |

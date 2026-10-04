@@ -3459,3 +3459,17 @@ registry and `spec/wasm-abi.md`: `dir_subdir`, `dir_read_len`,
 response imports; the `dir.is_dir` slice test drops its legacy cross-check.
 `dir_only`, `env_only` and `exec_only` remain: the legacy codegen still emits
 them. The browser hosts under `web/` are not updated.
+
+### 2026-10-03: `crypto.reveal` and `net.listen_tls` return `CapError` results (RFC-0126 rule 3, row Q)
+
+`crypto.reveal` lowers to admitted Wasm through `secret_reveal_at`, which
+answers a Secret response (kind 25, `secret_response_status/size/into`): a
+host-sealed secret or the signing key is `Denied` with a fixed message, never
+a trap. `net.listen_tls` lowers through `net_listen_tls_at` (Net Listen plus
+Secret authority) to `Result(Listener, CapError)`: an address outside the
+grant is `Denied` before the certificate is parsed, and an unusable
+certificate or key is `Io`. `std/server` `serve_tls`/`serve_tls_n` abort with
+the `CapError` message as `serve` does. The source interpreter and legacy
+codegen refuse `crypto.reveal`. Evidence:
+`reveal_denies_the_signing_key_and_sealed_secrets_in_admitted_wasm`,
+`listen_tls_answers_cap_errors`.

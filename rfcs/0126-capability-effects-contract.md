@@ -207,9 +207,23 @@ spelled it.
 - `socket.close()` and `listener.serve_pool()` cannot fail. There is no
   `try_connect`: `connect` already answers a value.
 
+- `net.listen_tls(addr, cert_pem, key)` returns `Result(Listener, CapError)`
+  like `net.listen`. The key is an opaque `Secret`, sealed ones included, so its
+  bytes never enter guest memory. An address the grant does not admit is
+  `Denied` before the certificate is parsed; an unusable certificate or key is
+  `Io` with a fixed reason that carries no certificate or key text.
+
 Each operation is one host call answering a Net response; the guest reads its
 status and payload and takes the minted `Socket` or `Listener` on success.
-`net.listen_tls` is not yet lowered to admitted Wasm.
+
+### Rule 3 for secrets
+
+`crypto.reveal(key)` returns `Result(String, CapError)`. It needs the `Reveal`
+right, so a `Secret[Seal]` is rejected at check time. A secret the host sealed
+(granted `sealed`) and the signing key are `Denied` at run time, with a fixed
+message that carries no key material. By-handle operations (`crypto.sign`,
+`crypto.public_key`, `net.listen_tls`) accept sealed secrets and do not reveal
+them.
 
 The cryptographic, networking, filesystem, process, server, environment, and
 secret modules are retained features. Pure hashing, verification, and encoding

@@ -126,34 +126,14 @@ impl Interpreter {
                 )),
             };
         }
-        // `crypto.reveal` is gated: a `Secret` equal to the signing key (the bare
-        // `Secret` / `require("signing")`) is sign-only and must not be revealed —
-        // only named value-secrets are. Mirrors the WASM host (`host_crypto_reveal_len`)
-        // through the one shared identity rule so the backends can't drift.
+        // `crypto.reveal` answers `Result(String, CapError)` (RFC-0126 rule 3).
+        // The frozen walker gains no new semantics: it refuses the operation
+        // rather than emulating that result.
         if name == intrinsics::CRYPTO_REVEAL {
-            #[cfg(feature = "test-fixtures")]
-            if let [Value::FixtureSecret(secret)] = args {
-                return match self.invoke_fixture(witchy_test_host::HostRequest::SecretReveal {
-                    secret: *secret,
-                })? {
-                    witchy_test_host::HostResponse::String(value) => Ok(Some(Value::str(value))),
-                    response => err(format!(
-                        "fixture secret reveal returned unexpected response {response:?}"
-                    )),
-                };
-            }
-            if let [Value::Secret(bytes, sealed)] = args {
-                // (RFC-0060) A sealed secret is consumable by handle but never revealable.
-                if *sealed {
-                    return err(witchy_caps::capabilities::SEALED_SECRET_REVEAL_ERROR);
-                }
-                if witchy_caps::capabilities::secret_is_signing_key(
-                    self.signing_key.as_ref().map(|s| s.as_slice()),
-                    bytes,
-                ) {
-                    return err("the signing key is not revealable; use crypto.sign / crypto.public_key");
-                }
-            }
+            return err(
+                "`crypto.reveal` returns a `CapError` result, which the source interpreter does \
+                 not implement; run the program as admitted Wasm",
+            );
         }
         #[cfg(feature = "test-fixtures")]
         if name == intrinsics::CRYPTO_SIGN

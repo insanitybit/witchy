@@ -707,3 +707,35 @@ fn main(console: Console, net: Net):
             vec!["`b.test:80` is not permitted by this Net capability".to_string()]);
     }
 
+    /// `net.listen_tls` answers `Result(Listener, CapError)` in admitted Wasm.
+    /// An allowlisted address with a usable certificate listens, the key held
+    /// by sealed handle. An address outside the grant is `Denied` before the
+    /// certificate is parsed; an unusable certificate is `Io` with a fixed
+    /// reason that carries no certificate or key text.
+    #[test]
+    fn listen_tls_answers_cap_errors() {
+        let issued = rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("certificate");
+        let certificate = issued.cert.pem();
+        let key = issued.key_pair.serialize_pem();
+        let literal = |text: &str| text.replace('\n', "\\n");
+        let src = format!(
+            "fn shown(r: Result(Listener, CapError)) -> String:\n    match r:\n        Ok(_) -> \"listening\"\n        Err(Denied(m)) -> \"denied: \" + m\n        Err(Io(m)) -> \"io: \" + m\n        Err(_) -> \"other\"\n\nfn main(console: Console, net: Net, store: SecretStore):\n    let key = store.require(\"tls\")\n    console.print(shown(net.listen_tls(\"127.0.0.1:0\", \"{cert}\", key)))\n    console.print(shown(net.listen_tls(\"10.9.9.9:443\", \"{cert}\", key)))\n    console.print(shown(net.listen_tls(\"127.0.0.1:0\", \"not a certificate\", key)))\n",
+            cert = literal(&certificate),
+        );
+        let mut sealed = crate::runtime::SecretGrant::new("tls", key.into_bytes());
+        sealed.sealed = true;
+        let out = run_admitted_net_with(&src, crate::runtime::Capabilities {
+            print: true, quiet: true, net_allow: Some(vec!["127.0.0.1:*".to_string()]), net_listen: true,
+            secrets: vec![sealed],
+            ..Default::default()
+        }).expect("a refused listen is a value");
+        assert_eq!(out, vec![
+            "listening".to_string(),
+            "denied: `10.9.9.9:443` is not permitted by this Net capability".to_string(),
+            "io: `127.0.0.1:0`: invalid TLS certificate or key".to_string(),
+        ]);
+        for line in &out {
+            assert!(!line.contains("PRIVATE KEY") && !line.contains("CERTIFICATE"), "a message carried key material: {line}");
+        }
+    }
+

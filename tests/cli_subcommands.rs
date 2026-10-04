@@ -195,7 +195,7 @@ fn secret_file_argument_preserves_exact_bytes() {
     let src = write(
         &dir,
         "secret_file.witchy",
-        "import secretstore\nimport crypto\n\nfn main(console: Console, store: SecretStore):\n    console.print(crypto.reveal(secretstore.require(store, \"token\")))\n",
+        "import secretstore\nimport crypto\n\nfn main(console: Console, store: SecretStore):\n    match crypto.reveal(secretstore.require(store, \"token\")):\n        Ok(value) -> console.print(value)\n        Err(error) -> fail(error.message())\n",
     );
     let spec = format!("token={}", secret.display());
     let out = run(&["--secret-file", &spec, &src]);
@@ -593,7 +593,7 @@ fn named_secret_does_not_satisfy_a_bare_secret() {
     let src = write(
         &dir,
         "s.witchy",
-        "import crypto\n\nfn main(console: Console, key: Secret):\n    console.print(crypto.reveal(key))\n",
+        "import crypto\n\nfn main(console: Console, key: Secret):\n    match crypto.reveal(key):\n        Ok(value) -> console.print(value)\n        Err(error) -> fail(error.message())\n",
     );
     for pre in [vec![], vec!["sandbox", "--dir", dir.to_str().unwrap()]] {
         let mut args = pre.clone();
@@ -821,7 +821,7 @@ fn grant_document_rejects_a_misspelled_secret_modifier() {
     let prog = write(
         &dir,
         "r.witchy",
-        "import secretstore\nimport crypto\n\nfn main(console: Console, store: SecretStore):\n    let s = secretstore.require(store, \"token\")\n    console.print(crypto.reveal(s))\n",
+        "import secretstore\nimport crypto\n\nfn main(console: Console, store: SecretStore):\n    let s = secretstore.require(store, \"token\")\n    match crypto.reveal(s):\n        Ok(value) -> console.print(value)\n        Err(error) -> fail(error.message())\n",
     );
     let bad = write(&dir, "bad.toml", "[secrets]\ntoken = { from = \"env:MY_TOKEN\", seald = true }\n");
     let out = Command::new(BIN)
@@ -966,7 +966,7 @@ fn an_env_injected_secret_is_stripped_from_the_environment() {
     let prog = write(
         &dir,
         "r.witchy",
-        "import secretstore\nimport crypto\n\nfn main(console: Console, store: SecretStore):\n    console.print(crypto.reveal(secretstore.require(store, \"token\")))\n",
+        "import secretstore\nimport crypto\n\nfn main(console: Console, store: SecretStore):\n    match crypto.reveal(secretstore.require(store, \"token\")):\n        Ok(value) -> console.print(value)\n        Err(error) -> fail(error.message())\n",
     );
     let grants = write(&dir, "g.toml", "[secrets]\ntoken = { from = \"env:MY_TOKEN\" }\n");
     let out = Command::new(BIN)
@@ -988,7 +988,7 @@ fn a_secrets_variable_cannot_also_be_granted_through_env() {
     let prog = write(
         &dir,
         "r.witchy",
-        "import secretstore\nimport crypto\n\nfn main(console: Console, store: SecretStore, env: Env):\n    console.print(crypto.reveal(secretstore.require(store, \"token\")))\n",
+        "import secretstore\nimport crypto\n\nfn main(console: Console, store: SecretStore, env: Env):\n    match crypto.reveal(secretstore.require(store, \"token\")):\n        Ok(value) -> console.print(value)\n        Err(error) -> fail(error.message())\n",
     );
     let grants = write(
         &dir,
@@ -1018,7 +1018,7 @@ fn grant_approval_row_marks_the_reveal_policy() {
     let prog = write(
         &dir,
         "r.witchy",
-        "import secretstore\nimport crypto\n\nfn main(console: Console, store: SecretStore):\n    console.print(crypto.reveal(secretstore.require(store, \"apikey\")))\n",
+        "import secretstore\nimport crypto\n\nfn main(console: Console, store: SecretStore):\n    match crypto.reveal(secretstore.require(store, \"apikey\")):\n        Ok(value) -> console.print(value)\n        Err(error) -> fail(error.message())\n",
     );
     let doc = write(
         &dir,

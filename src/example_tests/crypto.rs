@@ -129,49 +129,44 @@ use crate::{codegen, interpreter, parser, typeck};
         );
     }
 
-    /// SEC-004: the signing key — the bare `Secret`, or `require("signing")` — is
-    /// SIGN-ONLY. `crypto.reveal` on it must error (so handing code a key to sign
-    /// with cannot also exfiltrate it), and it must error IDENTICALLY on both
-    /// backends (the gate is one shared identity rule). Named value-secrets stay
-    /// revealable — covered end-to-end by the `sandbox` CLI e2e test.
+    /// SEC-004: the signing key (the bare `Secret`, or `require("signing")`) is
+    /// SIGN-ONLY, and a secret granted `sealed` is usable only by handle.
+    /// `crypto.reveal` answers both with `Err(Denied)`, a value the program
+    /// can act on, never the key bytes; a revealable named secret is `Ok`
+    /// (RFC-0126 rule 3, admitted Wasm).
     #[test]
-    fn signing_key_is_not_revealable_on_both_backends() {
-        use crate::runtime::{Capabilities, Runtime};
-        let src = "import secretstore\nimport crypto\nfn main(console: Console, secrets: SecretStore):\n    console.print(crypto.reveal(secrets.require(\"signing\")))\n";
-        let module = parser::parse_module(src).expect("parse");
-        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
-        typeck::check(&linked).expect("typecheck");
+    fn reveal_denies_the_signing_key_and_sealed_secrets_in_admitted_wasm() {
+        struct ResetOptimization;
+        impl Drop for ResetOptimization {
+            fn drop(&mut self) { crate::opt::set_for_tests(None); }
+        }
+        crate::opt::set_for_tests(Some(crate::opt::OptSet::none()));
+        let _reset = ResetOptimization;
+        let src = "import secretstore\nimport crypto\n\nfn shown(r: Result(String, CapError)) -> String:\n    match r:\n        Ok(value) -> \"ok: \" + value\n        Err(Denied(m)) -> \"denied: \" + m\n        Err(e) -> \"other: \" + e.message()\n\nfn main(console: Console, secrets: SecretStore):\n    console.print(shown(crypto.reveal(secrets.require(\"signing\"))))\n    console.print(shown(crypto.reveal(secrets.require(\"tls\"))))\n    console.print(shown(crypto.reveal(secrets.require(\"token\"))))\n";
+        let checked = witchy::resolve_std_only_checked(src).expect("check reveal program");
+        let artifact = codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("admit reveal program");
         let seed = [7u8; 32];
-
-        // Interpreter (oracle): refuses.
-        let interp =
-            interpreter::run_module_signed(linked.clone(), ".", Vec::new(), Vec::new(), Some(seed));
-        let msg = interp.expect_err("interp must refuse to reveal the signing key").message;
-        assert!(msg.contains("not revealable"), "unexpected interp error: {msg}");
-
-        // Compiled WASM (the security boundary): also refuses.
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
-        let mut rt = Runtime::batch().expect("runtime");
-        let mut actor = rt
-            .spawn(
-                &bytes,
-                Capabilities {
-                    print: true,
-                    quiet: true,
-                    signing_key: Some(seed),
-                    // (RFC-0005) the signing key is a real granted "signing" secret,
-                    // not a magic handle-0 fallback — populate it as production does.
-                    secrets: vec![crate::runtime::SecretGrant::new("signing", seed.to_vec())],
-                    ..Default::default()
-                },
-                64,
-            )
-            .expect("spawn");
-        assert!(
-            actor.run().is_err(),
-            "compiled backend must refuse to reveal the signing key"
-        );
+        let mut sealed = crate::runtime::SecretGrant::new("tls", b"tls-private-key".to_vec());
+        sealed.sealed = true;
+        let mut rt = crate::runtime::Runtime::batch().expect("runtime");
+        let mut vm = rt.spawn_admitted(&artifact, crate::runtime::Capabilities {
+            print: true,
+            quiet: true,
+            signing_key: Some(seed),
+            secrets: vec![
+                crate::runtime::SecretGrant::new("signing", seed.to_vec()),
+                sealed,
+                crate::runtime::SecretGrant::new("token", b"hunter2".to_vec()),
+            ],
+            ..Default::default()
+        }, 64).expect("spawn admitted reveal program");
+        vm.run().expect("a refused reveal is a value, not a trap");
+        assert_eq!(vm.output(), vec![
+            "denied: the signing key is not revealable; use crypto.sign / crypto.public_key".to_string(),
+            format!("denied: {}", witchy_caps::capabilities::SEALED_SECRET_REVEAL_ERROR),
+            "ok: hunter2".to_string(),
+        ]);
     }
 
     /// (BUG-394) `SecretStore.require(name)` for an ungranted secret must fail
@@ -349,7 +344,7 @@ use crate::{codegen, interpreter, parser, typeck};
         let sealed_reveal = concat!(
             "import crypto\n",
             "fn leak(key: Secret[Seal]) -> String:\n",
-            "    key.reveal()\n",
+            "    key.reveal() ?? \"\"\n",
             "fn main(console: Console, signer: Secret):\n",
             "    console.print(leak(signer))\n",
         );
@@ -380,7 +375,7 @@ use crate::{codegen, interpreter, parser, typeck};
         let bare_reveal = concat!(
             "import crypto\n",
             "fn main(console: Console, key: Secret):\n",
-            "    console.print(key.reveal())\n",
+            "    console.print(key.reveal() ?? \"\")\n",
         );
         typeck::check_str(bare_reveal).expect("a bare Secret may still be revealed");
     }
