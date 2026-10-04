@@ -796,15 +796,26 @@ run_product_tests() {
     fi
     if [ "${#dtest_cmd[@]}" -gt 0 ]; then
         rm -f "$WITCHY_GATE_DTEST_REPORT"
-        local dtest_status=0 selected_tests=""
-        "${dtest_cmd[@]}" || dtest_status=$?
+        local dtest_status=0 selected_tests="" dtest_output
+        dtest_output="$(mktemp)"
+        "${dtest_cmd[@]}" >"$dtest_output" 2>&1 || dtest_status=$?
+        cat "$dtest_output"
+        # dtest wraps nextest's empty-selection exit 4 in its own exit code.
+        # Require both diagnostics so an ordinary test failure remains red.
+        local empty_target=0
+        if [ "$dtest_status" -ne 0 ] &&
+            grep -qF 'error: no tests to run' "$dtest_output" &&
+            grep -qF 'test runner exited with exit status: 4' "$dtest_output"; then
+            empty_target=1
+        fi
+        rm -f "$dtest_output"
         if [ -s "$WITCHY_GATE_DTEST_REPORT" ]; then
             selected_tests="$(jq -er '
                 select(.schema == 1 and (.tests|type) == "array")
                 | .tests | length
             ' "$WITCHY_GATE_DTEST_REPORT" 2>/dev/null || true)"
             if [ -n "$selected_tests" ] && [ "$selected_tests" -gt 0 ]; then
-                if [ "$dtest_status" -ne 4 ]; then
+                if [ "$empty_target" -ne 1 ] && [ "$dtest_status" -ne 4 ]; then
                     return "$dtest_status"
                 fi
                 # Nextest exit 4 means this dtest chunk selected no runnable
