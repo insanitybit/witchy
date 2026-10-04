@@ -521,6 +521,19 @@ in the list qualifies the shared element slot and refuses that write; a
 frozen `Box` nested inside a tuple element does the same. Unknown or
 incompatible element shapes still fail closed. Row H remains partial.
 
+Generic record field replacement, 2026-10-04: projected `var` assignments
+now rebuild the source qualifier shape of a record field through its declared
+generic field template. Replacing `Holder(a).item` with a plain tuple retains
+the root proof for a later deep write; admitted unoptimized Wasm returns the
+independent `100` with zero canonical heap leaks. A frozen replacement
+qualifies the corresponding type argument and refuses the later write. A
+shared type parameter also qualifies its sibling field when one field is
+replaced with a frozen value; the focused `Pair(a)` case refuses a write
+through the sibling. A non-generic record whose field gains a frozen child
+cannot encode that change in its root type, so the proof is revoked and the
+deep write refuses. Unknown field or replacement shapes still fail closed;
+row H remains partial.
+
 `rfc0167_frozen_view_replacement` adds a normal-mode row L composition
 witness: a rooted `&frozen Box` keeps the old field value when a `var frozen
 Box` root is replaced, so admitted unoptimized Wasm prints the independently

@@ -69,3 +69,21 @@ fn main() -> Int:
 "#).expect_err("record root without source type arguments cannot encode frozen replacement");
     assert!(error.to_string().contains("cannot verify deep assignment place"), "{error}");
 }
+
+#[test]
+fn shared_record_parameter_qualifies_sibling_after_replacement() {
+    let error = witchy::resolve_std_only_checked(r#"
+type Box:
+    value: Int
+type Pair(a):
+    left: a
+    right: a
+fn main() -> Int:
+    let cold: frozen Box = Box(1)
+    var pair = Pair(Box(2), Box(3))
+    pair.left = cold
+    pair.right.value = 9
+    0
+"#).expect_err("shared generic source parameter must qualify the sibling field");
+    assert!(error.to_string().contains("cannot mutate through frozen value"), "{error}");
+}
