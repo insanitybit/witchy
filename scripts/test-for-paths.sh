@@ -200,10 +200,19 @@ emit_gate_nextest() {
     # native WIR evidence falls through to the ordinary fail-safe route.
     # A mixed checked-source/root edit needs the root package's default native
     # feature graph. Selecting the pure WIR partition for the whole union
-    # disables that graph and makes root tests fail to compile.
+    # disables that graph and makes root tests fail to compile. The same holds
+    # for root selections made by path (a touched `tests/misc` module, root
+    # integration binary, or example module): this early return would drop
+    # them, so such a diff takes the ordinary union below.
     if [ "$gate_pure_wir" -eq 1 ] && [ "$gate_native_wir" -eq 0 ] \
         && [ "$gate_need_conformance" -eq 0 ] \
-        && [[ " ${gate_pkgs[*]} " != *" witchy "* ]]; then
+        && [[ " ${gate_pkgs[*]} " != *" witchy "* ]] \
+        && [ "${#gate_tests[@]}" -eq 0 ] \
+        && [ "${#gate_witchy_tests[@]}" -eq 0 ] \
+        && [ "${#gate_misc_modules[@]}" -eq 0 ] \
+        && [ "${#gate_example_mods[@]}" -eq 0 ] \
+        && [ "$gate_need_examples" -eq 0 ] \
+        && [ "$gate_need_stdlib_docs" -eq 0 ]; then
         local pure_expr="" pure_extra="" pure_checks="" pure_pkg
         for pure_pkg in "${gate_pkgs[@]}"; do
             pure_expr="${pure_expr:+$pure_expr or }package($pure_pkg)"

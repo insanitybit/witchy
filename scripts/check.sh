@@ -691,22 +691,33 @@ if cargo nextest --version >/dev/null 2>&1; then
     # telemetry and is not a control protocol.
     # Keep the legacy command above intact as the fail-safe when selection
     # fails or the heuristic reaches no tests.
+    #
+    # A mapper route with a second feature partition gets one dtest run per
+    # partition, each inside that partition's own Cargo scope and each falling
+    # back to its own legacy command. The second partition's report is
+    # telemetry only, like the first's.
     dtest_cmd=()
+    dtest_extra_cmd=()
     if [ -n "${WITCHY_GATE_DTEST_FROM:-}" ] \
         && [ -n "${WITCHY_GATE_DTEST_REPORT:-}" ] \
         && [ "$main_queue_only" -eq 0 ] \
-        && [ "${#test_cmd_extra[@]}" -eq 0 ] \
         && command -v dtest >/dev/null 2>&1; then
-        dtest_cmd=(dtest --workspace . run
+        dtest_base=(dtest --workspace . run
             --from "$WITCHY_GATE_DTEST_FROM" --to HEAD --assume-clean
             --caller-scope --narrow-single-partition --ignore-config-runner-args
-            --quiet --report "$WITCHY_GATE_DTEST_REPORT")
-        [ -z "$main_expr" ] || dtest_cmd+=(--filter-expr "$main_expr")
+            --quiet)
+        [ -z "$main_expr" ] || dtest_base+=(--filter-expr "$main_expr")
         # Reuse the mapper's validated Cargo target and feature scope, dropping
         # only the `cargo nextest run` executable prefix. Dtest contributes the
         # exact-test expression and launches this as one nextest process.
-        dtest_cmd+=(-- "${nextest_cmd[@]:3}")
+        dtest_cmd=("${dtest_base[@]}" --report "$WITCHY_GATE_DTEST_REPORT"
+            -- "${nextest_cmd[@]:3}")
         [ "$explicit_targets_only" -eq 0 ] || dtest_cmd+=(--no-tests=warn)
+        if [ "${#nextest_extra_cmd[@]}" -gt 0 ]; then
+            dtest_extra_cmd=("${dtest_base[@]}"
+                --report "${WITCHY_GATE_DTEST_REPORT%.json}.partition.json"
+                -- "${nextest_extra_cmd[@]:3}")
+        fi
     fi
 
     # Gate only: the pure SafeWIR and lowerer-only routes resolve a different
@@ -729,12 +740,18 @@ if cargo nextest --version >/dev/null 2>&1; then
             && "$command" != *" witchy-lower/native-test-runtime"* ]]
     }
     if [ -n "${WITCHY_GATE_SCOPE:-}" ]; then
+        # Dtest launches the same Cargo scope, so it must build in the same
+        # target as the legacy command it stands in for.
         if pure_gate_command "${test_cmd[@]}"; then
             test_cmd=(env "CARGO_TARGET_DIR=${target_dir}-pure" "${test_cmd[@]}")
+            [ "${#dtest_cmd[@]}" -eq 0 ] \
+                || dtest_cmd=(env "CARGO_TARGET_DIR=${target_dir}-pure" "${dtest_cmd[@]}")
         fi
         if [ "${#test_cmd_extra[@]}" -gt 0 ] \
             && pure_gate_command "${test_cmd_extra[@]}"; then
             test_cmd_extra=(env "CARGO_TARGET_DIR=${target_dir}-pure" "${test_cmd_extra[@]}")
+            [ "${#dtest_extra_cmd[@]}" -eq 0 ] \
+                || dtest_extra_cmd=(env "CARGO_TARGET_DIR=${target_dir}-pure" "${dtest_extra_cmd[@]}")
         fi
     fi
 
@@ -790,51 +807,70 @@ else
     queue_infra_edit_cmd=("${queue_infra_cmd[@]}")
 fi
 
+# Run one partition's dtest command. Sets dtest_fell_back=1 when its legacy
+# command must run instead; otherwise returns the dtest run's status.
+run_dtest_partition() {
+    local report="$1"
+    shift
+    dtest_fell_back=0
+    rm -f "$report"
+    local dtest_status=0 selected_tests="" dtest_output
+    dtest_output="$(mktemp)"
+    "$@" >"$dtest_output" 2>&1 || dtest_status=$?
+    cat "$dtest_output"
+    # dtest wraps nextest's empty-selection exit 4 in its own exit code.
+    # Require both diagnostics so an ordinary test failure remains red.
+    local empty_target=0
+    if [ "$dtest_status" -ne 0 ] &&
+        grep -qF 'error: no tests to run' "$dtest_output" &&
+        grep -qF 'test runner exited with exit status: 4' "$dtest_output"; then
+        empty_target=1
+    fi
+    rm -f "$dtest_output"
+    if [ -s "$report" ]; then
+        selected_tests="$(jq -er '
+            select(.schema == 1 and (.tests|type) == "array")
+            | .tests | length
+        ' "$report" 2>/dev/null || true)"
+        if [ -n "$selected_tests" ] && [ "$selected_tests" -gt 0 ]; then
+            if [ "$empty_target" -ne 1 ] && [ "$dtest_status" -ne 4 ]; then
+                return "$dtest_status"
+            fi
+            # Nextest exit 4 means this dtest chunk selected no runnable
+            # test inside the mapper's Cargo target. Dtest's report counts
+            # tests before that target intersection, so a positive report
+            # alone cannot prove a test ran. Keep the audited mapper's
+            # scoped command as the fallback; do not treat an empty run as
+            # a green gate.
+            echo "check.sh: dtest target intersection was empty; using audited legacy selection" >&2
+        else
+            if [ -z "$selected_tests" ] && [ "$dtest_status" -ne 0 ]; then
+                echo "check.sh: dtest produced an invalid report after runner failure" >&2
+                return "$dtest_status"
+            fi
+            echo "check.sh: dtest selected no tests; using audited legacy selection" >&2
+        fi
+    else
+        echo "check.sh: dtest selection failed; using audited legacy selection" >&2
+    fi
+    dtest_fell_back=1
+}
+
 run_product_tests() {
     if [ "${#test_cmd_extra[@]}" -gt 0 ]; then
-        "${test_cmd_extra[@]}" || return "$?"
+        if [ "${#dtest_extra_cmd[@]}" -gt 0 ]; then
+            run_dtest_partition "${WITCHY_GATE_DTEST_REPORT%.json}.partition.json" \
+                "${dtest_extra_cmd[@]}" || return "$?"
+        else
+            dtest_fell_back=1
+        fi
+        if [ "$dtest_fell_back" -eq 1 ]; then
+            "${test_cmd_extra[@]}" || return "$?"
+        fi
     fi
     if [ "${#dtest_cmd[@]}" -gt 0 ]; then
-        rm -f "$WITCHY_GATE_DTEST_REPORT"
-        local dtest_status=0 selected_tests="" dtest_output
-        dtest_output="$(mktemp)"
-        "${dtest_cmd[@]}" >"$dtest_output" 2>&1 || dtest_status=$?
-        cat "$dtest_output"
-        # dtest wraps nextest's empty-selection exit 4 in its own exit code.
-        # Require both diagnostics so an ordinary test failure remains red.
-        local empty_target=0
-        if [ "$dtest_status" -ne 0 ] &&
-            grep -qF 'error: no tests to run' "$dtest_output" &&
-            grep -qF 'test runner exited with exit status: 4' "$dtest_output"; then
-            empty_target=1
-        fi
-        rm -f "$dtest_output"
-        if [ -s "$WITCHY_GATE_DTEST_REPORT" ]; then
-            selected_tests="$(jq -er '
-                select(.schema == 1 and (.tests|type) == "array")
-                | .tests | length
-            ' "$WITCHY_GATE_DTEST_REPORT" 2>/dev/null || true)"
-            if [ -n "$selected_tests" ] && [ "$selected_tests" -gt 0 ]; then
-                if [ "$empty_target" -ne 1 ] && [ "$dtest_status" -ne 4 ]; then
-                    return "$dtest_status"
-                fi
-                # Nextest exit 4 means this dtest chunk selected no runnable
-                # test inside the mapper's Cargo target. Dtest's report counts
-                # tests before that target intersection, so a positive report
-                # alone cannot prove a test ran. Keep the audited mapper's
-                # scoped command as the fallback; do not treat an empty run as
-                # a green gate.
-                echo "check.sh: dtest target intersection was empty; using audited legacy selection" >&2
-            else
-                if [ -z "$selected_tests" ] && [ "$dtest_status" -ne 0 ]; then
-                    echo "check.sh: dtest produced an invalid report after runner failure" >&2
-                    return "$dtest_status"
-                fi
-                echo "check.sh: dtest selected no tests; using audited legacy selection" >&2
-            fi
-        else
-            echo "check.sh: dtest selection failed; using audited legacy selection" >&2
-        fi
+        run_dtest_partition "$WITCHY_GATE_DTEST_REPORT" "${dtest_cmd[@]}" || return "$?"
+        [ "$dtest_fell_back" -eq 1 ] || return 0
     fi
     if [ -z "$queue_overlap_dir" ]; then
         "${test_cmd[@]}"

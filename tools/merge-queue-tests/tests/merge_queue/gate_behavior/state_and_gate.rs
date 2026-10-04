@@ -468,6 +468,21 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     )
     .expect("write fake rustup");
     fs::set_permissions(&rustup, fs::Permissions::from_mode(0o755)).expect("chmod fake rustup");
+    // Only invoked when a case sets WITCHY_GATE_DTEST_FROM. Records its
+    // arguments like the fake cargo and reports one selected test.
+    let dtest = bin.join("dtest");
+    fs::write(
+        &dtest,
+        "#!/bin/sh\n\
+         printf 'dtest %s target=%s\\n' \"$*\" \"${CARGO_TARGET_DIR:-}\" >>\"$FAKE_CARGO_ARGS_FILE\"\n\
+         while [ $# -gt 0 ]; do\n\
+           if [ \"$1\" = --report ]; then printf '{\"schema\":1,\"tests\":[\"t\"]}' >\"$2\"; fi\n\
+           shift\n\
+         done\n\
+         exit 0\n",
+    )
+    .expect("write fake dtest");
+    fs::set_permissions(&dtest, fs::Permissions::from_mode(0o755)).expect("chmod fake dtest");
     // This fixture invokes check.sh twelve times without changing repository
     // sources. Return the already-audited ignore-policy census instead of
     // rescanning every Rust file twelve times; test-nextest-list-wrapper.sh
@@ -1108,6 +1123,52 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
             line.ends_with(&format!("target={}-pure", temp.path().join("target-pure-wir").display()))
         }),
         "pure WIR gate shared the native graph's target: {pure_wir_args}",
+    );
+
+    // A route with a second feature partition runs each partition through
+    // dtest, inside that partition's own target, with no legacy fallback.
+    fs::write(&cargo_args_file, "").expect("clear fake cargo arguments");
+    let partitioned = check_sh(&root, &[])
+        .env("PATH", &path)
+        .env("CARGO_TARGET_DIR", temp.path().join("target-pure-wir"))
+        .env("WITCHY_GATE_SCOPE", "all")
+        .env(
+            "WITCHY_GATE_NEXTEST",
+            "-p witchy-wir --test unit --test structural_contracts --no-default-features",
+        )
+        .env("WITCHY_GATE_NEXTEST_EXPR", "package(witchy-wir) or package(witchy-lower)")
+        .env("WITCHY_GATE_NEXTEST_EXTRA", "-p witchy-lower --no-default-features")
+        .env("WITCHY_GATE_DTEST_FROM", "0123456789abcdef0123456789abcdef01234567")
+        .env("WITCHY_GATE_DTEST_REPORT", temp.path().join("dtest-partitioned.json"))
+        .env("WITCHY_GATE_SKIP_RUST_CLASS", "1")
+        .env("WITCHY_GATE_SKIP_COMPILE", "1")
+        .env("WITCHY_GATE_SKIP_FMT", "1")
+        .env("FAKE_CARGO_ARGS_FILE", &cargo_args_file)
+        .env("WITCHY_FAILFAST_POLL", "0.05")
+        .env("WITCHY_STAGE_HEARTBEAT_INTERVAL", "0")
+        .output()
+        .expect("run partitioned dtest gate");
+    assert!(
+        partitioned.status.success(),
+        "partitioned dtest fake gate failed: {}\n{}",
+        String::from_utf8_lossy(&partitioned.stderr),
+        String::from_utf8_lossy(&partitioned.stdout),
+    );
+    let partitioned_args =
+        fs::read_to_string(&cargo_args_file).expect("read partitioned cargo arguments");
+    let dtest_runs: Vec<_> =
+        partitioned_args.lines().filter(|line| line.starts_with("dtest ")).collect();
+    let pure_target = format!("target={}-pure", temp.path().join("target-pure-wir").display());
+    assert!(
+        dtest_runs.len() == 2
+            && dtest_runs.iter().all(|line| line.ends_with(&pure_target))
+            && dtest_runs.iter().any(|line| line.contains("-p witchy-wir --test unit"))
+            && dtest_runs.iter().any(|line| line.contains("-p witchy-lower --no-default-features")),
+        "each partition must run through dtest in the pure target: {partitioned_args}",
+    );
+    assert!(
+        !partitioned_args.lines().any(|line| line.starts_with("nextest run")),
+        "a selecting dtest run must not also run its legacy partition: {partitioned_args}",
     );
 
     fs::write(&cargo_args_file, "").expect("clear fake cargo arguments");

@@ -2220,6 +2220,19 @@ fn safewir_changes_stay_on_the_pure_compiler_graph() {
 }
 
 #[test]
+fn a_changed_root_test_module_survives_a_pure_wir_diff() {
+    let output = gate_nextest(&[
+        "crates/witchy-wir/src/canonical_safewir/check.rs",
+        "tests/misc/rfc0129_cooperative_worker_boundary.rs",
+    ]);
+    assert!(
+        output.contains("--test misc") && output.contains("rfc0129_cooperative_worker_boundary::"),
+        "the pure WIR route dropped a changed root test module: {output}",
+    );
+    assert!(!output.lines().next().unwrap_or("").contains("--no-default-features"), "{output}");
+}
+
+#[test]
 fn canonical_source_changes_use_the_same_pure_wir_boundary() {
     let output = gate_nextest(&["crates/witchy-canonical-source/src/lib.rs"]);
     let lines: Vec<_> = output.lines().collect();

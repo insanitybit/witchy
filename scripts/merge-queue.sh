@@ -3186,9 +3186,9 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     # owns the conservative fallback, non-Rust/workspace routes, secondary
     # feature partitions, queue fixtures, and package checks. A report is read
     # only after the gate for telemetry; it no longer controls execution.
+    # A second feature partition gets its own dtest run inside check.sh.
     if [ -n "$nextest_args" ] && [ -n "$changed" ] \
-        && printf '%s\n' "$changed" | grep -cE '\.rs$' >/dev/null \
-        && [ -z "$nextest_extra" ]; then
+        && printf '%s\n' "$changed" | grep -cE '\.rs$' >/dev/null; then
         gate_dtest_status="pending"
         gate_dtest_from="$base"
         gate_test_selector="dtest"
