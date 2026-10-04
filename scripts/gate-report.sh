@@ -75,7 +75,11 @@ jq -r --argjson cutoff "$cutoff" '
     select((.event=="merged" or .event=="red" or .event=="timeout" or .event=="batch_red")
            and .log != null and .elapsed_s != null
            and ((.ts|fromdateiso8601) >= $cutoff))
-    | [.log, .event, ((.gate_elapsed_s // .elapsed_s)|tostring)] | @tsv
+    | [.log, .event, ((.gate_elapsed_s // .elapsed_s)|tostring),
+       (.test_selector // "legacy"), (.nextest_scheduled_tests // ""),
+       (.nextest_executed_tests // ""), (.nextest_passed_tests // ""),
+       (.nextest_failed_tests // ""), (.nextest_skipped_tests // ""),
+       (.nextest_binaries // "")] | @tsv
 ' "$journal" | awk -F '\t' '!seen[$1]++' >"$attempts"
 
 # One awk process scans every selected log. Spawning an awk+jq pair per gate
@@ -83,6 +87,7 @@ jq -r --argjson cutoff "$cutoff" '
 LC_ALL=C awk -v meta="$attempts" '
         function reset_values() {
             compile=discovery=execution=test_stage=auxiliary=tests=binaries=""
+            executed=passed=failed=skipped=""
             exact_tests=exact_fmt=exact_clippy=exact_wasm=exact_book=""
             saw_stage_marker=in_workspace_tests=0
         }
@@ -112,13 +117,24 @@ LC_ALL=C awk -v meta="$attempts" '
             if ((!saw_stage_marker || in_workspace_tests) && line ~ /Finished `test` profile .* in /) {
                 value=line; sub(/^.* in /, "", value); compile=duration(value)
             }
-            if ((!saw_stage_marker || in_workspace_tests) && line ~ /Starting [0-9]+ tests across [0-9]+ binaries/) {
+            if ((!saw_stage_marker || in_workspace_tests) && line ~ /Starting [0-9]+ tests? across [0-9]+ binar(y|ies)/) {
                 value=line; sub(/^.*Starting /, "", value); sub(/^[[:space:]]*/, "", value); split(value, fields, " ")
                 tests=fields[1]; binaries=fields[4]
             }
             if ((!saw_stage_marker || in_workspace_tests) && line ~ /Summary \[ *[0-9.]+s\]/) {
                 value=line; sub(/^.*Summary \[ */, "", value); sub(/s\].*$/, "", value)
                 execution=value
+                value=line; sub(/^.*s\] /, "", value); n=split(value, summary_fields, " ")
+                run=summary_fields[1]; sub(/\/.*/, "", run)
+                if (run ~ /^[0-9]+$/) executed=run
+                for (i=2; i<=n; i++) {
+                    label=summary_fields[i]; gsub(/[:,]/, "", label)
+                    number=summary_fields[i-1]; gsub(/[^0-9]/, "", number)
+                    if (number == "") continue
+                    if (label == "passed") passed=number
+                    else if (label == "failed") failed=number
+                    else if (label == "skipped") skipped=number
+                }
             }
             if (line ~ /\[1\] tests \(workspace\) took [0-9]+s$/) {
                 value=line; sub(/^.* took /, "", value); sub(/s$/, "", value); test_stage=value
@@ -145,19 +161,26 @@ LC_ALL=C awk -v meta="$attempts" '
                 discovery=test_stage-compile-execution
                 if (discovery < 0) discovery=0
             }
-            printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n", logfile, outcome, elapsed, compile, discovery, execution, test_stage, auxiliary, tests, binaries, exact_tests, exact_fmt, exact_clippy, exact_wasm, exact_book
+            printf "%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s|%s\n", logfile, outcome, elapsed, selector, compile, discovery, execution, test_stage, auxiliary, tests, executed, passed, failed, skipped, binaries, exact_tests, exact_fmt, exact_clippy, exact_wasm, exact_book
         }
         BEGIN {
             while ((getline row < meta) > 0) {
-                split(row, fields, "\t")
-                logfile=fields[1]
-                gate_outcome=fields[2]
-                gate_elapsed=fields[3]
+                split(row, metadata, "\t")
+                logfile=metadata[1]
+                gate_outcome=metadata[2]
+                gate_elapsed=metadata[3]
+                selector=metadata[4]
                 if ((getline probe < logfile) < 0) continue
                 close(logfile)
                 reset_values()
                 while ((getline line < logfile) > 0) consume(line)
                 close(logfile)
+                if (metadata[5] != "") tests=metadata[5]
+                if (metadata[6] != "") executed=metadata[6]
+                if (metadata[7] != "") passed=metadata[7]
+                if (metadata[8] != "") failed=metadata[8]
+                if (metadata[9] != "") skipped=metadata[9]
+                if (metadata[10] != "") binaries=metadata[10]
                 emit(logfile, gate_outcome, gate_elapsed)
             }
             close(meta)
@@ -165,13 +188,15 @@ LC_ALL=C awk -v meta="$attempts" '
     ' | jq -Rc '
         def number_or_null: if .=="" then null else tonumber end;
         split("|") as $f
-        | {log:$f[0], outcome:$f[1], elapsed_s:($f[2]|tonumber),
-           compile_s:($f[3]|number_or_null), discovery_estimate_s:($f[4]|number_or_null),
-           execution_s:($f[5]|number_or_null), test_stage_s:($f[6]|number_or_null),
-           auxiliary_s:($f[7]|number_or_null), tests:($f[8]|number_or_null),
-           binaries:($f[9]|number_or_null), exact_tests_s:($f[10]|number_or_null),
-           fmt_s:($f[11]|number_or_null), clippy_s:($f[12]|number_or_null),
-           wasm_s:($f[13]|number_or_null), book_s:($f[14]|number_or_null)}' >"$phases"
+        | {log:$f[0], outcome:$f[1], elapsed_s:($f[2]|tonumber), selector:$f[3],
+           compile_s:($f[4]|number_or_null), discovery_estimate_s:($f[5]|number_or_null),
+           execution_s:($f[6]|number_or_null), test_stage_s:($f[7]|number_or_null),
+           auxiliary_s:($f[8]|number_or_null), scheduled_tests:($f[9]|number_or_null),
+           executed_tests:($f[10]|number_or_null), passed_tests:($f[11]|number_or_null),
+           failed_tests:($f[12]|number_or_null), skipped_tests:($f[13]|number_or_null),
+           binaries:($f[14]|number_or_null), exact_tests_s:($f[15]|number_or_null),
+           fmt_s:($f[16]|number_or_null), clippy_s:($f[17]|number_or_null),
+           wasm_s:($f[18]|number_or_null), book_s:($f[19]|number_or_null)}' >"$phases"
 
 generated="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 report="$tmp/report.json"
@@ -351,7 +376,30 @@ jq -sn \
                              clippy:($phases|map(.clippy_s)|distribution),
                              wasm:($phases|map(.wasm_s)|distribution),
                              book:($phases|map(.book_s)|distribution)},
-        suite:{tests:($phases|map(.tests)|distribution), binaries:($phases|map(.binaries)|distribution)},
+        suite:{tests:($phases|map(.scheduled_tests)|distribution),
+               scheduled:($phases|map(.scheduled_tests)|distribution),
+               executed:($phases|map(.executed_tests)|distribution),
+               passed:($phases|map(.passed_tests)|distribution),
+               failed:($phases|map(.failed_tests)|distribution),
+               skipped:($phases|map(.skipped_tests)|distribution),
+               binaries:($phases|map(.binaries)|distribution)},
+        selector_comparison:{
+          dtest:(($phases|map(select(.selector=="dtest"))) as $s
+            | {samples:($s|length), gate_s:($s|map(.elapsed_s)|distribution),
+               compile_s:($s|map(.compile_s)|distribution),
+               execution_s:($s|map(.execution_s)|distribution),
+               scheduled_tests:($s|map(.scheduled_tests)|distribution),
+               executed_tests:($s|map(.executed_tests)|distribution),
+               skipped_tests:($s|map(.skipped_tests)|distribution),
+               binaries:($s|map(.binaries)|distribution)}),
+          legacy:(($phases|map(select(.selector!="dtest"))) as $s
+            | {samples:($s|length), gate_s:($s|map(.elapsed_s)|distribution),
+               compile_s:($s|map(.compile_s)|distribution),
+               execution_s:($s|map(.execution_s)|distribution),
+               scheduled_tests:($s|map(.scheduled_tests)|distribution),
+               executed_tests:($s|map(.executed_tests)|distribution),
+               skipped_tests:($s|map(.skipped_tests)|distribution),
+               binaries:($s|map(.binaries)|distribution)})},
         dtest:(($attempts|map(select(.dtest_status != null))) as $d
           | {samples:($d|length),
              selected_gates:($d|map(select(.test_selector=="dtest"))|length),
@@ -521,6 +569,14 @@ jq -r '
     "  overlay hits / compacted:  \(.dtest.overlay_hits) / \(.dtest.overlay_compacted)",
     "  dtest / legacy gate p50:  \(value(.dtest.gate_s.dtest.p50; "s")) / \(value(.dtest.gate_s.legacy.p50; "s"))",
     ("  outcomes:                 " + (.dtest.status | map("\(.status)=\(.n)") | join(", "))),
+    "",
+    "dtest versus legacy execution",
+    "  samples:                   \(.selector_comparison.dtest.samples) / \(.selector_comparison.legacy.samples)",
+    "  gate p50:                  \(value(.selector_comparison.dtest.gate_s.p50; "s")) / \(value(.selector_comparison.legacy.gate_s.p50; "s"))",
+    "  compile p50:               \(value(.selector_comparison.dtest.compile_s.p50; "s")) / \(value(.selector_comparison.legacy.compile_s.p50; "s"))",
+    "  execution p50:             \(value(.selector_comparison.dtest.execution_s.p50; "s")) / \(value(.selector_comparison.legacy.execution_s.p50; "s"))",
+    "  executed tests p50:        \(value(.selector_comparison.dtest.executed_tests.p50; "")) / \(value(.selector_comparison.legacy.executed_tests.p50; ""))",
+    "  skipped tests p50:         \(value(.selector_comparison.dtest.skipped_tests.p50; "")) / \(value(.selector_comparison.legacy.skipped_tests.p50; ""))",
     "",
     "Structured stage duration (p50 / p90; exact where instrumented)",
     "  tests (n=\(.structured_phases_s.tests.count)):   \(value(.structured_phases_s.tests.p50; "s")) / \(value(.structured_phases_s.tests.p90; "s"))",

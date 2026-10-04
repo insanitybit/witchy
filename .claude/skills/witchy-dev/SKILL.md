@@ -286,7 +286,12 @@ test binary when possible. Exact-name filters are bounded; an oversized list
 falls back conservatively to the mapper's filter and scope rather than risking
 the process argument limit. Clean queue worktrees skip redundant dirty-tree discovery.
 Inspect selection, Git, graph, and gate timings with
-`./scripts/gate-report.sh --since 24h` or its `--json` form.
+`./scripts/gate-report.sh --since 24h` or its `--json` form. Terminal queue
+events persist the primary workspace nextest scheduled, executed, passed,
+failed, skipped, and binary counts. The report's `selector_comparison` compares
+dtest and legacy gates using those actual execution counts plus compile,
+execution, and whole-gate time; use those fields instead of treating dtest's
+conservative selected-test estimate as tests actually run.
 
 **`cargo check -p witchy-runtime` does NOT compile the Wasm kernel.** The
 `runtime` module sits behind that crate's non-default `native` feature, which

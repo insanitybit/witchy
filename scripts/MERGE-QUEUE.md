@@ -104,6 +104,11 @@ and handoff notes. It is observational, not a locking or file-ownership system.
   (the idle master canary, step 8 below). `merged`/`red`/
   `timeout` carry the gate log path, elapsed seconds, and a stage-timing
   summary parsed from check.sh's `==> [N] stage (t+Ns)` markers.
+  They also carry the primary workspace nextest scheduled, executed, passed,
+  failed, skipped, and binary counts. `gate-report.sh` keeps historical log
+  parsing as a fallback and reports dtest-versus-legacy distributions for
+  actual execution counts, compile time, execution time, and whole-gate time.
+  Auxiliary queue and fuzz shards do not overwrite the workspace counts.
   Every attempt-terminal event also carries a **contention covariate** written
   from the one `record_attempt` choke point: `gate_load_start` /
   `gate_load_end` (1-minute load average sampled at the gate boundaries) and

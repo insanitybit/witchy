@@ -188,6 +188,12 @@ gate_dtest_commands=""
 gate_dtest_reason=""
 gate_dtest_from=""
 gate_dtest_report=""
+gate_nextest_scheduled_tests=""
+gate_nextest_executed_tests=""
+gate_nextest_passed_tests=""
+gate_nextest_failed_tests=""
+gate_nextest_skipped_tests=""
+gate_nextest_binaries=""
 # A function run_gate polls between monitor ticks; when it succeeds the gate
 # is killed and reports `yielded`. Only the idle master canary sets it.
 gate_yield_probe=""
@@ -513,6 +519,55 @@ disk_guard() {
     printf '%s\n' "$!" >"$lock/pid"
 }
 
+# Extract the primary workspace nextest invocation once, immediately after the
+# gate. Auxiliary queue/fuzz shards have their own stage markers and must not
+# overwrite the product counts. A red run can report `15/1714 tests run`; keep
+# both the scheduled and actually executed values.
+capture_gate_test_metrics() { # capture_gate_test_metrics <gate-log>
+    local values=""
+    values="$(LC_ALL=C awk '
+        BEGIN { scheduled=executed=passed=failed=skipped=binaries=""; saw_stage=workspace=0 }
+        {
+            line=$0
+            gsub(/\033\[[0-9;]*m/, "", line)
+            if (line ~ /^==> \[[0-9]+\] /) {
+                saw_stage=1
+                workspace=(line ~ /^==> \[1\] tests \(workspace\)/)
+            }
+            if ((!saw_stage || workspace) && line ~ /Starting [0-9]+ tests? across [0-9]+ binar(y|ies)/) {
+                value=line
+                sub(/^.*Starting /, "", value)
+                sub(/^[[:space:]]*/, "", value)
+                split(value, fields, " ")
+                scheduled=fields[1]
+                binaries=fields[4]
+            }
+            if ((!saw_stage || workspace) && line ~ /Summary \[ *[0-9.]+s\]/) {
+                value=line
+                sub(/^.*s\] /, "", value)
+                n=split(value, fields, " ")
+                run=fields[1]
+                sub(/\/.*/, "", run)
+                if (run ~ /^[0-9]+$/) executed=run
+                for (i=2; i<=n; i++) {
+                    label=fields[i]
+                    gsub(/[:,]/, "", label)
+                    number=fields[i-1]
+                    gsub(/[^0-9]/, "", number)
+                    if (number == "") continue
+                    if (label == "passed") passed=number
+                    else if (label == "failed") failed=number
+                    else if (label == "skipped") skipped=number
+                }
+            }
+        }
+        END { printf "%s\034%s\034%s\034%s\034%s\034%s", scheduled, executed, passed, failed, skipped, binaries }
+    ' "$1" 2>/dev/null || true)"
+    IFS=$'\x1c' read -r gate_nextest_scheduled_tests gate_nextest_executed_tests \
+        gate_nextest_passed_tests gate_nextest_failed_tests \
+        gate_nextest_skipped_tests gate_nextest_binaries <<<"$values"
+}
+
 # Record one coordinator attempt with phase boundaries captured by process_one.
 # Keep elapsed_s as the actual gate duration for existing journal consumers;
 # attempt_elapsed_s covers dequeue through the final validation decision. All
@@ -549,6 +604,12 @@ record_attempt() { # event branch start prepared locked gate-start gate-end fini
     [ -n "${gate_dtest_required_filter_bytes:-}" ] && selection+=(dtest_required_filter_bytes "$gate_dtest_required_filter_bytes")
     [ -n "${gate_dtest_commands:-}" ] && selection+=(dtest_commands "$gate_dtest_commands")
     [ -n "${gate_dtest_reason:-}" ] && selection+=(dtest_reason "$gate_dtest_reason")
+    [ -n "${gate_nextest_scheduled_tests:-}" ] && selection+=(nextest_scheduled_tests "$gate_nextest_scheduled_tests")
+    [ -n "${gate_nextest_executed_tests:-}" ] && selection+=(nextest_executed_tests "$gate_nextest_executed_tests")
+    [ -n "${gate_nextest_passed_tests:-}" ] && selection+=(nextest_passed_tests "$gate_nextest_passed_tests")
+    [ -n "${gate_nextest_failed_tests:-}" ] && selection+=(nextest_failed_tests "$gate_nextest_failed_tests")
+    [ -n "${gate_nextest_skipped_tests:-}" ] && selection+=(nextest_skipped_tests "$gate_nextest_skipped_tests")
+    [ -n "${gate_nextest_binaries:-}" ] && selection+=(nextest_binaries "$gate_nextest_binaries")
 
     # RFC-0159 E. `reason` already carries the failing stage and failure line,
     # concatenated into prose -- so grouping reds by cause meant re-parsing a
@@ -2697,6 +2758,12 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     gate_dtest_reason=""
     gate_dtest_from=""
     gate_dtest_report=""
+    gate_nextest_scheduled_tests=""
+    gate_nextest_executed_tests=""
+    gate_nextest_passed_tests=""
+    gate_nextest_failed_tests=""
+    gate_nextest_skipped_tests=""
+    gate_nextest_binaries=""
     local branch change_id submitted_sha attempt_id
     branch="$(jq -r .branch "$f")"
     change_id="$(jq -r '.change_id // empty' "$f")"
@@ -3257,6 +3324,7 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
         "$skip_book" "$nextest_args" "$nextest_expr" \
         "$skip_rust_class" "$skip_compile" "$skip_wasm" "$check_packages" \
         "$skip_fmt" "$nextest_extra"
+    capture_gate_test_metrics "$log"
     if [ "$gate_dtest_status" = "pending" ]; then
         local dtest_values=""
         if [ -s "$gate_dtest_report" ] \
