@@ -1880,8 +1880,9 @@ impl Checker {
                 let mut sources = items.iter().map(|item|
                     self.inferred_binding_storage_type(item, element));
                 let first = sources.next()??;
-                sources.all(|source| source.as_ref() == Some(&first))
-                    .then_some(ast::Type::Named("List".into(), vec![first]))
+                let element = sources.try_fold(first, |common, source|
+                    Self::common_storage_type(&common, &source?))?;
+                Some(ast::Type::Named("List".into(), vec![element]))
             }
             (Expr::Ctor { name, args }, _) => {
                 let source = self.constructor_storage_result_from_arguments(name, args)?;

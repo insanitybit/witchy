@@ -512,6 +512,15 @@ Both argument orders of `Twin(a, a)` also refuse when one `a` is frozen;
 repeated bindings join conservatively. Unbound constructor parameters and
 unknown argument shapes remain without a storage proof. Row H remains partial.
 
+List literal storage joins, 2026-10-04: inferred list bindings now join
+source qualifiers from every element using the same recursive rule as
+generic call arguments. An all-plain `List(Box)` inside a tuple admits a
+deep indexed `var` write and returns the independent `93` on admitted
+unoptimized Wasm with zero canonical heap leaks. A frozen element elsewhere
+in the list qualifies the shared element slot and refuses that write; a
+frozen `Box` nested inside a tuple element does the same. Unknown or
+incompatible element shapes still fail closed. Row H remains partial.
+
 `rfc0167_frozen_view_replacement` adds a normal-mode row L composition
 witness: a rooted `&frozen Box` keeps the old field value when a `var frozen
 Box` root is replaced, so admitted unoptimized Wasm prints the independently
