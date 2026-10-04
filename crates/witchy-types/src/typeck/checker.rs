@@ -39,7 +39,7 @@ pub(super) struct Checker {
     /// The module's type definitions in the canonical form, so a view capture
     /// is admitted by exactly the record-root and list-root carrier rules that
     /// lowering and authority apply, with the refusal reported here.
-    pub(super) canonical_definitions: std::collections::BTreeMap<String, ast::TypeDef>,
+    pub(super) canonical_definitions: std::rc::Rc<std::collections::BTreeMap<String, ast::TypeDef>>,
     /// RFC-0164 Phase 3: memoizes `resolve`, invalidated by `bind_subst_var`/
     /// `restore_subst` (the only two ways `subst` changes) rather than on
     /// every read, so it survives across the many `resolve` calls between

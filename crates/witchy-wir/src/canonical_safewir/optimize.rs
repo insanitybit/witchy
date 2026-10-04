@@ -57,7 +57,7 @@ pub fn eliminate_same_block_redundant_bounds_guards_checked(
 fn attempt_bounds_guard_pass(
     before: &CheckedSafeWirRevision,
 ) -> Result<CheckedOptimizedSafeWir, BoundsGuardEliminationError> {
-    let optimized = eliminate_same_block_redundant_bounds_guards(before.module().clone())?;
+    let optimized = bounds_guard_candidate(before.module().clone(), before.affine_abi().map(|proofs| &**proofs))?;
     if optimized.revision() == before.module().revision()
         && super::identity::module_digest(&optimized)
             == super::identity::module_digest(before.module())
@@ -162,6 +162,13 @@ impl fmt::Display for RewriteRelationError {
 pub fn eliminate_same_block_redundant_bounds_guards(
     before: CanonicalModule<InitialValid>,
 ) -> Result<CanonicalModule<InitialValid>, BoundsGuardEliminationError> {
+    bounds_guard_candidate(before, None)
+}
+
+fn bounds_guard_candidate(
+    before: CanonicalModule<InitialValid>,
+    affine_abi: Option<&super::check::AffineAbiProofs>,
+) -> Result<CanonicalModule<InitialValid>, BoundsGuardEliminationError> {
     let mut candidate: CanonicalModule<OptimizationCandidate> = before.clone().into_stage();
     if rewrite(&mut candidate, &mut AnalysisDb::new(&before)) {
         candidate.revision = before.revision.checked_next().ok_or(
@@ -172,7 +179,7 @@ pub fn eliminate_same_block_redundant_bounds_guards(
     }
     check_rewrite_relation(&before, &candidate)
         .map_err(BoundsGuardEliminationError::RewriteRelation)?;
-    super::check::check_optimization_candidate(candidate)
+    super::check::check_optimization_candidate(candidate, affine_abi)
         .map_err(BoundsGuardEliminationError::Safety)
 }
 

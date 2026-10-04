@@ -13468,8 +13468,11 @@ fn run_check_selected(
         .ok_or_else(|| TypeError {
             message: "checked Task declaration has inconsistent execution-obligation arity".into(),
         })?;
-    let canonical_definitions = witchy_canonical_source::aggregates::type_definitions(module);
+    let canonical_definitions = std::rc::Rc::new(witchy_canonical_source::aggregates::type_definitions(module));
     let storage_plans = checker::shared_storage_plans(&canonical_definitions);
+    // Shape and storage judgments over these fixed definitions are pure; share
+    // them across the whole check instead of recomputing each probe.
+    let _shape_memo = witchy_canonical_source::aggregates::enter_shape_memo(std::rc::Rc::clone(&canonical_definitions));
     let mut c = Checker {
         canonical_definitions,
         replay_capture_scope: witchy_canonical_source::scope::canonical_scope(module),

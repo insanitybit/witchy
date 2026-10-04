@@ -522,6 +522,24 @@ pub fn with_shape_memo<R>(definitions: &BTreeMap<String, TypeDef>, body: impl Fn
     shape_memo::scoped(definitions, body)
 }
 
+/// `with_shape_memo` for a caller that cannot hold a borrow across its body,
+/// such as the type checker, which owns its definitions and mutates itself
+/// while consulting them. The scope shares ownership of the immutable map, so
+/// its address cannot be reused by another map while the scope is open. It
+/// closes when dropped; `None` when a scope for this map is already open.
+pub fn enter_shape_memo(definitions: std::rc::Rc<BTreeMap<String, TypeDef>>) -> Option<ShapeMemoScope> {
+    shape_memo::enter(&definitions).then_some(ShapeMemoScope { _definitions: definitions })
+}
+
+/// An open shape-memo scope; see [`enter_shape_memo`].
+pub struct ShapeMemoScope {
+    _definitions: std::rc::Rc<BTreeMap<String, TypeDef>>,
+}
+
+impl Drop for ShapeMemoScope {
+    fn drop(&mut self) { shape_memo::leave(); }
+}
+
 pub(crate) mod shape_memo {
     use std::cell::RefCell;
     use std::collections::BTreeMap;
@@ -586,6 +604,30 @@ pub(crate) mod shape_memo {
         }
         let _pop = Pop;
         body()
+    }
+
+    /// Open a scope for `definitions` unless one is already open; whether it
+    /// opened one. Paired with `leave` by `ShapeMemoScope`'s drop.
+    pub(super) fn enter(definitions: &BTreeMap<String, TypeDef>) -> bool {
+        let wanted = address(definitions);
+        SCOPES.with(|scopes| {
+            let mut scopes = scopes.borrow_mut();
+            if scopes.iter().any(|scope| scope.definitions == wanted) { return false; }
+            scopes.push(Scope {
+                definitions: wanted,
+                shapes: HashMap::default(),
+                identities: HashMap::default(),
+                derived: HashMap::default(),
+                storage_plans: HashMap::default(),
+            });
+            true
+        })
+    }
+
+    pub(super) fn leave() {
+        SCOPES.with(|scopes| {
+            scopes.borrow_mut().pop();
+        });
     }
 
     fn with_scope<R>(definitions: &BTreeMap<String, TypeDef>, read: impl FnOnce(&mut Scope) -> R) -> Option<R> {

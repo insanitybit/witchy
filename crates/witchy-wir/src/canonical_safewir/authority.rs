@@ -85,6 +85,7 @@ struct CheckedOptimizationWitness {
 pub struct CheckedInitialSafeWir {
     module: CanonicalModule<InitialValid>,
     witness: CheckedLoweringWitness,
+    affine_abi: Option<std::sync::Arc<super::check::AffineAbiProofs>>,
 }
 
 impl CheckedInitialSafeWir {
@@ -104,6 +105,7 @@ pub struct CheckedOptimizedSafeWir {
     module: CanonicalModule<InitialValid>,
     checked_lowering: CheckedLoweringWitness,
     optimizations: Vec<CheckedOptimizationWitness>,
+    affine_abi: Option<std::sync::Arc<super::check::AffineAbiProofs>>,
 }
 
 impl CheckedOptimizedSafeWir {
@@ -143,6 +145,16 @@ impl CheckedSafeWirRevision {
         match self {
             Self::Initial(checked) => &checked.witness,
             Self::Optimized(checked) => &checked.checked_lowering,
+        }
+    }
+
+    /// The source-affine proofs the initial check ran under. A pass re-checks
+    /// its candidate under them so unchanged functions replay their verdicts;
+    /// final validation still derives its own proofs from the source.
+    pub(super) fn affine_abi(&self) -> Option<&std::sync::Arc<super::check::AffineAbiProofs>> {
+        match self {
+            Self::Initial(checked) => checked.affine_abi.as_ref(),
+            Self::Optimized(checked) => checked.affine_abi.as_ref(),
         }
     }
 
@@ -609,7 +621,7 @@ pub fn check_initial_with_witness(
         proper_tail_manifest_digest: expected,
         checked_source_witness,
     };
-    Ok(CheckedInitialSafeWir { module, witness })
+    Ok(CheckedInitialSafeWir { module, witness, affine_abi: Some(std::sync::Arc::new(affine_abi)) })
 }
 
 /// Consume the immutable initially-checked graph and recheck that exact graph
@@ -656,6 +668,7 @@ pub(super) fn bind_checked_same_block_bounds_guard_optimization(
         module,
         checked_lowering: checked.checked_lowering().clone(),
         optimizations,
+        affine_abi: checked.affine_abi().cloned(),
     })
 }
 
@@ -731,6 +744,7 @@ fn validate_optimized_final_inner(
         module,
         checked_lowering,
         optimizations,
+        affine_abi: _,
     } = checked;
     if !optimization_chain_matches(&module, &checked_lowering, &optimizations) {
         return Err(FinalValidationError::OptimizationDoesNotMatchWitness);
@@ -798,6 +812,7 @@ fn validate_optimized_final_parts_for_test(
             module,
             checked_lowering,
             optimizations,
+            affine_abi: None,
         },
         None,
     )
@@ -843,7 +858,7 @@ fn check_initial_with_expected_digest(
         proper_tail_manifest_digest: expected,
         checked_source_witness,
     };
-    Ok(CheckedInitialSafeWir { module, witness })
+    Ok(CheckedInitialSafeWir { module, witness, affine_abi: None })
 }
 
 // Authority cases that need a real checked source (RFC-0170 P4).

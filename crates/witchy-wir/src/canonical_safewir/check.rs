@@ -323,8 +323,9 @@ pub(super) fn recheck_final_with_affine_abi(
 /// The candidate has no authority until this traversal succeeds.
 pub(super) fn check_optimization_candidate(
     candidate: CanonicalModule<OptimizationCandidate>,
+    affine_abi: Option<&AffineAbiProofs>,
 ) -> Result<CanonicalModule<InitialValid>, InitialCheckError> {
-    check_candidate(&candidate, candidate.abi_catalog(), None, None)?;
+    check_candidate(&candidate, candidate.abi_catalog(), None, affine_abi)?;
     Ok(candidate.into_stage())
 }
 

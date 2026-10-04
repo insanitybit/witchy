@@ -57,9 +57,11 @@ fn main(dir: Dir):
     let _ = output
 "#;
 
-fn run_admitted(source: &str) -> (Vec<String>, Vec<u8>, usize) {
+/// Output, Wasm, worker launches and run-grant names of one checked source.
+fn run_admitted(source: &str) -> (Vec<String>, Vec<u8>, usize, BTreeSet<String>) {
     let checked = witchy::resolve_std_only_checked(source)
         .expect("RFC-0129 row-6 source must check");
+    let grants = grant_names(&checked);
     let artifact = codegen::compile_checked_module_artifact(&checked)
         .expect_lowered("admit RFC-0129 row-6 source");
     let wasm = artifact.wasm().to_vec();
@@ -73,7 +75,7 @@ fn run_admitted(source: &str) -> (Vec<String>, Vec<u8>, usize) {
         .expect("spawn admitted RFC-0129 row-6 source");
     actor.run().expect("run RFC-0129 row-6 admitted Wasm");
     assert_eq!(actor.canonical_heap_leaks().expect("heap audit"), Some(0));
-    (actor.output(), wasm, actor.admitted_zero_grant_worker_launches())
+    (actor.output(), wasm, actor.admitted_zero_grant_worker_launches(), grants)
 }
 
 fn witchy_imports(wasm: &[u8]) -> BTreeSet<String> {
@@ -99,9 +101,7 @@ fn worker_imports(imports: &BTreeSet<String>) -> BTreeSet<String> {
         .collect()
 }
 
-fn run_grant_names(source: &str) -> BTreeSet<String> {
-    let checked = witchy::resolve_std_only_checked(source)
-        .expect("RFC-0129 row-6 capability source must check");
+fn grant_names(checked: &witchy::pipeline::CheckedModule) -> BTreeSet<String> {
     witchy::capabilities::run_grant(checked.module())
         .keys()
         .map(|name| (*name).to_string())
@@ -120,7 +120,7 @@ fn rfc0129_acceptance_row_6_cooperative_map_stays_in_its_executor() {
         "[25, 9, 64, 1]",
     ];
 
-    let (cooperative_output, cooperative_wasm, cooperative_launches) = run_admitted(COOPERATIVE_MAP);
+    let (cooperative_output, cooperative_wasm, cooperative_launches, cooperative_grants) = run_admitted(COOPERATIVE_MAP);
     assert_eq!(cooperative_launches, 0, "cooperative work launches no worker VMs");
     assert_eq!(
         cooperative_output,
@@ -128,7 +128,7 @@ fn rfc0129_acceptance_row_6_cooperative_map_stays_in_its_executor() {
         "cooperative tasks may use an explicitly passed Console and keep input order",
     );
     assert_eq!(
-        run_grant_names(COOPERATIVE_MAP),
+        cooperative_grants,
         BTreeSet::from(["Console".to_string()]),
         "cooperative work receives only main's explicit Console grant",
     );
@@ -141,7 +141,7 @@ fn rfc0129_acceptance_row_6_cooperative_map_stays_in_its_executor() {
 
 #[test]
 fn rfc0129_acceptance_row_6_scalar_par_map_crosses_the_worker_boundary() {
-    let (parallel_output, parallel_wasm, parallel_launches) = run_admitted(PARALLEL_WORKER_MAP);
+    let (parallel_output, parallel_wasm, parallel_launches, _) = run_admitted(PARALLEL_WORKER_MAP);
     assert!(parallel_launches > 0, "scalar par_map must launch a zero-grant worker VM");
     assert_eq!(parallel_output, ["[25, 9, 64, 1]"], "parallel worker map keeps input order");
     let parallel_workers = worker_imports(&witchy_imports(&parallel_wasm));
@@ -157,7 +157,7 @@ fn rfc0129_acceptance_row_6_scalar_par_map_crosses_the_worker_boundary() {
 
 #[test]
 fn rfc0129_acceptance_row_6_capturing_callback_stays_in_its_parent() {
-    let (fallback_output, fallback_wasm, fallback_launches) = run_admitted(SEQUENTIAL_WORKER_FALLBACK);
+    let (fallback_output, fallback_wasm, fallback_launches, fallback_grants) = run_admitted(SEQUENTIAL_WORKER_FALLBACK);
     assert_eq!(fallback_launches, 0, "capturing callback launches no worker VMs");
     assert_eq!(
         fallback_output,
@@ -165,7 +165,7 @@ fn rfc0129_acceptance_row_6_capturing_callback_stays_in_its_parent() {
         "a capability-bearing callback remains ordered in its parent VM",
     );
     assert_eq!(
-        run_grant_names(SEQUENTIAL_WORKER_FALLBACK),
+        fallback_grants,
         BTreeSet::from(["Console".to_string()]),
         "capturing Console does not manufacture a worker grant",
     );
@@ -190,7 +190,7 @@ fn rfc0129_acceptance_row_6_with_dir_worker_receives_exactly_its_dir() {
         "vm.with_dir must retain its explicit isolated-worker adapter: {explicit_imports:?}",
     );
     assert_eq!(
-        run_grant_names(EXPLICIT_DIR_WORKER),
+        grant_names(&explicit_checked),
         BTreeSet::from(["Dir".to_string()]),
         "the worker receives exactly the Dir named by the API",
     );
