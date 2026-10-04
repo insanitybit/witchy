@@ -3597,3 +3597,13 @@ per-family import names. Env's duplicate payload reader is gone. The Exec,
 Fetch, build-read and VM-service responses keep their own protocols. Evidence:
 the existing Dir/File/Env/Net/Secret runtime self-checks and example tests over
 the renamed imports; `spec/wasm-abi.md` regenerated.
+
+### 2026-10-04: native Dir reads refuse a FIFO without blocking (RFC-0126 rule 3)
+
+The confined read path opens with nonblocking mode and checks the opened
+handle's file type before reading. Eager File binding uses the same path, so a
+FIFO cannot block before the response is formed. The host response test covers
+regular files, directories, denied paths and a FIFO without a writer.
+`admitted_dir_read_rejects_a_pipe_without_waiting_for_a_writer` compiles a
+normal-mode source program to admitted Wasm and observes `ok`, then `Io`
+under an explicit read grant. The browser provider remains deferred.

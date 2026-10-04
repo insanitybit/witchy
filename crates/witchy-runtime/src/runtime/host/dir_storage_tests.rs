@@ -345,6 +345,7 @@ pub fn dir_read_at_answers_failures_as_statuses() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::symlink;
+        assert!(std::process::Command::new("mkfifo").arg(root.join("pipe")).status().unwrap().success());
         symlink("../outside.txt", root.join("out.txt")).unwrap();
         symlink("../missing.txt", root.join("dangling.txt")).unwrap();
         symlink(outer.path().join("outside.txt"), root.join("absolute.txt")).unwrap();
@@ -372,6 +373,8 @@ pub fn dir_read_at_answers_failures_as_statuses() {
     ];
     #[cfg(unix)]
     rows.extend([
+        // A special file must answer without waiting for another process.
+        (grant, "pipe", 5),
         // A symlink leaving the root, outside target present or not.
         (grant, "out.txt", 1), (grant, "dangling.txt", 1), (grant, "absolute.txt", 1),
         (grant, "outdir/x.txt", 1), (grant, "nodir/x.txt", 1),

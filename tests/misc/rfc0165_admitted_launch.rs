@@ -640,6 +640,27 @@ fn admitted_dir_reads_larger_than_the_probe_buffer_and_denied_paths() {
     std::fs::remove_dir_all(&root).expect("cleanup");
 }
 
+#[cfg(unix)]
+#[test]
+fn admitted_dir_read_rejects_a_pipe_without_waiting_for_a_writer() {
+    let root = scratch_dir("dir-pipe");
+    std::fs::write(root.join("plain.txt"), "ok").expect("seed file");
+    assert!(std::process::Command::new("mkfifo").arg(root.join("pipe")).status().unwrap().success());
+    let output = run_admitted_with_grants(
+        "fn main(console: Console, dir: Dir[Read]):\n    console.print(dir.read(\"plain.txt\") ?? \"bad\")\n    match dir.read(\"pipe\"):\n        Ok(_) -> console.print(\"bad\")\n        Err(Io(_)) -> console.print(\"io\")\n        Err(_) -> console.print(\"other\")\n",
+        Capabilities {
+            print: true,
+            print_int: true,
+            quiet: true,
+            dir_root: Some(root.clone()),
+            dir_read: true,
+            ..Default::default()
+        },
+    ).expect("admitted program runs");
+    assert_eq!(output, ["ok", "io"]);
+    std::fs::remove_dir_all(root).expect("cleanup");
+}
+
 #[test]
 fn admitted_env_get_env_answers_set_unset_and_denied_without_an_existence_oracle() {
     // RFC-0126 rule 3: one host lookup answers `Result(Option(String),

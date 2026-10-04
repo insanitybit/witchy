@@ -317,6 +317,24 @@ impl ConfinedDir {
         Ok(self.entry_identity(rel)?.map(|(kind, exact)| if exact { kind } else { ConfinedEntryKind::Other }))
     }
 
+    /// Identify a special leaf without following it. A pipe is an I/O
+    /// failure, while a symlink or spelling alias is an authority refusal.
+    pub fn entry_is_special_file(&self, rel: &str) -> Result<bool, ConfineError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let file = self.file(rel, false)?;
+            let metadata = file.parent.inner.symlink_metadata(&file.name)
+                .map_err(|error| inaccessible(&file.display, error))?;
+            let kind = metadata.file_type();
+            Ok(!kind.is_file() && !kind.is_dir() && !kind.is_symlink())
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = rel;
+            unavailable()
+        }
+    }
+
     /// The no-follow kind of `rel`'s leaf and whether the caller spelled it
     /// exactly as its directory entry.
     fn entry_identity(&self, rel: &str) -> Result<Option<(ConfinedEntryKind, bool)>, ConfineError> {
@@ -565,7 +583,28 @@ impl ConfinedFile {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn open_read_handle(&self) -> std::io::Result<cap_std::fs::File> {
-        self.parent.inner.open(&self.name)
+        self.open_regular_read_handle(false)
+    }
+
+    /// Open without waiting for a FIFO writer, then check the opened inode.
+    /// Checking the path first would race with a swap to a special file.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn open_regular_read_handle(&self, no_follow: bool) -> std::io::Result<cap_std::fs::File> {
+        use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt, OpenOptionsSyncExt};
+        let mut options = cap_std::fs::OpenOptions::new();
+        options.read(true).nonblock(true);
+        if no_follow {
+            options.follow(FollowSymlinks::No);
+        }
+        let file = self.parent.inner.open_with(&self.name, &options)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
+            return Err(std::io::Error::new(
+                if metadata.is_dir() { std::io::ErrorKind::IsADirectory } else { std::io::ErrorKind::InvalidData },
+                "read target is not a regular file",
+            ));
+        }
+        Ok(file)
     }
 
     #[cfg(target_arch = "wasm32")]
@@ -609,7 +648,7 @@ impl ConfinedFile {
                 return String::from_utf8(self.read_bytes_no_follow()?)
                     .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error));
             }
-            let mut file = self.open_read_handle()?;
+            let mut file = self.open_regular_read_handle(false)?;
             let mut contents = String::new();
             file.read_to_string(&mut contents)?;
             Ok(contents)
@@ -626,11 +665,8 @@ impl ConfinedFile {
     pub fn read_bytes_no_follow(&self) -> std::io::Result<Vec<u8>> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
             use std::io::Read;
-            let mut options = cap_std::fs::OpenOptions::new();
-            options.read(true).follow(FollowSymlinks::No);
-            let mut file = self.parent.inner.open_with(&self.name, &options)?;
+            let mut file = self.open_regular_read_handle(true)?;
             let mut contents = Vec::new();
             file.read_to_end(&mut contents)?;
             Ok(contents)
@@ -658,6 +694,7 @@ impl ConfinedFile {
         read.map_err(|error| {
             let through_link = self.name.to_str().is_some_and(|name| {
                 matches!(self.parent.entry_kind_spelled(name), Ok(Some(ConfinedEntryKind::Other)))
+                    && !matches!(self.parent.entry_is_special_file(name), Ok(true))
             });
             let kind = if through_link { ConfineErrorKind::Denied } else { ConfineErrorKind::of_io(&error) };
             ConfineError::new(kind, format!("read failed for `{}`: {error}", self.display.display()))
@@ -670,7 +707,7 @@ impl ConfinedFile {
         #[cfg(not(target_arch = "wasm32"))]
         {
             use std::io::Read;
-            let mut file = self.open_read_handle()?;
+            let mut file = self.open_regular_read_handle(false)?;
             let mut contents = Vec::new();
             file.read_to_end(&mut contents)?;
             Ok(contents)

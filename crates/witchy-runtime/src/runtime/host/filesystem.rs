@@ -432,6 +432,7 @@ fn dir_read_contents(dir: &DirAuthority, rel: &str) -> Result<Vec<u8>, ConfineEr
     let through_link = std::path::Path::new(rel).ancestors().filter_map(|prefix| prefix.to_str()).any(|prefix| {
         !prefix.is_empty()
             && matches!(base.entry_kind_spelled(prefix), Ok(Some(ConfinedEntryKind::Other)))
+            && !matches!(base.entry_is_special_file(prefix), Ok(true))
     });
     if !dir.policy.is_empty() {
         // Every parent must be an exactly spelled directory; anything else (a

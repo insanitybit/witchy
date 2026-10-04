@@ -155,10 +155,11 @@ and gives a fixed reason. It never contains a host-resolved, canonicalized, or
 absolute host path, raw operating-system error text, or another allow-listed
 name. Host diagnostics for traps may keep full detail.
 
-Open: with no entry policy, reading a FIFO (or another blocking special file)
-inside the root blocks the host thread. It discloses nothing, but it is a
-denial of service the host does not yet refuse. Under a policy such an entry is
-`Other` and answers `NotFound`.
+Without an entry policy, reads open a file without waiting for a FIFO writer
+and verify that the opened handle is a regular file before reading it. A FIFO
+or other special file answers `Io`. Under a policy such an entry is `Other`
+and answers `NotFound`. The host and admitted Wasm witnesses cover a FIFO
+without a writer.
 
 Every `Dir` and `File` operation and `env.get_env` implement this rule end to
 end in admitted Wasm: `read`, `read_bytes`, `list`, `subtree`, `read_file`,
