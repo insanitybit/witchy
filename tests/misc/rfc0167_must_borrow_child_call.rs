@@ -70,3 +70,20 @@ fn main() -> Int:
     assert!(error.to_string().contains("cannot return a borrowed must-consume child"),
         "unexpected diagnostic: {error}");
 }
+
+#[test]
+fn borrowed_unique_child_cannot_escape_the_pattern_scope() {
+    let error = witchy::resolve_std_only_checked(r#"
+type Box:
+    value: unique List(Int)
+
+fn leak(let box: Box) -> Int:
+    match box:
+        Box(value) -> value.length()
+
+fn main() -> Int:
+    0
+"#).expect_err("borrowed unique child must not escape");
+    assert!(error.to_string().contains("requires `move`"),
+        "unexpected diagnostic: {error}");
+}

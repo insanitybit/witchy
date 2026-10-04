@@ -10176,6 +10176,15 @@ impl Checker {
                 witchy_canonical_source::storage::borrowed_affine_match_shape(
                     &source, arms, &self.canonical_definitions,
                 ).is_some());
+        if !borrowed_inspection && matches!(scrutinee, Expr::Var(_))
+            && self.inferred_unique_source_type(scrutinee, &st)
+                .or_else(|| ty_to_ast(&self.resolve(&st))).is_some_and(|source|
+                    witchy_canonical_source::storage::affine_storage_shape(
+                        &source, &self.canonical_definitions,
+                    ).is_some())
+        {
+            return terr("matching an affine aggregate with a consuming pattern requires `move` of its root");
+        }
         if !borrowed_inspection {
             self.transfer_once_match_scrutinee(scrutinee, &st)?;
             self.transfer_unique_value(scrutinee, &st, "match scrutinee")?;

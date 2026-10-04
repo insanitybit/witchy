@@ -1168,6 +1168,21 @@ pub fn borrowed_affine_match_shape(
     arms: &[MatchArm],
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Option<ScalarAggregateShape> {
+    fn carries_declared_must(
+        ty: &Type,
+        definitions: &BTreeMap<String, TypeDef>,
+        active: &mut HashSet<Type>,
+        depth: usize,
+    ) -> bool {
+        if depth > 128 || !active.insert(ty.clone()) { return false; }
+        let direct = matches!(ty.unqualified(), Type::Named(name, _)
+            if definitions.get(name).is_some_and(|definition| definition.must_consume));
+        let nested = !direct && stored_children(ty, definitions).ok().flatten()
+            .is_some_and(|children| children.into_types().iter().any(|child|
+                carries_declared_must(child, definitions, active, depth + 1)));
+        active.remove(ty);
+        direct || nested
+    }
     fn read_only(
         ty: &Type,
         pattern: &Pattern,
@@ -1194,7 +1209,8 @@ pub fn borrowed_affine_match_shape(
             let field = &shape.fields[first_field + offset];
             match argument {
                 Pattern::Var(_) if StoragePlan::classify(field.unqualified(), definitions, |_| Some(0))
-                    .requires_affine_owner_token() => true,
+                    .requires_affine_owner_token()
+                    && carries_declared_must(field, definitions, &mut HashSet::new(), 0) => true,
                 Pattern::Wildcard | Pattern::Var(_) | Pattern::Int(_) | Pattern::Bool(_)
                     | Pattern::Duration(_) | Pattern::IntRange { .. } =>
                     matches!(StoragePlan::classify(field.unqualified(), definitions, |_| Some(0)),
