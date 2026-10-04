@@ -11,9 +11,12 @@ pub(super) struct Files<'a> {
     raw: &'a dyn SourceFiles,
     members: BTreeMap<PathBuf, (PackageCoordinate, String)>,
     selected: BTreeSet<(PathBuf, String)>,
-    verifier: Option<pipeline::CheckedModule>,
-    verifier_artifact: Option<AdmittedCanonicalArtifact>,
 }
+
+/// The admitted registry verifier, compiled once per process. It is built only
+/// from sources bundled into this compiler, so every resolver in the process
+/// would compile the identical artifact.
+static VERIFIER: std::sync::OnceLock<Result<AdmittedCanonicalArtifact, String>> = std::sync::OnceLock::new();
 
 impl<'a> Files<'a> {
     pub(super) fn new(raw: &'a dyn SourceFiles) -> Self {
@@ -21,62 +24,11 @@ impl<'a> Files<'a> {
             raw,
             members: BTreeMap::new(),
             selected: BTreeSet::new(),
-            verifier: None,
-            verifier_artifact: None,
         }
     }
 
-    fn verifier(&mut self) -> Result<&pipeline::CheckedModule, String> {
-        if self.verifier.is_none() {
-            // Only compiler-bundled verifier sources enter checking. No source
-            // expansion is admitted, and a vendored manifest cannot choose a body.
-            let compiler = PackageCoordinate::new(
-                PackageSource::Toolchain, "witchy/compiler", env!("CARGO_PKG_VERSION"),
-            ).map_err(|error| error.to_string())?;
-            let mut assignments = vec![
-                ("registry_recipe".to_owned(), ModuleLoadIdentity::new(compiler.clone(),
-                    ["source", "package_inputs", "registry_recipe"]).map_err(|error| error.to_string())?),
-                ("gm_core".to_owned(), ModuleLoadIdentity::new(compiler.clone(),
-                    ["projects", "grimoire", "src", "gm_core"]).map_err(|error| error.to_string())?),
-                ("coven_artifact".to_owned(), ModuleLoadIdentity::new(compiler,
-                    ["projects", "coven", "src", "coven_artifact"]).map_err(|error| error.to_string())?),
-            ];
-            for name in witchy_syntax::linker::STD_MODULES {
-                assignments.push(((*name).to_owned(), toolchain_module_owner(name)?));
-            }
-            for name in witchy_syntax::linker::PLAYGROUND_MODULES {
-                assignments.push(((*name).to_owned(), playground_module_owner(name)?));
-            }
-            let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments)
-                .map_err(|error| error.to_string())?;
-            let user_modules = std::collections::HashSet::from([
-                "registry_recipe".to_owned(), "gm_core".to_owned(), "coven_artifact".to_owned(),
-            ]);
-            self.verifier = Some(witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(vec![
-                ("registry_recipe".into(), include_bytes!("registry_verify.witchy").to_vec()),
-                ("gm_core".into(), include_bytes!("../../../projects/grimoire/src/gm_core.witchy").to_vec()),
-                ("coven_artifact".into(), include_bytes!("../../../projects/coven/src/coven_artifact.witchy").to_vec()),
-            ], "registry_recipe", witchy_syntax::linker::ComptimeExpander::with_sibling_request(
-                witchy_types::pipeline::require_expansion_free, |_| false,
-            ),
-                &user_modules, owners)
-                .map_err(|error| error.to_string())?);
-        }
-        Ok(self.verifier.as_ref().expect("registry verifier initialized"))
-    }
-
-    fn admitted_verifier_artifact(&mut self) -> Result<&AdmittedCanonicalArtifact, String> {
-        if self.verifier_artifact.is_none() {
-            let artifact = match codegen::compile_checked_module_artifact(self.verifier()?) {
-                LoweringOutcome::Lowered(artifact) => artifact,
-                LoweringOutcome::Unsupported(reason) => {
-                    return Err(format!("registry verifier is not admitted: {reason}"));
-                }
-                LoweringOutcome::Rejected(error) => return Err(error.to_string()),
-            };
-            self.verifier_artifact = Some(artifact);
-        }
-        Ok(self.verifier_artifact.as_ref().expect("registry verifier artifact initialized"))
+    fn admitted_verifier_artifact(&mut self) -> Result<&'static AdmittedCanonicalArtifact, String> {
+        VERIFIER.get_or_init(compile_verifier).as_ref().map_err(Clone::clone)
     }
 
     fn evaluate_verifier(&mut self, mode: &str, arguments: Vec<String>) -> Result<Vec<String>, String> {
@@ -93,7 +45,7 @@ impl<'a> Files<'a> {
         let mut args = Vec::with_capacity(arguments.len() + 1);
         args.push(mode.to_owned());
         args.extend(arguments);
-        let mut vm = runtime.spawn_admitted(&artifact, Capabilities {
+        let mut vm = runtime.spawn_admitted(artifact, Capabilities {
             print: true, quiet: true, args,
             capture_output_limit_bytes: Some(1024 * 1024),
             ..Capabilities::none()
@@ -509,5 +461,46 @@ mod admitted_verifier_tests {
         ]).expect("compiler-owned verifier executes on admitted Wasm");
         assert_eq!(result.first().map(String::as_str), Some("error"));
         assert_eq!(result.len(), 4);
+    }
+}
+
+fn compile_verifier() -> Result<AdmittedCanonicalArtifact, String> {
+    // Only compiler-bundled verifier sources enter checking. No source
+    // expansion is admitted, and a vendored manifest cannot choose a body.
+    let compiler = PackageCoordinate::new(
+        PackageSource::Toolchain, "witchy/compiler", env!("CARGO_PKG_VERSION"),
+    ).map_err(|error| error.to_string())?;
+    let mut assignments = vec![
+        ("registry_recipe".to_owned(), ModuleLoadIdentity::new(compiler.clone(),
+            ["source", "package_inputs", "registry_recipe"]).map_err(|error| error.to_string())?),
+        ("gm_core".to_owned(), ModuleLoadIdentity::new(compiler.clone(),
+            ["projects", "grimoire", "src", "gm_core"]).map_err(|error| error.to_string())?),
+        ("coven_artifact".to_owned(), ModuleLoadIdentity::new(compiler,
+            ["projects", "coven", "src", "coven_artifact"]).map_err(|error| error.to_string())?),
+    ];
+    for name in witchy_syntax::linker::STD_MODULES {
+        assignments.push(((*name).to_owned(), toolchain_module_owner(name)?));
+    }
+    for name in witchy_syntax::linker::PLAYGROUND_MODULES {
+        assignments.push(((*name).to_owned(), playground_module_owner(name)?));
+    }
+    let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments)
+        .map_err(|error| error.to_string())?;
+    let user_modules = std::collections::HashSet::from([
+        "registry_recipe".to_owned(), "gm_core".to_owned(), "coven_artifact".to_owned(),
+    ]);
+    let checked = witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(vec![
+        ("registry_recipe".into(), include_bytes!("registry_verify.witchy").to_vec()),
+        ("gm_core".into(), include_bytes!("../../../projects/grimoire/src/gm_core.witchy").to_vec()),
+        ("coven_artifact".into(), include_bytes!("../../../projects/coven/src/coven_artifact.witchy").to_vec()),
+    ], "registry_recipe", witchy_syntax::linker::ComptimeExpander::with_sibling_request(
+        witchy_types::pipeline::require_expansion_free, |_| false,
+    ),
+        &user_modules, owners)
+    .map_err(|error| error.to_string())?;
+    match codegen::compile_checked_module_artifact(&checked) {
+        LoweringOutcome::Lowered(artifact) => Ok(artifact),
+        LoweringOutcome::Unsupported(reason) => Err(format!("registry verifier is not admitted: {reason}")),
+        LoweringOutcome::Rejected(error) => Err(error.to_string()),
     }
 }
