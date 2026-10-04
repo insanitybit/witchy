@@ -463,30 +463,6 @@ fn publish_cache_file(path: &std::path::Path, bytes: &[u8]) {
     }
 }
 
-/// The wasm for an EMBEDDED program (`witchy pm`, `coven-serve`), cached across
-/// the WHOLE front-end pipeline — parse, link, typecheck, AND codegen. The
-/// embedded sources are `include_str!` constants, so the binary fingerprint
-/// covers them exactly: a hit proves THIS binary already parsed/linked/checked/
-/// compiled THESE sources successfully, and the ~300ms front-end cost (which
-/// dominates a warm `pm` invocation — the source cache below only skips
-/// codegen, the last ~90ms) is skipped entirely. Sound by construction like
-/// the source cache: a stale key just misses. The capability grant is host
-/// policy (CLI flags), never derived from the AST, so skipping the front end
-/// changes no authority decision.
-pub(crate) fn embedded_wasm_cached(
-    name: &str,
-    link: impl FnOnce() -> Result<pipeline::CheckedModule, String>,
-) -> Result<Vec<u8>, String> {
-    let checked = link()?;
-    match codegen::compile_checked_module_binary(&checked) {
-        codegen::LoweringOutcome::Lowered(bytes) => Ok(bytes),
-        codegen::LoweringOutcome::Unsupported(reason) => {
-            Err(format!("the embedded {name} {reason}"))
-        }
-        codegen::LoweringOutcome::Rejected(error) => Err(error.to_string()),
-    }
-}
-
 /// Compile a checked production module with the proof wrapper, including
 /// authenticated loader ownership, in the cache key. Identical source loaded
 /// from different packages therefore cannot share runtime type identities or

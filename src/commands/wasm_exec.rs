@@ -13,7 +13,7 @@ use crate::{artifact, runtime, trusted_publisher};
 /// Reads the import section with `wasmparser` — a streaming parse of one
 /// section, not a compile. (This used to call `wasmtime::Module::new` on a
 /// fresh uncached `Engine`, running the FULL Cranelift compile — ~30% of a warm
-/// `witchy pm <verb>` — only to list imports and throw the code away; the real
+/// launch — only to list imports and throw the code away; the real
 /// compile happens at `rt.spawn`, which also rejects any malformed module.)
 pub(crate) fn witchy_imports(bytes: &[u8]) -> Result<Vec<String>, String> {
     use wasmparser::{Parser, Payload, TypeRef};
@@ -212,7 +212,7 @@ pub(crate) fn run_wasm_module(
         print: true,
         print_int: true,
         quiet: true,
-        // A listening program (e.g. `coven-serve`) is a long-running server: its
+        // A listening program is a long-running server: its
         // `main` never returns, so the buffered output path (drained only after
         // the run) would swallow its log/readiness lines. Stream them live and
         // flushed instead. Non-listening programs keep the buffered path, which

@@ -983,14 +983,6 @@ fn build_read_integration_edits_run_only_their_own_modules() {
             "tests/misc/rfc0103_build_step_confinement.rs",
             "rfc0103_build_step_confinement",
         ),
-        (
-            "tests/misc/rfc0165_build_read_project.rs",
-            "rfc0165_build_read_project",
-        ),
-        (
-            "tests/misc/rfc0165_build_env_project.rs",
-            "rfc0165_build_env_project",
-        ),
     ] {
         let commands = selected(&["--edit-loop", path]);
         assert_eq!(commands.len(), 1, "{path}: {commands:?}");
@@ -1390,8 +1382,6 @@ fn canonical_build_recipe_edits_keep_cross_stage_contracts() {
         );
         for module in [
             "rfc0103_build_step_confinement::",
-            "rfc0165_build_read_project::",
-            "rfc0165_build_env_project::",
         ] {
             assert!(commands[2].contains(module), "{path}: {module}: {commands:?}");
         }

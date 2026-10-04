@@ -536,8 +536,6 @@ for p in "${paths[@]}"; do
         crates/witchy-canonical-source/src/* | \
         crates/witchy-wir/src/canonical*)
             canonical_rewrite=1 ;;
-        tests/misc/rfc0165_build_env_project.rs | \
-        tests/misc/rfc0165_build_read_project.rs) ;;
         tests/misc/rfc0165_*.rs)
             canonical_rewrite=1 ;;
     esac
@@ -657,15 +655,6 @@ for p in "${paths[@]}"; do
             # probe in the edit loop; the complete adapter family remains in
             # the landing selection below.
             add_early "cargo nextest run -p witchy --features witchy-wir/native --test misc --ignore-default-filter -E 'test(=rfc0165_owner_adapters::server_workers_reject_raw_wasm_even_with_genuine_entry_metadata)'"
-            path_has_early=1 ;;
-        tests/misc/rfc0165_build_read_project.rs | \
-        tests/misc/rfc0165_build_env_project.rs)
-            # These are nightly-deferred, so the admitted-test wrapper filters
-            # them out. Run the focused edit probe directly; the landing gate
-            # retains its deferred selection policy.
-            _misc="${p##*/}"
-            _misc="${_misc%.rs}"
-            add_early "cargo nextest run --test misc -E 'test(/.*${_misc}::/)'"
             path_has_early=1 ;;
         tests/misc/rfc0077_integration_grants.rs)
             # The async source-integration cases each take about 166s and run
@@ -879,7 +868,7 @@ for p in "${paths[@]}"; do
             any_rust=1
             add_witchy_test 'diagnostic_golden_tests'
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --bin witchy -E 'test(/^diagnostic_golden_tests/)'" ;;
-        src/lib.rs | src/artifact.rs | src/stats.rs | src/idp.rs | \
+        src/lib.rs | src/artifact.rs | src/stats.rs | \
         src/trusted_publisher.rs | src/capabilities_tests.rs)
             any_rust=1
             add_pkg witchy
@@ -980,10 +969,7 @@ for p in "${paths[@]}"; do
             else
                 _misc="${p##*/}"
                 _misc="${_misc%.rs}"
-                case "$_misc" in
-                    rfc0165_build_read_project | rfc0165_build_env_project) ;;
-                    *) add_misc_module "$_misc" ;;
-                esac
+                add_misc_module "$_misc"
                 if [ "$path_has_early" -eq 0 ]; then
                     add "./scripts/nextest-admitted.sh witchy -- cargo nextest run --test misc -E 'test(/.*${_misc}::/)'"
                 fi
@@ -1311,7 +1297,7 @@ elif [ "$edit_loop" -eq 1 ] && [ "$canonical_rewrite" -eq 1 ] \
     if [ "$canonical_build_recipe" -eq 1 ]; then
         canonical_build_recipe_wir_expr=" or test(canonical_safewir::build_read::tests::build_env_catalog_authenticates_root_and_keeps_presence_internal)"
         canonical_build_recipe_lower_expr=" or test(=tests::grantful_build_primitives_compile_to_build_imports_only)"
-        canonical_build_recipe_app_expr=" or test(/.*rfc0103_build_step_confinement::/) or test(/.*rfc0165_build_read_project::/) or test(/.*rfc0165_build_env_project::/)"
+        canonical_build_recipe_app_expr=" or test(/.*rfc0103_build_step_confinement::/)"
     fi
     canonical_wasmir_tail_expr=""
     if [ "$canonical_wasmir_tail" -eq 1 ]; then

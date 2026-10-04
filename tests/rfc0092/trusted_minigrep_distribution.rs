@@ -23,7 +23,8 @@ fn committed_minigrep_builds_and_runs_as_an_installed_trusted_app() {
     let built = run(
         Command::new(BIN)
             .current_dir(scratch.path())
-            .args(["--release", "build", "--target", "trusted-publisher", "project"]),
+            .args(["compile", "project/src/minigrep.witchy", "--target", "trusted-publisher",
+                "--manifest", "project/witchy.toml", "--out", "project/target/release/minigrep", "--release"]),
     );
     assert!(
         built.status.success(),

@@ -67,15 +67,6 @@ fn ordinary_project_command_executes_owner_capture_with_resolved_dependency() {
         .args(["--dir", "app", "--", "launch-argument"]).output().unwrap();
     assert!(String::from_utf8_lossy(&direct.stderr).contains("confinement: layer="),
         "the admitted child must report confinement: {}", String::from_utf8_lossy(&direct.stderr));
-    // exec.run's documented result is stdout followed by stderr, including
-    // the child's real confinement report. Compare the complete capture;
-    // neither strip diagnostics nor depend on platform-specific report text.
-    let expected_capture = [direct.stdout.as_slice(), direct.stderr.as_slice()].concat();
     success(direct, "launch-argument");
-    let result = Command::new(BIN).current_dir(&dir).env("WITCHY_HOME", dir.join("home"))
-        .args(["run", "app", "launch-argument"]).output().unwrap();
-    assert_eq!(result.status.code(), Some(7), "stdout={} stderr={}",
-        String::from_utf8_lossy(&result.stdout), String::from_utf8_lossy(&result.stderr));
-    assert_eq!(result.stdout, expected_capture, "project Exec capture must preserve both child streams");
     assert!(!dir.join("app/target/app.wasm").exists());
 }

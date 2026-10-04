@@ -23,11 +23,7 @@ mod rfc0165_packaged_source;
 #[path = "misc/rfc0165_project_run.rs"]
 mod rfc0165_project_run;
 
-#[path = "misc/rfc0165_build_read_project.rs"]
-mod rfc0165_build_read_project;
 
-#[path = "misc/rfc0165_build_env_project.rs"]
-mod rfc0165_build_env_project;
 
 
 

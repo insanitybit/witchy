@@ -44,12 +44,13 @@ fn main(console: Console, cwd: Dir[Read], root: Dir[Read], env: Env, args: List(
     )
     .unwrap();
 
-    // The documented project command chooses target/release/<rune-name> and
-    // produces one executable artifact.
+    // The compiler command a package manager drives produces one executable
+    // artifact at the requested path.
     let built = run(
         Command::new(BIN)
             .current_dir(scratch.path())
-            .args(["--release", "build", "--target", "trusted-publisher"]),
+            .args(["compile", "src/trusted_fixture.witchy", "--target", "trusted-publisher",
+                "--manifest", "witchy.toml", "--out", "target/release/trusted_fixture", "--release"]),
     );
     assert!(
         built.status.success(),

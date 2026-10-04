@@ -240,3 +240,33 @@ fn production_build_read_refuses_escape_without_writing_output() {
     assert!(stderr.contains("read_build") && stderr.contains("escapes"), "{stderr}");
     assert!(!out.join("result.txt").exists());
 }
+
+/// `BuildEnv` reads the real process environment through its allow-list:
+/// present, empty and unset keys keep their distinct answers, and a key
+/// outside the list is refused without disclosing its value.
+#[test]
+fn build_env_preserves_present_empty_unset_and_refuses_unlisted_keys() {
+    let dir = TempDir::new("build-env-states");
+    let out = dir.join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    let source = dir.join("build.witchy");
+    std::fs::write(&source, "fn build(env: BuildEnv, out: BuildOut):\n    let present = env.get_build_env(\"WITCHY_BE_PRESENT\") ?? \"unset\"\n    let empty = env.get_build_env(\"WITCHY_BE_EMPTY\") ?? \"unset\"\n    let unset = env.get_build_env(\"WITCHY_BE_UNSET\") ?? \"unset\"\n    out.write_out(\"env.txt\", present + \"|\" + empty + \"|\" + unset)\n").unwrap();
+    let granted = Command::new(BIN)
+        .args(["build-step", source.to_str().unwrap(), "--out", out.to_str().unwrap(),
+            "--env", "WITCHY_BE_PRESENT", "--env", "WITCHY_BE_EMPTY", "--env", "WITCHY_BE_UNSET"])
+        .env("WITCHY_BE_PRESENT", "caf\u{e9}").env("WITCHY_BE_EMPTY", "").env_remove("WITCHY_BE_UNSET")
+        .output().unwrap();
+    assert!(granted.status.success(), "{}", String::from_utf8_lossy(&granted.stderr));
+    assert_eq!(std::fs::read_to_string(out.join("env.txt")).unwrap(), "caf\u{e9}||unset");
+
+    std::fs::write(&source, "fn build(env: BuildEnv, out: BuildOut):\n    out.write_out(\"denied.txt\", env.get_build_env(\"WITCHY_BE_SECRET\") ?? \"unset\")\n").unwrap();
+    let denied = Command::new(BIN)
+        .args(["build-step", source.to_str().unwrap(), "--out", out.to_str().unwrap(), "--env", "WITCHY_BE_PRESENT"])
+        .env("WITCHY_BE_SECRET", "ungranted-environment-secret")
+        .output().unwrap();
+    let trace = format!("{}{}", String::from_utf8_lossy(&denied.stdout), String::from_utf8_lossy(&denied.stderr));
+    assert!(!denied.status.success(), "{trace}");
+    assert!(trace.contains("`WITCHY_BE_SECRET` is not in this BuildEnv grant's allow-list"), "{trace}");
+    assert!(!trace.contains("ungranted-environment-secret"), "{trace}");
+    assert!(!out.join("denied.txt").exists());
+}

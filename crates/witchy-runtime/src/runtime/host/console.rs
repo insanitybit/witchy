@@ -310,7 +310,7 @@ fn host_print(mut caller: Caller<'_, VmState>, ptr: i32, len: i32) -> Result<()>
         use std::io::Write;
         // Long-running server: stream cleanly (no debug prefix) and flush, since
         // `main` never returns to drain the buffer and stdout is block-buffered
-        // when redirected to a pipe/file (e.g. `coven-serve > log`).
+        // when redirected to a pipe/file (e.g. `server > log`).
         print!("{text}");
         let _ = std::io::stdout().flush();
     } else if !caller.data().caps.quiet {

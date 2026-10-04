@@ -41,7 +41,6 @@ pub(crate) use commands::wasm_exec::run_wasm_file;
 mod lsp;
 mod source;
 pub(crate) use witchy::parser;
-mod idp;
 pub(crate) use witchy::runtime;
 pub(crate) use witchy::typeck;
 pub(crate) use witchy::trusted_publisher;

@@ -41,7 +41,7 @@ USAGE:
     witchy doc     <file.witchy>...                generate stdlib documentation from doc-comments
     witchy compile <entry.witchy> [--dep name=path]... [--package-owner source package version module] [--dep-owner alias source package version module]... [--out <file.wasm>]
                                                   compile to a standalone .wasm module
-    witchy --release build --target trusted-publisher [--out <file>]
+    witchy compile <entry.witchy> --target trusted-publisher --manifest <witchy.toml> --out <file> [--release]
                                                   build a trusted self-contained native application
     witchy build-step <file.witchy> [--out <dir>] [--read <dir>]...
                                                   run a build-time entrypoint with declared grants
@@ -53,11 +53,8 @@ USAGE:
                                                    reformat in place (--check: verify only, --cap-methods: RFC-0076 migration)
     witchy lsp                                    run the language server
 
-Package commands: new, init, add, build, run [args...], update, audit, tree,
-outdated, why, why-cap, verify, vendor, publish, promote, yank, list — run
-`witchy pm` for the full package-manager help. All of them accept
-`-C <dir>`; `witchy run` passes everything after `run` (or after `--`) to the
-program as `main`'s `args`, including `--help`.";
+Projects, dependencies and publishing are the package manager's: grimoire
+drives this compiler.";
 
 /// (RFC-0037) The optimization mode a LEADING global flag selects (`--release` /
 /// `--debug`), or `None`. `args` is the argv WITHOUT the program name. Only the

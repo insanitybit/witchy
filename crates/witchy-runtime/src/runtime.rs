@@ -901,7 +901,7 @@ pub struct Capabilities {
     pub capture_output_limit_bytes: Option<usize>,
     /// Stream Console output live to stdout as each line is printed, cleanly
     /// (no `[vm N]` debug prefix) and flushed immediately. This is for
-    /// long-running servers (`coven-serve`) whose `main` never returns: the
+    /// long-running servers whose `main` never returns: the
     /// default path buffers output and drains it only after the run completes,
     /// so a server's log/readiness lines would never appear. Independent of
     /// `quiet` (which governs the debug echo); when `live_output` is set the
