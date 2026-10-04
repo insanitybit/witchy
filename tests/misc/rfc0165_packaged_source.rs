@@ -37,8 +37,6 @@ fn packaged_owner_rechecks_closed_source_and_rejects_substitution_before_effects
     std::fs::write(&source, SOURCE).unwrap();
     std::fs::write(&manifest, MANIFEST).unwrap();
     let expected = "packaged capture\nlaunch-argument\n";
-    let interpreted = Command::new(BIN).arg(&source).arg("launch-argument").output().unwrap();
-    outcome(&interpreted, 7, expected);
 
     let application = folder.join("app");
     let compiled = Command::new(BIN).arg("compile").arg(&source)

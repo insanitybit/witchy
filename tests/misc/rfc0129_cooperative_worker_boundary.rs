@@ -108,8 +108,10 @@ fn run_grant_names(source: &str) -> BTreeSet<String> {
         .collect()
 }
 
+// RFC-0129 row 6: cooperative and parallel maps use distinct boundaries.
+// One test per program, so each compiles once.
 #[test]
-fn rfc0129_acceptance_row_6_cooperative_and_parallel_maps_use_distinct_boundaries() {
+fn rfc0129_acceptance_row_6_cooperative_map_stays_in_its_executor() {
     let cooperative_expected = [
         "task 5",
         "task 3",
@@ -135,7 +137,10 @@ fn rfc0129_acceptance_row_6_cooperative_and_parallel_maps_use_distinct_boundarie
         cooperative_workers.is_empty(),
         "chan.par_map must stay inside its cooperative executor: {cooperative_workers:?}",
     );
+}
 
+#[test]
+fn rfc0129_acceptance_row_6_scalar_par_map_crosses_the_worker_boundary() {
     let (parallel_output, parallel_wasm, parallel_launches) = run_admitted(PARALLEL_WORKER_MAP);
     assert!(parallel_launches > 0, "scalar par_map must launch a zero-grant worker VM");
     assert_eq!(parallel_output, ["[25, 9, 64, 1]"], "parallel worker map keeps input order");
@@ -148,7 +153,10 @@ fn rfc0129_acceptance_row_6_cooperative_and_parallel_maps_use_distinct_boundarie
         ]),
         "a direct scalar vm.par_map has a measured two-import worker-VM boundary",
     );
+}
 
+#[test]
+fn rfc0129_acceptance_row_6_capturing_callback_stays_in_its_parent() {
     let (fallback_output, fallback_wasm, fallback_launches) = run_admitted(SEQUENTIAL_WORKER_FALLBACK);
     assert_eq!(fallback_launches, 0, "capturing callback launches no worker VMs");
     assert_eq!(
@@ -166,7 +174,10 @@ fn rfc0129_acceptance_row_6_cooperative_and_parallel_maps_use_distinct_boundarie
         fallback_workers.is_empty(),
         "a capability-capturing callback cannot silently cross the worker boundary: {fallback_workers:?}",
     );
+}
 
+#[test]
+fn rfc0129_acceptance_row_6_with_dir_worker_receives_exactly_its_dir() {
     let explicit_checked = witchy::resolve_std_only_checked(EXPLICIT_DIR_WORKER)
         .expect("the explicit Dir worker source must check");
     // Legacy raw-codegen ABI evidence only; canonical vm.with_dir admission is
