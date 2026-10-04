@@ -161,6 +161,8 @@ mod rfc0167_indirect_var_view_tuple;
 mod rfc0167_inferred_tuple_qualifiers;
 #[path = "misc/rfc0167_call_result_storage.rs"]
 mod rfc0167_call_result_storage;
+#[path = "misc/rfc0167_generic_argument_storage.rs"]
+mod rfc0167_generic_argument_storage;
 #[path = "misc/rfc0167_must_var_list_replacement.rs"]
 mod rfc0167_must_var_list_replacement;
 #[path = "misc/rfc0167_must_result_propagation.rs"]

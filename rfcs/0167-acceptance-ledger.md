@@ -473,6 +473,16 @@ templates agree, and result qualifiers still join conservatively. This
 covers local named-function aliases; lambda-origin templates, trait dispatch,
 and external callable metadata remain open, so row H is partial.
 
+Nested generic call arguments, 2026-10-04: source result qualifiers now flow
+through checked named calls used as arguments to another generic call.
+`wrap(identity(fresh()))` carries the plain `Box`
+result through two generic substitutions, admits a deep `var` write, and
+returns the independent `93` on admitted unoptimized Wasm with zero canonical
+heap leaks. The same nested path from a `frozen Box` refuses that write with
+the frozen-mutation diagnostic. Source parameter bindings must be complete;
+unknown argument shapes and callable origins without source contracts remain
+fail closed. Row H remains partial for those paths and wider compositions.
+
 `rfc0167_frozen_view_replacement` adds a normal-mode row L composition
 witness: a rooted `&frozen Box` keeps the old field value when a `var frozen
 Box` root is replaced, so admitted unoptimized Wasm prints the independently

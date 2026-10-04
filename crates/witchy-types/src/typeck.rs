@@ -1713,6 +1713,11 @@ impl Checker {
         match expression {
             Expr::Var(name) => self.binding_storage_type(name),
             Expr::Unary { op: UnOp::Move, expr } => self.argument_storage_type(expr),
+            Expr::Call { name, args } => self.call_storage_result_from_arguments(name, args),
+            Expr::Apply { func, args } => match func.as_ref() {
+                Expr::Var(name) => self.call_storage_result_from_arguments(name, args),
+                _ => None,
+            },
             Expr::Ctor { name, .. } => {
                 let (_, result) = self.ctor_sigs.get(name)?;
                 self.inferred_binding_storage_type(expression, result)
@@ -1771,13 +1776,20 @@ impl Checker {
         }
     }
 
-    fn checked_call_storage_result(&self, name: &str, args: &[Expr], ty: &Ty) -> Option<ast::Type> {
+    fn call_storage_result_from_arguments(&self, name: &str, args: &[Expr]) -> Option<ast::Type> {
         let source = self.callable_storage_result_type(name)?;
-        let expected = ty_to_ast(&self.resolve(ty))?;
-        if Self::storage_erased_type(&source)? == expected {
+        let Some((templates, parameters)) = self.callable_storage_parameters(name) else {
+            // Without the source parameter contract, a generic result cannot
+            // be specialized from its arguments. The checked result path
+            // below may still accept a fully concrete result.
+            if self.fn_typarams.get(name).is_some_and(|params| !params.is_empty()) {
+                return None;
+            }
+            return Some(source);
+        };
+        if parameters.is_empty() {
             return Some(source);
         }
-        let (templates, parameters) = self.callable_storage_parameters(name)?;
         if templates.len() != args.len() {
             return None;
         }
@@ -1786,7 +1798,19 @@ impl Checker {
             let actual = self.argument_storage_type(argument)?;
             Self::bind_storage_source_parameters(template, &actual, &parameters, &mut bindings)?;
         }
-        let specialized = Self::substitute_unique_source_type(&source, &bindings);
+        if !parameters.iter().all(|parameter| bindings.contains_key(parameter)) {
+            return None;
+        }
+        Some(Self::substitute_unique_source_type(&source, &bindings))
+    }
+
+    fn checked_call_storage_result(&self, name: &str, args: &[Expr], ty: &Ty) -> Option<ast::Type> {
+        let source = self.callable_storage_result_type(name)?;
+        let expected = ty_to_ast(&self.resolve(ty))?;
+        if Self::storage_erased_type(&source)? == expected {
+            return Some(source);
+        }
+        let specialized = self.call_storage_result_from_arguments(name, args)?;
         (Self::storage_erased_type(&specialized)? == expected).then_some(specialized)
     }
 
