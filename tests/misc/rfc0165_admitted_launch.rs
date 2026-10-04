@@ -662,6 +662,29 @@ fn admitted_dir_read_rejects_a_pipe_without_waiting_for_a_writer() {
 }
 
 #[test]
+fn admitted_dir_read_bounds_the_host_response_before_copying_to_the_guest() {
+    let root = scratch_dir("dir-bounded");
+    std::fs::write(root.join("small.txt"), "ok").expect("seed file");
+    std::fs::File::create(root.join("oversized.txt"))
+        .expect("create sparse file")
+        .set_len((64 << 20) + 1)
+        .expect("size sparse file");
+    let output = run_admitted_with_grants(
+        "fn main(console: Console, dir: Dir[Read]):\n    console.print(dir.read(\"small.txt\") ?? \"bad\")\n    match dir.read(\"oversized.txt\"):\n        Ok(_) -> console.print(\"bad\")\n        Err(Io(_)) -> console.print(\"io\")\n        Err(_) -> console.print(\"other\")\n",
+        Capabilities {
+            print: true,
+            print_int: true,
+            quiet: true,
+            dir_root: Some(root.clone()),
+            dir_read: true,
+            ..Default::default()
+        },
+    ).expect("admitted program runs");
+    assert_eq!(output, ["ok", "io"]);
+    std::fs::remove_dir_all(root).expect("cleanup");
+}
+
+#[test]
 fn admitted_env_get_env_answers_set_unset_and_denied_without_an_existence_oracle() {
     // RFC-0126 rule 3: one host lookup answers `Result(Option(String),
     // CapError)`. The table crosses allow-listed and not-allow-listed names

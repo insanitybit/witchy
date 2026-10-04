@@ -336,6 +336,10 @@ fn dir_bytes_length(length: usize) -> Result<i32> {
     i32::try_from(length).map_err(|_| Error::msg("Dir response exceeds the guest ABI size limit"))
 }
 
+/// Keep one guest-triggered file response bounded before constructing its
+/// host-side payload. The same limit covers Dir and File reads.
+const MAX_CAP_READ_BYTES: u64 = 64 << 20;
+
 fn dir_storage_range(ptr: i32, length: i32, limit: usize) -> Result<std::ops::Range<usize>> {
     let start = usize::try_from(ptr).map_err(|_| Error::msg("negative Dir storage slice pointer"))?;
     let length = usize::try_from(length).map_err(|_| Error::msg("negative Dir storage slice length"))?;
@@ -391,7 +395,7 @@ fn host_file_read_at(mut caller: Caller<'_, VmState>, f: Option<Rooted<ExternRef
         return Err(Error::msg("this File capability does not grant Read"));
     }
     let FileBacking::Fs(backing) = &file.backing;
-    let read = backing.read_bytes_classified()
+    let read = backing.read_bytes_classified_bounded(MAX_CAP_READ_BYTES)
         .and_then(|bytes| utf8_contents(bytes, "File").map(String::into_bytes));
     let (status, bytes) = match read {
         Ok(bytes) => (0, bytes),
@@ -452,7 +456,7 @@ fn dir_read_contents(dir: &DirAuthority, rel: &str) -> Result<Vec<u8>, ConfineEr
         return match base.entry_kind_spelled(rel)? {
             Some(ConfinedEntryKind::File) => {
                 let file = base.file(rel, false)?;
-                file.read_bytes_no_follow().map_err(|error| ConfineError::new(
+                file.read_bytes_bounded(MAX_CAP_READ_BYTES, true).map_err(|error| ConfineError::new(
                     ConfineErrorKind::of_io(&error),
                     format!("read failed for `{rel}`: {error}"),
                 ))
@@ -466,7 +470,7 @@ fn dir_read_contents(dir: &DirAuthority, rel: &str) -> Result<Vec<u8>, ConfineEr
         };
     }
     base.file(rel, true)
-        .and_then(|file| file.read_bytes().map_err(|error| ConfineError::new(
+        .and_then(|file| file.read_bytes_bounded(MAX_CAP_READ_BYTES, false).map_err(|error| ConfineError::new(
             ConfineErrorKind::of_io(&error),
             format!("read failed for `{rel}`: {error}"),
         )))

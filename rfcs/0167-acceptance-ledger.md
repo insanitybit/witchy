@@ -3607,3 +3607,12 @@ regular files, directories, denied paths and a FIFO without a writer.
 `admitted_dir_read_rejects_a_pipe_without_waiting_for_a_writer` compiles a
 normal-mode source program to admitted Wasm and observes `ok`, then `Io`
 under an explicit read grant. The browser provider remains deferred.
+
+### 2026-10-04: bounded native file responses (RFC-0126 rule 3)
+
+Native `Dir.read`, `Dir.read_bytes`, and `File.read` use one 64 MiB host
+read limit. The confined handle is read through a limit-plus-one reader, so
+an oversized file answers `Io` without staging its entire contents or
+publishing a truncated success. The admitted normal-mode Wasm witness reads
+a small file and branches on `Io` for a sparse file one byte above the
+limit.

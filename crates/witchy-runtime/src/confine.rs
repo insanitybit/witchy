@@ -689,8 +689,8 @@ impl ConfinedFile {
     /// whatever its target is, so a link leaving the root never reports
     /// whether its outside target exists; any other failure is classified by
     /// its I/O kind.
-    pub fn read_bytes_classified(&self) -> Result<Vec<u8>, ConfineError> {
-        let read = if self.no_follow { self.read_bytes_no_follow() } else { self.read_bytes() };
+    pub fn read_bytes_classified_bounded(&self, limit: u64) -> Result<Vec<u8>, ConfineError> {
+        let read = self.read_bytes_bounded(limit, self.no_follow);
         read.map_err(|error| {
             let through_link = self.name.to_str().is_some_and(|name| {
                 matches!(self.parent.entry_kind_spelled(name), Ok(Some(ConfinedEntryKind::Other)))
@@ -699,6 +699,28 @@ impl ConfinedFile {
             let kind = if through_link { ConfineErrorKind::Denied } else { ConfineErrorKind::of_io(&error) };
             ConfineError::new(kind, format!("read failed for `{}`: {error}", self.display.display()))
         })
+    }
+
+    /// Read at most `limit + 1` bytes from the opened regular file. The
+    /// extra byte distinguishes an exact-limit result from an oversized one
+    /// without staging the whole file in host memory.
+    pub fn read_bytes_bounded(&self, limit: u64, no_follow: bool) -> std::io::Result<Vec<u8>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            use std::io::Read;
+            let file = self.open_regular_read_handle(no_follow)?;
+            let mut contents = Vec::new();
+            file.take(limit.saturating_add(1)).read_to_end(&mut contents)?;
+            if contents.len() as u64 > limit {
+                return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "read exceeds the host limit"));
+            }
+            Ok(contents)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (limit, no_follow);
+            Err(unsupported())
+        }
     }
 
     /// Read the confined file's RAW bytes without UTF-8 validation — for binary
@@ -993,6 +1015,18 @@ pub mod tests {
         fn join(&self, path: &str) -> PathBuf {
             self.0.join(path)
         }
+    }
+
+    pub fn bounded_file_read_accepts_the_limit_and_refuses_the_next_byte() {
+        let scratch = Scratch::new();
+        std::fs::write(scratch.join("exact"), b"four").unwrap();
+        std::fs::write(scratch.join("over"), b"fives").unwrap();
+        let root = ConfinedDir::open_ambient(&scratch.0).unwrap();
+        let exact = root.file("exact", true).unwrap();
+        let over = root.file("over", true).unwrap();
+        assert_eq!(exact.read_bytes_bounded(4, false).unwrap(), b"four");
+        assert_eq!(over.read_bytes_bounded(4, false).unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(over.read_bytes_classified_bounded(4).unwrap_err().kind, ConfineErrorKind::Io);
     }
     impl Drop for Scratch {
         fn drop(&mut self) {

@@ -18,6 +18,7 @@ mod confine {
     mod tests {
         use crate::Outcome;
         use witchy_runtime::confine::tests as checks;
+        #[test] fn bounded_file_read_accepts_the_limit_and_refuses_the_next_byte() { checks::bounded_file_read_accepts_the_limit_and_refuses_the_next_byte().check() }
         #[test] fn a_fresh_operation_rejects_a_swapped_parent() { checks::a_fresh_operation_rejects_a_swapped_parent().check() }
         #[test] fn a_symlink_leaf_is_never_followed_for_writes() { checks::a_symlink_leaf_is_never_followed_for_writes().check() }
         #[test] fn exact_entry_identity_rejects_symlink_and_case_aliases() { checks::exact_entry_identity_rejects_symlink_and_case_aliases().check() }

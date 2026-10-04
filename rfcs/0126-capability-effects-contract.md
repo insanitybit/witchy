@@ -161,6 +161,10 @@ or other special file answers `Io`. Under a policy such an entry is `Other`
 and answers `NotFound`. The host and admitted Wasm witnesses cover a FIFO
 without a writer.
 
+Native `Dir.read`, `Dir.read_bytes`, and `File.read` stop after at most
+64 MiB plus one byte. An oversized file answers `Io` with a fixed
+guest-visible message; its contents are not published as a partial result.
+
 Every `Dir` and `File` operation and `env.get_env` implement this rule end to
 end in admitted Wasm: `read`, `read_bytes`, `list`, `subtree`, `read_file`,
 `write_file`, `write`, `append`, `write_bytes`, `append_bytes`, `create_new`,
