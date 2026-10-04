@@ -1833,6 +1833,19 @@ impl Checker {
             }
             (Expr::Unary { op: UnOp::Move, expr }, _) =>
                 self.inferred_binding_storage_type(expr, &resolved),
+            (Expr::Block(block), _) => self.inferred_block_storage_type(block, &resolved),
+            (Expr::If { then_block, else_block: Some(else_block), .. }, _) => {
+                let then_source = self.inferred_block_storage_type(then_block, &resolved)?;
+                let else_source = self.inferred_block_storage_type(else_block, &resolved)?;
+                Self::common_storage_type(&then_source, &else_source)
+            }
+            (Expr::Match { arms, .. }, _) if !arms.is_empty() => {
+                let mut sources = arms.iter().map(|arm|
+                    self.inferred_binding_storage_type(&arm.body, &resolved));
+                let first = sources.next()??;
+                sources.try_fold(first, |common, source|
+                    Self::common_storage_type(&common, &source?))
+            }
             (Expr::Tuple(items), Ty::Tuple(fields)) if items.len() == fields.len() =>
                 Some(ast::Type::Tuple(items.iter().zip(fields.iter()).map(|(item, field)|
                     self.inferred_binding_storage_type(item, field)).collect::<Option<Vec<_>>>()?)),
@@ -1852,6 +1865,11 @@ impl Checker {
             | (Expr::Bool(_), Ty::Bool) => ty_to_ast(&resolved),
             _ => None,
         }
+    }
+
+    fn inferred_block_storage_type(&self, block: &Block, ty: &Ty) -> Option<ast::Type> {
+        let Stmt::Expr(result) = block.stmts.last()? else { return None; };
+        self.inferred_binding_storage_type(result, ty)
     }
 
 
