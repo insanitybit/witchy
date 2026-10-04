@@ -502,6 +502,16 @@ with zero canonical heap leaks. A frozen `if` arm and a shadowed frozen
 match-arm local both refuse deep mutation after generic substitution. Missing
 arm facts still fail closed; row H remains partial for other argument forms.
 
+Generic constructor source storage, 2026-10-04: source field templates for
+user-defined generic variants now bind checked argument storage qualifiers
+into the constructor's nominal result shape. `extract(Envelope(Box(2)))`
+retains a plain `Box` through construction and a generic return, admits a
+deep `var` write, and returns the independent `93` on admitted unoptimized
+Wasm with zero canonical heap leaks. A frozen payload refuses that write.
+Both argument orders of `Twin(a, a)` also refuse when one `a` is frozen;
+repeated bindings join conservatively. Unbound constructor parameters and
+unknown argument shapes remain without a storage proof. Row H remains partial.
+
 `rfc0167_frozen_view_replacement` adds a normal-mode row L composition
 witness: a rooted `&frozen Box` keeps the old field value when a `var frozen
 Box` root is replaced, so admitted unoptimized Wasm prints the independently

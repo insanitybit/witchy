@@ -1734,10 +1734,7 @@ impl Checker {
             },
             Expr::Block(_) | Expr::If { .. } | Expr::Match { .. } =>
                 self.scoped_expression_storage_type(expression),
-            Expr::Ctor { name, .. } => {
-                let (_, result) = self.ctor_sigs.get(name)?;
-                self.inferred_binding_storage_type(expression, result)
-            }
+            Expr::Ctor { name, args } => self.constructor_storage_result_from_arguments(name, args),
             Expr::Tuple(items) => Some(ast::Type::Tuple(items.iter()
                 .map(|item| self.argument_storage_type(item)).collect::<Option<Vec<_>>>()?)),
             Expr::List(items) if !items.is_empty() => {
@@ -1790,6 +1787,31 @@ impl Checker {
                 Self::bind_storage_source_parameters(expected, found, parameters, bindings),
             _ => None,
         }
+    }
+
+    fn constructor_storage_result_from_arguments(
+        &self,
+        name: &str,
+        args: &[Expr],
+    ) -> Option<ast::Type> {
+        let (_, result) = self.ctor_sigs.get(name)?;
+        let Ty::Named(result_name, _) = self.resolve(result) else { return None; };
+        let parameters = self.ctor_source_type_params.get(name)?;
+        if parameters.is_empty() {
+            return Some(ast::Type::Named(result_name.to_string(), Vec::new()));
+        }
+        let templates = self.unique_ctor_field_types.get(name)?;
+        if templates.len() != args.len() {
+            return None;
+        }
+        let mut bindings = HashMap::new();
+        for (template, argument) in templates.iter().zip(args) {
+            let actual = self.argument_storage_type(argument)?;
+            Self::bind_storage_source_parameters(template, &actual, parameters, &mut bindings)?;
+        }
+        Some(ast::Type::Named(result_name.to_string(), parameters.iter()
+            .map(|parameter| bindings.get(parameter).cloned())
+            .collect::<Option<Vec<_>>>()?))
     }
 
     fn call_storage_result_from_arguments(&self, name: &str, args: &[Expr]) -> Option<ast::Type> {
@@ -1861,7 +1883,12 @@ impl Checker {
                 sources.all(|source| source.as_ref() == Some(&first))
                     .then_some(ast::Type::Named("List".into(), vec![first]))
             }
-            (Expr::Ctor { .. } | Expr::Record { .. }, Ty::Named(name, args)) if args.is_empty() =>
+            (Expr::Ctor { name, args }, _) => {
+                let source = self.constructor_storage_result_from_arguments(name, args)?;
+                (Self::storage_erased_type(&source)? == ty_to_ast(&resolved)?)
+                    .then_some(source)
+            }
+            (Expr::Record { .. }, Ty::Named(name, args)) if args.is_empty() =>
                 Some(ast::Type::Named(name.to_string(), Vec::new())),
             (Expr::Int(_), Ty::Int)
             | (Expr::Float(_), Ty::Float)
