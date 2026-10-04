@@ -173,13 +173,32 @@ gate_dtest_changed_files=""
 gate_dtest_changed_definitions=""
 gate_dtest_selected_tests=""
 gate_dtest_index_ms=""
+gate_dtest_index_load_ms=""
 gate_dtest_index_git_ms=""
+gate_dtest_index_stat_ms=""
+gate_dtest_index_read_ms=""
+gate_dtest_index_parse_ms=""
+gate_dtest_index_materialize_ms=""
 gate_dtest_index_graph_ms=""
+gate_dtest_index_serialize_ms=""
+gate_dtest_index_map_ms=""
 gate_dtest_selection_ms=""
+gate_dtest_selection_git_diff_ms=""
+gate_dtest_selection_old_sources_ms=""
+gate_dtest_selection_old_parse_us=""
+gate_dtest_selection_definition_compare_us=""
+gate_dtest_selection_old_cache_hits=""
+gate_dtest_selection_old_cache_misses=""
+gate_dtest_selection_old_cache_lookup_us=""
+gate_dtest_selection_old_cache_write_ms=""
+gate_dtest_selection_graph_walk_ms=""
+gate_dtest_selection_materialize_ms=""
 gate_dtest_partitions=""
 gate_dtest_overlay_hits=""
 gate_dtest_overlay_entries=""
 gate_dtest_overlay_compacted=""
+gate_dtest_index_overlay_entries=""
+gate_dtest_index_overlay_compacted=""
 gate_dtest_target_narrowed="false"
 gate_dtest_exact_filter=""
 gate_dtest_filter_bytes=""
@@ -591,13 +610,32 @@ record_attempt() { # event branch start prepared locked gate-start gate-end fini
     [ -n "${gate_dtest_changed_definitions:-}" ] && selection+=(dtest_changed_definitions "$gate_dtest_changed_definitions")
     [ -n "${gate_dtest_selected_tests:-}" ] && selection+=(dtest_selected_tests "$gate_dtest_selected_tests")
     [ -n "${gate_dtest_index_ms:-}" ] && selection+=(dtest_index_ms "$gate_dtest_index_ms")
+    [ -n "${gate_dtest_index_load_ms:-}" ] && selection+=(dtest_index_load_ms "$gate_dtest_index_load_ms")
     [ -n "${gate_dtest_index_git_ms:-}" ] && selection+=(dtest_index_git_ms "$gate_dtest_index_git_ms")
+    [ -n "${gate_dtest_index_stat_ms:-}" ] && selection+=(dtest_index_stat_ms "$gate_dtest_index_stat_ms")
+    [ -n "${gate_dtest_index_read_ms:-}" ] && selection+=(dtest_index_read_ms "$gate_dtest_index_read_ms")
+    [ -n "${gate_dtest_index_parse_ms:-}" ] && selection+=(dtest_index_parse_ms "$gate_dtest_index_parse_ms")
+    [ -n "${gate_dtest_index_materialize_ms:-}" ] && selection+=(dtest_index_materialize_ms "$gate_dtest_index_materialize_ms")
     [ -n "${gate_dtest_index_graph_ms:-}" ] && selection+=(dtest_index_graph_ms "$gate_dtest_index_graph_ms")
+    [ -n "${gate_dtest_index_serialize_ms:-}" ] && selection+=(dtest_index_serialize_ms "$gate_dtest_index_serialize_ms")
+    [ -n "${gate_dtest_index_map_ms:-}" ] && selection+=(dtest_index_map_ms "$gate_dtest_index_map_ms")
     [ -n "${gate_dtest_selection_ms:-}" ] && selection+=(dtest_selection_ms "$gate_dtest_selection_ms")
+    [ -n "${gate_dtest_selection_git_diff_ms:-}" ] && selection+=(dtest_selection_git_diff_ms "$gate_dtest_selection_git_diff_ms")
+    [ -n "${gate_dtest_selection_old_sources_ms:-}" ] && selection+=(dtest_selection_old_sources_ms "$gate_dtest_selection_old_sources_ms")
+    [ -n "${gate_dtest_selection_old_parse_us:-}" ] && selection+=(dtest_selection_old_parse_us "$gate_dtest_selection_old_parse_us")
+    [ -n "${gate_dtest_selection_definition_compare_us:-}" ] && selection+=(dtest_selection_definition_compare_us "$gate_dtest_selection_definition_compare_us")
+    [ -n "${gate_dtest_selection_old_cache_hits:-}" ] && selection+=(dtest_selection_old_cache_hits "$gate_dtest_selection_old_cache_hits")
+    [ -n "${gate_dtest_selection_old_cache_misses:-}" ] && selection+=(dtest_selection_old_cache_misses "$gate_dtest_selection_old_cache_misses")
+    [ -n "${gate_dtest_selection_old_cache_lookup_us:-}" ] && selection+=(dtest_selection_old_cache_lookup_us "$gate_dtest_selection_old_cache_lookup_us")
+    [ -n "${gate_dtest_selection_old_cache_write_ms:-}" ] && selection+=(dtest_selection_old_cache_write_ms "$gate_dtest_selection_old_cache_write_ms")
+    [ -n "${gate_dtest_selection_graph_walk_ms:-}" ] && selection+=(dtest_selection_graph_walk_ms "$gate_dtest_selection_graph_walk_ms")
+    [ -n "${gate_dtest_selection_materialize_ms:-}" ] && selection+=(dtest_selection_materialize_ms "$gate_dtest_selection_materialize_ms")
     [ -n "${gate_dtest_partitions:-}" ] && selection+=(dtest_partitions "$gate_dtest_partitions")
     [ -n "${gate_dtest_overlay_hits:-}" ] && selection+=(dtest_overlay_hits "$gate_dtest_overlay_hits")
     [ -n "${gate_dtest_overlay_entries:-}" ] && selection+=(dtest_overlay_entries "$gate_dtest_overlay_entries")
     [ -n "${gate_dtest_overlay_compacted:-}" ] && selection+=(dtest_overlay_compacted "$gate_dtest_overlay_compacted")
+    [ -n "${gate_dtest_index_overlay_entries:-}" ] && selection+=(dtest_index_overlay_entries "$gate_dtest_index_overlay_entries")
+    [ -n "${gate_dtest_index_overlay_compacted:-}" ] && selection+=(dtest_index_overlay_compacted "$gate_dtest_index_overlay_compacted")
     selection+=(dtest_target_narrowed "${gate_dtest_target_narrowed:-false}")
     [ -n "${gate_dtest_exact_filter:-}" ] && selection+=(dtest_exact_filter "$gate_dtest_exact_filter")
     [ -n "${gate_dtest_filter_bytes:-}" ] && selection+=(dtest_filter_bytes "$gate_dtest_filter_bytes")
@@ -2743,13 +2781,32 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     gate_dtest_changed_definitions=""
     gate_dtest_selected_tests=""
     gate_dtest_index_ms=""
+    gate_dtest_index_load_ms=""
     gate_dtest_index_git_ms=""
+    gate_dtest_index_stat_ms=""
+    gate_dtest_index_read_ms=""
+    gate_dtest_index_parse_ms=""
+    gate_dtest_index_materialize_ms=""
     gate_dtest_index_graph_ms=""
+    gate_dtest_index_serialize_ms=""
+    gate_dtest_index_map_ms=""
     gate_dtest_selection_ms=""
+    gate_dtest_selection_git_diff_ms=""
+    gate_dtest_selection_old_sources_ms=""
+    gate_dtest_selection_old_parse_us=""
+    gate_dtest_selection_definition_compare_us=""
+    gate_dtest_selection_old_cache_hits=""
+    gate_dtest_selection_old_cache_misses=""
+    gate_dtest_selection_old_cache_lookup_us=""
+    gate_dtest_selection_old_cache_write_ms=""
+    gate_dtest_selection_graph_walk_ms=""
+    gate_dtest_selection_materialize_ms=""
     gate_dtest_partitions=""
     gate_dtest_overlay_hits=""
     gate_dtest_overlay_entries=""
     gate_dtest_overlay_compacted=""
+    gate_dtest_index_overlay_entries=""
+    gate_dtest_index_overlay_compacted=""
     gate_dtest_target_narrowed="false"
     gate_dtest_exact_filter=""
     gate_dtest_filter_bytes=""
@@ -3338,19 +3395,43 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
                     and (.run.commands|type) == "number")
                 | [.timings.total_ms, .changed_files, .changed_definitions,
                    (.tests|length), .timings.index.elapsed_ms,
-                   .timings.index.git_ms, .timings.index.graph_ms,
-                   .timings.selection.elapsed_ms, (.partitions|length),
+                   .timings.index.load_ms, .timings.index.git_ms,
+                   .timings.index.stat_ms, .timings.index.read_ms,
+                   .timings.index.parse_ms, .timings.index.materialize_ms,
+                   .timings.index.graph_ms, .timings.index.serialize_ms,
+                   .timings.index.map_ms, .timings.selection.elapsed_ms,
+                   .timings.selection.git_diff_ms, .timings.selection.old_sources_ms,
+                   .timings.selection.old_parse_us,
+                   .timings.selection.definition_compare_us,
+                   .timings.selection.old_cache_hits,
+                   .timings.selection.old_cache_misses,
+                   .timings.selection.old_cache_lookup_us,
+                   .timings.selection.old_cache_write_ms,
+                   .timings.selection.graph_walk_ms,
+                   .timings.selection.materialize_ms, (.partitions|length),
                    .timings.index.overlay_hits, .timings.index.overlay_entries,
                    .timings.index.overlay_compacted,
+                   .timings.index.index_overlay_entries,
+                   .timings.index.index_overlay_compacted,
                    .run.target_narrowed, .run.exact_filter,
                    .run.filter_bytes, .run.required_filter_bytes, .run.commands]
-                | map(tostring) | join("\u001f")
+                | map(if . == null then "" else tostring end) | join("\u001f")
             ' "$gate_dtest_report" 2>/dev/null)"; then
             IFS=$'\x1f' read -r gate_dtest_elapsed_ms gate_dtest_changed_files \
                 gate_dtest_changed_definitions gate_dtest_selected_tests \
-                gate_dtest_index_ms gate_dtest_index_git_ms gate_dtest_index_graph_ms \
-                gate_dtest_selection_ms gate_dtest_partitions gate_dtest_overlay_hits \
+                gate_dtest_index_ms gate_dtest_index_load_ms gate_dtest_index_git_ms \
+                gate_dtest_index_stat_ms gate_dtest_index_read_ms \
+                gate_dtest_index_parse_ms gate_dtest_index_materialize_ms \
+                gate_dtest_index_graph_ms gate_dtest_index_serialize_ms \
+                gate_dtest_index_map_ms gate_dtest_selection_ms \
+                gate_dtest_selection_git_diff_ms gate_dtest_selection_old_sources_ms \
+                gate_dtest_selection_old_parse_us gate_dtest_selection_definition_compare_us \
+                gate_dtest_selection_old_cache_hits gate_dtest_selection_old_cache_misses \
+                gate_dtest_selection_old_cache_lookup_us gate_dtest_selection_old_cache_write_ms \
+                gate_dtest_selection_graph_walk_ms gate_dtest_selection_materialize_ms \
+                gate_dtest_partitions gate_dtest_overlay_hits \
                 gate_dtest_overlay_entries gate_dtest_overlay_compacted \
+                gate_dtest_index_overlay_entries gate_dtest_index_overlay_compacted \
                 gate_dtest_target_narrowed gate_dtest_exact_filter \
                 gate_dtest_filter_bytes gate_dtest_required_filter_bytes \
                 gate_dtest_commands <<<"$dtest_values"

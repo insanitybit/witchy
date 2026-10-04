@@ -220,6 +220,8 @@ jq -sn \
          execution_s:(map(.execution_s)|distribution),
          executed_tests:(map(.executed_tests)|distribution)};
     def numeric($value): if $value==null or $value=="" then null else ($value|tonumber) end;
+    def delta_if_numeric($left; $right):
+        if $left == null or $right == null then null else $left - $right end;
     def attempt_elapsed: numeric(.attempt_elapsed_s // .elapsed_s);
     def attempt_lock_wait: (numeric(.lock_wait_s) // 0);
     def attempt_work:
@@ -438,12 +440,14 @@ jq -sn \
                          and $cell[0].load_band!="unknown"),
                 dtest:($d|gate_profile), legacy:($l|gate_profile),
                 gate_p50_delta_s:(if ($d|length)>0 and ($l|length)>0
-                                  then (($d|map(.elapsed_s)|distribution|.p50)
-                                        - ($l|map(.elapsed_s)|distribution|.p50))
+                                  then delta_if_numeric(
+                                      ($d|map(.elapsed_s)|distribution|.p50);
+                                      ($l|map(.elapsed_s)|distribution|.p50))
                                   else null end),
                 execution_p50_delta_s:(if ($d|length)>0 and ($l|length)>0
-                                       then (($d|map(.execution_s)|distribution|.p50)
-                                             - ($l|map(.execution_s)|distribution|.p50))
+                                       then delta_if_numeric(
+                                           ($d|map(.execution_s)|distribution|.p50);
+                                           ($l|map(.execution_s)|distribution|.p50))
                                        else null end)}]
             | {dimensions:{executed_tests:"<100, 100-299, 300-599, 600+",
                            binaries:"1-3, 4-11, 12+",
@@ -456,14 +460,33 @@ jq -sn \
                        | map({status:.[0].dtest_status, n:length}) | sort_by(-.n)),
              selection_ms:($d|map(numeric(.dtest_elapsed_ms))|distribution),
              internal_index_ms:($d|map(numeric(.dtest_index_ms))|distribution),
+             index_load_ms:($d|map(numeric(.dtest_index_load_ms))|distribution),
              internal_git_ms:($d|map(numeric(.dtest_index_git_ms))|distribution),
+             index_stat_ms:($d|map(numeric(.dtest_index_stat_ms))|distribution),
+             index_read_ms:($d|map(numeric(.dtest_index_read_ms))|distribution),
+             index_parse_ms:($d|map(numeric(.dtest_index_parse_ms))|distribution),
+             index_materialize_ms:($d|map(numeric(.dtest_index_materialize_ms))|distribution),
              internal_graph_ms:($d|map(numeric(.dtest_index_graph_ms))|distribution),
+             index_serialize_ms:($d|map(numeric(.dtest_index_serialize_ms))|distribution),
+             index_map_ms:($d|map(numeric(.dtest_index_map_ms))|distribution),
              internal_selection_ms:($d|map(numeric(.dtest_selection_ms))|distribution),
+             selection_git_diff_ms:($d|map(numeric(.dtest_selection_git_diff_ms))|distribution),
+             selection_old_sources_ms:($d|map(numeric(.dtest_selection_old_sources_ms))|distribution),
+             selection_old_parse_us:($d|map(numeric(.dtest_selection_old_parse_us))|distribution),
+             selection_definition_compare_us:($d|map(numeric(.dtest_selection_definition_compare_us))|distribution),
+             selection_old_cache_hits:($d|map(numeric(.dtest_selection_old_cache_hits))|add//0),
+             selection_old_cache_misses:($d|map(numeric(.dtest_selection_old_cache_misses))|add//0),
+             selection_old_cache_lookup_us:($d|map(numeric(.dtest_selection_old_cache_lookup_us))|distribution),
+             selection_old_cache_write_ms:($d|map(numeric(.dtest_selection_old_cache_write_ms))|distribution),
+             selection_graph_walk_ms:($d|map(numeric(.dtest_selection_graph_walk_ms))|distribution),
+             selection_materialize_ms:($d|map(numeric(.dtest_selection_materialize_ms))|distribution),
              selected_tests:($d|map(numeric(.dtest_selected_tests))|distribution),
              partitions:($d|map(numeric(.dtest_partitions))|distribution),
              overlay_hits:($d|map(numeric(.dtest_overlay_hits))|add//0),
              overlay_entries:($d|map(numeric(.dtest_overlay_entries))|distribution),
              overlay_compacted:($d|map(numeric(.dtest_overlay_compacted))|add//0),
+             index_overlay_entries:($d|map(numeric(.dtest_index_overlay_entries))|distribution),
+             index_overlay_compacted:($d|map(numeric(.dtest_index_overlay_compacted))|add//0),
              target_narrowed:($d|map(select(.dtest_target_narrowed=="true"))|length),
              exact_filter_fallbacks:($d|map(select(.dtest_exact_filter=="false"))|length),
              filter_bytes:($d|map(numeric(.dtest_filter_bytes))|distribution),
@@ -609,13 +632,18 @@ jq -r '
     "  selected gates / samples: \(.dtest.selected_gates) / \(.dtest.samples)",
     "  selection ms p50 / p90:   \(value(.dtest.selection_ms.p50; "ms")) / \(value(.dtest.selection_ms.p90; "ms"))",
     "  index/git/graph p50:       \(value(.dtest.internal_index_ms.p50; "ms")) / \(value(.dtest.internal_git_ms.p50; "ms")) / \(value(.dtest.internal_graph_ms.p50; "ms"))",
+    "  index stat/read/parse p50: \(value(.dtest.index_stat_ms.p50; "ms")) / \(value(.dtest.index_read_ms.p50; "ms")) / \(value(.dtest.index_parse_ms.p50; "ms"))",
+    "  index copy/write/map p50:  \(value(.dtest.index_materialize_ms.p50; "ms")) / \(value(.dtest.index_serialize_ms.p50; "ms")) / \(value(.dtest.index_map_ms.p50; "ms"))",
     "  selection p50 / p90:       \(value(.dtest.internal_selection_ms.p50; "ms")) / \(value(.dtest.internal_selection_ms.p90; "ms"))",
+    "  old-source Git/parse p50:  \(value(.dtest.selection_git_diff_ms.p50; "ms")) / \(value(.dtest.selection_old_sources_ms.p50; "ms")) / \(value(.dtest.selection_old_parse_us.p50; "us"))",
+    "  graph/materialize p50:     \(value(.dtest.selection_graph_walk_ms.p50; "ms")) / \(value(.dtest.selection_materialize_ms.p50; "ms"))",
     "  selected tests p50 / p90: \(value(.dtest.selected_tests.p50; "")) / \(value(.dtest.selected_tests.p90; ""))",
     "  target-narrowed gates:     \(.dtest.target_narrowed)",
     "  exact-filter fallbacks:    \(.dtest.exact_filter_fallbacks)",
     "  filter bytes p50 / p90:    \(value(.dtest.filter_bytes.p50; "")) / \(value(.dtest.filter_bytes.p90; ""))",
     "  required bytes p50 / p90:  \(value(.dtest.required_filter_bytes.p50; "")) / \(value(.dtest.required_filter_bytes.p90; ""))",
     "  overlay hits / compacted:  \(.dtest.overlay_hits) / \(.dtest.overlay_compacted)",
+    "  graph-stable index overlay: \(value(.dtest.index_overlay_entries.p50; "")) entries p50; \(.dtest.index_overlay_compacted) compacted",
     "  dtest / legacy gate p50:  \(value(.dtest.gate_s.dtest.p50; "s")) / \(value(.dtest.gate_s.legacy.p50; "s"))",
     ("  outcomes:                 " + (.dtest.status | map("\(.status)=\(.n)") | join(", "))),
     "",
