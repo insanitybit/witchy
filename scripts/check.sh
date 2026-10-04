@@ -804,13 +804,23 @@ run_product_tests() {
                 | .tests | length
             ' "$WITCHY_GATE_DTEST_REPORT" 2>/dev/null || true)"
             if [ -n "$selected_tests" ] && [ "$selected_tests" -gt 0 ]; then
-                return "$dtest_status"
+                if [ "$dtest_status" -ne 4 ]; then
+                    return "$dtest_status"
+                fi
+                # Nextest exit 4 means this dtest chunk selected no runnable
+                # test inside the mapper's Cargo target. Dtest's report counts
+                # tests before that target intersection, so a positive report
+                # alone cannot prove a test ran. Keep the audited mapper's
+                # scoped command as the fallback; do not treat an empty run as
+                # a green gate.
+                echo "check.sh: dtest target intersection was empty; using audited legacy selection" >&2
+            else
+                if [ -z "$selected_tests" ] && [ "$dtest_status" -ne 0 ]; then
+                    echo "check.sh: dtest produced an invalid report after runner failure" >&2
+                    return "$dtest_status"
+                fi
+                echo "check.sh: dtest selected no tests; using audited legacy selection" >&2
             fi
-            if [ -z "$selected_tests" ] && [ "$dtest_status" -ne 0 ]; then
-                echo "check.sh: dtest produced an invalid report after runner failure" >&2
-                return "$dtest_status"
-            fi
-            echo "check.sh: dtest selected no tests; using audited legacy selection" >&2
         else
             echo "check.sh: dtest selection failed; using audited legacy selection" >&2
         fi
