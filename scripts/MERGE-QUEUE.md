@@ -108,7 +108,13 @@ and handoff notes. It is observational, not a locking or file-ownership system.
   failed, skipped, and binary counts. `gate-report.sh` keeps historical log
   parsing as a fallback and reports dtest-versus-legacy distributions for
   actual execution counts, compile time, execution time, and whole-gate time.
-  Auxiliary queue and fuzz shards do not overwrite the workspace counts.
+  Its stratified comparison groups gates by executed tests (`<100`,
+  `100-299`, `300-599`, `600+`), test binaries (`1-3`, `4-11`, `12+`), and
+  load per core (`<1`, `1-3`, `>=3`); only cells with both selectors and all
+  three known bands count as matched. This controls for broad workload and
+  contention differences, but the gates are still unpaired and should be
+  treated as observational data. Auxiliary queue and fuzz shards do not
+  overwrite the workspace counts.
   Every attempt-terminal event also carries a **contention covariate** written
   from the one `record_attempt` choke point: `gate_load_start` /
   `gate_load_end` (1-minute load average sampled at the gate boundaries) and

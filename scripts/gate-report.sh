@@ -213,6 +213,12 @@ jq -sn \
     def distribution:
         {count:(map(select(. != null))|length),
          p50:(percentile(0.50)), p90:(percentile(0.90)), max:(map(select(. != null))|max//null)};
+    def gate_profile:
+        {samples:length,
+         gate_s:(map(.elapsed_s)|distribution),
+         compile_s:(map(.compile_s)|distribution),
+         execution_s:(map(.execution_s)|distribution),
+         executed_tests:(map(.executed_tests)|distribution)};
     def numeric($value): if $value==null or $value=="" then null else ($value|tonumber) end;
     def attempt_elapsed: numeric(.attempt_elapsed_s // .elapsed_s);
     def attempt_lock_wait: (numeric(.lock_wait_s) // 0);
@@ -306,6 +312,24 @@ jq -sn \
              failed_work_s:($prior_failures|map(attempt_work)|add//0),
              failed_lock_wait_s:($prior_failures|map(attempt_lock_wait)|add//0)}
        ]) as $rework_rows
+    | ($phases | map(. as $phase
+        | . + {load_per_core:((($attempts
+            | map(select(.log==$phase.log)) | .[0]) // {}) | load_per_core)}
+        | . + {
+            executed_test_band:(if .executed_tests==null then "unknown"
+                                elif .executed_tests<100 then "<100"
+                                elif .executed_tests<300 then "100-299"
+                                elif .executed_tests<600 then "300-599"
+                                else "600+" end),
+            binary_band:(if .binaries==null then "unknown"
+                         elif .binaries<4 then "1-3"
+                         elif .binaries<12 then "4-11"
+                         else "12+" end),
+            load_band:(if .load_per_core==null then "unknown"
+                       elif .load_per_core<1 then "idle (<1/core)"
+                       elif .load_per_core<3 then "busy (1-3/core)"
+                       else "saturated (>=3/core)" end)
+          })) as $cohort_phases
     | {
         schema:3, generated_at:$generated, since:$since, state_dir:$state_dir,
         throughput:{submissions:($recent|map(select(.event=="submitted"))|length),
@@ -399,7 +423,32 @@ jq -sn \
                scheduled_tests:($s|map(.scheduled_tests)|distribution),
                executed_tests:($s|map(.executed_tests)|distribution),
                skipped_tests:($s|map(.skipped_tests)|distribution),
-               binaries:($s|map(.binaries)|distribution)})},
+               binaries:($s|map(.binaries)|distribution)}),
+          stratified:(
+            [$cohort_phases
+             | group_by([.executed_test_band,.binary_band,.load_band])[] as $cell
+             | ([ $cell[] | select(.selector=="dtest") ]) as $d
+             | ([ $cell[] | select(.selector!="dtest") ]) as $l
+             | {executed_test_band:$cell[0].executed_test_band,
+                binary_band:$cell[0].binary_band,
+                load_band:$cell[0].load_band,
+                matched:(($d|length)>0 and ($l|length)>0
+                         and $cell[0].executed_test_band!="unknown"
+                         and $cell[0].binary_band!="unknown"
+                         and $cell[0].load_band!="unknown"),
+                dtest:($d|gate_profile), legacy:($l|gate_profile),
+                gate_p50_delta_s:(if ($d|length)>0 and ($l|length)>0
+                                  then (($d|map(.elapsed_s)|distribution|.p50)
+                                        - ($l|map(.elapsed_s)|distribution|.p50))
+                                  else null end),
+                execution_p50_delta_s:(if ($d|length)>0 and ($l|length)>0
+                                       then (($d|map(.execution_s)|distribution|.p50)
+                                             - ($l|map(.execution_s)|distribution|.p50))
+                                       else null end)}]
+            | {dimensions:{executed_tests:"<100, 100-299, 300-599, 600+",
+                           binaries:"1-3, 4-11, 12+",
+                           load_per_core:"<1, 1-3, >=3 (or unknown)"},
+               matched_cells:(map(select(.matched))|length), cells:.})},
         dtest:(($attempts|map(select(.dtest_status != null))) as $d
           | {samples:($d|length),
              selected_gates:($d|map(select(.test_selector=="dtest"))|length),
@@ -577,6 +626,17 @@ jq -r '
     "  execution p50:             \(value(.selector_comparison.dtest.execution_s.p50; "s")) / \(value(.selector_comparison.legacy.execution_s.p50; "s"))",
     "  executed tests p50:        \(value(.selector_comparison.dtest.executed_tests.p50; "")) / \(value(.selector_comparison.legacy.executed_tests.p50; ""))",
     "  skipped tests p50:         \(value(.selector_comparison.dtest.skipped_tests.p50; "")) / \(value(.selector_comparison.legacy.skipped_tests.p50; ""))",
+    "",
+    "Matched workload cohorts",
+    "  matched cells:             \(.selector_comparison.stratified.matched_cells)",
+    (if .selector_comparison.stratified.matched_cells == 0 then
+       "  no cohort has both selectors with known workload and load bands yet"
+     else
+        (.selector_comparison.stratified.cells
+        | map(select(.matched)
+              | "  tests=\(.executed_test_band), binaries=\(.binary_band), load/core=\(.load_band): n=\(.dtest.samples)/\(.legacy.samples), gate p50=\(value(.dtest.gate_s.p50; "s"))/\(value(.legacy.gate_s.p50; "s")) (delta \(value(.gate_p50_delta_s; "s"))), execution p50=\(value(.dtest.execution_s.p50; "s"))/\(value(.legacy.execution_s.p50; "s")) (delta \(value(.execution_p50_delta_s; "s")))")
+        | join("\n"))
+     end),
     "",
     "Structured stage duration (p50 / p90; exact where instrumented)",
     "  tests (n=\(.structured_phases_s.tests.count)):   \(value(.structured_phases_s.tests.p50; "s")) / \(value(.structured_phases_s.tests.p90; "s"))",

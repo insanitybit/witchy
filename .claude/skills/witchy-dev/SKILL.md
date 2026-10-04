@@ -291,7 +291,10 @@ events persist the primary workspace nextest scheduled, executed, passed,
 failed, skipped, and binary counts. The report's `selector_comparison` compares
 dtest and legacy gates using those actual execution counts plus compile,
 execution, and whole-gate time; use those fields instead of treating dtest's
-conservative selected-test estimate as tests actually run.
+conservative selected-test estimate as tests actually run. The report also
+shows stratified cohorts by executed-test band, binary-count band, and load per
+core; these are workload-matched observations, not paired runs of the same
+commit.
 
 **`cargo check -p witchy-runtime` does NOT compile the Wasm kernel.** The
 `runtime` module sits behind that crate's non-default `native` feature, which
