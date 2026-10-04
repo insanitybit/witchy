@@ -3494,3 +3494,22 @@ the `CapError` message as `serve` does. The source interpreter and legacy
 codegen refuse `crypto.reveal`. Evidence:
 `reveal_denies_the_signing_key_and_sealed_secrets_in_admitted_wasm`,
 `listen_tls_answers_cap_errors`.
+
+### 2026-10-04: entry capabilities admitted from the capability model; `File` launch-supplied (RFC-0126 acceptance 2)
+
+One table maps the capability model's `CapabilityKind` to SafeWIR kind ids
+(`canonical_safewir::capability_kind_id`/`capability_kind_of`); the canonical
+source re-exports the model's kind instead of declaring its own, and the three
+per-site copies of the table (lowering, layout matching, closure capture) use
+it. Entry admission admits any parameter whose kind the model permits as a root
+(`root_origin_permits_entry`) and SafeWIR represents, build kinds only in build
+recipes; the wire tag is the kind id. The runtime mints each parameter from its
+grant ordinal among the entry's parameters of that kind through one per-kind
+adapter dispatch. `main(f: File)` is therefore launch-supplied in admitted Wasm
+(previously refused at admission). Evidence:
+`file_entry_parameters_bind_positionally_in_admitted_wasm`; the rfc0092 trusted
+tests `dependency_footprint_does_not_widen_the_trusted_root`,
+`explicit_exec_policy_uses_a_separately_bound_readable_dir`,
+`fixed_file_and_named_secret_providers_resolve_only_at_startup` and
+`committed_minigrep_builds_and_runs_as_an_installed_trusted_app` leave the
+RFC-0165 deferred list (the slow ones stay nightly).

@@ -61,7 +61,7 @@ pub struct SourceConstructor<'a> {
 
 impl<'a> SourceConstructor<'a> {
     pub fn from_checked(source: &CanonicalSourceView<'a>, ordinal: ConstructorId) -> Result<Self, ContractError> {
-        use witchy_canonical_source::capabilities::{CapabilityKind, CapabilityRepresentation};
+        use witchy_canonical_source::capabilities::CapabilityRepresentation;
         let witness = source.closure_witness().entries().get(ordinal.0 as usize)
             .ok_or(ContractError::MissingWitness)?;
         let definitions = source.type_definitions();
@@ -89,25 +89,8 @@ impl<'a> SourceConstructor<'a> {
                 let Some(CapabilityRepresentation::Direct(kind)) =
                     witchy_canonical_source::capabilities::representation(capture.checked_type(), &definitions)
                 else { return Err(ContractError::UnsupportedCapture) };
-                Ok(CaptureTransfer::CopyCapability(match kind {
-                    CapabilityKind::Console => CapabilityKindId::new(0),
-                    CapabilityKind::Dir => super::DIR_CAPABILITY_KIND,
-                    CapabilityKind::Env => super::ENV_CAPABILITY_KIND,
-                    CapabilityKind::File => super::FILE_CAPABILITY_KIND,
-                    CapabilityKind::Net => super::NET_CAPABILITY_KIND,
-                    CapabilityKind::Listener => super::LISTENER_CAPABILITY_KIND,
-                    CapabilityKind::Socket => super::SOCKET_CAPABILITY_KIND,
-                    CapabilityKind::Exec => super::EXEC_CAPABILITY_KIND,
-                    CapabilityKind::Fetch => super::FETCH_CAPABILITY_KIND,
-                    CapabilityKind::Clock => super::CLOCK_CAPABILITY_KIND,
-                    CapabilityKind::SecretStore => super::SECRET_STORE_CAPABILITY_KIND,
-                    CapabilityKind::Secret => super::SECRET_CAPABILITY_KIND,
-                    CapabilityKind::BuildOut => super::BUILD_OUT_CAPABILITY_KIND,
-                    CapabilityKind::BuildRead => super::BUILD_READ_CAPABILITY_KIND,
-                    CapabilityKind::BuildEnv => super::BUILD_ENV_CAPABILITY_KIND,
-                    CapabilityKind::BuildExec => super::BUILD_EXEC_CAPABILITY_KIND,
-                    CapabilityKind::BuildNet => super::BUILD_NET_CAPABILITY_KIND,
-                }))
+                super::capability_kind_id(kind).map(CaptureTransfer::CopyCapability)
+                    .ok_or(ContractError::UnsupportedCapture)
             }
             }
         }).collect::<Result<Vec<_>, _>>()?;

@@ -46,7 +46,7 @@ impl Runtime {
         witchy_test_host::validate_console_output_plan_with_argv(&plan, entry.argument_positions().len()).map_err(Error::msg)?;
         if entry.result() != CanonicalEntryResult::Unit
             || entry.capabilities().is_empty()
-            || entry.capabilities().iter().any(|kind| *kind != CanonicalEntryCapability::Console)
+            || entry.capabilities().iter().any(|kind| *kind != witchy_wir::CapabilityKind::Console)
         {
             bail!("admitted Console fixture requires a unit entry with only Console and argv parameters; other recipes are unsupported");
         }

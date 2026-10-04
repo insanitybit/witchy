@@ -577,6 +577,40 @@ pub const FILE_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(3);
 /// BuildOut is a write-only host capability, never a linear-memory value.
 pub const BUILD_OUT_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(9);
 
+/// The SafeWIR kind that represents a host capability: the one table between
+/// the capability model's vocabulary and SafeWIR kind ids. `Rand` has no
+/// compiled representation.
+pub const fn capability_kind_id(kind: witchy_canonical_source::capabilities::CapabilityKind) -> Option<CapabilityKindId> {
+    use witchy_canonical_source::capabilities::CapabilityKind as K;
+    Some(match kind {
+        K::Console => CapabilityKindId::new(0),
+        K::Dir => DIR_CAPABILITY_KIND,
+        K::Env => ENV_CAPABILITY_KIND,
+        K::File => FILE_CAPABILITY_KIND,
+        K::Net => NET_CAPABILITY_KIND,
+        K::Listener => LISTENER_CAPABILITY_KIND,
+        K::Socket => SOCKET_CAPABILITY_KIND,
+        K::BuildOut => BUILD_OUT_CAPABILITY_KIND,
+        K::Exec => EXEC_CAPABILITY_KIND,
+        K::BuildRead => BUILD_READ_CAPABILITY_KIND,
+        K::BuildEnv => BUILD_ENV_CAPABILITY_KIND,
+        K::BuildExec => BUILD_EXEC_CAPABILITY_KIND,
+        K::BuildNet => BUILD_NET_CAPABILITY_KIND,
+        K::Fetch => FETCH_CAPABILITY_KIND,
+        K::Clock => CLOCK_CAPABILITY_KIND,
+        K::SecretStore => SECRET_STORE_CAPABILITY_KIND,
+        K::Secret => SECRET_CAPABILITY_KIND,
+        K::Rand => return None,
+    })
+}
+
+/// The host capability a SafeWIR kind id represents, if it represents one
+/// (response handles and other internal kinds do not).
+pub fn capability_kind_of(id: CapabilityKindId) -> Option<witchy_canonical_source::capabilities::CapabilityKind> {
+    witchy_canonical_source::capabilities::CapabilityKind::ALL.iter().copied()
+        .find(|kind| capability_kind_id(*kind) == Some(id))
+}
+
 /// The canonical signatures the module declares for the stateless `Dir` and
 /// `File` operations. Lowering owns the signature ids; the catalog owns everything
 /// authenticated about the imports themselves.

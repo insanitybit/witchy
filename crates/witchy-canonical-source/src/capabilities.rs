@@ -20,8 +20,9 @@ pub fn externref_cap_name(name: &str) -> Option<&'static str> {
         _ => None,
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum CapabilityKind { Console, Dir, Env, File, Net, Listener, Socket, BuildOut, BuildRead, BuildEnv, BuildExec, BuildNet, Exec, Fetch, Clock, SecretStore, Secret }
+pub use witchy_cap_model::CapabilityKind;
+pub use witchy_cap_model::CapabilityClass;
+pub use witchy_cap_model::authority::root_origin_permits_entry;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CapabilityRepresentation {
@@ -72,25 +73,14 @@ fn direct_kind(
     seen: &mut BTreeSet<String>,
 ) -> Option<CapabilityKind> {
     let Type::Named(name, arguments) = source.unqualified() else { return None };
-    match name.as_str() {
-        "Exec" if arguments.is_empty() => return Some(CapabilityKind::Exec),
-        "Fetch" if arguments.is_empty() => return Some(CapabilityKind::Fetch),
-        "Clock" if arguments.is_empty() => return Some(CapabilityKind::Clock),
-        "SecretStore" if arguments.is_empty() => return Some(CapabilityKind::SecretStore),
-        "Secret" => return Some(CapabilityKind::Secret),
-        "BuildOut" if arguments.is_empty() => return Some(CapabilityKind::BuildOut),
-        "BuildRead" if arguments.is_empty() => return Some(CapabilityKind::BuildRead),
-        "BuildEnv" if arguments.is_empty() => return Some(CapabilityKind::BuildEnv),
-        "BuildExec" if arguments.is_empty() => return Some(CapabilityKind::BuildExec),
-        "BuildNet" if arguments.is_empty() => return Some(CapabilityKind::BuildNet),
-        "Console" if arguments.is_empty() => return Some(CapabilityKind::Console),
-        "Dir" => return Some(CapabilityKind::Dir),
-        "Env" if arguments.is_empty() => return Some(CapabilityKind::Env),
-        "File" => return Some(CapabilityKind::File),
-        "Net" => return Some(CapabilityKind::Net),
-        "Listener" if arguments.is_empty() => return Some(CapabilityKind::Listener),
-        "Socket" if arguments.is_empty() => return Some(CapabilityKind::Socket),
-        _ => {}
+    // `Rand` has no compiled representation. Rights markers are accepted only
+    // where the capability model gives the kind a rights vocabulary; `Console`
+    // is represented without them.
+    if let Some(kind) = CapabilityKind::from_name(name)
+        && kind != CapabilityKind::Rand
+        && (arguments.is_empty() || (!kind.rights().is_empty() && kind != CapabilityKind::Console))
+    {
+        return Some(kind);
     }
     if !seen.insert(name.clone()) { return None; }
     direct_kind(brand_payload(source, definitions)?, definitions, seen)

@@ -27,7 +27,7 @@ pub mod canonical_launch;
 pub use canonical_entry::{CANONICAL_ENTRY_SECTION, canonical_entry_from_wasm};
 pub use canonical_wasmir::{
     AdmittedOwnerBridge, OwnerBridgeRecipe,
-    AdmittedVmService, AdmittedParMap, AdmittedExternalWasmImport, AdmittedCanonicalArtifact, CanonicalAdmissionError, CanonicalEntry, CanonicalEntryCapability,
+    AdmittedVmService, AdmittedParMap, AdmittedExternalWasmImport, AdmittedCanonicalArtifact, CanonicalAdmissionError, CanonicalEntry, CapabilityKind,
     CanonicalEntryResult, HEAP_BASE_EXPORT, HEAP_FREE_EXPORT, HEAP_TOP_EXPORT, admit_canonical,
 };
 pub use canonical_wasmir::admit_canonical_with_observer;

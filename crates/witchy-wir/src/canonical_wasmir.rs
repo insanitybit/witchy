@@ -459,41 +459,14 @@ pub struct AdmittedCanonicalArtifact {
     entry: Option<CanonicalEntry>,
 }
 
-/// A capability parameter of the program entry, by host family.
-///
-/// The runtime mints the corresponding opaque host reference at launch. The
-/// variant set is exactly the families the canonical foundation lowers; an
-/// entry demanding any other capability kind is refused at admission rather
-/// than launched with a token the host cannot mint.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CanonicalEntryCapability {
-    Exec,
-    Clock,
-    /// An explicitly supplied namespace; an empty namespace is still a grant.
-    SecretStore,
-    /// A separate bare signing-secret grant, not inferred from a Store entry.
-    Secret,
-    /// An explicit origin-scoped grant, in Fetch-parameter ordinal order.
-    Fetch,
-    Console,
-    /// A recipe-only, write-only build output grant (kind 9).
-    BuildOut,
-    /// A recipe-only, read-only build input grant (kind 12).
-    BuildRead,
-    /// A recipe-only snapshot of explicitly named environment keys (kind 14).
-    BuildEnv,
-    /// A recipe-only grant of host-selected confined tools (kind 15).
-    BuildExec,
-    /// A recipe-only exact host:port allow-list (kind 16).
-    BuildNet,
-    /// A root `Dir` grant, minted by the launcher from the grant ordinal
-    /// among the entry's `Dir` parameters (kind 1).
-    Dir,
-    /// The process environment grant (kind 2).
-    Env,
-    /// A supplied Net grant, in Net-parameter ordinal order (kind 4).
-    Net,
-}
+/// A capability parameter of the program entry is one of the capability
+/// model's root kinds. The runtime mints the corresponding opaque host
+/// reference at launch, each kind from its grant ordinal among the entry's
+/// parameters of that kind. A derived-only kind (`Socket`, `Listener`), a
+/// kind without a compiled representation, or a build kind outside a build
+/// recipe is refused at admission rather than launched with a token the host
+/// cannot mint.
+pub use witchy_canonical_source::capabilities::CapabilityKind;
 
 /// What the program entry returns, for the frozen exit-code convention: an
 /// `Int` or `Float` result is printed by the host, anything else is dropped.
@@ -516,7 +489,7 @@ pub enum CanonicalEntryResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CanonicalEntry {
     export: String,
-    capabilities: Vec<CanonicalEntryCapability>,
+    capabilities: Vec<CapabilityKind>,
     argument_positions: Vec<u8>,
     result: CanonicalEntryResult,
 }
@@ -535,6 +508,13 @@ pub const HEAP_FREE_EXPORT: &str = "__witchy_heap_free";
 pub const HEAP_BASE_EXPORT: &str = "__witchy_heap_base";
 const ENTRY_VERSION: u8 = 1;
 
+/// Whether the launch protocol may supply `kind` as an entry parameter: the
+/// capability model permits it as a root and SafeWIR represents it.
+fn entry_kind_permitted(kind: CapabilityKind) -> bool {
+    witchy_canonical_source::capabilities::root_origin_permits_entry(kind)
+        && crate::canonical_safewir::capability_kind_id(kind).is_some()
+}
+
 impl CanonicalEntry {
     /// Wire form: version, export name (length-prefixed), capability tags
     /// (count-prefixed), result tag. Every field is derived from the validated
@@ -546,22 +526,9 @@ impl CanonicalEntry {
         bytes.extend_from_slice(export);
         bytes.push(u8::try_from(self.capabilities.len()).expect("entry capability count fits a byte"));
         for capability in &self.capabilities {
-            bytes.push(match capability {
-                CanonicalEntryCapability::Console => 0,
-                CanonicalEntryCapability::Dir => 1,
-                CanonicalEntryCapability::Env => 2,
-                CanonicalEntryCapability::Net => 4,
-                CanonicalEntryCapability::BuildOut => 9,
-                CanonicalEntryCapability::BuildRead => 12,
-                CanonicalEntryCapability::BuildEnv => 14,
-                CanonicalEntryCapability::BuildExec => 15,
-                CanonicalEntryCapability::BuildNet => 16,
-                CanonicalEntryCapability::Exec => 10,
-                CanonicalEntryCapability::Fetch => 17,
-                CanonicalEntryCapability::Clock => 19,
-                CanonicalEntryCapability::SecretStore => 20,
-                CanonicalEntryCapability::Secret => 21,
-            });
+            let id = crate::canonical_safewir::capability_kind_id(*capability)
+                .expect("an admitted entry capability has a SafeWIR kind");
+            bytes.push(u8::try_from(id.get()).expect("capability kind ids fit a byte"));
         }
         bytes.push(match self.result {
             CanonicalEntryResult::Unit => 0,
@@ -594,23 +561,9 @@ impl CanonicalEntry {
         let (tags, result) = rest.split_at(usize::from(count));
         let capabilities = tags
             .iter()
-            .map(|tag| match tag {
-                0 => Ok(CanonicalEntryCapability::Console),
-                1 => Ok(CanonicalEntryCapability::Dir),
-                2 => Ok(CanonicalEntryCapability::Env),
-                4 => Ok(CanonicalEntryCapability::Net),
-                9 => Ok(CanonicalEntryCapability::BuildOut),
-                12 => Ok(CanonicalEntryCapability::BuildRead),
-                14 => Ok(CanonicalEntryCapability::BuildEnv),
-                15 => Ok(CanonicalEntryCapability::BuildExec),
-                16 => Ok(CanonicalEntryCapability::BuildNet),
-                10 => Ok(CanonicalEntryCapability::Exec),
-                17 => Ok(CanonicalEntryCapability::Fetch),
-                19 => Ok(CanonicalEntryCapability::Clock),
-                20 => Ok(CanonicalEntryCapability::SecretStore),
-                21 => Ok(CanonicalEntryCapability::Secret),
-                other => Err(invalid(&format!("unknown capability tag {other}"))),
-            })
+            .map(|tag| crate::canonical_safewir::capability_kind_of(crate::canonical_safewir::CapabilityKindId::new(u32::from(*tag)))
+                .filter(|kind| entry_kind_permitted(*kind))
+                .ok_or_else(|| invalid(&format!("unknown capability tag {tag}"))))
             .collect::<Result<Vec<_>, _>>()?;
         let result = match result[0] {
             0 => CanonicalEntryResult::Unit,
@@ -644,7 +597,7 @@ impl CanonicalEntry {
         &self.export
     }
 
-    pub fn capabilities(&self) -> &[CanonicalEntryCapability] {
+    pub fn capabilities(&self) -> &[CapabilityKind] {
         &self.capabilities
     }
 
@@ -1135,47 +1088,14 @@ fn derive_entry(
     let mut argument_positions = Vec::new();
     for (index, (parameter, source_parameter)) in signature.parameters.iter().zip(source_parameters).enumerate() {
         match parameter {
-            ValueType::Capability(kind) if *kind == CapabilityKindId::new(0) => {
-                capabilities.push(CanonicalEntryCapability::Console);
-            }
-            ValueType::Capability(kind) if *kind == CapabilityKindId::new(1) => {
-                capabilities.push(CanonicalEntryCapability::Dir);
-            }
-            ValueType::Capability(kind) if *kind == CapabilityKindId::new(2) => {
-                capabilities.push(CanonicalEntryCapability::Env);
-            }
-ValueType::Capability(kind) if *kind == crate::canonical_safewir::BUILD_OUT_CAPABILITY_KIND && source.is_build_recipe() => {
-    capabilities.push(CanonicalEntryCapability::BuildOut);
-}
-            ValueType::Capability(kind) if *kind == crate::canonical_safewir::BUILD_READ_CAPABILITY_KIND && source.is_build_recipe() => {
-                capabilities.push(CanonicalEntryCapability::BuildRead);
-            }
-            ValueType::Capability(kind) if *kind == crate::canonical_safewir::BUILD_ENV_CAPABILITY_KIND && source.is_build_recipe() => {
-                capabilities.push(CanonicalEntryCapability::BuildEnv);
-            }
-            ValueType::Capability(kind) if *kind == crate::canonical_safewir::BUILD_EXEC_CAPABILITY_KIND && source.is_build_recipe() => {
-                capabilities.push(CanonicalEntryCapability::BuildExec);
-            }
-            ValueType::Capability(kind) if *kind == crate::canonical_safewir::BUILD_NET_CAPABILITY_KIND && source.is_build_recipe() => {
-                capabilities.push(CanonicalEntryCapability::BuildNet);
-            }
-            ValueType::Capability(kind) if *kind == crate::canonical_safewir::EXEC_CAPABILITY_KIND => {
-                capabilities.push(CanonicalEntryCapability::Exec);
-            }
-            ValueType::Capability(kind) if *kind == crate::canonical_safewir::FETCH_CAPABILITY_KIND => {
-                capabilities.push(CanonicalEntryCapability::Fetch);
-            }
-            ValueType::Capability(kind) if *kind == crate::canonical_safewir::CLOCK_CAPABILITY_KIND => {
-                capabilities.push(CanonicalEntryCapability::Clock);
-            }
-            ValueType::Capability(kind) if *kind == crate::canonical_safewir::SECRET_STORE_CAPABILITY_KIND => {
-                capabilities.push(CanonicalEntryCapability::SecretStore);
-            }
-            ValueType::Capability(kind) if *kind == crate::canonical_safewir::SECRET_CAPABILITY_KIND => {
-                capabilities.push(CanonicalEntryCapability::Secret);
-            }
-            ValueType::Capability(kind) if *kind == crate::canonical_safewir::NET_CAPABILITY_KIND => {
-                capabilities.push(CanonicalEntryCapability::Net);
+            ValueType::Capability(id) => {
+                let kind = crate::canonical_safewir::capability_kind_of(*id)
+                    .filter(|kind| entry_kind_permitted(*kind))
+                    .filter(|kind| kind.class() != witchy_canonical_source::capabilities::CapabilityClass::Build || source.is_build_recipe())
+                    .ok_or_else(|| CanonicalAdmissionError::UnsupportedEntry(format!(
+                        "entry parameter {parameter:?} cannot be supplied by the launch protocol"
+                    )))?;
+                capabilities.push(kind);
             }
             ValueType::Ref(layout) if *layout == argument_layout && matches!(
                 source_parameter.unqualified(),

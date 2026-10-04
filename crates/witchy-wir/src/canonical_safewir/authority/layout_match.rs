@@ -169,26 +169,9 @@ pub(crate) fn value_type_matches_source(
             layouts, signatures, context, records, closure_layouts);
     }
     if let Some(representation) = witchy_canonical_source::capabilities::representation(source, records) {
-        use witchy_canonical_source::capabilities::{CapabilityKind, CapabilityRepresentation};
-        let kind = match representation {
-            CapabilityRepresentation::Direct(CapabilityKind::Console) | CapabilityRepresentation::Nullable(CapabilityKind::Console) => super::super::CapabilityKindId::new(0),
-            CapabilityRepresentation::Direct(CapabilityKind::Dir) | CapabilityRepresentation::Nullable(CapabilityKind::Dir) => super::super::DIR_CAPABILITY_KIND,
-            CapabilityRepresentation::Direct(CapabilityKind::Env) | CapabilityRepresentation::Nullable(CapabilityKind::Env) => super::super::ENV_CAPABILITY_KIND,
-            CapabilityRepresentation::Direct(CapabilityKind::File) | CapabilityRepresentation::Nullable(CapabilityKind::File) => super::super::FILE_CAPABILITY_KIND,
-            CapabilityRepresentation::Direct(CapabilityKind::Net) | CapabilityRepresentation::Nullable(CapabilityKind::Net) => super::super::NET_CAPABILITY_KIND,
-            CapabilityRepresentation::Direct(CapabilityKind::Listener) | CapabilityRepresentation::Nullable(CapabilityKind::Listener) => super::super::LISTENER_CAPABILITY_KIND,
-            CapabilityRepresentation::Direct(CapabilityKind::Socket) | CapabilityRepresentation::Nullable(CapabilityKind::Socket) => super::super::SOCKET_CAPABILITY_KIND,
-            CapabilityRepresentation::Direct(CapabilityKind::Exec) | CapabilityRepresentation::Nullable(CapabilityKind::Exec) => super::super::EXEC_CAPABILITY_KIND,
-            CapabilityRepresentation::Direct(CapabilityKind::Fetch) | CapabilityRepresentation::Nullable(CapabilityKind::Fetch) => super::super::FETCH_CAPABILITY_KIND,
-            CapabilityRepresentation::Direct(CapabilityKind::Clock) | CapabilityRepresentation::Nullable(CapabilityKind::Clock) => super::super::CLOCK_CAPABILITY_KIND,
-            CapabilityRepresentation::Direct(CapabilityKind::SecretStore) | CapabilityRepresentation::Nullable(CapabilityKind::SecretStore) => super::super::SECRET_STORE_CAPABILITY_KIND,
-            CapabilityRepresentation::Direct(CapabilityKind::Secret) | CapabilityRepresentation::Nullable(CapabilityKind::Secret) => super::super::SECRET_CAPABILITY_KIND,
-            CapabilityRepresentation::Direct(CapabilityKind::BuildOut) | CapabilityRepresentation::Nullable(CapabilityKind::BuildOut) => super::super::BUILD_OUT_CAPABILITY_KIND,
-            CapabilityRepresentation::Direct(CapabilityKind::BuildRead) | CapabilityRepresentation::Nullable(CapabilityKind::BuildRead) => super::super::BUILD_READ_CAPABILITY_KIND,
-            CapabilityRepresentation::Direct(CapabilityKind::BuildEnv) | CapabilityRepresentation::Nullable(CapabilityKind::BuildEnv) => super::super::BUILD_ENV_CAPABILITY_KIND,
-            CapabilityRepresentation::Direct(CapabilityKind::BuildExec) | CapabilityRepresentation::Nullable(CapabilityKind::BuildExec) => super::super::BUILD_EXEC_CAPABILITY_KIND,
-            CapabilityRepresentation::Direct(CapabilityKind::BuildNet) | CapabilityRepresentation::Nullable(CapabilityKind::BuildNet) => super::super::BUILD_NET_CAPABILITY_KIND,
-        };
+        use witchy_canonical_source::capabilities::CapabilityRepresentation;
+        let (CapabilityRepresentation::Direct(kind) | CapabilityRepresentation::Nullable(kind)) = representation;
+        let Some(kind) = super::super::capability_kind_id(kind) else { return false };
         return matches!(
             (representation, actual),
             (CapabilityRepresentation::Direct(_), super::super::ValueType::Capability(actual_kind))

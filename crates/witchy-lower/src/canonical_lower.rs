@@ -21105,29 +21105,11 @@ fn source_value_type(
     if let Some(owner) = closure_layouts.opaque_type(source, definitions) {
         return Ok(ValueType::Gc(owner));
     }
-    use witchy_canonical_source::capabilities::{CapabilityKind, CapabilityRepresentation};
+    use witchy_canonical_source::capabilities::CapabilityRepresentation;
     if let Some(representation) = witchy_canonical_source::capabilities::representation(source, definitions) {
         let (CapabilityRepresentation::Direct(kind) | CapabilityRepresentation::Nullable(kind)) = representation;
-        let kind = match kind {
-            CapabilityKind::Console => witchy_wir::canonical_safewir::CapabilityKindId::new(0),
-            CapabilityKind::Dir => witchy_wir::canonical_safewir::DIR_CAPABILITY_KIND,
-            CapabilityKind::Env => witchy_wir::canonical_safewir::ENV_CAPABILITY_KIND,
-            CapabilityKind::File => witchy_wir::canonical_safewir::FILE_CAPABILITY_KIND,
-            // RFC-0165 Net checked-source correspondence (Net track).
-            CapabilityKind::Net => witchy_wir::canonical_safewir::NET_CAPABILITY_KIND,
-            CapabilityKind::Listener => witchy_wir::canonical_safewir::LISTENER_CAPABILITY_KIND,
-            CapabilityKind::Socket => witchy_wir::canonical_safewir::SOCKET_CAPABILITY_KIND,
-            CapabilityKind::Exec => witchy_wir::canonical_safewir::EXEC_CAPABILITY_KIND,
-            CapabilityKind::Fetch => witchy_wir::canonical_safewir::FETCH_CAPABILITY_KIND,
-            CapabilityKind::Clock => witchy_wir::canonical_safewir::CLOCK_CAPABILITY_KIND,
-            CapabilityKind::SecretStore => witchy_wir::canonical_safewir::SECRET_STORE_CAPABILITY_KIND,
-            CapabilityKind::Secret => witchy_wir::canonical_safewir::SECRET_CAPABILITY_KIND,
-            CapabilityKind::BuildOut => witchy_wir::canonical_safewir::BUILD_OUT_CAPABILITY_KIND,
-            CapabilityKind::BuildRead => witchy_wir::canonical_safewir::BUILD_READ_CAPABILITY_KIND,
-            CapabilityKind::BuildEnv => witchy_wir::canonical_safewir::BUILD_ENV_CAPABILITY_KIND,
-            CapabilityKind::BuildExec => witchy_wir::canonical_safewir::BUILD_EXEC_CAPABILITY_KIND,
-            CapabilityKind::BuildNet => witchy_wir::canonical_safewir::BUILD_NET_CAPABILITY_KIND,
-        };
+        let kind = witchy_wir::canonical_safewir::capability_kind_id(kind)
+            .ok_or(CanonicalLoweringError::UnsupportedExpression("capability without a compiled representation"))?;
         return Ok(match representation {
             CapabilityRepresentation::Direct(_) => ValueType::Capability(kind),
             CapabilityRepresentation::Nullable(_) => ValueType::NullableCapability(kind),

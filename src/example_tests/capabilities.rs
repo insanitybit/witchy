@@ -163,6 +163,35 @@ use crate::{codegen, interpreter, parser, typeck};
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// RFC-0012/RFC-0126: `main`'s `File` parameters are launch-supplied in
+    /// admitted Wasm, each from its grant ordinal among the `File`
+    /// parameters, so the i-th `File` is backed by the i-th `--file` grant.
+    /// A `File[Read]` grant reads and refuses nothing it was not given.
+    #[test]
+    fn file_entry_parameters_bind_positionally_in_admitted_wasm() {
+        let base = std::env::temp_dir().join(format!("witchy_file_entry_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).expect("mkdir");
+        std::fs::write(base.join("first.txt"), "one").expect("seed first");
+        std::fs::write(base.join("second.txt"), "two").expect("seed second");
+        let src = "fn main(console: Console, a: File[Read], b: File[Read]):\n    console.print(a.read() ?? \"unreadable\")\n    console.print(b.read() ?? \"unreadable\")\n";
+        let out = run_admitted(src, crate::runtime::Capabilities {
+            print: true,
+            quiet: true,
+            file_grants: vec![base.join("first.txt"), base.join("second.txt")],
+            ..Default::default()
+        }).expect("both File parameters are granted");
+        assert_eq!(out, vec!["one".to_string(), "two".to_string()]);
+        let missing = run_admitted(src, crate::runtime::Capabilities {
+            print: true,
+            quiet: true,
+            file_grants: vec![base.join("first.txt")],
+            ..Default::default()
+        }).expect_err("an ungranted File parameter is refused at launch");
+        assert!(missing.contains("requires a File capability for parameter 1"), "{missing}");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// RFC-0011 entry policies through `dir.only(...)` in admitted Wasm. A name
     /// the policy refuses is `Denied` present or absent, an entry it cannot see
     /// answers like a missing one (`NotFound`, or `Ok(false)` from a probe), an

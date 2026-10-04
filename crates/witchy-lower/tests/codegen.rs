@@ -309,7 +309,7 @@ mod tests {
         use witchy_types::runtime_type::{
             AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource,
         };
-        use witchy_wir::CanonicalEntryCapability::{BuildEnv, BuildExec, BuildOut};
+        use witchy_wir::CapabilityKind::{BuildEnv, BuildExec, BuildOut};
 
         let module = parse_module(
             "import option\nfn build(out: BuildOut, env: BuildEnv, dl: BuildNet, cc: BuildExec):\n    let v = match env.get_build_env(\"WITCHY_BUILD_ALLOWED\"):\n        Some(x) -> x\n        None -> \"unset\"\n    out.write_out(\"x.witchy\", v + dl.fetch_build(\"127.0.0.1:9\", \"/schema\") + cc.run_tool(\"cat\", \"input\"))\n",

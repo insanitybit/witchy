@@ -17,7 +17,7 @@ use wasmtime::{
 };
 use witchy_wir::layout::{HEAP_REDZONE, LayoutBundle};
 use witchy_wir::{
-    AdmittedCanonicalArtifact, CanonicalEntry, CanonicalEntryCapability, CanonicalEntryResult,
+    AdmittedCanonicalArtifact, CanonicalEntry, CapabilityKind, CanonicalEntryResult,
 };
 use witchy_wir::canonical_safewir::ExternalWasmIdentity;
 use witchy_wir::optimizer_policy::{OptimizerPolicy, SECTION_NAME as OPTIMIZER_POLICY_SECTION};
@@ -1509,96 +1509,100 @@ impl Vm {
         Ok(())
     }
 
+    /// The host reference for one entry capability: the per-kind host adapter
+    /// minting the `ordinal`-th grant of `kind`. Admission only admits root
+    /// kinds; any other answers an error rather than a token.
+    fn mint_entry_capability(&mut self, kind: CapabilityKind, ordinal: usize) -> Result<wasmtime::Rooted<ExternRef>> {
+        let missing = || Error::msg(format!(
+            "the program's `main` requires a {kind:?} capability for parameter {ordinal} that was not granted"
+        ));
+        let data = self.store.data();
+        match kind {
+            CapabilityKind::Console => {
+                #[cfg(feature = "test-fixtures")]
+                if data.fixture_console.is_some() {
+                    return host::canonical_fixture::mint(&mut self.store);
+                }
+                if !data.caps.print && !data.caps.console_read { return Err(missing()); }
+                ExternRef::new(&mut self.store, ConsoleCapability)
+            }
+            CapabilityKind::Clock => {
+                let authority = host::clock_env_rand::mint_clock(data)?;
+                ExternRef::new(&mut self.store, authority)
+            }
+            CapabilityKind::Env => {
+                if !data.caps.env { return Err(missing()); }
+                let authority = host::clock_env_rand::env_authority(data);
+                ExternRef::new(&mut self.store, authority)
+            }
+            CapabilityKind::SecretStore => {
+                let authority = host::secret::mint_store(data);
+                ExternRef::new(&mut self.store, authority)
+            }
+            CapabilityKind::Secret => {
+                let authority = host::secret::mint_canonical_secret(data)?;
+                ExternRef::new(&mut self.store, authority)
+            }
+            CapabilityKind::Dir => {
+                let authority = host::filesystem::dir_grant(data, ordinal).ok_or_else(missing)?;
+                ExternRef::new(&mut self.store, authority)
+            }
+            CapabilityKind::File => {
+                let authority = data.files.get(ordinal).cloned().ok_or_else(missing)?;
+                ExternRef::new(&mut self.store, authority)
+            }
+            CapabilityKind::Net => {
+                let authority = data.nets.get(ordinal).cloned().ok_or_else(missing)?;
+                ExternRef::new(&mut self.store, authority)
+            }
+            CapabilityKind::Fetch => {
+                let authority = host::fetch::mint(data, ordinal)?;
+                ExternRef::new(&mut self.store, authority)
+            }
+            CapabilityKind::Exec => {
+                let authority = host::filesystem::exec_grant(data)?;
+                ExternRef::new(&mut self.store, authority)
+            }
+            CapabilityKind::BuildOut => {
+                let authority = host::build_out::mint(data)?;
+                ExternRef::new(&mut self.store, authority)
+            }
+            CapabilityKind::BuildRead => {
+                let authority = host::build_read::mint(data)?;
+                ExternRef::new(&mut self.store, authority)
+            }
+            CapabilityKind::BuildEnv => {
+                let authority = host::build_env::mint(data)?;
+                ExternRef::new(&mut self.store, authority)
+            }
+            CapabilityKind::BuildExec => {
+                let authority = host::build_exec::mint(data)?;
+                ExternRef::new(&mut self.store, authority)
+            }
+            CapabilityKind::BuildNet => {
+                let authority = host::build_net::mint(data)?;
+                ExternRef::new(&mut self.store, authority)
+            }
+            CapabilityKind::Rand | CapabilityKind::Socket | CapabilityKind::Listener => {
+                bail!("{kind:?} is not a launch-supplied entry capability")
+            }
+        }
+    }
+
     fn call_canonical_entry(&mut self, entry: &CanonicalEntry) -> Result<()> {
         let func = self
             .instance
             .get_func(&mut self.store, entry.export())
             .ok_or_else(|| Error::msg(format!("admitted artifact lacks its entry export `{}`", entry.export())))?;
         let mut params = Vec::with_capacity(entry.capabilities().len());
-        // `Dir` parameters are minted by ordinal among THIS entry's Dir
-        // parameters, exactly as the frozen wrapper's `mint_dir(i)` calls do, so
-        // the i-th `Dir` in `main`'s signature is backed by the i-th grant.
-        let mut dir_ordinal = 0usize;
-        let mut net_ordinal = 0usize;
-        let mut fetch_ordinal = 0usize;
-        for capability in entry.capabilities() {
-            let token = match capability {
-                CanonicalEntryCapability::Clock => {
-                    let authority = host::clock_env_rand::mint_clock(self.store.data())?;
-                    ExternRef::new(&mut self.store, authority)?
-                }
-                CanonicalEntryCapability::SecretStore => {
-                    let authority = host::secret::mint_store(self.store.data());
-                    ExternRef::new(&mut self.store, authority)?
-                }
-                CanonicalEntryCapability::Secret => {
-                    let authority = host::secret::mint_canonical_secret(self.store.data())?;
-                    ExternRef::new(&mut self.store, authority)?
-                }
-                CanonicalEntryCapability::Console => {
-                    #[cfg(feature = "test-fixtures")]
-                    if self.store.data().fixture_console.is_some() {
-                        let token = host::canonical_fixture::mint(&mut self.store)?;
-                        params.push(Val::ExternRef(Some(token)));
-                        continue;
-                    }
-                    if !self.store.data().caps.print && !self.store.data().caps.console_read {
-                        bail!("the program's `main` requires a Console capability that was not granted");
-                    }
-                    ExternRef::new(&mut self.store, ConsoleCapability)?
-                }
-                CanonicalEntryCapability::Dir => {
-                    let Some(authority) = host::filesystem::dir_grant(self.store.data(), dir_ordinal)
-                    else {
-                        bail!("the program's `main` requires a Dir capability for parameter {dir_ordinal} that was not granted");
-                    };
-                    dir_ordinal += 1;
-                    ExternRef::new(&mut self.store, authority)?
-                }
-CanonicalEntryCapability::BuildOut => {
-    let authority = host::build_out::mint(self.store.data())?;
-    ExternRef::new(&mut self.store, authority)?
-}
-                CanonicalEntryCapability::BuildRead => {
-                    let authority = host::build_read::mint(self.store.data())?;
-                    ExternRef::new(&mut self.store, authority)?
-                }
-                CanonicalEntryCapability::BuildEnv => {
-                    let authority = host::build_env::mint(self.store.data())?;
-                    ExternRef::new(&mut self.store, authority)?
-                }
-                CanonicalEntryCapability::BuildExec => {
-                    let authority = host::build_exec::mint(self.store.data())?;
-                    ExternRef::new(&mut self.store, authority)?
-                }
-                CanonicalEntryCapability::BuildNet => {
-                    let authority = host::build_net::mint(self.store.data())?;
-                    ExternRef::new(&mut self.store, authority)?
-                }
-                CanonicalEntryCapability::Fetch => {
-                    let authority = host::fetch::mint(self.store.data(), fetch_ordinal)?;
-                    fetch_ordinal += 1;
-                    ExternRef::new(&mut self.store, authority)?
-                }
-                CanonicalEntryCapability::Exec => {
-                    let authority = host::filesystem::exec_grant(self.store.data())?;
-                    ExternRef::new(&mut self.store, authority)?
-                }
-                CanonicalEntryCapability::Env => {
-                    if !self.store.data().caps.env {
-                        bail!("the program's `main` requires an Env capability that was not granted");
-                    }
-                    let authority = host::clock_env_rand::env_authority(self.store.data());
-                    ExternRef::new(&mut self.store, authority)?
-                }
-                CanonicalEntryCapability::Net => {
-                    let authority = self.store.data().nets.get(net_ordinal).cloned().ok_or_else(|| {
-                        Error::msg(format!("the program's `main` requires a Net capability for parameter {net_ordinal} that was not granted"))
-                    })?;
-                    net_ordinal += 1;
-                    ExternRef::new(&mut self.store, authority)?
-                }
-            };
+        // Each parameter is minted from its grant ordinal among THIS entry's
+        // parameters of the same kind, so the i-th `Dir` in `main`'s signature
+        // is backed by the i-th `Dir` grant (and likewise `File`, `Net`, `Fetch`).
+        let mut ordinals = std::collections::BTreeMap::<CapabilityKind, usize>::new();
+        for &kind in entry.capabilities() {
+            let ordinal = ordinals.entry(kind).or_default();
+            let token = self.mint_entry_capability(kind, *ordinal)?;
+            *ordinal += 1;
             params.push(Val::ExternRef(Some(token)));
         }
         // Capabilities are all checked before writing launch-owned memory.
