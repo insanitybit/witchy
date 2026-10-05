@@ -335,6 +335,29 @@ pub(super) fn derive_result_contracts(
     Ok((contracts, summaries))
 }
 
+/// The previous round's summaries, recording each callee a derivation reads.
+/// Every read in the derivation goes through `get`, so the recorded set is
+/// exactly what the derived summary depends on.
+struct SummaryReads<'a> {
+    summaries: &'a BTreeMap<FunctionId, BodySummary>,
+    read: std::cell::RefCell<BTreeSet<FunctionId>>,
+}
+
+impl<'a> SummaryReads<'a> {
+    fn new(summaries: &'a BTreeMap<FunctionId, BodySummary>) -> Self {
+        Self { summaries, read: std::cell::RefCell::new(BTreeSet::new()) }
+    }
+
+    fn get(&self, function: &FunctionId) -> Option<&'a BodySummary> {
+        self.read.borrow_mut().insert(*function);
+        self.summaries.get(function)
+    }
+
+    fn into_reads(self) -> BTreeSet<FunctionId> {
+        self.read.into_inner()
+    }
+}
+
 fn derive_all(
     functions: &FunctionIndex,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
@@ -348,18 +371,38 @@ fn derive_all(
         .iter()
         .map(|(id, function)| (*id, CallableDefinitions::new(function)))
         .collect::<BTreeMap<_, _>>();
+    // Each round derives every summary from the previous round's. A summary
+    // depends only on its own function, the fixed indexes, and the previous
+    // summaries it reads, so a function none of whose reads changed last
+    // round derives exactly what it derived then; only the others recompute.
+    let mut reads = BTreeMap::<FunctionId, BTreeSet<FunctionId>>::new();
+    let mut changed: Option<BTreeSet<FunctionId>> = None;
     let mut converged = false;
     for _ in 0..MAX_CONTRACT_ITERATIONS {
-        let next = functions
-            .iter()
-            .map(|(id, function)| Ok((*id, derive_summary(function, functions, signatures, &summaries, &definitions[id])?)))
-            .collect::<Result<BTreeMap<_, _>, InitialCheckError>>()?;
-        if next == summaries {
+        let mut next = BTreeMap::new();
+        for (id, function) in functions.iter() {
+            let stale = changed.as_ref().is_none_or(|changed| {
+                reads.get(id).is_none_or(|read| !read.is_disjoint(changed))
+            });
+            if !stale {
+                next.insert(*id, summaries[id].clone());
+                continue;
+            }
+            let view = SummaryReads::new(&summaries);
+            let summary = derive_summary(function, functions, signatures, &view, &definitions[id])?;
+            reads.insert(*id, view.into_reads());
+            next.insert(*id, summary);
+        }
+        let now_changed = next.iter()
+            .filter(|(id, summary)| summaries.get(id) != Some(summary))
+            .map(|(id, _)| *id)
+            .collect::<BTreeSet<_>>();
+        summaries = next;
+        if now_changed.is_empty() {
             converged = true;
-            summaries = next;
             break;
         }
-        summaries = next;
+        changed = Some(now_changed);
     }
     if !converged {
         return Err(InitialCheckError::UnknownCallableContract {
@@ -401,7 +444,7 @@ fn derive_summary(
     function: &Function,
     functions: &FunctionIndex,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
-    summaries: &BTreeMap<FunctionId, BodySummary>,
+    summaries: &SummaryReads<'_>,
     definitions: &CallableDefinitions<'_>,
 ) -> Result<BodySummary, InitialCheckError> {
     let entry = function
@@ -768,7 +811,7 @@ fn derive_origins(
     function: &Function,
     functions: &FunctionIndex,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
-    summaries: &BTreeMap<FunctionId, BodySummary>,
+    summaries: &SummaryReads<'_>,
     entry_origins: &BTreeMap<ValueId, Origin>,
     definitions: &CallableDefinitions<'_>,
 ) -> Result<BTreeMap<ValueId, Origin>, InitialCheckError> {
@@ -832,7 +875,7 @@ fn propagate_operation_origins(
     operation: &Operation,
     functions: &FunctionIndex,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
-    summaries: &BTreeMap<FunctionId, BodySummary>,
+    summaries: &SummaryReads<'_>,
     origins: &mut BTreeMap<ValueId, Origin>,
     definitions: &CallableDefinitions<'_>,
 ) -> Result<(), InitialCheckError> {
@@ -1058,7 +1101,7 @@ fn derive_operation(
     operation: &Operation,
     functions: &FunctionIndex,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
-    summaries: &BTreeMap<FunctionId, BodySummary>,
+    summaries: &SummaryReads<'_>,
     origins: &mut BTreeMap<ValueId, Origin>,
     summary: &mut BodySummary,
     definitions: &CallableDefinitions<'_>,
@@ -1333,7 +1376,7 @@ fn indirect_target_summary(
     callee: ValueId,
     signature: &FunctionSignature,
     functions: &FunctionIndex,
-    summaries: &BTreeMap<FunctionId, BodySummary>,
+    summaries: &SummaryReads<'_>,
     definitions: &CallableDefinitions<'_>,
 ) -> Result<BodySummary, InitialCheckError> {
     let mut target = None;
@@ -1543,7 +1586,7 @@ fn derive_tail_results(
     arguments: &[CallArgument],
     functions: &FunctionIndex,
     signatures: &BTreeMap<FunctionSignatureId, &FunctionSignature>,
-    summaries: &BTreeMap<FunctionId, BodySummary>,
+    summaries: &SummaryReads<'_>,
     origins: &BTreeMap<ValueId, Origin>,
     summary: &mut BodySummary,
 ) -> Result<(), InitialCheckError> {
@@ -1622,7 +1665,7 @@ fn derive_call_needs(
     callee: FunctionId,
     arguments: &[CallArgument],
     functions: &FunctionIndex,
-    summaries: &BTreeMap<FunctionId, BodySummary>,
+    summaries: &SummaryReads<'_>,
     origins: &BTreeMap<ValueId, Origin>,
     summary: &mut BodySummary,
 ) -> Result<(), InitialCheckError> {
