@@ -107,6 +107,11 @@ pub struct ResolvedSource {
     mode: crate::linker::LinkMode,
     allow_ast_fold: bool,
     user_modules: std::collections::HashSet<String>,
+    /// The runtime projection the enclosing link already lowered from this
+    /// exact source, installed before its source check runs; see
+    /// [`ResolvedSource::runtime_projection_ref`]. A lowering that failed
+    /// installs nothing: the check then relinks as if it had not run.
+    runtime: Option<Module>,
 }
 
 /// A resolved expanded source set whose injected semantic checker completed
@@ -141,6 +146,27 @@ impl ResolvedSource {
 
     pub fn method_owners(&self) -> &crate::type_resolve::MethodOwnerCandidates {
         &self.method_owners
+    }
+
+    /// The ordinary runtime projection, borrowed when the enclosing link has
+    /// already lowered it. Linking the resolved source again reproduces the
+    /// link's own destructive lowering exactly, so the link lowers a copy
+    /// once, installs it here for its source check, and returns that same
+    /// module only after the check accepts. A lowering failure surfaces when
+    /// the check asks for the projection, just as the relink would fail.
+    pub fn runtime_projection_ref(&self) -> Result<std::borrow::Cow<'_, Module>, crate::linker::LinkError> {
+        match &self.runtime {
+            Some(module) => Ok(std::borrow::Cow::Borrowed(module)),
+            None => self.runtime_projection().map(std::borrow::Cow::Owned),
+        }
+    }
+
+    pub(crate) fn install_runtime_projection(&mut self, projection: Module) {
+        self.runtime = Some(projection);
+    }
+
+    pub(crate) fn take_runtime_projection(&mut self) -> Option<Module> {
+        self.runtime.take()
     }
 
     /// Build the ordinary runtime projection on a clone while retaining this
@@ -551,6 +577,7 @@ pub(crate) fn resolve_linked_source(
         mode,
         allow_ast_fold,
         user_modules: user_modules.clone(),
+        runtime: None,
     })
 }
 

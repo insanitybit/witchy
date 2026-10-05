@@ -11631,8 +11631,9 @@ pub fn check_linked_source_semantics_typed(
         None
     };
     let body_projection = source
-        .runtime_projection()
+        .runtime_projection_ref()
         .map_err(witchy_syntax::linker::SourceLinkError::Link)?;
+    let body_projection = &*body_projection;
     // Check only the standard library this program can reach (see
     // std_pruning; a failure anywhere in the production route after pruning
     // reruns the route unpruned, so a pruned error is never reported).
@@ -11649,11 +11650,11 @@ pub fn check_linked_source_semantics_typed(
             _ => None,
         })
         .collect();
-    if let Some(pruned) = crate::std_pruning::prune(&body_projection, &std_impls) {
+    if let Some(pruned) = crate::std_pruning::prune(body_projection, &std_impls) {
         return check_with_compiler_syntax_with_task_provenance(&pruned, false, !has_async)
             .map(|typed| (typed, typed_async_source)).map_err(source_error);
     }
-    check_with_compiler_syntax_with_task_provenance(&body_projection, false, !has_async)
+    check_with_compiler_syntax_with_task_provenance(body_projection, false, !has_async)
         .map(|typed| (typed, typed_async_source)).map_err(source_error)
 }
 

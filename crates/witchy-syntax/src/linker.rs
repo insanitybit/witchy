@@ -2593,8 +2593,47 @@ where
         mode,
         allow_ast_fold,
     )?;
+    if !matches!(async_stage, AsyncLoweringStage::Runtime) {
+        check_source(&resolved)?;
+        return lower_checked_source(
+            resolved.after_semantic_check(), origin_tables, async_stage, mode, entry, &user_std_shadows, allow_ast_fold,
+        );
+    }
+    // The source check asks for the runtime projection, and relinking the
+    // resolved source reproduces exactly this link's own lowering. Lower a
+    // copy once, before the check, and lend it to the check: the speculative
+    // result is returned only after the check accepts. A failed lowering lends
+    // nothing, so the check relinks and reports what it reported before, and
+    // the lowering error reaches the caller only if the check passes.
+    let mut resolved = resolved;
+    let lowered = lower_checked_source(
+        resolved.clone().after_semantic_check(), origin_tables, async_stage, mode, entry, &user_std_shadows, allow_ast_fold,
+    );
+    let rest = match lowered {
+        Ok(LinkedModule { module, origins, source_item_maps, async_surface, module_names, declarations }) => {
+            resolved.install_runtime_projection(module);
+            Ok((origins, source_item_maps, async_surface, module_names, declarations))
+        }
+        Err(error) => Err(error),
+    };
     check_source(&resolved)?;
-    let checked = resolved.after_semantic_check();
+    let (origins, source_item_maps, async_surface, module_names, declarations) = rest?;
+    let module = resolved.take_runtime_projection()
+        .expect("a successful lowering installed its projection");
+    Ok(LinkedModule { module, origins, source_item_maps, async_surface, module_names, declarations })
+}
+
+/// Destructive lowering of a semantically checked source set: everything the
+/// link does after its injected source check accepted the resolved proof.
+fn lower_checked_source(
+    checked: crate::source_check::SemanticallyCheckedSource,
+    mut origin_tables: HashMap<String, crate::origin::OriginTable>,
+    async_stage: AsyncLoweringStage,
+    mode: LinkMode,
+    entry: &str,
+    user_std_shadows: &HashSet<String>,
+    allow_ast_fold: bool,
+) -> Result<LinkedModule, SourceLinkError> {
     let (mut modules, declarations, mut async_surface) =
         lower_expanded_source(checked, &mut origin_tables, async_stage)?;
 
@@ -2790,7 +2829,7 @@ where
                         bare_fn_imports.get(mname),
                         &fns,
                         &bound,
-                        &user_std_shadows,
+                        user_std_shadows,
                         mode,
                         entry,
                         is_opt(m),
@@ -2864,7 +2903,7 @@ where
                                 bare_fn_imports.get(mname),
                                 &fns,
                                 &bound,
-                                &user_std_shadows,
+                                user_std_shadows,
                         mode,
                         entry,
                         is_opt(m),
@@ -2896,7 +2935,7 @@ where
                             bare_fn_imports.get(mname),
                             &fns,
                             &bound,
-                            &user_std_shadows,
+                            user_std_shadows,
                         mode,
                         entry,
                         is_opt(m),
