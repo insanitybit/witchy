@@ -28,7 +28,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 
-use witchy_syntax::ast::{Item, Module};
+use witchy_syntax::ast::{ImplDef, Item, Module};
 
 /// Modules whose presence disables pruning: they reflect over, or compile,
 /// arbitrary program items at run time.
@@ -264,13 +264,14 @@ pub fn prune(module: &Module, std_impls: &HashSet<(String, Vec<String>)>) -> Opt
         }
     }
 
-    let mut pruned = module.clone();
+    // Copy only what survives: most of the standard library is unreachable,
+    // and cloning it just to drop it was the bulk of this pass.
+    let lines_aligned = module.item_lines.len() == module.items.len();
     let mut removed = 0usize;
     let mut removed_names = HashSet::new();
-    let lines_aligned = pruned.item_lines.len() == pruned.items.len();
-    let old_lines = std::mem::take(&mut pruned.item_lines);
-    let mut items = Vec::with_capacity(pruned.items.len());
-    for (index, item) in pruned.items.drain(..).enumerate() {
+    let mut items = Vec::with_capacity(module.items.len());
+    let mut item_lines = Vec::new();
+    for (index, item) in module.items.iter().enumerate() {
         let before = items.len();
         match item {
             Item::Function(function)
@@ -278,37 +279,56 @@ pub fn prune(module: &Module, std_impls: &HashSet<(String, Vec<String>)>) -> Opt
                     && !function.name.split_once('.').is_some_and(|(_, rest)| rest.starts_with("__")) =>
             {
                 if kept.contains(&(index, None)) {
-                    items.push(Item::Function(function));
+                    items.push(item.clone());
                 } else {
                     removed += 1;
-                    removed_names.insert(function.name);
+                    removed_names.insert(function.name.clone());
                 }
             }
-            Item::Impl(mut implementation)
+            Item::Impl(implementation)
                 if implementation.trait_name.is_none() && !roots.contains(&index) =>
             {
-                let count = implementation.methods.len();
-                let mut method_index = 0;
-                implementation.methods.retain(|_| {
-                    let keep = kept.contains(&(index, Some(method_index)));
-                    method_index += 1;
-                    keep
-                });
-                removed += count - implementation.methods.len();
-                if !implementation.methods.is_empty() {
-                    items.push(Item::Impl(implementation));
+                let methods: Vec<_> = implementation.methods.iter().enumerate()
+                    .filter(|(method_index, _)| kept.contains(&(index, Some(*method_index))))
+                    .map(|(_, method)| method.clone())
+                    .collect();
+                removed += implementation.methods.len() - methods.len();
+                if !methods.is_empty() {
+                    items.push(Item::Impl(ImplDef {
+                        origin: implementation.origin,
+                        trait_name: None,
+                        trait_args: implementation.trait_args.clone(),
+                        type_name: implementation.type_name.clone(),
+                        target_args: implementation.target_args.clone(),
+                        bounds: implementation.bounds.clone(),
+                        methods,
+                    }));
                 }
             }
-            other => items.push(other),
+            other => items.push(other.clone()),
         }
         if lines_aligned && items.len() > before {
-            pruned.item_lines.push(old_lines[index]);
+            item_lines.push(module.item_lines[index]);
         }
     }
-    pruned.items = items;
     if removed == 0 {
         return None;
     }
+    let pruned = Module {
+        modes: module.modes.clone(),
+        imports: module.imports.clone(),
+        from_imports: module.from_imports.clone(),
+        items,
+        import_lines: module.import_lines.clone(),
+        item_lines,
+        compiler_item_syntax: module.compiler_item_syntax.clone(),
+        compiler_expr_syntax: module.compiler_expr_syntax.clone(),
+        compiler_type_syntax: module.compiler_type_syntax.clone(),
+        compiler_pattern_syntax: module.compiler_pattern_syntax.clone(),
+        compiler_stmt_syntax: module.compiler_stmt_syntax.clone(),
+        compiler_block_syntax: module.compiler_block_syntax.clone(),
+        linked_entry: module.linked_entry.clone(),
+    };
     // Two whole-module judgments read the checked module and choose the
     // analysis every later stage uses, with no fallback after the route
     // returns Ok: whether it contains canonical views, and legacy loans.
