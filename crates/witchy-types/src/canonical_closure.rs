@@ -196,9 +196,15 @@ struct Builder<'a> {
     scopes: Vec<Vec<Binding>>,
     sites: Vec<LambdaSite>,
     qualifier_cache: RefCell<HashMap<Type, (bool, usize)>>,
+    /// Built on the first encoded type, then shared by every later one.
+    abi_context: std::cell::OnceCell<canonical_abi::Context>,
 }
 
 impl<'a> Builder<'a> {
+    fn abi_context(&self) -> &canonical_abi::Context {
+        self.abi_context.get_or_init(|| canonical_abi::Context::from_module(self.typed.module()))
+    }
+
     fn plain_call_view_result(&self, name: &str, arguments: &[&Expr]) -> bool {
         if self.resolve(name).is_some_and(|binding| binding.mutable || binding.unproved_qualifier) {
             return false;
@@ -581,9 +587,9 @@ impl<'a> Builder<'a> {
                         path: path.clone(),
                         ty: signature.clone(),
                     })?;
-                let mut signature_encoding = canonical_abi::canonical_checked_ty_bytes(self.typed, &signature)
+                let mut signature_encoding = canonical_abi::canonical_checked_ty_bytes_in(self.abi_context(), &signature)
                     .map_err(|error| ClosureWitnessError::UnsupportedType { context: error.to_string() })?;
-                let declared_signature_encoding = canonical_abi::canonical_ast_type_bytes(self.typed, &declared_signature)
+                let declared_signature_encoding = canonical_abi::canonical_ast_type_bytes_in(self.abi_context(), &declared_signature)
                     .map_err(|error| ClosureWitnessError::UnsupportedType { context: error.to_string() })?;
                 witchy_canonical_source::closure::put_bytes(&mut signature_encoding, &declared_signature_encoding);
                 let captures = witchy_syntax::lambda_scan::scan_lambda(params, body).captures();
@@ -615,7 +621,7 @@ impl<'a> Builder<'a> {
                     }
                     let checked_type = binding.ty.clone().ok_or_else(|| ClosureWitnessError::MissingCaptureType { name: name.clone() })?;
                     if binding.borrowed || explicit_borrow(&checked_type) { return Err(ClosureWitnessError::BorrowedCapture { name }); }
-                    let checked_type_encoding = canonical_abi::canonical_ast_type_bytes(self.typed, &checked_type)
+                    let checked_type_encoding = canonical_abi::canonical_ast_type_bytes_in(self.abi_context(), &checked_type)
                         .map_err(|error| ClosureWitnessError::UnsupportedType { context: error.to_string() })?;
                     let transfer = ClosureCaptureTransfer::classify(&checked_type, &self.definitions)
                         .ok_or_else(|| ClosureWitnessError::UnsupportedType {
@@ -731,6 +737,7 @@ fn walk_module(typed: &TypedModule) -> Result<Builder<'_>, ClosureWitnessError> 
         definitions: witchy_canonical_source::aggregates::type_definitions(typed.module()),
         entries: Vec::new(), scopes: Vec::new(), sites: Vec::new(),
         qualifier_cache: RefCell::new(HashMap::new()),
+        abi_context: std::cell::OnceCell::new(),
     };
     let scope = witchy_canonical_source::scope::canonical_scope(typed.module());
     for (item_index, item_def) in typed.module().items.iter().enumerate() {

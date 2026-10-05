@@ -1632,13 +1632,12 @@ fn bind_canonical_callable_witness(
         .collect::<Vec<_>>();
     let functions = runtime_functions.iter().map(String::as_str).collect::<HashSet<_>>();
     let declarations = canonical_abi::DeclarationSignatures::new(typed);
-    let mut signatures = BTreeMap::new();
-    for name in &runtime_functions {
+    let signatures = declarations.with_memo(|| runtime_functions.iter().map(|name| {
         let signature = declarations.signature(name).map_err(|error| {
             PipelineError::Type(TypeError { message: error.to_string() })
         })?;
-        signatures.insert(name.clone(), signature);
-    }
+        Ok((name.clone(), signature))
+    }).collect::<Result<BTreeMap<_, _>, PipelineError>>())?;
     // Generated instances split along the same entry scope. An instance inside
     // the scope is a direct call target: it must carry an exact rechecked body
     // and signature, and anything else is a forged or corrupted entry that

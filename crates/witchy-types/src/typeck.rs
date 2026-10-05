@@ -13570,33 +13570,14 @@ fn best_effort_table_selected(
     }
 }
 
-/// The checked type table of a trait-lowering intermediate, and nothing else.
+/// The checked type table of a trait-lowering intermediate, and nothing else,
+/// and whether the checker accepted the module.
 ///
 /// `traits::lower_with` annotates the module once before trait lowering and
-/// again after every monomorphization round. It reads only the table (through
-/// `rewrite_preserving_nodes` / `rewrite_into_module`, which consumes the
-/// wrapper), never the loan, access or view facts `typed_module_best_effort`
-/// derives -- whole-module walks that were rebuilt every round and dropped
-/// unread. A wrapper built here carries none, so every fact accessor answers
-/// `Missing` rather than a stale or invented graph.
-#[track_caller]
-pub(crate) fn annotate_types_with_from_conversions(
-    module: Module,
-    from_conversion_fns: &HashSet<String>,
-) -> TypedModule {
-    let table = best_effort_table(&module, Some(from_conversion_fns));
-    TypedModule {
-        module: Box::new(module),
-        table,
-        loan_facts: None,
-        access_facts: None,
-        view_facts: None,
-        checked_as: None,
-    }
-}
-
-/// `annotate_types_with_from_conversions`, and whether the checker accepted
-/// the module; see [`reannotate_after_mono_round`].
+/// again after every monomorphization round (see
+/// [`reannotate_after_mono_round`]). It reads only the table, never the loan,
+/// access or view facts `typed_module_best_effort` derives, so a wrapper built
+/// here carries none and every fact accessor answers `Missing`.
 #[track_caller]
 pub(crate) fn annotate_types_reporting(
     module: Module,

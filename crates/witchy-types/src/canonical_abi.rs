@@ -61,16 +61,17 @@ impl Context {
     }
 }
 
-pub(crate) fn canonical_checked_ty_bytes(
-    typed: &TypedModule,
+/// A checked type's canonical ABI bytes, against a context the caller keeps
+/// for many types of one module.
+pub(crate) fn canonical_checked_ty_bytes_in(
+    context: &Context,
     ty: &Ty,
 ) -> Result<Vec<u8>, CanonicalAbiError> {
     if !within_canonical_abi_type_budget(ty) {
         return Err(CanonicalAbiError::Unsupported("checked type exceeds canonical ABI bounds".into()));
     }
-    let context = Context::from_module(typed.module());
     let mut bytes = Vec::new();
-    encode_ty(ty, &context, &mut bytes)?;
+    encode_ty(ty, context, &mut bytes)?;
     Ok(bytes)
 }
 
@@ -78,12 +79,20 @@ pub(crate) fn canonical_ast_type_bytes(
     typed: &TypedModule,
     ty: &Type,
 ) -> Result<Vec<u8>, CanonicalAbiError> {
+    canonical_ast_type_bytes_in(&Context::from_module(typed.module()), ty)
+}
+
+/// [`canonical_ast_type_bytes`] against a context the caller keeps for many
+/// types of one module.
+pub(crate) fn canonical_ast_type_bytes_in(
+    context: &Context,
+    ty: &Type,
+) -> Result<Vec<u8>, CanonicalAbiError> {
     if !within_canonical_abi_ast_budget(ty) {
         return Err(CanonicalAbiError::Unsupported("source type exceeds canonical ABI bounds".into()));
     }
-    let context = Context::from_module(typed.module());
     let mut bytes = Vec::new();
-    encode_ast(ty, &context, &mut bytes)?;
+    encode_ast(ty, context, &mut bytes)?;
     Ok(bytes)
 }
 
@@ -122,6 +131,13 @@ impl<'a> DeclarationSignatures<'a> {
 
     pub fn signature(&self, name: &str) -> Result<Type, CanonicalAbiError> {
         declaration_signature(self.typed, &self.context, self.declarations.get(name).copied(), name)
+    }
+
+    /// Run `body`, typically a run of [`Self::signature`] calls, with the
+    /// shape memo open for this module's definitions: each signature asks
+    /// for affine storage shapes of the same types, answered once.
+    pub fn with_memo<R>(&self, body: impl FnOnce() -> R) -> R {
+        witchy_canonical_source::aggregates::with_shape_memo(&self.context.definitions, body)
     }
 }
 
@@ -321,18 +337,21 @@ pub fn derive_manifest(
     let declarations = DeclarationSignatures::new(typed);
     let context = &declarations.context;
     let mut entries = BTreeSet::new();
-    for (ordinal, name) in closed_functions.iter().enumerate() {
-        let function_ordinal = u32::try_from(ordinal).map_err(|_| {
-            CanonicalAbiError::InvalidCallable("function ordinal overflow".into())
-        })?;
-        let signature = declarations.signature(name)?;
-        let entry = callable_from_ast(
-            &signature,
-            CanonicalTargetPolicy::ClosedLocal(CanonicalLocalTarget { function_ordinal }),
-            &context,
-        )?;
-        entries.insert(entry);
-    }
+    declarations.with_memo(|| -> Result<(), CanonicalAbiError> {
+        for (ordinal, name) in closed_functions.iter().enumerate() {
+            let function_ordinal = u32::try_from(ordinal).map_err(|_| {
+                CanonicalAbiError::InvalidCallable("function ordinal overflow".into())
+            })?;
+            let signature = declarations.signature(name)?;
+            let entry = callable_from_ast(
+                &signature,
+                CanonicalTargetPolicy::ClosedLocal(CanonicalLocalTarget { function_ordinal }),
+                &context,
+            )?;
+            entries.insert(entry);
+        }
+        Ok(())
+    })?;
     for ty in typed.table().concrete_types() {
         collect_ty_callables(ty, CanonicalTargetPolicy::OpenAbi, &context, &mut entries)?;
     }
