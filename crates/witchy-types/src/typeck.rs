@@ -13645,6 +13645,19 @@ pub(crate) fn reannotate_after_mono_round(
         Ok(Some(table)) => table,
         _ => return annotate_types_reporting(module, from_conversion_fns),
     };
+    // An unselected body keeps its facts by preorder position, which names
+    // the same nodes only while its shape is unchanged. A changed count
+    // proves a change the selection missed: annotate the whole module.
+    let reshaped = module.items.iter().any(|item| match item {
+        Item::Function(function) if !selected.contains(&function.name) => {
+            let owner = node_keys::OwnerId::of_function(&function.name);
+            previous.index.count(owner) != fresh.index.count(owner)
+        }
+        _ => false,
+    });
+    if reshaped {
+        return annotate_types_reporting(module, from_conversion_fns);
+    }
     let mut table = previous;
     for item in &module.items {
         if let Item::Function(function) = item

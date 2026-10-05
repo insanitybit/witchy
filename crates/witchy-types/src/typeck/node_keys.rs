@@ -51,6 +51,9 @@ fn intern(name: &str) -> OwnerId {
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct NodeIndex {
     keys: HashMap<usize, NodeKey>,
+    /// How many expressions each owner holds: equal content has an equal
+    /// count, so a differing count proves the owner's body changed shape.
+    counts: HashMap<OwnerId, u32>,
 }
 
 impl NodeIndex {
@@ -59,6 +62,7 @@ impl NodeIndex {
     /// occurrence's identity and gives later ones a numbered one.
     pub(crate) fn of(module: &Module) -> Self {
         let mut keys = HashMap::new();
+        let mut counts = HashMap::new();
         let mut seen: HashMap<String, u32> = HashMap::new();
         let mut owner_of = |name: String| {
             let occurrence = seen.entry(name.clone()).or_insert(0);
@@ -69,18 +73,18 @@ impl NodeIndex {
         for item in &module.items {
             match item {
                 Item::Function(function) => {
-                    index_block(&mut keys, owner_of(format!("fn {}", function.name)), &function.body);
+                    index_block(&mut keys, &mut counts, owner_of(format!("fn {}", function.name)), &function.body);
                 }
                 Item::Impl(definition) => for method in &definition.methods {
                     let owner = owner_of(format!(
                         "impl {} for {} fn {}",
                         definition.trait_name.as_deref().unwrap_or(""), definition.type_name, method.name,
                     ));
-                    index_block(&mut keys, owner, &method.body);
+                    index_block(&mut keys, &mut counts, owner, &method.body);
                 },
                 Item::Trait(definition) => for method in &definition.methods {
                     let Some(body) = &method.default else { continue };
-                    index_block(&mut keys, owner_of(format!("trait {} fn {}", definition.name, method.name)), body);
+                    index_block(&mut keys, &mut counts, owner_of(format!("trait {} fn {}", definition.name, method.name)), body);
                 },
                 Item::Const { name, value, .. } => {
                     let owner = owner_of(format!("const {name}"));
@@ -90,15 +94,21 @@ impl NodeIndex {
                         node += 1;
                         Ok(())
                     });
+                    counts.insert(owner, node);
                 }
                 Item::Comptime(block) => {
                     comptime += 1;
-                    index_block(&mut keys, owner_of(format!("comptime {comptime}")), block);
+                    index_block(&mut keys, &mut counts, owner_of(format!("comptime {comptime}")), block);
                 }
                 Item::Type(_) | Item::TypeAlias { .. } => {}
             }
         }
-        Self { keys }
+        Self { keys, counts }
+    }
+
+    /// How many expressions `owner` holds in the indexed allocation.
+    pub(crate) fn count(&self, owner: OwnerId) -> u32 {
+        self.counts.get(&owner).copied().unwrap_or(0)
     }
 
     /// The key of this exact expression, when it belongs to the indexed
@@ -128,11 +138,12 @@ impl NodeIndex {
     }
 }
 
-fn index_block(keys: &mut HashMap<usize, NodeKey>, owner: OwnerId, block: &Block) {
+fn index_block(keys: &mut HashMap<usize, NodeKey>, counts: &mut HashMap<OwnerId, u32>, owner: OwnerId, block: &Block) {
     let mut node = 0u32;
     let _ = witchy_syntax::ast::visit::visit_block(block, &mut |expression: &Expr| -> Result<(), ()> {
         keys.insert(expression as *const Expr as usize, NodeKey { owner, node });
         node += 1;
         Ok(())
     });
+    counts.insert(owner, node);
 }
