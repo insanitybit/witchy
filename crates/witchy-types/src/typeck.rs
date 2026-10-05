@@ -68,8 +68,6 @@ pub use names::*;
 mod module_checks;
 pub use module_checks::*;
 mod checker;
-mod node_keys;
-use node_keys::NodeKey;
 use checker::Checker;
 mod ownership;
 mod opt_contract;
@@ -11922,38 +11920,33 @@ impl RegionPromotionFact {
 
 #[derive(Debug, Default, PartialEq)]
 pub struct TypeTable {
-    /// The expressions of the module allocation these facts describe, by
-    /// address, with their stable keys. Every expression fact below is keyed
-    /// by [`NodeKey`]; an accessor resolves a `&Expr` through this index.
-    index: node_keys::NodeIndex,
-    types: HashMap<NodeKey, Ty>,
+    types: HashMap<usize, Ty>,
     checked_storage_declared_types: HashSet<ast::Type>,
-    affine_expression_types: HashMap<NodeKey, ast::Type>,
+    affine_expression_types: HashMap<usize, ast::Type>,
     /// Expression identity produced by the checker branch for the
     /// compiler-known `.owned()` operation. Structural rewrites must rebuild
     /// this table before any authority or tail-manifest consumer uses it.
-    compiler_owned_materializations: HashSet<NodeKey>,
+    compiler_owned_materializations: HashSet<usize>,
     /// Exact checker-authenticated source declaration behind a function-value
     /// expression. This remains valid for a generic use-site instantiation.
-    declared_function_values: HashMap<NodeKey, String>,
+    declared_function_values: HashMap<usize, String>,
     /// Canonical view expressions retain their carrier type even while a
     /// generic payload variable remains unresolved. These are authenticated
     /// formation facts, not general permission for downstream consumers to
     /// treat arbitrary unresolved expressions as concrete runtime values.
-    view_types: HashMap<NodeKey, Ty>,
+    view_types: HashMap<usize, Ty>,
     /// Fully resolved lexical callee signatures at named call expressions.
     /// A source spelling alone never supplies a callable type.
-    local_callees: HashMap<NodeKey, Ty>,
+    local_callees: HashMap<usize, Ty>,
     /// Checked expressions with no normal continuation. Unlike value types,
     /// this fact survives an unresolved result variable; it supplies no value
     /// representation and does not exempt descendants from type checking.
-    non_completing: HashSet<NodeKey>,
+    non_completing: HashSet<usize>,
     /// Complete callable identity for each concrete named declaration.
     functions: HashMap<String, Ty>,
-    existential_packs: HashMap<NodeKey, (Ty, Ty)>,
-    existential_upcasts: HashMap<NodeKey, (Ty, Ty)>,
-    record_projections: HashMap<NodeKey, (Ty, Ty)>,
-    /// Keyed by the `region:` block's address (blocks have no stable key yet).
+    existential_packs: HashMap<usize, (Ty, Ty)>,
+    existential_upcasts: HashMap<usize, (Ty, Ty)>,
+    record_projections: HashMap<usize, (Ty, Ty)>,
     region_promotions: HashMap<usize, RegionPromotionFact>,
     /// For each declaration with an unannotated parameter or result, the
     /// concrete types the check inferred at exactly those positions (`None`
@@ -12631,7 +12624,7 @@ fn compiler_known_owned_tail(expr: &Expr, table: &TypeTable) -> bool {
     let Expr::MethodCall { method, args, .. } = expr else { return false };
     method == "owned"
         && args.is_empty()
-        && table.is_compiler_owned_materialization(expr)
+        && table.compiler_owned_materializations.contains(&(expr as *const Expr as usize))
 }
 
 fn expr_kind(expr: &Expr) -> ProperTailExprKind {
@@ -12712,7 +12705,7 @@ impl TypeTable {
     }
 
     pub fn affine_expression_type(&self, e: &Expr) -> Option<&ast::Type> {
-        self.affine_expression_types.get(&self.index.key(e)?)
+        self.affine_expression_types.get(&(e as *const Expr as usize))
     }
 
     pub fn affine_expression_types(&self) -> impl Iterator<Item = &ast::Type> {
@@ -12722,30 +12715,30 @@ impl TypeTable {
     /// Whether this exact checked expression cannot complete normally.
     /// Absence means unknown or completing, never permission to omit a type.
     pub fn is_non_completing(&self, e: &Expr) -> bool {
-        self.index.key(e).is_some_and(|key| self.non_completing.contains(&key))
+        self.non_completing.contains(&(e as *const Expr as usize))
     }
 
     pub fn type_of(&self, e: &Expr) -> Option<&Ty> {
-        self.types.get(&self.index.key(e)?)
+        self.types.get(&(e as *const Expr as usize))
     }
 
     pub fn is_compiler_owned_materialization(&self, e: &Expr) -> bool {
-        self.index.key(e).is_some_and(|key| self.compiler_owned_materializations.contains(&key))
+        self.compiler_owned_materializations.contains(&(e as *const Expr as usize))
     }
 
     pub(crate) fn declared_function_value(&self, e: &Expr) -> Option<&str> {
         matches!(self.type_of(e), Some(Ty::Fn(..)))
-            .then(|| self.declared_function_values.get(&self.index.key(e)?))
+            .then(|| self.declared_function_values.get(&(e as *const Expr as usize)))
             .flatten()
             .map(String::as_str)
     }
 
     pub(crate) fn view_type_of(&self, e: &Expr) -> Option<&Ty> {
-        self.view_types.get(&self.index.key(e)?)
+        self.view_types.get(&(e as *const Expr as usize))
     }
 
     pub fn local_callee_type(&self, e: &Expr) -> Option<&Ty> {
-        self.local_callees.get(&self.index.key(e)?)
+        self.local_callees.get(&(e as *const Expr as usize))
     }
 
     /// Every concrete expression type in this table. Consumers use this only
@@ -12767,21 +12760,21 @@ impl TypeTable {
     /// exact expression node.
     pub fn existential_pack(&self, e: &Expr) -> Option<&(Ty, Ty)> {
         self.existential_packs
-            .get(&self.index.key(e)?)
+            .get(&(e as *const Expr as usize))
     }
 
     /// The finalized `(target, source)` supertrait conversion requested at this
     /// exact expression node.
     pub fn existential_upcast(&self, e: &Expr) -> Option<&(Ty, Ty)> {
         self.existential_upcasts
-            .get(&self.index.key(e)?)
+            .get(&(e as *const Expr as usize))
     }
 
     /// The finalized `(target, source)` exact-record projection requested at
     /// this expression node.
     pub fn record_projection(&self, e: &Expr) -> Option<&(Ty, Ty)> {
         self.record_projections
-            .get(&self.index.key(e)?)
+            .get(&(e as *const Expr as usize))
     }
 
     /// The checker-authenticated promotion contract for this exact `region:`
@@ -13166,8 +13159,7 @@ fn normalized_facts(module: &Module, table: &TypeTable, typed: &TypedModule) -> 
         }
     }
     let mut facts = Vec::new();
-    let addresses = table.index.entries().map(|(address, key)| (key, address)).collect::<HashMap<_, _>>();
-    let mut add = |tag: &str, key: &NodeKey, value: String| match addresses.get(key).and_then(|address| index.get(address)) {
+    let mut add = |tag: &str, key: &usize, value: String| match index.get(key) {
         Some(position) => facts.push(format!("{tag}{position}:{value}")),
         None => facts.push(format!("stale {tag}:{value}")),
     };
@@ -13660,25 +13652,12 @@ pub(crate) fn reannotate_after_mono_round(
         Ok(Some(table)) => table,
         _ => return annotate_types_reporting(module, from_conversion_fns),
     };
-    // An unselected body keeps its facts by preorder position, which names
-    // the same nodes only while its shape is unchanged. A changed count
-    // proves a change the selection missed: annotate the whole module.
-    let reshaped = module.items.iter().any(|item| match item {
-        Item::Function(function) if !selected.contains(&function.name) => {
-            let owner = node_keys::OwnerId::of_function(&function.name);
-            previous.index.count(owner) != fresh.index.count(owner)
-        }
-        _ => false,
-    });
-    if reshaped {
-        return annotate_types_reporting(module, from_conversion_fns);
-    }
     let mut table = previous;
     for item in &module.items {
         if let Item::Function(function) = item
             && selected.contains(&function.name)
         {
-            table.forget_expression_facts(&function.name);
+            table.forget_expression_facts(&function.body);
         }
     }
     table.absorb(fresh);
@@ -13690,9 +13669,8 @@ pub(crate) fn reannotate_after_mono_round(
                 let mut missing = 0;
                 let mut differing = 0;
                 let _ = witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression: &Expr| -> Result<(), ()> {
-                    let ours = table.index.key(expression).and_then(|key| table.types.get(&key));
-                    let theirs = full.index.key(expression).and_then(|key| full.types.get(&key));
-                    match (ours, theirs) {
+                    let key = expression as *const Expr as usize;
+                    match (table.types.get(&key), full.types.get(&key)) {
                         (None, Some(ty)) => {
                             missing += 1;
                             let shown = format!("{expression:?}");
@@ -13791,21 +13769,23 @@ fn incremental_annotation_plan(
 }
 
 impl TypeTable {
-    /// Drop every expression-keyed fact of the function `name`, whose body
-    /// is about to be re-checked.
-    fn forget_expression_facts(&mut self, name: &str) {
-        let owner = node_keys::OwnerId::of_function(name);
-        let kept = |key: &NodeKey| key.owner() != owner;
-        self.types.retain(|key, _| kept(key));
-        self.affine_expression_types.retain(|key, _| kept(key));
-        self.compiler_owned_materializations.retain(kept);
-        self.declared_function_values.retain(|key, _| kept(key));
-        self.view_types.retain(|key, _| kept(key));
-        self.local_callees.retain(|key, _| kept(key));
-        self.non_completing.retain(kept);
-        self.existential_packs.retain(|key, _| kept(key));
-        self.existential_upcasts.retain(|key, _| kept(key));
-        self.record_projections.retain(|key, _| kept(key));
+    /// Drop every expression-keyed fact under `block`, whose body is about
+    /// to be re-checked.
+    fn forget_expression_facts(&mut self, block: &Block) {
+        let _ = witchy_syntax::ast::visit::visit_block(block, &mut |expression: &Expr| -> Result<(), ()> {
+            let key = expression as *const Expr as usize;
+            self.types.remove(&key);
+            self.affine_expression_types.remove(&key);
+            self.compiler_owned_materializations.remove(&key);
+            self.declared_function_values.remove(&key);
+            self.view_types.remove(&key);
+            self.local_callees.remove(&key);
+            self.non_completing.remove(&key);
+            self.existential_packs.remove(&key);
+            self.existential_upcasts.remove(&key);
+            self.record_projections.remove(&key);
+            Ok(())
+        });
     }
 
     /// Take every fact of `fresh`, a selected check of the same module.
@@ -13813,7 +13793,6 @@ impl TypeTable {
     /// body was not checked) keeps the previous resolution.
     fn absorb(&mut self, fresh: TypeTable) {
         let TypeTable {
-            index,
             types,
             checked_storage_declared_types,
             affine_expression_types,
@@ -13829,8 +13808,6 @@ impl TypeTable {
             region_promotions,
             inferred_signatures,
         } = fresh;
-        // `fresh` checked this table's module; its index is the current one.
-        self.index = index;
         self.types.extend(types);
         self.checked_storage_declared_types.extend(checked_storage_declared_types);
         self.affine_expression_types.extend(affine_expression_types);
@@ -14710,26 +14687,21 @@ fn run_check_seeded(
                     source, &c.canonical_definitions,
                 )
         }).collect();
-        // The checker recorded facts by address, including those of
-        // transient nodes it built and dropped while checking; only the
-        // module's own expressions have keys, so only their facts remain.
-        let index = node_keys::NodeIndex::of(module);
         return Ok(Some(TypeTable {
-            types: index.rekey_map(types),
+            types,
             checked_storage_declared_types: c.checked_storage_declared_types,
-            affine_expression_types: index.rekey_map(affine_expression_types),
-            compiler_owned_materializations: index.rekey_set(c.compiler_owned_materializations),
-            declared_function_values: index.rekey_map(c.declared_function_values),
-            view_types: index.rekey_map(view_types),
-            local_callees: index.rekey_map(local_callees),
-            non_completing: index.rekey_set(non_completing),
+            affine_expression_types,
+            compiler_owned_materializations: c.compiler_owned_materializations,
+            declared_function_values: c.declared_function_values,
+            view_types,
+            local_callees,
+            non_completing,
             functions,
-            existential_packs: index.rekey_map(existential_packs),
-            existential_upcasts: index.rekey_map(existential_upcasts),
-            record_projections: index.rekey_map(record_projections),
+            existential_packs,
+            existential_upcasts,
+            record_projections,
             region_promotions: c.region_promotions,
             inferred_signatures,
-            index,
         }));
     }
     Ok(None)
