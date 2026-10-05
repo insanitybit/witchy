@@ -135,6 +135,9 @@ pub struct CanonicalCheckedSource {
     proper_tail_manifest: ProperTailSiteManifest,
     closure_witness: ClosureWitnessManifest,
     callable_witness: CanonicalCallableWitness,
+    // Derived from `typed` and `callable_witness`, which never change after
+    // construction; see `witchy_canonical_source::source::closed_callable_items`.
+    closed_callable_items: Vec<Option<u32>>,
     launch_contract_payload: Vec<u8>,
     obligations: BTreeSet<CanonicalObligation>,
     precompiled_declarations: PrecompiledDeclarationEnvironment,
@@ -169,6 +172,7 @@ impl CanonicalCheckedSource {
             abi_manifest: &self.callable_witness.abi_manifest,
             closed_abis: &self.callable_witness.closed_abis,
             runtime_functions: &self.callable_witness.runtime_functions,
+            closed_callable_items: &self.closed_callable_items,
             launch_contract_payload: &self.launch_contract_payload,
             build_entry: self.build_entry.as_deref(),
             access: self.typed.access_facts().ok().map(|facts| facts as &dyn CheckedAccessQuery),
@@ -1388,6 +1392,9 @@ fn attach_canonical_source(
         collect_checked_substorage(source, &type_definitions, &mut concrete_types, 0);
     }
     let concrete_types = concrete_types.into_iter().collect::<Vec<_>>();
+    let closed_callable_items = witchy_canonical_source::source::closed_callable_items(
+        typed.module(), &callable_witness.runtime_functions,
+    );
     checked.canonical_source = Some(CanonicalCheckedSource {
         console_fixture: false,
         build_entry: None,
@@ -1407,6 +1414,7 @@ fn attach_canonical_source(
         proper_tail_manifest,
         closure_witness,
         callable_witness,
+        closed_callable_items,
         launch_contract_payload,
         obligations,
         precompiled_declarations,

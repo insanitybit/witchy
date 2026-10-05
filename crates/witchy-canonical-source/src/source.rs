@@ -1079,6 +1079,31 @@ pub struct PrecompiledExport {
     pub sidecar_sha256: [u8; 32],
 }
 
+/// The checked AST item of each closed-runtime callable ordinal, or `None`
+/// when the name is missing or ambiguous among either the runtime callables or
+/// the module's function declarations. Built once per checked source: a scan
+/// per lookup made admission quadratic in the number of functions.
+pub fn closed_callable_items(module: &Module, runtime_functions: &[String]) -> Vec<Option<u32>> {
+    let mut runtime_counts = BTreeMap::<&str, usize>::new();
+    for name in runtime_functions {
+        *runtime_counts.entry(name.as_str()).or_default() += 1;
+    }
+    // (first item, number of declarations) per function name.
+    let mut declarations = BTreeMap::<&str, (usize, usize)>::new();
+    for (item, declaration) in module.items.iter().enumerate() {
+        if let Item::Function(function) = declaration {
+            declarations.entry(function.name.as_str()).or_insert((item, 0)).1 += 1;
+        }
+    }
+    runtime_functions.iter().map(|name| {
+        if runtime_counts[name.as_str()] != 1 { return None; }
+        match declarations.get(name.as_str()) {
+            Some(&(item, 1)) => u32::try_from(item).ok(),
+            _ => None,
+        }
+    }).collect()
+}
+
 /// Everything a view borrows, as the checked frontend assembles it.
 pub struct CanonicalSourceParts<'s> {
     pub module: &'s Module,
@@ -1090,6 +1115,8 @@ pub struct CanonicalSourceParts<'s> {
     pub abi_manifest: &'s CanonicalCallableAbiManifest,
     pub closed_abis: &'s BTreeMap<String, CanonicalCallableAbi>,
     pub runtime_functions: &'s [String],
+    /// [`closed_callable_items`] of `module` and `runtime_functions`.
+    pub closed_callable_items: &'s [Option<u32>],
     pub launch_contract_payload: &'s [u8],
     pub build_entry: Option<&'s str>,
     /// `None` when the checked access facts are unavailable.
@@ -1120,6 +1147,7 @@ pub struct CanonicalSourceView<'s> {
     abi_manifest: &'s CanonicalCallableAbiManifest,
     closed_abis: &'s BTreeMap<String, CanonicalCallableAbi>,
     runtime_functions: &'s [String],
+    closed_callable_items: &'s [Option<u32>],
     launch_contract_payload: &'s [u8],
     build_entry: Option<&'s str>,
     access: Option<&'s dyn CheckedAccessQuery>,
@@ -1150,6 +1178,7 @@ impl<'s> CanonicalSourceView<'s> {
             abi_manifest,
             closed_abis,
             runtime_functions,
+            closed_callable_items,
             launch_contract_payload,
             build_entry,
             access,
@@ -1174,6 +1203,7 @@ impl<'s> CanonicalSourceView<'s> {
             abi_manifest,
             closed_abis,
             runtime_functions,
+            closed_callable_items,
             launch_contract_payload,
             build_entry,
             access,
@@ -1306,19 +1336,7 @@ impl<'s> CanonicalSourceView<'s> {
     /// and unreachable declarations, so their ordinals are not item ordinals.
     /// Neither a missing declaration nor an ambiguous name grants authority.
     pub fn closed_callable_item_ordinal(&self, ordinal: u32) -> Option<u32> {
-        let name = self.runtime_functions.get(ordinal as usize)?;
-        if self.runtime_functions.iter().filter(|candidate| *candidate == name).count() != 1 {
-            return None;
-        }
-        let mut matching = self.module.items.iter().enumerate().filter_map(|(item, declaration)| {
-            match declaration {
-                Item::Function(function) if &function.name == name => Some(item),
-                _ => None,
-            }
-        });
-        let item = matching.next()?;
-        if matching.next().is_some() { return None; }
-        u32::try_from(item).ok()
+        self.closed_callable_items.get(ordinal as usize).copied().flatten()
     }
 
     /// The exact retained source declaration for a closed callable. Unlike the
