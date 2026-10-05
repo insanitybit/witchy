@@ -31,17 +31,22 @@
 //!
 //! # The persistent store
 //!
-//! With `WITCHY_SAFEWIR_CHECK_CACHE_DIR` set, verdicts that took at least
-//! [`PERSIST_THRESHOLD`] to establish are also written to that directory and
-//! read back by later processes, so the executor is checked once per checkout
-//! rather than once per test process. This is opt-in because a verdict read
-//! from disk is trusted the way the compiler binary on disk is: whoever can
-//! write the directory can make a function pass. The repo's cargo config opts
-//! every cargo- and nextest-launched process in (tests are de facto trusted);
-//! a `witchy` run from a shell is not opted in. Entries live under a digest of
-//! this crate's sources (`build.rs`), so a changed checker never sees an older
-//! checker's verdicts, and each file carries its key and an integrity digest
-//! so a truncated or misnamed file is a miss, never a verdict.
+//! Verdicts that took at least [`PERSIST_THRESHOLD`] to establish are also
+//! written to a store directory and read back by later processes, so the
+//! executor is checked once rather than once per process. The store is
+//! `WITCHY_SAFEWIR_CHECK_CACHE_DIR` when set (the repo's cargo config points
+//! every cargo- and nextest-launched process at a per-checkout store), and
+//! otherwise the user's cache directory (`witchy/safewir-verdicts` under
+//! `~/Library/Caches`, `$XDG_CACHE_HOME` or `~/.cache`, or `%LOCALAPPDATA%`).
+//! A verdict read from disk is trusted the way the compiler binary on disk
+//! is: whoever can write the directory can make a function pass. So the
+//! user cache directory is created owner-only and is read only while it
+//! belongs to this user and no one else can write it.
+//! `WITCHY_SAFEWIR_CHECK_CACHE=off` disables the memo and the store. Entries
+//! live under a digest of this crate's sources (`build.rs`), so a changed
+//! checker never sees an older checker's verdicts, and each file carries its
+//! key and an integrity digest so a truncated or misnamed file is a miss,
+//! never a verdict.
 //!
 //! # One checker per verdict at a time
 //!
@@ -660,15 +665,72 @@ pub(crate) mod store {
     /// Digest of this crate's sources at build time, stamped by `build.rs`.
     pub(super) const SOURCE_STAMP: &str = env!("WITCHY_WIR_SOURCE_DIGEST");
 
-    /// The stamp directory for this checker build, when the store is opted in.
+    /// The stamp directory for this checker build: under
+    /// `WITCHY_SAFEWIR_CHECK_CACHE_DIR` when set, otherwise under the user's
+    /// cache directory, which is used only while it is private to this user.
     pub(super) fn dir() -> Option<&'static Path> {
         static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
         DIR.get_or_init(|| {
-            let root = std::env::var_os("WITCHY_SAFEWIR_CHECK_CACHE_DIR")
-                .filter(|value| !value.is_empty())?;
-            Some(stamp_dir(Path::new(&root)))
+            if let Some(root) = std::env::var_os("WITCHY_SAFEWIR_CHECK_CACHE_DIR")
+                .filter(|value| !value.is_empty())
+            {
+                return Some(stamp_dir(Path::new(&root)));
+            }
+            let root = user_cache_root()?;
+            private_to_this_user(&root).then(|| stamp_dir(&root))
         })
         .as_deref()
+    }
+
+    /// `<platform cache directory>/witchy/safewir-verdicts`, or `None` where
+    /// the platform names none.
+    fn user_cache_root() -> Option<PathBuf> {
+        let nonempty = |name: &str| std::env::var_os(name).filter(|value| !value.is_empty()).map(PathBuf::from);
+        let base = if cfg!(target_os = "macos") {
+            nonempty("HOME").map(|home| home.join("Library/Caches"))
+        } else if cfg!(windows) {
+            nonempty("LOCALAPPDATA")
+        } else {
+            nonempty("XDG_CACHE_HOME").or_else(|| nonempty("HOME").map(|home| home.join(".cache")))
+        }?;
+        Some(base.join("witchy").join("safewir-verdicts"))
+    }
+
+    /// Whether `root` exists (created owner-only if absent) and no other user
+    /// can change what it holds, now or later in this process. A verdict read
+    /// from the store is trusted like the compiler binary, so this is checked
+    /// once, before the first read, for `root` and each ancestor up to the
+    /// platform cache directory (`<cache>/witchy/safewir-verdicts`): each must
+    /// be a real directory (not a symlink), owned by this user or the
+    /// superuser, and writable by neither group nor others. Replacing or
+    /// renaming any of them needs write access to its parent, so a later swap
+    /// is excluded too. The owner is compared against a file this process
+    /// creates in `root`.
+    #[cfg(unix)]
+    fn private_to_this_user(root: &Path) -> bool {
+        use std::os::unix::fs::{DirBuilderExt, MetadataExt};
+        if fs::symlink_metadata(root).is_err()
+            && fs::DirBuilder::new().recursive(true).mode(0o700).create(root).is_err()
+        {
+            return false;
+        }
+        let probe = root.join(format!(".owner.{}", std::process::id()));
+        let owner = fs::File::create(&probe).and_then(|file| file.metadata()).map(|metadata| metadata.uid());
+        let _ = fs::remove_file(&probe);
+        let Ok(owner) = owner else { return false };
+        root.ancestors().take(3).all(|directory| {
+            fs::symlink_metadata(directory).is_ok_and(|metadata| {
+                metadata.is_dir()
+                    && (metadata.uid() == owner || metadata.uid() == 0)
+                    && metadata.mode() & 0o022 == 0
+            })
+        }) && fs::symlink_metadata(root).is_ok_and(|metadata| metadata.uid() == owner)
+    }
+
+    /// Windows' per-user local application data is private to its user.
+    #[cfg(not(unix))]
+    fn private_to_this_user(root: &Path) -> bool {
+        fs::create_dir_all(root).is_ok()
     }
 
     pub(super) fn stamp_dir(root: &Path) -> PathBuf {

@@ -222,19 +222,18 @@ verdicts are memoized in-process, and every cargo/nextest-launched process
 (tests and the `witchy` binaries they spawn) also persists the expensive ones
 under `state/safewir-check-cache/` via `[env]` in `.cargo/config.toml`, so the
 std async executor is checked once per checkout instead of once per test
-process. A shell `witchy` run is not opted in. `WITCHY_SAFEWIR_CHECK_CACHE=off`
+process. A shell `witchy` run uses a per-user store
+(`witchy/safewir-verdicts` in the platform cache directory), read only while
+it is private to that user. `WITCHY_SAFEWIR_CHECK_CACHE=off`
 disables memoization; the store is keyed under a digest of `witchy-wir`'s
 sources, so an edited checker never replays old verdicts. Design and trust
 boundary: `crates/witchy-wir/src/canonical_safewir/check/cache.rs`.
 
-`scripts/bin/witchy` is the same idea for ad-hoc compiler runs: the store is
-opt-in, and a bare shell `witchy` is deliberately left out, but that taxes the
-loop you actually wait on. Measured on a five-line async program, twice each:
-**29.3s CPU without the store, 8.6s with it** -- anything touching async
-re-checks the std executor from scratch otherwise. Using the shim IS the
-opt-in, exactly as `scripts/bin/cargo` is for the build cache; the first run
-pays to populate the store and every later one collects. A `witchy` invoked
-from outside the repo keeps the untouched default.
+`scripts/bin/witchy` points ad-hoc compiler runs at the repository's shared
+store (`state/safewir-check-cache`, the one tests warm) instead of the
+per-user one. Measured on a five-line async program, twice each:
+**29.3s CPU without a warm store, 8.6s with it** -- anything touching async
+re-checks the std executor from scratch otherwise.
 
 The coordinator's explicit gate target remains authoritative. Do not run a
 full gate yourself. While another agent is active, prefer
