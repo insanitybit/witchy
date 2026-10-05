@@ -11943,6 +11943,18 @@ pub struct TypeTable {
     existential_upcasts: HashMap<usize, (Ty, Ty)>,
     record_projections: HashMap<usize, (Ty, Ty)>,
     region_promotions: HashMap<usize, RegionPromotionFact>,
+    /// For each declaration with an unannotated parameter or result, the
+    /// concrete types the check inferred at exactly those positions (`None`
+    /// at annotated ones). Absent when any such position stayed unresolved.
+    inferred_signatures: HashMap<String, InferredSignature>,
+}
+
+/// The inferred positions of one declaration's signature; see
+/// `TypeTable::inferred_signatures`.
+#[derive(Debug, Clone, PartialEq)]
+struct InferredSignature {
+    params: Vec<Option<Ty>>,
+    result: Option<Ty>,
 }
 
 /// The canonical source operation key for one proper-tail candidate.
@@ -13458,11 +13470,15 @@ pub(crate) fn reannotate_after_mono_round(
     if !previous_accepted || std::env::var_os("WITCHY_REANNOTATE_UNCHANGED").is_some() {
         return annotate_types_reporting(module, from_conversion_fns);
     }
-    let selected = incremental_annotation_selection(&module, changed);
-    let (fresh, accepted) = best_effort_table_selected(&module, Some(&selected), Some(from_conversion_fns));
-    if !accepted {
+    let Some((selected, seeded)) = incremental_annotation_plan(&module, changed, &previous) else {
         return annotate_types_reporting(module, from_conversion_fns);
-    }
+    };
+    let fresh = match run_check_seeded(
+        &module, true, Some(&selected), None, None, Some(from_conversion_fns), false, Some(&seeded),
+    ) {
+        Ok(Some(table)) => table,
+        _ => return annotate_types_reporting(module, from_conversion_fns),
+    };
     let mut table = previous;
     for item in &module.items {
         if let Item::Function(function) = item
@@ -13513,37 +13529,70 @@ pub(crate) fn reannotate_after_mono_round(
     (typed_module_with_table(module, table), true)
 }
 
-/// The bodies a selected re-annotation must check: `changed`, plus every
-/// function they reach (through calls and function values) whose signature
-/// the checker resolves only from its body -- an unannotated result or
-/// parameter is a fresh variable until that body is checked. A whole-module
-/// run skips bounded templates' bodies, so the selection never includes one.
-fn incremental_annotation_selection(module: &Module, changed: &HashSet<String>) -> HashSet<String> {
-    let functions = module.items.iter().filter_map(|item| match item {
-        Item::Function(function) if function.bounds.is_empty() => Some((function.name.as_str(), function)),
-        _ => None,
-    }).collect::<HashMap<_, _>>();
+/// The bodies a selected re-annotation checks and the signatures it seeds,
+/// or `None` when only a whole-module check gives the exact answer.
+///
+/// The selection is `changed` (a whole-module run skips bounded templates'
+/// bodies, so it never includes one). A declaration with an unannotated
+/// result or parameter has a single monomorphic variable that ANY body may
+/// pin: its own, or a caller's. Every unselected body is unchanged, so the
+/// previous whole-module table already holds the resolution they pinned;
+/// seeding it lets the selected bodies see exactly what the whole-module
+/// check sees. A selected body that names such a declaration the previous
+/// check left unresolved could pin it for the first time -- changing facts
+/// in unselected bodies too -- so that case falls back.
+fn incremental_annotation_plan(
+    module: &Module,
+    changed: &HashSet<String>,
+    previous: &TypeTable,
+) -> Option<(HashSet<String>, HashMap<String, InferredSignature>)> {
     let body_inferred = |function: &Function| {
         function.ret.is_none() || function.params.iter().any(|parameter| parameter.ty.is_none())
     };
     let mut selected = HashSet::new();
-    let mut pending = changed.iter().filter_map(|name| functions.get(name.as_str()).copied()).collect::<Vec<_>>();
-    while let Some(function) = pending.pop() {
-        if !selected.insert(function.name.clone()) {
-            continue;
+    let mut seeded = HashMap::new();
+    // Unresolved before the round: unselected ones a selected body may now
+    // pin, and selected ones an unselected caller would see pinned.
+    let mut unresolved_unselected = HashSet::new();
+    let mut unresolved_selected = HashSet::new();
+    for item in &module.items {
+        let Item::Function(function) = item else { continue };
+        let is_selected = changed.contains(&function.name) && function.bounds.is_empty();
+        if is_selected {
+            selected.insert(function.name.clone());
         }
-        let _ = witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression: &Expr| -> Result<(), ()> {
-            if let Expr::Call { name, .. } | Expr::Var(name) = expression
-                && let Some(callee) = functions.get(name.as_str())
-                && body_inferred(callee)
-                && !selected.contains(&callee.name)
-            {
-                pending.push(callee);
+        if body_inferred(function) {
+            match previous.inferred_signatures.get(&function.name) {
+                Some(resolved) => { seeded.insert(function.name.clone(), resolved.clone()); }
+                None if is_selected => { unresolved_selected.insert(function.name.as_str()); }
+                None => { unresolved_unselected.insert(function.name.as_str()); }
             }
-            Ok(())
-        });
+        }
     }
-    selected
+    let names_any = |function: &Function, names: &HashSet<&str>| {
+        witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression: &Expr| match expression {
+            Expr::Call { name, .. } | Expr::Var(name) if names.contains(name.as_str()) => Err(()),
+            _ => Ok(()),
+        }).is_err()
+    };
+    if !unresolved_unselected.is_empty() || !unresolved_selected.is_empty() {
+        for item in &module.items {
+            let Item::Function(function) = item else { continue };
+            let blocked = if selected.contains(&function.name) {
+                &unresolved_unselected
+            } else {
+                &unresolved_selected
+            };
+            if !blocked.is_empty() && names_any(function, blocked) {
+                if std::env::var_os("WITCHY_DEBUG_TYPECK_TIMING").is_some() {
+                    eprintln!("incremental annotate: `{}` blocks on {:?}", function.name,
+                        blocked.iter().filter(|name| names_any(function, &[**name].into_iter().collect())).collect::<Vec<_>>());
+                }
+                return None;
+            }
+        }
+    }
+    Some((selected, seeded))
 }
 
 impl TypeTable {
@@ -13584,6 +13633,7 @@ impl TypeTable {
             existential_upcasts,
             record_projections,
             region_promotions,
+            inferred_signatures,
         } = fresh;
         self.types.extend(types);
         self.checked_storage_declared_types.extend(checked_storage_declared_types);
@@ -13598,6 +13648,7 @@ impl TypeTable {
         self.existential_upcasts.extend(existential_upcasts);
         self.record_projections.extend(record_projections);
         self.region_promotions.extend(region_promotions);
+        self.inferred_signatures.extend(inferred_signatures);
     }
 }
 
@@ -13706,6 +13757,27 @@ fn run_check_selected_untimed(
     trait_supertraits: Option<&HashMap<String, Vec<String>>>,
     from_conversion_fns: Option<&HashSet<String>>,
     compiler_syntax_allowed: bool,
+) -> Result<Option<TypeTable>, TypeError> {
+    run_check_seeded(
+        module, record, selected_functions, trait_method_names, trait_supertraits,
+        from_conversion_fns, compiler_syntax_allowed, None,
+    )
+}
+
+/// `run_check_selected`, with `seeded` declarations' signatures unified with
+/// the given types after registration. A selected check uses this to supply
+/// the resolutions that unselected bodies would have pinned in a
+/// whole-module check (see [`reannotate_after_mono_round`]).
+#[allow(clippy::too_many_arguments)]
+fn run_check_seeded(
+    module: &Module,
+    record: bool,
+    selected_functions: Option<&HashSet<String>>,
+    trait_method_names: Option<&HashSet<String>>,
+    trait_supertraits: Option<&HashMap<String, Vec<String>>>,
+    from_conversion_fns: Option<&HashSet<String>>,
+    compiler_syntax_allowed: bool,
+    seeded: Option<&HashMap<String, InferredSignature>>,
 ) -> Result<Option<TypeTable>, TypeError> {
     let module = &module;
     // Source-check entry points carry the pre-lowering trait catalog. Internal
@@ -14248,6 +14320,22 @@ fn run_check_selected_untimed(
         }
     }
     c.current_typarams.clear();
+    for (name, seed) in seeded.into_iter().flatten() {
+        let Some((params, result)) = c.fn_sigs.get(name).cloned() else {
+            return terr(format!("seeded declaration `{name}` has no signature"));
+        };
+        if seed.params.len() != params.len() {
+            return terr(format!("seeded declaration `{name}` has a different arity"));
+        }
+        for (param, seed_param) in params.iter().zip(&seed.params) {
+            if let Some(seed_param) = seed_param {
+                c.unify(param, seed_param)?;
+            }
+        }
+        if let Some(seed_result) = &seed.result {
+            c.unify(&result, seed_result)?;
+        }
+    }
 
     // `main` is the root entrypoint: its parameters are where the host's authority
     // enters, so they must be capabilities (or the args list) — validate before
@@ -14401,6 +14489,25 @@ fn run_check_selected_untimed(
                 })
             })
             .collect();
+        let inferred_signatures = module.items.iter().filter_map(|item| {
+            let Item::Function(function) = item else { return None };
+            if function.ret.is_some() && function.params.iter().all(|parameter| parameter.ty.is_some()) {
+                return None;
+            }
+            let (params, result) = c.fn_sigs.get(&function.name)?;
+            let resolved = |ty: &Ty| Some(c.resolve(ty)).filter(|ty| !ty_has_var(ty));
+            let params = function.params.iter().zip(params.iter())
+                .map(|(parameter, ty)| match parameter.ty {
+                    Some(_) => Some(None),
+                    None => resolved(ty).map(Some),
+                })
+                .collect::<Option<Vec<_>>>()?;
+            let result = match function.ret {
+                Some(_) => None,
+                None => Some(resolved(result)?),
+            };
+            Some((function.name.clone(), InferredSignature { params, result }))
+        }).collect();
         let affine_expression_types = c.affine_expression_types.into_iter().filter(|(site, source)| {
             types.get(site).and_then(ty_to_ast)
                 == witchy_canonical_source::storage::affine_storage_erased_type(
@@ -14421,6 +14528,7 @@ fn run_check_selected_untimed(
             existential_upcasts,
             record_projections,
             region_promotions: c.region_promotions,
+            inferred_signatures,
         }));
     }
     Ok(None)
