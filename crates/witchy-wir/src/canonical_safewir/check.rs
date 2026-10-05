@@ -366,6 +366,7 @@ fn check_candidate<S: ModuleStage>(
     let affine_cache_proofs = affine_abi.filter(|proofs| !proofs.is_empty())
         .map(|proofs| std::sync::Arc::new(proofs.clone()));
 
+    let counters_before = cache::counters();
     for function in candidate.functions() {
         // A verdict is a pure function of what the key digests, so an
         // admitted function is checked once per process and replayed
@@ -429,6 +430,16 @@ fn check_candidate<S: ModuleStage>(
                 return Err(InitialCheckError::DuplicateTailObligation(*site));
             }
         }
+    }
+    if cache::debug() {
+        let (hits, store_hits, misses) = cache::counters();
+        eprintln!(
+            "safewir-check-cache: {} functions: {} hits, {} store hits, {} misses",
+            candidate.functions().len(),
+            hits - counters_before.0,
+            store_hits - counters_before.1,
+            misses - counters_before.2,
+        );
     }
 
     for site in tail_obligations.keys() {

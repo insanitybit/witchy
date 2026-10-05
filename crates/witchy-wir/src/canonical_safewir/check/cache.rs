@@ -609,8 +609,13 @@ pub(super) fn record(key: FunctionCheckKey, discharged: Discharged, elapsed: Dur
     }
 }
 
+/// In-process hits, store hits and misses so far.
+pub(super) fn counters() -> (u64, u64, u64) {
+    (HITS.load(Ordering::Relaxed), STORE_HITS.load(Ordering::Relaxed), MISSES.load(Ordering::Relaxed))
+}
+
 /// `WITCHY_SAFEWIR_CHECK_CACHE_DEBUG` reports store traffic on stderr.
-fn debug() -> bool {
+pub(super) fn debug() -> bool {
     static DEBUG: OnceLock<bool> = OnceLock::new();
     *DEBUG.get_or_init(|| std::env::var_os("WITCHY_SAFEWIR_CHECK_CACHE_DEBUG").is_some())
 }

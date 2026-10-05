@@ -13241,6 +13241,7 @@ pub fn annotate(module: Module) -> TypedModule {
 /// obligations that did not exist during source checking, so silently replacing
 /// their diagnostics with an empty table would turn a required rejection into a
 /// later generic "unsupported lowering" error.
+#[track_caller]
 pub fn annotate_checked(module: Module) -> Result<TypedModule, TypeError> {
     // Frontend checking already enforced the compiler-syntax boundary before
     // linking and comptime expansion. The executable AST can legitimately retain
@@ -13301,6 +13302,7 @@ pub fn annotate_typed_async_projection(module: Module) -> Result<TypedModule, Ty
 /// table still belongs to `module`. This keeps the ordinary public `main`
 /// contract strict while validating the generated entrypoint under the build
 /// capability contract.
+#[track_caller]
 pub fn annotate_checked_build(mut module: Module) -> Result<TypedModule, TypeError> {
     let mut renamed_entry = None;
     for (index, item) in module.items.iter_mut().enumerate() {
@@ -13345,6 +13347,7 @@ fn annotate_with_conversion_fns(
 
 /// The recorded type table of a whole-module check, or an empty table when
 /// the module does not check: best-effort annotation never reports an error.
+#[track_caller]
 fn best_effort_table(module: &Module, from_conversion_fns: Option<&HashSet<String>>) -> TypeTable {
     match run_check_selected(
         module,
@@ -13375,6 +13378,7 @@ fn best_effort_table(module: &Module, from_conversion_fns: Option<&HashSet<Strin
 /// derives -- whole-module walks that were rebuilt every round and dropped
 /// unread. A wrapper built here carries none, so every fact accessor answers
 /// `Missing` rather than a stale or invented graph.
+#[track_caller]
 pub(crate) fn annotate_types_with_from_conversions(
     module: Module,
     from_conversion_fns: &HashSet<String>,
@@ -13412,6 +13416,7 @@ fn detect_entry_module(module: &Module) -> String {
     before.unwrap_or_default()
 }
 
+#[track_caller]
 pub(crate) fn check_selected_lowered(
     module: &Module,
     names: &HashSet<String>,
@@ -13429,6 +13434,7 @@ pub(crate) fn check_selected_lowered(
         .map(|_| ())
 }
 
+#[track_caller]
 fn run_check_with_trait_methods(
     module: &Module,
     record: bool,
@@ -13447,7 +13453,45 @@ fn run_check_with_trait_methods(
     )
 }
 
+/// Every whole-module checker run. `WITCHY_DEBUG_TYPECK_TIMING` reports each
+/// one with its first caller outside the `#[track_caller]` wrappers, so a
+/// compile's repeated checks can be counted and timed.
+#[track_caller]
 fn run_check_selected(
+    module: &Module,
+    record: bool,
+    selected_functions: Option<&HashSet<String>>,
+    trait_method_names: Option<&HashSet<String>>,
+    trait_supertraits: Option<&HashMap<String, Vec<String>>>,
+    from_conversion_fns: Option<&HashSet<String>>,
+    compiler_syntax_allowed: bool,
+) -> Result<Option<TypeTable>, TypeError> {
+    static TIMING: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !*TIMING.get_or_init(|| std::env::var_os("WITCHY_DEBUG_TYPECK_TIMING").is_some()) {
+        return run_check_selected_untimed(
+            module, record, selected_functions, trait_method_names, trait_supertraits,
+            from_conversion_fns, compiler_syntax_allowed,
+        );
+    }
+    let caller = std::panic::Location::caller();
+    let start = std::time::Instant::now();
+    let result = run_check_selected_untimed(
+        module, record, selected_functions, trait_method_names, trait_supertraits,
+        from_conversion_fns, compiler_syntax_allowed,
+    );
+    eprintln!(
+        "typeck: {}:{} items={} selected={} record={record} ok={} took={:?}",
+        caller.file(),
+        caller.line(),
+        module.items.len(),
+        selected_functions.map_or_else(|| "all".to_string(), |names| names.len().to_string()),
+        result.is_ok(),
+        start.elapsed(),
+    );
+    result
+}
+
+fn run_check_selected_untimed(
     module: &Module,
     record: bool,
     selected_functions: Option<&HashSet<String>>,
