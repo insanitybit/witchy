@@ -261,10 +261,16 @@ pub fn lower(module: Module) -> Module {
 /// flavor so the error reads "`Float` does not implement `Show`" at check
 /// time instead of "unknown function `show`" after lowering.
 pub fn lower_checked(module: Module) -> Result<Module, String> {
+    lower_checked_or_lowered(module).map_err(|(_, message)| message)
+}
+
+/// [`lower_checked`] whose error keeps the module it lowered anyway, which
+/// is exactly [`lower`] of the same input.
+pub fn lower_checked_or_lowered(module: Module) -> Result<Module, (Module, String)> {
     let (lowered, missing, _, _) = lower_with(module, false, None);
     let lowered = lowered.into_module();
     match missing.into_iter().next() {
-        Some(msg) => Err(msg),
+        Some(msg) => Err((lowered, msg)),
         None => Ok(lowered),
     }
 }
@@ -386,11 +392,14 @@ fn lower_with(
     // Expand type aliases and inline module-level constants first (a no-op once
     // the linker has done so, but covers single-module paths like `check_str`).
     let inlined = witchy_syntax::consts::inline(module);
-    let module = match witchy_syntax::aliases::resolve(inlined.clone()) {
+    // A resolution error is already the semantic check's (records lowering
+    // runs the same pass first), so the partly resolved module it returns
+    // stands in for the unresolved one without a whole-module copy.
+    let module = match witchy_syntax::aliases::resolve_or_return(inlined) {
         Ok(module) => module,
-        Err(message) => {
-            let catalog = crate::witness::WitnessCatalog::from_module(&inlined);
-            return (Lowering::Module(inlined), vec![message], std::collections::BTreeMap::new(), catalog);
+        Err((module, message)) => {
+            let catalog = crate::witness::WitnessCatalog::from_module(&module);
+            return (Lowering::Module(module), vec![message], std::collections::BTreeMap::new(), catalog);
         }
     };
     // Retain the resolved trait/impl universe while ordinary trait lowering

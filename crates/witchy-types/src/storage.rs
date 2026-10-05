@@ -38,9 +38,14 @@ pub struct ReferenceStorageClassifier<'a> {
 
 impl<'a> ReferenceStorageClassifier<'a> {
     pub fn new(module: &'a Module) -> Self {
+        Self::from_items(module.items.iter())
+    }
+
+    /// The classifier over declarations drawn from any number of modules.
+    pub fn from_items(items: impl IntoIterator<Item = &'a Item>) -> Self {
         let mut defs = HashMap::new();
         let mut aliases = HashMap::new();
-        for item in &module.items {
+        for item in items {
             match item {
                 Item::Type(def) => {
                     defs.insert(def.name.as_str(), def);

@@ -82,24 +82,36 @@ fn dfs_cycle(
 
 /// Expand every type alias, normalize RFC-0098 structural-record composition,
 /// synthesize the resulting exact anonymous shapes, and drop alias items.
-pub fn resolve(module: Module) -> Result<Module, String> {
-    resolve_impl(module, true, true)
+pub fn resolve(mut module: Module) -> Result<Module, String> {
+    resolve_impl(&mut module, true, true)?;
+    Ok(module)
+}
+
+/// [`resolve`] that hands the module back with the error. A failure leaves
+/// it partly resolved: each item it completed has its aliases expanded,
+/// which keeps every item's meaning.
+pub fn resolve_or_return(mut module: Module) -> Result<Module, (Module, String)> {
+    match resolve_impl(&mut module, true, true) {
+        Ok(()) => Ok(module),
+        Err(message) => Err((module, message)),
+    }
 }
 
 /// Normalize composition before record derives expand while retaining alias
 /// declarations for compile-time generated source that may still name them.
 /// Alias uses inside a composition are expanded so its exact shape is known;
 /// unrelated written aliases remain intact for the later [`resolve`] pass.
-pub(crate) fn normalize_record_compositions(module: Module) -> Result<Module, String> {
-    resolve_impl(module, false, false)
+pub(crate) fn normalize_record_compositions(mut module: Module) -> Result<Module, String> {
+    resolve_impl(&mut module, false, false)?;
+    Ok(module)
 }
 
 fn resolve_impl(
-    mut module: Module,
+    module: &mut Module,
     drop_aliases: bool,
     expand_aliases: bool,
-) -> Result<Module, String> {
-    let map = resolved_map(&module)?;
+) -> Result<(), String> {
+    let map = resolved_map(module)?;
     let context = ResolveContext {
         aliases: &map,
         expand_aliases,
@@ -147,7 +159,7 @@ fn resolve_impl(
             module.import_lines.push(u32::MAX);
         }
     }
-    Ok(module)
+    Ok(())
 }
 
 /// Build the same fixpoint-resolved alias map [`resolve`] uses, without mutating

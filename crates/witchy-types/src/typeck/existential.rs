@@ -27,15 +27,15 @@ use super::{terr, TypeError, AMBIENT_TRAIT_NAMES};
 ///
 /// Runs right after `check_trait_names`, before trait lowering, so `Item::Trait`
 /// declarations are still present.
-pub(super) fn check_existential_types(items: &[Item]) -> Result<(), TypeError> {
+pub(super) fn check_existential_types(items: &[&Item]) -> Result<(), TypeError> {
     let mut traits: HashMap<&str, &ast::TraitDef> = HashMap::new();
-    for item in items {
+    for &item in items {
         if let Item::Trait(tr) = item {
             traits.insert(tr.name.as_str(), tr);
         }
     }
     let mut check = ExistentialCheck { traits };
-    for item in items {
+    for &item in items {
         match item {
             Item::Function(f) => check.visit_function(f)?,
             Item::Type(t) => {

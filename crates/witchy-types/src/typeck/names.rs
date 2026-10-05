@@ -6,7 +6,7 @@ use super::*;
 /// Reject references to undeclared types in function signatures. The
 /// set of known names is the builtins plus every `type` declared in the
 /// module; lowercase argument-less names are generic parameters.
-pub(super) fn check_type_names(module: &Module) -> Result<(), TypeError> {
+pub(super) fn check_type_names(items: &[&Item]) -> Result<(), TypeError> {
     let mut known: HashSet<&str> = BUILTIN_TYPE_NAMES.iter().copied().collect();
     known.extend(CapabilityKind::ALL.iter().map(|kind| kind.name()));
     let mut arities: HashMap<&str, usize> = BUILTIN_TYPE_NAMES
@@ -21,7 +21,7 @@ pub(super) fn check_type_names(module: &Module) -> Result<(), TypeError> {
     // representation checks. The transitive reference fact itself comes from
     // `ReferenceStorageClassifier` below.
     let mut type_defs: HashMap<&str, &ast::TypeDef> = HashMap::new();
-    for item in &module.items {
+    for &item in items {
         if let Item::Type(t) = item {
             known.insert(t.name.as_str());
             arities.insert(t.name.as_str(), type_def_arity(t));
@@ -43,8 +43,8 @@ pub(super) fn check_type_names(module: &Module) -> Result<(), TypeError> {
         .iter()
         .map(|(name, definition)| (*name, ast::effective_nominal_type_def_params(definition)))
         .collect();
-    let reference_storage = ReferenceStorageClassifier::new(module);
-    for item in &module.items {
+    let reference_storage = ReferenceStorageClassifier::from_items(items.iter().copied());
+    for &item in items {
         let in_ctx = |e: TypeError, ctx: &str| TypeError {
             message: format!("in `{}`: {}", ctx.rsplit('.').next().unwrap_or(ctx), e.message),
         };
@@ -610,14 +610,14 @@ pub(super) fn check_type_names(module: &Module) -> Result<(), TypeError> {
 /// Reject trait names that do not resolve to a declared trait before trait/impl
 /// lowering turns those names into dispatch strings. A misspelled trait in a
 /// bound or impl head should not become an inert contract.
-pub(super) fn check_trait_names(module: &Module) -> Result<(), TypeError> {
+pub(super) fn check_trait_names(items: &[&Item]) -> Result<(), TypeError> {
     fn bare(name: &str) -> &str {
         name.rsplit('.').next().unwrap_or(name)
     }
 
     let mut arities: HashMap<&str, usize> = HashMap::new();
     arities.extend(AMBIENT_TRAIT_NAMES.iter().copied().map(|name| (name, 0)));
-    for item in &module.items {
+    for &item in items {
         if let Item::Trait(tr) = item {
             arities.insert(tr.name.as_str(), tr.typarams.len());
         }
@@ -635,7 +635,7 @@ pub(super) fn check_trait_names(module: &Module) -> Result<(), TypeError> {
             }
         };
 
-    for item in &module.items {
+    for &item in items {
         match item {
             Item::Trait(tr) => {
                 for supertrait in &tr.supertraits {

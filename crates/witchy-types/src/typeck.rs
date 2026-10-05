@@ -11581,32 +11581,10 @@ pub fn check_linked_source_semantics_typed(
             },
         ));
     };
-    let mut aggregate = first.clone();
-    aggregate.imports.clear();
-    aggregate.import_lines.clear();
-    aggregate.from_imports.clear();
-    aggregate.item_lines.clear();
-    for (_, module) in modules {
-        aggregate.items.extend(module.items.iter().cloned());
-        aggregate
-            .compiler_item_syntax
-            .extend(module.compiler_item_syntax.iter().cloned());
-        aggregate
-            .compiler_expr_syntax
-            .extend(module.compiler_expr_syntax.iter().cloned());
-        aggregate
-            .compiler_type_syntax
-            .extend(module.compiler_type_syntax.iter().cloned());
-        aggregate
-            .compiler_pattern_syntax
-            .extend(module.compiler_pattern_syntax.iter().cloned());
-        aggregate
-            .compiler_stmt_syntax
-            .extend(module.compiler_stmt_syntax.iter().cloned());
-        aggregate
-            .compiler_block_syntax
-            .extend(module.compiler_block_syntax.iter().cloned());
-    }
+    // The resolve-wide checks read only items, so they borrow them in place.
+    let aggregate = first.items.iter()
+        .chain(modules.flat_map(|(_, module)| module.items.iter()))
+        .collect::<Vec<_>>();
     let source_error = |error: TypeError| {
         witchy_syntax::linker::SourceLinkError::Source(
             witchy_syntax::source_check::SourceCheckError::new(error.message),
@@ -11614,8 +11592,9 @@ pub fn check_linked_source_semantics_typed(
     };
     check_type_names(&aggregate).map_err(source_error)?;
     check_trait_names(&aggregate).map_err(source_error)?;
-    check_existential_types(&aggregate.items).map_err(source_error)?;
+    check_existential_types(&aggregate).map_err(source_error)?;
     check_public_state_impls(&aggregate).map_err(source_error)?;
+    drop(aggregate);
     let has_async = source.modules().iter().any(|(_, module)| module.items.iter().any(|item| match item {
         Item::Function(function) => function.is_async,
         Item::Impl(definition) => definition.methods.iter().any(|method| method.is_async),
@@ -11651,8 +11630,10 @@ pub fn check_linked_source_semantics_typed(
         })
         .collect();
     if let Some(pruned) = crate::std_pruning::prune(body_projection, &std_impls) {
-        return check_with_compiler_syntax_with_task_provenance(&pruned, false, !has_async)
-            .map(|typed| (typed, typed_async_source)).map_err(source_error);
+        return check_with_compiler_syntax_and_source(
+            std::borrow::Cow::Owned(pruned), false, !has_async, false,
+        )
+            .map(|(typed, _)| (typed, typed_async_source)).map_err(source_error);
     }
     check_with_compiler_syntax_with_task_provenance(body_projection, false, !has_async)
         .map(|typed| (typed, typed_async_source)).map_err(source_error)
@@ -11685,8 +11666,8 @@ impl CheckedComptimeSource {
 /// Run the complete comptime check and retain its normalized source for the
 /// interpreter. Errors and their ordering are identical to [`check_comptime`].
 pub fn check_comptime_source(module: &Module) -> Result<CheckedComptimeSource, TypeError> {
-    check_with_compiler_syntax_and_source(module, true, true)
-        .map(|(_, module)| CheckedComptimeSource { module })
+    check_with_compiler_syntax_and_source(std::borrow::Cow::Borrowed(module), true, true, true)
+        .map(|(_, module)| CheckedComptimeSource { module: module.expect("source was retained") })
 }
 
 fn check_with_compiler_syntax(
@@ -11701,15 +11682,21 @@ fn check_with_compiler_syntax_with_task_provenance(
     compiler_syntax_allowed: bool,
     verify_task_provenance: bool,
 ) -> Result<TypedModule, TypeError> {
-    check_with_compiler_syntax_and_source(module, compiler_syntax_allowed, verify_task_provenance)
+    check_with_compiler_syntax_and_source(
+        std::borrow::Cow::Borrowed(module), compiler_syntax_allowed, verify_task_provenance, false,
+    )
         .map(|(typed, _)| typed)
 }
 
+/// `retain_source` also returns the normalized source, before trait
+/// erasure; without it the check copies no module it is not given.
 fn check_with_compiler_syntax_and_source(
-    module: &Module,
+    source: std::borrow::Cow<'_, Module>,
     compiler_syntax_allowed: bool,
     verify_task_provenance: bool,
-) -> Result<(TypedModule, Module), TypeError> {
+    retain_source: bool,
+) -> Result<(TypedModule, Option<Module>), TypeError> {
+    let module: &Module = &source;
     crate::views::reject_const_view_formation(module)?;
     // Catch duplicate top-level functions before lowering, while `impl` methods
     // are still distinct from free functions (so overloaded methods aren't
@@ -11733,7 +11720,8 @@ fn check_with_compiler_syntax_and_source(
 
     // Lower named-field record construction (a no-op once the linker has done so,
     // but covers single-module paths like `check_str`).
-    let checked = witchy_syntax::source_check::check(module.clone())
+    // An owned module is consumed here, not copied.
+    let checked = witchy_syntax::source_check::check(source.into_owned())
         .map_err(|error| TypeError { message: error.message })?;
     let checked = witchy_syntax::generators::lower(checked)
         .map_err(|message| TypeError { message })?;
@@ -11742,15 +11730,17 @@ fn check_with_compiler_syntax_and_source(
     let recs = witchy_syntax::records::lower(checked)
         .map_err(|message| TypeError { message })?
         .into_module();
-    check_type_names(&recs)?;
+    let recs_items = recs.items.iter().collect::<Vec<_>>();
+    check_type_names(&recs_items)?;
     if !compiler_syntax_allowed {
         check_compiler_syntax_declarations(&recs)?;
     }
-    check_public_state_impls(&recs)?;
-    check_trait_names(&recs)?;
+    check_public_state_impls(&recs_items)?;
+    check_trait_names(&recs_items)?;
     // Validate every `dyn Trait` occurrence (identity, existential safety, and
     // v1 exclusions) while trait declarations are still present.
-    check_existential_types(&recs.items)?;
+    check_existential_types(&recs_items)?;
+    drop(recs_items);
     let trait_method_names = collect_trait_method_names(&recs);
     let trait_supertraits = recs
         .items
@@ -11766,7 +11756,8 @@ fn check_with_compiler_syntax_and_source(
     // checker only ever sees plain functions (a no-op for trait-free modules).
     // The checked flavor surfaces unsatisfiable dispatch ("`Float` does not
     // implement `Show`") instead of a post-lowering unknown-function error.
-    match crate::traits::lower_checked(recs.clone()) {
+    let retained = retain_source.then(|| recs.clone());
+    match crate::traits::lower_checked_or_lowered(recs) {
         Ok(lowered) => {
             check_unique_parameters(&lowered)
                 .map_err(UniquenessError::into_type_error)?;
@@ -11783,11 +11774,9 @@ fn check_with_compiler_syntax_and_source(
             // type checking (so a genuine type error is reported first) on the
             // lowered module (method calls are plain `Call`s and the borrow
             // signatures survive lowering as `Qualified(Borrow, _)`).
-            // `recs` already stays alive while the checker lowers its clone;
-            // retaining it does not clone either AST or address-keyed tables.
-            typed_module_checked(lowered, type_table, verify_task_provenance).map(|typed| (typed, recs))
+            typed_module_checked(lowered, type_table, verify_task_provenance).map(|typed| (typed, retained))
         }
-        Err(message) => {
+        Err((plainly_lowered, message)) => {
             // (BUG-307) Mono's "cannot infer the result type" fallback fires when
             // `annotate` returned an EMPTY TypeTable — which is itself a symptom of
             // a REAL checker error elsewhere in the module (a body type error breaks
@@ -11800,7 +11789,7 @@ fn check_with_compiler_syntax_and_source(
             if message.contains("cannot infer the result type") {
                 if let Err(real) =
                     run_check_with_trait_methods(
-                        &crate::traits::lower(recs),
+                        &plainly_lowered,
                         false,
                         &trait_method_names,
                         &trait_supertraits,
@@ -14448,7 +14437,7 @@ fn run_check_seeded(
 
     // Reject typo'd / undeclared type names in signatures before they become
     // opaque types that mis-unify with a confusing message later.
-    check_type_names(module)?;
+    check_type_names(&module.items.iter().collect::<Vec<_>>())?;
 
     // RFC-0138 first cut: explicit reference handles do not retain the
     // referent-root consumption fact required by `once fn`. Reject these

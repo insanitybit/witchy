@@ -323,10 +323,10 @@ pub(super) fn canonical_public_state_std_impl(implementation: &ast::ImplDef) -> 
 /// or by the compiler-authenticated `derive(PublicState)` generator. Without
 /// this check, a handwritten or user-generated empty proof could launder Bytes,
 /// capabilities, functions, secrets, or host handles through a wrapper.
-pub(super) fn check_public_state_impls(module: &Module) -> Result<(), TypeError> {
-    let derived_types: HashSet<&str> = module
-        .items
+pub(super) fn check_public_state_impls(items: &[&Item]) -> Result<(), TypeError> {
+    let derived_types: HashSet<&str> = items
         .iter()
+        .copied()
         .filter_map(|item| match item {
             Item::Type(definition) if definition.public_state_derived => {
                 Some(definition.name.as_str())
@@ -334,7 +334,7 @@ pub(super) fn check_public_state_impls(module: &Module) -> Result<(), TypeError>
             _ => None,
         })
         .collect();
-    for item in &module.items {
+    for &item in items {
         let Item::Impl(implementation) = item else { continue };
         let Some(trait_name) = implementation.trait_name.as_deref() else { continue };
         if trait_name != "public_state.PublicState" {
