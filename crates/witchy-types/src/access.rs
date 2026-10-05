@@ -16,7 +16,7 @@ use witchy_syntax::ast::{
 
 use crate::typeck::{TypeTable, ty_to_ast};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 enum AccessFlow {
     None,
     /// An access component which the active value does not instantiate (for
@@ -305,7 +305,7 @@ impl AccessFlow {
 /// Finalized access-signature facts keyed to the exact typed AST used to build
 /// them. The owning [`crate::typeck::TypedModule`] must remain alive while these
 /// address-keyed queries are used.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct CheckedAccessFacts {
     owner: *const Module,
     values: HashMap<usize, AccessFlow>,
@@ -2116,6 +2116,28 @@ pub fn checked_facts(
     table: &TypeTable,
 ) -> Result<CheckedAccessFacts, AccessFlowError> {
     AccessVerifier::new(module, table).verify()
+}
+
+/// The access facts of `typed`: the ones its checked annotation derived when
+/// they are current, otherwise derived into `derived`. Every checked
+/// annotation derives exactly [`checked_facts`] of its module and table, so a
+/// retained copy is that answer. `WITCHY_VERIFY_INCREMENTAL_ANNOTATE=1`
+/// derives them again and panics if they differ.
+pub(crate) fn retained_or_checked<'a>(
+    typed: &'a crate::typeck::TypedModule,
+    derived: &'a mut Option<CheckedAccessFacts>,
+) -> Result<&'a CheckedAccessFacts, AccessFlowError> {
+    static VERIFY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    match typed.access_facts() {
+        Ok(retained) => {
+            if *VERIFY.get_or_init(|| std::env::var_os("WITCHY_VERIFY_INCREMENTAL_ANNOTATE").is_some()) {
+                let fresh = checked_facts(typed.module(), typed.table())?;
+                assert!(*retained == fresh, "retained access facts differ from the module's own");
+            }
+            Ok(retained)
+        }
+        Err(_) => Ok(derived.insert(checked_facts(typed.module(), typed.table())?)),
+    }
 }
 
 /// Verify one lowered module through the same checked query used by access-fact

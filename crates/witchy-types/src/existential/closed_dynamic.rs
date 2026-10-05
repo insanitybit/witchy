@@ -213,7 +213,8 @@ pub(crate) fn prepare(
         }
     }
     let typed = crate::typeck::annotate_checked(module).map_err(|error| error.to_string())?;
-    let facts = crate::access::checked_facts(typed.module(), typed.table()).map_err(|error| error.to_string())?;
+    let mut derived = None;
+    let facts = crate::access::retained_or_checked(&typed, &mut derived).map_err(|error| error.to_string())?;
     for method in plan.methods().iter().filter(|method| scope.contains(&method.function)) {
         let signature = facts.declaration(&method.function).ok_or("prepared dynamic method lost checked signature")?;
         let identity = runtime_catalog.checked_callable_identity_with_authority(signature, typed.module())

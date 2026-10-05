@@ -138,10 +138,11 @@ pub(crate) fn build_dynamic_runtime_plan_inner(
     catalog: &WitnessCatalog,
     runtime_catalog: Option<&RuntimeDeclarationCatalog>,
 ) -> Result<RuntimeTypePlan, String> {
-    let access_facts = crate::access::checked_facts(typed.module(), typed.table())
+    let mut derived = None;
+    let access_facts = crate::access::retained_or_checked(typed, &mut derived)
         .map_err(|error| error.to_string())?;
     let dynamic_methods =
-        collect_dynamic_method_definitions(typed.module(), runtime_catalog, &access_facts)?;
+        collect_dynamic_method_definitions(typed.module(), runtime_catalog, access_facts)?;
     let dynamic_function_names = dynamic::dynamic_method_bodies_requested(typed.module())
         .then(|| dynamic_methods.iter().map(|method| method.function.clone()).collect())
         .unwrap_or_default();

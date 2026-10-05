@@ -282,7 +282,7 @@ pub fn checked_assignment_place(
 /// The producer recognizes only the place forms accepted by type checking. A
 /// later access-verification error does not erase these identities, allowing
 /// fail-closed diagnostic consumers to retain roots without re-parsing syntax.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct CheckedPlaceFacts {
     owner: *const Module,
     places: HashMap<usize, CheckedPlace>,
