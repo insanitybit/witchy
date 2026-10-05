@@ -531,7 +531,7 @@ fn check_normal_reference_type_interfaces(modules: &[(String, Module)]) -> Resul
                     types.extend(function.params.iter().filter_map(|param| param.ty.as_ref()));
                     types.extend(function.ret.iter());
                 }
-                Item::Type(definition) => for variant in &definition.variants {
+                Item::Type(definition) => for variant in definition.variants.iter() {
                     types.extend(variant.fields.iter());
                 },
                 Item::Trait(trait_def) => for method in &trait_def.methods {
@@ -2805,16 +2805,19 @@ fn lower_checked_source(
     let mut origin_item_maps: HashMap<String, Vec<Vec<usize>>> = HashMap::new();
     let mut seen_anon_types: HashMap<String, TypeDef> = HashMap::new();
     let mut seen_anon_trait_impls: HashSet<(String, Vec<String>, String, Vec<String>)> = HashSet::new();
-    for (mname, m) in &modules {
-        let mut item_map = vec![Vec::new(); m.items.len()];
-        for (source_index, item) in m.items.iter().enumerate() {
+    // Each module's items move into the linked module; nothing below reads a
+    // source module's items again, so none is copied.
+    for (mname, m) in &mut modules {
+        let source_items = std::mem::take(&mut m.items);
+        let m = &*m;
+        let mut item_map = vec![Vec::new(); source_items.len()];
+        for (source_index, item) in source_items.into_iter().enumerate() {
             match item {
-                Item::Function(f) => {
-                    let mut f2 = f.clone();
-                    f2.name = if mname == entry && f.name == "main" {
+                Item::Function(mut f2) => {
+                    f2.name = if mname == entry && f2.name == "main" {
                         "main".to_string()
                     } else {
-                        format!("{mname}.{}", f.name)
+                        format!("{mname}.{}", f2.name)
                     };
                     f2.attributes
                         .push(linked_source_module_attribute(mname));
@@ -2871,7 +2874,7 @@ fn lower_checked_source(
                 Item::Type(t) => {
                     if is_generated_anon_name(&t.name) {
                         if let Some(prev) = seen_anon_types.get(&t.name) {
-                            if prev == t {
+                            if *prev == t {
                                 continue;
                             }
                         } else {
@@ -2879,7 +2882,7 @@ fn lower_checked_source(
                         }
                     }
                     item_map[source_index].push(items.len());
-                    items.push(Item::Type(t.clone()));
+                    items.push(Item::Type(t));
                 }
                 // Constants and aliases were resolved per-module above, so none
                 // remain here.
@@ -2888,8 +2891,7 @@ fn lower_checked_source(
                 // after linking (see `crate::traits`). Their method bodies are
                 // rewritten here, in their defining module's context, so calls
                 // inside them resolve like any other function body.
-                Item::Trait(t) => {
-                    let mut t2 = t.clone();
+                Item::Trait(mut t2) => {
                     for ms in &mut t2.methods {
                         if let Some(body) = &mut ms.default {
                             let mut bound = HashSet::new();
@@ -2913,13 +2915,12 @@ fn lower_checked_source(
                     item_map[source_index].push(items.len());
                     items.push(Item::Trait(t2));
                 }
-                Item::Impl(im) => {
-                    if let Some(key) = generated_anon_trait_impl_key(im) {
+                Item::Impl(mut im2) => {
+                    if let Some(key) = generated_anon_trait_impl_key(&im2) {
                         if !seen_anon_trait_impls.insert(key) {
                             continue;
                         }
                     }
-                    let mut im2 = im.clone();
                     for method in &mut im2.methods {
                         method
                             .attributes
@@ -4072,7 +4073,7 @@ fn check_sealing(
         for item in &m.items {
             if let Item::Type(t) = item {
                 if t.sealed {
-                    for v in &t.variants {
+                    for v in t.variants.iter() {
                         let info = (mname.clone(), t.is_capability);
                         sealed.insert(v.name.clone(), info.clone());
                         sealed.insert(format!("{mname}.{}", v.name), info);
@@ -4713,7 +4714,7 @@ fn check_reserved_item(
             for param in &t.params {
                 check_reserved_binding(module_name, "type parameter", param, line)?;
             }
-            for variant in &t.variants {
+            for variant in t.variants.iter() {
                 if is_reserved_user_identifier(&variant.name) && !generated_anon {
                     return reserved_name_error(module_name, "constructor", &variant.name);
                 }
