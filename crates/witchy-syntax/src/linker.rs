@@ -2447,21 +2447,26 @@ where
         // that compile-time API when they invoke an imported tag, so preserve the
         // pre-expansion modules and overlay their compile-time-only pieces onto
         // sibling snapshots. Runtime modules remain stripped after their own pass.
-        let expansion_sources = modules.clone();
+        // A module's request depends only on its own unexpanded source, so it
+        // is known up front: the copy is taken only when some module will ask.
+        let needs_siblings: Vec<bool> = modules
+            .iter()
+            .map(|(_, module)| expansion_uses_siblings && expand.needs_siblings(module))
+            .collect();
+        let expansion_sources = needs_siblings.contains(&true).then(|| modules.clone());
         let names: Vec<String> = modules.iter().map(|(n, _)| n.clone()).collect();
         for (i, name) in names.iter().enumerate() {
-            let needs_siblings = expansion_uses_siblings && expand.needs_siblings(&modules[i].1);
-            let siblings: Vec<(String, Module)> = modules
-                .iter()
-                .enumerate()
-                .filter(|(j, _)| needs_siblings && *j != i)
-                .map(|(j, (module_name, module))| {
-                    (
-                        module_name.clone(),
-                        expansion_sibling(module, &expansion_sources[j].1),
-                    )
-                })
-                .collect();
+            let siblings: Vec<(String, Module)> = match &expansion_sources {
+                Some(sources) if needs_siblings[i] => modules
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, _)| *j != i)
+                    .map(|(j, (module_name, module))| {
+                        (module_name.clone(), expansion_sibling(module, &sources[j].1))
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
             let origins = expand.run(name, &mut modules[i].1, &siblings)
                 .map_err(|message| LinkError { message, location: None })?;
             origin_tables.insert(name.clone(), origins);
@@ -2593,34 +2598,13 @@ where
         mode,
         allow_ast_fold,
     )?;
-    if !matches!(async_stage, AsyncLoweringStage::Runtime) {
-        check_source(&resolved)?;
-        return lower_checked_source(
-            resolved.after_semantic_check(), origin_tables, async_stage, mode, entry, &user_std_shadows, allow_ast_fold,
-        );
-    }
-    // The source check asks for the runtime projection, and relinking the
-    // resolved source reproduces exactly this link's own lowering. Lower a
-    // copy once, before the check, and lend it to the check: the speculative
-    // result is returned only after the check accepts. A failed lowering lends
-    // nothing, so the check relinks and reports what it reported before, and
-    // the lowering error reaches the caller only if the check passes.
-    let mut resolved = resolved;
-    let lowered = lower_checked_source(
-        resolved.clone().after_semantic_check(), origin_tables, async_stage, mode, entry, &user_std_shadows, allow_ast_fold,
-    );
-    let rest = match lowered {
-        Ok(LinkedModule { module, origins, source_item_maps, async_surface, module_names, declarations }) => {
-            resolved.install_runtime_projection(module);
-            Ok((origins, source_item_maps, async_surface, module_names, declarations))
-        }
-        Err(error) => Err(error),
-    };
+    // The injected check reads the resolved source; destructive lowering then
+    // consumes it. A check that needs the lowered runtime module checks what
+    // the link returns, so the source is never copied to serve both.
     check_source(&resolved)?;
-    let (origins, source_item_maps, async_surface, module_names, declarations) = rest?;
-    let module = resolved.take_runtime_projection()
-        .expect("a successful lowering installed its projection");
-    Ok(LinkedModule { module, origins, source_item_maps, async_surface, module_names, declarations })
+    lower_checked_source(
+        resolved.after_semantic_check(), origin_tables, async_stage, mode, entry, &user_std_shadows, allow_ast_fold,
+    )
 }
 
 /// Destructive lowering of a semantically checked source set: everything the

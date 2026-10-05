@@ -11508,21 +11508,22 @@ pub fn check(module: &Module) -> Result<(), TypeError> {
     Ok(())
 }
 
-/// Validate complete semantics on the expanded source set before the linker
-/// lowers generators, async functions, records, traits, or impls.
-pub fn check_linked_source_semantics(
-    source: &witchy_syntax::source_check::ResolvedSource,
-) -> Result<(), witchy_syntax::linker::SourceLinkError> {
-    check_linked_source_semantics_typed(source).map(|_| ())
+/// The source half of the linked-source check: everything that must read the
+/// expanded source set before the linker lowers generators, async functions,
+/// records, traits, or impls. The link then lowers that same source, and
+/// [`LinkedSourceSemantics::check_runtime_projection`] checks its result, so
+/// the source and its projection never have to exist side by side.
+pub struct LinkedSourceSemantics {
+    has_async: bool,
+    typed_async_source: Option<TypedModule>,
+    std_impls: std::collections::HashSet<(String, Vec<String>)>,
 }
 
-/// Validate expanded linked-source semantics and return both typed projections
-/// produced by that check. The source async projection retains exact `await`
-/// and capture identities before CPS erases them; the runtime projection is
-/// the executable input to later canonical preparation.
-pub fn check_linked_source_semantics_typed(
+/// Validate expanded linked-source semantics. The source async projection
+/// retains exact `await` and capture identities before CPS erases them.
+pub fn check_linked_source_semantics(
     source: &witchy_syntax::source_check::ResolvedSource,
-) -> Result<(TypedModule, Option<TypedModule>), witchy_syntax::linker::SourceLinkError> {
+) -> Result<LinkedSourceSemantics, witchy_syntax::linker::SourceLinkError> {
     fn source_error(
         module_name: &str,
         module: &Module,
@@ -11611,10 +11612,6 @@ pub fn check_linked_source_semantics_typed(
     } else {
         None
     };
-    let body_projection = source
-        .runtime_projection_ref()
-        .map_err(witchy_syntax::linker::SourceLinkError::Link)?;
-    let body_projection = &*body_projection;
     // Check only the standard library this program can reach (see
     // std_pruning; a failure anywhere in the production route after pruning
     // reruns the route unpruned, so a pruned error is never reported).
@@ -11631,14 +11628,32 @@ pub fn check_linked_source_semantics_typed(
             _ => None,
         })
         .collect();
-    if let Some(pruned) = crate::std_pruning::prune(body_projection, &std_impls) {
-        return check_with_compiler_syntax_and_source(
-            std::borrow::Cow::Owned(pruned), false, !has_async, false,
-        )
-            .map(|(typed, _)| (typed, typed_async_source)).map_err(source_error);
+    Ok(LinkedSourceSemantics { has_async, typed_async_source, std_impls })
+}
+
+impl LinkedSourceSemantics {
+    /// Check the runtime projection the link lowered from the checked source,
+    /// returning it typed alongside the source async projection. The runtime
+    /// projection is the executable input to later canonical preparation.
+    pub fn check_runtime_projection(
+        self,
+        body_projection: &Module,
+    ) -> Result<(TypedModule, Option<TypedModule>), witchy_syntax::linker::SourceLinkError> {
+        let Self { has_async, typed_async_source, std_impls } = self;
+        let source_error = |error: TypeError| {
+            witchy_syntax::linker::SourceLinkError::Source(
+                witchy_syntax::source_check::SourceCheckError::new(error.message),
+            )
+        };
+        if let Some(pruned) = crate::std_pruning::prune(body_projection, &std_impls) {
+            return check_with_compiler_syntax_and_source(
+                std::borrow::Cow::Owned(pruned), false, !has_async, false,
+            )
+                .map(|(typed, _)| (typed, typed_async_source)).map_err(source_error);
+        }
+        check_with_compiler_syntax_with_task_provenance(body_projection, false, !has_async)
+            .map(|typed| (typed, typed_async_source)).map_err(source_error)
     }
-    check_with_compiler_syntax_with_task_provenance(body_projection, false, !has_async)
-        .map(|typed| (typed, typed_async_source)).map_err(source_error)
 }
 
 /// Type-check the isolated program used to execute a `comptime:` block.

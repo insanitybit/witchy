@@ -741,14 +741,11 @@ fn link_checked_with(
     module_owners: Option<AuthenticatedModuleOwners>,
 ) -> Result<(CheckedModule, Option<typeck::TypedModule>), PipelineError> {
     let _link = crate::std_pruning::enter_link();
-    let typed_async_source = RefCell::new(None);
-    let canonical_typed_source = RefCell::new(None);
+    // The source half of the check runs inside the link, before lowering
+    // consumes the source; its runtime half checks the module the link returns.
+    let source_semantics = RefCell::new(None);
     let check_source = |source: &witchy_syntax::source_check::ResolvedSource| {
-        let (typed, async_source) = typeck::check_linked_source_semantics_typed(source)?;
-        if capture_canonical_typed_source {
-            *canonical_typed_source.borrow_mut() = Some(typed);
-        }
-        *typed_async_source.borrow_mut() = async_source;
+        *source_semantics.borrow_mut() = Some(typeck::check_linked_source_semantics(source)?);
         Ok(())
     };
     let linked = if capture_canonical_typed_source {
@@ -779,15 +776,18 @@ fn link_checked_with(
             ),
         }
     }?;
+    let (typed, typed_async_source) = source_semantics.into_inner()
+        .expect("a successful link ran its source check")
+        .check_runtime_projection(&linked.module)?;
     if let Some(module_owners) = &module_owners {
         module_owners.validate_module_names(linked.module_names.iter().cloned())?;
     }
     Ok((CheckedModule {
         linked,
         module_owners,
-        typed_async_source: typed_async_source.into_inner(),
+        typed_async_source,
         canonical_source: None,
-    }, canonical_typed_source.into_inner()))
+    }, capture_canonical_typed_source.then_some(typed)))
 }
 
 fn checked_source_digest(
