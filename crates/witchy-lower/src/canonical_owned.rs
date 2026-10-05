@@ -17,6 +17,30 @@ type Values = BTreeSet<ValueId>;
 use witchy_wir::canonical_safewir::closure_owner_contract::{CaptureTransfer, OwnerFamily, OwnerOperation};
 use witchy_wir::canonical_safewir::dictionary::{DictionaryOperation, DictionaryRehashTransfer};
 
+/// The module's signature and callee tables. Built once per module: rebuilding
+/// them for every lowered function made lowering quadratic in the number of
+/// functions.
+pub(super) struct CallTables<'a> {
+    signatures: BTreeMap<FunctionSignatureId, &'a FunctionSignature>,
+    callees: BTreeMap<FunctionId, FunctionSignatureId>,
+}
+
+impl<'a> CallTables<'a> {
+    pub(super) fn new(
+        signatures: &'a [FunctionSignature],
+        source_functions: &HashMap<String, (FunctionId, FunctionSignatureId)>,
+    ) -> Self {
+        Self {
+            signatures: signatures.iter().map(|signature| (signature.id, signature)).collect(),
+            callees: source_functions.values().copied().collect(),
+        }
+    }
+
+    pub(super) fn callee_signature(&self, callee: FunctionId) -> Option<FunctionSignatureId> {
+        self.callees.get(&callee).copied()
+    }
+}
+
 #[derive(Debug)]
 pub(super) enum ReleasePlacementError {
     MissingBlock(BlockId),
@@ -528,12 +552,9 @@ fn operation_flow(
 pub(super) fn insert_releases(
     function: &mut Function,
     signature: &FunctionSignature,
-    signatures: &[FunctionSignature],
-    source_functions: &HashMap<String, (FunctionId, FunctionSignatureId)>,
+    tables: &CallTables<'_>,
     families: &[OwnerFamily],
 ) -> Result<(), ReleasePlacementError> {
-    let signatures = signatures.iter().map(|signature| (signature.id, signature)).collect();
-    let callees = source_functions.values().copied().collect();
     let blocks: BTreeMap<_, _> = function.blocks.iter().map(|block| (block.id, block)).collect();
     let entry = blocks.get(&function.entry).ok_or(ReleasePlacementError::MissingBlock(function.entry))?;
     let owned = entry.parameters.iter().zip(&signature.contract.parameters).filter_map(|(parameter, contract)| {
@@ -578,7 +599,7 @@ pub(super) fn insert_releases(
         let mut output = Vec::new();
         release_dead(&mut owned, &live, &mut output);
         for (operation, dead) in block.operations.iter().zip(dead_after) {
-            operation_flow(function, operation, &mut owned, &immortal, &signatures, &callees, families)?;
+            operation_flow(function, operation, &mut owned, &immortal, &tables.signatures, &tables.callees, families)?;
             output.push(operation.clone());
             release_values(&mut owned, &dead, &mut output);
         }
@@ -680,8 +701,7 @@ pub(super) fn insert_releases(
 pub(super) fn insert_releases_with_owner_families(
     function: &mut Function,
     signature: &FunctionSignature,
-    signatures: &[FunctionSignature],
-    source_functions: &HashMap<String, (FunctionId, FunctionSignatureId)>,
+    tables: &CallTables<'_>,
     families: &[OwnerFamily],
 ) -> Result<(), ReleasePlacementError> {
     let mut drops = BTreeMap::new();
@@ -697,7 +717,7 @@ pub(super) fn insert_releases_with_owner_families(
             if !drops.contains_key(id) { return Err(ReleasePlacementError::UnresolvedResult(*value)); }
         }
     }
-    insert_releases(function, signature, signatures, source_functions, families)?;
+    insert_releases(function, signature, tables, families)?;
     for block in &mut function.blocks {
         for operation in &mut block.operations {
             let Operation::DropRef { object } = operation else { continue };

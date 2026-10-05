@@ -1656,6 +1656,7 @@ if capability_imports.contains("build_out_write_at") {
         eprintln!("canonical scope: {names:?}");
     }
     let forwarded_dict_intrinsics = checked_dict_forwarders(typed.module());
+    let call_tables = owned::CallTables::new(&signatures, &functions_by_name);
     let mut functions = Vec::new();
     let mut proper_tail_locations = BTreeMap::new();
     for (item_index, item) in typed.module().items.iter().enumerate() {
@@ -1711,6 +1712,7 @@ if capability_imports.contains("build_out_write_at") {
             &direct_shared_alias_callees,
             &checked_parameter_conventions,
             &signatures,
+            &call_tables,
             &tail_manifest,
             &mut proper_tail_locations,
             typed.table(),
@@ -1773,6 +1775,7 @@ if capability_imports.contains("build_out_write_at") {
             &direct_shared_alias_callees,
             &checked_parameter_conventions,
             &signatures,
+            &call_tables,
             &tail_manifest,
             &mut proper_tail_locations,
             typed.table(),
@@ -4095,6 +4098,7 @@ fn lower_function(
     direct_shared_alias_callees: &HashMap<String, FunctionSignatureId>,
     checked_parameter_conventions: &HashMap<FunctionSignatureId, Vec<Convention>>,
     signatures: &[FunctionSignature],
+    call_tables: &owned::CallTables<'_>,
     tail_manifest: &ProperTailSiteManifest,
     proper_tail_locations: &mut BTreeMap<witchy_wir::canonical_safewir::TailSiteId, witchy_wir::canonical_safewir::ProperTailLocation>,
     type_table: &TypeTable,
@@ -4400,12 +4404,12 @@ fn lower_function(
         value_types: lowerer.values,
         blocks,
     };
-    demote_shared_reference_phis(&mut lowered, signatures, functions);
+    demote_shared_reference_phis(&mut lowered, signatures, call_tables);
     let debug = std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some();
     if debug {
         eprintln!("canonical lowered `{}` before release placement:\n{lowered:#?}", function.name);
     }
-    owned::insert_releases_with_owner_families(&mut lowered, signature, signatures, functions, &closures.owners)
+    owned::insert_releases_with_owner_families(&mut lowered, signature, call_tables, &closures.owners)
         .map_err(|error| CanonicalLoweringError::OwnedReleasePlacement(format!("{error:?}")))?;
     // Release placement may prepend the drop of an unused managed parameter.
     // A lambda's entry must first authenticate its closure tag and read its
@@ -4441,7 +4445,7 @@ fn lower_function(
 fn demote_shared_reference_phis(
     function: &mut Function,
     signatures: &[FunctionSignature],
-    functions: &HashMap<String, (FunctionId, FunctionSignatureId)>,
+    call_tables: &owned::CallTables<'_>,
 ) {
     // A loop backedge can become shared after nested joins were constructed.
     // Propagate that loss of uniqueness through the completed graph before
@@ -4466,8 +4470,8 @@ fn demote_shared_reference_phis(
                     shared.insert(*destination);
                 }
                 Operation::Call { destinations, callee, .. } => {
-                    let signature = functions.values().find(|(function, _)| function == callee)
-                        .and_then(|(_, signature)| signatures.get(signature.get() as usize));
+                    let signature = call_tables.callee_signature(*callee)
+                        .and_then(|signature| signatures.get(signature.get() as usize));
                     shared.extend(destinations.iter().enumerate().filter_map(|(index, value)|
                         shared_result(signature, index).then_some(*value)));
                 }

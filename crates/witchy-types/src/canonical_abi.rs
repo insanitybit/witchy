@@ -5,7 +5,7 @@
 //! can be bound to a later candidate by a consumer.  Function names and
 //! backend-assigned IDs are never part of the projection.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use witchy_syntax::ast::{self, Convention, Item, Type};
 
@@ -95,13 +95,46 @@ pub(crate) fn canonical_ast_type_bytes(
 /// Exposed for the ABI-security pins in `tests/typeck/capabilities.rs`.
 #[doc(hidden)]
 pub fn checked_declaration_signature(typed: &TypedModule, name: &str) -> Result<Type, CanonicalAbiError> {
-    let context = Context::from_module(typed.module());
+    DeclarationSignatures::new(typed).signature(name)
+}
+
+/// One module's ABI context and declaration lookup, built once for every
+/// signature asked of it. Rebuilding both per declaration made manifest
+/// derivation quadratic in the number of functions.
+#[doc(hidden)]
+pub struct DeclarationSignatures<'a> {
+    typed: &'a TypedModule,
+    context: Context,
+    declarations: HashMap<&'a str, &'a ast::Function>,
+}
+
+impl<'a> DeclarationSignatures<'a> {
+    pub fn new(typed: &'a TypedModule) -> Self {
+        let mut declarations = HashMap::new();
+        for item in &typed.module().items {
+            if let Item::Function(function) = item {
+                // The first declaration of a name wins, as a linear search would.
+                declarations.entry(function.name.as_str()).or_insert(function);
+            }
+        }
+        Self { typed, context: Context::from_module(typed.module()), declarations }
+    }
+
+    pub fn signature(&self, name: &str) -> Result<Type, CanonicalAbiError> {
+        declaration_signature(self.typed, &self.context, self.declarations.get(name).copied(), name)
+    }
+}
+
+fn declaration_signature(
+    typed: &TypedModule,
+    context: &Context,
+    declaration: Option<&ast::Function>,
+    name: &str,
+) -> Result<Type, CanonicalAbiError> {
     let mut signature = typed.table().function_type(name).ok_or_else(||
         CanonicalAbiError::InvalidCallable(format!("checked declaration `{name}` has no finalized signature")))?;
-    let declaration = typed.module().items.iter().find_map(|item| match item {
-        Item::Function(function) if function.name == name => Some(function),
-        _ => None,
-    }).ok_or_else(|| CanonicalAbiError::InvalidCallable(format!("missing checked declaration `{name}`")))?;
+    let declaration = declaration
+        .ok_or_else(|| CanonicalAbiError::InvalidCallable(format!("missing checked declaration `{name}`")))?;
     let Type::Fn(parameters, result, conventions, _) = &mut signature else {
         return Err(CanonicalAbiError::InvalidCallable("checked declaration is not callable".into()));
     };
@@ -285,13 +318,14 @@ pub fn derive_manifest(
     typed: &TypedModule,
     closed_functions: &[String],
 ) -> Result<CanonicalCallableAbiManifest, CanonicalAbiError> {
-    let context = Context::from_module(typed.module());
+    let declarations = DeclarationSignatures::new(typed);
+    let context = &declarations.context;
     let mut entries = BTreeSet::new();
     for (ordinal, name) in closed_functions.iter().enumerate() {
         let function_ordinal = u32::try_from(ordinal).map_err(|_| {
             CanonicalAbiError::InvalidCallable("function ordinal overflow".into())
         })?;
-        let signature = checked_declaration_signature(typed, name)?;
+        let signature = declarations.signature(name)?;
         let entry = callable_from_ast(
             &signature,
             CanonicalTargetPolicy::ClosedLocal(CanonicalLocalTarget { function_ordinal }),

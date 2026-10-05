@@ -1602,9 +1602,10 @@ fn bind_canonical_callable_witness(
         })
         .collect::<Vec<_>>();
     let functions = runtime_functions.iter().map(String::as_str).collect::<HashSet<_>>();
+    let declarations = canonical_abi::DeclarationSignatures::new(typed);
     let mut signatures = BTreeMap::new();
     for name in &runtime_functions {
-        let signature = canonical_abi::checked_declaration_signature(typed, name).map_err(|error| {
+        let signature = declarations.signature(name).map_err(|error| {
             PipelineError::Type(TypeError { message: error.to_string() })
         })?;
         signatures.insert(name.clone(), signature);
