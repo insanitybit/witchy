@@ -33,3 +33,6 @@ CXX = "sccache c++"
 # digest of witchy-wir's sources, so an edited checker never replays old
 # verdicts.
 WITCHY_SAFEWIR_CHECK_CACHE_DIR = { value = "state/safewir-check-cache", relative = true }
+# The SafeWIR checker checks a module's functions on several threads. Test
+# processes already run in parallel with each other, so each checks on one.
+WITCHY_CHECK_THREADS = "1"

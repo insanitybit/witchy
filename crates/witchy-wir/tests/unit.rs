@@ -30,6 +30,9 @@ mod canonical_safewir {
         mod sorted {
             #[test] fn collect_keeps_order_and_last_pair() { witchy_wir::self_checks::canonical_safewir_check::sorted_map_collect_keeps_order_and_last_pair() }
         }
+        mod parallel {
+            #[test] fn map_keeps_item_order() { witchy_wir::self_checks::canonical_safewir_check::parallel_map_keeps_item_order() }
+        }
         mod cache {
             #[test] fn affine_verdicts_require_exact_capture_proofs() { witchy_wir::self_checks::canonical_safewir_check_cache::affine_verdicts_require_exact_capture_proofs() }
             mod store {

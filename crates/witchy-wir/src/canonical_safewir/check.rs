@@ -13,6 +13,7 @@ use super::{
 
 pub(crate) mod cache;
 pub(crate) mod memory;
+mod parallel;
 mod sorted;
 use memory::MemoryChecker;
 pub(crate) mod contracts;
@@ -367,7 +368,7 @@ fn check_candidate<S: ModuleStage>(
         .map(|proofs| std::sync::Arc::new(proofs.clone()));
 
     let counters_before = cache::counters();
-    for function in candidate.functions() {
+    let check_one = |function: &Function| -> Result<cache::Discharged, InitialCheckError> {
         // A verdict is a pure function of what the key digests, so an
         // admitted function is checked once per process and replayed
         // afterwards; see `cache`. Rejections are never replayed.
@@ -386,7 +387,7 @@ fn check_candidate<S: ModuleStage>(
             Some(proofs) => cache::lookup_affine(key, proofs),
             None => cache::lookup(key),
         });
-        let discharged = match replayed {
+        Ok(match replayed {
             Some(replayed) => replayed,
             None => 'check: {
                 // A large function may be under check in another process
@@ -424,7 +425,17 @@ fn check_candidate<S: ModuleStage>(
                 }
                 discharged
             }
-        };
+        })
+    };
+    let workers = parallel::workers(candidate.functions().len());
+    // One worker checks lazily, so the first rejection ends the loop.
+    let verdicts: Box<dyn Iterator<Item = Result<cache::Discharged, InitialCheckError>> + '_> = if workers > 1 {
+        Box::new(parallel::map_ordered(candidate.functions(), workers, &check_one).into_iter())
+    } else {
+        Box::new(candidate.functions().iter().map(&check_one))
+    };
+    for verdict in verdicts {
+        let discharged = verdict?;
         for site in discharged.iter() {
             if !observed_tail_sites.insert(*site) {
                 return Err(InitialCheckError::DuplicateTailObligation(*site));
@@ -2616,6 +2627,21 @@ impl ValueType {
 #[doc(hidden)]
 pub mod self_checks {
     use std::collections::BTreeMap;
+
+    /// Test processes check on one thread, so the parallel map is pinned here:
+    /// every item once, results in item order, for any worker count.
+    pub fn parallel_map_keeps_item_order() {
+        let items = (0..97_u32).collect::<Vec<_>>();
+        for workers in [1, 2, 3, 8] {
+            let calls = std::sync::atomic::AtomicUsize::new(0);
+            let results = super::parallel::map_ordered(&items, workers, |item| {
+                calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                item * 3
+            });
+            assert_eq!(results, items.iter().map(|item| item * 3).collect::<Vec<_>>());
+            assert_eq!(calls.into_inner(), items.len());
+        }
+    }
 
     pub fn sorted_map_collect_keeps_order_and_last_pair() {
         use super::sorted::SortedMap;
