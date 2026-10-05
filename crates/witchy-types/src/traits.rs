@@ -821,22 +821,37 @@ fn lower_with(
     let template_body_diag = if no_fallback.is_empty() {
         None
     } else {
-        let probe = Module {
-            modes: Vec::new(),
-            imports: imports.clone(),
-            from_imports: Vec::new(),
-            items: typed.module().items.clone(),
-            import_lines: Vec::new(),
-            item_lines: Vec::new(),
-            compiler_item_syntax: typed.module().compiler_item_syntax.clone(),
-            compiler_expr_syntax: typed.module().compiler_expr_syntax.clone(),
-            compiler_type_syntax: typed.module().compiler_type_syntax.clone(),
-            compiler_pattern_syntax: typed.module().compiler_pattern_syntax.clone(),
-            compiler_stmt_syntax: typed.module().compiler_stmt_syntax.clone(),
-            compiler_block_syntax: typed.module().compiler_block_syntax.clone(),
-            linked_entry: linked_entry.clone(),
+        // The probe is the annotated module without performance modes or
+        // source lines. Usually it already is exactly that, and is borrowed.
+        let annotated = typed.module();
+        let owned_probe;
+        let probe = if annotated.modes.is_empty()
+            && annotated.from_imports.is_empty()
+            && annotated.import_lines.is_empty()
+            && annotated.item_lines.is_empty()
+            && annotated.imports == imports
+            && annotated.linked_entry == linked_entry
+        {
+            annotated
+        } else {
+            owned_probe = Module {
+                modes: Vec::new(),
+                imports: imports.clone(),
+                from_imports: Vec::new(),
+                items: annotated.items.clone(),
+                import_lines: Vec::new(),
+                item_lines: Vec::new(),
+                compiler_item_syntax: annotated.compiler_item_syntax.clone(),
+                compiler_expr_syntax: annotated.compiler_expr_syntax.clone(),
+                compiler_type_syntax: annotated.compiler_type_syntax.clone(),
+                compiler_pattern_syntax: annotated.compiler_pattern_syntax.clone(),
+                compiler_stmt_syntax: annotated.compiler_stmt_syntax.clone(),
+                compiler_block_syntax: annotated.compiler_block_syntax.clone(),
+                linked_entry: linked_entry.clone(),
+            };
+            &owned_probe
         };
-        crate::typeck::check_selected_lowered(&probe, &no_fallback, &from_conversion_fns)
+        crate::typeck::check_selected_lowered(probe, &no_fallback, &from_conversion_fns)
             .err()
             .and_then(|e| {
                 // Some bounded trait calls are intentionally unresolved until a
@@ -917,17 +932,10 @@ fn lower_with(
                     _ => None,
                 })
                 .collect();
-            // The walk retargets names inside existing bodies; those bodies are
-            // re-checked with the generated ones. Snapshot only when the next
-            // annotation can be incremental.
-            let bodies_before = accepted.then(|| {
-                typed.module().items.iter().filter_map(|item| match item {
-                    Item::Function(function) => Some(function.body.clone()),
-                    _ => None,
-                }).collect::<Vec<_>>()
-            });
+            // Only an accepted annotation can be extended incrementally.
+            let incremental = accepted;
             let __t_mono = mono_timing_start();
-            let (next_memo, next_diags, generated) = typed.rewrite_preserving_nodes(
+            let (next_memo, next_diags, (generated, retargeted)) = typed.rewrite_preserving_nodes(
                 |table, module| {
                     let witness_plan = crate::existential::concrete_pack_requests(module, table)
                         .and_then(|requests| {
@@ -949,6 +957,7 @@ fn lower_with(
                         specializations: &mut generic_specializations,
                         affine_specializations: &mut affine_specializations,
                         generated: Vec::new(),
+                        retargeted: HashSet::new(),
                         table,
                         skip_walk: &no_fallback,
                         show_types: &show_types,
@@ -992,7 +1001,7 @@ fn lower_with(
                         Err(message) => mono.diagnostics.push(message),
                     }
                     mono.run(&mut module.items);
-                    (mono.memo, mono.diagnostics, mono.generated)
+                    (mono.memo, mono.diagnostics, (mono.generated, mono.retargeted))
                 },
             );
             memo = next_memo;
@@ -1012,17 +1021,12 @@ fn lower_with(
             // typed owner before extending the AST, then annotate the new exact
             // module before either the next round or the final dispatch pass.
             let (mut module, previous_table, ()) = typed.rewrite_into_module(|_, _| ());
+            // The walk retargets names inside existing bodies; those bodies are
+            // re-checked with the generated ones when the next annotation can be
+            // incremental.
             let mut changed = HashSet::new();
-            if let Some(bodies_before) = &bodies_before {
-                let functions = module.items.iter().filter_map(|item| match item {
-                    Item::Function(function) => Some(function),
-                    _ => None,
-                });
-                for (function, before) in functions.zip(bodies_before) {
-                    if function.body != *before {
-                        changed.insert(function.name.clone());
-                    }
-                }
+            if incremental {
+                changed.extend(retargeted);
             }
             changed.extend(generated.iter().map(|function| function.name.clone()));
             let items_before = module.items.as_ptr();
@@ -1039,7 +1043,7 @@ fn lower_with(
             module.items.extend(generated.into_iter().map(Item::Function));
             // A reallocation moved every function's inline body block, so the
             // previous facts no longer address this module's nodes.
-            let previous_valid = bodies_before.is_some() && module.items.as_ptr() == items_before;
+            let previous_valid = incremental && module.items.as_ptr() == items_before;
             let concrete_check_error = (!generated_names.is_empty())
                 .then(|| {
                     crate::typeck::check_selected_lowered(
@@ -4935,6 +4939,9 @@ struct Mono<'a> {
     /// storage and therefore require a semantic recheck after substitution.
     affine_specializations: &'a mut HashSet<String>,
     generated: Vec<Function>,
+    /// Functions whose existing body this walk retargeted a call in: the
+    /// bodies the next annotation must recheck besides the generated ones.
+    retargeted: HashSet<String>,
     /// typeck's resolved types for this module instance. Generated bodies have
     /// no entries until the next fixpoint round, so declarations and typed local
     /// scopes provide their structured fallback.

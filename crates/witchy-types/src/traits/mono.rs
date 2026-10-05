@@ -72,6 +72,15 @@ impl Mono<'_> {
         self.specialize(name, type_args);
     }
 
+    /// Point a call in the body being walked at `target`, recording the
+    /// body as changed only when the name actually differs.
+    fn retarget(&mut self, name: &mut String, target: String) {
+        if *name != target {
+            *name = target;
+            self.retargeted.insert(self.current_function.clone());
+        }
+    }
+
     pub(super) fn run(&mut self, items: &mut [Item]) {
         for item in items.iter_mut() {
             if let Item::Function(f) = item {
@@ -670,7 +679,7 @@ impl Mono<'_> {
                     if self.render_available {
                         if let Some(ty) = self.table.type_of(&args[0]) {
                             if render_needs_show(ty, self.show_types) {
-                                *name = "show.render".to_string();
+                                self.retarget(name, "show.render".to_string());
                             }
                         }
                     }
@@ -699,7 +708,7 @@ impl Mono<'_> {
                             } else {
                                 ""
                             };
-                            *name = format!("{prefix}{replacement}");
+                            self.retarget(name, format!("{prefix}{replacement}"));
                         }
                         None => self.diagnostics.push(format!(
                             "{}Glamour child holes accept only `String`, `glamour.VNode(msg)`, or `glamour.Ui(msg)`",
@@ -708,7 +717,7 @@ impl Mono<'_> {
                     }
                 }
                 if !scope.is_local(name)
-                    && let Some(template) = self.templates.get(name.as_str()).cloned()
+                    && let Some(template) = self.templates.get(name.as_str())
                 {
                     let specialization_result = result_ty.as_ref().or_else(|| {
                         (!template.bounds.is_empty()).then_some(initializer_result).flatten()
@@ -729,7 +738,8 @@ impl Mono<'_> {
                                 let refined = subst_trait_params(pattern, &subst);
                                 refine_ast_scope_type(scope, binding, &refined);
                             }
-                            *name = self.specialize(name, type_args);
+                            let target = self.specialize(name, type_args);
+                            self.retarget(name, target);
                         }
                         // A BOUNDED template has no generic fallback (its body
                         // can't compile unresolved), so failing to infer is an
@@ -901,7 +911,7 @@ impl Mono<'_> {
                     return;
                 }
                 let original = name.clone();
-                let Some(template) = self.templates.get(&original).cloned() else { return };
+                let Some(template) = self.templates.get(&original) else { return };
                 let Some(actual) = result_ty.as_ref() else { return };
                 let Some(type_args) = self.resolve_function_value_type_args(&template, actual) else {
                     return;
@@ -909,7 +919,8 @@ impl Mono<'_> {
                 if std::env::var_os("WITCHY_DEBUG_MONO").is_some() {
                     eprintln!("mono: function value `{original}` -> {type_args:?}");
                 }
-                *name = self.specialize(&original, type_args);
+                let target = self.specialize(&original, type_args);
+                self.retarget(name, target);
             }
             Expr::Int(_) | Expr::Duration(_) | Expr::Float(_) | Expr::Str(_) | Expr::Bool(_) | Expr::TaggedLit { .. } => {}
         }
