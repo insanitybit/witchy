@@ -50,7 +50,13 @@ pub fn replay_capture_eligibility(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Result<(), SnapshotRefusal> {
-    snapshot_eligibility_for(ty, definitions, SnapshotUse::ReplayableTask, &BTreeSet::new()).map(|_| ())
+    // A pure function of the type and the map; see `affine_storage_shape`.
+    if let Some(known) = crate::aggregates::shape_memo::replay_eligibility(definitions, ty) {
+        return known;
+    }
+    let eligibility = snapshot_eligibility_for(ty, definitions, SnapshotUse::ReplayableTask, &BTreeSet::new()).map(|_| ());
+    crate::aggregates::shape_memo::remember_replay_eligibility(definitions, ty, eligibility);
+    eligibility
 }
 
 /// A generic recipe capture is conditional on each checked instantiation.
@@ -1286,6 +1292,21 @@ pub fn aggregate_uses_nullable_owned_fields(
 }
 
 pub fn affine_storage_shape(
+    ty: &Type,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Option<AffineStorageShape> {
+    // A pure function of the type and the map: the open shape-memo scope for
+    // that map may answer it. The checker asks for every declaration's
+    // result, and canonical-source assembly for every checked storage type.
+    if let Some(known) = crate::aggregates::shape_memo::affine_shape(definitions, ty) {
+        return known;
+    }
+    let shape = affine_storage_shape_uncached(ty, definitions);
+    crate::aggregates::shape_memo::remember_affine_shape(definitions, ty, &shape);
+    shape
+}
+
+fn affine_storage_shape_uncached(
     ty: &Type,
     definitions: &BTreeMap<String, TypeDef>,
 ) -> Option<AffineStorageShape> {

@@ -555,6 +555,8 @@ pub(crate) mod shape_memo {
         identities: HashMap<Type, Option<Type>>,
         derived: HashMap<&'static str, HashMap<Type, Type>>,
         storage_plans: HashMap<Type, crate::storage::StoragePlan>,
+        affine_shapes: HashMap<Type, Option<crate::storage::AffineStorageShape>>,
+        replay_eligibility: HashMap<Type, Result<(), crate::storage::SnapshotRefusal>>,
     }
 
     thread_local! {
@@ -592,6 +594,8 @@ pub(crate) mod shape_memo {
                 identities: HashMap::default(),
                 derived: HashMap::default(),
                 storage_plans: HashMap::default(),
+                affine_shapes: HashMap::default(),
+                replay_eligibility: HashMap::default(),
             });
         });
         struct Pop;
@@ -619,6 +623,8 @@ pub(crate) mod shape_memo {
                 identities: HashMap::default(),
                 derived: HashMap::default(),
                 storage_plans: HashMap::default(),
+                affine_shapes: HashMap::default(),
+                replay_eligibility: HashMap::default(),
             });
             true
         })
@@ -670,6 +676,40 @@ pub(crate) mod shape_memo {
     pub(crate) fn remember_storage_plan(definitions: &BTreeMap<String, TypeDef>, ty: &Type, plan: &crate::storage::StoragePlan) {
         with_scope(definitions, |scope| {
             scope.storage_plans.insert(ty.clone(), plan.clone());
+        });
+    }
+
+    pub(crate) fn affine_shape(
+        definitions: &BTreeMap<String, TypeDef>,
+        ty: &Type,
+    ) -> Option<Option<crate::storage::AffineStorageShape>> {
+        with_scope(definitions, |scope| scope.affine_shapes.get(ty).cloned()).flatten()
+    }
+
+    pub(crate) fn remember_affine_shape(
+        definitions: &BTreeMap<String, TypeDef>,
+        ty: &Type,
+        shape: &Option<crate::storage::AffineStorageShape>,
+    ) {
+        with_scope(definitions, |scope| {
+            scope.affine_shapes.insert(ty.clone(), shape.clone());
+        });
+    }
+
+    pub(crate) fn replay_eligibility(
+        definitions: &BTreeMap<String, TypeDef>,
+        ty: &Type,
+    ) -> Option<Result<(), crate::storage::SnapshotRefusal>> {
+        with_scope(definitions, |scope| scope.replay_eligibility.get(ty).copied()).flatten()
+    }
+
+    pub(crate) fn remember_replay_eligibility(
+        definitions: &BTreeMap<String, TypeDef>,
+        ty: &Type,
+        eligibility: Result<(), crate::storage::SnapshotRefusal>,
+    ) {
+        with_scope(definitions, |scope| {
+            scope.replay_eligibility.insert(ty.clone(), eligibility);
         });
     }
 

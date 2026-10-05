@@ -1446,6 +1446,19 @@ fn analyze_task_behavior(
     deferred_task_role: Option<&DeferredTaskRole>,
 ) -> Result<CheckedTaskBehavior, TypeError> {
     let definitions = type_definitions(module);
+    // Every call argument asks a storage judgment of its type; most types recur.
+    witchy_canonical_source::aggregates::with_shape_memo(&definitions, || {
+        analyze_task_behavior_with(module, table, export_declarations, deferred_task_role, &definitions)
+    })
+}
+
+fn analyze_task_behavior_with(
+    module: &Module,
+    table: &TypeTable,
+    export_declarations: bool,
+    deferred_task_role: Option<&DeferredTaskRole>,
+    definitions: &BTreeMap<String, TypeDef>,
+) -> Result<CheckedTaskBehavior, TypeError> {
     let function_index = index_functions(module);
     let functions: Vec<_> = module
         .items

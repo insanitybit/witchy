@@ -1373,24 +1373,27 @@ fn attach_canonical_source(
             Type::RecordCompose { .. } => {}
         }
     }
-    for item in &typed.module().items {
-        if let Item::Function(function) = item {
-            for parameter in &function.params {
-                if let Some(ty) = &parameter.ty {
+    // Many declarations share their storage types; judge each once.
+    witchy_canonical_source::aggregates::with_shape_memo(&type_definitions, || {
+        for item in &typed.module().items {
+            if let Item::Function(function) = item {
+                for parameter in &function.params {
+                    if let Some(ty) = &parameter.ty {
+                        collect_checked_substorage(ty, &type_definitions, &mut concrete_types, 0);
+                    }
+                }
+                if let Some(ty) = &function.ret {
                     collect_checked_substorage(ty, &type_definitions, &mut concrete_types, 0);
                 }
             }
-            if let Some(ty) = &function.ret {
-                collect_checked_substorage(ty, &type_definitions, &mut concrete_types, 0);
-            }
         }
-    }
-    for declared in typed.table().checked_storage_declared_types() {
-        collect_checked_substorage(declared, &type_definitions, &mut concrete_types, 0);
-    }
-    for source in typed.table().affine_expression_types() {
-        collect_checked_substorage(source, &type_definitions, &mut concrete_types, 0);
-    }
+        for declared in typed.table().checked_storage_declared_types() {
+            collect_checked_substorage(declared, &type_definitions, &mut concrete_types, 0);
+        }
+        for source in typed.table().affine_expression_types() {
+            collect_checked_substorage(source, &type_definitions, &mut concrete_types, 0);
+        }
+    });
     let concrete_types = concrete_types.into_iter().collect::<Vec<_>>();
     let closed_callable_items = witchy_canonical_source::source::closed_callable_items(
         typed.module(), &callable_witness.runtime_functions,
