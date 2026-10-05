@@ -22,6 +22,7 @@ pub mod optimizer_policy;
 pub mod runtime_layout_catalog;
 pub mod canonical_safewir;
 mod canonical_wasmir;
+mod parallel;
 mod canonical_entry;
 pub mod canonical_launch;
 pub use canonical_entry::{CANONICAL_ENTRY_SECTION, canonical_entry_from_wasm};

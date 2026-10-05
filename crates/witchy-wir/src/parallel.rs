@@ -1,12 +1,13 @@
-//! Checking a module's functions on several threads.
+//! Per-function module work on several threads.
 //!
-//! Each function's verdict is a pure function of its own inputs (see
-//! `cache`), so functions are checked independently and their results are
-//! consumed in module order afterwards: the first error reported, and every
+//! A SafeWIR verdict and an admission plan are each a pure function of one
+//! function and shared module inputs (see `canonical_safewir::check::cache`),
+//! so functions are processed independently and their results are consumed
+//! in module order afterwards: the first error reported, and every
 //! module-level check that follows, are exactly the sequential ones.
-//! `WITCHY_CHECK_THREADS` sets the worker count; `1` checks on the calling
-//! thread with the sequential early exit. The repo's cargo config sets it to
-//! `1` for test processes, which already run in parallel with each other.
+//! `WITCHY_CHECK_THREADS` sets the worker count; with `1` the callers work on
+//! the calling thread, in order. The repo's cargo config sets it to `1` for
+//! test processes, which already run in parallel with each other.
 
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -18,7 +19,7 @@ const MAX_WORKERS: usize = 8;
 /// stack (`RUST_MIN_STACK` in `.cargo/config.toml`), above the main thread's.
 const WORKER_STACK: usize = 16 * 1024 * 1024;
 
-pub(super) fn workers(functions: usize) -> usize {
+pub(crate) fn workers(functions: usize) -> usize {
     static CONFIGURED: OnceLock<usize> = OnceLock::new();
     let configured = *CONFIGURED.get_or_init(|| {
         std::env::var("WITCHY_CHECK_THREADS").ok()
@@ -32,7 +33,7 @@ pub(super) fn workers(functions: usize) -> usize {
 }
 
 /// `f` of every item, in item order, computed on `workers` threads.
-pub(super) fn map_ordered<T: Sync, R: Send>(
+pub(crate) fn map_ordered<T: Sync, R: Send>(
     items: &[T],
     workers: usize,
     f: impl Fn(&T) -> R + Sync,

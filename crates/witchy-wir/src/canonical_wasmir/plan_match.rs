@@ -1153,13 +1153,19 @@ pub(super) fn decode_and_match_plan(
         .map(|import| (import.id, import.clone())).collect();
     let signatures_by_id: BTreeMap<_, _> = source.signatures().iter()
         .map(|signature| (signature.id, signature)).collect();
-    let mut expected = source.functions().iter()
-        .map(|function| {
-            let signature = *signatures_by_id.get(&function.signature)
-                .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
-            expected_function_plan(function, signature, &layouts, &function_indices, &signature_indices, &imports_by_id, &import_indices, &static_data_offsets, owner_cleanup_function, &target.owner_bridges, &memory_helpers)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let plan = |function: &Function| {
+        let signature = *signatures_by_id.get(&function.signature)
+            .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+        expected_function_plan(function, signature, &layouts, &function_indices, &signature_indices, &imports_by_id, &import_indices, &static_data_offsets, owner_cleanup_function, &target.owner_bridges, &memory_helpers)
+    };
+    // Each function's plan reads only the shared module inputs above.
+    let workers = crate::parallel::workers(source.functions().len());
+    let mut expected = if workers > 1 {
+        crate::parallel::map_ordered(source.functions(), workers, plan)
+            .into_iter().collect::<Result<Vec<_>, _>>()?
+    } else {
+        source.functions().iter().map(plan).collect::<Result<Vec<_>, _>>()?
+    };
     if let Some(bridge) = owner_cleanup_bridge {
         expected.push(owner_operation_kernel::plan_cleanup_helper(&layouts, bridge)?);
     }

@@ -886,13 +886,25 @@ fn encode_checked_unvalidated(checked: &CheckedWasmIr) -> Result<Vec<u8>, Encode
         .map(|function| (function.id, function)).collect();
     let source_signatures_by_id: BTreeMap<_, _> = source.signatures().iter()
         .map(|signature| (signature.id, signature)).collect();
-    for target_function in &target.functions {
+    let encode = |target_function: &WasmFunction| -> Result<_, EncodeError> {
         let source_function = *source_functions_by_id.get(&target_function.id).ok_or(EncodeError::MissingFunction(target_function.id))?;
         let signature = *source_signatures_by_id.get(&source_function.signature).ok_or(EncodeError::UnsupportedSignature { signature: source_function.signature })?;
         let type_index = signature_indices.get(&source_function.signature).copied().ok_or(EncodeError::UnsupportedSignature { signature: source_function.signature })?;
+        let body = encode_function(source_function, signature, target_function, &function_indices, &signature_indices, &import_indices, &import_contracts, &static_data_offsets, &layouts, &target.owner_bridges, owner_cleanup_function, &memory_helpers)?;
+        Ok((type_index, body))
+    };
+    // Bodies encode independently; the sections take them in function order.
+    let workers = crate::parallel::workers(target.functions.len());
+    let encoded = if workers > 1 {
+        crate::parallel::map_ordered(&target.functions, workers, encode)
+    } else {
+        target.functions.iter().map(encode).collect()
+    };
+    for (target_function, encoded) in target.functions.iter().zip(encoded) {
+        let (type_index, body) = encoded?;
         functions.function(type_index);
         exports.export(&format!("f{}", target_function.id.get()), ExportKind::Func, function_indices[&target_function.id]);
-        code.function(&encode_function(source_function, signature, target_function, &function_indices, &signature_indices, &import_indices, &import_contracts, &static_data_offsets, &layouts, &target.owner_bridges, owner_cleanup_function, &memory_helpers)?);
+        code.function(&body);
     }
     if let (Some(bridge), Some(type_index)) = (owner_cleanup_bridge, owner_cleanup_type) {
         functions.function(type_index);

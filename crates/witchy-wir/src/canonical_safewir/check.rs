@@ -13,7 +13,6 @@ use super::{
 
 pub(crate) mod cache;
 pub(crate) mod memory;
-mod parallel;
 mod sorted;
 use memory::MemoryChecker;
 pub(crate) mod contracts;
@@ -427,10 +426,10 @@ fn check_candidate<S: ModuleStage>(
             }
         })
     };
-    let workers = parallel::workers(candidate.functions().len());
+    let workers = crate::parallel::workers(candidate.functions().len());
     // One worker checks lazily, so the first rejection ends the loop.
     let verdicts: Box<dyn Iterator<Item = Result<cache::Discharged, InitialCheckError>> + '_> = if workers > 1 {
-        Box::new(parallel::map_ordered(candidate.functions(), workers, &check_one).into_iter())
+        Box::new(crate::parallel::map_ordered(candidate.functions(), workers, &check_one).into_iter())
     } else {
         Box::new(candidate.functions().iter().map(&check_one))
     };
@@ -2634,7 +2633,7 @@ pub mod self_checks {
         let items = (0..97_u32).collect::<Vec<_>>();
         for workers in [1, 2, 3, 8] {
             let calls = std::sync::atomic::AtomicUsize::new(0);
-            let results = super::parallel::map_ordered(&items, workers, |item| {
+            let results = crate::parallel::map_ordered(&items, workers, |item| {
                 calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 item * 3
             });
