@@ -93,6 +93,19 @@ impl Analysis for BoundsGuardRedundancy {
     const VERSION: u32 = 1;
 
     fn compute(_module: &CanonicalModule<InitialValid>, function: &Function) -> Self::Result {
+        redundant_bounds_guards(function)
+    }
+
+    fn fact_at(result: &Self::Result, point: ProgramPoint) -> Option<&Self::Fact> {
+        result.get(&(point.block, point.operation))
+    }
+}
+
+/// [`BoundsGuardRedundancy`]'s facts for one function: each bounds guard,
+/// keyed by its block and operation index, and whether it repeats an earlier
+/// guard of the same comparison. A syntactic fact of the body alone.
+pub(super) fn redundant_bounds_guards(function: &Function) -> BTreeMap<(BlockId, usize), bool> {
+    {
         let mut facts = BTreeMap::new();
         for block in &function.blocks {
             let mut comparisons = BTreeMap::new();
@@ -112,9 +125,5 @@ impl Analysis for BoundsGuardRedundancy {
             }
         }
         facts
-    }
-
-    fn fact_at(result: &Self::Result, point: ProgramPoint) -> Option<&Self::Fact> {
-        result.get(&(point.block, point.operation))
     }
 }

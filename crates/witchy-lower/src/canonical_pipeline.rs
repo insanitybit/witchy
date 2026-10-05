@@ -8,11 +8,11 @@ use std::fmt;
 
 use witchy_types::pipeline::{CanonicalCheckedSource, CheckedModule};
 use witchy_wir::canonical_safewir::optimize::{
-    PassId, run_checked_pass,
+    PassId, remove_redundant_bounds_guards_before_check, run_checked_pass,
 };
 use witchy_wir::canonical_safewir::{
-    FinalValidationError, InitialWitnessError, ValidatedSafeWir, check_initial_with_witness,
-    validate_final,
+    CanonicalModule, FinalValidationError, InitialWitnessError, LoweredCandidate, ValidatedSafeWir,
+    check_initial_with_witness, validate_final,
 };
 use witchy_wir::{AdmittedCanonicalArtifact, CanonicalAdmissionError};
 
@@ -140,6 +140,25 @@ pub(crate) fn validate_checked_source(
     })
 }
 
+/// The bounds-guard pass's output, checked as the initial module instead of
+/// after a check of the guarded one. The checker is the authority either way:
+/// this module passes the same complete initial check and final validation.
+/// `None` (nothing to remove, or a rejection) leaves the caller's sequence,
+/// which then checks the guarded module exactly as before.
+fn validate_guard_free_first(
+    candidate: &CanonicalModule<LoweredCandidate>,
+    source: &CanonicalCheckedSource,
+) -> Option<ValidatedSafeWir> {
+    let optimized = remove_redundant_bounds_guards_before_check(candidate)?;
+    let validated = check_initial_with_witness(optimized, &source.view())
+        .map_err(|error| format!("{error:?}"))
+        .and_then(|checked| validate_final(checked, &source.view()).map_err(|error| format!("{error:?}")));
+    if let Err(error) = &validated {
+        if std::env::var_os("WIRDIAG").is_some() { eprintln!("WIRBAIL guard-free-first: {error}"); }
+    }
+    validated.ok()
+}
+
 fn validate_checked_source_inner(
     source: &CanonicalCheckedSource,
 ) -> Result<ValidatedSafeWir, CanonicalPipelineError> {
@@ -154,6 +173,9 @@ fn validate_checked_source_inner(
         }
         if let Ok(candidate) = borrowed_attempt {
             let candidate = candidate.with_launch_contract_payload(source.launch_contract_payload().to_vec());
+            if let Some(validated) = validate_guard_free_first(&candidate, source) {
+                return Ok(validated);
+            }
             let checked_attempt = check_initial_with_witness(candidate, &source.view());
             if let Err(error) = &checked_attempt {
                 if std::env::var_os("WIRDIAG").is_some() { eprintln!("WIRBAIL borrowed-view-check: {error:?}"); }
@@ -176,6 +198,11 @@ fn validate_checked_source_inner(
     let candidate = lower_typed_module(source, layouts)
         .map_err(CanonicalPipelineError::Lowering)?
         .with_launch_contract_payload(source.launch_contract_payload().to_vec());
+    if use_bounds_guard_pass(source) {
+        if let Some(validated) = validate_guard_free_first(&candidate, source) {
+            return Ok(validated);
+        }
+    }
     let baseline_candidate = use_bounds_guard_pass(source).then(|| candidate.clone());
     let checked = check_initial_with_witness(candidate, &source.view())
         .map_err(CanonicalPipelineError::InitialValidation)?;

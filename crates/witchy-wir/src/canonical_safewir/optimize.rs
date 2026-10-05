@@ -3,6 +3,9 @@
 //! Production passes consume validated input, consult disposable analyses,
 //! construct an authority-free candidate, and revalidate it. The driver keeps
 //! the original checked input if a pass fails; final validation is still required.
+//! The bounds-guard rewrite can also run on a lowered candidate before its first
+//! check ([`remove_redundant_bounds_guards_before_check`]); its output is then an
+//! ordinary lowered candidate, admitted only by the complete initial check.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -11,8 +14,8 @@ use super::analysis::{AnalysisDb, BoundsGuardRedundancy, ProgramPoint};
 
 use super::{
     CanonicalModule, CheckedInitialSafeWir, CheckedOptimizedSafeWir, CheckedSafeWirRevision,
-    Function, GuardKind, InitialCheckError, InitialValid, Operation,
-    OptimizationAuthorityError, OptimizationCandidate, Revision,
+    Function, GuardKind, InitialCheckError, InitialValid, LoweredCandidate, ModuleStage,
+    Operation, OptimizationAuthorityError, OptimizationCandidate, Revision,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -211,11 +214,55 @@ fn rewrite(
     changed
 }
 
+/// The same-block bounds-guard rewrite on a lowered candidate, before any
+/// check. Nothing here grants authority: the result is an ordinary lowered
+/// candidate that must pass the complete initial check, and the independent
+/// rewrite relation must hold against `lowered`. Checking this module first
+/// spares checking the guarded one whenever it is admitted; a caller that
+/// sees it rejected checks `lowered` instead. `None` when no guard is
+/// redundant or the relation fails.
+pub fn remove_redundant_bounds_guards_before_check(
+    lowered: &CanonicalModule<LoweredCandidate>,
+) -> Option<CanonicalModule<LoweredCandidate>> {
+    let mut candidate = lowered.clone();
+    let mut changed = false;
+    for function in &mut candidate.functions {
+        let redundant = super::analysis::redundant_bounds_guards(function);
+        for block in &mut function.blocks {
+            let before_len = block.operations.len();
+            let block_id = block.id;
+            let mut operation_index = 0;
+            block.operations.retain(|_| {
+                let keep = redundant.get(&(block_id, operation_index)) != Some(&true);
+                operation_index += 1;
+                keep
+            });
+            changed |= block.operations.len() != before_len;
+        }
+    }
+    if !changed {
+        return None;
+    }
+    check_rewrite_relation_between(lowered, &candidate, false).ok()?;
+    Some(candidate)
+}
+
 /// Independently recognize the one allowed rewrite. This intentionally does
 /// not call `rewrite` or compare against a regenerated candidate.
 pub(super) fn check_rewrite_relation(
     before: &CanonicalModule<InitialValid>,
     after: &CanonicalModule<OptimizationCandidate>,
+) -> Result<(), RewriteRelationError> {
+    check_rewrite_relation_between(before, after, true)
+}
+
+/// The relation between any two stages; `advances_revision` says whether a
+/// change must advance the revision (a pass over a checked revision) or keep
+/// it (a lowered candidate that has not been checked yet).
+fn check_rewrite_relation_between<A: ModuleStage, B: ModuleStage>(
+    before: &CanonicalModule<A>,
+    after: &CanonicalModule<B>,
+    advances_revision: bool,
 ) -> Result<(), RewriteRelationError> {
     if before.checked_source != after.checked_source
         || before.launch_contract_payload != after.launch_contract_payload
@@ -242,7 +289,7 @@ pub(super) fn check_rewrite_relation(
     for (before, after) in before.functions.iter().zip(&after.functions) {
         changed |= check_function_relation(before, after)?;
     }
-    let expected_revision = if changed {
+    let expected_revision = if changed && advances_revision {
         before
             .revision
             .checked_next()
