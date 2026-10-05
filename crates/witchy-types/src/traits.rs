@@ -253,7 +253,7 @@ fn subst_self(t: &Type, self_ty: &Type) -> Type {
 /// generics on primitive type arguments (the interpreter and Rust handle generic
 /// `==` and 64-bit Ints natively, so only the lossy WASM i32 generic ABI needs it).
 pub fn lower(module: Module) -> Module {
-    lower_with(module, false).0
+    lower_with(module, false, None).0.into_module()
 }
 
 /// [`lower`] that surfaces unsatisfiable trait dispatch: a trait-method call
@@ -261,7 +261,8 @@ pub fn lower(module: Module) -> Module {
 /// flavor so the error reads "`Float` does not implement `Show`" at check
 /// time instead of "unknown function `show`" after lowering.
 pub fn lower_checked(module: Module) -> Result<Module, String> {
-    let (lowered, missing, _, _) = lower_with(module, false);
+    let (lowered, missing, _, _) = lower_with(module, false, None);
+    let lowered = lowered.into_module();
     match missing.into_iter().next() {
         Some(msg) => Err(msg),
         None => Ok(lowered),
@@ -272,7 +273,7 @@ pub fn lower_checked(module: Module) -> Result<Module, String> {
 /// arguments — for the WASM backend, whose generic ABI otherwise pointer-compares
 /// strings and truncates large Ints.
 pub fn lower_for_wasm(module: Module) -> Module {
-    lower_with(module, true).0
+    lower_with(module, true, None).0.into_module()
 }
 
 /// Trait-lowered Wasm input plus the compiler-owned logical identity of every
@@ -310,8 +311,53 @@ impl WasmTraitLowering {
 /// Wasm trait lowering with retained generic-instantiation identity for the
 /// RFC-0111 physical callable-specialization phase.
 pub fn lower_for_wasm_with_specializations(module: Module) -> WasmTraitLowering {
-    let (module, _, generic_specializations, witness_catalog) = lower_with(module, true);
+    let (module, _, generic_specializations, witness_catalog) = lower_with(module, true, None);
+    let module = module.into_module();
     WasmTraitLowering { module, generic_specializations, witness_catalog }
+}
+
+/// The Wasm trait lowering of a module the checker already accepted.
+pub enum CheckedWasmLowering {
+    /// Lowering changed nothing and specialized nothing: the checked module,
+    /// with its table and facts, is its own lowering.
+    Unchanged(crate::typeck::TypedModule),
+    Lowered(WasmTraitLowering),
+}
+
+/// [`lower_for_wasm_with_specializations`] of `checked`, the checker's own
+/// annotation of an already trait-lowered module.
+///
+/// The ordinary lowering starts by rebuilding the module and annotating it
+/// from scratch. When that rebuild reproduces `checked`'s module exactly, its
+/// table is the annotation of the same nodes, and the fixpoint starts from it.
+/// If the fixpoint then specializes nothing and the final dispatch leaves the
+/// module unchanged, the lowering is the identity and `checked` -- an
+/// annotation the checker already accepted -- is returned whole. Any
+/// difference falls back to the ordinary lowering of the rebuilt module.
+pub fn lower_checked_for_wasm(checked: crate::typeck::TypedModule) -> CheckedWasmLowering {
+    let module = checked.module().clone();
+    let (lowered, _, generic_specializations, witness_catalog) = lower_with(module, true, Some(checked));
+    match lowered {
+        Lowering::Unchanged(typed) => CheckedWasmLowering::Unchanged(typed),
+        Lowering::Module(module) => CheckedWasmLowering::Lowered(
+            WasmTraitLowering { module, generic_specializations, witness_catalog },
+        ),
+    }
+}
+
+/// `lower_with`'s result: a lowered module, or the unchanged `prior`.
+enum Lowering {
+    Module(Module),
+    Unchanged(crate::typeck::TypedModule),
+}
+
+impl Lowering {
+    fn into_module(self) -> Module {
+        match self {
+            Self::Module(module) => module,
+            Self::Unchanged(typed) => typed.into_module(),
+        }
+    }
 }
 
 /// Start a mono-phase profiling timer, but ONLY when `WITCHY_DEBUG_MONO_TIMING`
@@ -325,11 +371,14 @@ fn mono_timing_start() -> Option<std::time::Instant> {
     std::env::var_os("WITCHY_DEBUG_MONO_TIMING").map(|_| std::time::Instant::now())
 }
 
+/// `prior`, when given, is the checker's accepted annotation of a module
+/// equal to `module`; see [`lower_checked_for_wasm`].
 fn lower_with(
     module: Module,
     mono_unbounded: bool,
+    prior: Option<crate::typeck::TypedModule>,
 ) -> (
-    Module,
+    Lowering,
     Vec<String>,
     std::collections::BTreeMap<String, LogicalSpecializationIdentity>,
     crate::witness::WitnessCatalog,
@@ -341,7 +390,7 @@ fn lower_with(
         Ok(module) => module,
         Err(message) => {
             let catalog = crate::witness::WitnessCatalog::from_module(&inlined);
-            return (inlined, vec![message], std::collections::BTreeMap::new(), catalog);
+            return (Lowering::Module(inlined), vec![message], std::collections::BTreeMap::new(), catalog);
         }
     };
     // Retain the resolved trait/impl universe while ordinary trait lowering
@@ -358,7 +407,11 @@ fn lower_with(
                 || !signature_type_vars(f).is_empty())
     }) || module_needs_lowering(&module.items);
     if !needs_lowering {
-        return (module, Vec::new(), std::collections::BTreeMap::new(), witness_catalog);
+        let lowered = match prior {
+            Some(prior) if crate::typeck::identical_modules(prior.module(), &module) => Lowering::Unchanged(prior),
+            _ => Lowering::Module(module),
+        };
+        return (lowered, Vec::new(), std::collections::BTreeMap::new(), witness_catalog);
     }
 
     // method name -> owning trait(s), and each trait's full method list (for
@@ -704,24 +757,40 @@ fn lower_with(
     let mut items = items;
     items.reserve(items.len() / 4 + 64);
     let __t = mono_timing_start();
-    let (mut typed, mut accepted) = crate::typeck::annotate_types_reporting(
-        Module {
-            modes: modes.clone(),
-            imports: imports.clone(),
-            from_imports: Vec::new(),
-            items,
-            import_lines: Vec::new(),
-            item_lines: Vec::new(),
-            compiler_item_syntax: compiler_item_syntax.clone(),
-            compiler_expr_syntax: compiler_expr_syntax.clone(),
-            compiler_type_syntax: compiler_type_syntax.clone(),
-            compiler_pattern_syntax: compiler_pattern_syntax.clone(),
-            compiler_stmt_syntax: compiler_stmt_syntax.clone(),
-            compiler_block_syntax: compiler_block_syntax.clone(),
-            linked_entry: linked_entry.clone(),
-        },
-        &from_conversion_fns,
-    );
+    let rebuilt = Module {
+        modes: modes.clone(),
+        imports: imports.clone(),
+        from_imports: Vec::new(),
+        items,
+        import_lines: Vec::new(),
+        item_lines: Vec::new(),
+        compiler_item_syntax: compiler_item_syntax.clone(),
+        compiler_expr_syntax: compiler_expr_syntax.clone(),
+        compiler_type_syntax: compiler_type_syntax.clone(),
+        compiler_pattern_syntax: compiler_pattern_syntax.clone(),
+        compiler_stmt_syntax: compiler_stmt_syntax.clone(),
+        compiler_block_syntax: compiler_block_syntax.clone(),
+        linked_entry: linked_entry.clone(),
+    };
+    // The prior annotation stands in for this one only when it describes the
+    // very module annotated here and the two checks agree on what they
+    // accept: this pass rejects compiler syntax, and with `From` conversions
+    // present it admits conversions the checker's run did not.
+    let prior = prior.filter(|prior| {
+        crate::typeck::identical_modules(prior.module(), &rebuilt)
+            && from_conversion_fns.is_empty()
+            && rebuilt.compiler_item_syntax.is_empty()
+            && rebuilt.compiler_expr_syntax.is_empty()
+            && rebuilt.compiler_type_syntax.is_empty()
+            && rebuilt.compiler_pattern_syntax.is_empty()
+            && rebuilt.compiler_stmt_syntax.is_empty()
+            && rebuilt.compiler_block_syntax.is_empty()
+    });
+    let started_from_prior = prior.is_some();
+    let (mut typed, mut accepted) = match prior {
+        Some(prior) => (prior, true),
+        None => crate::typeck::annotate_types_reporting(rebuilt, &from_conversion_fns),
+    };
     if let Some(__t) = __t {
         eprintln!(
             "annotate first_table: items={} took={:?}",
@@ -813,6 +882,7 @@ fn lower_with(
     let mut bound_diags: Vec<String> = Vec::new();
     let mut generic_specializations = std::collections::BTreeMap::new();
     let mut affine_specializations = HashSet::new();
+    let mut specialized_any = false;
     if !templates.is_empty() {
         // Annotate + monomorphize to a FIXPOINT (RFC-0046 §2): each round types the
         // concrete specializations the previous round generated, unlocking the
@@ -919,6 +989,7 @@ fn lower_with(
             memo = next_memo;
             mono_diags = next_diags;
             let progressed = !generated.is_empty();
+            specialized_any |= progressed;
             if let Some(__t_mono) = __t_mono {
                 eprintln!(
                     "mono round {round}: items={} generated={} mono_walk={:?}",
@@ -1012,7 +1083,7 @@ fn lower_with(
     let owner_methods = build_owner_methods(&typed.module().items);
     let missing_impls = std::cell::RefCell::new(Vec::new());
     let (var_calls, returns_nil) = build_mutation_tables(&typed.module().items);
-    let (mut lowered, _, ()) = typed.rewrite_into_module(|type_table, module| {
+    let finish = |type_table: &crate::typeck::TypeTable, module: &mut Module| {
         let ctx = Ctx {
             trait_methods: &trait_methods,
             inherent_methods: &inherent_methods,
@@ -1052,20 +1123,37 @@ fn lower_with(
         // final table-dependent operation in the closure; the table is consumed
         // together with the typed owner immediately afterwards.
         rewrite_try_from_conversions(&mut module.items, type_table, &from_conversion_fns);
-    });
-    lowered
-        .items
-        .retain(|it| !matches!(it, Item::Function(f) if no_fallback.contains(&f.name)));
-    lowered.imports = imports;
-    // (RFC-0056; BUG-210) A defaulted parameter on an `impl`/`trait` method
-    // (`p.scaled()` where `fn scaled(self, k: Int = 2)`) is unreachable through the
-    // linker's keyword-argument pass, which ran BEFORE method calls were resolved.
-    // Now that every dispatchable method is a positional `Call` to a mangled
-    // function that carries the same defaults, splice the trailing constant
-    // defaults with the exact free-function mechanism — in the shared `lower_with`,
-    // so both backends fill them identically (parity by construction). Labels never
-    // reach a method call, so this only ever splices omitted trailing defaults.
-    let kw = witchy_syntax::keyword_args::resolve(&mut lowered);
+        module
+            .items
+            .retain(|it| !matches!(it, Item::Function(f) if no_fallback.contains(&f.name)));
+        module.imports = imports;
+        // (RFC-0056; BUG-210) A defaulted parameter on an `impl`/`trait` method
+        // (`p.scaled()` where `fn scaled(self, k: Int = 2)`) is unreachable through the
+        // linker's keyword-argument pass, which ran BEFORE method calls were resolved.
+        // Now that every dispatchable method is a positional `Call` to a mangled
+        // function that carries the same defaults, splice the trailing constant
+        // defaults with the exact free-function mechanism — in the shared `lower_with`,
+        // so both backends fill them identically (parity by construction). Labels never
+        // reach a method call, so this only ever splices omitted trailing defaults.
+        witchy_syntax::keyword_args::resolve(module)
+    };
+    let (lowered, kw) = if started_from_prior && !specialized_any {
+        // Finish in place: if that leaves the module exactly as the checker
+        // annotated it, the prior annotation is still the module's own.
+        let snapshot = typed.module().clone();
+        let (kw, unchanged) = typed.rewrite_preserving_nodes(|type_table, module| {
+            let kw = finish(type_table, module);
+            (kw, crate::typeck::identical_modules(module, &snapshot))
+        });
+        if unchanged {
+            (Lowering::Unchanged(typed), kw)
+        } else {
+            (Lowering::Module(typed.into_module()), kw)
+        }
+    } else {
+        let (module, _, kw) = typed.rewrite_into_module(finish);
+        (Lowering::Module(module), kw)
+    };
     (
         lowered,
         {

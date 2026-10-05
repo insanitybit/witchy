@@ -12062,6 +12062,46 @@ impl ProperTailSiteManifest {
     }
 }
 
+/// Whether two modules are the same input to every later stage: equal
+/// structurally AND in the source lines diagnostics report, which the
+/// hand-written `PartialEq` of functions, arms and variants ignores.
+pub(crate) fn identical_modules(left: &Module, right: &Module) -> bool {
+    left == right && unequated_source_lines(left) == unequated_source_lines(right)
+}
+
+/// Every line field `PartialEq` skips, in a fixed walk order: function and
+/// method lines, variant and variant-field lines, and match-arm lines.
+fn unequated_source_lines(module: &Module) -> Vec<u32> {
+    fn function_lines(function: &witchy_syntax::ast::Function, lines: &mut Vec<u32>) {
+        lines.push(function.line);
+        let _ = witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| -> Result<(), ()> {
+            if let Expr::Match { arms, .. } = expression {
+                lines.extend(arms.iter().map(|arm| arm.line));
+            }
+            Ok(())
+        });
+    }
+    let mut lines = Vec::new();
+    for item in &module.items {
+        match item {
+            Item::Function(function) => function_lines(function, &mut lines),
+            Item::Impl(implementation) => {
+                for method in &implementation.methods {
+                    function_lines(method, &mut lines);
+                }
+            }
+            Item::Type(definition) => {
+                for variant in &definition.variants {
+                    lines.push(variant.line);
+                    lines.extend(&variant.field_lines);
+                }
+            }
+            _ => {}
+        }
+    }
+    lines
+}
+
 impl TypedModule {
     /// Derive proper-tail obligations from this exact checked AST allocation.
     /// The result contains no AST pointers and remains valid after this owner is
@@ -12967,6 +13007,8 @@ impl TypedModule {
     /// Mutate fields that preserve every expression allocation (for example a
     /// resolved call name or binary-op tag) while consulting the existing facts.
     /// Structural rewrites must instead consume the typed module and re-annotate.
+    /// A rewrite that reports whether it changed anything may be structural
+    /// when it did, provided the caller then consumes the module unread.
     pub(crate) fn rewrite_preserving_nodes<R>(
         &mut self,
         rewrite: impl FnOnce(&TypeTable, &mut Module) -> R,
@@ -13012,10 +13054,7 @@ impl TypedModule {
         checked: CheckedAnnotation,
         candidate: Module,
     ) -> Result<TypedModule, TypeError> {
-        if self.reusable_as(checked)
-            && *self.module == candidate
-            && format!("{:?}", self.module) == format!("{candidate:?}")
-        {
+        if self.reusable_as(checked) && identical_modules(&self.module, &candidate) {
             return Ok(self);
         }
         drop(self);
@@ -13065,6 +13104,154 @@ impl TypedModule {
         let result = rewrite(&self.table, &mut self.module);
         (*self.module, self.table, result)
     }
+
+    /// Accept the semantic check's own annotation of this module as its
+    /// runtime annotation ([`annotate_checked`]), when canonical lowering
+    /// proved to be the identity on it.
+    ///
+    /// Both are the whole-module checker over the same module. The runtime
+    /// recheck differs only in admitting compiler syntax (which the semantic
+    /// check has already passed here) and in omitting verdict-only source
+    /// rules, so it accepts this module and infers the same table, from which
+    /// the facts follow. `WITCHY_VERIFY_INCREMENTAL_ANNOTATE=1` runs the
+    /// recheck as well and panics if its facts differ.
+    pub(crate) fn accepted_as_runtime_annotation(mut self) -> Result<TypedModule, TypeError> {
+        static VERIFY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *VERIFY.get_or_init(|| std::env::var_os("WITCHY_VERIFY_INCREMENTAL_ANNOTATE").is_some()) {
+            let recheck = annotate_checked((*self.module).clone())?;
+            let mine = normalized_facts(&self.module, &self.table, &self);
+            let theirs = normalized_facts(recheck.module(), recheck.table(), &recheck);
+            assert!(
+                mine == theirs,
+                "the semantic check's annotation diverged from the runtime recheck ({} vs {} facts)",
+                mine.len(), theirs.len(),
+            );
+        }
+        self.checked_as = Some(CheckedAnnotation::Runtime);
+        Ok(self)
+    }
+}
+
+/// A table's facts keyed by expression preorder position rather than node
+/// address, so annotations of two structurally equal modules compare. A fact
+/// whose key addresses no expression of `module` is kept as `stale`, which
+/// never equals a positioned fact. The retained access and view facts are
+/// read per expression and per declaration, with any expression address in
+/// their rendering replaced by its position; the loan graph is keyed by
+/// statement and contributes its aggregate telemetry and owner roots.
+fn normalized_facts(module: &Module, table: &TypeTable, typed: &TypedModule) -> Vec<String> {
+    let mut index = HashMap::new();
+    let mut expressions: Vec<&Expr> = Vec::new();
+    for item in &module.items {
+        if let Item::Function(function) = item {
+            let _ = witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| -> Result<(), ()> {
+                let next = index.len();
+                if let std::collections::hash_map::Entry::Vacant(entry) = index.entry(expression as *const Expr as usize) {
+                    entry.insert(next);
+                    expressions.push(expression);
+                }
+                Ok(())
+            });
+        }
+    }
+    let mut facts = Vec::new();
+    let mut add = |tag: &str, key: &usize, value: String| match index.get(key) {
+        Some(position) => facts.push(format!("{tag}{position}:{value}")),
+        None => facts.push(format!("stale {tag}:{value}")),
+    };
+    for (key, ty) in &table.types { add("type", key, format!("{ty:?}")); }
+    for (key, ty) in &table.local_callees { add("callee", key, format!("{ty:?}")); }
+    for (key, ty) in &table.view_types { add("view", key, format!("{ty:?}")); }
+    for key in &table.non_completing { add("noncompleting", key, String::new()); }
+    for (key, value) in &table.affine_expression_types { add("affine", key, format!("{value:?}")); }
+    for (key, value) in &table.declared_function_values { add("declared", key, value.clone()); }
+    for (key, value) in &table.existential_packs { add("pack", key, format!("{value:?}")); }
+    for (key, value) in &table.existential_upcasts { add("upcast", key, format!("{value:?}")); }
+    for (key, value) in &table.record_projections { add("projection", key, format!("{value:?}")); }
+    for key in &table.compiler_owned_materializations { add("owned", key, String::new()); }
+    facts.extend(table.functions.iter().map(|(name, ty)| format!("function {name}:{ty:?}")));
+    facts.extend(table.inferred_signatures.iter().map(|(name, signature)| format!("inferred {name}:{signature:?}")));
+    let mut storage = table.checked_storage_declared_types.iter().map(|ty| format!("{ty:?}")).collect::<Vec<_>>();
+    storage.sort();
+    facts.extend(storage.into_iter().map(|ty| format!("storage {ty}")));
+    facts.push(format!("region promotions {}", table.region_promotions.len()));
+    let positioned = |rendering: String| replace_expression_addresses(&rendering, &index);
+    match typed.access_facts() {
+        Ok(access) => {
+            for (position, expression) in expressions.iter().enumerate() {
+                if let Some(call) = access.call_at(module, expression) {
+                    facts.push(positioned(format!("access call{position}:{call:?}")));
+                }
+                if let Some(callable) = access.callable_at(module, expression) {
+                    facts.push(positioned(format!("access callable{position}:{callable:?}")));
+                }
+                if let Some(place) = access.place_at(module, expression) {
+                    facts.push(positioned(format!("access place{position}:{place:?}")));
+                }
+            }
+            for item in &module.items {
+                if let Item::Function(function) = item {
+                    if let Some(signature) = access.declaration(&function.name) {
+                        facts.push(positioned(format!("access declaration {}:{signature:?}", function.name)));
+                    }
+                }
+            }
+        }
+        Err(error) => facts.push(format!("access facts {error:?}")),
+    }
+    match typed.view_facts() {
+        Ok(views) => {
+            for (position, expression) in expressions.iter().enumerate() {
+                if let Some(view) = views.view_for(expression) {
+                    facts.push(positioned(format!("view fact{position}:{view:?}")));
+                }
+            }
+            facts.push(format!("view facts {}", views.iter().count()));
+        }
+        Err(error) => facts.push(format!("view facts {error:?}")),
+    }
+    match typed.loan_facts() {
+        Ok(loans) => {
+            facts.push(format!("loan telemetry {:?}", loans.telemetry()));
+            let mut roots = loans.owner_roots().iter().map(|root| format!("loan root {root:?}")).collect::<Vec<_>>();
+            roots.sort();
+            facts.extend(roots);
+        }
+        Err(error) => facts.push(format!("loan facts {error:?}")),
+    }
+    facts.sort();
+    facts
+}
+
+/// Replace every decimal or `0x` hexadecimal number in `rendering` that is
+/// the address of an indexed expression with that expression's position.
+fn replace_expression_addresses(rendering: &str, index: &HashMap<usize, usize>) -> String {
+    let bytes = rendering.as_bytes();
+    let mut out = String::with_capacity(rendering.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        let starts_number = bytes[at].is_ascii_digit()
+            && !(at > 0 && (bytes[at - 1].is_ascii_alphanumeric() || bytes[at - 1] == b'_'));
+        if !starts_number {
+            let next = at + rendering[at..].chars().next().map_or(1, char::len_utf8);
+            out.push_str(&rendering[at..next]);
+            at = next;
+            continue;
+        }
+        let hex = rendering[at..].starts_with("0x");
+        let start = if hex { at + 2 } else { at };
+        let mut end = start;
+        while end < bytes.len() && (if hex { bytes[end].is_ascii_hexdigit() } else { bytes[end].is_ascii_digit() }) {
+            end += 1;
+        }
+        let value = if hex { usize::from_str_radix(&rendering[start..end], 16) } else { rendering[start..end].parse() };
+        match value.ok().and_then(|address| index.get(&address)) {
+            Some(position) => out.push_str(&format!("@{position}")),
+            None => out.push_str(&rendering[at..end]),
+        }
+        at = end;
+    }
+    out
 }
 
 /// Convert a resolved checker type to the surface `ast::Type` shape the

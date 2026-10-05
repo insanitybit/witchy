@@ -1467,12 +1467,30 @@ fn canonicalize_callable_instances<'catalog>(
     // std call it means (`option.ok_or` / `result.map_err`) BEFORE
     // specialization, so those generic helpers are instantiated and the
     // recheck below types the synthesized nodes.
-    let (module, _, _) = typed.rewrite_into_module(|table, module| {
+    // A rewrite that changed something consumes the table with the module
+    // below; one that changed nothing leaves the checked annotation intact.
+    let mut typed = typed;
+    let try_rewritten = typed.rewrite_preserving_nodes(|table, module| {
         crate::try_context::rewrite_try_ctx_module(module, table)
     });
-    let (module, generic_instances) =
-        crate::traits::lower_for_wasm_with_specializations(module).into_parts();
-    let typed = typeck::annotate_checked(module)?;
+    let lowering = if try_rewritten {
+        crate::traits::CheckedWasmLowering::Lowered(
+            crate::traits::lower_for_wasm_with_specializations(typed.into_module()),
+        )
+    } else {
+        crate::traits::lower_checked_for_wasm(typed)
+    };
+    let (typed, generic_instances) = match lowering {
+        // The lowering is the identity: this module is the one the semantic
+        // check already accepted, so its annotation is the recheck's answer.
+        crate::traits::CheckedWasmLowering::Unchanged(typed) => {
+            (typed.accepted_as_runtime_annotation()?, std::collections::BTreeMap::new())
+        }
+        crate::traits::CheckedWasmLowering::Lowered(lowering) => {
+            let (module, generic_instances) = lowering.into_parts();
+            (typeck::annotate_checked(module)?, generic_instances)
+        }
+    };
     let mut preparation = crate::canonical_equality::PreparationSession::new(
         &typed, dictionary_catalog, generic_instances,
     ).map_err(|message| PipelineError::Type(TypeError { message }))?;
