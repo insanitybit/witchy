@@ -134,6 +134,9 @@ pub struct CanonicalCheckedSource {
     source_witness: CheckedSourceWitness,
     proper_tail_manifest: ProperTailSiteManifest,
     closure_witness: ClosureWitnessManifest,
+    // Every lambda of `typed` with its identity, from the derivation that
+    // produced `closure_witness`; `None` when that derivation was refused.
+    closure_sites: Option<Vec<crate::canonical_closure::LambdaSite>>,
     callable_witness: CanonicalCallableWitness,
     // Derived from `typed` and `callable_witness`, which never change after
     // construction; see `witchy_canonical_source::source::closed_callable_items`.
@@ -251,6 +254,12 @@ impl CanonicalCheckedSource {
     #[doc(hidden)]
     pub fn closure_witness(&self) -> &ClosureWitnessManifest {
         &self.closure_witness
+    }
+
+    /// The lambda sites the closure witness was derived with, or `None`
+    /// when the derivation was refused (and recorded as an obligation).
+    pub fn closure_sites(&self) -> Option<&[crate::canonical_closure::LambdaSite]> {
+        self.closure_sites.as_deref()
     }
 
     /// Return the exact rechecked callable signature for a final executable
@@ -1263,7 +1272,7 @@ fn attach_canonical_source(
     source_bundle_digest: [u8; 32],
     proper_tail_manifest: ProperTailSiteManifest,
     mut closure_witness: ClosureWitnessManifest,
-    closure_sites: Vec<crate::canonical_closure::LambdaSite>,
+    closure_sites: Option<Vec<crate::canonical_closure::LambdaSite>>,
     callable_witness: CanonicalCallableWitness,
     obligations: BTreeSet<CanonicalObligation>,
     dynamic_runtime_plan: Option<RuntimeTypePlan>,
@@ -1272,7 +1281,7 @@ fn attach_canonical_source(
 ) -> Result<CheckedModule, PipelineError> {
     let deferred_task_role = checked_deferred_task_role(typed.module(), runtime_catalog);
     let final_behavior = crate::task_provenance::checked_final_execution_contracts(
-        &typed, &closure_witness, &closure_sites, deferred_task_role.as_ref(),
+        &typed, &closure_witness, closure_sites.as_deref().unwrap_or_default(), deferred_task_role.as_ref(),
         &callable_witness.generic_instances);
     let mut declarations = final_behavior.declarations;
     let mut final_task_behaviors = BTreeMap::new();
@@ -1416,6 +1425,7 @@ fn attach_canonical_source(
         }),
         proper_tail_manifest,
         closure_witness,
+        closure_sites,
         callable_witness,
         closed_callable_items,
         launch_contract_payload,
@@ -1981,10 +1991,10 @@ fn finish_canonical_source(
     // and the manifest binds no lambda at all. An internal inconsistency of
     // the witness itself is not a limit and stays a type error.
     let (closure_witness, closure_sites) = match crate::canonical_closure::derive_closure_witness_with_sites(&typed_source) {
-        Ok(derived) => derived,
+        Ok((witness, sites)) => (witness, Some(sites)),
         Err(error) if error.is_canonical_obligation() => {
             obligations.insert(CanonicalObligation::ClosureWitness(error.to_string()));
-            (ClosureWitnessManifest::default(), Vec::new())
+            (ClosureWitnessManifest::default(), None)
         }
         Err(error) => {
             return Err(PipelineError::Type(TypeError { message: error.to_string() }));

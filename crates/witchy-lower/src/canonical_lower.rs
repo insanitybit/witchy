@@ -643,8 +643,17 @@ pub(crate) fn lower_typed_module_with_borrowed_views(
     // witness: the closure record is their leading parameter and every
     // `Int` capture is loaded from it at entry. Each is met again by node
     // address when its function body is lowered.
-    let sites = lambda_sites(typed)
-        .map_err(|error| CanonicalLoweringError::UnsupportedCanonicalObligation(format!("closure witness: {error}")))?;
+    // The checked source keeps the sites its closure witness was derived
+    // with; a refused derivation is rederived here for its error.
+    let derived;
+    let sites = match source.closure_sites() {
+        Some(sites) => sites,
+        None => {
+            derived = lambda_sites(typed)
+                .map_err(|error| CanonicalLoweringError::UnsupportedCanonicalObligation(format!("closure witness: {error}")))?;
+            &derived[..]
+        }
+    };
     let witnesses = source.closure_witness().entries();
     let mut lambda_names: HashMap<usize, String> = HashMap::new();
     let mut lambda_functions: Vec<LambdaFunction<'_>> = Vec::new();
