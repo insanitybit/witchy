@@ -698,8 +698,13 @@ fn lower_with(
         }
     }
 
+    // Room for the specializations the fixpoint appends: facts are keyed to
+    // node addresses, and a reallocated item vector would move every
+    // function's inline body (see `reannotate_after_mono_round`).
+    let mut items = items;
+    items.reserve(items.len() / 4 + 64);
     let __t = mono_timing_start();
-    let mut typed = crate::typeck::annotate_types_with_from_conversions(
+    let (mut typed, mut accepted) = crate::typeck::annotate_types_reporting(
         Module {
             modes: modes.clone(),
             imports: imports.clone(),
@@ -833,6 +838,15 @@ fn lower_with(
                     _ => None,
                 })
                 .collect();
+            // The walk retargets names inside existing bodies; those bodies are
+            // re-checked with the generated ones. Snapshot only when the next
+            // annotation can be incremental.
+            let bodies_before = accepted.then(|| {
+                typed.module().items.iter().filter_map(|item| match item {
+                    Item::Function(function) => Some(function.body.clone()),
+                    _ => None,
+                }).collect::<Vec<_>>()
+            });
             let __t_mono = mono_timing_start();
             let (next_memo, next_diags, generated) = typed.rewrite_preserving_nodes(
                 |table, module| {
@@ -917,7 +931,21 @@ fn lower_with(
             // Generated nodes have no facts in the current table. Consume the
             // typed owner before extending the AST, then annotate the new exact
             // module before either the next round or the final dispatch pass.
-            let mut module = typed.into_module();
+            let (mut module, previous_table, ()) = typed.rewrite_into_module(|_, _| ());
+            let mut changed = HashSet::new();
+            if let Some(bodies_before) = &bodies_before {
+                let functions = module.items.iter().filter_map(|item| match item {
+                    Item::Function(function) => Some(function),
+                    _ => None,
+                });
+                for (function, before) in functions.zip(bodies_before) {
+                    if function.body != *before {
+                        changed.insert(function.name.clone());
+                    }
+                }
+            }
+            changed.extend(generated.iter().map(|function| function.name.clone()));
+            let items_before = module.items.as_ptr();
             let generated_names = generated
                 .iter()
                 .filter(|function| {
@@ -929,6 +957,9 @@ fn lower_with(
                 .map(|function| function.name.clone())
                 .collect::<HashSet<_>>();
             module.items.extend(generated.into_iter().map(Item::Function));
+            // A reallocation moved every function's inline body block, so the
+            // previous facts no longer address this module's nodes.
+            let previous_valid = bodies_before.is_some() && module.items.as_ptr() == items_before;
             let concrete_check_error = (!generated_names.is_empty())
                 .then(|| {
                     crate::typeck::check_selected_lowered(
@@ -943,8 +974,9 @@ fn lower_with(
                 mono_diags.push(error.message.clone());
             }
             let __t = mono_timing_start();
-            typed =
-                crate::typeck::annotate_types_with_from_conversions(module, &from_conversion_fns);
+            (typed, accepted) = crate::typeck::reannotate_after_mono_round(
+                module, previous_table, previous_valid, &changed, &from_conversion_fns,
+            );
             if let Some(__t) = __t {
                 eprintln!(
                     "annotate round {round}: items={} took={:?}",

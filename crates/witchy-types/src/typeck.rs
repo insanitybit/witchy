@@ -13349,23 +13349,35 @@ fn annotate_with_conversion_fns(
 /// the module does not check: best-effort annotation never reports an error.
 #[track_caller]
 fn best_effort_table(module: &Module, from_conversion_fns: Option<&HashSet<String>>) -> TypeTable {
+    best_effort_table_selected(module, None, from_conversion_fns).0
+}
+
+/// The best-effort table over `selected` bodies (every body when `None`),
+/// and whether the checker accepted the module. A rejected module has an
+/// empty table.
+#[track_caller]
+fn best_effort_table_selected(
+    module: &Module,
+    selected: Option<&HashSet<String>>,
+    from_conversion_fns: Option<&HashSet<String>>,
+) -> (TypeTable, bool) {
     match run_check_selected(
         module,
         true,
-        None,
+        selected,
         None,
         None,
         from_conversion_fns,
         false,
     ) {
-        Ok(Some(table)) => table,
+        Ok(Some(table)) => (table, true),
         Err(e) => {
             if std::env::var_os("WITCHY_DEBUG_ANNOTATE").is_some() {
                 eprintln!("annotate: checker error on lowered module: {e}");
             }
-            TypeTable::default()
+            (TypeTable::default(), false)
         }
-        _ => TypeTable::default(),
+        _ => (TypeTable::default(), false),
     }
 }
 
@@ -13391,6 +13403,201 @@ pub(crate) fn annotate_types_with_from_conversions(
         access_facts: None,
         view_facts: None,
         checked_as: None,
+    }
+}
+
+/// `annotate_types_with_from_conversions`, and whether the checker accepted
+/// the module; see [`reannotate_after_mono_round`].
+#[track_caller]
+pub(crate) fn annotate_types_reporting(
+    module: Module,
+    from_conversion_fns: &HashSet<String>,
+) -> (TypedModule, bool) {
+    let (table, accepted) = best_effort_table_selected(&module, None, Some(from_conversion_fns));
+    (typed_module_with_table(module, table), accepted)
+}
+
+fn typed_module_with_table(module: Module, table: TypeTable) -> TypedModule {
+    TypedModule {
+        module: Box::new(module),
+        table,
+        loan_facts: None,
+        access_facts: None,
+        view_facts: None,
+        checked_as: None,
+    }
+}
+
+/// Re-annotate a trait-lowering intermediate after one monomorphization
+/// round, checking only the bodies the round could have changed.
+///
+/// `previous` is the best-effort table of this exact module before the round
+/// (`previous_accepted`: the checker accepted it), keyed to the same node
+/// allocations. The round appended new functions and, through
+/// `rewrite_preserving_nodes`, retargeted names inside some existing bodies
+/// without allocating; `changed` names both. Every other body is identical,
+/// is checked against the same declarations plus the appended ones, and so
+/// has the facts `previous` already holds. The checker therefore runs over
+/// `changed` bodies only and their facts replace the old ones.
+///
+/// Any doubt falls back to the whole-module annotation: a rejected previous
+/// module (its table is empty, not partial), a rejected selected check (the
+/// whole-module check rejects the same body and yields an empty table), or
+/// `WITCHY_REANNOTATE_UNCHANGED`. `WITCHY_VERIFY_INCREMENTAL_ANNOTATE=1`
+/// computes both tables and panics when they differ.
+#[track_caller]
+pub(crate) fn reannotate_after_mono_round(
+    module: Module,
+    previous: TypeTable,
+    previous_accepted: bool,
+    changed: &HashSet<String>,
+    from_conversion_fns: &HashSet<String>,
+) -> (TypedModule, bool) {
+    static VERIFY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let verify = *VERIFY.get_or_init(|| std::env::var_os("WITCHY_VERIFY_INCREMENTAL_ANNOTATE").is_some());
+    if !previous_accepted || std::env::var_os("WITCHY_REANNOTATE_UNCHANGED").is_some() {
+        return annotate_types_reporting(module, from_conversion_fns);
+    }
+    let selected = incremental_annotation_selection(&module, changed);
+    let (fresh, accepted) = best_effort_table_selected(&module, Some(&selected), Some(from_conversion_fns));
+    if !accepted {
+        return annotate_types_reporting(module, from_conversion_fns);
+    }
+    let mut table = previous;
+    for item in &module.items {
+        if let Item::Function(function) = item
+            && selected.contains(&function.name)
+        {
+            table.forget_expression_facts(&function.body);
+        }
+    }
+    table.absorb(fresh);
+    if verify {
+        let (full, full_accepted) = best_effort_table_selected(&module, None, Some(from_conversion_fns));
+        if full != table {
+            for item in &module.items {
+                let Item::Function(function) = item else { continue };
+                let mut missing = 0;
+                let mut differing = 0;
+                let _ = witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression: &Expr| -> Result<(), ()> {
+                    let key = expression as *const Expr as usize;
+                    match (table.types.get(&key), full.types.get(&key)) {
+                        (None, Some(ty)) => {
+                            missing += 1;
+                            let shown = format!("{expression:?}");
+                            eprintln!("  missing {ty} at {}", &shown[..shown.len().min(240)]);
+                        }
+                        (Some(_), None) => missing += 1,
+                        (Some(a), Some(b)) if a != b => differing += 1,
+                        _ => {}
+                    }
+                    Ok(())
+                });
+                if missing + differing > 0 {
+                    eprintln!(
+                        "incremental annotate: `{}` selected={} missing={missing} differing={differing}",
+                        function.name, selected.contains(&function.name),
+                    );
+                }
+            }
+        }
+        assert!(
+            full_accepted && full == table,
+            "incremental re-annotation diverged from the whole-module table (accepted={full_accepted}, \
+             changed={}, types {} vs {}, local_callees {} vs {}, functions {} vs {})",
+            selected.len(), table.types.len(), full.types.len(),
+            table.local_callees.len(), full.local_callees.len(),
+            table.functions.len(), full.functions.len(),
+        );
+    }
+    (typed_module_with_table(module, table), true)
+}
+
+/// The bodies a selected re-annotation must check: `changed`, plus every
+/// function they reach (through calls and function values) whose signature
+/// the checker resolves only from its body -- an unannotated result or
+/// parameter is a fresh variable until that body is checked. A whole-module
+/// run skips bounded templates' bodies, so the selection never includes one.
+fn incremental_annotation_selection(module: &Module, changed: &HashSet<String>) -> HashSet<String> {
+    let functions = module.items.iter().filter_map(|item| match item {
+        Item::Function(function) if function.bounds.is_empty() => Some((function.name.as_str(), function)),
+        _ => None,
+    }).collect::<HashMap<_, _>>();
+    let body_inferred = |function: &Function| {
+        function.ret.is_none() || function.params.iter().any(|parameter| parameter.ty.is_none())
+    };
+    let mut selected = HashSet::new();
+    let mut pending = changed.iter().filter_map(|name| functions.get(name.as_str()).copied()).collect::<Vec<_>>();
+    while let Some(function) = pending.pop() {
+        if !selected.insert(function.name.clone()) {
+            continue;
+        }
+        let _ = witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression: &Expr| -> Result<(), ()> {
+            if let Expr::Call { name, .. } | Expr::Var(name) = expression
+                && let Some(callee) = functions.get(name.as_str())
+                && body_inferred(callee)
+                && !selected.contains(&callee.name)
+            {
+                pending.push(callee);
+            }
+            Ok(())
+        });
+    }
+    selected
+}
+
+impl TypeTable {
+    /// Drop every expression-keyed fact under `block`, whose body is about
+    /// to be re-checked.
+    fn forget_expression_facts(&mut self, block: &Block) {
+        let _ = witchy_syntax::ast::visit::visit_block(block, &mut |expression: &Expr| -> Result<(), ()> {
+            let key = expression as *const Expr as usize;
+            self.types.remove(&key);
+            self.affine_expression_types.remove(&key);
+            self.compiler_owned_materializations.remove(&key);
+            self.declared_function_values.remove(&key);
+            self.view_types.remove(&key);
+            self.local_callees.remove(&key);
+            self.non_completing.remove(&key);
+            self.existential_packs.remove(&key);
+            self.existential_upcasts.remove(&key);
+            self.record_projections.remove(&key);
+            Ok(())
+        });
+    }
+
+    /// Take every fact of `fresh`, a selected check of the same module.
+    /// Signatures resolved there win; a declaration it left unresolved (its
+    /// body was not checked) keeps the previous resolution.
+    fn absorb(&mut self, fresh: TypeTable) {
+        let TypeTable {
+            types,
+            checked_storage_declared_types,
+            affine_expression_types,
+            compiler_owned_materializations,
+            declared_function_values,
+            view_types,
+            local_callees,
+            non_completing,
+            functions,
+            existential_packs,
+            existential_upcasts,
+            record_projections,
+            region_promotions,
+        } = fresh;
+        self.types.extend(types);
+        self.checked_storage_declared_types.extend(checked_storage_declared_types);
+        self.affine_expression_types.extend(affine_expression_types);
+        self.compiler_owned_materializations.extend(compiler_owned_materializations);
+        self.declared_function_values.extend(declared_function_values);
+        self.view_types.extend(view_types);
+        self.local_callees.extend(local_callees);
+        self.non_completing.extend(non_completing);
+        self.functions.extend(functions);
+        self.existential_packs.extend(existential_packs);
+        self.existential_upcasts.extend(existential_upcasts);
+        self.record_projections.extend(record_projections);
+        self.region_promotions.extend(region_promotions);
     }
 }
 
