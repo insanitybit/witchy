@@ -77,8 +77,11 @@ const SERIALIZATION_VERSION: u32 = 2;
 const DOMAIN: &[u8] = b"witchy/canonical-safewir/function-check/v2";
 const MAX_ENTRIES: usize = 1 << 16;
 /// Verdicts cheaper than this are not worth a file: re-checking them costs
-/// less than the open would.
-pub(super) const PERSIST_THRESHOLD: Duration = Duration::from_millis(10);
+/// less than the read would. A store hit costs tens of microseconds; a
+/// typical small function checks in 0.2-1 ms, and every process that links
+/// it would otherwise pay that again (measured: 50 µs gains nothing over
+/// 200 µs; 10 ms left almost every standard-library function rechecked).
+pub(super) const PERSIST_THRESHOLD: Duration = Duration::from_micros(200);
 
 /// Functions at least this many blocks long are checked under a [`claim`].
 /// Small functions check faster than a lock round trip.
