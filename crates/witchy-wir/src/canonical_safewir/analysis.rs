@@ -105,25 +105,23 @@ impl Analysis for BoundsGuardRedundancy {
 /// keyed by its block and operation index, and whether it repeats an earlier
 /// guard of the same comparison. A syntactic fact of the body alone.
 pub(super) fn redundant_bounds_guards(function: &Function) -> BTreeMap<(BlockId, usize), bool> {
-    {
-        let mut facts = BTreeMap::new();
-        for block in &function.blocks {
-            let mut comparisons = BTreeMap::new();
-            let mut guarded = BTreeSet::new();
-            for (index, operation) in block.operations.iter().enumerate() {
-                match operation {
-                    Operation::Compare { destination, operator, left, right } => {
-                        comparisons.insert(*destination, (*operator, *left, *right));
-                    }
-                    Operation::Guard { condition, kind: GuardKind::Bounds } => {
-                        let redundant = comparisons.get(condition)
-                            .is_some_and(|comparison| !guarded.insert(*comparison));
-                        facts.insert((block.id, index), redundant);
-                    }
-                    _ => {}
+    let mut facts = BTreeMap::new();
+    for block in &function.blocks {
+        let mut comparisons = BTreeMap::new();
+        let mut guarded = BTreeSet::new();
+        for (index, operation) in block.operations.iter().enumerate() {
+            match operation {
+                Operation::Compare { destination, operator, left, right } => {
+                    comparisons.insert(*destination, (*operator, *left, *right));
                 }
+                Operation::Guard { condition, kind: GuardKind::Bounds } => {
+                    let redundant = comparisons.get(condition)
+                        .is_some_and(|comparison| !guarded.insert(*comparison));
+                    facts.insert((block.id, index), redundant);
+                }
+                _ => {}
             }
         }
-        facts
     }
+    facts
 }

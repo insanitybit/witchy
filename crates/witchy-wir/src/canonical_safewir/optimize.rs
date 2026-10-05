@@ -224,12 +224,16 @@ fn rewrite(
 pub fn remove_redundant_bounds_guards_before_check(
     lowered: &CanonicalModule<LoweredCandidate>,
 ) -> Option<CanonicalModule<LoweredCandidate>> {
+    // Copy the module only once some guard is known to go.
+    let redundant = lowered.functions.iter()
+        .map(super::analysis::redundant_bounds_guards)
+        .collect::<Vec<_>>();
+    if !redundant.iter().any(|facts| facts.values().any(|&redundant| redundant)) {
+        return None;
+    }
     let mut candidate = lowered.clone();
-    let mut changed = false;
-    for function in &mut candidate.functions {
-        let redundant = super::analysis::redundant_bounds_guards(function);
+    for (function, redundant) in candidate.functions.iter_mut().zip(&redundant) {
         for block in &mut function.blocks {
-            let before_len = block.operations.len();
             let block_id = block.id;
             let mut operation_index = 0;
             block.operations.retain(|_| {
@@ -237,11 +241,7 @@ pub fn remove_redundant_bounds_guards_before_check(
                 operation_index += 1;
                 keep
             });
-            changed |= block.operations.len() != before_len;
         }
-    }
-    if !changed {
-        return None;
     }
     check_rewrite_relation_between(lowered, &candidate, false).ok()?;
     Some(candidate)

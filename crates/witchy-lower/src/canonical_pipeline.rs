@@ -150,11 +150,13 @@ fn validate_guard_free_first(
     source: &CanonicalCheckedSource,
 ) -> Option<ValidatedSafeWir> {
     let optimized = remove_redundant_bounds_guards_before_check(candidate)?;
-    let validated = check_initial_with_witness(optimized, &source.view())
-        .map_err(|error| format!("{error:?}"))
-        .and_then(|checked| validate_final(checked, &source.view()).map_err(|error| format!("{error:?}")));
+    let checked = check_initial_with_witness(optimized, &source.view());
+    if let Err(error) = &checked {
+        if std::env::var_os("WIRDIAG").is_some() { eprintln!("WIRBAIL guard-free-first: {error:?}"); }
+    }
+    let validated = validate_final(checked.ok()?, &source.view());
     if let Err(error) = &validated {
-        if std::env::var_os("WIRDIAG").is_some() { eprintln!("WIRBAIL guard-free-first: {error}"); }
+        if std::env::var_os("WIRDIAG").is_some() { eprintln!("WIRBAIL guard-free-first-final: {error:?}"); }
     }
     validated.ok()
 }
