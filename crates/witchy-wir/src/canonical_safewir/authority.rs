@@ -1150,7 +1150,7 @@ pub mod self_checks {
         let named = |name: &str| Type::Named(name.into(), vec![]);
         let definition = |name: &str, fields: Vec<Type>| {
             let mut definition = ScalarAggregateShape {
-                name: name.into(), fields, variants: vec![], tagged: false, packed: false,
+                name: name.into(), fields: fields.into(), variants: vec![].into(), tagged: false, packed: false,
             }.packed_view();
             definition.packed = false;
             definition
@@ -1180,7 +1180,7 @@ pub mod self_checks {
         use witchy_canonical_source::aggregates::ScalarAggregateShape;
         let named = |name: &str| Type::Named(name.into(), vec![]);
         let mut definition = ScalarAggregateShape {
-            name: "Box".into(), fields: vec![named("a")], variants: vec![],
+            name: "Box".into(), fields: vec![named("a")].into(), variants: vec![].into(),
             tagged: false, packed: false,
         }.packed_view();
         definition.packed = false;

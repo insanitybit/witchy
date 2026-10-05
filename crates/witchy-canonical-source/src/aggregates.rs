@@ -31,10 +31,11 @@ pub struct ScalarVariant {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScalarAggregateShape {
     /// The nominal name the layout resolver sees (`Point`, `Option`).
-    pub name: String,
+    pub name: std::sync::Arc<str>,
     /// Every slot's scalar type; slot 0 is the tag of a tagged shape.
-    pub fields: Vec<Type>,
-    pub variants: Vec<ScalarVariant>,
+    /// Shared, so a memoized shape clones without copying.
+    pub fields: std::sync::Arc<[Type]>,
+    pub variants: std::sync::Arc<[ScalarVariant]>,
     /// A sum type carries a tag; a one-variant record does not.
     pub tagged: bool,
     /// A `packed` one-variant record is an inline aggregate rather than a
@@ -51,13 +52,13 @@ impl ScalarAggregateShape {
     /// for this shape.
     pub fn packed_view(&self) -> TypeDef {
         TypeDef {
-            name: self.name.clone(),
+            name: self.name.to_string(),
             must_consume: false,
             params: Vec::new(),
             variants: vec![Variant {
-                name: self.name.clone(),
+                name: self.name.to_string(),
                 line: 0,
-                fields: self.fields.clone(),
+                fields: self.fields.to_vec(),
                 field_names: (0..self.fields.len()).map(|index| format!("slot{index}")).collect(),
                 field_lines: vec![0; self.fields.len()],
             }],
@@ -848,7 +849,7 @@ fn view_aggregate_plan_at(
     if shape.packed { return None; }
     let mut carriers = 0usize;
     let mut fields = Vec::with_capacity(shape.fields.len());
-    for field in &shape.fields {
+    for field in shape.fields.iter() {
         match contains_stored_view(field, definitions)? {
             false => fields.push(ViewCarrierFieldPlan::Plain),
             true => {
@@ -1095,9 +1096,9 @@ fn shape_from_instantiation(
     if definition.variants.len() == 1 {
         let variant = &definition.variants[0];
         return Some(ScalarAggregateShape {
-            name,
-            fields: variant.fields.iter().map(|field| substitute_type(field, &substitutions)).collect::<Option<Vec<_>>>()?,
-            variants: vec![ScalarVariant { name: variant.name.clone(), first_field: 0, arity: variant.fields.len() }],
+            name: name.into(),
+            fields: variant.fields.iter().map(|field| substitute_type(field, &substitutions)).collect::<Option<Vec<_>>>()?.into(),
+            variants: vec![ScalarVariant { name: variant.name.clone(), first_field: 0, arity: variant.fields.len() }].into(),
             tagged: false,
             packed: definition.packed,
         });
@@ -1108,7 +1109,7 @@ fn shape_from_instantiation(
         variants.push(ScalarVariant { name: variant.name.clone(), first_field: fields.len(), arity: variant.fields.len() });
         fields.extend(variant.fields.iter().map(|field| substitute_type(field, &substitutions)).collect::<Option<Vec<_>>>()?);
     }
-    Some(ScalarAggregateShape { name, fields, variants, tagged: true, packed: false })
+    Some(ScalarAggregateShape { name: name.into(), fields: fields.into(), variants: variants.into(), tagged: true, packed: false })
 }
 
 #[cfg(test)]
@@ -1116,7 +1117,7 @@ mod shape_memo_tests {
     use super::*;
 
     fn record(name: &str, fields: Vec<Type>) -> TypeDef {
-        ScalarAggregateShape { name: name.into(), fields, variants: Vec::new(), tagged: false, packed: false }
+        ScalarAggregateShape { name: name.into(), fields: fields.into(), variants: Vec::new().into(), tagged: false, packed: false }
             .packed_view()
     }
 
@@ -1165,7 +1166,7 @@ mod recursive_shape_tests {
 
     fn definition(name: &str, fields: Vec<Type>, packed: bool) -> TypeDef {
         let mut definition = ScalarAggregateShape {
-            name: name.into(), fields, variants: Vec::new(), tagged: false, packed,
+            name: name.into(), fields: fields.into(), variants: Vec::new().into(), tagged: false, packed,
         }.packed_view();
         definition.packed = packed;
         definition
@@ -1329,10 +1330,10 @@ mod recursive_shape_tests {
         ]);
         for unit in [named("Nil"), named("Unit"), Type::Tuple(Vec::new())] {
             let applied = Type::Named("Payload".into(), vec![unit.clone()]);
-            assert_eq!(scalar_aggregate_shape(&applied, &definitions).unwrap().fields,
+            assert_eq!(scalar_aggregate_shape(&applied, &definitions).unwrap().fields.to_vec(),
                 vec![unit.clone(), named("Int")]);
             let option = Type::Named("Option".into(), vec![unit.clone()]);
-            assert_eq!(scalar_aggregate_shape(&option, &definitions).unwrap().fields,
+            assert_eq!(scalar_aggregate_shape(&option, &definitions).unwrap().fields.to_vec(),
                 vec![named("Int"), unit.clone()]);
             assert!(aggregate_field_shape_well_formed(&unit, &definitions));
         }
@@ -1348,7 +1349,7 @@ mod recursive_shape_tests {
             ("Option".into(), option_definition()),
         ]);
         let shape = scalar_aggregate_shape(&named("Tree"), &definitions).unwrap();
-        assert_eq!(shape.fields, tree.variants[0].fields);
+        assert_eq!(shape.fields.to_vec(), tree.variants[0].fields);
         assert!(aggregate_field_shape_well_formed(&Type::Named("Option".into(), vec![named("Tree")]), &definitions));
         assert!(aggregate_field_shape_well_formed(&named("Tree"), &definitions));
 
@@ -1467,7 +1468,7 @@ mod recursive_shape_tests {
         let definitions = BTreeMap::from([("Pair".into(), pair), ("Node".into(), node)]);
         let pair = Type::Named("Pair".into(), vec![named("Int"), named("String")]);
         let shape = scalar_aggregate_shape(&pair, &definitions).expect("concrete Pair shape");
-        assert_eq!(shape.fields, vec![named("Int"), named("String")]);
+        assert_eq!(shape.fields.to_vec(), vec![named("Int"), named("String")]);
         assert!(scalar_aggregate_shape(&Type::Named("Node".into(), vec![named("Int")]), &definitions).is_some());
     }
 
@@ -1515,9 +1516,9 @@ mod recursive_shape_tests {
         ]);
         let cursor = applied("model.Cursor", named("Int"));
         let signature = thunk(applied("model.Step", named("Int")));
-        assert_eq!(scalar_aggregate_shape(&cursor, &definitions).unwrap().fields, vec![signature.clone()]);
+        assert_eq!(scalar_aggregate_shape(&cursor, &definitions).unwrap().fields.to_vec(), vec![signature.clone()]);
         let holder = applied("model.Holder", signature.clone());
-        assert_eq!(scalar_aggregate_shape(&holder, &definitions).unwrap().fields, vec![signature.clone()]);
+        assert_eq!(scalar_aggregate_shape(&holder, &definitions).unwrap().fields.to_vec(), vec![signature.clone()]);
         assert_eq!(concrete_aggregate_identity(&holder, &definitions), Some(holder.clone()));
         assert!(aggregate_field_shape_well_formed(&signature, &definitions));
         assert!(aggregate_field_shape_well_formed(&thunk(named("Nil")), &definitions));
@@ -1525,7 +1526,7 @@ mod recursive_shape_tests {
         let borrowing = Type::Fn(vec![cursor], Box::new(named("Int")), vec![Convention::Borrow], CallableQualifiers::default());
         for callable in [&consuming, &borrowing] {
             let generic = applied("model.Holder", callable.clone());
-            assert_eq!(scalar_aggregate_shape(&generic, &definitions).unwrap().fields, vec![callable.clone()]);
+            assert_eq!(scalar_aggregate_shape(&generic, &definitions).unwrap().fields.to_vec(), vec![callable.clone()]);
             assert_eq!(concrete_aggregate_identity(&generic, &definitions), Some(generic));
         }
         assert_ne!(aggregate_key(&applied("model.Holder", consuming)), aggregate_key(&applied("model.Holder", borrowing)));
@@ -1579,9 +1580,9 @@ fn scalar_aggregate_shape_uncached(
             return None;
         }
         return Some(ScalarAggregateShape {
-            name: render_type(ty)?,
-            fields: items.clone(),
-            variants: vec![ScalarVariant { name: String::new(), first_field: 0, arity: items.len() }],
+            name: render_type(ty)?.into(),
+            fields: items.clone().into(),
+            variants: vec![ScalarVariant { name: String::new(), first_field: 0, arity: items.len() }].into(),
             tagged: false,
             packed: false,
         });
@@ -1611,9 +1612,9 @@ fn scalar_aggregate_shape_uncached(
             // The synthetic head is the physical aggregate identity.  Two
             // source unions with the same tag spelling but different payload
             // schema must never share a layout.
-            name: name.clone(),
-            fields,
-            variants: shape_variants,
+            name: name.as_str().into(),
+            fields: fields.into(),
+            variants: shape_variants.into(),
             tagged: true,
             packed: false,
         });

@@ -268,7 +268,7 @@ impl CarrierElement {
                             Some(Self::Sum { name: name.clone(), arguments, variants })
                         } else {
                             if shape.fields.is_empty() { return None; }
-                            let [variant] = shape.variants.as_slice() else { return None };
+                            let [variant] = &*shape.variants else { return None };
                             let field_names = checked_variant_field_names(name, 0, variant, definitions)?;
                             let fields = shape.fields.iter().map(|field| {
                                 Self::from_checked_type_with_definitions_at(field, definitions, depth + 1, budget, true)

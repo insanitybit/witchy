@@ -71,7 +71,7 @@ impl AggregateOwnerKey<'_> {
             encoder.byte(u8::from(*owner_field));
         }
         encoder.count(self.shape.variants.len())?;
-        for variant in &self.shape.variants {
+        for variant in self.shape.variants.iter() {
             encoder.text(&variant.name)?;
             encoder.count(variant.first_field)?;
             encoder.count(variant.arity)?;

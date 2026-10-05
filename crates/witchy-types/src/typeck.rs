@@ -2988,7 +2988,7 @@ impl Checker {
                 let shape = witchy_canonical_source::aggregates::scalar_aggregate_shape(
                     &source, &self.canonical_definitions,
                 )?;
-                let (success_name, failure_name) = match shape.name.as_str() {
+                let (success_name, failure_name) = match &*shape.name {
                     "Option" => ("Some", "None"),
                     "Result" => ("Ok", "Err"),
                     _ => return None,

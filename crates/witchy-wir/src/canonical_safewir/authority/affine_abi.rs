@@ -257,7 +257,7 @@ fn bind_owner_environments<S: ModuleStage>(
         let Some(LayoutKind::PackedRecord { fields }) = layouts.get(physical).map(|descriptor| descriptor.kind())
         else { return Err(refuse()) };
         if family.constructors.len() != shape.variants.len() { return Err(refuse()); }
-        for (constructor, variant) in family.constructors.iter().zip(&shape.variants) {
+        for (constructor, variant) in family.constructors.iter().zip(shape.variants.iter()) {
             if constructor.captures.len() != variant.arity { return Err(refuse()); }
             if proofs.owner_captures.insert(constructor.id, constructor.captures.iter()
                 .map(|capture| (capture.transfer, capture.value_type)).collect()).is_some() { return Err(refuse()); }

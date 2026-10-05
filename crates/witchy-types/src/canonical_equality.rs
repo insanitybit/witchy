@@ -380,7 +380,7 @@ impl Preparation<'_> {
                 let shape = scalar_aggregate_shape(ty, &self.definitions)
                     .ok_or("structural equality has no finite checked nominal shape")?;
                 let mut arms = Vec::new();
-                for variant in &shape.variants {
+                for variant in shape.variants.iter() {
                     let mut terms = Vec::new();
                     for (index, field) in shape.fields[variant.first_field..variant.first_field + variant.arity].iter().enumerate() {
                         terms.push(self.equal(field, var(&format!("l{index}")), var(&format!("r{index}")))?);

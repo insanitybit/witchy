@@ -570,7 +570,7 @@ impl LayoutProjection {
                             | StoragePlan::AggregateView(_, _) | StoragePlan::AuthenticatedPlace(_)) =>
             {
                 let shape = scalar_aggregate_shape(ty, &self.definitions).expect("checked above");
-                for field in &shape.fields {
+                for field in shape.fields.iter() {
                     if !layout_field_is_inline(field, &self.definitions) {
                         self.visit_type(field)?;
                     }
@@ -1245,7 +1245,7 @@ fn intern_v1_layout_fields(
         // interner's type resolver cannot place a reference inside a record.
         let mut children = Vec::with_capacity(shape.fields.len());
         let nullable_fields = aggregate_uses_nullable_owned_fields(ty, definitions);
-        for field in &shape.fields {
+        for field in shape.fields.iter() {
             let child = if let Some(scalar) = scalar_kind_of(field) {
                 interner
                     .intern_scalar(scalar)
@@ -1633,7 +1633,7 @@ pub mod self_checks {
 
     fn heap_definition(name: &str, fields: Vec<Type>) -> witchy_syntax::ast::TypeDef {
         let mut definition = witchy_canonical_source::aggregates::ScalarAggregateShape {
-            name: name.into(), fields, variants: Vec::new(), tagged: false, packed: false,
+            name: name.into(), fields: fields.into(), variants: Vec::new().into(), tagged: false, packed: false,
         }.packed_view();
         definition.packed = false;
         definition

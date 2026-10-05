@@ -3824,7 +3824,7 @@ fn canonical_region_packed_descriptor(
     }
     let descriptor = RegionPackedLayoutDescriptor {
         record: record.clone(),
-        fields: shape.fields.clone(),
+        fields: shape.fields.to_vec(),
     };
     let layout = packed_scalar_layout(&descriptor.fields, layout_bundle, layouts)?;
     let actual = layouts.get(layout).ok_or(CanonicalLoweringError::MissingLayout(
@@ -4838,7 +4838,7 @@ struct SharedOperationFacts {
 struct ScalarizedRecord {
     source_type: Type,
     name: String,
-    field_types: Vec<Type>,
+    field_types: std::sync::Arc<[Type]>,
     field_names: Vec<String>,
     lanes: Vec<String>,
 }
@@ -6383,7 +6383,7 @@ impl FunctionLowerer<'_> {
         if variant.field_names.len() != args.len() { return Ok(false) }
         let field_names = variant.field_names.clone();
         let mut values = Vec::with_capacity(args.len());
-        for (arg, field_type) in args.iter().zip(&shape.fields) {
+        for (arg, field_type) in args.iter().zip(shape.fields.iter()) {
             let value = self.lower_expr(arg)?;
             // A constructor normally creates a separate owned field edge.
             // Preserve that boundary when an argument already names storage;
@@ -13077,9 +13077,9 @@ impl FunctionLowerer<'_> {
     ) -> Result<(), CanonicalLoweringError> {
         let left_type = self.expression_storage_type(left)?;
         let shape = scalar_aggregate_shape(&left_type, self.definitions)
-            .filter(|shape| matches!(shape.name.as_str(), "Option" | "Result"))
+            .filter(|shape| matches!(&*shape.name, "Option" | "Result"))
             .ok_or(CanonicalLoweringError::UnsupportedExpression("coalesce operand"))?;
-        let success_name = if shape.name == "Option" { "Some" } else { "Ok" };
+        let success_name = if &*shape.name == "Option" { "Some" } else { "Ok" };
         let (success_index, success) = shape.variant(success_name)
             .ok_or(CanonicalLoweringError::UnsupportedExpression("coalesce success variant"))?;
         if success.arity != 1 {
@@ -13137,7 +13137,7 @@ impl FunctionLowerer<'_> {
         self.bindings = outer;
         self.current = fallback_block;
         if affine_result {
-            let failure_name = if shape.name == "Option" { "None" } else { "Err" };
+            let failure_name = if &*shape.name == "Option" { "None" } else { "Err" };
             let (_, failure) = shape.variant(failure_name)
                 .ok_or(CanonicalLoweringError::UnsupportedExpression("coalesce failure variant"))?;
             let pattern = Pattern::Ctor {
@@ -13157,9 +13157,9 @@ impl FunctionLowerer<'_> {
     fn lower_coalesce(&mut self, left: &Expr, right: &Expr) -> Result<ValueId, CanonicalLoweringError> {
         let left_type = self.expression_storage_type(left)?;
         let shape = scalar_aggregate_shape(&left_type, self.definitions)
-            .filter(|shape| matches!(shape.name.as_str(), "Option" | "Result"))
+            .filter(|shape| matches!(&*shape.name, "Option" | "Result"))
             .ok_or(CanonicalLoweringError::UnsupportedExpression("coalesce operand"))?;
-        let success_name = if shape.name == "Option" { "Some" } else { "Ok" };
+        let success_name = if &*shape.name == "Option" { "Some" } else { "Ok" };
         let (success_index, success) = shape.variant(success_name)
             .ok_or(CanonicalLoweringError::UnsupportedExpression("coalesce success variant"))?;
         if success.arity != 1 {
@@ -13182,7 +13182,7 @@ impl FunctionLowerer<'_> {
             &shape.fields[success_field], self.definitions,
         ).is_some();
         let consuming_patterns = if affine_result {
-            let failure_name = if shape.name == "Option" { "None" } else { "Err" };
+            let failure_name = if &*shape.name == "Option" { "None" } else { "Err" };
             let (_, failure) = shape.variant(failure_name)
                 .ok_or(CanonicalLoweringError::UnsupportedExpression("coalesce failure variant"))?;
             // These are the operator's two checked variant decisions, not a
@@ -13235,7 +13235,7 @@ impl FunctionLowerer<'_> {
         ).is_some() || StoragePlan::classify(&inner_type, self.definitions, |_| Some(0))
             .requires_affine_owner_token();
         let shape = scalar_aggregate_shape(&inner_type, self.definitions)
-            .filter(|shape| matches!(shape.name.as_str(), "Option" | "Result"))
+            .filter(|shape| matches!(&*shape.name, "Option" | "Result"))
             .ok_or(CanonicalLoweringError::UnsupportedExpression("try operand"))?;
         let result_type = self.result_type.clone().ok_or(
             CanonicalLoweringError::UnsupportedExpression("try outside a result-returning function"),
@@ -13243,7 +13243,7 @@ impl FunctionLowerer<'_> {
         let failure_shape = scalar_aggregate_shape(&result_type, self.definitions)
             .filter(|failure| failure.name == shape.name)
             .ok_or(CanonicalLoweringError::UnsupportedExpression("try in a function without a matching result"))?;
-        let (success_name, failure_name) = if shape.name == "Result" { ("Ok", "Err") } else { ("Some", "None") };
+        let (success_name, failure_name) = if &*shape.name == "Result" { ("Ok", "Err") } else { ("Some", "None") };
         let (success_index, success) = shape.variant(success_name)
             .map(|(index, variant)| (index, variant.clone()))
             .ok_or_else(|| CanonicalLoweringError::MissingBinding(success_name.to_owned()))?;
@@ -13788,7 +13788,7 @@ impl FunctionLowerer<'_> {
             _ if scalar_aggregate_shape(ty, self.definitions).is_some() => {
                 let shape = scalar_aggregate_shape(ty, self.definitions).expect("checked above");
                 let mut slots = Vec::with_capacity(shape.fields.len());
-                for field in &shape.fields {
+                for field in shape.fields.iter() {
                     slots.push(self.push_empty_value(field)?);
                 }
                 self.lower_aggregate_for_source(ty, &shape, 0, slots)
@@ -16844,7 +16844,7 @@ impl FunctionLowerer<'_> {
                 && scalar_aggregate_shape(&left_source, self.definitions).is_some_and(|shape| {
                     shape.tagged && !shape.packed && !shape.variants.is_empty()
                         && shape.variants.iter().all(|variant| variant.arity == 0)
-                        && shape.fields == [Type::Named("Int".into(), Vec::new())]
+                        && *shape.fields == [Type::Named("Int".into(), Vec::new())]
                 });
             if nullary_enum {
                 let left = self.lower_expr(left)?;
@@ -21260,7 +21260,7 @@ fn aggregate_layout_for_source(
 ) -> Result<witchy_wir::layout::LayoutId, CanonicalLoweringError> {
     let checked_shape = scalar_aggregate_shape(source, definitions)
         .ok_or_else(|| CanonicalLoweringError::UnsupportedType(source.clone()))?;
-    if checked_shape.fields != expected_fields {
+    if *checked_shape.fields != *expected_fields {
         return Err(CanonicalLoweringError::UnsupportedType(source.clone()));
     }
     if let Ok(nominal) = crate::canonical_layouts::recursive_nominal_layout_id_for_shape(source, definitions)
@@ -21712,7 +21712,7 @@ fn collect_render_payloads(
     }
     let Some(shape) = scalar_aggregate_shape(ty, definitions) else { return };
     let tuple = matches!(ty, Type::Tuple(_));
-    for variant in &shape.variants {
+    for variant in shape.variants.iter() {
         if tuple {
             payloads.insert(b"(".to_vec());
         } else if variant.arity == 0 {

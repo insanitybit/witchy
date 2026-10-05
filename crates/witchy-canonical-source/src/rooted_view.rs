@@ -68,11 +68,11 @@ impl GraphRootPlan {
         bytes.extend_from_slice(&self.graph.source_key());
         let shape = self.graph.shape();
         bytes.extend_from_slice(&u32::try_from(shape.fields.len()).ok()?.to_le_bytes());
-        for field in &shape.fields {
+        for field in shape.fields.iter() {
             bytes.extend_from_slice(&SourceTypeKey { source: field }.digest()?);
         }
         bytes.extend_from_slice(&u32::try_from(shape.variants.len()).ok()?.to_le_bytes());
-        for variant in &shape.variants {
+        for variant in shape.variants.iter() {
             bytes.extend_from_slice(&u32::try_from(variant.name.len()).ok()?.to_le_bytes());
             bytes.extend_from_slice(variant.name.as_bytes());
             bytes.extend_from_slice(&u32::try_from(variant.first_field).ok()?.to_le_bytes());

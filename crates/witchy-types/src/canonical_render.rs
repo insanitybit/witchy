@@ -188,7 +188,7 @@ impl Preparation {
                 let shape = scalar_aggregate_shape(ty, &self.definitions)
                     .ok_or("structural rendering has no finite checked nominal shape")?;
                 let mut arms = Vec::new();
-                for variant in &shape.variants {
+                for variant in shape.variants.iter() {
                     let anonymous = witchy_syntax::linker::is_generated_anon_name(&variant.name);
                     let field_names = if anonymous {
                         let declaration = self.definitions.get(name)

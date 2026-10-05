@@ -190,7 +190,7 @@ mod tests {
         let named = |name: &str| Type::Named(name.into(), Vec::new());
         let list = Type::Named("List".into(), vec![named("Int")]);
         let mut definition = ScalarAggregateShape {
-            name: "Bag".into(), fields: vec![list], variants: Vec::new(), tagged: false, packed: false,
+            name: "Bag".into(), fields: vec![list].into(), variants: Vec::new().into(), tagged: false, packed: false,
         }.packed_view();
         definition.packed = false;
         let definitions = BTreeMap::from([("Bag".into(), definition)]);
@@ -207,7 +207,7 @@ mod tests {
         // A nominal argument binds source identity, but an unused argument
         // does not place its resource in the record's retained storage.
         let mut phantom = ScalarAggregateShape {
-            name: "Phantom".into(), fields: vec![named("Int")], variants: Vec::new(), tagged: false, packed: false,
+            name: "Phantom".into(), fields: vec![named("Int")].into(), variants: Vec::new().into(), tagged: false, packed: false,
         }.packed_view();
         phantom.packed = false;
         phantom.params = vec!["a".into()];

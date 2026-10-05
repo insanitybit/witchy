@@ -31,7 +31,7 @@ impl FunctionLowerer<'_> {
                 matches!(result_type.unqualified(), Type::Named(name, args)
                     if name == "Option" && args.len() == 1
                         && args[0].unqualified() == element_source.unqualified())
-                    && shape.name == "Option" && shape.tagged
+                    && &*shape.name == "Option" && shape.tagged
                     && shape.fields.len() == 2 && shape.variants.len() == 2
                     && shape.variants[0].first_field == 1 && shape.variants[0].arity == 1
                     && shape.variants[1].arity == 0
