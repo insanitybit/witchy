@@ -7,7 +7,7 @@ accumulator server where each batch arrives over a channel (channels move values
 so the task owns each one).
 
 **Shows:** `let`/`var`/`own` parameters and `move`, recursion, an ADT with an
-`impl` method, `chan.serve`/`spawn`/`send`/`join`, `async`/`await`, and the
+`impl` method, `chan.serve`/`scope`/`send`, `async`/`await`, and the
 `Console` capability.
 
 ## Run

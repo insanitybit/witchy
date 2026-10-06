@@ -55,6 +55,4 @@ async fn main(console: Console):
     console.print("drained length: " + "${drain(move gone)}")
 
     let (tx, rx) = chan.channel(4).await
-    let h = chan.spawn(adder(console, rx)).await
-    feeder(tx).await
-    chan.join(h).await
+    chan.scope([adder(console, rx), feeder(tx)]).await

@@ -2,14 +2,14 @@
 
 A producer sends values over a capacity-one channel and a consumer receives them
 until the channel closes. The capacity forces real backpressure: the producer
-must wait while the consumer drains each value. Spawning and the channel are
-independent: the producer is `spawn`ed, and the channel is an ordinary typed
-value passed to both sides, not a task's mailbox. The result is deterministic on
+must wait while the consumer drains each value. Tasks and the channel are
+independent: `chan.scope` runs the producer and consumer together, and the
+channel is an ordinary typed value passed to both sides, not a task's mailbox. The result is deterministic on
 both backends.
 
-**Shows:** `async`/`await`, `chan.spawn`, first-class channels
+**Shows:** `async`/`await`, structured `chan.scope`, first-class channels
 (`Sender(Int)`/`Receiver(Int)`), bounded backpressure, `chan.send`/`chan.consume`,
-structured `chan.join`, and the `Console` capability.
+and the `Console` capability.
 
 ## Cooperative tasks versus worker VMs
 

@@ -1,7 +1,7 @@
 // A capacity-one channel forces the producer to wait while the consumer drains
-// each value. Spawning and the channel are independent: the producer is
-// `spawn`ed, and the channel is an ordinary typed value passed to both sides,
-// not a task's mailbox. The result is deterministic on both backends.
+// each value. Tasks and the channel are independent: `chan.scope` runs the
+// producer and consumer together, and the channel is an ordinary typed value
+// passed to both sides, not a task's mailbox. The result is deterministic on both backends.
 //
 // Run:  witchy examples/channels/src/channels.witchy
 //       witchy parity examples/channels/src/channels.witchy
@@ -17,7 +17,5 @@ async fn consumer(console: Console, rx: Receiver(Int)):
 
 async fn main(console: Console):
     let (tx, rx) = chan.channel(1).await
-    let producer_handle = chan.spawn(producer(tx)).await
-    consumer(console, rx).await
-    chan.join(producer_handle).await
+    chan.scope([producer(tx), consumer(console, rx)]).await
     console.print("channel drained")

@@ -2,11 +2,11 @@
 
 `for await x in rx:` — a receive loop over a channel that runs its body for each
 message until the channel closes (and the body may itself `await`). A `producer`
-sends a few numbers over a `Sender`, a spawned `worker` consumes them with
+sends a few numbers over a `Sender`, a concurrent `worker` consumes them with
 `for await`, and both forms of `for` appear: the producer iterates a *list*, the
 worker iterates a *receiver*.
 
-**Shows:** `async`/`await`, `chan.channel`/`chan.send`/`chan.spawn`, `for await`
+**Shows:** `async`/`await`, `chan.channel`/`chan.send`/`chan.scope`, `for await`
 receive loops, and the `Console` capability.
 
 ## Run

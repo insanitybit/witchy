@@ -30,6 +30,4 @@ async fn client(console: Console, srv: Sender(Msg)):
 
 async fn main(console: Console):
     let (srv_tx, srv_rx) = chan.channel(4).await
-    let h = chan.spawn(server(srv_rx)).await
-    client(console, srv_tx).await
-    chan.join(h).await
+    chan.scope([server(srv_rx), client(console, srv_tx)]).await

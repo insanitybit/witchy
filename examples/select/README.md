@@ -5,7 +5,7 @@ favours the first), yielding `Closed` once neither can deliver. Two producers
 feed separate channels and one collector merges them — a single task reacting to
 whichever source speaks next, which one receiver can't express.
 
-**Shows:** `async`/`await`, channels (`Sender`/`Receiver`), `chan.spawn`,
+**Shows:** `async`/`await`, channels (`Sender`/`Receiver`), `chan.scope`,
 `chan.select`, and `match` on the select outcome.
 
 ## Run

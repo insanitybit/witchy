@@ -1,6 +1,6 @@
 // Ergonomic async/await: write straight-line `async fn` code with `await`; the
-// compiler lowers it to cooperative tasks (CPS over closures). `chan.spawn` starts
-// a concurrent task — no channel required — and the deterministic round-robin
+// compiler lowers it to cooperative tasks (CPS over closures). `chan.scope` runs
+// tasks concurrently — no channel required — and the deterministic round-robin
 // schedule makes the interleaved output byte-identical on the interpreter and the
 // compiled WASM.
 //
@@ -21,7 +21,4 @@ async fn ticker(console: Console, name: String, n: Int):
         ticker(console, name, n - 1).await
 
 async fn main(console: Console):
-    let a = chan.spawn(ticker(console, "A", 3)).await
-    let b = chan.spawn(ticker(console, "B", 3)).await
-    chan.join(a).await
-    chan.join(b).await
+    chan.scope([ticker(console, "A", 3), ticker(console, "B", 3)]).await
