@@ -18653,11 +18653,9 @@ impl FunctionLowerer<'_> {
     /// An `Int` as a `Size` in `0..=maximum`; anything else aborts, as the
     /// interpreter's negative-count and out-of-range errors do.
     fn int_to_size_checked(&mut self, value: ValueId, maximum: u64) -> Result<ValueId, CanonicalLoweringError> {
-        let zero = self.push_const_int(0)?;
-        let non_negative = self.push_compare(ComparisonOperator::GreaterEqualSigned, value, zero)?;
-        self.push_trap_unless(non_negative)?;
+        // One unsigned comparison: a negative Int is above every limit.
         let limit = self.push_const_int(i64::try_from(maximum).map_err(|_| CanonicalLoweringError::IdOverflow)?)?;
-        let bounded = self.push_compare(ComparisonOperator::LessEqualSigned, value, limit)?;
+        let bounded = self.push_compare(ComparisonOperator::LessEqualUnsigned, value, limit)?;
         self.push_trap_unless(bounded)?;
         let narrowed = self.fresh(ValueType::Size)?;
         self.push_operation(Operation::NarrowSize { destination: narrowed, value });
@@ -18668,10 +18666,9 @@ impl FunctionLowerer<'_> {
     fn bytes_index_checked(&mut self, object: ValueId, index: ValueId) -> Result<ValueId, CanonicalLoweringError> {
         let total = self.string_length_of(object)?;
         let index = self.int_to_size_checked(index, u64::from(u32::MAX - 4))?;
+        // The Bounds guard traps on its own failure.
         let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, index, total)?;
-        self.push_trap_unless(in_bounds)?;
-        let again = self.push_compare(ComparisonOperator::LessUnsigned, index, total)?;
-        self.push_guard(again, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
         Ok(index)
     }
 
