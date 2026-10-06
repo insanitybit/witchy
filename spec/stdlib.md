@@ -53,11 +53,11 @@ Build raw bytes from integers in `0..=255`, or Err on the first invalid byte.
 
 Decode bytes as UTF-8 text. Invalid sequences are replaced with U+FFFD (lossy), so this never fails; round-tripping a string is exact because witchy strings are always valid UTF-8. Prefer `to_string_lossy` when the lossy boundary matters.
 
-#### `fn length(b: Bytes) -> Int`
+#### `fn length(let b: Bytes) -> Int`
 
 The number of bytes.
 
-#### `fn at(b: Bytes, index: Int) -> Int`
+#### `fn at(let b: Bytes, index: Int) -> Int`
 
 The byte at `index`, as an Int in `0..=255`.
 

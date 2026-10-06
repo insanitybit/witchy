@@ -63,11 +63,11 @@ pub fn to_string(b: Bytes) -> String:
     __bytes_to_string(b)
 
 // The number of bytes.
-pub fn length(b: Bytes) -> Int:
+pub fn length(let b: Bytes) -> Int:
     __bytes_length(b)
 
 // The byte at `index`, as an Int in `0..=255`.
-pub fn at(b: Bytes, index: Int) -> Int:
+pub fn at(let b: Bytes, index: Int) -> Int:
     __bytes_at(b, index)
 
 // The two byte buffers joined.
@@ -166,19 +166,19 @@ impl Bytes:
             Err(e) -> Err(bytes_error_message(e))
 
     // The number of bytes.
-    pub fn length(self) -> Int:
+    pub fn length(let self) -> Int:
         length(self)
 
     // Whether the buffer has no bytes.
-    pub fn is_empty(self) -> Bool:
+    pub fn is_empty(let self) -> Bool:
         __bytes_length(self) == 0
 
     // The byte at `index`, as an Int in `0..=255`.
-    pub fn at(self, index: Int) -> Int:
+    pub fn at(let self, index: Int) -> Int:
         at(self, index)
 
     // The byte at `index`, or None when out of range.
-    pub fn get(self, index: Int) -> Option(Int):
+    pub fn get(let self, index: Int) -> Option(Int):
         if index < 0 || index >= __bytes_length(self):
             None
         else:
