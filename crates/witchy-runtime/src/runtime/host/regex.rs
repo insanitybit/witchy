@@ -4,7 +4,84 @@ use super::super::{memory_of, read_slice_str, VmState};
 
 pub(in crate::runtime) fn link(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "regex_match_spans_into", host_spans)?;
+    linker.func_wrap("witchy", "regex_count_slices", host_count)?;
+    linker.func_wrap("witchy", "regex_replace_all_into", host_replace_all)?;
     Ok(())
+}
+
+fn compile(pattern: &str) -> Result<::regex::Regex> {
+    ::regex::Regex::new(pattern)
+        .map_err(|error| Error::msg(format!("invalid regex pattern `{pattern}`: {error}")))
+}
+
+/// The bounded output slice `[output, output + capacity)`, checked against
+/// memory before anything is computed or written.
+fn output_range(memory: &[u8], output: i32, capacity: i32) -> Result<std::ops::Range<usize>> {
+    let start = usize::try_from(output).map_err(|_| Error::msg("negative regex output pointer"))?;
+    let capacity = usize::try_from(capacity).map_err(|_| Error::msg("negative regex output capacity"))?;
+    let end = start.checked_add(capacity).ok_or_else(|| Error::msg("regex output slice overflow"))?;
+    if end > memory.len() { return Err(Error::msg("regex output slice exceeds memory")); }
+    Ok(start..end)
+}
+
+fn host_count(mut caller: Caller<'_, VmState>, pattern: i32, pattern_len: i32,
+    text: i32, text_len: i32) -> Result<i32> {
+    let memory = memory_of(&mut caller)?;
+    count(memory.data(&caller), pattern, pattern_len, text, text_len)
+}
+
+fn count(memory: &[u8], pattern: i32, pattern_len: i32, text: i32, text_len: i32) -> Result<i32> {
+    let pattern = read_slice_str(memory, pattern, pattern_len)?;
+    let text = read_slice_str(memory, text, text_len)?;
+    i32::try_from(compile(&pattern)?.find_iter(&text).count())
+        .map_err(|_| Error::msg("regex match count exceeds ABI size"))
+}
+
+fn host_replace_all(mut caller: Caller<'_, VmState>, pattern: i32, pattern_len: i32,
+    text: i32, text_len: i32, replacement: i32, replacement_len: i32,
+    output: i32, capacity: i32) -> Result<i32> {
+    let memory = memory_of(&mut caller)?;
+    replace_all_into(memory.data_mut(&mut caller), pattern, pattern_len, text, text_len,
+        replacement, replacement_len, output, capacity)
+}
+
+/// Every match replaced by the literal replacement (no `$1` expansion). The
+/// result is the full byte count; insufficient capacity writes nothing.
+///
+/// The output can be far larger than its inputs (every empty match takes a
+/// copy of the replacement), so the host never materializes it: the size is
+/// counted from the match spans, and the pieces are written straight into
+/// the guest's own buffer, which the guest allocated under its own limits.
+fn replace_all_into(memory: &mut [u8], pattern: i32, pattern_len: i32,
+    text: i32, text_len: i32, replacement: i32, replacement_len: i32,
+    output: i32, capacity: i32) -> Result<i32> {
+    let pattern = read_slice_str(memory, pattern, pattern_len)?;
+    let text = read_slice_str(memory, text, text_len)?;
+    let replacement = read_slice_str(memory, replacement, replacement_len)?;
+    let range = output_range(memory, output, capacity)?;
+    // At most one span per text byte plus one: linear in the input.
+    let spans = compile(&pattern)?.find_iter(&text).map(|found| (found.start(), found.end())).collect::<Vec<_>>();
+    let oversized = || Error::msg("regex replacement exceeds ABI size");
+    let matched = spans.iter().map(|(start, end)| end - start).sum::<usize>();
+    let required = spans.len().checked_mul(replacement.len())
+        .and_then(|inserted| (text.len() - matched).checked_add(inserted))
+        .ok_or_else(oversized)?;
+    let required_abi = i32::try_from(required).map_err(|_| oversized())?;
+    if required <= range.len() {
+        let mut cursor = range.start;
+        let mut write = |bytes: &[u8]| {
+            memory[cursor..cursor + bytes.len()].copy_from_slice(bytes);
+            cursor += bytes.len();
+        };
+        let mut kept = 0;
+        for (start, end) in spans {
+            write(&text.as_bytes()[kept..start]);
+            write(replacement.as_bytes());
+            kept = end;
+        }
+        write(&text.as_bytes()[kept..]);
+    }
+    Ok(required_abi)
 }
 
 fn host_spans(mut caller: Caller<'_, VmState>, pattern: i32, pattern_len: i32,
@@ -17,12 +94,9 @@ fn spans_into(memory: &mut [u8], pattern: i32, pattern_len: i32,
     text: i32, text_len: i32, output: i32, capacity: i32) -> Result<i32> {
     let pattern = read_slice_str(memory, pattern, pattern_len)?;
     let text = read_slice_str(memory, text, text_len)?;
-    let start = usize::try_from(output).map_err(|_| Error::msg("negative regex output pointer"))?;
-    let capacity = usize::try_from(capacity).map_err(|_| Error::msg("negative regex output capacity"))?;
-    let end = start.checked_add(capacity).ok_or_else(|| Error::msg("regex output slice overflow"))?;
-    if end > memory.len() { return Err(Error::msg("regex output slice exceeds memory")); }
-    let regex = ::regex::Regex::new(&pattern)
-        .map_err(|error| Error::msg(format!("invalid regex pattern `{pattern}`: {error}")))?;
+    let range = output_range(memory, output, capacity)?;
+    let (start, capacity) = (range.start, range.len());
+    let regex = compile(&pattern)?;
     let mut encoded = String::new();
     let mut byte_cursor = 0;
     let mut char_cursor = 0usize;
@@ -76,5 +150,48 @@ pub mod tests {
         assert_eq!(memory, before);
         memory[0] = 255;
         assert!(spans_into(&mut memory, 0, 1, 8, 6, 32, 7).is_err());
+    }
+
+    pub fn canonical_regex_count_and_replace_bounded_writes() {
+        let mut memory = [b'!'; 96];
+        memory[0..3].copy_from_slice(b"a+b");
+        memory[8..18].copy_from_slice(b"xaab-ab-ac");
+        memory[24..26].copy_from_slice(b"<>");
+        assert_eq!(count(&memory, 0, 3, 8, 10).unwrap(), 2);
+        let original = memory;
+        // "x<>-<>-ac" is 9 bytes: a short buffer writes nothing.
+        assert_eq!(replace_all_into(&mut memory, 0, 3, 8, 10, 24, 2, 48, 8).unwrap(), 9);
+        assert_eq!(memory, original, "short capacity writes nothing");
+        assert_eq!(replace_all_into(&mut memory, 0, 3, 8, 10, 24, 2, 48, 9).unwrap(), 9);
+        assert_eq!(&memory[48..57], b"x<>-<>-ac");
+        assert_eq!(memory[57], b'!');
+        // The replacement is literal: `$0` is not expanded.
+        memory[24..26].copy_from_slice(b"$0");
+        assert_eq!(replace_all_into(&mut memory, 0, 3, 8, 10, 24, 2, 64, 16).unwrap(), 9);
+        assert_eq!(&memory[64..73], b"x$0-$0-ac");
+        let before = memory;
+        assert!(replace_all_into(&mut memory, 0, 3, 8, 10, 24, 2, 90, 16).is_err(), "output past memory");
+        assert!(replace_all_into(&mut memory, 0, 3, 8, 10, 24, -1, 48, 9).is_err(), "negative slice");
+        assert_eq!(memory, before, "invalid slices never write");
+        memory[0] = b'[';
+        assert!(count(&memory, 0, 1, 8, 10).unwrap_err().to_string().contains("invalid regex pattern"));
+    }
+
+    pub fn canonical_regex_replace_sizes_empty_matches_without_writing() {
+        // An empty pattern matches before, between, and after every byte:
+        // "ab" with "xy" is "xyaxybxy".
+        let mut memory = [b'!'; 64];
+        memory[8..10].copy_from_slice(b"ab");
+        memory[16..18].copy_from_slice(b"xy");
+        assert_eq!(replace_all_into(&mut memory, 0, 0, 8, 2, 16, 2, 32, 8).unwrap(), 8);
+        assert_eq!(&memory[32..40], b"xyaxybxy");
+        assert_eq!(memory[40], b'!');
+        // Ten bytes, each surrounded by a ten-byte replacement, report their
+        // full size against a short buffer and write nothing.
+        memory[8..18].copy_from_slice(b"0123456789");
+        memory[24..34].copy_from_slice(b"ABCDEFGHIJ");
+        let before = memory;
+        assert_eq!(replace_all_into(&mut memory, 0, 0, 8, 10, 24, 10, 40, 16).unwrap(), 10 + 11 * 10);
+        assert_eq!(memory, before);
     }
 }

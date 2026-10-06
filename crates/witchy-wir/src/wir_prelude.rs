@@ -351,6 +351,8 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "cap_response_take_listener" (func $cap_response_take_listener_host (param externref) (result externref)))
   (import "witchy" "console_print" (func $console_print_host (param externref i32 i32)))
   (import "witchy" "regex_match_spans_into" (func $regex_match_spans_into_host (param i32 i32 i32 i32 i32 i32) (result i32)))
+  (import "witchy" "regex_count_slices" (func $regex_count_slices_host (param i32 i32 i32 i32) (result i32)))
+  (import "witchy" "regex_replace_all_into" (func $regex_replace_all_into_host (param i32 i32 i32 i32 i32 i32 i32 i32) (result i32)))
   (import "witchy" "net_listen_at" (func $net_listen_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "net_accept_at" (func $net_accept_at_host (param externref) (result externref)))
   (import "witchy" "net_send_at" (func $net_send_at_host (param externref i32 i32) (result externref)))
@@ -567,6 +569,8 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "string_from_code"
         | "regex_match_spans_len"
         | "regex_match_spans_into"
+        | "regex_count_slices"
+        | "regex_replace_all_into"
         | "regex_count"
         | "regex_replace_all_len"
         | "crypto.__ecdsa_p256_verify_status"

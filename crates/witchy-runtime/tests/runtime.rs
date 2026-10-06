@@ -276,6 +276,8 @@ mod runtime {
                 use crate::Outcome;
                 use witchy_runtime::runtime::self_checks::host_regex_tests as checks;
                 #[test] fn canonical_regex_bounded_writes_and_invalid_slices() { checks::canonical_regex_bounded_writes_and_invalid_slices().check() }
+                #[test] fn canonical_regex_count_and_replace_bounded_writes() { checks::canonical_regex_count_and_replace_bounded_writes().check() }
+                #[test] fn canonical_regex_replace_sizes_empty_matches_without_writing() { checks::canonical_regex_replace_sizes_empty_matches_without_writing().check() }
             }
         }
         mod secret {

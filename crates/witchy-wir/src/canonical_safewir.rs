@@ -1073,6 +1073,55 @@ impl CanonicalAbiCatalog {
         Ok(self)
     }
 
+    /// Pure regex match count over two UTF-8 read slices.
+    pub fn with_regex_count_import(
+        mut self,
+        signature: FunctionSignatureId,
+        string_layout: LayoutId,
+    ) -> Result<Self, String> {
+        use crate::wir_prelude::WasmTy;
+        let read = || HostParameterRole::Buffer {
+            value_type: ValueType::Ref(string_layout), access: AccessMode::Read,
+            extent: HostBufferExtent::Slice,
+        };
+        let import = authenticated_prelude_import(
+            "regex_count_slices",
+            &[WasmTy::I32, WasmTy::I32, WasmTy::I32, WasmTy::I32],
+            &[WasmTy::I32], signature,
+            vec![read(), read()],
+            vec![HostResultRole::Value(ValueType::Size)], HostMutation::ReadOnly,
+        )?;
+        self.imports.insert(import.id, import);
+        Ok(self)
+    }
+
+    /// Pure literal regex replacement over three UTF-8 read slices and one
+    /// bounded output slice, with the same byte-count contract as
+    /// [`Self::with_regex_spans_import`].
+    pub fn with_regex_replace_all_import(
+        mut self,
+        signature: FunctionSignatureId,
+        string_layout: LayoutId,
+    ) -> Result<Self, String> {
+        use crate::wir_prelude::WasmTy;
+        let read = || HostParameterRole::Buffer {
+            value_type: ValueType::Ref(string_layout), access: AccessMode::Read,
+            extent: HostBufferExtent::Slice,
+        };
+        let import = authenticated_prelude_import(
+            "regex_replace_all_into",
+            &[WasmTy::I32; 8],
+            &[WasmTy::I32], signature,
+            vec![read(), read(), read(), HostParameterRole::Buffer {
+                value_type: ValueType::Ref(string_layout), access: AccessMode::Write,
+                extent: HostBufferExtent::Slice,
+            }],
+            vec![HostResultRole::Value(ValueType::Size)], HostMutation::WriteBuffers,
+        )?;
+        self.imports.insert(import.id, import);
+        Ok(self)
+    }
+
     fn from_imports(imports: Vec<ImportContract>) -> Self {
         Self {
             imports: imports.into_iter().map(|import| (import.id, import)).collect(),

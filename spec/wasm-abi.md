@@ -361,6 +361,8 @@ An empty set is an authenticated reject-all contract, never a wildcard.
 | `cap_response_take_listener` | `(externref) -> externref` | internal/toolchain service | none | omitted |
 | `console_print` | `(externref, i32, i32)` | non-authority infrastructure | none | omitted |
 | `regex_match_spans_into` | `(i32, i32, i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |
+| `regex_count_slices` | `(i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |
+| `regex_replace_all_into` | `(i32, i32, i32, i32, i32, i32, i32, i32) -> i32` | non-authority infrastructure | none | omitted |
 | `net_listen_at` | `(externref, i32, i32) -> externref` | capability authority | Net.Listen | omitted |
 | `net_accept_at` | `(externref) -> externref` | capability authority | Net.Listen | omitted |
 | `net_send_at` | `(externref, i32, i32) -> externref` | capability authority | Net.Connect | omitted |

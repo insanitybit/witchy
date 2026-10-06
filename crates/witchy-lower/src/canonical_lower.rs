@@ -1129,7 +1129,7 @@ pub(crate) fn lower_typed_module_with_borrowed_views(
     let clock_needed = capability_imports.remove("clock_now");
     let monotonic_clock_needed = capability_imports.remove("clock_now_monotonic");
     let compiler_imports = collect_compiler_imports(typed.module());
-    let regex_spans = regex::is_needed(typed.module());
+    let regex_needed = regex::needed(typed.module());
     // RFC-0165 Net import registration (Net track).
     let net_imports = net::collect_imports(typed.module());
     if net::needs_responses(&net_imports) { capability_imports.extend(net::RESPONSE_IMPORTS); }
@@ -1139,7 +1139,7 @@ pub(crate) fn lower_typed_module_with_borrowed_views(
     }
     let exec_needed = exec::is_needed(typed.module());
     let crypto_needed = crypto::is_needed(typed.module());
-    if crypto_needed || exec_needed || prints || floats || !abort_sites.is_empty() || !capability_imports.is_empty() || !compiler_imports.is_empty() || regex_spans || !net_imports.is_empty() || !service_sites.is_empty() || !par_map_sites.is_empty() {
+    if crypto_needed || exec_needed || prints || floats || !abort_sites.is_empty() || !capability_imports.is_empty() || !compiler_imports.is_empty() || regex_needed.any() || !net_imports.is_empty() || !service_sites.is_empty() || !par_map_sites.is_empty() {
         let string_layout = string_layout(
             &Type::Named("String".into(), Vec::new()),
             &layouts,
@@ -1191,7 +1191,7 @@ pub(crate) fn lower_typed_module_with_borrowed_views(
         });
         let mut catalog = CanonicalAbiCatalog::from_authenticated_console_prelude(signature_id, float_signature_id, string_layout)
             .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
-        if !capability_imports.is_empty() || !compiler_imports.is_empty() || regex_spans {
+        if !capability_imports.is_empty() || !compiler_imports.is_empty() || regex_needed.any() {
             let dir = ValueType::Capability(witchy_wir::canonical_safewir::DIR_CAPABILITY_KIND);
             let file = ValueType::Capability(witchy_wir::canonical_safewir::FILE_CAPABILITY_KIND);
             let env = ValueType::Capability(witchy_wir::canonical_safewir::ENV_CAPABILITY_KIND);
@@ -1444,9 +1444,19 @@ if capability_imports.contains("build_out_write_at") {
                         .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
                 }
             }
-            if regex_spans {
+            if regex_needed.spans {
                 let signature = push_import_signature(vec![text, text, text], vec![ValueType::Size], Some(2))?;
                 catalog = catalog.with_regex_spans_import(signature, string_layout)
+                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+            }
+            if regex_needed.count {
+                let signature = push_import_signature(vec![text, text], vec![ValueType::Size], None)?;
+                catalog = catalog.with_regex_count_import(signature, string_layout)
+                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+            }
+            if regex_needed.replace_all {
+                let signature = push_import_signature(vec![text, text, text, text], vec![ValueType::Size], Some(3))?;
+                catalog = catalog.with_regex_replace_all_import(signature, string_layout)
                     .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
             }
         }
@@ -1493,7 +1503,9 @@ if capability_imports.contains("build_out_write_at") {
                     || (import.name == "float_to_str" && floats)
                     || capability_imports.contains(import.name.as_str())
                     || compiler_imports.contains(import.name.as_str())
-                    || (regex_spans && import.name == "regex_match_spans_into")
+                    || (regex_needed.spans && import.name == "regex_match_spans_into")
+                    || (regex_needed.count && import.name == "regex_count_slices")
+                    || (regex_needed.replace_all && import.name == "regex_replace_all_into")
                     || (exec_needed && witchy_wir::canonical_safewir::EXEC_IMPORT_NAMES.contains(&import.name.as_str()))
                     || (crypto_needed && crypto::is_host_import(&import.name))
                     || net_imports.contains(import.name.as_str()) // Net track
@@ -1521,6 +1533,8 @@ if capability_imports.contains("build_out_write_at") {
                 .filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id))).collect(),
             net: net_imports.iter().filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id))).collect(),
             regex_spans: projected.iter().find(|import| import.name == "regex_match_spans_into").map(|import| import.id),
+            regex_count: projected.iter().find(|import| import.name == "regex_count_slices").map(|import| import.id),
+            regex_replace_all: projected.iter().find(|import| import.name == "regex_replace_all_into").map(|import| import.id),
             compiler: compiler_imports.iter()
                 .filter_map(|name| projected.iter().find(|import| import.name == *name).map(|import| (*name, import.id)))
                 .collect(),
@@ -12326,6 +12340,8 @@ impl FunctionLowerer<'_> {
                 self.lower_list_pop_extract(expression, args)
             }
             Expr::Call { name, args } if name == witchy_syntax::intrinsics::REGEX_MATCH_SPANS => self.lower_regex_spans(args),
+            Expr::Call { name, args } if name == witchy_syntax::intrinsics::REGEX_COUNT => self.lower_regex_count(args),
+            Expr::Call { name, args } if name == witchy_syntax::intrinsics::REGEX_REPLACE_ALL => self.lower_regex_replace_all(args),
             Expr::Call { name, args } if is_capability_op(name) => self
                 .lower_capability_op(name, args)?
                 .ok_or(CanonicalLoweringError::UnsupportedExpression("capability operation without a value")),
@@ -21484,6 +21500,8 @@ struct HostImports {
     rune_hash: Option<witchy_wir::canonical_safewir::ImportId>,
     crypto_extensions: BTreeMap<&'static str, witchy_wir::canonical_safewir::ImportId>,
     regex_spans: Option<witchy_wir::canonical_safewir::ImportId>,
+    regex_count: Option<witchy_wir::canonical_safewir::ImportId>,
+    regex_replace_all: Option<witchy_wir::canonical_safewir::ImportId>,
     compiler: BTreeMap<&'static str, witchy_wir::canonical_safewir::ImportId>,
     print: Option<witchy_wir::canonical_safewir::ImportId>,
     float_to_str: Option<witchy_wir::canonical_safewir::ImportId>,
