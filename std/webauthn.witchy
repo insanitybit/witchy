@@ -39,7 +39,7 @@ type AssertionError:
     SignatureInvalid
 
 // Human-readable assertion failure text for logs and HTTP responses.
-pub fn assertion_error_message(e: AssertionError) -> String:
+pub fn assertion_error_message(e: AssertionError) -> unique String:
     match e:
         ClientDataJson(reason) -> "clientDataJSON did not parse: " + reason
         WrongClientType -> "clientData.type is not webauthn.get"
@@ -63,7 +63,7 @@ impl From(AssertionError) for String:
     fn from(value: AssertionError) -> Self:
         assertion_error_message(value)
 
-fn json_str(doc: Json, key: String) -> String:
+fn json_str(doc: Json, key: String) -> unique String:
     match json.get_string(doc, key):
         Some(s) -> s
         None -> ""
@@ -142,7 +142,7 @@ type RegistrationError:
     RegCoseMalformed(String)
     RegUnsupportedKey
 
-pub fn registration_error_message(e: RegistrationError) -> String:
+pub fn registration_error_message(e: RegistrationError) -> unique String:
     match e:
         RegClientDataJson(r) -> "clientDataJSON did not parse: " + r
         RegWrongClientType -> "clientData.type is not webauthn.create"

@@ -177,7 +177,7 @@ pub fn reflect_dict(d: Dict(k, v)) -> Mirror where k: Reflect, v: Reflect:
 
 // The string form of a reflected key: an `MString`'s raw text (unquoted, since it
 // is a field name, not a value), any other key its structural rendering.
-fn key_string(m: Mirror) -> String:
+fn key_string(m: Mirror) -> unique String:
     match m:
         MString(s) -> s
         _ -> render(m)
@@ -228,10 +228,10 @@ impl Reflect for (a, b, c, d, e, f, g, h) where a: Reflect, b: Reflect, c: Refle
 // --- a second consumer: structural debug rendering ---------------------------
 // `debug(x)` renders any value from its reflection, using the same `reflect` that
 // backs `json`.
-pub fn debug(x: a) -> String where a: Reflect:
+pub fn debug(x: a) -> unique String where a: Reflect:
     render(reflect(x))
 
-fn render(m: Mirror) -> String:
+fn render(m: Mirror) -> unique String:
     match m:
         MInt(n) -> "${n}"
         MFloat(f) -> "${f}"
@@ -254,7 +254,7 @@ fn render(m: Mirror) -> String:
 // Escape a string value for `debug`'s quoted rendering: backslash, double quote,
 // and every C0 control become escapes, so debug output stays single-line and
 // parseable-looking instead of smuggling terminal controls into structural text.
-fn escape_string(s: String) -> String:
+fn escape_string(s: String) -> unique String:
     var out = ""
     for c in s.chars():
         if c == "\\":
@@ -273,7 +273,7 @@ fn escape_string(s: String) -> String:
             out = out + c
     out
 
-fn escape_control(c: String) -> String:
+fn escape_control(c: String) -> unique String:
     let code = control_code(c)
     if code == 8:
         "\\b"
@@ -290,16 +290,16 @@ fn control_code(c: String) -> Int:
         k = k + 1
     0
 
-fn hex_digit(v: Int) -> String:
+fn hex_digit(v: Int) -> unique String:
     "0123456789abcdef".substring(v, v + 1)
 
-fn join_rendered(xs: List(Mirror)) -> String:
+fn join_rendered(xs: List(Mirror)) -> unique String:
     var parts = []
     for m in xs:
         list.push(parts, render(m))
     list.join(parts, ", ")
 
-fn render_fields(fields: List((String, Mirror))) -> String:
+fn render_fields(fields: List((String, Mirror))) -> unique String:
     var parts = []
     for k, m in fields:
         list.push(parts, k + ": " + render(m))

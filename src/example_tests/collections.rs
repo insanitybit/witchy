@@ -17,10 +17,14 @@ fn main(let console: Console):
     append(5, s.items)
     console.print("${s.total + list.length(s.items) + s.items[0]}")
 "#;
-        for mode in ["", "mode opt\n"] {
-            let source = format!("{mode}{body}");
-            assert_eq!(run_linked_on_wasm(&[("main", &source)], "main"), ["8"]);
-        }
+        assert_eq!(run_linked_on_wasm(&[("main", body)], "main"), ["8"]);
+        // `list.push` declares a `unique` receiver. Opt mode cannot prove a
+        // plain `var` parameter unique, so it refuses the hidden copy.
+        let opt = format!("mode opt\n{body}");
+        let linked = crate::pipeline::link(vec![("main".to_string(), parser::parse_module(&opt).expect("parse"))], "main")
+            .expect("link");
+        let refused = typeck::check(&linked).expect_err("opt mode refuses the hidden copy").message;
+        assert!(refused.contains("cannot repair ordinary storage into a `unique` parameter in `mode opt`"), "{refused}");
 
         let snapshot = r#"
 type Stack:
@@ -53,10 +57,7 @@ fn main(let console: Console):
         append(i, s.items)
     console.print("${s.total + list.length(s.items) + s.items[4]}")
 "#;
-        for mode in ["", "mode opt\n"] {
-            let source = format!("{mode}{looped}");
-            assert_eq!(run_linked_on_wasm(&[("main", &source)], "main"), ["12"]);
-        }
+        assert_eq!(run_linked_on_wasm(&[("main", looped)], "main"), ["12"]);
 
         let retained = looped.replace(
             "    for i in 0..5:",

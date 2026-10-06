@@ -24,7 +24,7 @@ type CapError:
 
 impl CapError:
     // The host's message, without the variant.
-    pub fn message(self) -> String:
+    pub fn message(self) -> unique String:
         match self:
             Denied(message) -> message
             NotFound(message) -> message

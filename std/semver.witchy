@@ -41,7 +41,7 @@ type SemverError:
     NegativeVersionComponent(String)
     NonNumericVersionComponent(String)
 
-pub fn semver_error_message(e: SemverError) -> String:
+pub fn semver_error_message(e: SemverError) -> unique String:
     match e:
         BadVersionShape(raw) -> "bad version `" + raw + "`: expected major.minor.patch"
         SignedVersionComponent(component) -> "bad version component `" + component + "`: sign characters are not allowed"
@@ -135,7 +135,7 @@ fn component(parts: List(String), i: Int) -> Result(Int, SemverError):
                     Ok(n)
             None -> Err(NonNumericVersionComponent(list.at(parts, i)))
 
-pub fn format(v: Version) -> String:
+pub fn format(v: Version) -> unique String:
     "${v.major}.${v.minor}.${v.patch}"
 
 impl Show for Version:

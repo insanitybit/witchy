@@ -3867,7 +3867,15 @@ fn discarded_std_var_writeback(
         return None;
     };
     let value = Expr::Call { name: private.to_string(), args: args.clone() };
-    witchy_syntax::parser::desugar_place_assign(place, value).ok()
+    let mut statement = witchy_syntax::parser::desugar_place_assign(place, value).ok()?;
+    // `xs.set_at(i, v)` is the place assignment `xs[i] = v`: count its index
+    // layer as the parser does, so both spellings share one place lowering.
+    if private == intrinsics::LIST_SET_AT
+        && let Stmt::Assign { place_depth, .. } = &mut statement
+    {
+        *place_depth += 1;
+    }
+    Some(statement)
 }
 
 /// Record type name -> its named field types, for typing `x.field` receivers.

@@ -26,7 +26,7 @@ type VerifyError:
 // Human-readable verifier failure text. Kept as an explicit helper so existing
 // String-oriented callers can preserve diagnostics while matching on
 // `VerifyError` remains available for libraries.
-pub fn verify_error_message(e: VerifyError) -> String:
+pub fn verify_error_message(e: VerifyError) -> unique String:
     match e:
         MalformedPublicKey(name) -> name + " public key is malformed"
         MalformedMessage(name) -> name + " message is malformed"
@@ -51,7 +51,7 @@ pub fn sha256(data: String) -> String:
 // hashes a string's UTF-8), this hashes the exact `Bytes` - the digest a binary
 // artifact (e.g. a trusted-publisher) is verified against (RFC-0095). Native intrinsic;
 // this body is a placeholder the runtime never executes.
-pub fn sha256_bytes(data: Bytes) -> String:
+pub fn sha256_bytes(data: Bytes) -> unique String:
     ""
 
 // The canonical content hash of a rune's source tree, as `sha256:<hex>`. Pass
@@ -59,7 +59,7 @@ pub fn sha256_bytes(data: Bytes) -> String:
 // `paths[i]` is the relative path, `contents[i]` its text. Entries are sorted and
 // length-prefixed before hashing, so the result is the rune's stable content
 // address - the package manager's tamper-evident identity.
-pub fn rune_hash(paths: List(String), contents: List(String)) -> String:
+pub fn rune_hash(paths: List(String), contents: List(String)) -> unique String:
     ""
 
 // Verify an Ed25519 signature. `public_key` and `signature` are hex-encoded;
@@ -76,7 +76,7 @@ pub fn sign(key: Secret[Seal], message: String) -> String:
 
 // The hex Ed25519 public key for a `Secret` - what verifiers check against.
 // By-handle, so `Secret[Seal]` suffices.
-pub fn public_key(key: Secret[Seal]) -> String:
+pub fn public_key(key: Secret[Seal]) -> unique String:
     ""
 
 // Reveal a `Secret`'s raw bytes as a string - for revealable value secrets
@@ -110,16 +110,16 @@ pub fn rsa_pkcs1_sha256_verify(public_key: String, message: String, signature: S
     verify_result(__rsa_pkcs1_sha256_verify_status(public_key, message, signature), "RSA PKCS#1 SHA-256")
 
 // SHA-512 of a string's UTF-8 bytes, as 128 lowercase hex characters. (Native-only.)
-pub fn sha512(data: String) -> String:
+pub fn sha512(data: String) -> unique String:
     ""
 
 // SHA3-256 (FIPS 202) of a string's UTF-8 bytes, as 64 hex characters. (Native-only.)
-pub fn sha3_256(data: String) -> String:
+pub fn sha3_256(data: String) -> unique String:
     ""
 
 // HMAC-SHA256 (FIPS 198-1). `key` is hex (so binary keys are representable);
 // `message` is raw text. Returns the 64-hex-char tag. (Native-only.)
-pub fn hmac_sha256(key: String, message: String) -> String:
+pub fn hmac_sha256(key: String, message: String) -> unique String:
     ""
 
 // A SHAKE request that cannot be served. The only invalid input is an output

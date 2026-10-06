@@ -16,13 +16,13 @@ pub fn length(s: String) -> Int:
 pub fn char_count(s: String) -> Int:
     string.char_count(s)
 
-pub fn chars(s: String) -> List(String):
+pub fn chars(s: String) -> unique List(String):
     string.chars(s)
 
-pub fn from_code(code: Int) -> String:
+pub fn from_code(code: Int) -> unique String:
     string.from_code(code)
 
-pub fn split(s: String, sep: String) -> List(String):
+pub fn split(s: String, sep: String) -> unique List(String):
     string.split(s, sep)
 
 pub fn contains(s: String, needle: String) -> Bool:
@@ -34,10 +34,10 @@ pub fn starts_with(s: String, prefix: String) -> Bool:
 pub fn ends_with(s: String, suffix: String) -> Bool:
     string.ends_with(s, suffix)
 
-pub fn replace(s: String, from: String, to: String) -> String:
+pub fn replace(s: String, from: String, to: String) -> unique String:
     string.replace(s, from, to)
 
-pub fn substring(s: String, start: Int, end: Int) -> String:
+pub fn substring(s: String, start: Int, end: Int) -> unique String:
     string.substring(s, start, end)
 
 pub fn as_str(s: &String) -> &str:
@@ -46,7 +46,7 @@ pub fn as_str(s: &String) -> &str:
 pub fn slice(s: &str, start: Int, end: Int) -> &str:
     string.slice(s, start, end)
 
-pub fn to_string(s: &str) -> String:
+pub fn to_string(s: &str) -> unique String:
     string.to_string(s)
 
 pub fn len(s: &str) -> Int:
@@ -60,13 +60,13 @@ pub fn hash_view(s: &str) -> Int:
 pub fn equal_views(left: &str, right: &str) -> Bool:
     string.equal_views(left, right)
 
-pub fn to_upper(s: String) -> String:
+pub fn to_upper(s: String) -> unique String:
     string.to_upper(s)
 
-pub fn to_lower(s: String) -> String:
+pub fn to_lower(s: String) -> unique String:
     string.to_lower(s)
 
-pub fn trim(s: String) -> String:
+pub fn trim(s: String) -> unique String:
     string.trim(s)
 
 pub fn to_int(s: String) -> Int:
@@ -100,7 +100,7 @@ fn rfind(s: String, sep: String) -> Int:
 // The raw character at `i`, or "" out of range (the clamping `substring` view).
 // Private: the std internals below index with an already-bounds-checked `i`, so
 // the Option would be pure overhead; public callers use `char_at`.
-fn char_or_empty(s: String, i: Int) -> String:
+fn char_or_empty(s: String, i: Int) -> unique String:
     string.substring(s, i, i + 1)
 
 // Whether `c` is an ASCII whitespace character (space, tab, newline, return).
@@ -120,11 +120,11 @@ impl String:
 
     // The characters, each as a single-character String - one O(n) pass, so
     // callers can index characters in O(1).
-    pub fn chars(self) -> List(String):
+    pub fn chars(self) -> unique List(String):
         string.chars(self)
 
     // Split on every occurrence of `sep`.
-    pub fn split(self, sep: String) -> List(String):
+    pub fn split(self, sep: String) -> unique List(String):
         string.split(self, sep)
 
     // Whether `needle` occurs in `self`.
@@ -150,12 +150,12 @@ impl String:
             Some(i)
 
     // Replace every occurrence of `from` with `to`.
-    pub fn replace(self, from: String, to: String) -> String:
+    pub fn replace(self, from: String, to: String) -> unique String:
         string.replace(self, from, to)
 
     // The substring from character index `start` (inclusive) to `end` (exclusive),
     // counted by Unicode scalar; out-of-range indices clamp.
-    pub fn substring(self, start: Int, end: Int) -> String:
+    pub fn substring(self, start: Int, end: Int) -> unique String:
         string.substring(self, start, end)
 
     // Return a rooted immutable view of this String as a string slice (`&str`).
@@ -163,18 +163,18 @@ impl String:
         string.as_str(self)
 
     // ASCII case mapping (the portable set both backends share).
-    pub fn to_upper(self) -> String:
+    pub fn to_upper(self) -> unique String:
         string.to_upper(self)
 
-    pub fn to_lower(self) -> String:
+    pub fn to_lower(self) -> unique String:
         string.to_lower(self)
 
     // Strip leading and trailing ASCII whitespace.
-    pub fn trim(self) -> String:
+    pub fn trim(self) -> unique String:
         string.trim(self)
 
     // Remove leading whitespace.
-    pub fn trim_start(self) -> String:
+    pub fn trim_start(self) -> unique String:
         var i = 0
         let n = string.char_count(self)
         while i < n && is_space(char_or_empty(self, i)):
@@ -182,7 +182,7 @@ impl String:
         string.substring(self, i, n)
 
     // Remove trailing whitespace.
-    pub fn trim_end(self) -> String:
+    pub fn trim_end(self) -> unique String:
         var j = string.char_count(self)
         while j > 0 && is_space(char_or_empty(self, j - 1)):
             j = j - 1
@@ -195,7 +195,7 @@ impl String:
         string.to_int(self)
 
     // Repeat a string `n` times.
-    pub fn repeat(self, n: Int) -> String:
+    pub fn repeat(self, n: Int) -> unique String:
         var out = ""
         var i = 0
         while i < n:
@@ -278,7 +278,7 @@ impl String:
     // The string with its characters in reverse order. Counted by Unicode scalar
     // (via `char_count`/`substring`), so multi-byte characters stay intact:
     // `reverse("café")` is `"éfac"`.
-    pub fn reverse(self) -> String:
+    pub fn reverse(self) -> unique String:
         var out = ""
         var i = string.char_count(self) - 1
         while i >= 0:
@@ -287,11 +287,11 @@ impl String:
         out
 
     // The first `n` characters (the whole string if it is shorter, "" if n <= 0).
-    pub fn take(self, n: Int) -> String:
+    pub fn take(self, n: Int) -> unique String:
         string.substring(self, 0, n)
 
     // All characters after the first `n` ("" if n covers the whole string).
-    pub fn drop(self, n: Int) -> String:
+    pub fn drop(self, n: Int) -> unique String:
         string.substring(self, n, string.char_count(self))
 
     // The number of non-overlapping occurrences of `sub` in `self` (0 for an empty
@@ -312,7 +312,7 @@ impl String:
     // The whitespace-separated words of `self`: tabs, newlines, and carriage
     // returns are treated as spaces, and empty pieces (from runs of whitespace) are
     // dropped. `"the  quick\tfox".words()` is `["the", "quick", "fox"]`.
-    pub fn words(self) -> List(String):
+    pub fn words(self) -> unique List(String):
         let a = string.replace(self, "\t", " ")
         let b = string.replace(a, "\n", " ")
         let c = string.replace(b, "\r", " ")
@@ -421,7 +421,7 @@ impl String:
                         Some(string.to_int(self))
 
     // Split text into its newline-separated lines.
-    pub fn lines(self) -> List(String):
+    pub fn lines(self) -> unique List(String):
         string.split(self, "\n")
 
 // --- impl str: string slice methods ---
@@ -444,5 +444,5 @@ impl str:
         string.len(self) == 0
 
     // Materialize this rooted slice view as an owned String.
-    pub fn to_string(self: &str) -> String:
+    pub fn to_string(self: &str) -> unique String:
         string.to_string(self)

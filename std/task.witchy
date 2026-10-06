@@ -329,7 +329,7 @@ pub fn channel_select4_frame_loop(a: ChannelId, b: ChannelId, c: ChannelId, d: C
 fn __channel_select(channels: List(ChannelId), k: fn(Option((Int, __Msg))) -> Task(a)) -> Task(a):
     Task(fn(): PullAny(channel_ids(channels), k))
 
-fn channel_ids(channels: List(ChannelId)) -> List(Int):
+fn channel_ids(channels: List(ChannelId)) -> unique List(Int):
     list.map(channels, fn(channel):
         match channel:
             ChannelId(id) -> id
@@ -519,7 +519,7 @@ fn typed_i64_materialize(buf: List(Int), head: Int, count: Int, cap: Int) -> (Li
 // Entering any ordinary scheduler operation permanently retires a typed ring.
 // The caller keeps the channel-id-aligned tables, while this helper preserves
 // the FIFO contents in the existing erased representation exactly once.
-fn materialize_typed_i64_channel(ch: Int, var channels: List((List(__Msg), Int, Int, Int)), var typed_i64_channels: List(Option(__TypedI64Ring))):
+fn materialize_typed_i64_channel(ch: Int, var channels: unique List((List(__Msg), Int, Int, Int)), var typed_i64_channels: unique List(Option(__TypedI64Ring))):
     match list.at(typed_i64_channels, ch):
         Some((typed_buf, typed_head, typed_count, typed_cap)) ->
             list.set_at(channels, ch, typed_i64_materialize(typed_buf, typed_head, typed_count, typed_cap))
@@ -547,7 +547,7 @@ fn first_ready(k: Int, chs: List(Int), channels: List((List(__Msg), Int, Int, In
 // Remove the first ready message in source order across up to four channels.
 // Sharing this scan keeps the scheduler's fixed-arity select cases from
 // repeating the same ring read and head update for every receiver.
-fn first_message(k: Int, arity: Int, ch0: Int, ch1: Int, ch2: Int, ch3: Int, var channels: List((List(__Msg), Int, Int, Int))) -> Option((Int, __Msg)):
+fn first_message(k: Int, arity: Int, ch0: Int, ch1: Int, ch2: Int, ch3: Int, var channels: unique List((List(__Msg), Int, Int, Int))) -> Option((Int, __Msg)):
     if k >= arity:
         None
     else:

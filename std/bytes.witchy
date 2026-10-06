@@ -19,7 +19,7 @@ type BytesError:
     ByteOutOfRange(Int)
     InvalidUtf8
 
-pub fn bytes_error_message(e: BytesError) -> String:
+pub fn bytes_error_message(e: BytesError) -> unique String:
     match e:
         ByteOutOfRange(n) -> "bytes.from_list: value ${n} is outside 0..=255"
         InvalidUtf8 -> "bytes.decode_utf8: invalid UTF-8"
@@ -59,7 +59,7 @@ pub fn from_list_string(xs: List(Int)) -> Result(Bytes, String):
 // Decode bytes as UTF-8 text. Invalid sequences are replaced with U+FFFD (lossy),
 // so this never fails; round-tripping a string is exact because witchy strings are
 // always valid UTF-8. Prefer `to_string_lossy` when the lossy boundary matters.
-pub fn to_string(b: Bytes) -> String:
+pub fn to_string(b: Bytes) -> unique String:
     __bytes_to_string(b)
 
 // The number of bytes.
@@ -71,11 +71,11 @@ pub fn at(let b: Bytes, index: Int) -> Int:
     __bytes_at(b, index)
 
 // The two byte buffers joined.
-pub fn concat(first: Bytes, second: Bytes) -> Bytes:
+pub fn concat(first: Bytes, second: Bytes) -> unique Bytes:
     __bytes_concat(first, second)
 
 // The bytes in `start..end` (clamped to the buffer; `start >= end` yields empty).
-pub fn slice(b: Bytes, start: Int, end: Int) -> Bytes:
+pub fn slice(b: Bytes, start: Int, end: Int) -> unique Bytes:
     __bytes_slice(b, start, end)
 
 // An empty byte buffer with pre-allocated capacity.
@@ -83,7 +83,7 @@ pub fn with_capacity(capacity: Int) -> unique Bytes:
     __bytes_with_capacity(capacity)
 
 // A byte buffer of `count` identical bytes, each equal to `value` (0..=255).
-pub fn repeat(value: Int, count: Int) -> Bytes:
+pub fn repeat(value: Int, count: Int) -> unique Bytes:
     __bytes_repeat(value, count)
 
 // Append a single byte `value` (0..=255) to `bytes`.
@@ -97,17 +97,17 @@ pub fn append(var bytes: unique Bytes, let suffix: Bytes):
     return
 
 // Guarantee room for at least `additional` more bytes without changing contents.
-pub fn reserve(var bytes: Bytes, additional: Int):
+pub fn reserve(var bytes: unique Bytes, additional: Int):
     bytes = __bytes_reserve(bytes, additional)
     return
 
 // Store byte `value` (0..=255) at `index`.
-pub fn set_at(var bytes: Bytes, index: Int, value: Int):
+pub fn set_at(var bytes: unique Bytes, index: Int, value: Int):
     bytes = __bytes_set_at(bytes, index, value)
     return
 
 // Exchange the bytes at indices `first` and `second`.
-pub fn swap(var bytes: Bytes, first: Int, second: Int):
+pub fn swap(var bytes: unique Bytes, first: Int, second: Int):
     bytes = __bytes_swap(bytes, first, second)
     return
 
@@ -115,7 +115,7 @@ pub fn swap(var bytes: Bytes, first: Int, second: Int):
 
 // The bytes as a list of Ints - the core behind the `to_list` method, also used
 // by `decode_utf8`'s strict round-trip check.
-fn int_list(b: Bytes) -> List(Int):
+fn int_list(b: Bytes) -> unique List(Int):
     var out = []
     var i = 0
     while i < __bytes_length(b):
@@ -142,14 +142,14 @@ fn bytes_eq(a: Bytes, b: Bytes) -> Bool:
 impl Bytes:
     // Decode bytes as UTF-8 text, replacing invalid sequences with U+FFFD. This is
     // explicit about being lossy; use `decode_utf8` when invalid bytes must be an Err.
-    pub fn to_string_lossy(self) -> String:
+    pub fn to_string_lossy(self) -> unique String:
         __bytes_to_string(self)
 
     // Decode bytes as UTF-8 text. Invalid sequences are replaced with U+FFFD
     // (lossy), so this never fails; round-tripping a string is exact because
     // witchy strings are always valid UTF-8. Prefer `to_string_lossy` when the
     // lossy boundary matters.
-    pub fn to_string(self) -> String:
+    pub fn to_string(self) -> unique String:
         to_string(self)
 
     // Strict UTF-8 decode. Returns Err instead of replacing invalid byte sequences.
@@ -185,16 +185,16 @@ impl Bytes:
             Some(__bytes_at(self, index))
 
     // The two byte buffers joined.
-    pub fn concat(self, second: Bytes) -> Bytes:
+    pub fn concat(self, second: Bytes) -> unique Bytes:
         concat(self, second)
 
     // The bytes in `start..end` (clamped to the buffer; `start >= end` yields
     // empty).
-    pub fn slice(self, start: Int, end: Int) -> Bytes:
+    pub fn slice(self, start: Int, end: Int) -> unique Bytes:
         slice(self, start, end)
 
     // The bytes as a list of Ints in `0..=255`.
-    pub fn to_list(self) -> List(Int):
+    pub fn to_list(self) -> unique List(Int):
         int_list(self)
 
     // Whether `needle` appears in the buffer. An empty needle matches nothing
@@ -246,13 +246,13 @@ impl Bytes:
         append(self, suffix)
 
     // Guarantee room for at least `additional` more bytes without changing contents.
-    pub fn reserve(var self, additional: Int):
+    pub fn reserve(var self: unique Bytes, additional: Int):
         reserve(self, additional)
 
     // Store byte `value` (0..=255) at `index`.
-    pub fn set_at(var self, index: Int, value: Int):
+    pub fn set_at(var self: unique Bytes, index: Int, value: Int):
         set_at(self, index, value)
 
     // Exchange the bytes at indices `first` and `second`.
-    pub fn swap(var self, first: Int, second: Int):
+    pub fn swap(var self: unique Bytes, first: Int, second: Int):
         swap(self, first, second)

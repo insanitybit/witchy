@@ -33,7 +33,7 @@ pub fn find(pattern: String, text: String) -> Option((Int, Int)):
         Some(list.at(all, 0))
 
 // Every non-overlapping match, leftmost first.
-pub fn find_all(pattern: String, text: String) -> List((Int, Int)):
+pub fn find_all(pattern: String, text: String) -> unique List((Int, Int)):
     let encoded = match_spans(pattern, text)
     if encoded.is_empty():
         []
@@ -65,7 +65,7 @@ pub fn find_all(pattern: String, text: String) -> List((Int, Int)):
         out
 
 // The matched substrings, leftmost first: extract("\\d+", "a1b22") is ["1", "22"].
-pub fn extract(pattern: String, text: String) -> List(String):
+pub fn extract(pattern: String, text: String) -> unique List(String):
     var out = []
     for span in find_all(pattern, text):
         let (s, e) = span
@@ -82,7 +82,7 @@ pub fn replace_all(pattern: String, text: String, replacement: String) -> String
     ""
 
 // `text` split on every match: split(",\\s*", "a, b,c") is ["a", "b", "c"].
-pub fn split(pattern: String, text: String) -> List(String):
+pub fn split(pattern: String, text: String) -> unique List(String):
     var out = []
     var prev = 0
     for span in find_all(pattern, text):

@@ -27,7 +27,7 @@ pub fn join(a: String, b: String) -> String:
 // The final component: "a/b/c.txt" -> "c.txt", "a/b/" -> "b", "/" -> "/".
 // The empty relative path has the conventional lexical component "."; it is
 // never confused with the absolute root.
-pub fn base(p: String) -> String:
+pub fn base(p: String) -> unique String:
     let t = trim_slashes(p)
     if t.is_empty():
         "."
@@ -68,7 +68,7 @@ pub fn ext(p: String) -> Option(String):
         None
 
 // The base name without its extension (".bashrc" -> ".bashrc"; "a.b.c" -> "a.b").
-pub fn stem(p: String) -> String:
+pub fn stem(p: String) -> unique String:
     let b = base(p)
     match ext(p):
         Some(e) -> b.strip_suffix("." + e)
@@ -77,7 +77,7 @@ pub fn stem(p: String) -> String:
 // Collapse `.` and `..` segments and redundant slashes. A relative path that
 // backs out past its start keeps the leading `..`s; an absolute one cannot escape
 // its root. An empty result is "." (relative) or "/" (absolute).
-pub fn normalize(p: String) -> String:
+pub fn normalize(p: String) -> unique String:
     let absolute = is_abs(p)
     var stack = []
     for seg in p.split("/"):
@@ -97,19 +97,19 @@ pub fn normalize(p: String) -> String:
         joined
 
 // --- internals ---------------------------------------------------------------
-fn trim_slashes(p: String) -> String:
+fn trim_slashes(p: String) -> unique String:
     var t = p
     while t.char_count() > 1 && t.ends_with("/"):
         t = t.strip_suffix("/")
     t
 
-fn last(xs: List(String)) -> String:
+fn last(xs: List(String)) -> unique String:
     if list.length(xs) == 0:
         ""
     else:
         list.at(xs, list.length(xs) - 1)
 
-fn drop_last(xs: List(String)) -> List(String):
+fn drop_last(xs: List(String)) -> unique List(String):
     // Everything but the final element - `take` of one fewer (empty when `xs`
     // is, since `take` of a non-positive count is empty). Dogfoods std/iter.
     let out: List(String) = iter.collect(iter.from_list(xs).take(list.length(xs) - 1))

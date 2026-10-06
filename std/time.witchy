@@ -25,7 +25,7 @@ type TimeError:
     BadUtcOffset(String, String)
     UtcOffsetOutOfRange(String)
 
-pub fn time_error_message(e: TimeError) -> String:
+pub fn time_error_message(e: TimeError) -> unique String:
     match e:
         YearOutOfRange(y) -> "year ${y} is out of range 1..9999"
         MonthOutOfRange(mo) -> "month ${mo} is out of range 1..12"
@@ -208,24 +208,24 @@ pub fn is_leap(y: Int) -> Bool:
 pub fn weekday(d: DateTime) -> Int:
     pmod(days_from_civil(year(d), month(d), day(d)) + 4, 7)
 
-pub fn weekday_name(d: DateTime) -> String:
+pub fn weekday_name(d: DateTime) -> unique String:
     list.at(["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"], weekday(d))
 
-pub fn month_name(d: DateTime) -> String:
+pub fn month_name(d: DateTime) -> unique String:
     list.at(["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"], month(d) - 1)
 
 // --- formatting --------------------------------------------------------------
 
 // `YYYY-MM-DD`.
-pub fn date_string(d: DateTime) -> String:
+pub fn date_string(d: DateTime) -> unique String:
     pad4(year(d)) + "-" + pad2(month(d)) + "-" + pad2(day(d))
 
 // `HH:MM:SS`.
-pub fn time_string(d: DateTime) -> String:
+pub fn time_string(d: DateTime) -> unique String:
     pad2(hour(d)) + ":" + pad2(minute(d)) + ":" + pad2(second(d))
 
 // RFC 3339 / ISO 8601 in UTC, e.g. `2026-06-08T22:30:00Z`.
-pub fn iso8601(d: DateTime) -> String:
+pub fn iso8601(d: DateTime) -> unique String:
     date_string(d) + "T" + time_string(d) + "Z"
 
 impl Show for DateTime:
@@ -236,7 +236,7 @@ impl Show for DateTime:
 // Directives: %Y year, %m month, %d day, %H hour, %M minute, %S second,
 // %a/%A weekday (short/full), %b/%B month name (short/full), %% a literal
 // percent. Anything else after `%` passes through unchanged.
-pub fn format(d: DateTime, layout: String) -> String:
+pub fn format(d: DateTime, layout: String) -> unique String:
     var out = ""
     var pending = false
     for c in layout.chars():
@@ -253,7 +253,7 @@ pub fn format(d: DateTime, layout: String) -> String:
         out = out + "%"
     out
 
-fn directive(d: DateTime, c: String) -> String:
+fn directive(d: DateTime, c: String) -> unique String:
     match c:
         "Y" -> pad4(year(d))
         "m" -> pad2(month(d))
@@ -311,13 +311,13 @@ fn pmod(a: Int, b: Int) -> Int:
     else:
         m
 
-fn pad2(n: Int) -> String:
+fn pad2(n: Int) -> unique String:
     if n < 10:
         "0" + "${n}"
     else:
         "${n}"
 
-fn pad4(n: Int) -> String:
+fn pad4(n: Int) -> unique String:
     if n < 10:
         "000" + "${n}"
     else if n < 100:

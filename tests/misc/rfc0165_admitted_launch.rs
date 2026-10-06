@@ -800,3 +800,97 @@ fn admitted_a_recursive_builder_under_an_async_main_has_no_callable_obligation()
     );
     assert_eq!(output, vec!["15".to_string()]);
 }
+
+#[test]
+fn admitted_a_place_update_leaves_an_earlier_alias_unchanged() {
+    // An in-place update writes only a list no other binding holds; an
+    // alias of the same token takes the copying rebuild.
+    let output = run_admitted(
+        "fn main(console: Console):\n    var xs = [1, 2, 3]\n    let a = xs\n    for i in 0..3:\n        xs[i] = 9\n    console.print(\"${a[0]} ${xs[0]}\")\n",
+    );
+    assert_eq!(output, vec!["1 9".to_string()]);
+}
+
+#[test]
+fn admitted_list_snapshots_taken_in_an_updating_loop_keep_their_values() {
+    let output = run_admitted(
+        "fn main(console: Console):\n    var xs = [0, 0, 0]\n    var snaps = []\n    for i in 0..3:\n        xs[i] = i + 1\n        snaps.push(xs)\n    console.print(\"${snaps[0][1]} ${snaps[1][1]} ${snaps[2][2]} ${xs[2]}\")\n",
+    );
+    assert_eq!(output, vec!["0 2 3 3".to_string()]);
+}
+
+#[test]
+fn admitted_a_shared_list_entering_an_updating_loop_is_copied_once() {
+    // The loop takes one owned copy of a shared entry value; the original
+    // binding keeps its contents.
+    let output = run_admitted(
+        "fn main(console: Console):\n    let base = list.repeat(1, 3)\n    var xs = base\n    for i in 0..3:\n        xs.set_at(i, i + 5)\n    console.print(\"${base[0]} ${xs[0]} ${xs[2]}\")\n",
+    );
+    assert_eq!(output, vec!["1 5 7".to_string()]);
+}
+
+#[test]
+fn admitted_an_in_place_update_after_an_inner_loop_keeps_its_extent() {
+    // The update reloads the list header after an inner loop that carries
+    // another list; the unique back edge carries that checked count.
+    let output = run_admitted(
+        "fn f() -> Int:\n    var p = [1, 2, 3]\n    var c = [5, 5, 5]\n    var r = 1\n    var total = 0\n    while total < 3:\n        for i in 0..r:\n            p[i] = p[i + 1]\n        c[r] = c[r] - 1\n        total = total + 1\n    c[1] + p[0]\n\nfn main(console: Console):\n    console.print(\"${f()}\")\n",
+    );
+    assert_eq!(output, vec!["4".to_string()]);
+}
+
+#[test]
+fn admitted_a_byte_update_leaves_an_earlier_alias_unchanged() {
+    let output = run_admitted(
+        "import bytes\n\nfn main(console: Console):\n    var b = bytes.repeat(0, 4)\n    let a = b\n    b.set_at(0, 7)\n    b.swap(0, 3)\n    console.print(\"${a.at(0)} ${b.at(0)} ${b.at(3)}\")\n",
+    );
+    assert_eq!(output, vec!["0 0 7".to_string()]);
+}
+
+#[test]
+fn admitted_a_shared_unique_result_is_copied_at_its_return() {
+    // Normal mode repairs a `unique` result that is not the sole owner with
+    // one copy, so the caller's update cannot reach the argument.
+    let output = run_admitted(
+        "fn copied(xs: List(Int)) -> unique List(Int):\n    xs\n\nfn main(console: Console):\n    let a = [1, 2]\n    var b = copied(a)\n    b[0] = 9\n    console.print(\"${a[0]} ${b[0]}\")\n",
+    );
+    assert_eq!(output, vec!["1 9".to_string()]);
+}
+
+#[test]
+fn admitted_a_unique_call_result_binding_is_an_ordinary_value() {
+    // Binding a `unique` result coerces the temporary; the binding is an
+    // ordinary value that may be copied and reused.
+    let output = run_admitted(
+        "fn total(xs: List(Int)) -> Int:\n    xs.length()\n\nfn main(console: Console):\n    var xs = list.repeat(1, 3)\n    let snapshot = xs\n    xs[0] = 5\n    console.print(\"${total(xs) + total(xs)} ${snapshot[0]} ${xs[0]}\")\n",
+    );
+    assert_eq!(output, vec!["6 1 5".to_string()]);
+}
+
+#[test]
+fn admitted_a_shadowed_alias_keeps_its_list_after_an_in_place_update() {
+    // A nested `let` hides `ys`, an alias of `xs`'s token, while `xs` is
+    // updated. The hidden binding still observes the value when restored.
+    let output = run_admitted(
+        "fn main(console: Console):\n    var xs = [1, 2, 3]\n    var ys = [0, 0, 0]\n    ys = xs\n    if xs.length() > 0:\n        let ys = 7\n        xs[0] = 9\n    console.print(\"${ys[0]} ${xs[0]}\")\n",
+    );
+    assert_eq!(output, vec!["1 9".to_string()]);
+}
+
+#[test]
+fn admitted_a_shadowed_alias_keeps_its_bytes_after_an_in_place_update() {
+    let output = run_admitted(
+        "import bytes\n\nfn main(console: Console):\n    var xs = bytes.repeat(1, 3)\n    var ys = bytes.repeat(0, 3)\n    ys = xs\n    if xs.length() > 0:\n        let ys = 7\n        xs.set_at(0, 9)\n    console.print(\"${ys.at(0)} ${xs.at(0)}\")\n",
+    );
+    assert_eq!(output, vec!["1 9".to_string()]);
+}
+
+#[test]
+fn admitted_an_assigned_alias_keeps_its_list_across_an_updating_loop() {
+    // `ys = xs` binds the same token without a clone; the loop that updates
+    // `xs` in place must enter with its own copy.
+    let output = run_admitted(
+        "fn main(console: Console):\n    var xs = [1, 2, 3]\n    var ys = [0]\n    ys = xs\n    for i in 0..3:\n        xs[i] = 0\n    console.print(\"${ys[0]} ${xs[0]}\")\n",
+    );
+    assert_eq!(output, vec!["1 0".to_string()]);
+}

@@ -15,7 +15,9 @@ fn main(console: Console):
     b.items.push(replace(b))
     console.print(b.items.join("|"))
 "#;
-    for source in [source.to_owned(), format!("mode opt\n{source}")] {
+    // Opt mode proves the pushed list's ownership from its declared field.
+    let opt_source = format!("mode opt\n{}", source.replace("items: List(String)", "items: unique List(String)"));
+    for source in [source.to_owned(), opt_source] {
         let message = super::source::checked(&source)
             .expect_err("later argument must not replace the reserved receiver root");
         assert!(

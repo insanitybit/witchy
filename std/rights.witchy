@@ -33,7 +33,7 @@ pub fn any_covers(declared: List(String), demanded: String) -> Bool:
 
 // The demanded capabilities no declared capability covers - the gap a gate blocks
 // on (an under-declaration, or a widening of authority). Empty means admitted.
-pub fn uncovered(declared: List(String), demanded: List(String)) -> List(String):
+pub fn uncovered(declared: List(String), demanded: List(String)) -> unique List(String):
     var missing = []
     for cap in demanded:
         if !any_covers(declared, cap):
@@ -53,7 +53,7 @@ pub fn base_name(cap: String) -> String:
         cap
 
 // The rights inside "Kind[A, B]" as ["A", "B"] (trimmed, blanks dropped).
-pub fn rights_of(cap: String) -> List(String):
+pub fn rights_of(cap: String) -> unique List(String):
     let (_kind, rest) = cap.split_once("[")
     let inner = rest.strip_suffix("]")
     var out = []
@@ -79,7 +79,7 @@ fn net_covers(declared: List(String), demanded: List(String)) -> Bool:
     else:
         subset(net_verbs(demanded), net_verbs(declared)) && subset(net_transports(demanded), net_transports(declared))
 
-fn net_verbs(markers: List(String)) -> List(String):
+fn net_verbs(markers: List(String)) -> unique List(String):
     var out = []
     for marker in markers:
         if is_net_verb(marker):
@@ -89,7 +89,7 @@ fn net_verbs(markers: List(String)) -> List(String):
     else:
         out
 
-fn net_transports(markers: List(String)) -> List(String):
+fn net_transports(markers: List(String)) -> unique List(String):
     var out = []
     for marker in markers:
         if is_net_transport(marker):
@@ -99,7 +99,7 @@ fn net_transports(markers: List(String)) -> List(String):
     else:
         out
 
-fn net_unknowns(markers: List(String)) -> List(String):
+fn net_unknowns(markers: List(String)) -> unique List(String):
     var out = []
     for marker in markers:
         if !is_net_verb(marker) && !is_net_transport(marker):

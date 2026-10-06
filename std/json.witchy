@@ -34,11 +34,11 @@ type DeserializeError:
     DeserializeMissingField(String)
     DeserializeExpected(String)
 
-pub fn decode_error_message(e: DecodeError) -> String:
+pub fn decode_error_message(e: DecodeError) -> unique String:
     match e:
         DecodeError(message) -> message
 
-pub fn deserialize_error_message(e: DeserializeError) -> String:
+pub fn deserialize_error_message(e: DeserializeError) -> unique String:
     match e:
         DeserializeMissingField(key) -> "missing field `" + key + "`"
         DeserializeExpected(shape) -> "expected " + shape
@@ -70,7 +70,7 @@ fn decode_error(message: String) -> DecodeError:
 // non-colliding name: the pre-mono pass cannot resolve a method called from
 // inside the recursive helpers (`encode_array`/`encode_object`), so the
 // `encode` method delegates here.
-fn encode_value(j: Json) -> String:
+fn encode_value(j: Json) -> unique String:
     match j:
         JsonNull -> "null"
         JsonBool(b) -> if b: "true" else: "false"
@@ -81,7 +81,7 @@ fn encode_value(j: Json) -> String:
         JsonObject(pairs) -> encode_object(pairs)
 
 // The pretty serializer core (see `encode_value` for why it is a free function).
-fn encode_indent(j: Json, depth: Int) -> String:
+fn encode_indent(j: Json, depth: Int) -> unique String:
     match j:
         JsonNull -> "null"
         JsonBool(b) -> if b: "true" else: "false"
@@ -91,7 +91,7 @@ fn encode_indent(j: Json, depth: Int) -> String:
         JsonArray(items) -> pretty_array(items, depth)
         JsonObject(pairs) -> pretty_object(pairs, depth)
 
-fn pretty_array(items: List(Json), depth: Int) -> String:
+fn pretty_array(items: List(Json), depth: Int) -> unique String:
     if list.length(items) == 0:
         "[]"
     else:
@@ -106,7 +106,7 @@ fn pretty_array(items: List(Json), depth: Int) -> String:
             out = out + pad + encode_indent(it, depth + 1)
         out + "\n" + indent(depth) + "]"
 
-fn pretty_object(pairs: List((String, Json)), depth: Int) -> String:
+fn pretty_object(pairs: List((String, Json)), depth: Int) -> unique String:
     assert_unique_object_keys(pairs, "json.encode_pretty")
     if list.length(pairs) == 0:
         "{}"
@@ -123,7 +123,7 @@ fn pretty_object(pairs: List((String, Json)), depth: Int) -> String:
             out = out + pad + encode_string(k) + ": " + encode_indent(v, depth + 1)
         out + "\n" + indent(depth) + "}"
 
-fn indent(depth: Int) -> String:
+fn indent(depth: Int) -> unique String:
     var out = ""
     var i = 0
     while i < depth:
@@ -131,7 +131,7 @@ fn indent(depth: Int) -> String:
         i = i + 1
     out
 
-fn encode_array(items: List(Json)) -> String:
+fn encode_array(items: List(Json)) -> unique String:
     var out = "["
     var first = true
     for it in items:
@@ -142,7 +142,7 @@ fn encode_array(items: List(Json)) -> String:
         out = out + encode_value(it)
     out + "]"
 
-fn encode_object(pairs: List((String, Json))) -> String:
+fn encode_object(pairs: List((String, Json))) -> unique String:
     assert_unique_object_keys(pairs, "json.encode")
     var out = "{"
     var first = true
@@ -166,7 +166,7 @@ fn assert_unique_object_keys(pairs: List((String, Json)), context: String):
 // Render a Float as a JSON number. `inf`/`-inf`/`NaN` are not JSON tokens; a
 // core JSON encoder must fail loudly rather than erase the numeric value as
 // `null`, which already means an intentional JSON null / `Option.None`.
-fn encode_float(x: Float) -> String:
+fn encode_float(x: Float) -> unique String:
     if is_finite(x):
         "${x}"
     else:
@@ -174,7 +174,7 @@ fn encode_float(x: Float) -> String:
         ""
 
 // Wrap `s` in quotes, escaping the characters JSON requires.
-fn encode_string(s: String) -> String:
+fn encode_string(s: String) -> unique String:
     var out = "\""
     for c in s.chars():
         out = out + escape_char(c)
@@ -200,7 +200,7 @@ fn escape_char(c: String) -> String:
 // above) rendered as a JSON escape: `\b`/`\f` in short form, the rest as
 // `\u00XX`. RFC 8259 forbids a raw control character inside a string, so without
 // this the encoder produced invalid JSON no conformant parser would accept.
-fn escape_control(c: String) -> String:
+fn escape_control(c: String) -> unique String:
     let code = control_code(c)
     if code == 8:
         "\\b"
@@ -221,7 +221,7 @@ fn control_code(c: String) -> Int:
     0
 
 // One lowercase hex digit for `v` in 0..15 (always in range here).
-fn hex_digit(v: Int) -> String:
+fn hex_digit(v: Int) -> unique String:
     "0123456789abcdef".substring(v, v + 1)
 
 // --- Decoder (parsing) ---------------------------------------------------
@@ -251,7 +251,7 @@ pub fn decode(s: String) -> Result(Json, DecodeError):
 
 // Re-join `cs[a..b)` into a String - for the rare multi-char spans (a number's or literal's
 // text). The spans are short, so the per-char concat is negligible.
-fn cspan(cs: List(String), a: Int, b: Int) -> String:
+fn cspan(cs: List(String), a: Int, b: Int) -> unique String:
     var out = ""
     var k = a
     while k < b:
@@ -614,7 +614,7 @@ fn pairs_contains_key(pairs: List((String, Json)), key: String) -> Bool:
             return true
     false
 
-fn merge_pairs(pa: List((String, Json)), pb: List((String, Json))) -> List((String, Json)):
+fn merge_pairs(pa: List((String, Json)), pb: List((String, Json))) -> unique List((String, Json)):
     var out = []
     for p in pa:
         let (k, _v) = p
@@ -718,7 +718,7 @@ pub fn object_sorted(pairs: List((String, Json))) -> Json:
         sorted = insert_by_key(sorted, p)
     JsonObject(sorted)
 
-fn insert_by_key(sorted: List((String, Json)), item: (String, Json)) -> List((String, Json)):
+fn insert_by_key(sorted: List((String, Json)), item: (String, Json)) -> unique List((String, Json)):
     let (ik, _iv) = item
     var out = []
     var placed = false
@@ -733,7 +733,7 @@ fn insert_by_key(sorted: List((String, Json)), item: (String, Json)) -> List((St
     out
 
 // The "array of strings, leniently" core (`strings` method + `get_strings`).
-fn string_items(j: Json) -> List(String):
+fn string_items(j: Json) -> unique List(String):
     var out = []
     if let Some(items) = array_value(j):
         for it in items:
@@ -773,12 +773,12 @@ pub fn from_option(o: Option(a), each: fn(a) -> Json) -> Json:
 // private cores above; those methods delegate. ---
 impl Json:
     // Serialize to the compact textual form.
-    pub fn encode(self) -> String:
+    pub fn encode(self) -> unique String:
         encode_value(self)
 
     // Serialize with 2-space indentation, for human-readable output. Empty
     // arrays and objects stay on one line (`[]` / `{}`).
-    pub fn encode_pretty(self) -> String:
+    pub fn encode_pretty(self) -> unique String:
         encode_indent(self, 0)
 
     // Look up a key in a JSON object.
@@ -903,7 +903,7 @@ impl Json:
     // trust boundary (package, registry, or security code) where a wrong shape
     // must be an ERROR, use the strict path instead: `get` then `array_of`
     // (`Result`), coercing each element with `as_string`.
-    pub fn get_strings(self, key: String) -> List(String):
+    pub fn get_strings(self, key: String) -> unique List(String):
         match get_key(self, key):
             Some(arr) -> string_items(arr)
             None -> []
@@ -911,7 +911,7 @@ impl Json:
     // A JSON array value as a `List(String)`, dropping any non-string element.
     // Lenient by design (RFC-0044), like `get_strings`; for a strict decode use
     // `array_of` (`Result`) and coerce each element with `as_string`.
-    pub fn strings(self) -> List(String):
+    pub fn strings(self) -> unique List(String):
         string_items(self)
 
     // The string at index `i` of a JSON array, when it is a string.
@@ -938,7 +938,7 @@ impl Json:
 pub fn from_value(x: a) -> Json where a: Reflect:
     mirror_to_json(reflect(x))
 
-pub fn stringify(x: a) -> String where a: Reflect:
+pub fn stringify(x: a) -> unique String where a: Reflect:
     encode_value(from_value(x))
 
 // A `Json` reflects to its own value rather than to the `Json` enum's shape, so
@@ -958,13 +958,13 @@ impl Reflect for Json:
                 assert_unique_object_keys(fields, "json.reflect")
                 MRecord("", reflect_json_fields(fields))
 
-fn reflect_json_each(xs: List(Json)) -> List(Mirror):
+fn reflect_json_each(xs: List(Json)) -> unique List(Mirror):
     var out = []
     for x in xs:
         list.push(out, x.reflect())
     out
 
-fn reflect_json_fields(fields: List((String, Json))) -> List((String, Mirror)):
+fn reflect_json_fields(fields: List((String, Json))) -> unique List((String, Mirror)):
     var out = []
     for k, v in fields:
         list.push(out, (k, v.reflect()))
@@ -989,13 +989,13 @@ fn mirror_to_json(m: Mirror) -> Json:
         MRecord(_name, fields) -> JsonObject(mirror_fields(fields))
         MVariant(tyname, variant, payload) -> mirror_variant_to_json(tyname, variant, payload)
 
-fn mirror_each(xs: List(Mirror)) -> List(Json):
+fn mirror_each(xs: List(Mirror)) -> unique List(Json):
     var out = []
     for m in xs:
         list.push(out, mirror_to_json(m))
     out
 
-fn mirror_fields(fields: List((String, Mirror))) -> List((String, Json)):
+fn mirror_fields(fields: List((String, Mirror))) -> unique List((String, Json)):
     var out = []
     for k, m in fields:
         list.push(out, (k, mirror_to_json(m)))

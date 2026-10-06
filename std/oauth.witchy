@@ -32,7 +32,7 @@ type OAuthError:
     ProviderError(String)
     MissingTokenField(String)
 
-pub fn oauth_error_message(e: OAuthError) -> String:
+pub fn oauth_error_message(e: OAuthError) -> unique String:
     match e:
         TokenEndpointNotHttps(endpoint) -> "refusing to POST client credentials to a non-HTTPS token endpoint: " + endpoint
         BearerEndpointNotHttps(endpoint) -> "refusing to send a bearer token to a non-HTTPS URL: " + endpoint
@@ -60,7 +60,7 @@ impl From(OAuthError) for String:
 // provider's space-separated permission list (e.g. GitHub `read:user`, OIDC `openid email`).
 // An endpoint that already carries fixed parameters (a tenant, `prompt`, ...) is
 // extended with `&`, never a second `?`.
-pub fn authorize_url(authorize_endpoint: String, client_id: String, redirect_uri: String, scope: String, state: String) -> String:
+pub fn authorize_url(authorize_endpoint: String, client_id: String, redirect_uri: String, scope: String, state: String) -> unique String:
     let joiner = if authorize_endpoint.contains("?"): "&" else: "?"
     authorize_endpoint + joiner + "response_type=code" + "&client_id=" + url.encode(client_id) + "&redirect_uri=" + url.encode(redirect_uri) + "&scope=" + url.encode(scope) + "&state=" + url.encode(state)
 

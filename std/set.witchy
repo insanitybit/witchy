@@ -27,12 +27,12 @@ impl Eq for Set(a) where a: Hash
 // module-level; every other operation lives on the methods below (RFC-0099). ---
 
 // The empty set.
-pub fn new() -> Set(a):
+pub fn new() -> unique Set(a):
     Set([])
 
 // A set of the distinct values in `xs` (duplicates collapse, keeping the first
 // occurrence of each member).
-pub fn from_list(xs: List(a)) -> Set(a) where a: Hash:
+pub fn from_list(xs: List(a)) -> unique Set(a) where a: Hash:
     var items = []
     for x in xs:
         if !list.contains(items, x):
@@ -69,12 +69,12 @@ impl Set(a):
         list.length(self.items) == 0
 
     // The members as a list, in insertion order.
-    pub fn to_list(self) -> List(a):
+    pub fn to_list(self) -> unique List(a):
         to_list(self)
 
 impl Set(a) where a: Hash:
     // Add `x`, returning whether it was newly inserted.
-    pub fn insert(var self, x: a) -> Bool:
+    pub fn insert(var self: unique Set(a), x: a) -> Bool:
         let items = self.items
         if list.contains(items, x):
             false
@@ -85,7 +85,7 @@ impl Set(a) where a: Hash:
             true
 
     // Remove `x`, returning whether it was present.
-    pub fn remove(var self, x: a) -> Bool:
+    pub fn remove(var self: unique Set(a), x: a) -> Bool:
         let items = self.items
         var out = []
         var removed = false
@@ -103,7 +103,7 @@ impl Set(a) where a: Hash:
         list.contains(items, x)
 
     // Every member of either set.
-    pub fn union(self, other: Set(a)) -> Set(a):
+    pub fn union(self, other: Set(a)) -> unique Set(a):
         let titems = other.items
         var out = self.items
         for x in titems:
@@ -112,7 +112,7 @@ impl Set(a) where a: Hash:
         Set(out)
 
     // The members in both sets.
-    pub fn intersection(self, other: Set(a)) -> Set(a):
+    pub fn intersection(self, other: Set(a)) -> unique Set(a):
         let sitems = self.items
         let titems = other.items
         var out = []
@@ -122,7 +122,7 @@ impl Set(a) where a: Hash:
         Set(out)
 
     // The members of this set that are not in `other`.
-    pub fn difference(self, other: Set(a)) -> Set(a):
+    pub fn difference(self, other: Set(a)) -> unique Set(a):
         let sitems = self.items
         let titems = other.items
         var out = []
@@ -132,7 +132,7 @@ impl Set(a) where a: Hash:
         Set(out)
 
     // The members in exactly one of the two sets.
-    pub fn symmetric_difference(self, other: Set(a)) -> Set(a):
+    pub fn symmetric_difference(self, other: Set(a)) -> unique Set(a):
         let sitems = self.items
         let titems = other.items
         var out = []

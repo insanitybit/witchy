@@ -1967,7 +1967,7 @@ impl FunctionLowerer<'_> {
                 Err(CanonicalLoweringError::UnsupportedType(source.clone()))
             }
             PreparedProjection::Index { source, index, site } => {
-                self.replace_list_value(current, *index, replacement, source.clone(), site)
+                self.replace_owned_list_value(current, *index, replacement, source.clone(), site)
             }
             PreparedProjection::Field { source, index } => {
                 let shape = scalar_aggregate_shape(source, self.definitions)

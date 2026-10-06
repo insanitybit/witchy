@@ -21,7 +21,7 @@ type CompilerError:
     InternalJson(json.DecodeError)
     InternalShape(String)
 
-pub fn compiler_error_message(e: CompilerError) -> String:
+pub fn compiler_error_message(e: CompilerError) -> unique String:
     match e:
         SourceRejected(message) -> message
         InternalJson(reason) -> "compiler.try_doc internal JSON error: " + json.decode_error_message(reason)
@@ -88,7 +88,7 @@ pub fn try_doc_string(name: String, source: String) -> Result(String, String):
 // so a registry can safely generate browsable docs from a rune's stored source on
 // either backend. Display callers get parse/comptime-boundary errors as an HTML
 // comment; tooling should prefer `try_doc`.
-pub fn doc(name: String, source: String) -> String:
+pub fn doc(name: String, source: String) -> unique String:
     match try_doc(name, source):
         Ok(md) -> md
         Err(e) -> "<!-- doc error: " + compiler_error_message(e) + " -->"

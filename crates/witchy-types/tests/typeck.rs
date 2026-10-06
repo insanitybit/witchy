@@ -366,8 +366,17 @@ mod tests {
             "fn build() -> unique List(Int):\n    [1]\n\nfn forward() -> unique List(Int):\n    build()\n",
         )
         .expect("a direct unique result forwards its checked root owner");
-        let unproved = check_str("fn bad(xs: List(Int)) -> unique List(Int):\n    xs\n")
-            .expect_err("an arbitrary shared value cannot claim a unique root owner");
+        // Normal mode repairs a shared result with a copy at the return;
+        // opt mode must prove the root owner in source.
+        check_str("fn copied(xs: List(Int)) -> unique List(Int):\n    xs\n")
+            .expect("normal mode repairs a shared unique result with a copy");
+        // The return repairs only storage it can copy; a dictionary must
+        // still prove its root owner in source.
+        let dictionary = check_str("fn shared(d: Dict(String, Int)) -> unique Dict(String, Int):\n    d\n")
+            .expect_err("normal mode cannot repair a shared unique Dict result");
+        assert!(dictionary.contains("no root-owner proof"), "{dictionary}");
+        let unproved = check_str("mode opt\n\nfn bad(xs: List(Int)) -> unique List(Int):\n    xs\n")
+            .expect_err("an arbitrary shared value cannot claim a unique root owner in opt mode");
         assert!(unproved.contains("no root-owner proof"), "{unproved}");
 
         check_str(
@@ -381,9 +390,9 @@ mod tests {
         .expect("every completing control-flow arm establishes a fresh root owner");
 
         let method = check_str(
-            "type Holder:\n    values: List(Int)\n\nimpl Holder:\n    fn expose(let self: Holder) -> unique List(Int):\n        self.values\n",
+            "mode opt\n\ntype Holder:\n    values: List(Int)\n\nimpl Holder:\n    fn expose(let self: Holder) -> unique List(Int):\n        self.values\n",
         )
-        .expect_err("an impl method cannot relabel a shared field as unique");
+        .expect_err("an opt-mode impl method cannot relabel a shared field as unique");
         assert!(method.contains("no root-owner proof"), "{method}");
     }
 

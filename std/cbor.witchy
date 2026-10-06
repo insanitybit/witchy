@@ -25,7 +25,7 @@ type CborError:
     Unsupported(Int)
     IndefiniteLength
 
-pub fn cbor_error_message(e: CborError) -> String:
+pub fn cbor_error_message(e: CborError) -> unique String:
     match e:
         Truncated -> "CBOR input ended mid-item"
         Unsupported(major) -> "unsupported CBOR major type ${major}"

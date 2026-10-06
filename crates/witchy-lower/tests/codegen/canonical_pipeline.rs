@@ -241,7 +241,7 @@ fn clock_does_not_select_monotonic_or_other_capabilities() {
 
 #[test]
 fn shared_callable_cannot_satisfy_unique_function_value_contract() {
-    let source = "mode opt\n\nfn shared(var values: List(Int), value: Int) -> ():\n    values.push(value)\n\nfn apply(callback: fn(var unique List(Int), Int) -> (), var values: unique List(Int)) -> ():\n    callback(values, 3)\n\nfn main() -> Int:\n    var values: unique List(Int) = [1, 2]\n    apply(shared, values)\n    values.length()\n";
+    let source = "mode opt\n\nfn shared(var values: List(Int), value: Int) -> ():\n    values = [value]\n\nfn apply(callback: fn(var unique List(Int), Int) -> (), var values: unique List(Int)) -> ():\n    callback(values, 3)\n\nfn main() -> Int:\n    var values: unique List(Int) = [1, 2]\n    apply(shared, values)\n    values.length()\n";
     let error = match witchy_types::pipeline::link_checked_from_source_bundle(
         vec![("main".to_string(), source.as_bytes().to_vec())], "main", witchy_syntax::linker::ComptimeExpander::new(no_expand))
     {

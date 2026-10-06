@@ -37,7 +37,7 @@ Matchable byte-buffer conversion failures.
 - `ByteOutOfRange(Int)`
 - `InvalidUtf8`
 
-#### `fn bytes_error_message(e: BytesError) -> String`
+#### `fn bytes_error_message(e: BytesError) -> unique String`
 
 #### `fn from_string(s: String) -> unique Bytes`
 
@@ -49,7 +49,7 @@ Build raw bytes from integers in `0..=255`, or Err on the first invalid byte.
 
 #### `fn from_list_string(xs: List(Int)) -> Result(Bytes, String)`
 
-#### `fn to_string(b: Bytes) -> String`
+#### `fn to_string(b: Bytes) -> unique String`
 
 Decode bytes as UTF-8 text. Invalid sequences are replaced with U+FFFD (lossy), so this never fails; round-tripping a string is exact because witchy strings are always valid UTF-8. Prefer `to_string_lossy` when the lossy boundary matters.
 
@@ -61,11 +61,11 @@ The number of bytes.
 
 The byte at `index`, as an Int in `0..=255`.
 
-#### `fn concat(first: Bytes, second: Bytes) -> Bytes`
+#### `fn concat(first: Bytes, second: Bytes) -> unique Bytes`
 
 The two byte buffers joined.
 
-#### `fn slice(b: Bytes, start: Int, end: Int) -> Bytes`
+#### `fn slice(b: Bytes, start: Int, end: Int) -> unique Bytes`
 
 The bytes in `start..end` (clamped to the buffer; `start >= end` yields empty).
 
@@ -73,7 +73,7 @@ The bytes in `start..end` (clamped to the buffer; `start >= end` yields empty).
 
 An empty byte buffer with pre-allocated capacity.
 
-#### `fn repeat(value: Int, count: Int) -> Bytes`
+#### `fn repeat(value: Int, count: Int) -> unique Bytes`
 
 A byte buffer of `count` identical bytes, each equal to `value` (0..=255).
 
@@ -85,23 +85,23 @@ Append a single byte `value` (0..=255) to `bytes`.
 
 Append all bytes from `suffix` to `bytes`.
 
-#### `fn reserve(var bytes: Bytes, additional: Int)`
+#### `fn reserve(var bytes: unique Bytes, additional: Int)`
 
 Guarantee room for at least `additional` more bytes without changing contents.
 
-#### `fn set_at(var bytes: Bytes, index: Int, value: Int)`
+#### `fn set_at(var bytes: unique Bytes, index: Int, value: Int)`
 
 Store byte `value` (0..=255) at `index`.
 
-#### `fn swap(var bytes: Bytes, first: Int, second: Int)`
+#### `fn swap(var bytes: unique Bytes, first: Int, second: Int)`
 
 Exchange the bytes at indices `first` and `second`.
 
-#### `Bytes.to_string_lossy() -> String`
+#### `Bytes.to_string_lossy() -> unique String`
 
 Decode bytes as UTF-8 text, replacing invalid sequences with U+FFFD. This is explicit about being lossy; use `decode_utf8` when invalid bytes must be an Err.
 
-#### `Bytes.to_string() -> String`
+#### `Bytes.to_string() -> unique String`
 
 Decode bytes as UTF-8 text. Invalid sequences are replaced with U+FFFD (lossy), so this never fails; round-tripping a string is exact because witchy strings are always valid UTF-8. Prefer `to_string_lossy` when the lossy boundary matters.
 
@@ -127,15 +127,15 @@ The byte at `index`, as an Int in `0..=255`.
 
 The byte at `index`, or None when out of range.
 
-#### `Bytes.concat(second: Bytes) -> Bytes`
+#### `Bytes.concat(second: Bytes) -> unique Bytes`
 
 The two byte buffers joined.
 
-#### `Bytes.slice(start: Int, end: Int) -> Bytes`
+#### `Bytes.slice(start: Int, end: Int) -> unique Bytes`
 
 The bytes in `start..end` (clamped to the buffer; `start >= end` yields empty).
 
-#### `Bytes.to_list() -> List(Int)`
+#### `Bytes.to_list() -> unique List(Int)`
 
 The bytes as a list of Ints in `0..=255`.
 
@@ -201,7 +201,7 @@ Each variant carries the host's message. The module is preluded: `CapError` and 
 - `AlreadyExists(String)`
 - `Io(String)`
 
-#### `CapError.message() -> String`
+#### `CapError.message() -> unique String`
 
 The host's message, without the variant.
 
@@ -237,7 +237,7 @@ A decode failure. `Truncated` means the input ended mid-item; `Unsupported` carr
 - `Unsupported(Int)`
 - `IndefiniteLength`
 
-#### `fn cbor_error_message(e: CborError) -> String`
+#### `fn cbor_error_message(e: CborError) -> unique String`
 
 #### `fn decode(b: Bytes) -> Result(Cbor, CborError)`
 
@@ -356,7 +356,7 @@ A channel of logical `capacity`: a positive capacity is bounded (the sender bloc
 
 An unbounded channel - `send` never blocks (the buffer grows without limit).
 
-#### `fn __recv_stream(rx: Receiver(m)) -> List(m)`
+#### `fn __recv_stream(rx: Receiver(m)) -> unique List(m)`
 
 Compiler marker for `for await x in rx:`. The async lowering pass unwraps this declaration before execution; it exists only so source type checking can resolve the parser's lossless receive-stream marker. It must never be called as a runtime channel operation.
 
@@ -793,7 +793,7 @@ Matchable compiler-service failures. `SourceRejected` is the ordinary parse, typ
 - `InternalJson(json.DecodeError)`
 - `InternalShape(String)`
 
-#### `fn compiler_error_message(e: CompilerError) -> String`
+#### `fn compiler_error_message(e: CompilerError) -> unique String`
 
 #### `fn footprint(source: String) -> String`
 
@@ -811,7 +811,7 @@ Render `source` to Markdown API documentation, or return a typed parse/comptime 
 
 Render docs with String errors for application-style boundaries.
 
-#### `fn doc(name: String, source: String) -> String`
+#### `fn doc(name: String, source: String) -> unique String`
 
 Render `source` to Markdown API documentation (the same output as `witchy doc` for source-only modules): the module's public types, traits, trait implementations, and functions with their signatures and doc-comments, under a heading titled `name`. This only PARSES the source - it never runs it - so a registry can safely generate browsable docs from a rune's stored source on either backend. Display callers get parse/comptime-boundary errors as an HTML comment; tooling should prefer `try_doc`.
 
@@ -870,7 +870,7 @@ A SHAKE request that cannot be served. The only invalid input is an output lengt
 
 - `InvalidOutputLength(Int)`
 
-#### `fn verify_error_message(e: VerifyError) -> String`
+#### `fn verify_error_message(e: VerifyError) -> unique String`
 
 Human-readable verifier failure text. Kept as an explicit helper so existing String-oriented callers can preserve diagnostics while matching on `VerifyError` remains available for libraries.
 
@@ -878,11 +878,11 @@ Human-readable verifier failure text. Kept as an explicit helper so existing Str
 
 SHA-256 of a string's UTF-8 bytes, as 64 lowercase hex characters.
 
-#### `fn sha256_bytes(data: Bytes) -> String`
+#### `fn sha256_bytes(data: Bytes) -> unique String`
 
 SHA-256 of RAW bytes, as 64 lowercase hex characters. Unlike `sha256` (which hashes a string's UTF-8), this hashes the exact `Bytes` - the digest a binary artifact (e.g. a trusted-publisher) is verified against (RFC-0095). Native intrinsic; this body is a placeholder the runtime never executes.
 
-#### `fn rune_hash(paths: List(String), contents: List(String)) -> String`
+#### `fn rune_hash(paths: List(String), contents: List(String)) -> unique String`
 
 The canonical content hash of a rune's source tree, as `sha256:<hex>`. Pass parallel lists - one entry per file (`witchy.toml` plus each `src/**/*.witchy`): `paths[i]` is the relative path, `contents[i]` its text. Entries are sorted and length-prefixed before hashing, so the result is the rune's stable content address - the package manager's tamper-evident identity.
 
@@ -894,7 +894,7 @@ Verify an Ed25519 signature. `public_key` and `signature` are hex-encoded; `mess
 
 Sign `message` with a `Secret` capability (the host grants it; it cannot be forged), returning the hex signature. A by-handle operation: it asks only for `Seal`, so a sealed `Secret[Seal]` signs without ever being readable.
 
-#### `fn public_key(key: Secret[Seal]) -> String`
+#### `fn public_key(key: Secret[Seal]) -> unique String`
 
 The hex Ed25519 public key for a `Secret` - what verifiers check against. By-handle, so `Secret[Seal]` suffices.
 
@@ -914,15 +914,15 @@ Like `ecdsa_p256_verify` but the message is also hex - for binary messages such 
 
 Verify an RSASSA-PKCS1-v1_5 / SHA-256 signature - JWT/OIDC "RS256" (the algorithm GitHub Actions and Google sign their identity tokens with). `public_key` is the hex of a DER-encoded RSA public key (PKCS#1 `RSAPublicKey`); `signature` is hex; `message` is the raw signed bytes (`header.payload` for a JWT). Malformed inputs are `Err`; a well-formed but non-matching signature is `Ok(false)`. (Native-only.)
 
-#### `fn sha512(data: String) -> String`
+#### `fn sha512(data: String) -> unique String`
 
 SHA-512 of a string's UTF-8 bytes, as 128 lowercase hex characters. (Native-only.)
 
-#### `fn sha3_256(data: String) -> String`
+#### `fn sha3_256(data: String) -> unique String`
 
 SHA3-256 (FIPS 202) of a string's UTF-8 bytes, as 64 hex characters. (Native-only.)
 
-#### `fn hmac_sha256(key: String, message: String) -> String`
+#### `fn hmac_sha256(key: String, message: String) -> unique String`
 
 HMAC-SHA256 (FIPS 198-1). `key` is hex (so binary keys are representable); `message` is raw text. Returns the 64-hex-char tag. (Native-only.)
 
@@ -958,11 +958,11 @@ dict - the associative map.
 
 The core operations are native primitives (intercepted by both backends; the bodies are self-recursive placeholders giving the type checker their signatures): `dict.new`, `dict.insert`, `dict.get_or`, `dict.at`, `dict.update`, `dict.contains_key`, `dict.remove`, `dict.keys`, `dict.values`, `dict.pairs`, `dict.length`. The rest is the compositional layer - a lookup returning `Option`, constructors from pairs, and the map/filter/merge transforms. Values with a proved retained byte-buffer view carrier are admitted through the same recursive list storage relation as ordinary dictionary values. Insertion materializes a fresh owned byte buffer for a view crossing a callable boundary whose allocation class is unknown. A whole `&Dict(K, V)` view retains its root when both element types pass the recursive owned-list carrier proof and SafeWIR validates their physical slots. The existing String-key scalar witnesses keep their snapshots after owner updates. Newly generic shapes, including `&Dict(String, List(Int))`, remain implemented but unverified pending durable admitted-Wasm and zero-leak evidence.
 
-#### `fn new() -> Dict(k, v)`
+#### `fn new() -> unique Dict(k, v)`
 
 An empty Dict.
 
-#### `fn with_capacity(capacity: Int) -> Dict(k, v)`
+#### `fn with_capacity(capacity: Int) -> unique Dict(k, v)`
 
 An empty Dict with pre-allocated capacity.
 
@@ -986,7 +986,7 @@ The value for `key`, inserting `default` first when the key is absent. Returns t
 
 The value for `key`, or a runtime error when absent. This is the read half of the `d[key]` subscript surface; use `get`/`get_or` when absence is ordinary.
 
-#### `fn update(var d: Dict(k, v), key: k, default: v, f: fn(v) -> v) where k: Hash`
+#### `fn update(var d: unique Dict(k, v), key: k, default: v, f: fn(v) -> v) where k: Hash`
 
 #### `fn contains_key(let d: Dict(k, v), let key: k) -> Bool where k: Hash`
 
@@ -994,7 +994,7 @@ Whether `key` is present. The `_key` suffix is deliberate: a Dict contains key/v
 
 #### `fn contains_by(let d: Dict(k, v), query: &q) -> Bool where k: Hash, q: Equivalent(k)`
 
-#### `fn __pop_extract(var d: Dict(k, v)) -> Option((k, v))`
+#### `fn __pop_extract(var d: unique Dict(k, v)) -> Option((k, v))`
 
 Remove the oldest entry and transfer both the key and value. `None` proves that the write-back dictionary is empty, including its must obligations.
 
@@ -1004,15 +1004,15 @@ Remove `key`, returning its old value when present. The dictionary performs one 
 
 #### `fn pop(var d: unique Dict(k, v)) -> Option((k, v))`
 
-#### `fn keys(let d: Dict(k, v)) -> List(k)`
+#### `fn keys(let d: Dict(k, v)) -> unique List(k)`
 
 The keys, in insertion order.
 
-#### `fn values(let d: Dict(k, v)) -> List(v)`
+#### `fn values(let d: Dict(k, v)) -> unique List(v)`
 
 The values, in insertion order.
 
-#### `fn pairs(let d: Dict(k, v)) -> List((k, v))`
+#### `fn pairs(let d: Dict(k, v)) -> unique List((k, v))`
 
 The (key, value) pairs, in insertion order.
 
@@ -1036,19 +1036,19 @@ Transfer the oldest entry, including its key, to the caller.
 
 Whether the dict has no entries.
 
-#### `Dict.keys() -> List(k)`
+#### `Dict.keys() -> unique List(k)`
 
 The keys, in insertion order.
 
-#### `Dict.values() -> List(v)`
+#### `Dict.values() -> unique List(v)`
 
 The values, in insertion order.
 
-#### `Dict.pairs() -> List((k, v))`
+#### `Dict.pairs() -> unique List((k, v))`
 
 The (key, value) pairs, in insertion order.
 
-#### `Dict.values_where(pred: fn(k) -> Bool) -> List(v)`
+#### `Dict.values_where(pred: fn(k) -> Bool) -> unique List(v)`
 
 The values whose keys satisfy `pred`, in the Dict's iteration order.
 
@@ -1116,7 +1116,7 @@ Matchable duration parse failures. The payloads keep the original input, and `Un
 - `TrailingUnitlessNumber(String)`
 - `EmptyDuration(String)`
 
-#### `fn parse_error_message(e: DurationParseError) -> String`
+#### `fn parse_error_message(e: DurationParseError) -> unique String`
 
 #### `fn milliseconds(n: Int) -> Duration`
 
@@ -1180,11 +1180,11 @@ The seconds component (0..59).
 
 The milliseconds component (0..999).
 
-#### `fn clock(d: Duration) -> String`
+#### `fn clock(d: Duration) -> unique String`
 
 A clock string "H:MM:SS": minutes and seconds zero-padded, hours in full (so a long span reads as e.g. "100:00:00"); the sub-second part is dropped. A negative span renders as a single leading "-" over the absolute components ("-0:00:01"), never as negative fields inside the clock.
 
-#### `fn human(d: Duration) -> String`
+#### `fn human(d: Duration) -> unique String`
 
 A compact label that omits leading zero units: `1h1m1s`, `1m30s`, `5s`, and `500ms` for a pure sub-second span. A negative span (e.g. from subtraction) keeps its sign as a single leading "-" over the absolute magnitude: `-1s`, `-1m30s` - not the truncated-division fields of the raw negative count.
 
@@ -1322,35 +1322,35 @@ Convert one reflectable value into an owned dynamic envelope. The compiler repla
 
 Return the immutable descriptor carried by a dynamic value.
 
-#### `fn type_name(ty: RuntimeType) -> String`
+#### `fn type_name(ty: RuntimeType) -> unique String`
 
 Human-readable only. Descriptor equality and decoding never key on this name.
 
-#### `fn fields(ty: RuntimeType) -> List(RuntimeField)`
+#### `fn fields(ty: RuntimeType) -> unique List(RuntimeField)`
 
 Declared public readable fields in source order. The compiler replaces the intrinsic with an authenticated lookup over canonical descriptor IDs.
 
-#### `fn field_name(field: RuntimeField) -> String`
+#### `fn field_name(field: RuntimeField) -> unique String`
 
 #### `fn field_type(field: RuntimeField) -> RuntimeType`
 
-#### `fn methods(ty: RuntimeType) -> List(RuntimeMethod)`
+#### `fn methods(ty: RuntimeType) -> unique List(RuntimeMethod)`
 
 Public methods explicitly registered with `@dynamic`. The compiler replaces this lookup with immutable data from the closed authenticated method plan.
 
-#### `fn method_name(method: RuntimeMethod) -> String`
+#### `fn method_name(method: RuntimeMethod) -> unique String`
 
-#### `fn method_args(method: RuntimeMethod) -> List(RuntimeType)`
+#### `fn method_args(method: RuntimeMethod) -> unique List(RuntimeType)`
 
 #### `fn method_result(method: RuntimeMethod) -> RuntimeType`
 
-#### `fn method_capabilities(method: RuntimeMethod) -> List(String)`
+#### `fn method_capabilities(method: RuntimeMethod) -> unique List(String)`
 
 #### `fn method_access(method: RuntimeMethod) -> RuntimeCallableAccess`
 
 The canonical access identity covers the receiver and every declared method parameter, including explicit capabilities, in source order.
 
-#### `fn access_borrow_relations(access: RuntimeCallableAccess) -> List(RuntimeBorrowRelation)`
+#### `fn access_borrow_relations(access: RuntimeCallableAccess) -> unique List(RuntimeBorrowRelation)`
 
 #### `fn access_is_pure(access: RuntimeCallableAccess) -> Bool`
 
@@ -1358,21 +1358,21 @@ The canonical access identity covers the receiver and every declared method para
 
 #### `fn borrow_relation_lifetime(relation: RuntimeBorrowRelation) -> Int`
 
-#### `fn borrow_relation_output(relation: RuntimeBorrowRelation) -> List(RuntimeLoanProjectionStep)`
+#### `fn borrow_relation_output(relation: RuntimeBorrowRelation) -> unique List(RuntimeLoanProjectionStep)`
 
-#### `fn borrow_relation_owners(relation: RuntimeBorrowRelation) -> List(RuntimeBorrowOwner)`
+#### `fn borrow_relation_owners(relation: RuntimeBorrowRelation) -> unique List(RuntimeBorrowOwner)`
 
 #### `fn borrow_relation_storage(relation: RuntimeBorrowRelation) -> RuntimeType`
 
-#### `fn borrow_relation_storage_qualifiers(relation: RuntimeBorrowRelation) -> List(RuntimeQualifierSite)`
+#### `fn borrow_relation_storage_qualifiers(relation: RuntimeBorrowRelation) -> unique List(RuntimeQualifierSite)`
 
 #### `fn borrow_owner_parameter(owner: RuntimeBorrowOwner) -> Int`
 
-#### `fn borrow_owner_input(owner: RuntimeBorrowOwner) -> List(RuntimeLoanProjectionStep)`
+#### `fn borrow_owner_input(owner: RuntimeBorrowOwner) -> unique List(RuntimeLoanProjectionStep)`
 
-#### `fn qualifier_site_path(site: RuntimeQualifierSite) -> List(RuntimeQualifierPathStep)`
+#### `fn qualifier_site_path(site: RuntimeQualifierSite) -> unique List(RuntimeQualifierPathStep)`
 
-#### `fn qualifier_site_qualifiers(site: RuntimeQualifierSite) -> List(RuntimeAccessQualifier)`
+#### `fn qualifier_site_qualifiers(site: RuntimeQualifierSite) -> unique List(RuntimeAccessQualifier)`
 
 #### `fn call(value: Dynamic, name: String, args: List(Dynamic)) -> Result(Dynamic, DynamicError)`
 
@@ -1416,13 +1416,13 @@ Matchable decode failures for the text encodings this module supports.
 - `InvalidBase64(String)`
 - `InvalidBase64Url(String)`
 
-#### `fn encoding_error_message(e: EncodingError) -> String`
+#### `fn encoding_error_message(e: EncodingError) -> unique String`
 
-#### `fn hex_encode(data: String) -> String`
+#### `fn hex_encode(data: String) -> unique String`
 
 Lowercase hex of `data`'s UTF-8 bytes.
 
-#### `fn hex_encode_bytes(data: Bytes) -> String`
+#### `fn hex_encode_bytes(data: Bytes) -> unique String`
 
 Lowercase hex of raw bytes.
 
@@ -1442,15 +1442,15 @@ Decode hex with String errors for application-style boundaries.
 
 Decode hex bytes with String errors for application-style boundaries.
 
-#### `fn base64_encode(data: String) -> String`
+#### `fn base64_encode(data: String) -> unique String`
 
 Standard base64 (with `=` padding) of `data`'s UTF-8 bytes.
 
-#### `fn base64_encode_bytes(data: Bytes) -> String`
+#### `fn base64_encode_bytes(data: Bytes) -> unique String`
 
 Standard base64 (with `=` padding) of raw bytes.
 
-#### `fn base64url_encode_bytes(data: Bytes) -> String`
+#### `fn base64url_encode_bytes(data: Bytes) -> unique String`
 
 base64url (no padding; `-`/`_`) of raw bytes.
 
@@ -1653,7 +1653,7 @@ Yield control to the executor once, then continue. `await yield_now()` is a coop
 
 Drive a single future to completion and return its value. Recursive on `More` so it needs no initial `a` (there is no default value for a generic type).
 
-#### `fn join_all(tasks: List(Future(a))) -> List(a)`
+#### `fn join_all(tasks: List(Future(a))) -> unique List(a)`
 
 Drive every task in `tasks` concurrently to completion, returning their results in the original order. The schedule is a deterministic round-robin - one poll step per task per round - so it is single-threaded and fixed-order on both backends. Deterministic continuations therefore agree; ordinary continuations may exercise delegated effects. Tasks interleave at their `pending`/`await` points. This is the structured-concurrency primitive (`scope`/`join`): hand it the task list and it fans them out, joining all before it returns.
 
@@ -1709,11 +1709,11 @@ A parsed request the server hands to a handler: method, raw path, the path param
 
 - `RequestBuilder(String, String, List((String, String)), String)`
 
-#### `fn response_parse_error_message(e: ResponseParseError) -> String`
+#### `fn response_parse_error_message(e: ResponseParseError) -> unique String`
 
-#### `fn http_error_message(e: HttpError) -> String`
+#### `fn http_error_message(e: HttpError) -> unique String`
 
-#### `fn origin(raw: String) -> String`
+#### `fn origin(raw: String) -> unique String`
 
 Canonical origin text for deriving Fetch from Net. Invalid or unsupported URLs are configuration errors here; request-time URL failures remain typed.
 
@@ -1759,7 +1759,7 @@ Whether the response status is in the 2xx success range.
 
 The numeric status code, e.g. 200.
 
-#### `fn body(r: Response) -> String`
+#### `fn body(r: Response) -> unique String`
 
 The response body.
 
@@ -2053,9 +2053,9 @@ Reconstruct a value from a `Json`. Reflection can read a value's structure but n
 
 - `fn from_json(j: Json) -> Result(Self, DeserializeError)`
 
-#### `fn decode_error_message(e: DecodeError) -> String`
+#### `fn decode_error_message(e: DecodeError) -> unique String`
 
-#### `fn deserialize_error_message(e: DeserializeError) -> String`
+#### `fn deserialize_error_message(e: DeserializeError) -> unique String`
 
 #### `fn decode(s: String) -> Result(Json, DecodeError)`
 
@@ -2077,13 +2077,13 @@ Encode an `Option` as payload-or-`null` - `Some(x)` through `each`, `None` as `J
 
 `from_value(x)` encodes a value to `Json` by reflecting over its structure, so it works for any type with no derive. `stringify(x)` returns the encoded string.
 
-#### `fn stringify(x: a) -> String where a: Reflect`
+#### `fn stringify(x: a) -> unique String where a: Reflect`
 
-#### `Json.encode() -> String`
+#### `Json.encode() -> unique String`
 
 Serialize to the compact textual form.
 
-#### `Json.encode_pretty() -> String`
+#### `Json.encode_pretty() -> unique String`
 
 Serialize with 2-space indentation, for human-readable output. Empty arrays and objects stay on one line (`[]` / `{}`).
 
@@ -2149,13 +2149,13 @@ A JSON number with no fraction/exponent decodes to `JsonInt`, but it is still a 
 
 #### `Json.get_bool(key: String) -> Option(Bool)`
 
-#### `Json.get_strings(key: String) -> List(String)`
+#### `Json.get_strings(key: String) -> unique List(String)`
 
 The string array at `key` as a `List(String)`, dropping any non-string element; `[]` when the key is absent or not an array. Collapses the very common "decode an object's array-of-strings field" pattern into one call.
 
 LENIENT BY DESIGN (RFC-0044): a missing key, a non-array value, and a non-string element all collapse to the same empty/filtered result - ergonomic for display, but it cannot tell "absent" from "malformed". At a trust boundary (package, registry, or security code) where a wrong shape must be an ERROR, use the strict path instead: `get` then `array_of` (`Result`), coercing each element with `as_string`.
 
-#### `Json.strings() -> List(String)`
+#### `Json.strings() -> unique List(String)`
 
 A JSON array value as a `List(String)`, dropping any non-string element. Lenient by design (RFC-0044), like `get_strings`; for a strict decode use `array_of` (`Result`) and coerce each element with `as_string`.
 
@@ -2277,7 +2277,7 @@ Matchable compact-JWT/OIDC verification failures. These distinguish malformed wi
 - `JwksKeysNotArray`
 - `JwksNoMatchingRsaKey(String)`
 
-#### `fn jwt_error_message(e: JwtError) -> String`
+#### `fn jwt_error_message(e: JwtError) -> unique String`
 
 Human-readable JWT/OIDC failure text for logs, CLI output, and HTTP responses.
 
@@ -2295,7 +2295,7 @@ The stricter relying-party entrypoint for short-lived identity tokens. RFC 7519 
 
 `clock_skew` applies only to a future `iat`. Expiry and nbf remain strict, so this API never extends the token's signed validity interval.
 
-#### `fn sign_eddsa(claims: Json, key: Secret[Seal]) -> String`
+#### `fn sign_eddsa(claims: Json, key: Secret[Seal]) -> unique String`
 
 Mint a compact EdDSA (Ed25519) JWT. The JOSE header is `{"alg":"EdDSA","typ": "JWT"}`; the signing input is `base64url(header) + "." + base64url(claims JSON)`; that ASCII is signed with the Ed25519 `Secret` (`crypto.sign`, hex output), and the hex signature is base64url-encoded as the third segment. The caller sets the registered claims (`iss`/`aud`/`sub`/`iat`/`exp`/…) in `claims`. Signing is by-handle, so a sealed `Secret[Seal]` mints tokens without being readable.
 
@@ -2351,7 +2351,7 @@ Select the RSA public key for `kid` from a JWKS document (`{"keys":[{"kty":"RSA"
 
 The witchy standard list library. Importing it grants no root authority, and its direct operations transform ordinary data. Higher-order combinators such as `map`, `filter`, and `fold` invoke the ordinary callbacks supplied by their callers; those callbacks are opaque delegated behavior and may be effectful.
 
-#### `fn with_capacity(capacity: Int) -> List(a)`
+#### `fn with_capacity(capacity: Int) -> unique List(a)`
 
 An empty list with pre-allocated capacity.
 
@@ -2363,27 +2363,27 @@ The number of elements.
 
 The element at `index` (0-based). Out of bounds is a runtime error on every backend.
 
-#### `fn __pop_extract(var xs: List(a)) -> Option(a)`
+#### `fn __pop_extract(var xs: unique List(a)) -> Option(a)`
 
 Remove the final element and return its old leaf. The repaired list travels through the same `var` write-back channel as every public mutator.
 
-#### `fn push(var xs: List(a), x: a)`
+#### `fn push(var xs: unique List(a), x: a)`
 
 Append `x` in place. For an admitted retained-root view element, append retains its snapshot root; later changes to the source binding do not retarget the stored view.
 
 #### `fn push_owned(var xs: List(a), own x: a)`
 
-Transfer an affine element into the list through the same checked append operation. Copyable callers can use `push` without moving their binding.
+Transfer an affine element into the list through the same checked append operation. Copyable callers can use `push` without moving their binding. The receiver is not declared `unique`: a list of affine elements cannot be repaired by copying, and its elements' affinity already keeps it exclusive.
 
-#### `fn concat(xs: List(a), ys: List(a)) -> List(a)`
+#### `fn concat(xs: List(a), ys: List(a)) -> unique List(a)`
 
 A new list that is `xs` followed by `ys`.
 
-#### `fn set_at(var xs: List(a), index: Int, value: a)`
+#### `fn set_at(var xs: unique List(a), index: Int, value: a)`
 
 Store `value` at `index`. An out-of-range (or negative) index is a runtime error on both backends, symmetric with `list.at` and `xs[i]`.
 
-#### `fn update_at(var xs: List(a), index: Int, f: fn(a) -> a)`
+#### `fn update_at(var xs: unique List(a), index: Int, f: fn(a) -> a)`
 
 A copy of `xs` with the function `f` applied to the element at `index`. An out-of-range (or negative) index is a runtime error on both backends, exactly like `list.at` - a silently discarded update is a contract violation (RFC-0044 rule 3), so it aborts rather than leaving the list unchanged.
 
@@ -2391,23 +2391,23 @@ A copy of `xs` with the function `f` applied to the element at `index`. An out-o
 
 Remove and return the final element. A uniquely owned non-empty list moves the leaf out in O(1) without copying its spine; a shared root is copied so aliases retain their old contents in normal mode. In `mode opt`, the `unique` receiver rejects a shared or loaned call site with the ownership reason. An empty list returns None without copying.
 
-#### `fn slice(xs: List(a), start: Int, end: Int) -> List(a)`
+#### `fn slice(xs: List(a), start: Int, end: Int) -> unique List(a)`
 
 The elements in the half-open index range [start, end), clamped to bounds. `slice(xs, 1, 3)` of [a,b,c,d] is [b,c]. An immutable view `&xs[start..end]` retains a snapshot instead; its compiler-known `.owned()` copies that range to a fresh list when the checked element has a recursive ownership carrier: a scalar, String, List, nonempty tuple, Dict, or non-packed checked aggregate whose fields and variant payloads have the same proof. Other element types fail closed.
 
-#### `fn range(n: Int) -> List(Int)`
+#### `fn range(n: Int) -> unique List(Int)`
 
 [0, 1, ..., n-1].
 
-#### `fn range_between(lo: Int, hi: Int) -> List(Int)`
+#### `fn range_between(lo: Int, hi: Int) -> unique List(Int)`
 
 The half-open span `lo..hi`: [lo, lo+1, ..., hi-1], empty when `lo >= hi`.
 
-#### `fn range_step(start: Int, stop: Int, step: Int) -> List(Int)`
+#### `fn range_step(start: Int, stop: Int, step: Int) -> unique List(Int)`
 
 The span from `start` toward `stop` (exclusive) advancing by `step`. A positive `step` counts up while below `stop`, a negative `step` counts down while above `stop`, and a zero `step` yields [] rather than looping forever.
 
-#### `fn repeat(x: a, n: Int) -> List(a)`
+#### `fn repeat(x: a, n: Int) -> unique List(a)`
 
 A list of `n` copies of `x` (empty when `n <= 0`).
 
@@ -2415,15 +2415,15 @@ A list of `n` copies of `x` (empty when `n <= 0`).
 
 Append `x` in place. For an admitted retained-root view element, append retains its snapshot root; later changes to the source binding do not retarget the stored view.
 
-#### `List.concat(ys: List(a)) -> List(a)`
+#### `List.concat(ys: List(a)) -> unique List(a)`
 
 A new list that is `xs` followed by `ys`.
 
-#### `List.map(f: fn(a) -> b) -> List(b)`
+#### `List.map(f: fn(a) -> b) -> unique List(b)`
 
 Apply `f` to every element, collecting the results.
 
-#### `List.filter(keep: fn(a) -> Bool) -> List(a)`
+#### `List.filter(keep: fn(a) -> Bool) -> unique List(a)`
 
 Keep only the elements for which `keep` returns true.
 
@@ -2467,7 +2467,7 @@ Whether the list has no elements.
 
 The element at `index` (0-based). Out of bounds is a runtime error on every backend.
 
-#### `List.slice(start: Int, end: Int) -> List(a)`
+#### `List.slice(start: Int, end: Int) -> unique List(a)`
 
 The elements in the half-open index range [start, end), clamped to bounds. `slice(xs, 1, 3)` of [a,b,c,d] is [b,c]. An immutable view `&xs[start..end]` retains a snapshot instead; its compiler-known `.owned()` copies that range to a fresh list when the checked element has a recursive ownership carrier: a scalar, String, List, nonempty tuple, Dict, or non-packed checked aggregate whose fields and variant payloads have the same proof. Other element types fail closed.
 
@@ -2527,7 +2527,7 @@ Reduce the list to a single value, left to right.
 
 Combine the elements left to right using the first as the seed, as `Some`; `None` for the empty list. (A `fold` that needs no initial value - handy for max/min/sum over a non-empty list with a plain binary op.)
 
-#### `List.scan(init: b, f: fn(b, a) -> b) -> List(b)`
+#### `List.scan(init: b, f: fn(b, a) -> b) -> unique List(b)`
 
 Like `fold`, but collect every intermediate accumulator left to right, starting from `init`: scan([1,2,3], 0, +) -> [0, 1, 3, 6].
 
@@ -2543,31 +2543,31 @@ The sum of `f` applied to each element (0 for the empty list) - e.g. a total ove
 
 The product of a list of integers (1 for the empty list).
 
-#### `List.flat_map(f: fn(a) -> List(b)) -> List(b)`
+#### `List.flat_map(f: fn(a) -> List(b)) -> unique List(b)`
 
 Map each element to a list, then concatenate the results.
 
-#### `List.flatten() -> List(b)`
+#### `List.flatten() -> unique List(b)`
 
 Concatenate a list of lists into one.
 
-#### `List.transpose() -> List(List(b))`
+#### `List.transpose() -> unique List(List(b))`
 
 Turn a list of rows into a list of columns. Rows are read only up to the length of the SHORTEST row, so a ragged tail is dropped and the result stays rectangular: `[[1, 2, 3], [4, 5, 6]].transpose()` is `[[1, 4], [2, 5], [3, 6]]`.
 
-#### `List.take(n: Int) -> List(a)`
+#### `List.take(n: Int) -> unique List(a)`
 
 The first `n` elements (fewer if the list is shorter).
 
-#### `List.drop(n: Int) -> List(a)`
+#### `List.drop(n: Int) -> unique List(a)`
 
 All but the first `n` elements.
 
-#### `List.take_while(pred: fn(a) -> Bool) -> List(a)`
+#### `List.take_while(pred: fn(a) -> Bool) -> unique List(a)`
 
 The longest leading run of elements satisfying `pred`.
 
-#### `List.drop_while(pred: fn(a) -> Bool) -> List(a)`
+#### `List.drop_while(pred: fn(a) -> Bool) -> unique List(a)`
 
 Drop the longest leading run satisfying `pred`, keeping the rest.
 
@@ -2575,27 +2575,27 @@ Drop the longest leading run satisfying `pred`, keeping the rest.
 
 Split the list at index `n` into `(first n, the rest)`. `n` is clamped, so `xs.split_at(0)` is `([], xs)` and an `n` past the end gives `(xs, [])`.
 
-#### `List.tail() -> List(a)`
+#### `List.tail() -> unique List(a)`
 
 All elements after the first; the empty list maps to the empty list.
 
-#### `List.drop_last() -> List(a)`
+#### `List.drop_last() -> unique List(a)`
 
 All elements except the last; the empty list maps to the empty list.
 
-#### `List.chunks(n: Int) -> List(List(a))`
+#### `List.chunks(n: Int) -> unique List(List(a))`
 
 Split the list into consecutive sublists of length `n` (the final one may be shorter). `[1,2,3,4,5].chunks(2)` is `[[1,2],[3,4],[5]]`; there are no chunks of a non-positive length, so `n < 1` yields `[]` (like `windows`).
 
-#### `List.windows(n: Int) -> List(List(a))`
+#### `List.windows(n: Int) -> unique List(List(a))`
 
 All contiguous sublists of length `n` (a sliding window of step 1). Empty when `n < 1` or longer than the list. `[1,2,3,4].windows(2)` is `[[1,2],[2,3],[3,4]]`.
 
-#### `List.zip(ys: List(b)) -> List((a, b))`
+#### `List.zip(ys: List(b)) -> unique List((a, b))`
 
 Pair up two lists element-wise, stopping at the shorter one.
 
-#### `List.zip_with(ys: List(b), f: fn(a, b) -> c) -> List(c)`
+#### `List.zip_with(ys: List(b), f: fn(a, b) -> c) -> unique List(c)`
 
 Combine two lists element-wise with `f`, stopping at the shorter one.
 
@@ -2603,11 +2603,11 @@ Combine two lists element-wise with `f`, stopping at the shorter one.
 
 Split a list of pairs into a pair of lists - the inverse of `zip`.
 
-#### `List.enumerate() -> List((Int, a))`
+#### `List.enumerate() -> unique List((Int, a))`
 
 Pair each element with its index: `[a, b]` -> `[(0, a), (1, b)]`.
 
-#### `List.intersperse(sep: a) -> List(a)`
+#### `List.intersperse(sep: a) -> unique List(a)`
 
 Insert `sep` between adjacent elements: [a, b, c] -> [a, sep, b, sep, c].
 
@@ -2639,7 +2639,7 @@ Remove the first occurrence of `target`, reporting whether one was removed; the 
 
 The number of elements equal to `target`, by the element type's `Eq` impl. This is the counted companion to `contains`, so equality dispatch stays in the list module alongside membership, indexing, and de-duplication.
 
-#### `List.unique() -> List(a)`
+#### `List.unique() -> unique List(a)`
 
 The list with duplicates removed, keeping the first occurrence of each element (by the element type's `Eq`), in original order.
 
@@ -2655,7 +2655,7 @@ The smallest element as `Some`, or `None` for the empty list. Generic over any `
 
 The largest element as `Some`, or `None` for the empty list. Generic over any `Ord` element type - see `min`.
 
-#### `List.join(sep: String) -> String`
+#### `List.join(sep: String) -> unique String`
 
 Concatenate the strings, inserting `sep` between adjacent elements: `["a", "b", "c"].join("-")` is `"a-b-c"`, and `[].join(sep)` is `""`.
 
@@ -2735,15 +2735,15 @@ Integer square root: the largest `r` with `r*r <= n` (`isqrt(0)` is 0). A negati
 
 Whether `n` is a perfect square (0, 1, 4, 9, ...). Negative `n` is never one.
 
-#### `fn to_base(n: Int, base: Int) -> String`
+#### `fn to_base(n: Int, base: Int) -> unique String`
 
 Render `n` in `base` (2..16) with lowercase digits; a negative `n` gets a leading "-". A base outside 2..16 has no digit alphabet, so it fails loudly naming the bad argument (RFC-0044 rule 3) rather than returning "".
 
-#### `fn to_hex(n: Int) -> String`
+#### `fn to_hex(n: Int) -> unique String`
 
 `n` in hexadecimal (e.g. 255 -> "ff").
 
-#### `fn to_binary(n: Int) -> String`
+#### `fn to_binary(n: Int) -> unique String`
 
 `n` in binary (e.g. 5 -> "101").
 
@@ -3162,9 +3162,9 @@ Structural impl construction with typed conditional bounds. Each pair is `(type_
 
 #### `fn module(items: List(ItemSyntax)) -> ModuleSyntax`
 
-#### `fn module_items(module_syntax: ModuleSyntax) -> List(ItemSyntax)`
+#### `fn module_items(module_syntax: ModuleSyntax) -> unique List(ItemSyntax)`
 
-#### `fn type_source(ty: TypeExpr) -> String`
+#### `fn type_source(ty: TypeExpr) -> unique String`
 
 Render a structured type back to source text only when generated source needs to name the type. Semantic branching should stay on `TypeExpr`, not this string.
 
@@ -3219,9 +3219,9 @@ Matchable OAuth/OIDC client failures. Transport, provider HTTP status, JSON resp
 - `ProviderError(String)`
 - `MissingTokenField(String)`
 
-#### `fn oauth_error_message(e: OAuthError) -> String`
+#### `fn oauth_error_message(e: OAuthError) -> unique String`
 
-#### `fn authorize_url(authorize_endpoint: String, client_id: String, redirect_uri: String, scope: String, state: String) -> String`
+#### `fn authorize_url(authorize_endpoint: String, client_id: String, redirect_uri: String, scope: String, state: String) -> unique String`
 
 The provider authorization-endpoint URL to redirect the user to. After the user approves, the provider redirects to `redirect_uri?code=...&state=...`. `scope` is the provider's space-separated permission list (e.g. GitHub `read:user`, OIDC `openid email`). An endpoint that already carries fixed parameters (a tenant, `prompt`, ...) is extended with `&`, never a second `?`.
 
@@ -3364,7 +3364,7 @@ Whether `p` is absolute (rooted at `/`).
 
 Join two path pieces with a single `/`. An empty piece is ignored; an absolute `b` replaces `a`.
 
-#### `fn base(p: String) -> String`
+#### `fn base(p: String) -> unique String`
 
 The final component: "a/b/c.txt" -> "c.txt", "a/b/" -> "b", "/" -> "/". The empty relative path has the conventional lexical component "."; it is never confused with the absolute root.
 
@@ -3376,11 +3376,11 @@ The parent before the final component as `Some`: "a/b/c" -> Some("a/b"), "/x" ->
 
 The extension after the final `.` in the base name, WITHOUT the leading dot, as `Some` ("a/b.tar.gz" -> Some("gz")) - matching Rust's `Path::extension` both in dropping the dot AND in the `Option` shape (RFC-0044 rule 1). A base with no extension, a dotfile base (".bashrc"), or the parent marker ("..") is `None`. A trailing dot on an ordinary filename is an empty extension.
 
-#### `fn stem(p: String) -> String`
+#### `fn stem(p: String) -> unique String`
 
 The base name without its extension (".bashrc" -> ".bashrc"; "a.b.c" -> "a.b").
 
-#### `fn normalize(p: String) -> String`
+#### `fn normalize(p: String) -> unique String`
 
 Collapse `.` and `..` segments and redundant slashes. A relative path that backs out past its start keeps the leading `..`s; an absolute one cannot escape its root. An empty result is "." (relative) or "/" (absolute).
 
@@ -3520,7 +3520,7 @@ A non-negative integer in `[0, n)`. `n` must be positive (RFC-0044 rule 3): `[0,
 
 A fair coin.
 
-#### `fn hex(rand: Rand, nbytes: Int) -> String`
+#### `fn hex(rand: Rand, nbytes: Int) -> unique String`
 
 `nbytes` random bytes rendered as lowercase hex (2 chars per byte) - the form a WebAuthn challenge, a CSRF nonce, or a session/token id wants. Draws full 64-bit words and truncates to the requested length.
 
@@ -3585,7 +3585,7 @@ A `Set` reflects to the same `MList` shape as its insertion-order `to_list` view
 
 A `Dict` reflects to an `MRecord` - the same string-keyed shape a record uses, so `json` encodes it as an object and `debug` renders it record-style. Each key is rendered to a string (an object/record key is always a string), each value reflects through the `v: Reflect` bound. This is intentionally one-way for encoding/debug: reflection does not preserve enough key structure for a general `Dict(k, v)` deserialize round trip. A free function for the same reason `reflect_list` is: a `Dict` receiver's `.reflect()` would bind to the `dict` module, so the generated `reflect` for a `Dict` field routes here.
 
-#### `fn debug(x: a) -> String where a: Reflect`
+#### `fn debug(x: a) -> unique String where a: Reflect`
 
 `debug(x)` renders any value from its reflection, using the same `reflect` that backs `json`.
 
@@ -3691,11 +3691,11 @@ Number of non-overlapping matches. This is native so callers that only need a co
 
 The leftmost match as a (start, end) character span - end exclusive - or None.
 
-#### `fn find_all(pattern: String, text: String) -> List((Int, Int))`
+#### `fn find_all(pattern: String, text: String) -> unique List((Int, Int))`
 
 Every non-overlapping match, leftmost first.
 
-#### `fn extract(pattern: String, text: String) -> List(String)`
+#### `fn extract(pattern: String, text: String) -> unique List(String)`
 
 The matched substrings, leftmost first: extract("\\d+", "a1b22") is ["1", "22"].
 
@@ -3703,7 +3703,7 @@ The matched substrings, leftmost first: extract("\\d+", "a1b22") is ["1", "22"].
 
 `text` with every match replaced (the replacement is literal - no `$1` group expansion): replace_all("\\s+", "a  b", "-") is "a-b". Native to avoid routing every span and output fragment through guest memory.
 
-#### `fn split(pattern: String, text: String) -> List(String)`
+#### `fn split(pattern: String, text: String) -> unique List(String)`
 
 `text` split on every match: split(",\\s*", "a, b,c") is ["a", "b", "c"].
 
@@ -3814,7 +3814,7 @@ Whether `declared` covers `demanded` (same kind, broad enough rights).
 
 Whether any capability in `declared` covers `demanded`.
 
-#### `fn uncovered(declared: List(String), demanded: List(String)) -> List(String)`
+#### `fn uncovered(declared: List(String), demanded: List(String)) -> unique List(String)`
 
 The demanded capabilities no declared capability covers - the gap a gate blocks on (an under-declaration, or a widening of authority). Empty means admitted.
 
@@ -3826,7 +3826,7 @@ A bracket-free capability ("Net") is the full authority of its kind.
 
 The base kind: "Dir[Read]" -> "Dir"; "Console" -> "Console".
 
-#### `fn rights_of(cap: String) -> List(String)`
+#### `fn rights_of(cap: String) -> unique List(String)`
 
 The rights inside "Kind[A, B]" as ["A", "B"] (trimmed, blanks dropped).
 
@@ -3873,7 +3873,7 @@ Matchable semantic-version parse failures. Requirement parsing reuses the same c
 - `NegativeVersionComponent(String)`
 - `NonNumericVersionComponent(String)`
 
-#### `fn semver_error_message(e: SemverError) -> String`
+#### `fn semver_error_message(e: SemverError) -> unique String`
 
 #### `fn version(major: Int, minor: Int, patch: Int) -> Version`
 
@@ -3887,7 +3887,7 @@ Parse `major.minor.patch` (missing trailing components default to 0), returning 
 
 Parse with String errors for application-style boundaries.
 
-#### `fn format(v: Version) -> String`
+#### `fn format(v: Version) -> unique String`
 
 #### `fn compare(a: Version, b: Version) -> Int`
 
@@ -3965,11 +3965,11 @@ A router: its routes plus the middleware layers wrapping the whole dispatch.
 
 - `Router(List(Route), List(fn(fn(Request) -> Response) -> fn(Request) -> Response))`
 
-#### `fn request_parse_error_message(e: RequestParseError) -> String`
+#### `fn request_parse_error_message(e: RequestParseError) -> unique String`
 
-#### `fn method(req: Request) -> String`
+#### `fn method(req: Request) -> unique String`
 
-#### `fn path(req: Request) -> String`
+#### `fn path(req: Request) -> unique String`
 
 The request path, normalized and percent-decoded for the handler. Routing and this accessor see the same normalized form (BUG-432): consecutive slashes are collapsed and trailing slashes stripped. Percent-decoding is applied after normalization so a `%2F` stays inside one segment (no forged separator, BUG-375).
 
@@ -3977,7 +3977,7 @@ The request path, normalized and percent-decoded for the handler. Routing and th
 
 A captured path parameter (`:name`), or None if absent.
 
-#### `fn param_or(req: Request, name: String, default: String) -> String`
+#### `fn param_or(req: Request, name: String, default: String) -> unique String`
 
 A captured path parameter, or `default` if absent.
 
@@ -3985,11 +3985,11 @@ A captured path parameter, or `default` if absent.
 
 A query-string parameter (`?name=...`), or None if absent.
 
-#### `fn query_pairs(req: Request) -> List((String, String))`
+#### `fn query_pairs(req: Request) -> unique List((String, String))`
 
 Complete decoded query entries for schema-driven adapters such as progressive forms. The list preserves duplicate names so the schema decoder can reject ambiguity instead of silently selecting one value.
 
-#### `fn query_or(req: Request, name: String, default: String) -> String`
+#### `fn query_or(req: Request, name: String, default: String) -> unique String`
 
 A query-string parameter, or `default` if absent.
 
@@ -3997,7 +3997,7 @@ A query-string parameter, or `default` if absent.
 
 A request header, looked up case-insensitively, or None.
 
-#### `fn request_body(req: Request) -> String`
+#### `fn request_body(req: Request) -> unique String`
 
 #### `fn json_body(req: Request) -> Result(Json, json.DecodeError)`
 
@@ -4007,7 +4007,7 @@ Decode the request body as JSON - the role of axum's `Json` extractor. Returns a
 
 Compatibility bridge for applications that intentionally want rendered errors.
 
-#### `fn form_body(req: Request) -> List((String, String))`
+#### `fn form_body(req: Request) -> unique List((String, String))`
 
 Parse an `application/x-www-form-urlencoded` body (`a=1&b=2`) into key/value pairs - for HTML form POSTs.
 
@@ -4015,7 +4015,7 @@ Parse an `application/x-www-form-urlencoded` body (`a=1&b=2`) into key/value pai
 
 A single form field, or None if absent.
 
-#### `fn form_field_or(req: Request, name: String, default: String) -> String`
+#### `fn form_field_or(req: Request, name: String, default: String) -> unique String`
 
 A single form field, or `default` if absent.
 
@@ -4083,11 +4083,11 @@ Application/server-boundary bridge for callers that want the old "parse or 400 R
 
 Dispatch `req` through `app` (all routes and middleware layers) and return the Response - the whole request pipeline WITHOUT a socket. The axum "oneshot" analog: handlers and routers become unit-testable with a `Request` literal, and it is the in-process way to call one app from another. `serve*` is this plus the accept loop.
 
-#### `fn render(resp: Response) -> String`
+#### `fn render(resp: Response) -> unique String`
 
 Serialize a `Response` to its HTTP/1.1 wire form (inverse of `http.parse_response`). The framing headers (Content-Length, Connection) are owned here; a status outside 100..599 traps. Public so a test or a custom transport can render a Response itself.
 
-#### `fn render_for(resp: Response, method: String) -> String`
+#### `fn render_for(resp: Response, method: String) -> unique String`
 
 `render`, honoring the request method: a HEAD response carries the same status/headers - including the Content-Length the body WOULD have - but the body bytes themselves are never sent (RFC 9110 §9.3.2). This is enforced at the rendering boundary so a `.head(...)` handler may simply return the GET response and the framework suppresses the body.
 
@@ -4149,11 +4149,11 @@ Set(a) - an unordered collection of distinct values. Members are compared by val
 
 - `Set { items: List(a) }`
 
-#### `fn new() -> Set(a)`
+#### `fn new() -> unique Set(a)`
 
 The empty set.
 
-#### `fn from_list(xs: List(a)) -> Set(a) where a: Hash`
+#### `fn from_list(xs: List(a)) -> unique Set(a) where a: Hash`
 
 A set of the distinct values in `xs` (duplicates collapse, keeping the first occurrence of each member).
 
@@ -4169,7 +4169,7 @@ The number of distinct members.
 
 Whether the set has no members.
 
-#### `Set.to_list() -> List(a)`
+#### `Set.to_list() -> unique List(a)`
 
 The members as a list, in insertion order.
 
@@ -4185,19 +4185,19 @@ Remove `x`, returning whether it was present.
 
 Whether `x` is a member of the set.
 
-#### `Set.union(other: Set(a)) -> Set(a)`
+#### `Set.union(other: Set(a)) -> unique Set(a)`
 
 Every member of either set.
 
-#### `Set.intersection(other: Set(a)) -> Set(a)`
+#### `Set.intersection(other: Set(a)) -> unique Set(a)`
 
 The members in both sets.
 
-#### `Set.difference(other: Set(a)) -> Set(a)`
+#### `Set.difference(other: Set(a)) -> unique Set(a)`
 
 The members of this set that are not in `other`.
 
-#### `Set.symmetric_difference(other: Set(a)) -> Set(a)`
+#### `Set.symmetric_difference(other: Set(a)) -> unique Set(a)`
 
 The members in exactly one of the two sets.
 
@@ -4231,7 +4231,7 @@ The witchy standard `Show` trait: render a value as a `String`. Built-in impls c
 
 - `fn show(self) -> String`
 
-#### `fn render(x: impl Show) -> String`
+#### `fn render(x: impl Show) -> unique String`
 
 Render one `Show` value to a `String` - `render(point)`, `render(90000ms)`, `render([1, 2, 3])`. This is the one public renderer (RFC-0053): string interpolation `"${x}"` lowers to `render(x)` for any `x` whose concrete type has a relevant `Show` impl, so interpolation and `show.say` agree. A type without a `Show` path keeps interpolation's byte-identical structural default.
 
@@ -4339,11 +4339,11 @@ The witchy standard string library. Importing it grants no root authority; this 
 
 #### `fn char_count(s: String) -> Int`
 
-#### `fn chars(s: String) -> List(String)`
+#### `fn chars(s: String) -> unique List(String)`
 
-#### `fn from_code(code: Int) -> String`
+#### `fn from_code(code: Int) -> unique String`
 
-#### `fn split(s: String, sep: String) -> List(String)`
+#### `fn split(s: String, sep: String) -> unique List(String)`
 
 #### `fn contains(s: String, needle: String) -> Bool`
 
@@ -4351,15 +4351,15 @@ The witchy standard string library. Importing it grants no root authority; this 
 
 #### `fn ends_with(s: String, suffix: String) -> Bool`
 
-#### `fn replace(s: String, from: String, to: String) -> String`
+#### `fn replace(s: String, from: String, to: String) -> unique String`
 
-#### `fn substring(s: String, start: Int, end: Int) -> String`
+#### `fn substring(s: String, start: Int, end: Int) -> unique String`
 
 #### `fn as_str(s: &String) -> &str`
 
 #### `fn slice(s: &str, start: Int, end: Int) -> &str`
 
-#### `fn to_string(s: &str) -> String`
+#### `fn to_string(s: &str) -> unique String`
 
 #### `fn len(s: &str) -> Int`
 
@@ -4369,11 +4369,11 @@ Content operations on retained string views. These inspect UTF-8 bytes without m
 
 #### `fn equal_views(left: &str, right: &str) -> Bool`
 
-#### `fn to_upper(s: String) -> String`
+#### `fn to_upper(s: String) -> unique String`
 
-#### `fn to_lower(s: String) -> String`
+#### `fn to_lower(s: String) -> unique String`
 
-#### `fn trim(s: String) -> String`
+#### `fn trim(s: String) -> unique String`
 
 #### `fn to_int(s: String) -> Int`
 
@@ -4385,11 +4385,11 @@ The string's length in BYTES (UTF-8). For user-perceived characters, see `char_c
 
 The number of Unicode scalar values.
 
-#### `String.chars() -> List(String)`
+#### `String.chars() -> unique List(String)`
 
 The characters, each as a single-character String - one O(n) pass, so callers can index characters in O(1).
 
-#### `String.split(sep: String) -> List(String)`
+#### `String.split(sep: String) -> unique List(String)`
 
 Split on every occurrence of `sep`.
 
@@ -4405,11 +4405,11 @@ Whether `needle` occurs in `self`.
 
 The character index (counted by Unicode scalar) of the first occurrence of `needle` as `Some`, or `None` when `needle` does not occur (RFC-0044 rule 1: absence is `Option`, never a -1 sentinel). An empty `needle` matches nothing (the module-wide empty-pattern rule, matching `last_index_of`/`count`). For a bare yes/no, use `contains`.
 
-#### `String.replace(from: String, to: String) -> String`
+#### `String.replace(from: String, to: String) -> unique String`
 
 Replace every occurrence of `from` with `to`.
 
-#### `String.substring(start: Int, end: Int) -> String`
+#### `String.substring(start: Int, end: Int) -> unique String`
 
 The substring from character index `start` (inclusive) to `end` (exclusive), counted by Unicode scalar; out-of-range indices clamp.
 
@@ -4417,21 +4417,21 @@ The substring from character index `start` (inclusive) to `end` (exclusive), cou
 
 Return a rooted immutable view of this String as a string slice (`&str`).
 
-#### `String.to_upper() -> String`
+#### `String.to_upper() -> unique String`
 
 ASCII case mapping (the portable set both backends share).
 
-#### `String.to_lower() -> String`
+#### `String.to_lower() -> unique String`
 
-#### `String.trim() -> String`
+#### `String.trim() -> unique String`
 
 Strip leading and trailing ASCII whitespace.
 
-#### `String.trim_start() -> String`
+#### `String.trim_start() -> unique String`
 
 Remove leading whitespace.
 
-#### `String.trim_end() -> String`
+#### `String.trim_end() -> unique String`
 
 Remove trailing whitespace.
 
@@ -4439,7 +4439,7 @@ Remove trailing whitespace.
 
 Parse a decimal integer; junk, overflow, or an empty string ABORTS the program (a runtime error, not an `Err`) on every backend. For the total version that returns `Option(Int)`, see `parse_int`.
 
-#### `String.repeat(n: Int) -> String`
+#### `String.repeat(n: Int) -> unique String`
 
 Repeat a string `n` times.
 
@@ -4471,15 +4471,15 @@ The single character (as a String) at character index `i` (counted by Unicode sc
 
 Whether the string has no characters.
 
-#### `String.reverse() -> String`
+#### `String.reverse() -> unique String`
 
 The string with its characters in reverse order. Counted by Unicode scalar (via `char_count`/`substring`), so multi-byte characters stay intact: `reverse("café")` is `"éfac"`.
 
-#### `String.take(n: Int) -> String`
+#### `String.take(n: Int) -> unique String`
 
 The first `n` characters (the whole string if it is shorter, "" if n <= 0).
 
-#### `String.drop(n: Int) -> String`
+#### `String.drop(n: Int) -> unique String`
 
 All characters after the first `n` ("" if n covers the whole string).
 
@@ -4487,7 +4487,7 @@ All characters after the first `n` ("" if n covers the whole string).
 
 The number of non-overlapping occurrences of `sub` in `self` (0 for an empty `sub`). After each match the search resumes past it.
 
-#### `String.words() -> List(String)`
+#### `String.words() -> unique List(String)`
 
 The whitespace-separated words of `self`: tabs, newlines, and carriage returns are treated as spaces, and empty pieces (from runs of whitespace) are dropped. `"the  quick\tfox".words()` is `["the", "quick", "fox"]`.
 
@@ -4519,7 +4519,7 @@ Split on the LAST occurrence of `sep` (e.g. a file extension): `rsplit_once` of 
 
 Safely parse a base-10 integer: an optional leading `-`/`+` then one or more digits. Returns None for empty, sign-only, non-digit, or out-of-range (beyond the i64 range) input - so it never traps the way the raw `string_to_int` builtin can.
 
-#### `String.lines() -> List(String)`
+#### `String.lines() -> unique List(String)`
 
 Split text into its newline-separated lines.
 
@@ -4539,7 +4539,7 @@ The sub-slice from character index `start` (inclusive) to `end` (exclusive), cou
 
 Whether the string has no characters.
 
-#### `str.to_string() -> String`
+#### `str.to_string() -> unique String`
 
 Materialize this rooted slice view as an owned String.
 
@@ -4829,7 +4829,7 @@ Matchable civil-time construction and ISO 8601 parse failures.
 
 - `DateTime(Int, Int, Int, Int, Int, Int)`
 
-#### `fn time_error_message(e: TimeError) -> String`
+#### `fn time_error_message(e: TimeError) -> unique String`
 
 #### `fn year(d: DateTime) -> Int`
 
@@ -4881,23 +4881,23 @@ Parse with String errors for application-style boundaries.
 
 Day of week: 0 = Sunday … 6 = Saturday.
 
-#### `fn weekday_name(d: DateTime) -> String`
+#### `fn weekday_name(d: DateTime) -> unique String`
 
-#### `fn month_name(d: DateTime) -> String`
+#### `fn month_name(d: DateTime) -> unique String`
 
-#### `fn date_string(d: DateTime) -> String`
+#### `fn date_string(d: DateTime) -> unique String`
 
 `YYYY-MM-DD`.
 
-#### `fn time_string(d: DateTime) -> String`
+#### `fn time_string(d: DateTime) -> unique String`
 
 `HH:MM:SS`.
 
-#### `fn iso8601(d: DateTime) -> String`
+#### `fn iso8601(d: DateTime) -> unique String`
 
 RFC 3339 / ISO 8601 in UTC, e.g. `2026-06-08T22:30:00Z`.
 
-#### `fn format(d: DateTime, layout: String) -> String`
+#### `fn format(d: DateTime, layout: String) -> unique String`
 
 A strftime-style layout: `%Y-%m-%d %H:%M:%S`, `%A %B %d` and friends. Directives: %Y year, %m month, %d day, %H hour, %M minute, %S second, %a/%A weekday (short/full), %b/%B month name (short/full), %% a literal percent. Anything else after `%` passes through unchanged.
 
@@ -4935,7 +4935,7 @@ A decoded TOML value (`toml.decode`), the structured counterpart of the string-q
 
 - `TomlDecodeError { message: String }`
 
-#### `fn decode_error_message(e: TomlDecodeError) -> String`
+#### `fn decode_error_message(e: TomlDecodeError) -> unique String`
 
 #### `fn decode(text: String) -> Result(Toml, TomlDecodeError)`
 
@@ -4977,17 +4977,17 @@ The string elements of an array-valued field of a decoded table `entry`: `Ok([])
 
 The string value of `path` (e.g. "rune.name"), or None if absent. Surrounding double quotes are stripped.
 
-#### `fn get_array(text: String, path: String) -> List(String)`
+#### `fn get_array(text: String, path: String) -> unique List(String)`
 
 The string-array value of `path` (e.g. "capabilities.runtime"), or [] if absent. Each element is unquoted.
 
 LENIENT BY DESIGN (RFC-0044): an absent path and a malformed/empty array both return `[]`, so this cannot tell "not declared" from "declared wrong" - convenient for reading config, but wrong for a trust boundary. Where a malformed array must be an ERROR, use the strict path: `decode(text)` (a `Result`) then match the `TomlArray` at the path.
 
-#### `fn table(text: String, section: String) -> List((String, String))`
+#### `fn table(text: String, section: String) -> unique List((String, String))`
 
 Every `key = value` pair defined directly under `[section]`, in file order. Keys are unquoted (`"acme/money"` -> `acme/money`); values are raw (trimmed, still quoted/inline) - feed an inline-table value to `inline_get`. Use this to enumerate a table whose keys you don't know ahead of time, like `[dependencies]`.
 
-#### `fn keys(text: String, section: String) -> List(String)`
+#### `fn keys(text: String, section: String) -> unique List(String)`
 
 Just the keys of `[section]` (unquoted), in file order.
 
@@ -4999,7 +4999,7 @@ Read `key` from an inline table value like `{ path = "../money", version = "1" }
 
 The version requirement a `[dependencies]` value declares, in EITHER TOML form: a bare string (`"acme/x" = "^1.0"`), whose value IS the requirement, or an inline table (`{ version = "^1.0" }`), whose `version` key holds it. `None` for a path-only inline table (no `version` key) or an empty value. Dep walks that read a version requirement (transitive resolution, `outdated`, `update`) must use this so a bare-string dep is not silently skipped.
 
-#### `fn inline_get_array(inline: String, key: String) -> List(String)`
+#### `fn inline_get_array(inline: String, key: String) -> unique List(String)`
 
 Read a string-array field from an inline table. This is the array counterpart to `inline_get`, used by nested policy values such as `{ programs = ["git"], child-paths = ["~/.gitconfig"] }`.
 
@@ -5039,7 +5039,7 @@ Stage `proposed` as a replacement for `original`, based on `revision`.
 
 Consume a transaction. A matching revision commits the proposed text; a mismatch consumes the attempt and returns the original text with both revisions so retry policy stays explicit.
 
-#### `fn rollback(own transaction: Transaction) -> String`
+#### `fn rollback(own transaction: Transaction) -> unique String`
 
 Consume a transaction without publishing its replacement and recover the original text.
 
@@ -5064,7 +5064,7 @@ Matchable URL parse failures. The payload is the original raw URL so callers can
 - `InvalidPort(String)`
 - `MalformedIpv6Literal(String)`
 
-#### `fn url_error_message(e: UrlError) -> String`
+#### `fn url_error_message(e: UrlError) -> unique String`
 
 #### `fn parse(s: String) -> Result(Url, UrlError)`
 
@@ -5074,13 +5074,13 @@ Parse a URL, or a matchable error naming what is malformed. A well-formed URL ne
 
 Parse a URL with String errors for application-style boundaries.
 
-#### `fn scheme(u: Url) -> String`
+#### `fn scheme(u: Url) -> unique String`
 
-#### `fn host(u: Url) -> String`
+#### `fn host(u: Url) -> unique String`
 
 #### `fn port(u: Url) -> Int`
 
-#### `fn pathname(u: Url) -> String`
+#### `fn pathname(u: Url) -> unique String`
 
 The path component only, normalized to `/` when the URL omits a path.
 
@@ -5096,23 +5096,23 @@ The fragment text without its leading `#`, retaining `Some("")` for a URL that e
 
 Add one percent-encoded query pair while preserving the fragment boundary. Existing query pairs remain in order; an explicitly empty query does not gain a leading `&`.
 
-#### `fn request_target(u: Url) -> String`
+#### `fn request_target(u: Url) -> unique String`
 
 The HTTP request target: path plus query, deliberately excluding the client-side fragment component (RFC 3986 section 3.5).
 
-#### `fn format(u: Url) -> String`
+#### `fn format(u: Url) -> unique String`
 
 Render a Url back to its string form - the inverse of `parse`. The port is shown only when it differs from the scheme default, so a parse/format round trip of `https://host/p` stays `https://host/p` rather than gaining `:443`.
 
-#### `fn encode(s: String) -> String`
+#### `fn encode(s: String) -> unique String`
 
 Percent-encode `s` for use as a query-string value (RFC 3986): the unreserved set (`A-Z a-z 0-9 - _ . ~`) passes through, every other byte becomes `%XX`. Used to build query strings safely - e.g. an OAuth `redirect_uri`, `scope`, or `state`.
 
-#### `fn decode(s: String) -> String`
+#### `fn decode(s: String) -> unique String`
 
 Percent-decode `s` (RFC 3986 §2.1): each `%XX` becomes the byte it names. Consecutive `%XX` bytes are decoded together so multi-byte UTF-8 escapes (`%E2%82%AC` -> `€`) round-trip. A stray `%` not followed by two hex digits passes through literally (total, lossy). `+` stays literal - for form/query decoding where `+` means space, use `decode_form`.
 
-#### `fn decode_form(s: String) -> String`
+#### `fn decode_form(s: String) -> unique String`
 
 Like `decode`, but also maps `+` to a space - the `application/x-www-form-urlencoded` convention for query strings and form bodies (RFC 1866 §8.2.1).
 
@@ -5140,7 +5140,7 @@ std/vm - (RFC-0032) parallel execution across cores.
 
 The compiled backend takes the parallel path only when `f` is a BARE TOP-LEVEL function and the element representation can cross the worker boundary. A local function value, lambda, or pointer-bearing element type instead runs this module's sequential reference body. `par_map` promises result ordering, not a general purity or isolation contract for an arbitrary ordinary callback.
 
-#### `fn par_map(xs: List(a), f: fn(a) -> b) -> List(b)`
+#### `fn par_map(xs: List(a), f: fn(a) -> b) -> unique List(b)`
 
 Map `f` over every element of `xs`, in parallel where the backend supports it, returning the results in input order.
 
@@ -5148,7 +5148,7 @@ Map `f` over every element of `xs`, in parallel where the backend supports it, r
 
 Run `f` on `input` in an ISOLATED worker VM (on the compiled backend) that is granted EXACTLY the directory capability `dir` - and nothing else. The worker can read/write within `dir` (with `dir`'s own rights) and reach NO other host resource: it is its own WebAssembly instance with its own memory, and every ungranted capability traps. This is the capability-passing sandbox - run untrusted/partially-trusted code with precisely scoped authority. `f` must be named directly as a bare top-level function; closures and local function values are rejected rather than silently running in the parent VM. Because the result is a deterministic function of `dir`'s contents and `input`, the isolation is invisible to the output, so the interpreter (which runs `f` directly) and the compiled backend agree.
 
-#### `fn serve(init: Bytes, requests: List(Bytes), handler: fn(Bytes, Bytes) -> Bytes) -> List(Bytes)`
+#### `fn serve(init: Bytes, requests: List(Bytes), handler: fn(Bytes, Bytes) -> Bytes) -> unique List(Bytes)`
 
 Run a stateful SERVICE on a single long-lived ISOLATED worker VM. The worker is created once and processes `requests` in order, threading an accumulator `state` through `handler(state, request) -> new_state`, emitting each new state as that request's response. This is witchy's cross-VM channel: a worker that processes a message stream with persistent state. It is deliberately LOCK-STEP (ordered, not racing) - that determinism is what lets the interpreter (a sequential scan) and the compiled backend (a persistent worker VM) agree, which a truly-racing channel could not. `handler` must be named directly as a bare top-level function; closures and local function values are rejected rather than silently replacing isolation with a parent-VM loop.
 
@@ -5199,7 +5199,7 @@ Matchable registration-verification failures. Malformed wire (hex/CBOR/COSE) is 
 - `RegCoseMalformed(String)`
 - `RegUnsupportedKey`
 
-#### `fn assertion_error_message(e: AssertionError) -> String`
+#### `fn assertion_error_message(e: AssertionError) -> unique String`
 
 Human-readable assertion failure text for logs and HTTP responses.
 
@@ -5207,7 +5207,7 @@ Human-readable assertion failure text for logs and HTTP responses.
 
 Verify an assertion. All `*_hex` arguments are hex-encoded bytes; `client_data_json` is the exact clientDataJSON text the browser signed over (it must be re-hashed verbatim, never re-serialized). `require_uv` demands user verification - pass `true` for a genuine second-factor gate. Returns `Ok(true)` when every check passes, or a typed `Err`.
 
-#### `fn registration_error_message(e: RegistrationError) -> String`
+#### `fn registration_error_message(e: RegistrationError) -> unique String`
 
 #### `fn verify_registration(client_data_json: String, attestation_object_hex: String, expected_challenge: String, expected_origin: String, expected_rp_id: String, require_uv: Bool) -> Result(RegisteredCredential, RegistrationError)`
 

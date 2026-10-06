@@ -2342,8 +2342,15 @@ impl Checker {
 
     fn expression_yields_inferred_owner(&self, value: &Expr, ty: &Ty) -> bool {
         self.opt_mode && match value {
+            // A declared `unique` result is a fresh temporary too: binding
+            // it keeps the owner proof, and a later copy demotes rather than
+            // consumes. A nested `unique` payload, or a binding declared
+            // `unique`, stays affine.
             Expr::Call { name, .. } => self.fresh_result_fns.contains(name)
-                && !self.callable_unique_contract(name).is_some_and(|contract| contract.unique_result),
+                || (self.callable_unique_contract(name).is_some_and(|contract| contract.unique_result)
+                    && matches!(self.fn_source_result_types.get(name),
+                        Some(ast::Type::Qualified(ast::TypeQual::Unique, inner))
+                            if !self.declared_type_carries_unique_storage(inner))),
             Expr::MethodCall { method, args, .. }
                 if method == OWNED_MATERIALIZATION && args.is_empty() =>
             {
@@ -2351,6 +2358,24 @@ impl Checker {
             }
             _ => false,
         }
+    }
+
+    /// In normal mode a call result stored into an ordinary binding is an
+    /// ordinary value, even when the callee declares a `unique` result: the
+    /// coercion consumes only the temporary (RFC-0167 §4). The backend keeps
+    /// the fresh owner token until an actual copy occurs. A nested `unique`
+    /// payload, an intrinsically affine type, an explicit annotation, or opt
+    /// mode keeps affine semantics. A method-form call has no recoverable
+    /// source result; it coerces too.
+    fn call_result_is_ordinary(&self, value: &Expr, ty: &Ty) -> bool {
+        !self.opt_mode
+            && matches!(value, Expr::Call { .. } | Expr::MethodCall { .. })
+            && match self.inferred_unique_source_type(value, ty) {
+                Some(ast::Type::Qualified(ast::TypeQual::Unique, inner)) =>
+                    !self.declared_type_carries_unique_storage(&inner),
+                Some(_) => false,
+                None => !self.ty_carries_unique_storage(ty),
+            }
     }
 
     fn forget_inferred_owner_binding(&mut self, name: &str) {
@@ -3021,13 +3046,13 @@ impl Checker {
                 items
                     .iter()
                     .map(|item| {
-                        self.inferred_unique_source_type(item, &self.fresh_for_unique_probe(item))
+                        self.aggregate_element_unique_source(item)
                             .unwrap_or_else(|| ast::Type::Named("Unit".into(), Vec::new()))
                     })
                     .collect(),
             )),
             Expr::List(items) => items.iter().find_map(|item| {
-                self.inferred_unique_source_type(item, &self.fresh_for_unique_probe(item))
+                self.aggregate_element_unique_source(item)
                     .map(|item| ast::Type::Named("List".into(), vec![item]))
             }),
             Expr::Ctor { name, args } => {
@@ -3038,10 +3063,7 @@ impl Checker {
                 };
                 let mut bindings = HashMap::new();
                 for (source_field, argument) in source_fields.iter().zip(args) {
-                    if let Some(argument_source) = self.inferred_unique_source_type(
-                        argument,
-                        &self.fresh_for_unique_probe(argument),
-                    ) {
+                    if let Some(argument_source) = self.aggregate_element_unique_source(argument) {
                         Self::bind_unique_source_parameters(
                             source_field,
                             &argument_source,
@@ -3067,6 +3089,17 @@ impl Checker {
             }
             _ => None,
         }
+    }
+
+    /// An aggregate element's unique source type. A call result stored into
+    /// an aggregate is the same ordinary coercion as a binding's
+    /// (`call_result_is_ordinary`), so it adds no `unique` payload.
+    fn aggregate_element_unique_source(&self, element: &Expr) -> Option<ast::Type> {
+        let probe = self.fresh_for_unique_probe(element);
+        if self.call_result_is_ordinary(element, &probe) {
+            return None;
+        }
+        self.inferred_unique_source_type(element, &probe)
     }
 
     fn authorize_unique_pattern_storage(&mut self, pattern: &Pattern, declared: &ast::Type) {
@@ -6319,17 +6352,8 @@ impl Checker {
                     if decl.as_ref().is_some_and(is_unique_value_type) {
                         self.authorize_unique_value_binding(name.clone());
                     }
-                    // In normal mode an inferred local of copyable storage is
-                    // an ordinary value, even when the callee declares a
-                    // unique result. The backend may retain its fresh owner
-                    // token until an actual copy occurs. An explicit unique
-                    // annotation still requests affine source semantics.
-                    let implicit_ordinary_result = !self.opt_mode
-                        && decl.is_none()
-                        && matches!(value, Expr::Call { .. } | Expr::MethodCall { .. })
-                        && matches!(self.inferred_unique_source_type(value, &binding_ty),
-                            Some(ast::Type::Qualified(ast::TypeQual::Unique, inner))
-                                if !self.declared_type_carries_unique_storage(&inner));
+                    let implicit_ordinary_result = decl.is_none()
+                        && self.call_result_is_ordinary(value, &binding_ty);
                     if !implicit_ordinary_result && decl.as_ref().map_or_else(
                         || self.expression_carries_unique_storage(value, &binding_ty)
                             || self.ty_carries_unique_storage(&binding_ty),
@@ -6584,8 +6608,9 @@ impl Checker {
                             bindings.remove(name);
                         }
                         self.forget_inferred_owner_binding(name);
-                        if self.expression_carries_unique_storage(value, &vt)
-                            || self.ty_carries_unique_storage(&existing)
+                        if !self.call_result_is_ordinary(value, &vt)
+                            && (self.expression_carries_unique_storage(value, &vt)
+                                || self.ty_carries_unique_storage(&existing))
                         {
                             self.authorize_unique_storage_binding(name.clone());
                             if self.expression_yields_inferred_owner(value, &vt) {

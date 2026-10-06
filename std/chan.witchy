@@ -120,7 +120,7 @@ pub fn unbounded() -> Task((Sender(m), Receiver(m))):
 // this declaration before execution; it exists only so source type checking
 // can resolve the parser's lossless receive-stream marker. It must never be
 // called as a runtime channel operation.
-pub fn __recv_stream(rx: Receiver(m)) -> List(m):
+pub fn __recv_stream(rx: Receiver(m)) -> unique List(m):
     []
 
 // Send `msg`; on a bounded channel this blocks until there is room while some
@@ -194,7 +194,7 @@ fn spawn_all_raw(children: List(Task(())), i: Int, own raw_handles: List(Int)) -
 // Consume every public handle before the first join/cancel suspension. The
 // task ID list is ordinary scalar state, so recursive scheduler continuations
 // cannot hide a live `must Handle` in a cancellable frame.
-fn raw_handle_ids_in_order(ids: List(Int)) -> List(Int):
+fn raw_handle_ids_in_order(ids: List(Int)) -> unique List(Int):
     // The consuming extraction runs from the tail; retain scheduling order.
     var ordered = []
     var i = list.length(ids)
@@ -203,12 +203,12 @@ fn raw_handle_ids_in_order(ids: List(Int)) -> List(Int):
         list.push(ordered, list.at(ids, i))
     ordered
 
-fn raw_handle_ids_collect(own hs: List(Handle), own ids: List(Int)) -> List(Int):
+fn raw_handle_ids_collect(own hs: List(Handle), own ids: List(Int)) -> unique List(Int):
     match list.__pop_extract(hs):
         Some(h) -> raw_handle_ids_collect(hs, appended(ids, task.__handle_into_raw(h)))
         None -> raw_handle_ids_in_order(ids)
 
-fn raw_handle_ids(own hs: List(Handle)) -> List(Int):
+fn raw_handle_ids(own hs: List(Handle)) -> unique List(Int):
     raw_handle_ids_collect(hs, [])
 
 // Join every handle in `hs` while the executor can make progress. Like `join`,

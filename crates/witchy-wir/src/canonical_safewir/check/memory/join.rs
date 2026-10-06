@@ -169,8 +169,14 @@ impl<'a> MemoryChecker<'a> {
         // An unspecified lane (a loop body renaming its header's object) is the
         // same object on this edge, so the same equalities transport its bounds;
         // left unrenamed, they would name values outside the target's scope.
+        // A unique lane is rebased the same way: an in-place update after an
+        // inner loop reloads its header, and that checked read names the count
+        // its back edge carries. A byte buffer's two lanes were authenticated
+        // above and keep that rule.
         for (argument, parameter) in arguments.iter().zip(&target.parameters) {
-            if !matches!(parameter.ownership, Some(Ownership::Shared) | None) {
+            if counted_unique_lanes.contains_key(argument)
+                || matches!(parameter.value_type, ValueType::Gc(_))
+            {
                 continue;
             }
             let Some(state) = self.state.objects.get(argument) else { continue };
@@ -190,10 +196,13 @@ impl<'a> MemoryChecker<'a> {
                     .or_else(|| (bound == count).then(|| size_lanes().find(|(source, _)| {
                         self.state.header_values.get(&(*argument, HeaderField::Length)) == Some(*source)
                     })).flatten())
-                    .or_else(|| size_lanes().find(|(source, _)| {
+                    // A unique lane is mutated by the loop it crosses; an
+                    // equal constant on another lane would tie its extent to
+                    // one that diverges. It takes only its own lanes.
+                    .or_else(|| (parameter.ownership != Some(Ownership::Unique)).then(|| size_lanes().find(|(source, _)| {
                         self.state.constants.get(&bound).zip(self.state.constants.get(source))
                             .is_some_and(|(left, right)| left == right)
-                    }));
+                    })).flatten());
                 if let Some((_, replacement)) = replacement {
                     renames.insert(bound, replacement.value);
                 }

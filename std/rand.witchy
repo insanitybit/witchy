@@ -28,7 +28,7 @@ pub fn bool(rand: Rand) -> Bool:
 // `nbytes` random bytes rendered as lowercase hex (2 chars per byte) - the form a
 // WebAuthn challenge, a CSRF nonce, or a session/token id wants. Draws full 64-bit
 // words and truncates to the requested length.
-pub fn hex(rand: Rand, nbytes: Int) -> String:
+pub fn hex(rand: Rand, nbytes: Int) -> unique String:
     // `nbytes * 2` (the character count) would overflow past `Int.MAX` and wrap
     // negative, silently yielding an EMPTY string - a catastrophic result for a
     // token/nonce. Refuse loudly instead (RFC-0044 rule 3).
@@ -43,7 +43,7 @@ pub fn hex(rand: Rand, nbytes: Int) -> String:
         out.substring(0, nbytes * 2)
 
 // The 16 lowercase hex characters of a 64-bit word, most-significant nibble first.
-fn word_hex(n: Int) -> String:
+fn word_hex(n: Int) -> unique String:
     let digits = "0123456789abcdef"
     var out = ""
     var shift = 60

@@ -31,6 +31,6 @@ pub fn commit(own transaction: Transaction, actual_revision: Int) -> Result(Stri
 
 // Consume a transaction without publishing its replacement and recover the
 // original text.
-pub fn rollback(own transaction: Transaction) -> String:
+pub fn rollback(own transaction: Transaction) -> unique String:
     match move transaction:
         Pending(original, _proposed, _revision) -> original

@@ -27,7 +27,7 @@ type UrlError:
     InvalidPort(String)
     MalformedIpv6Literal(String)
 
-pub fn url_error_message(e: UrlError) -> String:
+pub fn url_error_message(e: UrlError) -> unique String:
     match e:
         MissingSchemeSeparator(raw) -> "missing `scheme://` in: " + raw
         EmptyScheme(raw) -> "empty scheme in: " + raw
@@ -201,11 +201,11 @@ fn all_decimal_digits(s: String) -> Bool:
                 valid = false
         valid
 
-pub fn scheme(u: Url) -> String:
+pub fn scheme(u: Url) -> unique String:
     match u:
         Url(s, _host, _port, _path, _query, _fragment) -> s
 
-pub fn host(u: Url) -> String:
+pub fn host(u: Url) -> unique String:
     match u:
         Url(_scheme, h, _port, _path, _query, _fragment) -> h
 
@@ -214,7 +214,7 @@ pub fn port(u: Url) -> Int:
         Url(_scheme, _host, p, _path, _query, _fragment) -> p
 
 // The path component only, normalized to `/` when the URL omits a path.
-pub fn pathname(u: Url) -> String:
+pub fn pathname(u: Url) -> unique String:
     match u:
         Url(_scheme, _host, _port, p, _query, _fragment) -> if p.is_empty(): "/" else: p
 
@@ -244,18 +244,18 @@ pub fn with_query(u: Url, key: String, value: String) -> Url:
 
 // The HTTP request target: path plus query, deliberately excluding the
 // client-side fragment component (RFC 3986 section 3.5).
-pub fn request_target(u: Url) -> String:
+pub fn request_target(u: Url) -> unique String:
     match u:
         Url(_scheme, _host, _port, pa, q, _fragment) ->
             let path = if pa.is_empty(): "/" else: pa
             path + query_suffix(q)
 
-fn query_suffix(q: Option(String)) -> String:
+fn query_suffix(q: Option(String)) -> unique String:
     match q:
         None -> ""
         Some(value) -> "?" + value
 
-fn fragment_suffix(f: Option(String)) -> String:
+fn fragment_suffix(f: Option(String)) -> unique String:
     match f:
         None -> ""
         Some(value) -> "#" + value
@@ -271,7 +271,7 @@ fn suffix_absent(q: Option(String), f: Option(String)) -> Bool:
 // Render a Url back to its string form - the inverse of `parse`. The port is
 // shown only when it differs from the scheme default, so a parse/format round
 // trip of `https://host/p` stays `https://host/p` rather than gaining `:443`.
-pub fn format(u: Url) -> String:
+pub fn format(u: Url) -> unique String:
     match u:
         Url(s, h, p, pa, q, f) ->
             let authority = if p == default_port(s): h else: h + ":" + "${p}"
@@ -285,7 +285,7 @@ impl Show for Url:
 // Percent-encode `s` for use as a query-string value (RFC 3986): the unreserved set
 // (`A-Z a-z 0-9 - _ . ~`) passes through, every other byte becomes `%XX`. Used to build
 // query strings safely - e.g. an OAuth `redirect_uri`, `scope`, or `state`.
-pub fn encode(s: String) -> String:
+pub fn encode(s: String) -> unique String:
     var out = ""
     for ch in s.chars():
         if is_unreserved(ch):
@@ -298,7 +298,7 @@ fn is_unreserved(ch: String) -> Bool:
     "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~".contains(ch)
 
 // `%XX` for each UTF-8 byte of a single character (hex of the bytes, split into pairs).
-fn percent(ch: String) -> String:
+fn percent(ch: String) -> unique String:
     let hex = encoding.hex_encode(ch).to_upper()
     var out = ""
     var i = 0
@@ -312,16 +312,16 @@ fn percent(ch: String) -> String:
 // (`%E2%82%AC` -> `€`) round-trip. A stray `%` not followed by two hex digits
 // passes through literally (total, lossy). `+` stays literal - for form/query
 // decoding where `+` means space, use `decode_form`.
-pub fn decode(s: String) -> String:
+pub fn decode(s: String) -> unique String:
     pct_decode(s, false)
 
 // Like `decode`, but also maps `+` to a space - the
 // `application/x-www-form-urlencoded` convention for query strings and form
 // bodies (RFC 1866 §8.2.1).
-pub fn decode_form(s: String) -> String:
+pub fn decode_form(s: String) -> unique String:
     pct_decode(s, true)
 
-fn pct_decode(s: String, plus_space: Bool) -> String:
+fn pct_decode(s: String, plus_space: Bool) -> unique String:
     var out = ""
     var pending = ""
     var i = 0

@@ -19,7 +19,7 @@ import list
 
 // Map `f` over every element of `xs`, in parallel where the backend supports it,
 // returning the results in input order.
-pub fn par_map(xs: List(a), f: fn(a) -> b) -> List(b):
+pub fn par_map(xs: List(a), f: fn(a) -> b) -> unique List(b):
     list.map(xs, f)
 
 // Run `f` on `input` in an ISOLATED worker VM (on the compiled backend) that is granted
@@ -45,7 +45,7 @@ pub fn with_dir(dir: Dir, f: fn(Dir, Bytes) -> Bytes, input: Bytes) -> Bytes:
 // not. `handler` must be named directly as a bare top-level function; closures and local
 // function values are rejected rather than silently replacing isolation with a parent-VM
 // loop.
-pub fn serve(init: Bytes, requests: List(Bytes), handler: fn(Bytes, Bytes) -> Bytes) -> List(Bytes):
+pub fn serve(init: Bytes, requests: List(Bytes), handler: fn(Bytes, Bytes) -> Bytes) -> unique List(Bytes):
     var state = init
     var out = []
     for req in requests:

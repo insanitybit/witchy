@@ -694,8 +694,17 @@ pub(super) fn join_reachable_binding_facts(
     (consumed, must_live, once_invoked)
 }
 
+/// A direct `unique List`, `String`, or `Bytes` result the normal-mode
+/// return repairs with one copy when it is not the sole owner.
+fn normal_mode_repairs_unique_result(result: &ast::Type) -> bool {
+    matches!(result, ast::Type::Qualified(ast::TypeQual::Unique, inner)
+        if matches!(inner.as_ref(), ast::Type::Named(name, arguments)
+            if (name == "List" && arguments.len() == 1)
+                || (matches!(name.as_str(), "String" | "Bytes") && arguments.is_empty())))
+}
+
 /// A `unique List` / `unique Dict` result must carry a checked root-owner
-/// token. Fresh literals/new storage and direct calls carrying the same result
+/// token in `mode opt`, and in normal mode when the return cannot repair it. Fresh literals/new storage and direct calls carrying the same result
 /// ABI establish one.  A directly returned `own unique` collection parameter
 /// carries that same token too: uniqueness is ownership of the root, not a
 /// promise of spare list capacity.  Broader local-flow proofs remain outside
@@ -1076,6 +1085,17 @@ pub(super) fn check_unique_root_owner_results(module: &Module) -> Result<(), Typ
         let Some(result) = function.ret.as_ref() else {
             continue;
         };
+        // Normal mode repairs a missing proof with a copy at the return
+        // (RFC-0167 §4) for the storage the lowering can copy; opt mode, and
+        // every other unique result, must prove it in source. A `var`
+        // parameter's write-back is a second owning output, so returning it
+        // must stay a source-visible rejection (RFC-0167 row E).
+        if !witchy_canonical_source::source::source_execution_mode(function, &module.modes).is_opt()
+            && normal_mode_repairs_unique_result(result)
+            && !function.params.iter().any(|parameter| parameter.convention == Convention::Var)
+        {
+            continue;
+        }
         let transferred_parameters = function.params.iter().filter_map(|parameter| {
             (parameter.convention == Convention::Own
                 && parameter.ty.as_ref().is_some_and(is_unique_owner_type))

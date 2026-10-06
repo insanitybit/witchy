@@ -342,7 +342,7 @@ fn sig(name: &str, type_params: &[String], params: &[Param], ret: &Option<Type>,
                     .find(|(bv, _, _)| bv == v)
                     .map(|(_, t, _)| t.as_str())
                     .unwrap_or("?");
-                h.push_str(&format!("{}: impl {trait_name}", p.name));
+                h.push_str(&format!("{}{}: impl {trait_name}", convention(p), p.name));
             }
             _ => h.push_str(&param(p)),
         }
@@ -372,15 +372,19 @@ fn sig(name: &str, type_params: &[String], params: &[Param], ret: &Option<Type>,
     h
 }
 
-fn param(p: &Param) -> String {
-    // `var` (mutate + writeback) / `own` (consume) are the parameter
-    // conventions; an explicit borrow prints `let`.
-    let conv = match p.convention {
+/// `var` (mutate + writeback) / `own` (consume) are the parameter
+/// conventions; an explicit borrow prints `let`.
+fn convention(p: &Param) -> &'static str {
+    match p.convention {
         Convention::Let => "",
         Convention::Borrow => "let ",
         Convention::Var => "var ",
         Convention::Own => "own ",
-    };
+    }
+}
+
+fn param(p: &Param) -> String {
+    let conv = convention(p);
     let base = match &p.ty {
         Some(t) => format!("{conv}{}: {}", p.name, type_str(t)),
         None => format!("{conv}{}", p.name),

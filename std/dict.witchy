@@ -22,29 +22,29 @@ import cmp
 // --- native primitives ---
 
 // An empty Dict.
-pub fn new() -> Dict(k, v):
+pub fn new() -> unique Dict(k, v):
     dict.new()
 
 // An empty Dict with pre-allocated capacity.
-pub fn with_capacity(capacity: Int) -> Dict(k, v):
+pub fn with_capacity(capacity: Int) -> unique Dict(k, v):
     dict.with_capacity(capacity)
 
 // A new dict with `key` set to `val` (replacing any existing entry).
 // Insertion order of first appearance is preserved. The `d[key] = val` sugar
 // (RFC-0022) desugars to this: the shared `set_at` place-assign is retargeted to
 // `insert` once the receiver is known to be a Dict (RFC-0049).
-fn __insert(d: unique Dict(k, v), key: k, val: v) -> Dict(k, v) where k: Hash:
+fn __insert(d: unique Dict(k, v), key: k, val: v) -> unique Dict(k, v) where k: Hash:
     dict.__insert(d, key, val)
 
 // Return the unused incoming key and displaced value on a hit, and perform
 // the upsert with one semantic key
 // search. The ordinary result and repaired dictionary use the uniform `var`
 // ABI's independent result channels.
-fn __insert_extract(var d: Dict(k, v), own key: k, own val: v) -> Option((k, v)) where k: Hash:
+fn __insert_extract(var d: unique Dict(k, v), own key: k, own val: v) -> Option((k, v)) where k: Hash:
     dict.__insert_extract(d, key, val)
 
 // Ordinary keys can be discarded on a hit; return only the displaced value.
-fn __insert_value_extract(var d: Dict(k, v), key: k, val: v) -> Option(v) where k: Hash:
+fn __insert_value_extract(var d: unique Dict(k, v), key: k, val: v) -> Option(v) where k: Hash:
     dict.__insert_value_extract(d, key, val)
 
 // Insert `key` with `val`, returning the displaced value when the key existed.
@@ -83,10 +83,10 @@ pub fn at(let d: Dict(k, v), let key: k) -> v where k: Hash:
 
 // Single-lookup upsert: apply `f` to the current value (or `default` when
 // `key` is absent) and store the result under `key`.
-fn __update(d: Dict(k, v), key: k, default: v, f: fn(v) -> v) -> Dict(k, v) where k: Hash:
+fn __update(d: Dict(k, v), key: k, default: v, f: fn(v) -> v) -> unique Dict(k, v) where k: Hash:
     dict.__update(d, key, default, f)
 
-pub fn update(var d: Dict(k, v), key: k, default: v, f: fn(v) -> v) where k: Hash:
+pub fn update(var d: unique Dict(k, v), key: k, default: v, f: fn(v) -> v) where k: Hash:
     d = dict.__update(d, key, default, f)
     return
 
@@ -103,15 +103,15 @@ pub fn contains_by(let d: Dict(k, v), query: &q) -> Bool where k: Hash, q: Equiv
     dict.__contains_by(d, query)
 
 // A new dict with `key` (and its value) removed; unchanged when absent.
-fn __remove(d: unique Dict(k, v), key: k) -> Dict(k, v) where k: Hash:
+fn __remove(d: unique Dict(k, v), key: k) -> unique Dict(k, v) where k: Hash:
     dict.__remove(d, key)
 
-fn __remove_extract(var d: Dict(k, v), key: k) -> Option(v) where k: Hash:
+fn __remove_extract(var d: unique Dict(k, v), key: k) -> Option(v) where k: Hash:
     dict.__remove_extract(d, key)
 
 // Remove the oldest entry and transfer both the key and value. `None` proves
 // that the write-back dictionary is empty, including its must obligations.
-pub fn __pop_extract(var d: Dict(k, v)) -> Option((k, v)):
+pub fn __pop_extract(var d: unique Dict(k, v)) -> Option((k, v)):
     dict.__pop_extract(d)
 
 // Remove `key`, returning its old value when present. The dictionary performs
@@ -126,15 +126,15 @@ pub fn pop(var d: unique Dict(k, v)) -> Option((k, v)):
     dict.__pop_extract(d)
 
 // The keys, in insertion order.
-pub fn keys(let d: Dict(k, v)) -> List(k):
+pub fn keys(let d: Dict(k, v)) -> unique List(k):
     dict.keys(d)
 
 // The values, in insertion order.
-pub fn values(let d: Dict(k, v)) -> List(v):
+pub fn values(let d: Dict(k, v)) -> unique List(v):
     dict.values(d)
 
 // The (key, value) pairs, in insertion order.
-pub fn pairs(let d: Dict(k, v)) -> List((k, v)):
+pub fn pairs(let d: Dict(k, v)) -> unique List((k, v)):
     dict.pairs(d)
 
 // The number of entries.
@@ -158,19 +158,19 @@ impl Dict(k, v):
         dict.length(self) == 0
 
     // The keys, in insertion order.
-    pub fn keys(let self) -> List(k):
+    pub fn keys(let self) -> unique List(k):
         dict.keys(self)
 
     // The values, in insertion order.
-    pub fn values(let self) -> List(v):
+    pub fn values(let self) -> unique List(v):
         dict.values(self)
 
     // The (key, value) pairs, in insertion order.
-    pub fn pairs(let self) -> List((k, v)):
+    pub fn pairs(let self) -> unique List((k, v)):
         dict.pairs(self)
 
     // The values whose keys satisfy `pred`, in the Dict's iteration order.
-    pub fn values_where(self, pred: fn(k) -> Bool) -> List(v):
+    pub fn values_where(self, pred: fn(k) -> Bool) -> unique List(v):
         var out = []
         for entry in dict.pairs(self):
             let (key, value) = entry
@@ -185,7 +185,7 @@ impl Dict(k, v) where k: Hash:
     pub fn insert_owned(var self: unique Dict(k, v), own key: k, own val: v) -> Option((k, v)):
         dict.__insert_extract(self, key, val)
 
-    pub fn update(var self, key: k, default: v, f: fn(v) -> v):
+    pub fn update(var self: unique Dict(k, v), key: k, default: v, f: fn(v) -> v):
         let _ = dict.update(self, key, default, f)
 
     pub fn remove(var self: unique Dict(k, v), key: k) -> Option(v):

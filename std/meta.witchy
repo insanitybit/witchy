@@ -109,7 +109,7 @@ pub fn fresh(hint: String) -> Ident:
 
 // Interpreter-owned compile-time hook. Runtime modules cannot mention Ident,
 // and the linker limits this private intrinsic to std/meta.
-fn __meta_fresh_ident(hint: String) -> String:
+fn __meta_fresh_ident(hint: String) -> unique String:
     __meta_fresh_ident(hint)
 
 pub fn is_identifier(name: String) -> Bool:
@@ -125,7 +125,7 @@ pub fn is_identifier(name: String) -> Bool:
             i = i + 1
         ok
 
-fn ident_source(id: Ident) -> String:
+fn ident_source(id: Ident) -> unique String:
     match id:
         Ident(source) -> source
         CallSiteIdent(source) -> source
@@ -292,16 +292,16 @@ fn __meta_type_capability(name: Ident, rights: List(TypeSyntax)) -> TypeSyntax:
 pub fn type_expr(ty: TypeExpr) -> TypeSyntax:
     __meta_type_expr_wire(encode_type_expr_wire(ty))
 
-fn type_wire_string(value: String) -> String:
+fn type_wire_string(value: String) -> unique String:
     "${value.length()}\n" + value
 
-fn type_wire_bool(value: Bool) -> String:
+fn type_wire_bool(value: Bool) -> unique String:
     if value:
         "1\n"
     else:
         "0\n"
 
-fn encode_type_expr_wire(ty: TypeExpr) -> String:
+fn encode_type_expr_wire(ty: TypeExpr) -> unique String:
     match ty:
         TNamed(name, args) ->
             var wire = "N\n" + type_wire_string(name) + "${args.length()}\n"
@@ -515,11 +515,11 @@ pub fn expr_record_type(target: TypeSyntax, fields: List((Ident, ExprSyntax))) -
         wire = wire + ident_source(field_name) + "\n" + expr_wire_handle(value)
     __meta_expr_compose_wire(wire)
 
-fn expr_wire_handle(value: ExprSyntax) -> String:
+fn expr_wire_handle(value: ExprSyntax) -> unique String:
     match value:
         CompilerExprSyntax(handle) -> "${handle.length()}\n" + handle
 
-fn expr_wire_args(args: List(ExprSyntax)) -> String:
+fn expr_wire_args(args: List(ExprSyntax)) -> unique String:
     var wire = "${args.length()}\n"
     for arg in args:
         wire = wire + expr_wire_handle(arg)
@@ -555,7 +555,7 @@ pub fn expr_if(cond: ExprSyntax, then_body: BlockSyntax, else_body: Option(Block
         None -> wire = wire + "0\n"
     __meta_expr_compose_wire(wire)
 
-fn block_wire_handle(body: BlockSyntax) -> String:
+fn block_wire_handle(body: BlockSyntax) -> unique String:
     match body:
         CompilerBlockSyntax(handle) -> "${handle.length()}\n" + handle
 
@@ -695,7 +695,7 @@ pub fn pattern_or(patterns: List(PatternSyntax)) -> PatternSyntax:
         fail("meta.pattern_or: at least one alternative is required")
     __meta_pattern_wire("O\n" + pattern_wire_args(patterns))
 
-fn pattern_wire_args(patterns: List(PatternSyntax)) -> String:
+fn pattern_wire_args(patterns: List(PatternSyntax)) -> unique String:
     var wire = "${patterns.length()}\n"
     for pattern in patterns:
         match pattern:
@@ -851,14 +851,14 @@ pub fn param_var(name: Ident, ty: TypeSyntax) -> ParamSyntax:
 pub fn param_own(name: Ident, ty: TypeSyntax) -> ParamSyntax:
     __meta_param_wire("own\n" + binding_source(name) + "\n" + type_handle_wire(ty))
 
-fn binding_source(name: Ident) -> String:
+fn binding_source(name: Ident) -> unique String:
     match name:
         CallSiteIdent(_) -> fail("meta parameter requires a definition-site name")
         _ -> ()
 
     ident_source(name)
 
-fn type_handle_wire(ty: TypeSyntax) -> String:
+fn type_handle_wire(ty: TypeSyntax) -> unique String:
     match ty:
         CompilerTypeSyntax(handle) -> "${handle.length()}\n" + handle
 
@@ -993,7 +993,7 @@ fn __meta_impl_block(trait_ty: TypeSyntax, target_ty: TypeSyntax, items: List(It
 pub fn module(items: List(ItemSyntax)) -> ModuleSyntax:
     ModuleSyntax(items)
 
-pub fn module_items(module_syntax: ModuleSyntax) -> List(ItemSyntax):
+pub fn module_items(module_syntax: ModuleSyntax) -> unique List(ItemSyntax):
     match module_syntax:
         ModuleSyntax(items) -> items
 
@@ -1051,7 +1051,7 @@ fn target_with_params(t: TypeInfo) -> String:
 // A ` where a: Trait, b: Trait` clause binding each type parameter to `trait_name`,
 // or "" for a non-generic type - so a generic type's derived impl discharges its
 // parameters' bounds and monomorphizes per argument.
-fn where_each(params: List(String), trait_name: String) -> String:
+fn where_each(params: List(String), trait_name: String) -> unique String:
     if list.is_empty(params):
         ""
     else:
@@ -1066,13 +1066,13 @@ fn where_each(params: List(String), trait_name: String) -> String:
         else:
             " where " + list.join(bounds, ", ")
 
-fn type_sources(types: List(TypeExpr)) -> List(String):
+fn type_sources(types: List(TypeExpr)) -> unique List(String):
     var out = []
     for ty in types:
         list.push(out, type_source(ty))
     out
 
-fn function_type_sources(types: List(TypeExpr), conventions: List(String)) -> List(String):
+fn function_type_sources(types: List(TypeExpr), conventions: List(String)) -> unique List(String):
     var out = []
     var i = 0
     for ty in types:
@@ -1089,7 +1089,7 @@ fn function_type_sources(types: List(TypeExpr), conventions: List(String)) -> Li
 // Render a structured type back to source text only when generated source needs
 // to name the type. Semantic branching should stay on `TypeExpr`, not this
 // string.
-pub fn type_source(ty: TypeExpr) -> String:
+pub fn type_source(ty: TypeExpr) -> unique String:
     match ty:
         TNamed(name, args) ->
             // Slice descriptors retain their element argument for structural
@@ -1135,13 +1135,13 @@ pub fn derive_show(t: TypeInfo) -> ItemSyntax:
     let method = function(false, ident("show"), [param(ident("self"), type_expr(TNamed(t.name, type_params(t.params))))], Some(type_named(ident("String"), [])), body)
     impl_block_where(type_named(ident("Show"), []), type_expr(TNamed(t.name, type_params(t.params))), bound_list(t.params, "Show"), [method])
 
-fn type_params(params: List(String)) -> List(TypeExpr):
+fn type_params(params: List(String)) -> unique List(TypeExpr):
     var out: List(TypeExpr) = []
     for p in params:
         out.push(TNamed(p, []))
     out
 
-fn bound_list(params: List(String), trait_name: String) -> List((Ident, Ident)):
+fn bound_list(params: List(String), trait_name: String) -> unique List((Ident, Ident)):
     var out: List((Ident, Ident)) = []
     for p in params:
         if !p.starts_with("'"):
@@ -1175,7 +1175,7 @@ fn record_show_expr(fields: List(FieldInfo), self_expr: ExprSyntax, name: String
         out = expr_binary("+", out, expr_string(")"))
     out
 
-fn derive_show_source(t: TypeInfo) -> String:
+fn derive_show_source(t: TypeInfo) -> unique String:
     let head = "impl Show for " + target_with_params(t) + where_each(t.params, "Show") + ":\n    fn show(self) -> String:\n"
     match t.kind:
         TypeRecord -> head + "        " + record_show_body(t.name, t.fields) + "\n"
@@ -1187,7 +1187,7 @@ fn derive_show_source(t: TypeInfo) -> String:
 
 // The rendered body of a record's `show`: `"Name"` for a defensive empty-field
 // record input, else `"Name(" + show(self.f1) + ", " + show(self.f2) + ")"`.
-fn record_show_body(name: String, fields: List(FieldInfo)) -> String:
+fn record_show_body(name: String, fields: List(FieldInfo)) -> unique String:
     if list.is_empty(fields):
         "\"" + name + "\""
     else:
@@ -1198,7 +1198,7 @@ fn record_show_body(name: String, fields: List(FieldInfo)) -> String:
 
 // One arm of a sum type's `show`: bind the variant's payloads and render them
 // through their own `Show` (a nullary variant is just its name).
-fn variant_show_arm(v: VariantInfo) -> String:
+fn variant_show_arm(v: VariantInfo) -> unique String:
     var pats = []
     var parts = []
     var i = 0
@@ -1219,7 +1219,7 @@ pub fn derive_eq(t: TypeInfo) -> ItemSyntax:
     let methodless: List(ItemSyntax) = []
     impl_block_where(type_named(ident("Eq"), []), type_expr(TNamed(t.name, type_params(t.params))), bound_list(t.params, "Eq"), methodless)
 
-fn derive_eq_source(t: TypeInfo) -> String:
+fn derive_eq_source(t: TypeInfo) -> unique String:
     "impl Eq for " + target_with_params(t) + where_each(t.params, "Eq") + "\n"
 
 // `derive(PartialEq)` → field-wise structural equality. The operators dispatch
@@ -1270,7 +1270,7 @@ fn record_eq_expr(fields: List(FieldInfo), self_expr: ExprSyntax, other_expr: Ex
             terms.push(expr_binary("==", expr_field(self_expr, ident(f.name)), expr_field(other_expr, ident(f.name))))
         join_binary("&&", terms)
 
-fn derive_partial_eq_source(t: TypeInfo) -> String:
+fn derive_partial_eq_source(t: TypeInfo) -> unique String:
     let head = "impl PartialEq for " + target_with_params(t) + where_each(t.params, "PartialEq") + ":\n    fn eq(let self, let other: " + target_with_params(t) + ") -> Bool:\n"
     match t.kind:
         TypeRecord -> head + "        " + record_eq_body(t.fields) + "\n"
@@ -1282,7 +1282,7 @@ fn derive_partial_eq_source(t: TypeInfo) -> String:
 
 // The `&&`-chained field comparison of a record's `eq`, or `true` for a
 // defensive empty-field record input.
-fn record_eq_body(fields: List(FieldInfo)) -> String:
+fn record_eq_body(fields: List(FieldInfo)) -> unique String:
     if list.is_empty(fields):
         "true"
     else:
@@ -1293,7 +1293,7 @@ fn record_eq_body(fields: List(FieldInfo)) -> String:
 
 // One arm of a sum type's `eq`: match `other` against the same variant, compare
 // payloads pairwise, and fail on any other variant.
-fn variant_eq_arm(v: VariantInfo) -> String:
+fn variant_eq_arm(v: VariantInfo) -> unique String:
     var pats = []
     var opats = []
     var terms = []
@@ -1315,7 +1315,7 @@ fn variant_eq_arm(v: VariantInfo) -> String:
 
 // The `reflect`-call for a field/payload of declared type `ty` applied to the
 // expression text `value` - single-line, dispatched by structured type shape.
-fn reflect_call(ty: TypeExpr, value: String) -> String:
+fn reflect_call(ty: TypeExpr, value: String) -> unique String:
     match ty:
         TNamed(name, _args) ->
             if name == "List":
@@ -1496,7 +1496,7 @@ fn json_decode_value(ty: TypeExpr, value: ExprSyntax) -> ExprSyntax:
         TQualified(_, inner) -> json_decode_value(inner, value)
         _ -> expr_call(expr_name(ident("fail")), [expr_string("derive(Deserialize): unsupported field type")])
 
-fn nominal_path(name: String) -> List(Ident):
+fn nominal_path(name: String) -> unique List(Ident):
     var path: List(Ident) = []
     for segment in name.split("."):
         path.push(ident(segment))

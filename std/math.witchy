@@ -183,7 +183,7 @@ pub fn is_perfect_square(n: Int) -> Bool:
 // Render `n` in `base` (2..16) with lowercase digits; a negative `n` gets a
 // leading "-". A base outside 2..16 has no digit alphabet, so it fails loudly
 // naming the bad argument (RFC-0044 rule 3) rather than returning "".
-pub fn to_base(n: Int, base: Int) -> String:
+pub fn to_base(n: Int, base: Int) -> unique String:
     if base < 2 || base > 16:
         fail("math.to_base: base `${base}` is outside 2..16")
     if n == 0:
@@ -193,7 +193,7 @@ pub fn to_base(n: Int, base: Int) -> String:
     else:
         to_base_pos(n, base)
 
-fn to_base_pos(n: Int, base: Int) -> String:
+fn to_base_pos(n: Int, base: Int) -> unique String:
     if n == 0:
         ""
     else:
@@ -203,21 +203,21 @@ fn to_base_pos(n: Int, base: Int) -> String:
 // first - so `Int.MIN` (whose negation overflows back to itself) renders
 // correctly. Each step takes the negated low remainder as a digit and divides
 // toward zero; both `n % base` and `n / base` stay in range for any negative `n`.
-fn to_base_neg(n: Int, base: Int) -> String:
+fn to_base_neg(n: Int, base: Int) -> unique String:
     if n == 0:
         ""
     else:
         to_base_neg(n / base, base) + base_digit(0 - n % base)
 
-fn base_digit(d: Int) -> String:
+fn base_digit(d: Int) -> unique String:
     "0123456789abcdef".substring(d, d + 1)
 
 // `n` in hexadecimal (e.g. 255 -> "ff").
-pub fn to_hex(n: Int) -> String:
+pub fn to_hex(n: Int) -> unique String:
     to_base(n, 16)
 
 // `n` in binary (e.g. 5 -> "101").
-pub fn to_binary(n: Int) -> String:
+pub fn to_binary(n: Int) -> unique String:
     to_base(n, 2)
 
 // --- Float versions (Int comparison can't be reused for Float) ---
@@ -260,7 +260,7 @@ pub fn format_float(x: Float, decimals: Int) -> String:
         sign + "${scaled / scale}" + "." + zero_pad(scaled % scale, d)
 
 // `n` as a decimal string left-padded with zeros to at least `width` digits.
-fn zero_pad(n: Int, width: Int) -> String:
+fn zero_pad(n: Int, width: Int) -> unique String:
     var s = "${n}"
     while s.length() < width:
         s = "0" + s

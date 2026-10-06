@@ -55,6 +55,8 @@ mod net;
 
 #[path = "canonical_list_update.rs"]
 mod list_update;
+#[path = "canonical_writable.rs"]
+mod writable;
 #[path = "canonical_dict_hash.rs"]
 mod dict_hash;
 #[path = "canonical_dict_table.rs"]
@@ -612,25 +614,6 @@ pub(crate) fn lower_typed_module_with_borrowed_views(
             .get(function_type.unqualified())
             .ok_or_else(|| CanonicalLoweringError::UnsupportedType(function_type.clone()))?;
         let mut signature = signatures[source_signature_id.get() as usize].clone();
-        // A monomorphized list.push helper always allocates its replacement
-        // list before dropping the input. Its declaration-specific contract
-        // starts with the stronger result fact; later checked-source overlay
-        // revalidates it without coupling any other physical peer.
-        if function.name.starts_with("list.push__")
-            || function.name.starts_with("list.__push__")
-        {
-            let [ValueType::Ref(layout)] = signature.results.as_slice() else {
-                return Err(CanonicalLoweringError::InvalidCheckedFunctionType(
-                    function.name.clone(),
-                ));
-            };
-            let [result] = signature.contract.results.as_mut_slice() else {
-                return Err(CanonicalLoweringError::InvalidCheckedFunctionType(
-                    function.name.clone(),
-                ));
-            };
-            *result = ResultContract::Unique { layout: *layout };
-        }
         signature.id = FunctionSignatureId::new(
             u32::try_from(signatures.len()).map_err(|_| CanonicalLoweringError::IdOverflow)?,
         );
@@ -1078,23 +1061,7 @@ pub(crate) fn lower_typed_module_with_borrowed_views(
             &definitions,
             borrow_views,
         );
-        let mut signature = checked_signature_result?;
-        if function.name.starts_with("list.push__")
-            || function.name.starts_with("list.__push__")
-        {
-            let [ValueType::Ref(layout)] = signature.results.as_slice() else {
-                return Err(CanonicalLoweringError::InvalidCheckedFunctionType(
-                    function.name.clone(),
-                ));
-            };
-            let [result] = signature.contract.results.as_mut_slice() else {
-                return Err(CanonicalLoweringError::InvalidCheckedFunctionType(
-                    function.name.clone(),
-                ));
-            };
-            *result = ResultContract::Unique { layout: *layout };
-        }
-        signatures[signature_id.get() as usize] = signature;
+        signatures[signature_id.get() as usize] = checked_signature_result?;
     }
     // A direct shared alias is callable only through this declaration-specific
     // map. Generic entries require their sealed specialization identity;
@@ -4155,6 +4122,10 @@ fn lower_function(
         bindings: HashMap::new(),
         scalarized_records: HashMap::new(),
         consuming_projected_field: None,
+        rebinding: None,
+        unique_result: matches!(signature.contract.results.first(), Some(ResultContract::Unique { .. }))
+            .then(|| function.ret.clone())
+            .flatten(),
         elided_lambdas: HashMap::new(),
         elidable_lambda_names: crate::escape::only_directly_called(body).into_iter().collect(),
         reassigned_names: crate::escape::reassigned_names(body).into_iter().collect(),
@@ -4541,6 +4512,9 @@ struct LoopRebindings {
     pushed: BTreeSet<String>,
     self_appended: BTreeSet<String>,
     complex_appended: BTreeSet<String>,
+    /// The checked type of each root the body updates in place, so a
+    /// shared entry value can be copied once before the loop.
+    root_types: BTreeMap<String, Type>,
 }
 
 impl LoopRebindings {
@@ -4552,6 +4526,7 @@ impl LoopRebindings {
         self.pushed.remove(name);
         self.self_appended.remove(name);
         self.complex_appended.remove(name);
+        self.root_types.remove(name);
         self
     }
 }
@@ -4678,6 +4653,10 @@ fn loop_rebindings(block: &witchy_syntax::ast::Block) -> LoopRebindings {
                     if let Expr::Call { name: call, .. } = value
                         && matches!(call.as_str(), "list.push" | "list.__push")
                     {
+                        out.pushed.insert(name.clone());
+                    } else if *place_depth > 0 {
+                        // A place assignment (`xs[i] = v`, `r.f = v`) updates
+                        // its root, which may then be written in place.
                         out.pushed.insert(name.clone());
                     } else if *place_depth == 0
                         && matches!(value, Expr::Binary {
@@ -4859,6 +4838,11 @@ struct FunctionLowerer<'a> {
     scalarized_records: HashMap<String, ScalarizedRecord>,
     /// Exact field whose generated update result immediately replaces it.
     consuming_projected_field: Option<(String, usize)>,
+    /// The binding the statement being lowered replaces, with its right-hand
+    /// side by address (see `canonical_writable`).
+    rebinding: Option<(String, *const Expr)>,
+    /// The checked source type of a result declared `unique`.
+    unique_result: Option<Type>,
     elided_lambdas: HashMap<String, ElidedScalarLambda>,
     elidable_lambda_names: HashSet<String>,
     reassigned_names: HashSet<String>,
@@ -5552,29 +5536,7 @@ impl FunctionLowerer<'_> {
                 Stmt::Let { name, mutable, ty, value, .. } => {
                     self.lower_let_binding(name, *mutable, ty.as_ref(), value)?;
                 }
-                Stmt::Assign { name, value, place_depth } => {
-                    if !self.bindings.contains_key(name) {
-                        return Err(CanonicalLoweringError::MissingBinding(name.clone()));
-                    }
-                    if let Expr::Call { name: call, args } = value
-                        && matches!(call.as_str(), "list.push" | "list.__push")
-                    {
-                        self.lower_list_push(args)?;
-                        if !matches!(args.first(), Some(Expr::Var(receiver)) if receiver == name) {
-                            return Err(CanonicalLoweringError::UnsupportedExpression(
-                                "list.push assignment target",
-                            ));
-                        }
-                        continue;
-                    }
-                    if self.try_lower_buffer_append_assignment(name, value, *place_depth)? { continue; }
-                    if self.try_lower_place_assignment(name, value, *place_depth)? { continue; }
-                    let value = self.lower_expr(value)?;
-                    if self.values[&self.bindings[name]] != self.values[&value] {
-                        return Err(CanonicalLoweringError::UnsupportedExpression("assignment changes checked storage layout"));
-                    }
-                    self.bindings.insert(name.clone(), value);
-                }
+                Stmt::Assign { name, value, place_depth } => self.lower_assignment(name, value, *place_depth)?,
                 Stmt::Return(value) => {
                     if !final_statement {
                         return Err(CanonicalLoweringError::UnsupportedStatement("early return"));
@@ -6068,29 +6030,7 @@ impl FunctionLowerer<'_> {
                 Stmt::Let { name, mutable, ty, value, .. } => {
                     self.lower_let_binding(name, *mutable, ty.as_ref(), value)?;
                 }
-                Stmt::Assign { name, value, place_depth } => {
-                    if !self.bindings.contains_key(name) {
-                        return Err(CanonicalLoweringError::MissingBinding(name.clone()));
-                    }
-                    if let Expr::Call { name: call, args } = value
-                        && matches!(call.as_str(), "list.push" | "list.__push")
-                    {
-                        self.lower_list_push(args)?;
-                        if !matches!(args.first(), Some(Expr::Var(receiver)) if receiver == name) {
-                            return Err(CanonicalLoweringError::UnsupportedExpression(
-                                "list.push assignment target",
-                            ));
-                        }
-                        continue;
-                    }
-                    if self.try_lower_buffer_append_assignment(name, value, *place_depth)? { continue; }
-                    if self.try_lower_place_assignment(name, value, *place_depth)? { continue; }
-                    let value = self.lower_expr(value)?;
-                    if self.values[&self.bindings[name]] != self.values[&value] {
-                        return Err(CanonicalLoweringError::UnsupportedExpression("assignment changes checked storage layout"));
-                    }
-                    self.bindings.insert(name.clone(), value);
-                }
+                Stmt::Assign { name, value, place_depth } => self.lower_assignment(name, value, *place_depth)?,
                 Stmt::Expr(value) => self.lower_effect_expr(value)?,
                 Stmt::Return(value) => {
                     // An early `return` ends this block's control flow. It is
@@ -6199,29 +6139,7 @@ impl FunctionLowerer<'_> {
                 Stmt::Let { name, mutable, ty, value, .. } => {
                     self.lower_let_binding(name, *mutable, ty.as_ref(), value)?;
                 }
-                Stmt::Assign { name, value, place_depth } => {
-                    if !self.bindings.contains_key(name) {
-                        return Err(CanonicalLoweringError::MissingBinding(name.clone()));
-                    }
-                    if let Expr::Call { name: call, args } = value
-                        && matches!(call.as_str(), "list.push" | "list.__push")
-                    {
-                        self.lower_list_push(args)?;
-                        if !matches!(args.first(), Some(Expr::Var(receiver)) if receiver == name) {
-                            return Err(CanonicalLoweringError::UnsupportedExpression(
-                                "list.push assignment target",
-                            ));
-                        }
-                        continue;
-                    }
-                    if self.try_lower_buffer_append_assignment(name, value, *place_depth)? { continue; }
-                    if self.try_lower_place_assignment(name, value, *place_depth)? { continue; }
-                    let value = self.lower_expr(value)?;
-                    if self.values[&self.bindings[name]] != self.values[&value] {
-                        return Err(CanonicalLoweringError::UnsupportedExpression("assignment changes checked storage layout"));
-                    }
-                    self.bindings.insert(name.clone(), value);
-                }
+                Stmt::Assign { name, value, place_depth } => self.lower_assignment(name, value, *place_depth)?,
                 Stmt::Expr(value) => self.lower_effect_expr(value)?,
                 Stmt::Return(value) => {
                     self.lower_explicit_return(value.as_ref())?;
@@ -6881,29 +6799,7 @@ impl FunctionLowerer<'_> {
                 Stmt::Let { name, mutable, ty, value, .. } => {
                     self.lower_let_binding(name, *mutable, ty.as_ref(), value)?;
                 }
-                Stmt::Assign { name, value, place_depth } => {
-                    if !self.bindings.contains_key(name) {
-                        return Err(CanonicalLoweringError::MissingBinding(name.clone()));
-                    }
-                    if let Expr::Call { name: call, args } = value
-                        && matches!(call.as_str(), "list.push" | "list.__push")
-                    {
-                        self.lower_list_push(args)?;
-                        if !matches!(args.first(), Some(Expr::Var(receiver)) if receiver == name) {
-                            return Err(CanonicalLoweringError::UnsupportedExpression(
-                                "list.push assignment target",
-                            ));
-                        }
-                        continue;
-                    }
-                    if self.try_lower_buffer_append_assignment(name, value, *place_depth)? { continue; }
-                    if self.try_lower_place_assignment(name, value, *place_depth)? { continue; }
-                    let value = self.lower_expr(value)?;
-                    if self.values[&self.bindings[name]] != self.values[&value] {
-                        return Err(CanonicalLoweringError::UnsupportedExpression("assignment changes checked storage layout"));
-                    }
-                    self.bindings.insert(name.clone(), value);
-                }
+                Stmt::Assign { name, value, place_depth } => self.lower_assignment(name, value, *place_depth)?,
                 Stmt::Expr(value) => self.lower_effect_expr(value)?,
                 Stmt::LetPattern { pattern: Pattern::Wildcard, value } => self.lower_effect_expr(value)?,
                 Stmt::LetPattern { pattern, value } => self.lower_let_pattern(pattern, value)?,
@@ -9136,7 +9032,8 @@ impl FunctionLowerer<'_> {
     /// Whether `value` is also bound under a name other than `name`: a live
     /// `let` alias that must keep observing the pre-call value.
     fn aliased_binding(&self, name: &str, value: ValueId) -> bool {
-        self.bindings.iter().any(|(other, bound)| other != name && *bound == value)
+        let own = usize::from(self.bindings.get(name) == Some(&value));
+        self.binding_holders(value) > own
     }
 
     /// A tail-site path for the statement at `statement` of this function's
@@ -9289,6 +9186,7 @@ impl FunctionLowerer<'_> {
         let mut names = loop_lane_names(&outer, &rebound);
         self.scalarized_loop_lanes(&mut names);
         let outer = self.detach_shared_write_back_lanes(&names, outer)?;
+        let outer = self.unshare_mutated_list_lanes(&names, outer, &rebound)?;
         self.authenticate_rebound_list_extents(&names, &outer)?;
         let list_names = names
             .iter()
@@ -9451,6 +9349,52 @@ impl FunctionLowerer<'_> {
         Ok(outer)
     }
 
+    /// A loop that updates a scalar list in place (a push, an indexed
+    /// assignment, a `var` write-back) needs a unique header lane, which a
+    /// shared entry value (a call result, a clone) cannot feed. Enter such a
+    /// loop with one owned copy, as `var ys = xs` takes: without it every
+    /// iteration's update copies the whole list.
+    fn unshare_mutated_list_lanes(
+        &mut self,
+        names: &[String],
+        mut outer: HashMap<String, ValueId>,
+        rebound: &LoopRebindings,
+    ) -> Result<HashMap<String, ValueId>, CanonicalLoweringError> {
+        let byte_buffer = self.string_layout_id().ok().map(ValueType::Ref);
+        for name in names {
+            let value = outer[name];
+            // Another binding holding the same token (`ys = xs`) observes it
+            // too: the loop's unique lane needs its own copy.
+            if !rebound.pushed.contains(name)
+                || !(self.known_shared_value(value) || self.binding_holders(value) > 1)
+                || self.owner_list_family(value).is_some()
+            {
+                continue;
+            }
+            // A String or Bytes buffer updated in place (a byte store, a
+            // unique append) takes the same one copy.
+            if Some(self.values[&value]) == byte_buffer {
+                let copy = self.owned_string_copy(value)?;
+                self.bindings.insert(name.clone(), copy);
+                outer.insert(name.clone(), copy);
+                continue;
+            }
+            let Some(ty) = rebound.root_types.get(name) else { continue };
+            let Ok((layout, element_type, _, _)) = list_layout(
+                ty, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions,
+            ) else { continue };
+            if self.values[&value] != ValueType::Ref(layout)
+                || matches!(element_type, ValueType::Ref(_) | ValueType::Gc(_))
+            {
+                continue;
+            }
+            let copy = self.clone_list_value_for_storage(value, ty)?;
+            self.bindings.insert(name.clone(), copy);
+            outer.insert(name.clone(), copy);
+        }
+        Ok(outer)
+    }
+
     /// A list the loop rebinds crosses its header with count and capacity
     /// lanes, as a unique lane the body's copying update may replace. An
     /// earlier loop can leave such a list without extent facts; authenticate
@@ -9487,6 +9431,7 @@ impl FunctionLowerer<'_> {
         let mut names = loop_lane_names(&outer, &rebound);
         self.scalarized_loop_lanes(&mut names);
         let outer = self.detach_shared_write_back_lanes(&names, outer)?;
+        let outer = self.unshare_mutated_list_lanes(&names, outer, &rebound)?;
         self.authenticate_rebound_list_extents(&names, &outer)?;
         // An immutable exact-extent object crosses the loop as one
         // reference/count/capacity tuple. Mutable-capacity objects remain on
@@ -9812,6 +9757,7 @@ impl FunctionLowerer<'_> {
                 .flatten()
         });
         let outer = self.detach_shared_write_back_lanes(&names, outer)?;
+        let outer = self.unshare_mutated_list_lanes(&names, outer, &rebound)?;
         self.authenticate_rebound_list_extents(&names, &outer)?;
         // Authenticate referenced collection roots before the loop. A root
         // that is never rebound and has independent extent lanes can keep the
@@ -10081,6 +10027,7 @@ impl FunctionLowerer<'_> {
         let mut names = loop_lane_names(&outer, &rebound);
         self.scalarized_loop_lanes(&mut names);
         let outer = self.detach_shared_write_back_lanes(&names, outer)?;
+        let outer = self.unshare_mutated_list_lanes(&names, outer, &rebound)?;
         self.authenticate_rebound_list_extents(&names, &outer)?;
         // An immutable String used by the body keeps its dominating root.
         // Only its authenticated header lanes cross the loop, so a branch
@@ -10763,6 +10710,15 @@ impl FunctionLowerer<'_> {
         }
         let mut observe = |expression: &Expr| {
             if let Expr::Call { name, args } = expression {
+                // An updated root's checked type, from any operation it is
+                // the first operand of.
+                if let Some(argument @ Expr::Var(root)) = args.first()
+                    && rebound.pushed.contains(root)
+                    && !rebound.root_types.contains_key(root)
+                    && let Ok(ty) = self.expression_type(argument)
+                {
+                    rebound.root_types.insert(root.clone(), ty);
+                }
                 if witchy_syntax::intrinsics::is_list_pop_extract(name)
                     && let Some(root) = args.first().and_then(source_place_root)
                 {
@@ -10783,6 +10739,11 @@ impl FunctionLowerer<'_> {
                     {
                         if matches!(argument, Expr::Var(_)) {
                             rebound.pushed.insert(name.to_owned());
+                            if !rebound.root_types.contains_key(name)
+                                && let Ok(ty) = self.expression_type(argument)
+                            {
+                                rebound.root_types.insert(name.to_owned(), ty);
+                            }
                         } else if matches!(argument, Expr::Field { base, .. } if matches!(base.as_ref(), Expr::Var(_))) {
                             // A direct record field write-back restores the
                             // parent with a fresh unique record token. The
@@ -12243,7 +12204,7 @@ impl FunctionLowerer<'_> {
     }
 
     fn return_value(
-        &self,
+        &mut self,
         expression: Option<ValueId>,
         results: &[ValueType],
     ) -> Result<Terminator, CanonicalLoweringError> {
@@ -12258,6 +12219,7 @@ impl FunctionLowerer<'_> {
                         actual,
                     });
                 }
+                let value = self.unique_result_token(value)?;
                 Ok(Terminator::Return { values: vec![value] })
             }
             _ => Err(CanonicalLoweringError::InvalidCheckedFunctionType(self.function.clone())),
@@ -17160,6 +17122,17 @@ impl FunctionLowerer<'_> {
         Ok(())
     }
 
+    /// Grow a kernel loop's string accumulator. The accumulator is the loop's
+    /// own unique lane, so the shared copy-on-write rule writes it in place
+    /// with geometric growth instead of copying the whole prefix per piece.
+    fn append_to_accumulator(&mut self, accumulator: ValueId, piece: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        if accumulator != piece && self.sole_token(accumulator) {
+            self.append_owned_byte_sequence(accumulator, piece)
+        } else {
+            self.concat_string_values(accumulator, piece)
+        }
+    }
+
     fn append_owned_byte_sequence(
         &mut self,
         left: ValueId,
@@ -17631,7 +17604,7 @@ impl FunctionLowerer<'_> {
                 let index = self.lower_expr(index)?;
                 let value = self.lower_expr(value)?;
                 let byte = self.byte_value_checked(value)?;
-                let copy = self.owned_string_copy(source)?;
+                let copy = self.writable_byte_buffer(expression, source)?;
                 let index = self.bytes_index_checked(copy, index)?;
                 self.push_byte_store(copy, index, byte)?;
                 Ok(copy)
@@ -17640,7 +17613,7 @@ impl FunctionLowerer<'_> {
                 let source = self.lower_expr(source)?;
                 let first = self.lower_expr(first)?;
                 let second = self.lower_expr(second)?;
-                let copy = self.owned_string_copy(source)?;
+                let copy = self.writable_byte_buffer(expression, source)?;
                 let first = self.bytes_index_checked(copy, first)?;
                 let second = self.bytes_index_checked(copy, second)?;
                 let a = self.push_string_byte_load(copy, first, layout)?;
@@ -18713,6 +18686,32 @@ impl FunctionLowerer<'_> {
         Ok(true)
     }
 
+    /// `name = value`, or a place assignment rooted at `name`.
+    fn lower_assignment(&mut self, name: &str, value: &Expr, place_depth: u32) -> Result<(), CanonicalLoweringError> {
+        if !self.bindings.contains_key(name) {
+            return Err(CanonicalLoweringError::MissingBinding(name.to_owned()));
+        }
+        if let Expr::Call { name: call, args } = value
+            && matches!(call.as_str(), "list.push" | "list.__push")
+        {
+            self.lower_list_push(args)?;
+            if !matches!(args.first(), Some(Expr::Var(receiver)) if receiver == name) {
+                return Err(CanonicalLoweringError::UnsupportedExpression(
+                    "list.push assignment target",
+                ));
+            }
+            return Ok(());
+        }
+        if self.try_lower_buffer_append_assignment(name, value, place_depth)? { return Ok(()); }
+        if self.try_lower_place_assignment(name, value, place_depth)? { return Ok(()); }
+        let value = self.lower_rebinding_value(name, value)?;
+        if self.values[&self.bindings[name]] != self.values[&value] {
+            return Err(CanonicalLoweringError::UnsupportedExpression("assignment changes checked storage layout"));
+        }
+        self.bindings.insert(name.to_owned(), value);
+        Ok(())
+    }
+
     fn try_lower_buffer_append_assignment(
         &mut self,
         target: &str,
@@ -19048,7 +19047,7 @@ impl FunctionLowerer<'_> {
         self.current = piece_join;
         let piece_values = self.block_parameter_values(piece_join);
         self.track_accumulator_lanes(&piece_values);
-        let out = self.concat_string_values(body_values[0], piece_values[0])?;
+        let out = self.append_to_accumulator(body_values[0], piece_values[0])?;
         let (folded, _) = self.accumulator_lanes(out)?;
         let mut folded = self.split_folded_lanes(folded)?;
         let next = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor, consumed, OverflowBehavior::Wrap)?;
@@ -19215,10 +19214,10 @@ impl FunctionLowerer<'_> {
         self.current = selected;
         let selected_values = self.block_parameter_values(selected);
         self.track_accumulator_lanes(&selected_values);
-        let out = self.concat_string_values(body_values[0], selected_values[0])?;
+        let out = self.append_to_accumulator(body_values[0], selected_values[0])?;
         let element = self.load_list_element(object, cursor, element_value_type)?;
         let rendered = self.lower_render_typed(element, element_type)?;
-        let out = self.concat_string_values(out, rendered)?;
+        let out = self.append_to_accumulator(out, rendered)?;
         let (folded, _) = self.accumulator_lanes(out)?;
         let mut folded = self.split_folded_lanes(folded)?;
         let next = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor, one, OverflowBehavior::Wrap)?;
@@ -20182,9 +20181,9 @@ impl FunctionLowerer<'_> {
             else_arguments: Vec::new(),
         })?;
         let append = |this: &mut Self, lanes: &[ValueId], piece: ValueId, with_to: bool| -> Result<Vec<ValueId>, CanonicalLoweringError> {
-            let mut out = this.concat_string_values(lanes[0], piece)?;
+            let mut out = this.append_to_accumulator(lanes[0], piece)?;
             if with_to {
-                out = this.concat_string_values(out, to)?;
+                out = this.append_to_accumulator(out, to)?;
             }
             let (count, capacity) = this.tracked_lanes(out).expect("a concatenation has lanes");
             Ok(vec![out, count, capacity])

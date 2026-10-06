@@ -104,16 +104,16 @@ pub fn type_of(value: Dynamic) -> RuntimeType:
         Dynamic(ty, _) -> ty
 
 // Human-readable only. Descriptor equality and decoding never key on this name.
-pub fn type_name(ty: RuntimeType) -> String:
+pub fn type_name(ty: RuntimeType) -> unique String:
     match ty:
         RuntimeType(_, name) -> name
 
 // Declared public readable fields in source order. The compiler replaces the
 // intrinsic with an authenticated lookup over canonical descriptor IDs.
-pub fn fields(ty: RuntimeType) -> List(RuntimeField):
+pub fn fields(ty: RuntimeType) -> unique List(RuntimeField):
     __dynamic_fields(ty)
 
-pub fn field_name(field: RuntimeField) -> String:
+pub fn field_name(field: RuntimeField) -> unique String:
     match field:
         RuntimeField(name, _) -> name
 
@@ -123,14 +123,14 @@ pub fn field_type(field: RuntimeField) -> RuntimeType:
 
 // Public methods explicitly registered with `@dynamic`. The compiler replaces
 // this lookup with immutable data from the closed authenticated method plan.
-pub fn methods(ty: RuntimeType) -> List(RuntimeMethod):
+pub fn methods(ty: RuntimeType) -> unique List(RuntimeMethod):
     __dynamic_methods(ty)
 
-pub fn method_name(method: RuntimeMethod) -> String:
+pub fn method_name(method: RuntimeMethod) -> unique String:
     match method:
         RuntimeMethod(name, _, _, _, _) -> name
 
-pub fn method_args(method: RuntimeMethod) -> List(RuntimeType):
+pub fn method_args(method: RuntimeMethod) -> unique List(RuntimeType):
     match method:
         RuntimeMethod(_, args, _, _, _) -> args
 
@@ -138,7 +138,7 @@ pub fn method_result(method: RuntimeMethod) -> RuntimeType:
     match method:
         RuntimeMethod(_, _, result, _, _) -> result
 
-pub fn method_capabilities(method: RuntimeMethod) -> List(String):
+pub fn method_capabilities(method: RuntimeMethod) -> unique List(String):
     match method:
         RuntimeMethod(_, _, _, capabilities, _) -> capabilities
 
@@ -148,7 +148,7 @@ pub fn method_access(method: RuntimeMethod) -> RuntimeCallableAccess:
     match method:
         RuntimeMethod(_, _, _, _, access) -> access
 
-pub fn access_borrow_relations(access: RuntimeCallableAccess) -> List(RuntimeBorrowRelation):
+pub fn access_borrow_relations(access: RuntimeCallableAccess) -> unique List(RuntimeBorrowRelation):
     match access:
         RuntimeCallableAccess(_, _, _, _, _, relations) -> relations
 
@@ -164,11 +164,11 @@ pub fn borrow_relation_lifetime(relation: RuntimeBorrowRelation) -> Int:
     match relation:
         RuntimeBorrowRelation(lifetime, _, _, _, _) -> lifetime
 
-pub fn borrow_relation_output(relation: RuntimeBorrowRelation) -> List(RuntimeLoanProjectionStep):
+pub fn borrow_relation_output(relation: RuntimeBorrowRelation) -> unique List(RuntimeLoanProjectionStep):
     match relation:
         RuntimeBorrowRelation(_, output, _, _, _) -> output
 
-pub fn borrow_relation_owners(relation: RuntimeBorrowRelation) -> List(RuntimeBorrowOwner):
+pub fn borrow_relation_owners(relation: RuntimeBorrowRelation) -> unique List(RuntimeBorrowOwner):
     match relation:
         RuntimeBorrowRelation(_, _, owners, _, _) -> owners
 
@@ -176,7 +176,7 @@ pub fn borrow_relation_storage(relation: RuntimeBorrowRelation) -> RuntimeType:
     match relation:
         RuntimeBorrowRelation(_, _, _, storage, _) -> storage
 
-pub fn borrow_relation_storage_qualifiers(relation: RuntimeBorrowRelation) -> List(RuntimeQualifierSite):
+pub fn borrow_relation_storage_qualifiers(relation: RuntimeBorrowRelation) -> unique List(RuntimeQualifierSite):
     match relation:
         RuntimeBorrowRelation(_, _, _, _, qualifiers) -> qualifiers
 
@@ -184,15 +184,15 @@ pub fn borrow_owner_parameter(owner: RuntimeBorrowOwner) -> Int:
     match owner:
         RuntimeBorrowOwner(parameter, _) -> parameter
 
-pub fn borrow_owner_input(owner: RuntimeBorrowOwner) -> List(RuntimeLoanProjectionStep):
+pub fn borrow_owner_input(owner: RuntimeBorrowOwner) -> unique List(RuntimeLoanProjectionStep):
     match owner:
         RuntimeBorrowOwner(_, input) -> input
 
-pub fn qualifier_site_path(site: RuntimeQualifierSite) -> List(RuntimeQualifierPathStep):
+pub fn qualifier_site_path(site: RuntimeQualifierSite) -> unique List(RuntimeQualifierPathStep):
     match site:
         RuntimeQualifierSite(path, _) -> path
 
-pub fn qualifier_site_qualifiers(site: RuntimeQualifierSite) -> List(RuntimeAccessQualifier):
+pub fn qualifier_site_qualifiers(site: RuntimeQualifierSite) -> unique List(RuntimeAccessQualifier):
     match site:
         RuntimeQualifierSite(_, qualifiers) -> qualifiers
 

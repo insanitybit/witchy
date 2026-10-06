@@ -128,7 +128,7 @@ fn slot_value(s: Slot(a)) -> a:
 // may exercise delegated effects. Tasks interleave at their `pending`/`await`
 // points. This is the structured-concurrency primitive (`scope`/`join`):
 // hand it the task list and it fans them out, joining all before it returns.
-pub fn join_all(tasks: List(Future(a))) -> List(a):
+pub fn join_all(tasks: List(Future(a))) -> unique List(a):
     var slots = list.map(tasks, fn(f): Running(f))
     while list.any(slots, fn(s): is_running(s)):
         slots = list.map(slots, fn(s): step_slot(s))

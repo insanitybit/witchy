@@ -61,7 +61,7 @@ type JwtError:
     JwksNoMatchingRsaKey(String)
 
 // Human-readable JWT/OIDC failure text for logs, CLI output, and HTTP responses.
-pub fn jwt_error_message(e: JwtError) -> String:
+pub fn jwt_error_message(e: JwtError) -> unique String:
     match e:
         MalformedCompact -> "malformed JWT: expected three `.`-separated segments"
         NoHeaderSegment -> "malformed JWT: no header segment"
@@ -250,7 +250,7 @@ pub fn verify_oidc_fresh(token: String, rsa_pubkey_der_hex: String, issuer: Stri
 // the hex signature is base64url-encoded as the third segment. The caller sets the
 // registered claims (`iss`/`aud`/`sub`/`iat`/`exp`/…) in `claims`. Signing is
 // by-handle, so a sealed `Secret[Seal]` mints tokens without being readable.
-pub fn sign_eddsa(claims: Json, key: Secret[Seal]) -> String:
+pub fn sign_eddsa(claims: Json, key: Secret[Seal]) -> unique String:
     let header_b64 = base64url_of_text("{\"alg\":\"EdDSA\",\"typ\":\"JWT\"}")
     let payload_b64 = base64url_of_text(claims.encode())
     let signing_input = header_b64 + "." + payload_b64
@@ -261,7 +261,7 @@ pub fn sign_eddsa(claims: Json, key: Secret[Seal]) -> String:
     signing_input + "." + sig_b64
 
 // base64url (no padding, the JWT wire form) of a text string's UTF-8 bytes.
-fn base64url_of_text(text: String) -> String:
+fn base64url_of_text(text: String) -> unique String:
     encoding.base64url_encode_bytes(bytes.from_string(text))
 
 // Verify an EdDSA (Ed25519) compact JWT against an Ed25519 public key (hex),
@@ -440,7 +440,7 @@ fn der_integer(value_hex: String) -> String:
 // DER length of a hex string's byte count (`len/2`): short form below 128, else a
 // `0x8N` count-of-length-bytes prefix. RSA keys stay well under 65536 bytes, so one or
 // two length bytes always suffice.
-fn der_len(content_hex: String) -> String:
+fn der_len(content_hex: String) -> unique String:
     let n = content_hex.length() / 2
     if n < 128:
         byte_hex(n)
@@ -450,7 +450,7 @@ fn der_len(content_hex: String) -> String:
         "82" + math.to_hex(n).pad_left(4, "0")
 
 // A single byte as exactly two lowercase hex digits.
-fn byte_hex(b: Int) -> String:
+fn byte_hex(b: Int) -> unique String:
     math.to_hex(b).pad_left(2, "0")
 
 // Is the top bit of the first byte set (first hex digit in `8`..`f`)? Empty hex is not.

@@ -39,7 +39,7 @@ type ResponseParseError:
     MissingChunkDelimiter
     InternalChunkDecoderState
 
-pub fn response_parse_error_message(e: ResponseParseError) -> String:
+pub fn response_parse_error_message(e: ResponseParseError) -> unique String:
     match e:
         MissingChunkSizeTerminator -> "chunked response missing chunk-size terminator"
         InvalidChunkSize(line) -> "chunked response has invalid chunk size `" + line + "`"
@@ -49,7 +49,7 @@ pub fn response_parse_error_message(e: ResponseParseError) -> String:
         MissingChunkDelimiter -> "chunked response missing chunk delimiter"
         InternalChunkDecoderState -> "unreachable chunked decoder state"
 
-pub fn http_error_message(e: HttpError) -> String:
+pub fn http_error_message(e: HttpError) -> unique String:
     match e:
         Denied(message) -> message
         InvalidRequest(message) -> message
@@ -94,7 +94,7 @@ type Request:
 
 // Canonical origin text for deriving Fetch from Net. Invalid or unsupported
 // URLs are configuration errors here; request-time URL failures remain typed.
-pub fn origin(raw: String) -> String:
+pub fn origin(raw: String) -> unique String:
     match url.parse(raw):
         Err(e) ->
             fail("invalid HTTP URL: " + url.url_error_message(e))
@@ -141,7 +141,7 @@ pub fn try_get(fetch: Fetch, request_url: String) -> Result(Response, HttpError)
 pub fn try_post(fetch: Fetch, request_url: String, body: String) -> Result(Response, HttpError):
     try_request_with(fetch, "POST", request_url, [], body)
 
-fn render_headers(headers: List((String, String))) -> String:
+fn render_headers(headers: List((String, String))) -> unique String:
     var rendered = ""
     for header in headers:
         let (name, value) = header
@@ -242,7 +242,7 @@ pub fn status(r: Response) -> Int:
         Response(code, _hdrs, _body) -> code
 
 // The response body.
-pub fn body(r: Response) -> String:
+pub fn body(r: Response) -> unique String:
     match r:
         Response(_code, _hdrs, b) -> b
 
@@ -420,7 +420,7 @@ fn status_code(line: String) -> Int:
 // a malformed/truncated stream stops decoding and returns what was recovered
 // rather than trapping. Chunk sizes are byte counts, so framing is decoded on
 // `Bytes`; only the recovered payload is converted back to text.
-fn dechunk(body: String) -> String:
+fn dechunk(body: String) -> unique String:
     let raw = bytes.from_string(body)
     let crlf = bytes.from_string("\r\n")
     var out = bytes.from_string("")
@@ -490,7 +490,7 @@ fn bytes_index_from(b: Bytes, needle: Bytes, from: Int) -> Int:
 
 // The hex size of a chunk line, with any `;chunk-extension` and surrounding
 // whitespace stripped.
-fn chunk_size_hex(line: String) -> String:
+fn chunk_size_hex(line: String) -> unique String:
     let semi = line.index_of(";") ?? -1
     let raw: String = if semi < 0: line else: line.substring(0, semi)
     raw.trim()

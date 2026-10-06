@@ -31,7 +31,7 @@ type RequestParseError:
     ConflictingContentLength
     BadRequestLine
 
-pub fn request_parse_error_message(e: RequestParseError) -> String:
+pub fn request_parse_error_message(e: RequestParseError) -> unique String:
     match e:
         UnsupportedTransferEncoding -> "unsupported Transfer-Encoding"
         ConflictingContentLength -> "conflicting Content-Length headers"
@@ -48,7 +48,7 @@ impl From(RequestParseError) for String:
         request_parse_error_message(value)
 
 // ---- Request accessors ----
-pub fn method(req: Request) -> String:
+pub fn method(req: Request) -> unique String:
     match req:
         Request(m, _p, _pa, _q, _h, _b) -> m
 
@@ -56,12 +56,12 @@ pub fn method(req: Request) -> String:
 // this accessor see the same normalized form (BUG-432): consecutive slashes are
 // collapsed and trailing slashes stripped. Percent-decoding is applied after
 // normalization so a `%2F` stays inside one segment (no forged separator, BUG-375).
-pub fn path(req: Request) -> String:
+pub fn path(req: Request) -> unique String:
     percent_decode(normalize_path(raw_path_of(req)), false)
 
 // The raw (still percent-encoded) request path - used by the router so that
 // segment boundaries are taken from literal `/` only.
-fn raw_path_of(req: Request) -> String:
+fn raw_path_of(req: Request) -> unique String:
     match req:
         Request(_m, p, _pa, _q, _h, _b) -> p
 
@@ -71,7 +71,7 @@ pub fn param(req: Request, name: String) -> Option(String):
         Request(_m, _p, pa, _q, _h, _b) -> lookup(pa, name)
 
 // A captured path parameter, or `default` if absent.
-pub fn param_or(req: Request, name: String, default: String) -> String:
+pub fn param_or(req: Request, name: String, default: String) -> unique String:
     option.unwrap_or(param(req, name), default)
 
 // A query-string parameter (`?name=...`), or None if absent.
@@ -82,12 +82,12 @@ pub fn query(req: Request, name: String) -> Option(String):
 // Complete decoded query entries for schema-driven adapters such as
 // progressive forms. The list preserves duplicate names so the schema decoder
 // can reject ambiguity instead of silently selecting one value.
-pub fn query_pairs(req: Request) -> List((String, String)):
+pub fn query_pairs(req: Request) -> unique List((String, String)):
     match req:
         Request(_m, _p, _pa, q, _h, _b) -> q
 
 // A query-string parameter, or `default` if absent.
-pub fn query_or(req: Request, name: String, default: String) -> String:
+pub fn query_or(req: Request, name: String, default: String) -> unique String:
     option.unwrap_or(query(req, name), default)
 
 // A request header, looked up case-insensitively, or None.
@@ -95,7 +95,7 @@ pub fn request_header(req: Request, name: String) -> Option(String):
     match req:
         Request(_m, _p, _pa, _q, h, _b) -> http.find_header(h, name.to_lower())
 
-pub fn request_body(req: Request) -> String:
+pub fn request_body(req: Request) -> unique String:
     match req:
         Request(_m, _p, _pa, _q, _h, b) -> b
 
@@ -113,7 +113,7 @@ pub fn json_body_string(req: Request) -> Result(Json, String):
 
 // Parse an `application/x-www-form-urlencoded` body (`a=1&b=2`) into key/value
 // pairs - for HTML form POSTs.
-pub fn form_body(req: Request) -> List((String, String)):
+pub fn form_body(req: Request) -> unique List((String, String)):
     parse_query(request_body(req))
 
 // A single form field, or None if absent.
@@ -121,7 +121,7 @@ pub fn form_field(req: Request, name: String) -> Option(String):
     lookup(form_body(req), name)
 
 // A single form field, or `default` if absent.
-pub fn form_field_or(req: Request, name: String, default: String) -> String:
+pub fn form_field_or(req: Request, name: String, default: String) -> unique String:
     option.unwrap_or(form_field(req, name), default)
 
 fn lookup(pairs: List((String, String)), name: String) -> Option(String):
@@ -328,7 +328,7 @@ fn with_params(req: Request, params: List((String, String))) -> Request:
 fn match_path(pattern: String, p: String) -> Option(List((String, String))):
     match_segs(split_path(pattern), split_path(normalize_path(p)), [])
 
-fn split_path(p: String) -> List(String):
+fn split_path(p: String) -> unique List(String):
     // (BUG-375) Split on literal `/` FIRST, then percent-decode each segment - so a
     // captured `:param` / `*rest` reaches the handler decoded (`a%20b` -> `a b`),
     // while a `%2F` inside a segment decodes to a literal `/` that stays WITHIN that
@@ -365,7 +365,7 @@ fn match_segs(pat: List(String), segs: List(String), acc: List((String, String))
             else:
                 None
 
-fn rest(xs: List(a)) -> List(a):
+fn rest(xs: List(a)) -> unique List(a):
     var out = []
     var i = 1
     while i < list.length(xs):
@@ -373,7 +373,7 @@ fn rest(xs: List(a)) -> List(a):
         i = i + 1
     out
 
-fn join_segs(xs: List(String)) -> String:
+fn join_segs(xs: List(String)) -> unique String:
     var out = ""
     var first = true
     for s in xs:
@@ -401,7 +401,7 @@ fn read_request(sock: Socket) -> Result(Request, Response):
                     let body = if len > 0: sock.recv_bytes(len) ?? "" else: ""
                     Ok(Request(m, raw_path, [], q, headers, body))
 
-fn read_headers(sock: Socket) -> List((String, String)):
+fn read_headers(sock: Socket) -> unique List((String, String)):
     var hdrs = []
     var done = false
     while !done:
@@ -497,7 +497,7 @@ fn framed_length(headers: List((String, String))) -> Result(Int, RequestParseErr
             Some(n) -> if n > 0: Ok(n) else: Ok(0)
             None -> Ok(0)
 
-fn parse_query(q: String) -> List((String, String)):
+fn parse_query(q: String) -> unique List((String, String)):
     // (BUG-236 / BUG-352) `application/x-www-form-urlencoded`: keys and values are
     // percent-encoded and `+` stands for a space. Decode BOTH (`%XX` and `+`) so a
     // handler sees `q=a b` for `?q=a%20b` or `?q=a+b`, not the raw escapes. Empty
@@ -522,7 +522,7 @@ fn parse_query(q: String) -> List((String, String)):
 // Consecutive `%XX` bytes are accumulated and decoded together so a multi-byte UTF-8
 // escape (`%E2%82%AC` -> `€`) round-trips. Total: a stray `%` (not followed by two
 // hex digits) is passed through literally rather than trapping.
-fn percent_decode(s: String, plus_space: Bool) -> String:
+fn percent_decode(s: String, plus_space: Bool) -> unique String:
     var out = ""
     var pending = ""
     var i = 0
@@ -598,7 +598,7 @@ fn normalize_path(p: String) -> String:
         else:
             out
 
-fn third_word(s: String) -> String:
+fn third_word(s: String) -> unique String:
     let sp = s.index_of(" ") ?? -1
     if sp < 0:
         ""
@@ -617,7 +617,7 @@ fn first_word(s: String) -> String:
     else:
         s.substring(0, sp)
 
-fn second_word(s: String) -> String:
+fn second_word(s: String) -> unique String:
     let sp = s.index_of(" ") ?? -1
     if sp < 0:
         ""
@@ -636,7 +636,7 @@ fn before(s: String, sep: String) -> String:
     else:
         s.substring(0, i)
 
-fn after(s: String, sep: String) -> String:
+fn after(s: String, sep: String) -> unique String:
     let i = s.index_of(sep) ?? -1
     if i < 0:
         ""
@@ -655,7 +655,7 @@ pub fn handle(app: Router, req: Request) -> Response:
 // Serialize a `Response` to its HTTP/1.1 wire form (inverse of `http.parse_response`).
 // The framing headers (Content-Length, Connection) are owned here; a status outside
 // 100..599 traps. Public so a test or a custom transport can render a Response itself.
-pub fn render(resp: Response) -> String:
+pub fn render(resp: Response) -> unique String:
     render_for(resp, "")
 
 // `render`, honoring the request method: a HEAD response carries the same
@@ -663,7 +663,7 @@ pub fn render(resp: Response) -> String:
 // body bytes themselves are never sent (RFC 9110 §9.3.2). This is enforced at
 // the rendering boundary so a `.head(...)` handler may simply return the GET
 // response and the framework suppresses the body.
-pub fn render_for(resp: Response, method: String) -> String:
+pub fn render_for(resp: Response, method: String) -> unique String:
     match resp:
         // (BUG-255) A status code outside 100..599 is not a valid HTTP status
         // and would render a malformed status line; trap loudly (both backends).
@@ -697,7 +697,7 @@ fn check_status(code: Int):
     if code < 100 || code > 599:
         fail("invalid HTTP status code (must be 100..599): ${code}")
 
-fn reason(code: Int) -> String:
+fn reason(code: Int) -> unique String:
     if code == 200:
         "OK"
     else if code == 201:

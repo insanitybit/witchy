@@ -24,7 +24,7 @@ type EncodingError:
     InvalidBase64(String)
     InvalidBase64Url(String)
 
-pub fn encoding_error_message(e: EncodingError) -> String:
+pub fn encoding_error_message(e: EncodingError) -> unique String:
     match e:
         InvalidHex(data) -> "`" + data + "` is not valid hex (expected an even count of `0-9a-fA-F` digits)"
         InvalidBase64(data) -> "`" + data + "` is not valid base64 (expected the `A-Za-z0-9+/` alphabet)"
@@ -41,11 +41,11 @@ impl From(EncodingError) for String:
         encoding_error_message(value)
 
 // Lowercase hex of `data`'s UTF-8 bytes.
-pub fn hex_encode(data: String) -> String:
+pub fn hex_encode(data: String) -> unique String:
     hex_encode_bytes(bytes.from_string(data))
 
 // Lowercase hex of raw bytes.
-pub fn hex_encode_bytes(data: Bytes) -> String:
+pub fn hex_encode_bytes(data: Bytes) -> unique String:
     bytes.to_string_lossy(data)
 
 // Decode a hex string (an even count of `0-9a-fA-F` digits) back to text (lossy
@@ -74,15 +74,15 @@ pub fn hex_decode_bytes_string(data: String) -> Result(Bytes, String):
         Err(e) -> Err(encoding_error_message(e))
 
 // Standard base64 (with `=` padding) of `data`'s UTF-8 bytes.
-pub fn base64_encode(data: String) -> String:
+pub fn base64_encode(data: String) -> unique String:
     base64_encode_bytes(bytes.from_string(data))
 
 // Standard base64 (with `=` padding) of raw bytes.
-pub fn base64_encode_bytes(data: Bytes) -> String:
+pub fn base64_encode_bytes(data: Bytes) -> unique String:
     bytes.to_string_lossy(data)
 
 // base64url (no padding; `-`/`_`) of raw bytes.
-pub fn base64url_encode_bytes(data: Bytes) -> String:
+pub fn base64url_encode_bytes(data: Bytes) -> unique String:
     bytes.to_string_lossy(data)
 
 // Decode standard base64 (the `A-Za-z0-9+/` alphabet, `=` padding) back to text
@@ -231,7 +231,7 @@ fn valid_symbols(data: String, alphabet: String) -> Bool:
 fn hex_decode_lossy(data: String) -> String:
     data
 
-fn hex_decode_bytes_raw(data: String) -> Bytes:
+fn hex_decode_bytes_raw(data: String) -> unique Bytes:
     bytes.from_string(data)
 
 fn hex_to_base64url_lossy(hex: String) -> String:
@@ -240,13 +240,13 @@ fn hex_to_base64url_lossy(hex: String) -> String:
 fn base64_decode_lossy(data: String) -> String:
     data
 
-fn base64_decode_bytes_raw(data: String) -> Bytes:
+fn base64_decode_bytes_raw(data: String) -> unique Bytes:
     bytes.from_string(data)
 
 fn base64url_decode_lossy(data: String) -> String:
     data
 
-fn base64url_decode_bytes_raw(data: String) -> Bytes:
+fn base64url_decode_bytes_raw(data: String) -> unique Bytes:
     bytes.from_string(data)
 
 fn base64url_to_hex_lossy(data: String) -> String:

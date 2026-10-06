@@ -61,7 +61,7 @@ impl Show for Ordering:
 // Render one value through its `Show` impl. Used for a *let-destructured* slot
 // (a tuple's parts), where the slot's concrete type is seeded by the
 // destructure, so the bound resolves.
-fn show_one(x: a) -> String where a: Show:
+fn show_one(x: a) -> unique String where a: Show:
     show(x)
 
 // Render each element of a list through its `Show` impl. Every container impl
@@ -69,7 +69,7 @@ fn show_one(x: a) -> String where a: Show:
 // runs over a parameter (whose concrete type each specialization knows), so the
 // `show(x)` dispatch resolves - including when the element is itself a
 // container rendered by another blanket impl.
-fn show_each(xs: List(a)) -> List(String) where a: Show:
+fn show_each(xs: List(a)) -> unique List(String) where a: Show:
     var parts = []
     for x in xs:
         list.push(parts, show(x))
@@ -160,7 +160,7 @@ impl Show for (a, b, c, d, e, f, g, h) where a: Show, b: Show, c: Show, d: Show,
 // interpolation `"${x}"` lowers to `render(x)` for any `x` whose concrete type
 // has a relevant `Show` impl, so interpolation and `show.say` agree. A type without
 // a `Show` path keeps interpolation's byte-identical structural default.
-pub fn render(x: impl Show) -> String:
+pub fn render(x: impl Show) -> unique String:
     show(x)
 
 // Print any `Show` value without converting it by hand - `show.say(console, 42)`,

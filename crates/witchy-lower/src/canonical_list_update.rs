@@ -30,6 +30,59 @@ impl FunctionLowerer<'_> {
         self.rebuild_list_value(source, index, replacement, list_type)
     }
 
+    /// A place assignment's replacement: the root binding takes the result,
+    /// so a list no other binding can observe is updated in place. The
+    /// checker independently requires the store target to be the sole live
+    /// token; a shared list, a reference element, or an owner-family list
+    /// keeps the copying rebuild.
+    pub(super) fn replace_owned_list_value(
+        &mut self,
+        source: ValueId,
+        index: ValueId,
+        replacement: ValueId,
+        list_type: Type,
+        site: &abort::Site,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        if self.owner_list_family(source).is_some() || !self.sole_token(source) {
+            return self.replace_list_value(source, index, replacement, list_type, site);
+        }
+        let (layout, element_type, header_bytes, stride_bytes) = list_layout(
+            &list_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions,
+        )?;
+        if matches!(element_type, ValueType::Ref(_) | ValueType::Gc(_))
+            || self.values[&source] != ValueType::Ref(layout)
+            || self.values[&index] != ValueType::Int
+            || self.values[&replacement] != element_type
+        {
+            return self.replace_list_value(source, index, replacement, list_type, site);
+        }
+        self.diagnose_list_index(source, index, site)?;
+        self.ensure_list_extent(source)?;
+        let (length, capacity) = self.tracked_lanes(source).ok_or(
+            CanonicalLoweringError::UnsupportedExpression("list place extent"),
+        )?;
+        let index_size = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::NarrowSize { destination: index_size, value: index });
+        let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, index_size, length)?;
+        self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        self.guard_dynamic_extent(length, capacity, header_bytes, stride_bytes)?;
+        // The checker bounds a write by the allocation's capacity; the
+        // logical-length guard above is the source-level index check.
+        let writable = self.push_compare(ComparisonOperator::LessUnsigned, index_size, capacity)?;
+        self.push_guard(writable, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        self.push_operation(Operation::Store {
+            place: witchy_wir::canonical_safewir::Place::projected(
+                source,
+                Projection::Element { index: index_size },
+                element_type,
+                AccessMode::Write,
+            ),
+            value: replacement,
+            transfer: witchy_wir::canonical_safewir::StoreTransfer::CopyScalar,
+        });
+        Ok(source)
+    }
+
     /// Internal replacement also used for a dictionary's successful key
     /// lookup. Keep every typed extent and bounds check here; only the
     /// source-level list-index diagnostic belongs to the wrapper above.
