@@ -12145,14 +12145,32 @@ impl FunctionLowerer<'_> {
                             Ok(CallArgument::Move(owned))
                         }
                         ParameterOwnership::Shared if tail => Ok(CallArgument::Move(value)),
-                        // A `var` binding may be mutated in place after the
-                        // call; a clone would leave its token shared, so the
-                        // callee receives an owned copy (value semantics).
+                        // A `var` binding of an owned carrier shares its token
+                        // too: the clone marks it shared, so a later in-place
+                        // update of the binding copies once (canonical_writable.rs)
+                        // instead of every call copying eagerly. A loop-carried
+                        // binding keeps the copy: its header lane was fixed
+                        // unique before the body, whose earlier in-place writes
+                        // a shared back edge would invalidate. Graph, callable
+                        // and move-only storage carry per-layout affine plans a
+                        // shared token cannot satisfy; their callee gets a copy.
                         ParameterOwnership::Shared
-                            if source_place_root(argument).is_some_and(|name| self.mutable_bindings.contains(name)) =>
+                            if let Some(name) = source_place_root(argument)
+                                && self.mutable_bindings.contains(name)
+                                && (self.loop_contexts.iter().any(|context| context.names.iter().any(|carried| carried == name))
+                                    || !matches!(StoragePlan::classify(&self.expression_type(argument)?.unqualified(), self.definitions, |_| Some(0)),
+                                        StoragePlan::Owned(_))) =>
                         {
                             let source_type = self.expression_type(argument)?;
-                            let owned = self.owned_for_storage(value, &source_type)?;
+                            // Storage retains a Dict by shared token; this copy
+                            // must leave the binding's own table unique.
+                            let owned = if matches!(source_type.unqualified(), Type::Named(name, arguments) if name == "Dict" && arguments.len() == 2)
+                                && self.is_table_dictionary(&source_type)?
+                            {
+                                self.lower_dict_clone_exact(value)?
+                            } else {
+                                self.owned_for_storage(value, &source_type)?
+                            };
                             Ok(CallArgument::Move(owned))
                         }
                         ParameterOwnership::Shared => {

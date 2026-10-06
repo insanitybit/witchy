@@ -319,3 +319,31 @@ fn main(console: Console):
         let want = ["ok"];
         assert_eq!(wasm_run(src), want, "compiled backend captures coordinates once");
     }
+
+    /// A `var` shares its token with a call instead of copying for it; a write
+    /// after the call copies once, so every earlier result keeps its value.
+    #[test]
+    fn var_bytes_slices_keep_their_snapshot_across_later_writes() {
+        let src = "import bytes\n\nfn main(console: Console):\n    var seq = bytes.from_string(\"aaaa\")\n    let first = seq.slice(0, 3)\n    seq.set_at(0, 90)\n    var out = \"\"\n    var i = 1\n    while i < 4:\n        let s = seq.slice(0, 4)\n        seq.set_at(i, 66)\n        out = out + s.to_string() + \",\"\n        i = i + 1\n    console.print(first.to_string())\n    console.print(out + seq.to_string())\n";
+        assert_eq!(wasm_run(src), ["aaa", "Zaaa,ZBaa,ZBBa,ZBBB"]);
+    }
+
+    #[test]
+    fn var_collections_passed_to_a_call_keep_their_snapshot() {
+        let src = "fn keep_list(xs: List(Int)) -> List(Int):\n    xs\n\nfn keep_dict(d: Dict(String, Int)) -> Dict(String, Int):\n    d\n\nfn keep_text(s: String) -> String:\n    s\n\nfn main(console: Console):\n    var xs = [1, 2, 3]\n    let kept = keep_list(xs)\n    xs.set_at(0, 9)\n    xs.push(4)\n    var d: Dict(String, Int) = dict.new()\n    d[\"a\"] = 1\n    let kept_d = keep_dict(d)\n    d[\"a\"] = 2\n    d[\"b\"] = 3\n    var s = \"ab\"\n    s = s + \"c\"\n    let kept_s = keep_text(s)\n    s = s + \"d\"\n    console.print(\"${kept} ${xs}\")\n    console.print(\"${kept_d.get(\"a\")} ${kept_d.length()} ${d.get(\"a\")} ${d.length()}\")\n    console.print(\"${kept_s} ${s}\")\n";
+        assert_eq!(wasm_run(src), ["[1, 2, 3] [9, 2, 3, 4]", "Some(1) 1 Some(2) 2", "abc abcd"]);
+    }
+
+    /// A loop-carried `var` keeps its unique header lane: the body may write
+    /// it in place and then pass it to a call on the same iteration.
+    #[test]
+    fn loop_carried_var_arguments_follow_in_place_writes() {
+        let src = "fn total(xs: List(Int)) -> Int:\n    var t = 0\n    for x in xs:\n        t = t + x\n    t\n\nfn first(xs: List(Int)) -> Int:\n    xs[0]\n\nfn size(d: Dict(String, Int)) -> Int:\n    d.length()\n\nfn main(console: Console):\n    var xs: List(Int) = []\n    var ys = [0, 0]\n    var d: Dict(String, Int) = dict.new()\n    var acc = 0\n    var i = 0\n    while i < 3:\n        xs.push(i)\n        acc = acc + total(xs)\n        ys.set_at(0, i)\n        acc = acc + first(ys)\n        d[\"k${i}\"] = i\n        acc = acc + size(d)\n        i = i + 1\n    console.print(\"${acc} ${xs} ${ys} ${d.length()}\")\n";
+        assert_eq!(wasm_run(src), ["13 [0, 1, 2] [2, 0] 3"]);
+    }
+
+    #[test]
+    fn shared_var_arguments_keep_nested_projected_and_write_back_snapshots() {
+        let src = "fn keep_nested(xss: List(List(Int))) -> List(List(Int)):\n    xss\n\nfn keep(xs: List(Int)) -> List(Int):\n    xs\n\nfn bump(var xs: List(Int)):\n    xs.push(9)\n\nfn main(console: Console):\n    var xss = [[1], [2]]\n    let nested = keep_nested(xss)\n    let projected = keep(xss[1])\n    xss[0].push(5)\n    xss[1].push(6)\n    var xs = [1]\n    let kept = keep(xs)\n    bump(xs)\n    console.print(\"${nested} ${projected} ${xss}\")\n    console.print(\"${kept} ${xs}\")\n";
+        assert_eq!(wasm_run(src), ["[[1], [2]] [2] [[1, 5], [2, 6]]", "[1] [1, 9]"]);
+    }

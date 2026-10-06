@@ -2152,6 +2152,7 @@ impl Runtime {
         let mut rt = Self::configured(false, wasmtime::OptLevel::Speed, true)?;
         let mut config = Config::new();
         config.cranelift_opt_level(wasmtime::OptLevel::Speed);
+        config.compiler_inlining(wasmtime::Inlining::Yes);
         config.wasm_reference_types(true);
         config.wasm_function_references(true);
         config.wasm_gc(true);
@@ -2206,6 +2207,12 @@ impl Runtime {
         // Production batch/new keep Speed. `batch_quick` uses None so a
         // 10-line differential case is not paying an optimizing JIT.
         config.cranelift_opt_level(opt_level);
+        // An optimizing engine inlines small guest functions (std wrappers,
+        // `var` write-back helpers) into their callers. Abort diagnostics are
+        // explicit host calls, so no reported location depends on frames.
+        if opt_level != wasmtime::OptLevel::None {
+            config.compiler_inlining(wasmtime::Inlining::Yes);
+        }
         // (RFC-0005 step 7) Defense in depth: shrink the codegen/runtime surface to
         // exactly what witchy emits. Threads are compiled out of the Wasmtime
         // dependency entirely; pin every other WASM proposal explicitly so a
