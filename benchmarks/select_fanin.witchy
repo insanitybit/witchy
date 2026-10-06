@@ -1,8 +1,6 @@
-mode opt
-
 from chan import Sender
 
-async fn produce(let tx: Sender(Int), let start: Int, let count: Int):
+async fn produce(tx: Sender(Int), start: Int, count: Int):
     var i = 0
     while i < count:
         // The typed ready-channel plan carries local operands across the
@@ -25,13 +23,10 @@ fn expected_checksum(let per_source: Int) -> Int:
         i = i + 1
     checksum
 
-async fn main(let console: Console, let clock: Clock):
+async fn main(console: Console, clock: Clock):
     let (a_tx, a_rx) = chan.channel(2048).await
     let (b_tx, b_rx) = chan.channel(2048).await
-    let a_handle = chan.spawn(produce(a_tx, 0, 2048)).await
-    let b_handle = chan.spawn(produce(b_tx, 1, 2048)).await
-    chan.join(a_handle).await
-    chan.join(b_handle).await
+    chan.scope([produce(a_tx, 0, 2048), produce(b_tx, 1, 2048)]).await
 
     var seen_a = 0
     var seen_b = 0

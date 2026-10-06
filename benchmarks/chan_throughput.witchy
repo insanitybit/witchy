@@ -33,11 +33,12 @@ async fn producer(tx: Sender(Int), n: Int):
         chan.send(tx, i).await
         i = i + 1
 
-async fn main(console: Console):
-    let (tx, rx) = chan.channel(64).await
-    let producer_handle = chan.spawn(producer(tx, 64000)).await
+async fn consume(console: Console, rx: Receiver(Int)):
     var sum = 0
     for await v in rx:
         sum = sum + v
-    chan.join(producer_handle).await
     console.print("${sum}")
+
+async fn main(console: Console):
+    let (tx, rx) = chan.channel(64).await
+    chan.scope([producer(tx, 64000), consume(console, rx)]).await

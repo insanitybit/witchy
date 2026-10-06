@@ -15,11 +15,11 @@ fn fasta_repeat(let console: Console, n_total: Int, let seq_bytes: Bytes):
     while n > 0:
         let len_out = min(n, 60)
         if seqi + len_out < seq_len:
-            console.print(bytes.to_string(bytes.slice(seq_bytes, seqi, seqi + len_out)))
+            console.print(bytes.to_string(bytes.slice(seq_bytes.owned(), seqi, seqi + len_out)))
             seqi = seqi + len_out
         else:
-            let s1 = bytes.slice(seq_bytes, seqi, seq_len)
-            let s2 = bytes.slice(seq_bytes, 0, len_out - (seq_len - seqi))
+            let s1 = bytes.slice(seq_bytes.owned(), seqi, seq_len)
+            let s2 = bytes.slice(seq_bytes.owned(), 0, len_out - (seq_len - seqi))
             seqi = len_out - (seq_len - seqi)
             console.print(bytes.to_string(bytes.concat(s1, s2)))
         n = n - len_out
