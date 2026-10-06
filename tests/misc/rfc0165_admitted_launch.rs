@@ -779,3 +779,14 @@ fn admitted_a_loop_in_a_branch_keeps_the_next_loop_body_extent() {
     );
     assert_eq!(output, vec!["-1 -10".to_string()]);
 }
+
+#[test]
+fn admitted_a_recursive_builder_of_a_task_free_type_has_no_callable_obligation() {
+    // A recursive call's result summary nests one level per fixpoint round.
+    // A result type that reaches no task or callable carries no obligation,
+    // so the depth budget must not read the nesting as one.
+    let output = run_admitted(
+        "type Tree:\n    Leaf\n    Node(Tree, Tree)\n\nfn build(depth: Int) -> Tree:\n    if depth == 0:\n        Node(Leaf, Leaf)\n    else:\n        Node(build(depth - 1), build(depth - 1))\n\nfn count(t: Tree) -> Int:\n    match t:\n        Leaf -> 0\n        Node(l, r) -> 1 + count(l) + count(r)\n\nfn main(console: Console):\n    console.print(\"${count(build(3))}\")\n",
+    );
+    assert_eq!(output, vec!["15".to_string()]);
+}

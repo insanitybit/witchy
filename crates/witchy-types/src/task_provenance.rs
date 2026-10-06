@@ -245,6 +245,12 @@ impl<'a> Analyzer<'a, '_> {
     }
 
     fn opaque_result_may_hide_task_input(&self, expression: &Expr) -> bool {
+        self.checked_result_may_hide_task_input(expression).unwrap_or(false)
+    }
+
+    /// Whether the checked type of `expression` can reach a task or callable
+    /// input, or None when the expression has no checked type.
+    fn checked_result_may_hide_task_input(&self, expression: &Expr) -> Option<bool> {
         fn walk(ty: &Type, definitions: &BTreeMap<String, TypeDef>, parameter: bool,
             active: &mut HashSet<(Type, bool)>, depth: usize, remaining: &mut usize) -> bool {
             if depth > 128 || *remaining == 0 { return true; }
@@ -273,9 +279,9 @@ impl<'a> Analyzer<'a, '_> {
             active.remove(&key);
             hidden
         }
-        let Some(ty) = self.table.type_of(expression) else { return false };
-        let Some(source) = ty_to_ast(ty) else { return matches!(ty, Ty::Fn(..)) };
-        walk(&source, self.definitions, false, &mut HashSet::new(), 0, &mut 4_096)
+        let ty = self.table.type_of(expression)?;
+        let Some(source) = ty_to_ast(ty) else { return Some(matches!(ty, Ty::Fn(..))) };
+        Some(walk(&source, self.definitions, false, &mut HashSet::new(), 0, &mut 4_096))
     }
 
     fn unknown_opaque_result(&self, expression: &Expr) -> Proof {
@@ -646,6 +652,11 @@ impl<'a> Analyzer<'a, '_> {
                 source_execution_mode(function, &self.module.modes),
                 Box::new(body_result),
             )
+        } else if self.checked_result_may_hide_task_input(expression) == Some(false) {
+            // A result whose checked type reaches no task or callable carries
+            // no obligation. Its structural summary only grows through a
+            // recursive callee until the depth budget reads it as one.
+            Proof::Unknown
         } else {
             self.summaries.get(name).map_or(Proof::Unknown, |summary| {
                 summary.result.instantiate(&proofs).bounded(4096)
