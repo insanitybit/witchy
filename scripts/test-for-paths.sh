@@ -220,7 +220,7 @@ emit_gate_nextest() {
             [ "$pure_pkg" = witchy-wir ] \
                 || pure_extra="${pure_extra:+$pure_extra }-p $pure_pkg"
         done
-        printf '%s\n' '-p witchy-wir --test unit --test structural_contracts --test rfc0162_mutation_evidence --test rfc0165_route_gate --no-default-features'
+        printf '%s\n' '-p witchy-wir --test unit --test structural_contracts --test rfc0165_route_gate --no-default-features'
         printf '%s\n' "$pure_expr"
         printf '%s\n' "$pure_checks --no-default-features"
         [ -z "$pure_extra" ] || printf '%s\n' "$pure_extra --no-default-features"
@@ -683,7 +683,7 @@ for p in "${paths[@]}"; do
         crates/witchy-wir/tests/structural_contracts/owned_slot_child_storage.rs)
             add_early "cargo nextest run -p witchy-wir --test structural_contracts -E 'test(=owned_slot_child_storage::owned_slots_require_managed_child_storage_before_consuming_move)'"
             path_has_early=1 ;;
-        crates/witchy-wir/src/wir_prelude.rs | \
+        crates/witchy-wir/src/abi_catalog.rs | \
         crates/witchy-wir/examples/abi_catalog.rs | \
         tests/misc/wasm_abi_catalog.rs | \
         spec/wasm-abi.md)
@@ -727,7 +727,7 @@ for p in "${paths[@]}"; do
             add_pkg witchy-wir
             add_pkg witchy-lower
             add "cargo nextest run -p witchy-canonical-source -p witchy-types"
-            add "cargo nextest run -p witchy-wir --test unit --test structural_contracts --test rfc0162_mutation_evidence --test rfc0165_route_gate --no-default-features"
+            add "cargo nextest run -p witchy-wir --test unit --test structural_contracts --test rfc0165_route_gate --no-default-features"
             add "./scripts/nextest-admitted.sh witchy-lower -- cargo nextest run -p witchy-lower" ;;
         crates/witchy-types/*)
             any_rust=1
@@ -778,13 +778,12 @@ for p in "${paths[@]}"; do
             add "./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'"
             ;;
         crates/witchy-wir/src/canonical_safewir.rs | \
-        crates/witchy-wir/src/canonical_safewir/* | \
-        crates/witchy-wir/src/safewir_validate.rs)
+        crates/witchy-wir/src/canonical_safewir/*)
             any_rust=1
             gate_pure_wir=1
             add_pkg witchy-wir
             add_pkg witchy-lower
-            add "cargo nextest run -p witchy-wir --test unit --test structural_contracts --test rfc0162_mutation_evidence --test rfc0165_route_gate --no-default-features"
+            add "cargo nextest run -p witchy-wir --test unit --test structural_contracts --test rfc0165_route_gate --no-default-features"
             add "./scripts/nextest-admitted.sh witchy-lower -- cargo nextest run -p witchy-lower"
             ;;
         crates/witchy-wir/*)
@@ -1481,7 +1480,7 @@ cmds=(${coalesced_cmds[0]+"${coalesced_cmds[@]}"})
 # checker/admission logic. Pure-only routes retain their portability check;
 # a mixed edit does not rebuild that graph to repeat the same assertions.
 native_wir_command='cargo nextest run -p witchy-wir --features witchy-wir/native'
-pure_wir_command='cargo nextest run -p witchy-wir --test unit --test structural_contracts --test rfc0162_mutation_evidence --test rfc0165_route_gate --no-default-features'
+pure_wir_command='cargo nextest run -p witchy-wir --test unit --test structural_contracts --test rfc0165_route_gate --no-default-features'
 lower_command='./scripts/nextest-admitted.sh witchy-lower -- cargo nextest run -p witchy-lower'
 memory_probe="cargo nextest run -p witchy-wir --no-default-features --test unit -E 'test(constant_prefix_publication_rejects_gaps_and_missing_children)'"
 native_examples_command="./scripts/nextest-admitted.sh witchy -- cargo nextest run -E 'test(/^example_tests::/)'"

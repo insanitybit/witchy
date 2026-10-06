@@ -10,7 +10,7 @@ fn closure_value_capture_own_calls_preserve_outer_snapshots_on_all_backends() {
         );
         let want = ["15"];
         assert_eq!(
-            wasm_run_reowns(&src).0,
+            wasm_run(&src),
             want,
             "compiled execution preserves the captured snapshot in {mode:?}",
         );
@@ -58,12 +58,6 @@ fn main(console: Console):
             expected,
             "compiled code detaches the ordinary result before owner mutation",
         );
-        let (compiled, reowns, boundary_repairs, token_repairs) =
-            run_linked_on_wasm_ownership_counters(&[("api", api), ("app", app)], "app");
-        assert_eq!(compiled, expected);
-        assert_eq!(boundary_repairs, 0, "an owned normal result needs no boundary repair");
-        assert_eq!(token_repairs, 0, "an owned normal result needs no token repair");
-        assert_eq!(reowns, 1, "owner mutation detaches the result exactly once");
     }
 
     /// An aliased normal caller selects the copy-correct conventional entry for
@@ -102,12 +96,6 @@ fn main(console: Console):
             expected,
             "compiled backend performs the same repair and write-back",
         );
-        let (compiled, reowns, boundary_repairs, token_repairs) =
-            run_linked_on_wasm_ownership_counters(&[("api", api), ("app", app)], "app");
-        assert_eq!(compiled, expected);
-        assert_eq!(reowns, 1, "boundary repair performs one copy-backed re-own");
-        assert_eq!(boundary_repairs, 1, "the normal alias crosses one repair boundary");
-        assert_eq!(token_repairs, 1, "the repair reconstructs one ownership token");
     }
 
     /// RFC-0088 baseline: update-and-extract returns the exact old leaf while

@@ -385,7 +385,7 @@ pub(crate) fn lower_typed_module_with_borrowed_views(
             &definitions, source.closure_witness(),
         ).map(|evidence| evidence.detach()),
     };
-    let abort_sites = abort::sites(typed.module(), source.is_console_fixture())?;
+    let abort_sites = abort::sites(typed.module(), typed.table(), source.is_console_fixture())?;
     let (registry_imports, requires_secret) = registry_hosts::collect_imports(typed.module());
     let mut string_payloads = collect_string_payloads(typed.module(), typed.table(), &definitions);
     string_payloads.extend(abort_sites.values().map(|site| site.function.as_bytes().to_vec()));
@@ -395,6 +395,7 @@ pub(crate) fn lower_typed_module_with_borrowed_views(
             witchy_syntax::diag::DiagTemplate::DivisionOverflow,
             witchy_syntax::diag::DiagTemplate::ModuloByZero,
             witchy_syntax::diag::DiagTemplate::NanToInt,
+            witchy_syntax::diag::DiagTemplate::NanOrder,
         ].map(|template| template.render(0, 0, "").into_bytes()));
     }
     if requires_secret {
@@ -10949,6 +10950,9 @@ impl FunctionLowerer<'_> {
                         transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared | witchy_wir::canonical_safewir::LoadTransfer::ClonePresent | witchy_wir::canonical_safewir::LoadTransfer::TakeLast | witchy_wir::canonical_safewir::LoadTransfer::TakeOwnedField,
                         ..
                     } => { direct.insert(*destination); }
+                    Operation::Dictionary(witchy_wir::canonical_safewir::dictionary::DictionaryOperation::ReadSlot {
+                        destination, transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared, ..
+                    }) => { direct.insert(*destination); }
                     Operation::ClosureOwner(OwnerOperation::ReadEnvironmentField { destination, .. })
                         if matches!(self.values.get(destination), Some(ValueType::Ref(_))) => {
                         direct.insert(*destination);
@@ -16966,6 +16970,25 @@ impl FunctionLowerer<'_> {
                 && !matches!(operator, ComparisonOperator::Equal | ComparisonOperator::NotEqual)
             {
                 return Err(CanonicalLoweringError::UnsupportedExpression("ordered boolean comparison"));
+            }
+            if left_type == ValueType::Float
+                && !matches!(operator, ComparisonOperator::Equal | ComparisonOperator::NotEqual)
+            {
+                // Ordering a NaN aborts. NaN is the one float unequal to itself.
+                // A synthesized comparison has no source line; it still traps.
+                let site = self.diagnostic_site(expression).ok();
+                for operand in [left, right] {
+                    match &site {
+                        Some(site) => {
+                            let is_nan = self.push_compare(ComparisonOperator::NotEqual, operand, operand)?;
+                            self.abort_on_condition(is_nan, site, witchy_syntax::diag::DiagTemplate::NanOrder)?;
+                        }
+                        None => {
+                            let ordered = self.push_compare(ComparisonOperator::Equal, operand, operand)?;
+                            self.push_trap_unless(ordered)?;
+                        }
+                    }
+                }
             }
             let destination = self.fresh(ValueType::Bool)?;
             self.push_operation(Operation::Compare { destination, operator, left, right });

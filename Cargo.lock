@@ -2922,7 +2922,6 @@ dependencies = [
  "wasmparser 0.251.0",
  "wasmtime",
  "witchy-canonical-source",
- "witchy-lower",
  "witchy-syntax",
  "witchy-types",
  "witchy-wir",

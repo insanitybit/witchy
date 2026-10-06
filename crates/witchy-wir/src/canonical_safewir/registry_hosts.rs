@@ -18,7 +18,7 @@ impl CanonicalAbiCatalog {
     }
 
     pub fn with_clock_import(mut self, signature: FunctionSignatureId) -> Result<Self, String> {
-        use crate::wir_prelude::{AbiImportAuthority, WasmTy::*};
+        use crate::abi_catalog::{AbiImportAuthority, WasmTy::*};
         let import = authenticated_capability_import(REGISTRY_HOST_IMPORT_NAMES[0], &[ExternRef], &[I64], signature,
             vec![HostParameterRole::Capability(CLOCK_CAPABILITY_KIND)], vec![HostResultRole::Value(ValueType::Int)],
             HostMutation::ReadOnly, &[AbiImportAuthority::Clock])?;
@@ -27,7 +27,7 @@ impl CanonicalAbiCatalog {
     }
 
     pub fn with_clock_monotonic_import(mut self, signature: FunctionSignatureId) -> Result<Self, String> {
-        use crate::wir_prelude::{AbiImportAuthority, WasmTy::*};
+        use crate::abi_catalog::{AbiImportAuthority, WasmTy::*};
         let import = authenticated_capability_import("clock_now_monotonic", &[ExternRef], &[I64], signature,
             vec![HostParameterRole::Capability(CLOCK_CAPABILITY_KIND)], vec![HostResultRole::Value(ValueType::Int)],
             HostMutation::ReadOnly, &[AbiImportAuthority::Clock])?;
@@ -38,7 +38,7 @@ impl CanonicalAbiCatalog {
     pub fn with_registry_host_imports(
         mut self, signatures: [FunctionSignatureId; 5], string_layout: LayoutId,
     ) -> Result<Self, String> {
-        use crate::wir_prelude::{AbiImportAuthority, WasmTy::*};
+        use crate::abi_catalog::{AbiImportAuthority, WasmTy::*};
         let cap = HostParameterRole::Capability;
         let buffer = |access| HostParameterRole::Buffer {
             value_type: ValueType::Ref(string_layout), access, extent: HostBufferExtent::Slice,

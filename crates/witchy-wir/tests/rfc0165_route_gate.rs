@@ -456,50 +456,11 @@ fn raw_encoder_feature_is_dev_only_in_the_workspace_feature_tree() {
     assert!(uses > 0, "workspace must retain an explicit dev-only raw encoder test feature edge");
 }
 
-#[test]
-fn raw_wir_byte_entrypoints_are_sealed_or_are_the_documented_bridge() {
-    let source = read_source("src/wir_encode.rs");
-    let file = syn::parse_file(&source).expect("wir_encode.rs parses");
-
-    let encode = named(&file, "encode");
-    assert!(takes(encode, "WirModule"));
-    assert!(has_cfg(encode, "raw-encoder-test-api"));
-
-    let raw = named(&file, "try_encode_with_gc");
-    assert!(takes(raw, "WirModule"));
-    assert!(has_cfg(raw, "raw-encoder-test-api"));
-
-    let gc = named(&file, "encode_with_gc");
-    assert!(takes(gc, "WirModule"));
-    assert!(!is_public(gc), "the raw GC helper must remain crate-private");
-    assert!(has_cfg(gc, "raw-encoder-test-api"));
-
-    let bridge = named(&file, "try_encode_with_gc_source_map");
-    assert!(is_public(bridge));
-    assert!(takes(bridge, "WirModule"));
-    // The lib has no cfg(test) copy (`[lib] test = false`), so the bridge is
-    // reachable only through its own feature.
-    assert!(!has_cfg(bridge, "test"));
-    assert!(has_cfg(bridge, "legacy-encoder-bridge"));
-    assert!(!has_cfg(bridge, "raw-encoder-test-api"));
-
-    for function in functions(&file).filter(|function| is_public(function) && takes(function, "WirModule")) {
-        let is_bridge = function.sig.ident == "try_encode_with_gc_source_map";
-        let is_test_surface = has_cfg(function, "test") || has_cfg(function, "raw-encoder-test-api");
-        assert!(
-            is_bridge || is_test_surface,
-            "new ungated public WIR byte entrypoint: {}",
-            function.sig.ident
-        );
-    }
-}
-
 // The synthetic feature is an explicit opt-in, never an edge from a normal
 // dependency/default feature. Fail closed on unrecognized activation sites.
-// Two test-only features may forward to it: the lowerer's
-// `raw-module-test-api`, and the runtime's `self-checks`, which only the root
-// package's dev-dependency enables. `self-checks` is itself pinned, so no
-// production edge can reach it.
+// One test-only feature may forward to it: the runtime's `self-checks`, which
+// only the root package's dev-dependency enables. `self-checks` is itself
+// pinned, so no production edge can reach it.
 fn production_test_feature_violations(source: &str, owner: &str) -> Vec<usize> {
     let mut section = "";
     let mut violations = Vec::new();
@@ -519,8 +480,6 @@ fn production_test_feature_violations(source: &str, owner: &str) -> Vec<usize> {
         }
         let key = line.split_once('=').map(|(key, _)| key.trim());
         let test_forward = section == "[features]" && match (owner, key) {
-            ("witchy-lower", Some("raw-module-test-api")) =>
-                features == ["witchy-wir/legacy-encoder-bridge"],
             ("witchy-runtime", Some("self-checks")) =>
                 features.iter().all(|feature| feature.starts_with("witchy-wir/")),
             _ => false,
@@ -563,10 +522,6 @@ fn production_feature_pin_rejects_dependency_and_default_activation() {
         "[features]\nself-checks = [\"witchy-wir/raw-encoder-test-api\"]\n", "witchy-caps",
     ).is_empty());
     assert!(production_test_feature_violations(
-        "[features]\nraw-module-test-api = [\"witchy-wir/legacy-encoder-bridge\"]\n",
-        "witchy-lower",
-    ).is_empty());
-    assert!(production_test_feature_violations(
         "[features]\nself-checks = [\"native\", \"witchy-wir/raw-encoder-test-api\"]\n",
         "witchy-runtime",
     ).is_empty());
@@ -574,24 +529,6 @@ fn production_feature_pin_rejects_dependency_and_default_activation() {
         "[dev-dependencies]\nwitchy-runtime = { features = [\"self-checks\"] }\n",
         "witchy",
     ).is_empty());
-}
-
-#[test]
-fn legacy_lowerer_byte_helpers_are_test_only() {
-    let assembly = syn::parse_file(&read_source("../witchy-lower/src/codegen/assembly.rs"))
-        .expect("assembly parses");
-    for name in [
-        "encode_validated", "encode_validated_with_source_map", "validated_module_outcome",
-        "encoded_module_outcome", "append_layout_bundle", "append_suspension_carrier",
-        "compile_module_binary_mode", "compile_module_binary_with_source_map_mode",
-        "compile_build_module_mode", "assemble_checked_optimized_wir_module",
-    ] {
-        let function = named(&assembly, name);
-        assert!(has_cfg(function, "test") && has_cfg(function, "raw-module-test-api"), "{name}");
-    }
-    let mut calls = CalledFunctions::default();
-    calls.visit_block(&named(&assembly, "compile_checked_development_module").block);
-    assert_eq!(calls.0, BTreeSet::from(["public_outcome".into(), "unsupported".into()]));
 }
 
 #[test]
@@ -791,38 +728,4 @@ fn canonical_capabilities_lower_only_to_externref() {
             );
         }
     }
-}
-
-#[test]
-fn validated_legacy_encoder_still_consumes_only_bound_authority() {
-    let source = read_source("src/wir_encode.rs");
-    let file = syn::parse_file(&source).expect("wir_encode.rs parses");
-    for name in ["try_encode_validated", "try_encode_validated_with_source_map"] {
-        let function = named(&file, name);
-        assert!(is_public(function));
-        assert!(takes(function, "ValidatedWirModule"));
-    }
-}
-
-#[test]
-fn deleted_legacy_inliners_have_no_implementation_or_invocation() {
-    let optimizer = syn::parse_file(&read_source("src/wir_opt.rs")).expect("wir_opt.rs parses");
-    for name in ["inline", "recursive_inline"] {
-        assert!(optimizer
-            .items
-            .iter()
-            .all(|item| !matches!(item, Item::Mod(module) if module.ident == name)),
-            "deleted legacy inliner module `{name}` is still registered",
-        );
-    }
-
-    let optimizer_calls = called_functions(&optimizer);
-    assert!(!optimizer_calls.contains("inline_direct_calls"));
-    assert!(!optimizer_calls.contains("inline_recursive_calls"));
-
-    let assembly = syn::parse_file(&read_source("../witchy-lower/src/codegen/assembly.rs"))
-        .expect("assembly.rs parses");
-    let assembly_calls = called_functions(&assembly);
-    assert!(!assembly_calls.contains("inline_direct_calls"));
-    assert!(!assembly_calls.contains("inline_recursive_calls"));
 }

@@ -20,8 +20,7 @@ use witchy_wir::{
     AdmittedCanonicalArtifact, CanonicalEntry, CapabilityKind, CanonicalEntryResult,
 };
 use witchy_wir::canonical_safewir::ExternalWasmIdentity;
-use witchy_wir::optimizer_policy::{OptimizerPolicy, SECTION_NAME as OPTIMIZER_POLICY_SECTION};
-use witchy_wir::wir_prelude::abi_import_info;
+use witchy_wir::abi_catalog::abi_import_info;
 
 mod compiler;
 pub mod comptime;
@@ -86,37 +85,6 @@ fn validate_layout_metadata(wasm: &[u8]) -> Result<()> {
             })?;
     }
     Ok(())
-}
-
-/// Read the compiler's versioned external-optimizer contract. Binary artifacts
-/// fail closed on duplicate, unknown, or malformed policy metadata; textual WAT
-/// retains the default developer behavior because it cannot carry this section.
-fn optimizer_policy(wasm: &[u8]) -> Result<OptimizerPolicy> {
-    if !wasm.starts_with(b"\0asm") {
-        return Ok(OptimizerPolicy::Default);
-    }
-    let mut policy = None;
-    for payload in wasmparser::Parser::new(0).parse_all(wasm) {
-        let payload = payload
-            .map_err(|error| Error::msg(format!("invalid wasm metadata: {error}")))?;
-        if let wasmparser::Payload::CustomSection(section) = payload
-            && section.name() == OPTIMIZER_POLICY_SECTION
-        {
-            if policy.is_some() {
-                return Err(Error::msg(format!(
-                    "invalid `{OPTIMIZER_POLICY_SECTION}` metadata: duplicate section"
-                )));
-            }
-            policy = Some(
-                witchy_wir::optimizer_policy::decode(section.data()).map_err(|error| {
-                    Error::msg(format!(
-                        "invalid `{OPTIMIZER_POLICY_SECTION}` metadata: {error}"
-                    ))
-                })?,
-            );
-        }
-    }
-    Ok(policy.unwrap_or_default())
 }
 
 /// An on-disk Cranelift compilation cache so re-running the same program skips
@@ -791,9 +759,6 @@ fn build_module_with_binaryen<'a>(
     resolve_binaryen: impl FnOnce() -> Result<Option<&'a BinaryenTool>>,
 ) -> Result<Module> {
     validate_layout_metadata(opt_wasm)?;
-    if optimizer_policy(opt_wasm)? == OptimizerPolicy::PreserveRaw {
-        return Module::new(engine, opt_wasm);
-    }
     if !cacheable {
         return Module::new(engine, opt_wasm);
     }

@@ -7,7 +7,7 @@ impl CanonicalAbiCatalog {
     pub fn with_env_imports(
         mut self, signatures: [FunctionSignatureId; 1], string_layout: LayoutId,
     ) -> Result<Self, String> {
-        use crate::wir_prelude::{AbiImportAuthority, WasmTy::*};
+        use crate::abi_catalog::{AbiImportAuthority, WasmTy::*};
         let name = HostParameterRole::Buffer {
             value_type: ValueType::Ref(string_layout), access: AccessMode::Read, extent: HostBufferExtent::Slice,
         };

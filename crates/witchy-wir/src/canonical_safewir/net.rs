@@ -17,7 +17,7 @@ pub const NET_IMPORT_NAMES: [&str; 11] = [
 
 impl CanonicalAbiCatalog {
     pub fn with_net_imports(mut self, signatures: [FunctionSignatureId; 11], string_layout: LayoutId) -> Result<Self, String> {
-        use crate::wir_prelude::{AbiImportAuthority, WasmTy::*};
+        use crate::abi_catalog::{AbiImportAuthority, WasmTy::*};
         let cap = HostParameterRole::Capability;
         let read = || HostParameterRole::Buffer {
             value_type: ValueType::Ref(string_layout), access: AccessMode::Read, extent: HostBufferExtent::Slice,

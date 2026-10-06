@@ -23,9 +23,17 @@ pub(super) struct Site {
     pub parse_int_access: bool,
 }
 
-pub(super) fn sites(module: &witchy_syntax::ast::Module, console: bool) -> Result<HashMap<usize, Site>, CanonicalLoweringError> {
+pub(super) fn sites(
+    module: &witchy_syntax::ast::Module, table: &TypeTable, console: bool,
+) -> Result<HashMap<usize, Site>, CanonicalLoweringError> {
+    // Ordering a NaN aborts, so only Float orderings carry a diagnostic.
+    fn float_ordering(expression: &Expr, table: &TypeTable) -> bool {
+        matches!(expression, Expr::Binary { op: BinOp::Lt | BinOp::LtEq | BinOp::Gt | BinOp::GtEq, lhs, .. }
+            if matches!(table.type_of(lhs).and_then(witchy_types::typeck::ty_to_ast),
+                Some(Type::Named(name, arguments)) if name == "Float" && arguments.is_empty()))
+    }
     fn block(
-        body: &witchy_syntax::ast::Block, function: &str, console: bool,
+        body: &witchy_syntax::ast::Block, function: &str, table: &TypeTable, console: bool,
         sites: &mut HashMap<usize, Site>, visited: &mut HashSet<usize>,
     ) -> Result<(), CanonicalLoweringError> {
         if !visited.insert(body as *const _ as usize) { return Ok(()); }
@@ -42,15 +50,16 @@ pub(super) fn sites(module: &witchy_syntax::ast::Module, console: bool) -> Resul
                 match expression {
                     Expr::Block(body) | Expr::Lambda { body, .. }
                     | Expr::While { body, .. } | Expr::WhileLet { body, .. }
-                    | Expr::For { body, .. } => block(body, function, console, sites, visited)?,
+                    | Expr::For { body, .. } => block(body, function, table, console, sites, visited)?,
                     Expr::If { then_block, else_block, .. } => {
-                        block(then_block, function, console, sites, visited)?;
-                        if let Some(body) = else_block { block(body, function, console, sites, visited)?; }
+                        block(then_block, function, table, console, sites, visited)?;
+                        if let Some(body) = else_block { block(body, function, table, console, sites, visited)?; }
                     }
                     _ => {}
                 }
                 if is_list_access(expression)
                     || matches!(expression, Expr::Binary { op: BinOp::Div | BinOp::Mod, .. })
+                    || float_ordering(expression, table)
                     || matches!(expression, Expr::Call { name, .. } if name == "fail" || name == "__bytes_at" || name == "bytes.at" || name == "string.to_int" || name == "string.__to_int" || name == "math.to_int" || name == "math.__to_int" || registry_hosts::is_require(name) || (console && is_console_print(name))) {
                     let key = expression as *const Expr as usize;
                     if !sites.contains_key(&key) {
@@ -73,7 +82,7 @@ pub(super) fn sites(module: &witchy_syntax::ast::Module, console: bool) -> Resul
     for item in &module.items {
         if let Item::Function(function) = item && scope.contains(&function.name) {
             let source_callable = witchy_syntax::suspension::source_callable_name(function);
-            block(&function.body, &source_callable, console, &mut sites, &mut visited)?;
+            block(&function.body, &source_callable, table, console, &mut sites, &mut visited)?;
         }
     }
     Ok(sites)

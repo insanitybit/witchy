@@ -16,7 +16,7 @@ impl CandidateVmService {
 }
 impl CanonicalAbiCatalog {
     pub fn with_vm_service_imports(mut self, signatures: [FunctionSignatureId; 5], byte_layout: LayoutId) -> Result<Self, String> {
-        use crate::wir_prelude::WasmTy::*;
+        use crate::abi_catalog::WasmTy::*;
         let cap = HostParameterRole::Capability;
         let read = || HostParameterRole::Buffer { value_type: ValueType::Ref(byte_layout), access: AccessMode::Read, extent: HostBufferExtent::Slice };
         let write = || HostParameterRole::Buffer { value_type: ValueType::Ref(byte_layout), access: AccessMode::Write, extent: HostBufferExtent::Slice };

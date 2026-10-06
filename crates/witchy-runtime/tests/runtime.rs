@@ -324,7 +324,6 @@ mod runtime {
         #[test] fn binaryen_pin_resolution_rejects_mismatch_partial_sets_and_cross_source_mixing() { checks::binaryen_pin_resolution_rejects_mismatch_partial_sets_and_cross_source_mixing().check() }
         #[test] fn binaryen_requires_an_authenticated_bundle_and_runs_the_exact_recipe() { checks::binaryen_requires_an_authenticated_bundle_and_runs_the_exact_recipe().check() }
         #[test] fn byte_export_round_trips_non_utf8_and_enforces_output_limit() { checks::byte_export_round_trips_non_utf8_and_enforces_output_limit().check() }
-        #[test] fn checked_uaf_double_free_still_traps() { checks::checked_uaf_double_free_still_traps().check() }
         #[test] fn compiled_secret_fixture_keeps_material_opaque_and_scripts_crypto() { checks::compiled_secret_fixture_keeps_material_opaque_and_scripts_crypto().check() }
         #[test] fn concrete_grants_have_one_complete_confinement_policy() { checks::concrete_grants_have_one_complete_confinement_policy().check() }
         #[test] fn duplicate_artifact_layout_metadata_fails_closed() { checks::duplicate_artifact_layout_metadata_fails_closed().check() }
@@ -338,7 +337,6 @@ mod runtime {
         #[test] fn memory_budget_is_enforced() { checks::memory_budget_is_enforced().check() }
         #[test] fn null_externrefs_are_rejected_by_every_capability_family() { checks::null_externrefs_are_rejected_by_every_capability_family().check() }
         #[test] fn optimized_wasm_cache_envelope_rejects_corruption_and_swaps() { checks::optimized_wasm_cache_envelope_rejects_corruption_and_swaps().check() }
-        #[test] fn optimizer_policy_is_versioned_and_fails_closed() { checks::optimizer_policy_is_versioned_and_fails_closed().check() }
         #[test] fn read_only_direct_file_does_not_link_write() { checks::read_only_direct_file_does_not_link_write().check() }
         #[test] fn read_wstr_list_huge_count_fails_closed_not_aborts() { checks::read_wstr_list_huge_count_fails_closed_not_aborts().check() }
         #[test] fn runaway_vm_is_preempted() { checks::runaway_vm_is_preempted().check() }

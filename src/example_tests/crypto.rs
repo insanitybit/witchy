@@ -21,16 +21,9 @@ use crate::{codegen, interpreter, parser, typeck};
         assert!(typeck::check_str("fn main(c: Console):\n    c.print(sha256(\"x\"))\n").is_err());
         // The compiled WASM backend computes the same digest (the host fills the
         // 64-byte result the guest pre-allocated) — interpreter↔WASM parity.
-        let module = parser::parse_module(
-            "import crypto\nfn main(console: Console):\n    console.print(crypto.sha256(\"abc\"))\n",
-        )
-        .expect("parse");
-        let linked = crate::pipeline::link(vec![("main".into(), module)], "main").expect("link");
-        typeck::check(&linked).expect("typecheck");
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
+        let src = "import crypto\nfn main(console: Console):\n    console.print(crypto.sha256(\"abc\"))\n";
         assert_eq!(
-            crate::run_wasm_bytes(&bytes).expect("wasm run"),
+            crate::run_admitted_artifact(&admitted_artifact(src)).expect("wasm run"),
             vec!["ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"]
         );
     }
@@ -52,11 +45,10 @@ use crate::{codegen, interpreter, parser, typeck};
             interpreter::run_module_signed(linked.clone(), ".", Vec::new(), Vec::new(), Some(seed))
                 .expect("interp");
         assert_eq!(interp_out[2], "verified");
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
+        let bytes = admitted_artifact(src);
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
-            .spawn(
+            .spawn_admitted(
                 &bytes,
                 Capabilities {
                     print: true,
@@ -73,14 +65,14 @@ use crate::{codegen, interpreter, parser, typeck};
         actor.run().expect("run");
         assert_eq!(actor.output(), interp_out, "signature + pubkey must be byte-identical");
 
-        // Ungranted: the imports are absent, so instantiation fails.
+        // Ungranted: the launch refuses the Secret root before `main` runs.
         let mut rt = Runtime::batch().expect("runtime");
-        let denied = rt.spawn(
+        let denied = rt.spawn_admitted(
             &bytes,
             Capabilities { print: true, quiet: true, ..Default::default() },
             64,
-        );
-        assert!(denied.is_err(), "signing imports must not instantiate without the grant");
+        ).and_then(|mut vm| vm.run().map(|()| vm.output()));
+        assert!(denied.is_err(), "a signing program must be refused without the grant: {denied:?}");
     }
 
     /// `SecretStore.get`/`.require` and `crypto.sign`/`public_key` must behave
@@ -103,11 +95,10 @@ use crate::{codegen, interpreter, parser, typeck};
                 .expect("interp");
         assert_eq!(interp_out[2], "got signing");
         assert_eq!(interp_out[3], "absent none");
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
+        let bytes = admitted_artifact(src);
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
-            .spawn(
+            .spawn_admitted(
                 &bytes,
                 Capabilities {
                     print: true,
@@ -191,11 +182,10 @@ use crate::{codegen, interpreter, parser, typeck};
         assert!(msg.contains("required secret `missing` was not granted"), "interp msg: {msg}");
 
         // Compiled WASM: no "missing" secret granted → must trap eagerly (not print).
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
+        let bytes = admitted_artifact(src);
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
-            .spawn(&bytes, Capabilities { print: true, quiet: true, ..Default::default() }, 64)
+            .spawn_admitted(&bytes, Capabilities { print: true, quiet: true, ..Default::default() }, 64)
             .expect("spawn");
         assert!(
             actor.run().is_err(),
@@ -215,10 +205,9 @@ use crate::{codegen, interpreter, parser, typeck};
         )
         .expect("interp with grant");
         assert_eq!(interp_ok, vec!["reached"]);
-        let ok_bytes = codegen::compile_module_binary(&ok_linked)
-            .expect_lowered("lowers");
+        let ok_bytes = admitted_artifact(src);
         let mut ok_actor = rt
-            .spawn(
+            .spawn_admitted(
                 &ok_bytes,
                 Capabilities {
                     print: true,
@@ -309,11 +298,10 @@ use crate::{codegen, interpreter, parser, typeck};
         assert_eq!(interp_out[0], interp_out[2], "public_key is the same through either handle");
         assert_eq!(interp_out[1], interp_out[3], "sign is the same through either handle");
 
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
+        let bytes = admitted_artifact(src);
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
-            .spawn(
+            .spawn_admitted(
                 &bytes,
                 Capabilities {
                     print: true,

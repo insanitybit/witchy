@@ -36,46 +36,91 @@
     /// Compile and run on Wasm with explicit CLI argument inputs.
     #[allow(dead_code)]
     fn run_on_wasm_args(src: &str, args: Vec<String>) -> Vec<String> {
+        let artifact = admitted_artifact(src);
+        run_admitted_with(&artifact, crate::runtime::Capabilities { args, ..full_grants(Vec::new()) }, 4)
+    }
+
+    /// The grants the compiled-path helpers give a program: output, the
+    /// ambient Clock/Env, the working directory, and `net_allow`.
+    fn full_grants(net_allow: Vec<String>) -> crate::runtime::Capabilities {
+        crate::runtime::Capabilities {
+            print: true,
+            print_int: true,
+            clock: true,
+            env: true,
+            dir_root: Some(std::path::PathBuf::from(".")),
+            dir_read: true,
+            dir_write: true,
+            net_allow: Some(net_allow),
+            net_connect: true,
+            net_listen: true,
+            ..Default::default()
+        }
+    }
+
+    /// The admitted canonical artifact for a single-source program, checked
+    /// against the bundled std. Cached per thread by source: hundreds of tests
+    /// run the same fixtures.
+    fn admitted_artifact(src: &str) -> std::rc::Rc<witchy_wir::AdmittedCanonicalArtifact> {
         thread_local! {
-            static WASM_CACHE: std::cell::RefCell<std::collections::HashMap<String, Vec<u8>>> =
+            static ARTIFACTS: std::cell::RefCell<std::collections::HashMap<String, std::rc::Rc<witchy_wir::AdmittedCanonicalArtifact>>> =
                 std::cell::RefCell::new(std::collections::HashMap::new());
         }
-        let bytes = WASM_CACHE.with(|cache| {
-            let mut cache = cache.borrow_mut();
-            if let Some(b) = cache.get(src) {
-                return b.clone();
+        ARTIFACTS.with(|cache| {
+            if let Some(artifact) = cache.borrow().get(src) {
+                return artifact.clone();
             }
-            let linked = prepared_module(src);
-            let bytes = codegen::compile_module_binary(&linked)
-                .expect_lowered("the binary path lowers this program");
+            let checked = checked_modules(&[("main", src)], "main");
+            let artifact = std::rc::Rc::new(
+                codegen::compile_checked_module_artifact(&checked)
+                    .expect_lowered("the canonical pipeline lowers this program"),
+            );
+            let mut cache = cache.borrow_mut();
             if cache.len() >= 128 {
                 cache.clear();
             }
-            cache.insert(src.to_string(), bytes.clone());
-            bytes
-        });
+            cache.insert(src.to_string(), artifact.clone());
+            artifact
+        })
+    }
+
+    /// Check a program of user modules exactly as `witchy <file>` does --
+    /// std imports, comptime expansion and module owners included -- by
+    /// writing it to a fresh directory and loading the entry file. A fixture
+    /// that passes a bundled std module verbatim is resolved from std instead.
+    fn checked_modules(modules: &[(&str, &str)], entry: &str) -> witchy_types::pipeline::CheckedModule {
+        use std::hash::{Hash, Hasher};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        modules.hash(&mut hasher);
+        let dir = std::env::temp_dir().join(format!(
+            "witchy-example-tests-{}-{}-{:x}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed),
+            hasher.finish(),
+        ));
+        std::fs::create_dir_all(&dir).expect("fixture directory");
+        for (name, src) in modules {
+            if *name != entry && crate::bundled_module(name) == Some(*src) {
+                continue;
+            }
+            std::fs::write(dir.join(format!("{name}.witchy")), src).expect("write fixture module");
+        }
+        let entry_path = dir.join(format!("{entry}.witchy"));
+        let checked = crate::link_file_checked(entry_path.to_str().expect("UTF-8 fixture path"));
+        let _ = std::fs::remove_dir_all(&dir);
+        checked.unwrap_or_else(|error| panic!("type-check the program: {error}")).0
+    }
+
+    /// Run an admitted artifact on this thread's runtime under `caps`.
+    fn run_admitted_with(
+        artifact: &witchy_wir::AdmittedCanonicalArtifact,
+        caps: crate::runtime::Capabilities,
+        pages: usize,
+    ) -> Vec<String> {
         with_batch_runtime(|rt| {
-            use crate::runtime::Capabilities;
-            let mut actor = rt
-                .spawn(
-                    &bytes,
-                    Capabilities {
-                        print: true,
-                        print_int: true,
-                        clock: true,
-                        env: true,
-                        dir_root: Some(std::path::PathBuf::from(".")),
-                        dir_read: true,
-                        dir_write: true,
-                        net_allow: Some(Vec::new()),
-                        net_connect: true,
-                        net_listen: true,
-                        args,
-                        ..Default::default()
-                    },
-                    4,
-                )
-                .expect("spawn");
+            let mut actor = rt.spawn_admitted(artifact, caps, pages).expect("spawn");
             actor.run().expect("run");
             actor.output()
         })
@@ -285,33 +330,7 @@
         // itself can be built once per thread and reused across all of a test
         // function's cases.
         fn run_on_wasm_cached(src: &str) -> Vec<String> {
-            use crate::runtime::Capabilities;
-            let linked = super::prepared_module(src);
-            let bytes = super::codegen::compile_module_binary(&linked)
-                .expect_lowered("the binary path lowers this program");
-            super::with_batch_runtime(|rt| {
-                let mut actor = rt
-                    .spawn(
-                        &bytes,
-                        Capabilities {
-                            print: true,
-                            print_int: true,
-                            clock: true,
-                            env: true,
-                            dir_root: Some(std::path::PathBuf::from(".")),
-                            dir_read: true,
-                            dir_write: true,
-                            net_allow: Some(Vec::new()),
-                            net_connect: true,
-                            net_listen: true,
-                            ..Default::default()
-                        },
-                        4,
-                    )
-                    .expect("spawn");
-                actor.run().expect("run");
-                actor.output()
-            })
+            super::run_on_wasm(src)
         }
 
         fn sum_case(lo: i64, hi: i64, inclusive: bool) -> (String, Vec<String>) {
@@ -436,9 +455,7 @@
     mod math_float;
     mod async_channels;
     mod sandbox_vm;
-    mod wir_binary;
     mod compiler_footprint;
-    mod rfc0111_layout;
     mod example_sweeps;
     mod examples_programs;
     mod modes;
@@ -446,81 +463,12 @@
 
     fn wasm_run(src: &str) -> Vec<String> {
         witchy_interp::compiler_natives::install();
-        let linked = prepared_module(src);
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
-        with_batch_runtime(|rt| {
-            use crate::runtime::Capabilities;
-            let mut actor = rt
-                .spawn(
-                    &bytes,
-                    Capabilities {
-                        print: true,
-                        print_int: true,
-                        quiet: true,
-                        clock: true,
-                        rand: true,
-                        env: true,
-                        dir_root: Some(std::path::PathBuf::from(".")),
-                        dir_read: true,
-                        dir_write: true,
-                        net_allow: Some(Vec::new()),
-                        net_connect: true,
-                        net_listen: true,
-                        ..Default::default()
-                    },
-                    crate::RUN_MEMORY_PAGES,
-                )
-                .expect("spawn");
-            actor.run().expect("run");
-            actor.output()
-        })
+        let artifact = admitted_artifact(src);
+        let caps = crate::runtime::Capabilities { quiet: true, rand: true, ..full_grants(Vec::new()) };
+        run_admitted_with(&artifact, caps, crate::RUN_MEMORY_PAGES)
     }
 
-    /// `wasm_run` that also reads the exported `__witchy_reowns` counter —
-    /// the timing-free proof of whether accumulation ran in place (O(1)
-    /// re-owns) or fell to the copying path (O(n) re-owns).
-    fn wasm_run_reowns(src: &str) -> (Vec<String>, i64) {
-        use crate::runtime::Capabilities;
-        let linked = prepared_module(src);
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
-        with_batch_runtime(|rt| {
-            let mut actor = rt
-                .spawn(
-                    &bytes,
-                    Capabilities { print: true, print_int: true, quiet: true, ..Default::default() },
-                    crate::RUN_MEMORY_PAGES,
-                )
-                .expect("spawn");
-            actor.run().expect("run");
-            let reowns = actor.reowns().unwrap_or(0);
-            (actor.output(), reowns)
-        })
-    }
 
-    /// `wasm_run` that also reads the `__heap` frontier and `__rc_reused_bytes` —
-    /// the timing-free proof of whether the RC floor bounded the heap (flat frontier)
-    /// by recycling freed blocks (reused > 0), rather than leaking O(iterations).
-    fn wasm_run_heap(src: &str) -> (Vec<String>, i64, i64) {
-        use crate::runtime::Capabilities;
-        let linked = prepared_module(src);
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
-        with_batch_runtime(|rt| {
-            let mut actor = rt
-                .spawn(
-                    &bytes,
-                    Capabilities { print: true, print_int: true, quiet: true, ..Default::default() },
-                    crate::RUN_MEMORY_PAGES,
-                )
-                .expect("spawn");
-            actor.run().expect("run");
-            let heap = actor.heap_bytes().unwrap_or(0);
-            let reused = actor.rc_reused_bytes().unwrap_or(0);
-            (actor.output(), heap, reused)
-        })
-    }
 
     // ---- RFC-0052: one pattern grammar ------------------------------------
 
@@ -738,183 +686,24 @@
         serde_json::to_string_pretty(&serde_json::Value::Array(entries)).unwrap() + "\n"
     }
 
-    /// End-to-end through the *compiled* path: type-check, compile to WASM, run
-    /// on the wasmtime runtime with the output capabilities granted, and return
-    /// what the program printed.
+    /// End-to-end through the *compiled* path: type-check, compile through the
+    /// canonical pipeline, run the admitted artifact with the output
+    /// capabilities granted, and return what the program printed.
     fn run_on_wasm(src: &str) -> Vec<String> {
-        use crate::runtime::Capabilities;
-        let linked = prepared_module(src);
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
-        with_batch_runtime(|rt| {
-            let mut actor = rt
-                .spawn(
-                    &bytes,
-                    // Mirror the interpreter's automatic grants (output + the
-                    // read-only ambient Clock/Env), like `run_wasm_bytes`.
-                    Capabilities {
-                        print: true,
-                        print_int: true,
-                        clock: true,
-                        env: true,
-                        dir_root: Some(std::path::PathBuf::from(".")),
-                        dir_read: true,
-                        dir_write: true,
-                        net_allow: Some(Vec::new()),
-                        net_connect: true,
-                        net_listen: true,
-                        ..Default::default()
-                    },
-                    4,
-                )
-                .expect("spawn");
-            actor.run().expect("run");
-            actor.output()
-        })
-    }
-
-    /// Run a WIR-assembled binary with ONLY `print` granted — nothing else. If
-    /// the module imported any other authority, instantiate would fail. Proves
-    /// the pruned WIR-helper path emits capability-minimal modules.
-    fn run_bytes_print_only(bytes: &[u8]) -> Vec<String> {
-        use crate::runtime::Capabilities;
-        with_batch_runtime(|rt| {
-            let mut actor = rt
-                .spawn(
-                    bytes,
-                    Capabilities { print: true, quiet: true, ..Default::default() },
-                    crate::RUN_MEMORY_PAGES,
-                )
-                .expect("spawn under a print-only grant");
-            actor.run().expect("run");
-            actor.output()
-        })
-    }
-
-    /// Run one already checked, console-only program on the interpreter and
-    /// compiled Wasm without serializing their independent work. Keeping the
-    /// linked module outside the worker also avoids repeating source resolution.
-    fn run_interpreter_and_wasm_on_linked(linked: &ast::Module) -> (Vec<String>, Vec<String>) {
-        witchy_interp::compiler_natives::install();
-        std::thread::scope(|scope| {
-            let interpreter = scope.spawn(|| {
-                interpreter::run_module(linked.clone(), ".", Vec::new())
-                    .expect("interpreter run")
-            });
-            let bytes = codegen::compile_module_binary(linked)
-                .expect_lowered("the binary path lowers this program");
-            let wasm = run_bytes_print_only(&bytes);
-            (interpreter.join().expect("interpreter worker"), wasm)
-        })
+        let artifact = admitted_artifact(src);
+        run_admitted_with(&artifact, full_grants(Vec::new()), 4)
     }
 
 
-    /// Run a WIR-binary under a print-only grant and read the exported
-    /// `__witchy_reowns` counter — the timing-free proof of in-place (O(1)) vs
-    /// copying (O(n)) accumulation.
-    fn binary_run_reowns(bytes: &[u8]) -> (Vec<String>, i64) {
-        use crate::runtime::Capabilities;
-        with_batch_runtime(|rt| {
-            let mut actor = rt
-                .spawn(
-                    bytes,
-                    Capabilities { print: true, quiet: true, ..Default::default() },
-                    crate::RUN_MEMORY_PAGES,
-                )
-                .expect("spawn");
-            actor.run().expect("run");
-            let reowns = actor.reowns().unwrap_or(0);
-            (actor.output(), reowns)
-        })
-    }
 
-    /// Link a multi-module program, compile the flat module to WASM, run it on
-    /// the runtime with output capabilities, and return what it printed.
+
+
+    /// Check a multi-module program, compile it through the canonical
+    /// pipeline, run it with output capabilities, and return what it printed.
     fn run_linked_on_wasm(sources: &[(&str, &str)], entry: &str) -> Vec<String> {
-        witchy_interp::compiler_natives::install();
-        use crate::runtime::Capabilities;
-        let cached = if sources.len() == 1 && sources[0].0 == "main" && entry == "main" {
-            cached_prepared_module(sources[0].1)
-        } else {
-            None
-        };
-        let linked = if let Some(linked) = cached {
-            linked
-        } else {
-            let mods: Vec<(String, ast::Module)> = sources
-                .iter()
-                .map(|(n, s)| ((*n).to_string(), parser::parse_module(s).expect("parse")))
-                .collect();
-            let linked = crate::pipeline::link(mods, entry).expect("link");
-            assert!(typeck::check(&linked).is_ok(), "{:?}", typeck::check(&linked));
-            linked
-        };
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
-        with_batch_runtime(|rt| {
-            let mut actor = rt
-                .spawn(
-                    &bytes,
-                    // Mirror the interpreter's automatic grants (output + the
-                    // read-only ambient Clock/Env), like `run_wasm_bytes`.
-                    Capabilities {
-                        print: true,
-                        print_int: true,
-                        clock: true,
-                        env: true,
-                        dir_root: Some(std::path::PathBuf::from(".")),
-                        dir_read: true,
-                        dir_write: true,
-                        net_allow: Some(Vec::new()),
-                        net_connect: true,
-                        net_listen: true,
-                        ..Default::default()
-                    },
-                    4,
-                )
-                .expect("spawn");
-            actor.run().expect("run");
-            actor.output()
-        })
+        run_linked_on_wasm_net(sources, entry, &[])
     }
 
-    /// Link and run a multi-module program while retaining the ownership
-    /// counters exported by the compiled module. Boundary and ordinary
-    /// accumulation counters are separate: the former proves whether a
-    /// normal caller needed a repair adapter, while the latter records a
-    /// runtime detach/copy caused by an owner mutation. The two boundary
-    /// counters are returned separately so fixtures can prove that a repair
-    /// event is accounted for exactly once rather than inferred from output.
-    fn run_linked_on_wasm_ownership_counters(
-        sources: &[(&str, &str)],
-        entry: &str,
-    ) -> (Vec<String>, i64, i64, i64) {
-        use crate::runtime::Capabilities;
-        let mods: Vec<(String, ast::Module)> = sources
-            .iter()
-            .map(|(n, s)| ((*n).to_string(), parser::parse_module(s).expect("parse")))
-            .collect();
-        let linked = crate::pipeline::link(mods, entry).expect("link");
-        typeck::check(&linked).expect("typecheck");
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
-        with_batch_runtime(|rt| {
-            let mut actor = rt
-                .spawn(
-                    &bytes,
-                    Capabilities { print: true, print_int: true, quiet: true, ..Default::default() },
-                    4,
-                )
-                .expect("spawn");
-            actor.run().expect("run");
-            (
-                actor.output(),
-                actor.reowns().unwrap_or(0),
-                actor.boundary_reown_copies().unwrap_or(0),
-                actor.ownership_token_repairs().unwrap_or(0),
-            )
-        })
-    }
 
 
     /// Link + run a single-`main` source on the interpreter with a `Net` allowlist grant.
@@ -930,38 +719,12 @@
     /// Like `run_linked_on_wasm` but with an explicit `Net` allowlist grant, for
     /// programs that `restrict`/`connect` to specific addresses.
     fn run_linked_on_wasm_net(sources: &[(&str, &str)], entry: &str, net_allow: &[&str]) -> Vec<String> {
-        use crate::runtime::Capabilities;
-        let mods: Vec<(String, ast::Module)> = sources
-            .iter()
-            .map(|(n, s)| ((*n).to_string(), parser::parse_module(s).expect("parse")))
-            .collect();
-        let linked = crate::pipeline::link(mods, entry).expect("link");
-        assert!(typeck::check(&linked).is_ok(), "{:?}", typeck::check(&linked));
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
-        with_batch_runtime(|rt| {
-            let mut actor = rt
-                .spawn(
-                    &bytes,
-                    Capabilities {
-                        print: true,
-                        print_int: true,
-                        clock: true,
-                        env: true,
-                        dir_root: Some(std::path::PathBuf::from(".")),
-                        dir_read: true,
-                        dir_write: true,
-                        net_allow: Some(net_allow.iter().map(|s| (*s).to_string()).collect()),
-                        net_connect: true,
-                        net_listen: true,
-                        ..Default::default()
-                    },
-                    4,
-                )
-                .expect("spawn");
-            actor.run().expect("run");
-            actor.output()
-        })
+        witchy_interp::compiler_natives::install();
+        let checked = checked_modules(sources, entry);
+        let artifact = codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("the canonical pipeline lowers this program");
+        let grants = full_grants(net_allow.iter().map(|s| (*s).to_string()).collect());
+        run_admitted_with(&artifact, grants, 4)
     }
 
 

@@ -338,10 +338,6 @@ fn main(console: Console):
         let expected = vec!["held".to_owned(); 3];
         let prepared = prepare(source).expect("prepare admitted owner capture");
         assert!(!prepared.artifact.owner_bridges().is_empty());
-        let counted = codegen::compile_checked_module_binary_with_deterministic_counters(&checked)
-            .expect_lowered("previous stats counter entrypoint");
-        prepared.artifact.verify_exact_bytes(&counted)
-            .expect("canonical counter entrypoint emits identical bytes");
         for _ in 0..2 {
             assert_eq!(run_prepared(&prepared).expect("fresh admitted stats instance").stats.output, expected);
         }

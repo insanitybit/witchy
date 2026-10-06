@@ -30,12 +30,11 @@ pub(crate) use witchy::pipeline;
 mod cli;
 mod commands;
 #[cfg(test)]
-pub(crate) use commands::build_steps::run_build_step_sandboxed;
 #[cfg(test)]
 pub(crate) use commands::sandbox::run_file_sandboxed;
 #[cfg(test)]
 pub(crate) use commands::test_runner::run_tests_in_file;
-pub(crate) use commands::wasm_exec::{run_admitted_artifact, run_wasm_bytes, run_admitted_test_artifact, RUN_MEMORY_PAGES};
+pub(crate) use commands::wasm_exec::{run_admitted_artifact, run_admitted_test_artifact, RUN_MEMORY_PAGES};
 #[cfg(test)]
 pub(crate) use commands::wasm_exec::run_wasm_file;
 mod lsp;

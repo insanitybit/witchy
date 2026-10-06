@@ -97,7 +97,7 @@ impl SourceInputs {
             launcher_digest: [0; 32],
             bundled_digest: bundled_digest(),
             host_abi: super::HOST_ABI,
-            canonical_abi: witchy_wir::wir_prelude::WITCHY_ABI_VERSION,
+            canonical_abi: witchy_wir::abi_catalog::WITCHY_ABI_VERSION,
             opt_schema: options.version(), opt_mask: options.enabled_mask(),
             comptime_seed_version: 1,
             entry, dependencies, files, target_manifest,
@@ -112,7 +112,7 @@ impl SourceInputs {
             || self.launcher_digest != super::digest(launcher)
             || self.bundled_digest != bundled_digest()
             || self.host_abi != super::HOST_ABI
-            || self.canonical_abi != witchy_wir::wir_prelude::WITCHY_ABI_VERSION
+            || self.canonical_abi != witchy_wir::abi_catalog::WITCHY_ABI_VERSION
             || self.opt_schema != witchy_syntax::opt::OPT_SCHEMA_VERSION
             || self.opt_mask & !((1u32 << witchy_syntax::opt::Opt::ALL.len()) - 1) != 0
             || self.comptime_seed_version != 1

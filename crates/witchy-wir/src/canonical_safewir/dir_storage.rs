@@ -13,7 +13,7 @@ impl CanonicalAbiCatalog {
     pub fn with_dir_storage_imports(
         mut self, signatures: [FunctionSignatureId; 16], byte_layout: LayoutId,
     ) -> Result<Self, String> {
-        use crate::wir_prelude::{AbiImportAuthority, WasmTy::*};
+        use crate::abi_catalog::{AbiImportAuthority, WasmTy::*};
         let dir = HostParameterRole::Capability(DIR_CAPABILITY_KIND);
         let file = HostParameterRole::Capability(FILE_CAPABILITY_KIND);
         let buffer = |access| HostParameterRole::Buffer {

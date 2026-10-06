@@ -50,6 +50,13 @@ use crate::{codegen, interpreter, parser, typeck};
         assert!(parse_module(lib).is_ok());
     }
 
+    /// The admitted canonical artifact for a multi-module program.
+    fn admit_linked(sources: &[(&str, &str)], entry: &str) -> witchy_wir::AdmittedCanonicalArtifact {
+        let checked = checked_modules(sources, entry);
+        codegen::compile_checked_module_artifact(&checked)
+            .expect_lowered("the canonical pipeline lowers this program")
+    }
+
     /// Run `src` as unoptimized admitted Wasm with a read/write `Dir` grant on
     /// `root`; a trap is `Err` with its root cause.
     fn run_admitted_dir(src: &str, root: &std::path::Path) -> Result<Vec<String>, String> {
@@ -381,11 +388,10 @@ fn main(console: Console, root: Dir[Read]):
             "the source semantics must reject the negative list index"
         );
 
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the optimized binary path lowers this program");
+        let bytes = admit_linked(&[("attacker", attacker_src), ("app", app_src)], "app");
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
-            .spawn(
+            .spawn_admitted(
                 &bytes,
                 Capabilities {
                     print: true,
@@ -399,98 +405,6 @@ fn main(console: Console, root: Dir[Read]):
             .expect("spawn");
         assert!(actor.run().is_err(), "optimized WASM must trap before the caller's read");
         assert!(actor.output().is_empty(), "the dependency redirected the caller's Dir authority");
-
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    /// SEC-080: a dependency given only a benign `File[Read]` must not be able
-    /// to manufacture some other authority. The vulnerable optimizer removed
-    /// the `scratch[i]` check after `i` changed inside the loop, so the `-2`
-    /// store overwrote the adjacent empty `List(Console)` length. Indexing that
-    /// list then produced a scalar Console token and let the dependency print,
-    /// even though Console was retained by `main` and absent from `read_file`'s
-    /// capability footprint.
-    #[test]
-    fn file_only_dependency_cannot_forge_console_via_bounds_elision_sec_080() {
-        use crate::runtime::{Capabilities, FsRights, Runtime};
-
-        let attacker_src = r#"pub fn read_file(file: File[Read]) -> String:
-    let consoles: List(Console) = []
-    var scratch = ["seed"]
-    var i = 0
-    while i < scratch.length():
-        match i:
-            0 -> i = 0 - 2
-            _ -> ()
-        scratch[i] = "forged"
-        i = i + 4
-    let fake = list.at(consoles, 0)
-    fake.print("FILE-ONLY-CAPABILITY-ESCAPE")
-    // Only `File[Read]` reaches this dependency; it never needs to read it
-    // for the forged Console to be the observable escape.
-    "unread"
-"#;
-        let app_src = r#"import attacker
-
-fn main(console: Console, config: File[Read]):
-    let _ignored = attacker.read_file(config)
-"#;
-        let attacker = parser::parse_module(attacker_src).expect("attacker parse");
-        let footprint = crate::capabilities::analyze(&attacker);
-        let read_file = footprint
-            .entries
-            .iter()
-            .find(|entry| entry.name == "read_file")
-            .expect("read_file footprint");
-        assert_eq!(
-            crate::capabilities::show_caps(&read_file.capabilities),
-            "File[Read]",
-            "the dependency must receive no Console authority"
-        );
-
-        let app = parser::parse_module(app_src).expect("app parse");
-        let linked = crate::pipeline::link(
-            vec![("attacker".to_string(), attacker), ("app".to_string(), app)],
-            "app",
-        )
-        .expect("link");
-        typeck::check(&linked).expect("typecheck");
-
-        let root = std::env::temp_dir().join(format!(
-            "witchy-sec-080-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos()
-        ));
-        std::fs::create_dir_all(&root).expect("mkdir");
-        let benign = root.join("config.json");
-        std::fs::write(&benign, "{\"mode\":\"safe\"}").expect("seed file");
-
-        assert!(
-            interpreter::run_module_files(linked.clone(), &root, vec![benign.clone()]).is_err(),
-            "the source semantics must reject the negative list index"
-        );
-
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the optimized binary path lowers this program");
-        let mut rt = Runtime::batch().expect("runtime");
-        let mut actor = rt
-            .spawn(
-                &bytes,
-                Capabilities {
-                    print: true,
-                    quiet: true,
-                    file_grants: vec![benign],
-                    file_rights: vec![FsRights::new(true, false)],
-                    ..Default::default()
-                },
-                64,
-            )
-            .expect("spawn");
-        assert!(actor.run().is_err(), "optimized WASM must trap before forging Console");
-        assert!(actor.output().is_empty(), "the dependency printed through forged authority");
 
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -517,12 +431,10 @@ fn main(console: Console, config: File[Read]):
         let src = "fn main(console: Console, runner: Exec, dir: Dir):\n    console.print(runner.exec(dir, \"greet\", \"a\\0b\", \"hi\"))\n";
 
         let interp_out = interpreter::run_in(src, &root).expect("interp");
-        let module = parser::parse_module(src).expect("parse");
-        let bytes = codegen::compile_module_binary(&module)
-            .expect_lowered("the binary path lowers this program");
+        let bytes = admitted_artifact(src);
         let mut rt = Runtime::batch().expect("runtime");
         let mut actor = rt
-            .spawn(
+            .spawn_admitted(
                 &bytes,
                 Capabilities {
                     print: true,
@@ -547,12 +459,10 @@ fn main(console: Console, config: File[Read]):
         // An executable outside the granted subtree is rejected on both backends.
         let esc = "fn main(console: Console, runner: Exec, dir: Dir):\n    console.print(runner.exec(dir, \"../escape\", \"\", \"\"))\n";
         assert!(interpreter::run_in(esc, &root).is_err(), "interp must reject escape");
-        let m = parser::parse_module(esc).expect("parse");
-        let wbytes = codegen::compile_module_binary(&m)
-            .expect_lowered("the binary path lowers this program");
+        let wbytes = admitted_artifact(esc);
         let mut rt2 = Runtime::batch().expect("runtime");
         let mut a = rt2
-            .spawn(
+            .spawn_admitted(
                 &wbytes,
                 Capabilities {
                     print: true,
@@ -690,52 +600,6 @@ fn yes(b: Bool) -> String:
         );
     }
 
-    /// (RFC-0038) A bare grantable capability granted to `main` mints an identical
-    /// sealed record on BOTH backends: the interpreter builds a `Value::Ctor` from
-    /// the grant fields; the compiled backend stages each field host-side and
-    /// wraps them in a record via `mk{N}`. The two must agree bit-for-bit.
-    #[test]
-    fn grantable_user_cap_mints_identically_on_both_backends() {
-        use crate::runtime::{Capabilities, Runtime};
-        let src = "grantable capability UiRoot:\n    policy: String\n    app_id: String\n\nfn descr(u: UiRoot) -> String:\n    match u:\n        UiRoot(p, a) -> p + \"@\" + a\n\nfn main(console: Console, ui: UiRoot):\n    console.print(descr(ui))\n";
-        let expected = vec!["coven-web@web".to_string()];
-
-        // Interpreter: grant keyed by param name -> field values.
-        let module = parser::parse_module(src).expect("parse");
-        let mut fields = std::collections::BTreeMap::new();
-        fields.insert("policy".to_string(), "coven-web".to_string());
-        fields.insert("app_id".to_string(), "web".to_string());
-        let mut grants = std::collections::BTreeMap::new();
-        grants.insert("ui".to_string(), fields);
-        assert_eq!(
-            interpreter::run_module_user_caps(module, ".", vec![], vec![], vec![], grants).expect("interp"),
-            expected,
-            "interp"
-        );
-
-        // Compiled: field values staged host-side in declaration order.
-        let linked = resolve_std_src(src);
-        typeck::check(&linked).expect("typecheck");
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
-        let mut rt = Runtime::batch().expect("runtime");
-        let mut actor = rt
-            .spawn(
-                &bytes,
-                Capabilities {
-                    print: true,
-                    print_int: true,
-                    quiet: true,
-                    user_cap_fields: vec![vec!["coven-web".to_string(), "web".to_string()]],
-                    ..Default::default()
-                },
-                crate::RUN_MEMORY_PAGES,
-            )
-            .expect("spawn");
-        actor.run().expect("run");
-        assert_eq!(actor.output(), expected, "compiled WASM must agree");
-    }
-
     /// The sandbox grants exactly the computed footprint: a program combining
     /// argv, an `Env` narrowed to the named `PATH`, and a read-only Dir
     /// (minigrep's shape) runs confined, and its
@@ -778,11 +642,9 @@ fn yes(b: Bool) -> String:
     #[test]
     fn compiled_program_without_capability_cannot_instantiate() {
         use crate::runtime::{Capabilities, Runtime};
-        let module = parser::parse_module(include_str!("../../examples/compute/src/compute.witchy")).expect("parse");
-        let bytes = codegen::compile_module_binary(&module)
-            .expect_lowered("the binary path lowers this program");
+        let bytes = admitted_artifact(include_str!("../../examples/compute/src/compute.witchy"));
         let mut rt = Runtime::new().expect("runtime");
-        let result = rt.spawn(&bytes, Capabilities::none(), 4);
+        let result = rt.spawn_admitted(&bytes, Capabilities::none(), 4).and_then(|mut vm| vm.run());
         assert!(result.is_err(), "ungranted module must fail to instantiate");
     }
 

@@ -940,10 +940,12 @@ impl FunctionLowerer<'_> {
                 value,
                 witchy_wir::canonical_safewir::StoreTransfer::MoveUnique,
             )),
-            ValueType::Ref(_) => Ok((
-                self.owned_for_storage(value, source_type)?,
-                witchy_wir::canonical_safewir::StoreTransfer::MoveUnique,
-            )),
+            // Storage materializes the slot's owned token; the element's
+            // retained transfer says whether that token is unique or shared.
+            ValueType::Ref(_) => {
+                let retained = RetainedElementTransfer::for_element(source_type, self.definitions);
+                Ok((self.owned_for_storage(value, source_type)?, sequence_element_store_transfer(retained, expected)?))
+            }
             ValueType::Gc(_) => Err(CanonicalLoweringError::UnsupportedExpression("dict table GC slot")),
             _ => Ok((value, witchy_wir::canonical_safewir::StoreTransfer::CopyScalar)),
         }

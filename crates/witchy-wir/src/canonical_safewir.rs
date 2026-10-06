@@ -638,8 +638,8 @@ pub struct CompilerImportSignatures {
 /// the authenticated metadata, never the candidate's own claims.
 fn authenticated_prelude_import(
     name: &str,
-    params: &[crate::wir_prelude::WasmTy],
-    results: &[crate::wir_prelude::WasmTy],
+    params: &[crate::abi_catalog::WasmTy],
+    results: &[crate::abi_catalog::WasmTy],
     signature: FunctionSignatureId,
     parameter_roles: Vec<HostParameterRole>,
     result_roles: Vec<HostResultRole>,
@@ -653,8 +653,8 @@ fn authenticated_prelude_import(
 /// implement this compiler-service ABI.
 fn authenticated_internal_service_import(
     name: &str,
-    params: &[crate::wir_prelude::WasmTy],
-    results: &[crate::wir_prelude::WasmTy],
+    params: &[crate::abi_catalog::WasmTy],
+    results: &[crate::abi_catalog::WasmTy],
     signature: FunctionSignatureId,
     parameter_roles: Vec<HostParameterRole>,
     result_roles: Vec<HostResultRole>,
@@ -670,13 +670,13 @@ fn authenticated_internal_service_import(
 /// import can never be projected as a `Dir`/`Env` operation.
 fn authenticated_capability_import(
     name: &str,
-    params: &[crate::wir_prelude::WasmTy],
-    results: &[crate::wir_prelude::WasmTy],
+    params: &[crate::abi_catalog::WasmTy],
+    results: &[crate::abi_catalog::WasmTy],
     signature: FunctionSignatureId,
     parameter_roles: Vec<HostParameterRole>,
     result_roles: Vec<HostResultRole>,
     mutation: HostMutation,
-    authorities: &[crate::wir_prelude::AbiImportAuthority],
+    authorities: &[crate::abi_catalog::AbiImportAuthority],
 ) -> Result<ImportContract, String> {
     authenticated_import(name, params, results, signature, parameter_roles, result_roles, mutation, ImportAuthentication::Capability(authorities))
 }
@@ -686,7 +686,7 @@ enum ImportAuthentication<'a> {
     InternalService,
     CompilerSession,
     RuntimeDiagnostic,
-    Capability(&'a [crate::wir_prelude::AbiImportAuthority]),
+    Capability(&'a [crate::abi_catalog::AbiImportAuthority]),
 }
 
 /// The shared projection binds the generated classification as well as the
@@ -695,15 +695,15 @@ enum ImportAuthentication<'a> {
 #[allow(clippy::too_many_arguments)]
 fn authenticated_import(
     name: &str,
-    params: &[crate::wir_prelude::WasmTy],
-    results: &[crate::wir_prelude::WasmTy],
+    params: &[crate::abi_catalog::WasmTy],
+    results: &[crate::abi_catalog::WasmTy],
     signature: FunctionSignatureId,
     parameter_roles: Vec<HostParameterRole>,
     result_roles: Vec<HostResultRole>,
     mutation: HostMutation,
     authentication: ImportAuthentication<'_>,
 ) -> Result<ImportContract, String> {
-    use crate::wir_prelude::{abi_import_info, prelude, AbiImportClass, WasmTy, WITCHY_ABI_VERSION};
+    use crate::abi_catalog::{abi_import_info, prelude, AbiImportClass, WasmTy, WITCHY_ABI_VERSION};
 
     let (index, import) = prelude()
         .imports
@@ -788,7 +788,7 @@ fn authenticated_import(
 
 impl CanonicalAbiCatalog {
     pub fn with_build_out_import(mut self, signature: FunctionSignatureId, string_layout: LayoutId) -> Result<Self, String> {
-        use crate::wir_prelude::{WasmTy, AbiImportAuthority};
+        use crate::abi_catalog::{WasmTy, AbiImportAuthority};
         let read = || HostParameterRole::Buffer {
             value_type: ValueType::Ref(string_layout), access: AccessMode::Read,
             extent: HostBufferExtent::Slice,
@@ -804,7 +804,7 @@ impl CanonicalAbiCatalog {
     /// Source-bearing Console output borrows two bounded slices and carries
     /// the actual checked receiver. This adds no ambient grant or write range.
     pub fn with_console_print_at(mut self, signature: FunctionSignatureId, string_layout: LayoutId) -> Result<Self, String> {
-        use crate::wir_prelude::WasmTy;
+        use crate::abi_catalog::WasmTy;
         let read = || HostParameterRole::Buffer {
             value_type: ValueType::Ref(string_layout), access: AccessMode::Read,
             extent: HostBufferExtent::Slice,
@@ -821,7 +821,7 @@ impl CanonicalAbiCatalog {
     /// Terminal list diagnostics carry values and a bounded read-only label,
     /// not pointer authority. They do not replace an access's Bounds guard.
     pub fn with_list_bounds_import(mut self, signature: FunctionSignatureId, string_layout: LayoutId) -> Result<Self, String> {
-        use crate::wir_prelude::WasmTy;
+        use crate::abi_catalog::WasmTy;
         let import = authenticated_import(
             "__witchy_list_bounds_at", &[WasmTy::I64, WasmTy::I32, WasmTy::I32, WasmTy::I32, WasmTy::I32],
             &[], signature, vec![
@@ -835,7 +835,7 @@ impl CanonicalAbiCatalog {
         Ok(self)
     }
     pub fn with_bytes_bounds_import(mut self, signature: FunctionSignatureId, string_layout: LayoutId) -> Result<Self, String> {
-        use crate::wir_prelude::WasmTy;
+        use crate::abi_catalog::WasmTy;
         let import = authenticated_import(
             "__witchy_bytes_bounds_at", &[WasmTy::I64, WasmTy::I32, WasmTy::I32, WasmTy::I32, WasmTy::I32],
             &[], signature, vec![
@@ -849,7 +849,7 @@ impl CanonicalAbiCatalog {
         Ok(self)
     }
     pub fn with_parse_int_import(mut self, signature: FunctionSignatureId, string_layout: LayoutId) -> Result<Self, String> {
-        use crate::wir_prelude::WasmTy;
+        use crate::abi_catalog::WasmTy;
         let read = || HostParameterRole::Buffer {
             value_type: ValueType::Ref(string_layout), access: AccessMode::Read, extent: HostBufferExtent::Slice,
         };
@@ -865,7 +865,7 @@ impl CanonicalAbiCatalog {
     /// Terminal source diagnostics borrow two bounded UTF-8 slices. They carry
     /// no capability, no write authority, no result, and cannot reenter Wasm.
     pub fn with_abort_import(mut self, signature: FunctionSignatureId, string_layout: LayoutId) -> Result<Self, String> {
-        use crate::wir_prelude::WasmTy;
+        use crate::abi_catalog::WasmTy;
         let read = || HostParameterRole::Buffer {
             value_type: ValueType::Ref(string_layout), access: AccessMode::Read,
             extent: HostBufferExtent::Slice,
@@ -888,7 +888,7 @@ impl CanonicalAbiCatalog {
         float_to_str_signature: FunctionSignatureId,
         string_layout: LayoutId,
     ) -> Result<Self, String> {
-        use crate::wir_prelude::WasmTy;
+        use crate::abi_catalog::WasmTy;
         let mut imports = Self::from_authenticated_prelude(
             print_signature, float_to_str_signature, string_layout,
         )?.imports();
@@ -923,7 +923,7 @@ impl CanonicalAbiCatalog {
         float_to_str_signature: FunctionSignatureId,
         string_layout: LayoutId,
     ) -> Result<Self, String> {
-        use crate::wir_prelude::WasmTy;
+        use crate::abi_catalog::WasmTy;
         let print = authenticated_prelude_import(
             "print",
             &[WasmTy::I32, WasmTy::I32],
@@ -967,7 +967,7 @@ impl CanonicalAbiCatalog {
         signatures: CapabilityImportSignatures,
         string_layout: LayoutId,
     ) -> Result<Self, String> {
-        use crate::wir_prelude::{AbiImportAuthority, WasmTy};
+        use crate::abi_catalog::{AbiImportAuthority, WasmTy};
 
         let read_slice = || HostParameterRole::Buffer {
             value_type: ValueType::Ref(string_layout),
@@ -1012,7 +1012,7 @@ impl CanonicalAbiCatalog {
         signatures: CompilerImportSignatures,
         string_layout: LayoutId,
     ) -> Result<Self, String> {
-        use crate::wir_prelude::WasmTy;
+        use crate::abi_catalog::WasmTy;
         let read = || HostParameterRole::Buffer {
             value_type: ValueType::Ref(string_layout), access: AccessMode::Read, extent: HostBufferExtent::Slice,
         };
@@ -1054,7 +1054,7 @@ impl CanonicalAbiCatalog {
         signature: FunctionSignatureId,
         string_layout: LayoutId,
     ) -> Result<Self, String> {
-        use crate::wir_prelude::WasmTy;
+        use crate::abi_catalog::WasmTy;
         let read = || HostParameterRole::Buffer {
             value_type: ValueType::Ref(string_layout), access: AccessMode::Read,
             extent: HostBufferExtent::Slice,
@@ -1079,7 +1079,7 @@ impl CanonicalAbiCatalog {
         signature: FunctionSignatureId,
         string_layout: LayoutId,
     ) -> Result<Self, String> {
-        use crate::wir_prelude::WasmTy;
+        use crate::abi_catalog::WasmTy;
         let read = || HostParameterRole::Buffer {
             value_type: ValueType::Ref(string_layout), access: AccessMode::Read,
             extent: HostBufferExtent::Slice,
@@ -1103,7 +1103,7 @@ impl CanonicalAbiCatalog {
         signature: FunctionSignatureId,
         string_layout: LayoutId,
     ) -> Result<Self, String> {
-        use crate::wir_prelude::WasmTy;
+        use crate::abi_catalog::WasmTy;
         let read = || HostParameterRole::Buffer {
             value_type: ValueType::Ref(string_layout), access: AccessMode::Read,
             extent: HostBufferExtent::Slice,

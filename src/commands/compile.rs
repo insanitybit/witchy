@@ -7,7 +7,6 @@ use witchy_types::pipeline;
 use crate::link_file_checked;
 use witchy_types::runtime_type::{ModuleLoadIdentity, PackageCoordinate, PackageSource};
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
 
 pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
     // `witchy compile <entry> [--dep name=path]... [--out <file.wasm>]` links the
@@ -384,55 +383,6 @@ pub(super) fn compile_checked_to_wasm(checked: &pipeline::CheckedModule) -> Resu
     Ok(bytes)
 }
 
-pub(super) fn compile_checked_to_development_wasm(
-    checked: &pipeline::CheckedModule,
-) -> Result<codegen::CompiledDevelopmentModule, String> {
-    let compiled = match codegen::compile_checked_development_module(checked) {
-        codegen::LoweringOutcome::Lowered(compiled) => compiled,
-        codegen::LoweringOutcome::Unsupported(reason) => {
-            return Err(format!("cannot compile to WASM: {reason}"));
-        }
-        codegen::LoweringOutcome::Rejected(error) => {
-            return Err(format!("cannot compile to WASM: {error}"));
-        }
-    };
-    // Metadata belongs in the compiler's admitted output, never in a later
-    // packaging mutation. The development lowerer remains fail-closed until
-    // it can produce that output through canonical admission.
-    Ok(compiled)
-}
-
-/// A cheap fingerprint of the compiler build: the `witchy` binary's size + mtime.
-/// Any recompile of the compiler (or its bundled std) changes it, so the source
-/// cache can never serve codegen from an older compiler. A `stat`, not a read, so
-/// it costs nothing; computed once per process.
-fn compiler_fingerprint() -> &'static str {
-    use std::sync::OnceLock;
-    static FP: OnceLock<String> = OnceLock::new();
-    FP.get_or_init(|| {
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| std::fs::metadata(&p).ok())
-            .map(|m| {
-                let mt = m
-                    .modified()
-                    .ok()
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0);
-                format!("{}-{mt}", m.len())
-            })
-            .unwrap_or_else(|| "unknown".to_string())
-    })
-}
-
-/// The active optimization set as a stable string — part of the source-cache key,
-/// since every `WITCHY_OPT` setting compiles to different wasm. Reads the same
-/// `opt::enabled` the compiler does, so a test override or the env both flow in.
-fn active_opt_key() -> String {
-    witchy_syntax::opt::active_schema_key().to_string()
-}
-
 /// Best-effort publication for compiler caches. The temporary is created
 /// exclusively under an unpredictable same-directory name, so an existing
 /// path is never followed or truncated. Rename remains the single visibility
@@ -477,62 +427,6 @@ pub(crate) fn compile_checked_to_wasm_cached(
     // modified independently. Re-enable this only with an authenticated cache
     // format that verifies an admission receipt before returning bytes.
     compile_checked_to_wasm(checked)
-}
-
-/// Compile a checked development module with a small process-local cache. The
-/// cache key is the same content-addressable hash used for production codegen,
-/// so stale compiler artifacts never replay.
-pub(crate) fn compile_checked_to_development_wasm_cached(
-    checked: &pipeline::CheckedModule,
-) -> Result<codegen::CompiledDevelopmentModule, String> {
-    compile_to_development_wasm_cached(checked, || compile_checked_to_development_wasm(checked))
-}
-
-fn development_wasm_cache() -> &'static Mutex<HashMap<String, codegen::CompiledDevelopmentModule>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, codegen::CompiledDevelopmentModule>>> =
-        OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn compile_to_development_wasm_cached(
-    cache_input: &impl std::fmt::Debug,
-    compile: impl FnOnce() -> Result<codegen::CompiledDevelopmentModule, String>,
-) -> Result<codegen::CompiledDevelopmentModule, String> {
-    let key = {
-        use std::fmt::Write as _;
-        let mut w = {
-            struct HashWriter(blake3::Hasher);
-            impl std::fmt::Write for HashWriter {
-                fn write_str(&mut self, s: &str) -> std::fmt::Result {
-                    self.0.update(s.as_bytes());
-                    Ok(())
-                }
-            }
-            HashWriter(blake3::Hasher::new())
-        };
-        let _ = write!(w, "{cache_input:?}");
-        let mut hasher = w.0;
-        hasher.update(b"\0");
-        hasher.update(compiler_fingerprint().as_bytes());
-        hasher.update(b"\0");
-        hasher.update(active_opt_key().as_bytes());
-        hasher.finalize().to_hex().to_string()
-    };
-
-    if let Ok(cache) = development_wasm_cache().lock()
-        && let Some(cached) = cache.get(&key)
-    {
-        return Ok(cached.clone());
-    }
-
-    let compiled = compile()?;
-    if let Ok(mut cache) = development_wasm_cache().lock() {
-        if cache.len() >= 32 {
-            cache.clear();
-        }
-        cache.insert(key, compiled.clone());
-    }
-    Ok(compiled)
 }
 
 /// Portable Wasm ships its closed source. Say exactly what, every time.

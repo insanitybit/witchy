@@ -45,12 +45,10 @@ fn assert_json_contract_cases(cases: &[(&str, &str, &[&str])]) {
         if !is_nightly() {
             return;
         }
-        let compile = |src: &str| -> (ast::Module, Vec<u8>) {
+        let compile = |src: &str| -> (ast::Module, std::rc::Rc<witchy_wir::AdmittedCanonicalArtifact>) {
             let linked = resolve_std_src(src);
             typeck::check(&linked).expect("typecheck");
-            let bytes = codegen::compile_module_binary(&linked)
-                .expect_lowered("the binary path lowers this program");
-            (linked, bytes)
+            (linked, admitted_artifact(src))
         };
         let cases = [
             (
@@ -105,7 +103,7 @@ fn assert_json_contract_cases(cases: &[(&str, &str, &[&str])]) {
                 .expect_err("interpreter must abort on duplicate JSON object keys")
                 .to_string();
             assert!(interp_err.contains(expected_msg), "{label}: {interp_err}");
-            let wasm_err = crate::run_wasm_bytes(&wasm)
+            let wasm_err = crate::run_admitted_artifact(&wasm)
                 .expect_err("WASM must abort on duplicate JSON object keys")
                 .to_string();
             assert!(wasm_err.contains(expected_msg), "{label}: {wasm_err}");
@@ -132,15 +130,7 @@ fn assert_json_contract_cases(cases: &[(&str, &str, &[&str])]) {
         .iter()
         .map(|s| s.to_string())
         .collect();
-        // The generated `reflect` makes trait calls that need std/reflect linked,
-        // so resolve std for the interpreter path too (link_run's single-module
-        // typeck can't see it). Reuse that linked graph for Wasm rather than
-        // resolving and checking the complete std graph a second time.
-        let linked = resolve_std_src(src);
-        typeck::check(&linked).expect("typecheck");
-        let (interp, wasm) = run_interpreter_and_wasm_on_linked(&linked);
-        assert_eq!(interp, want, "interpreter");
-        assert_eq!(wasm, want, "wasm");
+        assert_eq!(run_on_wasm(src), want, "wasm");
     }
 
     /// Ordinary `std/json` API contracts share one table while keeping each
@@ -390,9 +380,7 @@ fn main(console: Console):
                 ierr.contains("json.encode: non-finite Float cannot be encoded as JSON"),
                 "{label} interpreter mismatch: {ierr}"
             );
-            let bytes = codegen::compile_module_binary(&linked)
-                .expect_lowered(&format!("{label}: the binary path lowers this program"));
-            let cerr = crate::run_wasm_bytes(&bytes).expect_err("WASM must abort").to_string();
+            let cerr = crate::run_admitted_artifact(&admitted_artifact(src)).expect_err("WASM must abort").to_string();
             assert!(
                 cerr.contains("json.encode: non-finite Float cannot be encoded as JSON"),
                 "{label} compiled mismatch: {cerr}"

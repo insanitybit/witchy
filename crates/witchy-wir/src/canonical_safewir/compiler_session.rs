@@ -41,7 +41,7 @@ impl CanonicalAbiCatalog {
     pub fn with_compiler_syntax_import(
         mut self, name: &str, signature: FunctionSignatureId, string_layout: LayoutId,
     ) -> Result<Self, String> {
-        use crate::wir_prelude::WasmTy::{I32, I64};
+        use crate::abi_catalog::WasmTy::{I32, I64};
         let read = HostParameterRole::Buffer { value_type: ValueType::Ref(string_layout), access: AccessMode::Read, extent: HostBufferExtent::Slice };
         let write = HostParameterRole::Buffer { value_type: ValueType::Ref(string_layout), access: AccessMode::Write, extent: HostBufferExtent::Slice };
         let import = match name {
@@ -71,7 +71,7 @@ impl CanonicalAbiCatalog {
     pub fn with_compiler_session_import(
         mut self, signature: FunctionSignatureId, string_layout: LayoutId,
     ) -> Result<Self, String> {
-        use crate::wir_prelude::WasmTy;
+        use crate::abi_catalog::WasmTy;
         let buffer = |access| HostParameterRole::Buffer {
             value_type: ValueType::Ref(string_layout), access, extent: HostBufferExtent::Slice,
         };
@@ -102,8 +102,8 @@ pub(super) fn validate<S: ModuleStage>(
         // Guest Wasm work is fuelled; the new syntax service explicitly meters
         // its host work. Other host computation/services need their own budget
         // contract before this compiler-only lane may call them.
-        let diagnostic = crate::wir_prelude::abi_import_info(&import.name).is_some_and(|info|
-            info.class == crate::wir_prelude::AbiImportClass::RuntimeDiagnostic);
+        let diagnostic = crate::abi_catalog::abi_import_info(&import.name).is_some_and(|info|
+            info.class == crate::abi_catalog::AbiImportClass::RuntimeDiagnostic);
         if import.module != "witchy" || (!metered(&import.name) && !diagnostic) {
             return Err(format!("comptime import `{}` has no deterministic compiler-session budget contract", import.name));
         }

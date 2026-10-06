@@ -65,7 +65,6 @@ dynamic_methods::dynamic_method_dispatch_matches_between_interpreter_and_wasm
 dynamic_methods::explicit_dynamic_method_capabilities_match_between_interpreter_and_wasm
 
 # RFC-0130 Generator / Coroutine Scaling & CFG (>2s scaling & multi-pass checks)
-scaling::rfc0130_acceptance_row_3_owned_frame_pulls_are_linear_and_storage_is_bounded_on_wasm
 while_let_cfg::while_let_bindings_and_effects_resume_once_on_both_backends
 nested_cfg::two_suspending_branches_resume_once_on_both_backends
 match_binding::match_bindings_survive_yield_without_replaying_guards_on_both_backends

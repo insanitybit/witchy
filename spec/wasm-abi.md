@@ -8,8 +8,8 @@ witchyc-compiled modules reach the outside world through a single WASM import
 module named `"witchy"`. Each import is a host function the runtime must supply;
 **a granted host function is a capability** (or non-authority infrastructure).
 This is the handshake between the compiler (the import declarations live in
-`crates/witchy-wir/src/wir_prelude.rs`, and the codegen path in
-`crates/witchy-lower/src/codegen/` selects which a module reaches) and a host
+`crates/witchy-wir/src/abi_catalog.rs`, and canonical lowering in
+`crates/witchy-lower/src/canonical_lower.rs` selects which a module reaches) and a host
 that satisfies them (`crates/witchy-runtime/src/runtime.rs` is the wasmtime host;
 `web/witchy-runtime/witchy-runtime.mjs` is the JavaScript deny-all capability host).
 
@@ -196,7 +196,7 @@ It does **not** implement unavailable capability sizing imports
 ## The imports
 
 ABI version 19 declares **183 imports** (`IMPORT_COUNT` in
-`crates/witchy-wir/src/wir_prelude.rs`). That file owns the ordered signatures
+`crates/witchy-wir/src/abi_catalog.rs`). That file owns the ordered signatures
 and the explicit metadata rendered below. The classes are:
 
 - **non-authority infrastructure**: deterministic computation or marshaling, no authority;

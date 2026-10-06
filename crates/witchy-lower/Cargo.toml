@@ -12,9 +12,6 @@ test = false
 doctest = false
 
 [features]
-# Synthetic AST and lowerer tests intentionally exercise stages below the
-# checked pipeline. Production dependents receive only proof-carrying entries.
-raw-module-test-api = ["witchy-wir/legacy-encoder-bridge"]
 # Wasmtime execution is a separate, explicitly selected conformance layer.
 # Ordinary lowerer tests inspect the emitted WIR/Wasm and rejection contracts
 # without compiling the native runtime graph.
@@ -38,13 +35,10 @@ wasmparser = "0.251"
 wasmtime = { version = "45.0.0", optional = true, default-features = false, features = ["anyhow","backtrace","cache","gc","gc-drc","wat","profiling","parallel-compilation","cranelift","pooling-allocator","demangle","addr2line","coredump","debug-builtins","runtime","std"] }
 
 [dev-dependencies]
-# Integration tests (tests/) compile the lib WITHOUT cfg(test); enable the
-# raw-module test surface for them via a self-dependency.
-witchy-lower = { path = ".", features = ["raw-module-test-api"] }
 # Every test build requests witchy-wir's full test feature set, so all
 # selections (-p witchy-wir, -p witchy-lower, --workspace, ...) share ONE
 # compiled witchy-wir and everything above it. Each distinct feature set was
 # a separate opt-level-2 build of witchy-wir plus every dependent crate in the
 # same target dir. Dev-dependency features never reach `cargo build`, so the
 # production boundary around the raw encoder is unchanged.
-witchy-wir = { path = "../witchy-wir", features = ["legacy-encoder-bridge", "raw-encoder-test-api", "checked-source-test-api"] }
+witchy-wir = { path = "../witchy-wir", features = ["raw-encoder-test-api", "checked-source-test-api"] }

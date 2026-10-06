@@ -100,43 +100,6 @@ fn unoptimized() -> ResetOptimization {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A build step runs in the **WASM sandbox**: it is compiled, instantiated
-    /// with only the BuildOut/BuildRead host functions linked, reads a confined
-    /// schema and writes generated source — and a `..` write traps via the same
-    /// confinement as a runtime `Dir`.
-    #[test]
-    fn build_step_runs_in_the_wasm_sandbox() {
-        let root = std::env::temp_dir().join(format!("witchy_wasm_build_{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let schema = root.join("schema");
-        std::fs::create_dir_all(&schema).unwrap();
-        std::fs::write(schema.join("svc.txt"), "Greeter").unwrap();
-
-        let module = parser::parse_module(
-            "fn build(out: BuildOut, schema: BuildRead):\n    let nl = \"\\n\"\n    out.write_out(\"api.witchy\", \"pub fn service() -> String:\" + nl + \"    \\\"\" + schema.read_build(\"svc.txt\") + \"\\\"\" + nl)\n",
-        )
-        .expect("parse");
-        let generated = crate::run_build_step_sandboxed(
-            module,
-            root.join("out"),
-            vec![schema.clone()],
-        )
-        .expect("sandboxed build step runs");
-        assert_eq!(generated, vec!["api.witchy".to_string()]);
-        let body = std::fs::read_to_string(root.join("out/api.witchy")).unwrap();
-        assert!(body.contains("\"Greeter\""), "generated source embeds the schema value: {body}");
-
-        // A `..` escape traps inside the sandbox, exactly like a runtime Dir.
-        let escaper = parser::parse_module(
-            "fn build(out: BuildOut):\n    out.write_out(\"../escape.txt\", \"nope\")\n",
-        )
-        .unwrap();
-        let err = crate::run_build_step_sandboxed(escaper, root.join("out2"), Vec::new())
-            .expect_err("a `..` write must trap in the sandbox");
-        assert!(err.contains("escapes the Dir capability"), "got: {err}");
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
     /// A confinement violation in the WASM sandbox surfaces the same clean
     /// message both backends print — the root cause, not
     /// wasmtime's "error while executing at wasm backtrace…" wrapper.

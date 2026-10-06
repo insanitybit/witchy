@@ -20,7 +20,7 @@ impl CanonicalAbiCatalog {
     pub fn with_crypto_extension_imports(mut self, signatures: [FunctionSignatureId; 4],
         bytes: LayoutId) -> Result<Self, String>
     {
-        use crate::wir_prelude::WasmTy::{I32, I64};
+        use crate::abi_catalog::WasmTy::{I32, I64};
         let read = HostParameterRole::Buffer { value_type: ValueType::Ref(bytes),
             access: AccessMode::Read, extent: HostBufferExtent::Slice };
         let write = HostParameterRole::Buffer { value_type: ValueType::Ref(bytes),
@@ -52,7 +52,7 @@ impl CanonicalAbiCatalog {
     /// RSA verification receives three initialized read-only UTF-8 slices, not
     /// legacy header addresses. Its status result carries no memory authority.
     pub fn with_rsa_pkcs1_sha256_verify_import(mut self, signature: FunctionSignatureId, string_layout: LayoutId) -> Result<Self, String> {
-        use crate::wir_prelude::WasmTy::{I32, I64};
+        use crate::abi_catalog::WasmTy::{I32, I64};
         let read = HostParameterRole::Buffer {
             value_type: ValueType::Ref(string_layout), access: AccessMode::Read,
             extent: HostBufferExtent::Slice,
@@ -66,7 +66,7 @@ impl CanonicalAbiCatalog {
     }
 
     pub fn with_ed25519_verify_import(mut self, signature: FunctionSignatureId, string_layout: LayoutId) -> Result<Self, String> {
-        use crate::wir_prelude::WasmTy::{I32, I64};
+        use crate::abi_catalog::WasmTy::{I32, I64};
         let read = HostParameterRole::Buffer {
             value_type: ValueType::Ref(string_layout), access: AccessMode::Read,
             extent: HostBufferExtent::Slice,
@@ -92,7 +92,7 @@ impl CanonicalAbiCatalog {
         signatures: [FunctionSignatureId; 2],
         byte_layout: LayoutId,
     ) -> Result<Self, String> {
-        use crate::wir_prelude::WasmTy::I32;
+        use crate::abi_catalog::WasmTy::I32;
         for (name, signature) in [CRYPTO_SHA256_IMPORT, CRYPTO_RUNE_HASH_IMPORT]
             .into_iter().zip(signatures)
         {

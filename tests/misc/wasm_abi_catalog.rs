@@ -7,7 +7,7 @@ use wasm_encoder::{
     Instruction, MemorySection, MemoryType, Module, TypeSection, ValType,
 };
 use witchy_runtime::runtime::{Capabilities, Runtime, SecretGrant};
-use witchy_wir::wir_prelude::{
+use witchy_wir::abi_catalog::{
     abi_import_info, prelude, render_abi_import_catalog, AbiImportAuthority, AbiImportClass,
     PreludeImport, WasmTy, WITCHY_ABI_VERSION,
 };

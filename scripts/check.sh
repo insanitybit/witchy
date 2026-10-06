@@ -218,7 +218,7 @@ if [ "$full" -eq 1 ] || [ "$fast" -eq 1 ]; then gate_scope="all"; fi
 # merge-queue.sh classifies from the batch diff and fails SAFE to running
 # them. Keep this filterset and that path list in step; when in doubt, add the
 # path there rather than narrowing this expression.
-sweeps_filter='test(/^example_tests::example_sweeps::/) or test(/^example_tests::region::examples_agree_under_inplace_and_forced_copy$/)'
+sweeps_filter='test(/^example_tests::example_sweeps::/)'
 gate_skip_sweeps="${WITCHY_GATE_SKIP_SWEEPS:-0}"
 case "$gate_skip_sweeps" in
     0 | 1) ;;

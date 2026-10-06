@@ -7,7 +7,7 @@ impl CanonicalAbiCatalog {
     pub fn with_secret_response_imports(
         mut self, signatures: [FunctionSignatureId; 1],
     ) -> Result<Self, String> {
-        use crate::wir_prelude::{AbiImportAuthority, WasmTy::*};
+        use crate::abi_catalog::{AbiImportAuthority, WasmTy::*};
         let import = authenticated_capability_import(SECRET_RESPONSE_IMPORT_NAMES[0],
             &[ExternRef], &[ExternRef], signatures[0],
             vec![HostParameterRole::Capability(SECRET_CAPABILITY_KIND)],

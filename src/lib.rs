@@ -139,14 +139,26 @@ pub(crate) fn resolve_std_only(src: &str) -> Result<witchy_syntax::ast::Module, 
 pub fn resolve_std_only_checked(
     src: &str,
 ) -> Result<witchy_types::pipeline::CheckedModule, ResolveStdError> {
+    check_user_modules(&[("main", src)], "main")
+}
+
+fn check_user_modules(
+    user: &[(&str, &str)],
+    entry: &str,
+) -> Result<witchy_types::pipeline::CheckedModule, ResolveStdError> {
     use witchy_types::runtime_type::{
         AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource,
     };
 
-    let entry = witchy_syntax::parser::parse_module(src).map_err(|error| ResolveStdError::Parse {
-        module: "main".into(), error,
-    })?;
-    let sources = resolve_std_sources_from_entry(src, entry)?;
+    let parsed = user
+        .iter()
+        .map(|(name, src)| {
+            witchy_syntax::parser::parse_module(src)
+                .map(|module| (*name, *src, module))
+                .map_err(|error| ResolveStdError::Parse { module: (*name).into(), error })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let sources = resolve_std_sources_from_entries(parsed)?;
     let application = PackageCoordinate::new(
         PackageSource::Workspace,
         "witchy/source",
@@ -157,10 +169,13 @@ pub fn resolve_std_only_checked(
         "witchy/std",
         env!("CARGO_PKG_VERSION"),
     )?;
-    let mut assignments = vec![(
-        "main".to_string(),
-        ModuleLoadIdentity::new(application, ["source", "main"])?,
-    )];
+    let mut assignments = user
+        .iter()
+        .map(|(name, _)| {
+            ModuleLoadIdentity::new(application.clone(), ["source", *name])
+                .map(|owner| ((*name).to_string(), owner))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     assignments.extend(
         witchy_syntax::linker::STD_MODULES
             .iter()
@@ -185,9 +200,12 @@ pub fn resolve_std_only_checked(
             .collect::<Result<Vec<_>, _>>()?,
     );
     let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments)?;
-    let user_modules = std::collections::HashSet::from(["main".to_string()]);
+    let user_modules = user
+        .iter()
+        .map(|(name, _)| (*name).to_string())
+        .collect::<std::collections::HashSet<_>>();
     witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
-        sources, "main",
+        sources, entry,
         witchy_syntax::linker::ComptimeExpander::with_sibling_request(
             witchy_types::pipeline::require_expansion_free, |_| false,
         ),
@@ -221,17 +239,23 @@ fn resolve_std_sources(src: &str) -> Result<Vec<(String, Vec<u8>)>, ResolveStdEr
             module: "main".to_string(),
             error,
         })?;
-    resolve_std_sources_from_entry(src, entry)
+    resolve_std_sources_from_entries(vec![("main", src, entry)])
 }
 
-fn resolve_std_sources_from_entry(
-    src: &str,
-    entry: witchy_syntax::ast::Module,
+/// The user modules' sources followed by the bundled std modules they import,
+/// transitively, in breadth-first order.
+fn resolve_std_sources_from_entries(
+    user: Vec<(&str, &str, witchy_syntax::ast::Module)>,
 ) -> Result<Vec<(String, Vec<u8>)>, ResolveStdError> {
     use std::collections::{HashSet, VecDeque};
-    let mut sources = vec![("main".to_string(), src.as_bytes().to_vec())];
-    let mut loaded: HashSet<String> = HashSet::from(["main".to_string()]);
-    let mut queue: VecDeque<witchy_syntax::ast::Module> = VecDeque::from([entry]);
+    let mut sources = Vec::with_capacity(user.len());
+    let mut loaded: HashSet<String> = HashSet::new();
+    let mut queue: VecDeque<witchy_syntax::ast::Module> = VecDeque::new();
+    for (name, src, module) in user {
+        sources.push((name.to_string(), src.as_bytes().to_vec()));
+        loaded.insert(name.to_string());
+        queue.push_back(module);
+    }
     while let Some(module) = queue.pop_front() {
         for name in module.imports.clone() {
             if !loaded.insert(name.clone()) {

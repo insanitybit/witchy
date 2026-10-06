@@ -27,7 +27,7 @@ impl CanonicalAbiCatalog {
     pub fn with_cap_response_imports(
         mut self, signatures: [FunctionSignatureId; 9], byte_layout: LayoutId,
     ) -> Result<Self, String> {
-        use crate::wir_prelude::WasmTy::*;
+        use crate::abi_catalog::WasmTy::*;
         let response = || vec![HostParameterRole::Capability(CAP_RESPONSE_KIND)];
         let size = || vec![HostResultRole::Value(ValueType::Size)];
         let into = vec![HostParameterRole::Capability(CAP_RESPONSE_KIND), HostParameterRole::Buffer {

@@ -1,5 +1,4 @@
 use super::*;
-use crate::{codegen, typeck};
 
     /// The `std/regex` toolkit — greedy quantifiers, escapes (`\d`/`\w`/`\s` and
     /// literal metacharacters), character classes with ranges and negation, and
@@ -36,12 +35,7 @@ use crate::{codegen, typeck};
     #[test]
     fn regex_invalid_pattern_is_loud_on_both_backends() {
         let src = "import regex\n\nfn main(console: Console):\n    console.print(\"${regex.matches(\"[\", \"x\")}\")\n";
-        let linked = resolve_std_src(src);
-        typeck::check(&linked).expect("typecheck");
-        let bytes = codegen::compile_module_binary(&linked)
-
-            .expect_lowered("the binary path lowers regex");
-        let wasm_err = crate::run_wasm_bytes(&bytes)
+        let wasm_err = crate::run_admitted_artifact(&admitted_artifact(src))
             .expect_err("WASM must reject invalid regex syntax")
             .to_string();
         assert!(wasm_err.contains("invalid regex pattern `[`"), "{wasm_err}");

@@ -17,4 +17,3 @@ pub use crate::canonical_wasmir::self_checks as canonical_wasmir;
 pub use crate::canonical_wasmir::closure_owner_kernel::self_checks as canonical_wasmir_closure_owner_kernel;
 #[cfg(feature = "native")]
 pub use crate::canonical_wasmir::drop_worklist::self_checks as canonical_wasmir_drop_worklist;
-pub use crate::safewir_validate::self_checks as safewir_validate;

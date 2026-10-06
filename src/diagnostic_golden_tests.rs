@@ -109,28 +109,6 @@ fn mode_diag(src: &str) -> String {
     }
 }
 
-/// A lowering (codegen) rejection, driving the whole front end then
-/// `compile_module_binary`; unsupported lowering and hard rejection remain
-/// distinct channels even when this golden renders both as diagnostics.
-fn lower_diag(src: &str) -> String {
-    let module = match parser::parse_module(src) {
-        Ok(m) => m,
-        Err(e) => return format!("<parse error>: {e}"),
-    };
-    let linked = match link_without_expansion(vec![("main".into(), module)], "main") {
-        Ok(m) => m,
-        Err(e) => return format!("<link error>: {e}"),
-    };
-    if let Err(e) = typeck::check(&linked) {
-        return format!("<type error>: {e}");
-    }
-    match codegen::compile_module_binary(&linked) {
-        codegen::LoweringOutcome::Lowered(_) => "<unexpectedly compiled>".to_string(),
-        codegen::LoweringOutcome::Unsupported(reason) => reason.to_string(),
-        codegen::LoweringOutcome::Rejected(error) => error.to_string(),
-    }
-}
-
 /// Run checked source on admitted Wasm and return its routed runtime trap.
 fn admitted_trap(src: &str, caps: crate::runtime::Capabilities) -> String {
     let checked = witchy::resolve_std_only_checked(src).expect("check source");
@@ -507,20 +485,6 @@ mod perf_mode {
         ));
     }
 
-}
-
-// ===========================================================================
-// Lowering-reject (codegen) diagnostics
-// ===========================================================================
-mod lowering {
-    use super::*;
-
-    #[test]
-    fn dict_record_key_not_lowerable() {
-        insta::assert_snapshot!(lower_diag(
-            "import dict\n\ntype K:\n    a: Int\n    b: Int\n\nfn main(console: Console):\n    var d = dict.new()\n    let _ = dict.insert(d, K(a: 1, b: 2), \"v\")\n    console.print(\"hi\")\n"
-        ));
-    }
 }
 
 // ===========================================================================

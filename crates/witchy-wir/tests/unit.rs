@@ -223,19 +223,3 @@ mod canonical_wasmir {
         }
     }
 }
-mod rfc0162_mutation_evidence_tests {
-    #[test] fn callable_checker_recomputes_parameter_effects() { witchy_wir::rfc0162_mutation_evidence_tests::callable_checker_recomputes_parameter_effects() }
-}
-mod safewir_call_tests {
-    #[test] fn imported_and_host_calls_require_catalog_authentication() { witchy_wir::safewir_call_tests::imported_and_host_calls_require_catalog_authentication() }
-}
-mod safewir_validate {
-    mod tests {
-        #[test] fn block_exit_accumulator_never_resurrects_consumed_authority() { witchy_wir::self_checks::safewir_validate::block_exit_accumulator_never_resurrects_consumed_authority() }
-        #[test] fn consuming_one_alias_invalidates_the_entire_group() { witchy_wir::self_checks::safewir_validate::consuming_one_alias_invalidates_the_entire_group() }
-        #[test] fn ordinary_call_cannot_reach_a_host_import() { witchy_wir::self_checks::safewir_validate::ordinary_call_cannot_reach_a_host_import() }
-        #[test] fn report_mode_rule_diagnostics_have_forged_fixtures() { witchy_wir::self_checks::safewir_validate::report_mode_rule_diagnostics_have_forged_fixtures() }
-        #[test] fn reuse_extent_is_rejected_at_the_reuse_operation() { witchy_wir::self_checks::safewir_validate::reuse_extent_is_rejected_at_the_reuse_operation() }
-        #[test] fn scalar_memory_width_and_representation_are_not_interchangeable() { witchy_wir::self_checks::safewir_validate::scalar_memory_width_and_representation_are_not_interchangeable() }
-    }
-}

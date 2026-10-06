@@ -10,28 +10,6 @@ fn is_nightly() -> bool {
         || std::env::var_os("WITCHY_FULL_SUITE").is_some_and(|v| v == "1")
 }
 
-fn assert_compiled_output(
-    module: &witchy::ast::Module,
-    expected: &[String],
-    label: &str,
-    stack_size: usize,
-) {
-    if !is_nightly() {
-        return;
-    }
-    let wasm = witchy::codegen::compile_module_binary(module).expect_lowered(label);
-    let mut runtime = witchy::runtime::Runtime::batch().expect("runtime");
-    let mut actor = runtime
-        .spawn(
-            &wasm,
-            witchy::runtime::Capabilities { print: true, quiet: true, ..Default::default() },
-            stack_size,
-        )
-        .expect("spawn");
-    actor.run().expect(label);
-    assert_eq!(actor.output(), expected, "{label}");
-}
-
 fn assert_admitted_source_output(source: &str, expected: &[String], label: &str, stack_size: usize) {
     struct ResetOptimization;
     impl Drop for ResetOptimization {

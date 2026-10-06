@@ -52,12 +52,11 @@ Ranked by severity-of-class. Hunt high to low.
      they do not establish an independent expected result. Use canonical
      SafeWIR execution helpers and an explicit expected value in the test.
 
-2. **Compiled-WASM memory safety.** The WIR runtime helpers
-   (`crates/witchy-wir/src/wir_helpers/` — `memory.rs`, `dict/`, `collections/`,
-   `bytes.rs`, …, plus `wir_prelude.rs`) do **manual heap
-   management**: `ensure(bytes)` grows linear memory, the `heap` global is
-   bump-allocated, structures are hand-laid (e.g. dict = `[count:i32]` + 16-byte
-   entries, key@+4 value@+12). Bug classes:
+2. **Compiled-WASM memory safety.** The admission kernels
+   (`crates/witchy-wir/src/canonical_wasmir/` — the allocator, dictionary,
+   drop-worklist and closure-owner kernels) do **manual heap management** over
+   layouts the SafeWIR checker (`crates/witchy-wir/src/canonical_safewir/check/`)
+   must have proved. Bug classes:
    - **Missing / under-sized `ensure()`** before a heap write → OOB store/trap
      (W-000a: `int_to_string` dropped its `ensure()` in the WAT→WIR port).
    - **Heap not advanced past the full allocation** → the unreserved tail gets
@@ -179,10 +178,11 @@ callee chain) are how you enumerate the other contexts.
 
 ## witchy-specific high-value targets (no-argument sweep order)
 
-1. **`crates/witchy-wir/src/wir_helpers/` + `wir_prelude.rs`** — every helper
-   that calls `ensure` or writes the `heap` global. Check: reserve-past-full-
-   allocation, every offset/stride, size-overflow into `ensure`. (W-000a, W-001
-   both lived here.)
+1. **`crates/witchy-wir/src/canonical_wasmir/` kernels + the SafeWIR checker** —
+   every kernel that allocates, grows, or writes a header, and every checker
+   rule that admits an extent. Check: reserve-past-full-allocation, every
+   offset/stride, size overflow into allocation, a checker rule that accepts a
+   fact the producer did not prove.
 2. **`crates/witchy-lower/src/analysis.rs` (uniqueness/own-ABI) + codegen
    in-place paths** — capacity vs reserved heap; alias-then-mutate value-semantics
    (the `inplace_*_alias_safe` tests are the spec).

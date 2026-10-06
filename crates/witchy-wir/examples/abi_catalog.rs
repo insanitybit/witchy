@@ -1,3 +1,3 @@
 fn main() {
-    print!("{}", witchy_wir::wir_prelude::render_abi_import_catalog());
+    print!("{}", witchy_wir::abi_catalog::render_abi_import_catalog());
 }

@@ -1,5 +1,4 @@
 use super::*;
-use crate::codegen;
 
     /// (RFC-0045) The message property: the compiled backend aborts with the
     /// exact expected message, not merely "an error". Covers each routed abort
@@ -42,10 +41,7 @@ use crate::codegen;
                 .iter()
                 .map(|(src, want)| {
                     scope.spawn(move || {
-                        let linked = prepared_module(src);
-                        let bytes = codegen::compile_module_binary(&linked)
-                            .expect_lowered("the binary path lowers this program");
-                        let cerr = crate::run_wasm_bytes(&bytes).expect_err("WASM must abort");
+                        let cerr = crate::run_admitted_artifact(&admitted_artifact(src)).expect_err("WASM must abort");
                         assert_eq!(cerr, format!("runtime error: {want}"), "compiled abort mismatch for src:\n{src}");
                     })
                 })
@@ -123,10 +119,7 @@ use crate::codegen;
             ),
         ];
         for (src, want_core) in cases {
-            let linked = prepared_module(src);
-            let bytes = codegen::compile_module_binary(&linked)
-                .expect_lowered("the binary path lowers this program");
-            let cerr = crate::run_wasm_bytes(&bytes).expect_err("WASM must abort");
+            let cerr = crate::run_admitted_artifact(&admitted_artifact(src)).expect_err("WASM must abort");
             assert!(cerr.starts_with("runtime error: ") && cerr.ends_with(want_core),
                 "compiled abort mismatch for src:\n{src}\ngot: {cerr}\nwant suffix: {want_core}");
         }

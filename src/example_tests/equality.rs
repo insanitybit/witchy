@@ -1,5 +1,5 @@
 use super::*;
-use crate::{codegen, parser, typeck};
+use crate::typeck;
 
     /// (RFC-0047) `==` on a function type is a compile-time error — there is no
     /// stable equality for functions (identity is a monomorphization/inlining
@@ -49,10 +49,8 @@ use crate::{codegen, parser, typeck};
         let resolved = "import result\n\nfn wrap(x: a) -> Result(a, String):\n    Ok(x)\n\nfn main(console: Console):\n    console.print(\"${wrap([1]) == wrap([2])}\")\n";
         assert_eq!(wasm_run(resolved), vec!["false"], "backends agree");
         let empty = "import result\n\nfn wrap(x: a) -> Result(a, String):\n    Ok(x)\n\nfn main(console: Console):\n    console.print(\"${wrap([]) == wrap([])}\")\n";
-        let rm = parser::parse_module(empty).expect("parse");
-        let linked = crate::pipeline::link(vec![("main".into(), rm)], "main").expect("link");
         assert!(
-            typeck::check(&linked).is_err(),
+            witchy::resolve_std_only_checked(empty).is_err(),
             "an empty generic payload must stay a loud checked-pipeline error"
         );
     }
@@ -69,10 +67,8 @@ use crate::{codegen, parser, typeck};
             let src = format!(
                 "fn main(console: Console):\n    let nan = 0.0 / 0.0\n    console.print(\"${{{cmp}}}\")\n"
             );
-            let module = parser::parse_module(&src).expect("parse");
-            let bytes = codegen::compile_module_binary(&module)
-                .expect_lowered("the binary path lowers this program");
-            assert!(crate::run_wasm_bytes(&bytes).is_err(), "WASM must trap on `{cmp}`");
+            let error = crate::run_admitted_artifact(&admitted_artifact(&src)).expect_err(&format!("WASM must trap on `{cmp}`"));
+            assert!(error.contains("line 3: cannot compare NaN"), "`{cmp}`: {error}");
         }
         // Ordinary float ordering and NaN equality still agree.
         let ok = "fn main(console: Console):\n    let nan = 0.0 / 0.0\n    console.print(\"${1.5 < 2.5}\")\n    console.print(\"${2.5 <= 2.5}\")\n    console.print(\"${nan == nan}\")\n";

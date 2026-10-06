@@ -126,7 +126,7 @@ fn authenticate_artifact_import_layouts(
             {
                 continue;
             }
-            let info = witchy_wir::wir_prelude::abi_import_info(import.name).ok_or_else(|| {
+            let info = witchy_wir::abi_catalog::abi_import_info(import.name).ok_or_else(|| {
                 invalid_layout_contract(&format!(
                     "host import `{}` has no generated ABI metadata",
                     import.name,
@@ -162,7 +162,7 @@ pub fn authenticate_host_layout_contract(
 /// import. Every production import currently carries an explicit reject-all
 /// contract; a future nonempty set must arrive with its real adapter.
 pub fn import_layout_policy(wasm: &[u8], import: &str) -> Result<HostLayoutPolicy, String> {
-    let info = witchy_wir::wir_prelude::abi_import_info(import)
+    let info = witchy_wir::abi_catalog::abi_import_info(import)
         .ok_or_else(|| invalid_layout_contract(&format!("unknown host import `{import}`")))?;
     authenticate_host_layout_contract(wasm, info.specialized_layouts)
 }

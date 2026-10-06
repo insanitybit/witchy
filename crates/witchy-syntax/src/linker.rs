@@ -3786,8 +3786,9 @@ fn rewrite_expr(
                 // lowering already synthesizes the same forwarding closure from
                 // a top-level `Var` value. Inherent method aliases still need
                 // their generated implementation target, so they retain the
-                // ordinary eta rewrite.
-                *e = if sig.generic && !sig.method_alias {
+                // ordinary eta rewrite. So does an intrinsic: its placeholder
+                // has no body to specialize or adapt, only a call form.
+                *e = if sig.generic && !sig.method_alias && crate::intrinsics::lookup(&qualified).is_none() {
                     Expr::Var(qualified)
                 } else {
                     eta_lambda(&qualified, sig)

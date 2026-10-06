@@ -67,7 +67,7 @@ cap-std-ext = "5.1.2"
 
 [dev-dependencies]
 # Combined checked-heap/UAF tests assemble the exact WIR allocator helpers.
-witchy-wir = { path = "../witchy-wir", features = ["native", "legacy-encoder-bridge", "raw-encoder-test-api", "checked-source-test-api"] }
+witchy-wir = { path = "../witchy-wir", features = ["native", "raw-encoder-test-api", "checked-source-test-api"] }
 # Every test build requests witchy-wir's full test feature set, so all
 # selections (-p witchy-wir, -p witchy-lower, --workspace, ...) share ONE
 # compiled witchy-wir and everything above it. Each distinct feature set was
@@ -86,4 +86,4 @@ test-support = ["native"]
 # functions for tests/runtime.rs. The root package's dev-dependency enables it,
 # so every workspace test build (and every shim `-p` selection) has it; it
 # only adds features a test build already requests.
-self-checks = ["native", "dep:wasm-encoder", "witchy-wir/native", "witchy-wir/legacy-encoder-bridge", "witchy-wir/raw-encoder-test-api", "witchy-wir/checked-source-test-api"]
+self-checks = ["native", "dep:wasm-encoder", "witchy-wir/native", "witchy-wir/raw-encoder-test-api", "witchy-wir/checked-source-test-api"]

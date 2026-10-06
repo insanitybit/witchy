@@ -6737,7 +6737,7 @@ pub(super) fn audit_static_island_artifacts(
                     let import = import
                         .map_err(|error| WebCommandError::failure(error.to_string()))?;
                     let permitted = import.module == "witchy"
-                        && witchy_wir::wir_prelude::abi_import_info(import.name)
+                        && witchy_wir::abi_catalog::abi_import_info(import.name)
                             .is_some_and(|info| info.browser && info.authorities.is_empty());
                     if !permitted {
                         forbidden_imports.push(format!("{}::{}", import.module, import.name));

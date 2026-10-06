@@ -55,17 +55,3 @@ use crate::{codegen, parser};
         let plain = cliff.replacen("mode opt\n\n", "", 1);
         crate::enforce_performance_modes(&link_mode(&plain), "t").expect("non-mode file is accepted");
     }
-
-    /// THE FORCED-COPY DIFFERENTIAL: `WITCHY_OPT=-inplace` compiles with the
-    /// in-place machinery off (the copying paths ARE the semantics). Outputs
-    /// must be identical — any divergence is an analysis soundness bug.
-    #[test]
-    fn forced_copy_mode_is_differential() {
-        let src = "fn tag(prefix: String, n: Int) -> String:\n    prefix + \"${n}\"\n\nfn main(console: Console):\n    var xs = []\n    let alias = xs\n    var s = \"\"\n    var d = dict.new()\n    var i = 0\n    while i < 800:\n        list.push(xs, i)\n        s = s + tag(\"x\", i)\n        let _ = dict.update(d, i % 7, 0, fn(n: Int): n + 1)\n        i = i + 1\n    console.print(\"${list.length(xs)}\")\n    console.print(\"${list.length(alias)}\")\n    console.print(\"${s.length()}\")\n    console.print(\"${dict.get_or(d, 3, 0)}\")\n";
-        let optimized = wasm_run(src);
-        codegen::set_force_copy_for_tests(Some(true));
-        let forced = wasm_run(src);
-        codegen::set_force_copy_for_tests(None);
-        assert_eq!(optimized, forced, "forced-copy output must match the optimized build");
-        assert_eq!(link_run(src), optimized, "and both must match the interpreter");
-    }

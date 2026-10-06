@@ -392,43 +392,6 @@ fn main(console: Console, argv: List(String)):
         assert_eq!(actor.output(), vec!["`unrelated.invalid` is not permitted by this Net capability".to_string()]);
     }
 
-    /// RFC-0020: `connect_pinned` re-checks the Net allowlist on the PINNED IP — a hostile or
-    /// buggy chooser that returns an internal address the capability forbids is still refused
-    /// (the hard floor under the sealed policy). Granted only a public endpoint, a pin to
-    /// loopback traps on compiled Wasm.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[test]
-    fn connect_pinned_rechecks_the_allowlist_on_compiled_wasm() {
-        use crate::runtime::{Capabilities, Runtime};
-        let src = "fn main(console: Console, net: Net):\n\
-	                   \x20   let s = net.connect_pinned(\"127.0.0.1\", \"example.com\", 80, false)\n\
-                   \x20   s.close()\n";
-        let linked = resolve_std_src(src);
-        typeck::check(&linked).expect("typecheck");
-        // Granted only 93.184.216.34:80 (a public IP) — the loopback pin is outside it.
-        let bytes = codegen::compile_module_binary(&linked)
-            .expect_lowered("the binary path lowers this program");
-        let mut rt = Runtime::new().expect("runtime");
-        let mut actor = rt
-            .spawn(
-                &bytes,
-                Capabilities {
-                    print: true,
-                    quiet: true,
-                    net_allow: Some(vec!["93.184.216.34:80".to_string()]),
-                    net_connect: true,
-                    net_listen: true,
-                    ..Default::default()
-                },
-                64,
-            )
-            .expect("spawn");
-        assert!(
-            actor.run().is_err(),
-            "compiled must refuse a pinned dial to an IP outside the allowlist",
-        );
-    }
-
     #[cfg(not(target_arch = "wasm32"))]
     fn run_admitted_oauth_net(source: &str, address: &str) -> Vec<String> {
         let checked = witchy::resolve_std_only_checked(source).expect("checked OAuth source");

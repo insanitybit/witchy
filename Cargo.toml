@@ -91,8 +91,8 @@ sha2 = "0.11.0"
 ed25519-dalek = "2.2.0"
 regex = "1.11"
 wasm-encoder = "0.251"
-# Reads back the pre-compiled prelude blob + validates the emitted module; pure
-# Rust, so the binary codegen path (WIR -> wasm) runs on the wasm playground too.
+# Validates and inspects emitted modules; pure Rust, so the playground build can
+# use it too.
 wasmparser = "0.251"
 # Native-only deps (the sandbox/PM/LSP layers); excluded from the wasm build.
 # Keep this identical in every workspace declaration. Witchy selects the DRC
@@ -136,8 +136,6 @@ aws-lc-rs = { version = "1", optional = true }
 [dev-dependencies]
 hashbrown = "0.16"
 proptest = "1.11.0"
-# Raw AST lowering is deliberate compiler-test machinery, not a production API.
-witchy-lower = { path = "crates/witchy-lower", features = ["raw-module-test-api"] }
 # Raw AST execution is deliberate oracle/test machinery, not a production API.
 witchy-interp = { path = "crates/witchy-interp", features = ["raw-module-test-api", "test-fixtures"] }
 # Raw WIR encoding is deliberate optimizer/oracle test machinery.
@@ -147,7 +145,7 @@ witchy-interp = { path = "crates/witchy-interp", features = ["raw-module-test-ap
 # a separate opt-level-2 build of witchy-wir plus every dependent crate in the
 # same target dir. Dev-dependency features never reach `cargo build`, so the
 # production boundary around the raw encoder is unchanged.
-witchy-wir = { path = "crates/witchy-wir", features = ["native", "legacy-encoder-bridge", "raw-encoder-test-api", "checked-source-test-api"] }
+witchy-wir = { path = "crates/witchy-wir", features = ["native", "raw-encoder-test-api", "checked-source-test-api"] }
 # Enables only the concurrency-safe TLS fixture hook for root-package tests.
 # The ordinary runtime dependency does not expose it in production builds.
 witchy-runtime = { path = "crates/witchy-runtime", features = ["test-support", "self-checks"] }

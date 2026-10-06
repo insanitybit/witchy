@@ -31,6 +31,11 @@ use crate::{codegen, interpreter, parser, typeck};
         (port, server)
     }
 
+    /// Run a std-only program as an admitted canonical artifact with dev grants.
+    fn admitted_run(src: &str) -> Result<Vec<String>, String> {
+        crate::run_admitted_artifact(&admitted_artifact(src))
+    }
+
     fn run_fixed_http_program(
         response: &'static str,
         build: impl FnOnce(u16) -> String,
@@ -102,9 +107,7 @@ fn main(console: Console):
             interpreter::run_module(linked, ".", Vec::new()).is_err(),
             "interpreter must trap on a CRLF header value"
         );
-        let bytes = codegen::compile_module_binary(&resolve_std_src(&crlf_value))
-            .expect_lowered("lowers");
-        assert!(crate::run_wasm_bytes(&bytes).is_err(), "WASM must trap on a CRLF header value");
+        assert!(admitted_run(&crlf_value).is_err(), "WASM must trap on a CRLF header value");
 
         // A header NAME with a space (not a token) must error on both backends.
         let bad_name = prog("http.check_header(\"bad name\", \"ok\")");
@@ -112,9 +115,7 @@ fn main(console: Console):
             interpreter::run_module(resolve_std_src(&bad_name), ".", Vec::new()).is_err(),
             "interpreter must trap on an invalid header name"
         );
-        let bn = codegen::compile_module_binary(&resolve_std_src(&bad_name))
-            .expect_lowered("lowers");
-        assert!(crate::run_wasm_bytes(&bn).is_err(), "WASM must trap on an invalid header name");
+        assert!(admitted_run(&bad_name).is_err(), "WASM must trap on an invalid header name");
 
         // A CR/LF in a request field (path/host/method) errors on both backends.
         let crlf_path = prog("http.check_field(\"request path\", \"/a\\nHost: evil\")");
@@ -122,9 +123,7 @@ fn main(console: Console):
             interpreter::run_module(resolve_std_src(&crlf_path), ".", Vec::new()).is_err(),
             "interpreter must trap on a CRLF path"
         );
-        let cp = codegen::compile_module_binary(&resolve_std_src(&crlf_path))
-            .expect_lowered("lowers");
-        assert!(crate::run_wasm_bytes(&cp).is_err(), "WASM must trap on a CRLF path");
+        assert!(admitted_run(&crlf_path).is_err(), "WASM must trap on a CRLF path");
 
         // BUG-506: NUL and other non-CR/LF controls are also forbidden at this
         // raw HTTP rendering boundary.
@@ -133,27 +132,21 @@ fn main(console: Console):
             interpreter::run_module(resolve_std_src(&nul_value), ".", Vec::new()).is_err(),
             "interpreter must trap on a NUL header value"
         );
-        let nv = codegen::compile_module_binary(&resolve_std_src(&nul_value))
-            .expect_lowered("lowers");
-        assert!(crate::run_wasm_bytes(&nv).is_err(), "WASM must trap on a NUL header value");
+        assert!(admitted_run(&nul_value).is_err(), "WASM must trap on a NUL header value");
 
         let soh_path = prog("let soh = string.from_code(1)\n    http.check_request_field(\"request path\", \"/a\" + soh + \"b\")");
         assert!(
             interpreter::run_module(resolve_std_src(&soh_path), ".", Vec::new()).is_err(),
             "interpreter must trap on a SOH request field"
         );
-        let sp = codegen::compile_module_binary(&resolve_std_src(&soh_path))
-            .expect_lowered("lowers");
-        assert!(crate::run_wasm_bytes(&sp).is_err(), "WASM must trap on a SOH request field");
+        assert!(admitted_run(&soh_path).is_err(), "WASM must trap on a SOH request field");
 
         let del_value = prog("let del = string.from_code(127)\n    http.check_header(\"x-test\", \"a\" + del + \"b\")");
         assert!(
             interpreter::run_module(resolve_std_src(&del_value), ".", Vec::new()).is_err(),
             "interpreter must trap on a DEL header value"
         );
-        let dv = codegen::compile_module_binary(&resolve_std_src(&del_value))
-            .expect_lowered("lowers");
-        assert!(crate::run_wasm_bytes(&dv).is_err(), "WASM must trap on a DEL header value");
+        assert!(admitted_run(&del_value).is_err(), "WASM must trap on a DEL header value");
 
         let nul_response = server_prog(
             "let nul = string.from_code(0)\n    let r = server.with_header(server.text(200, \"ok\"), \"x-test\", \"a\" + nul + \"b\")\n    let _wire = server.render(r)"
@@ -162,10 +155,7 @@ fn main(console: Console):
             interpreter::run_module(resolve_std_src(&nul_response), ".", Vec::new()).is_err(),
             "interpreter must trap before rendering a response header with NUL"
         );
-        let nr = codegen::compile_module_binary(&resolve_std_src(&nul_response))
-            .expect_lowered("lowers");
-        assert!(
-            crate::run_wasm_bytes(&nr).is_err(),
+        assert!(admitted_run(&nul_response).is_err(),
             "WASM must trap before rendering a response header with NUL"
         );
 
@@ -338,8 +328,6 @@ fn main(console: Console):
         let checked = witchy::resolve_std_only_checked(src).expect("checked HTTP scheme source");
         let artifact = codegen::compile_checked_module_artifact(&checked)
             .expect_lowered("the canonical path lowers HTTP scheme rejection");
-        assert!(matches!(codegen::compile_module_binary(&linked),
-            codegen::LoweringOutcome::Unsupported(_)), "raw HTTP Fetch encoding must remain unavailable");
         let mut runtime = Runtime::batch().expect("runtime");
         let mut actor = runtime.spawn_admitted(
             &artifact,
@@ -371,9 +359,7 @@ fn main(console: Console):
                 interpreter::run_module(resolve_std_src(src), ".", Vec::new()).is_err(),
                 "interpreter must trap: {src}"
             );
-            let bytes = codegen::compile_module_binary(&resolve_std_src(src))
-                .expect_lowered("lowers");
-            assert!(crate::run_wasm_bytes(&bytes).is_err(), "wasm must trap: {src}");
+            assert!(admitted_run(src).is_err(), "wasm must trap: {src}");
         }
     }
 
@@ -402,10 +388,7 @@ fn main(console: Console):
                 .to_string();
             assert!(interp_err.contains("policy: net port must be in 0..65535"), "{call}: {interp_err}");
 
-            let wasm = codegen::compile_module_binary(&linked)
-
-                .expect_lowered("out-of-range NetPolicy program should lower");
-            let wasm_err = crate::run_wasm_bytes(&wasm)
+            let wasm_err = admitted_run(&src)
                 .expect_err("WASM must reject out-of-range NetPolicy port")
                 .to_string();
             assert!(wasm_err.contains("policy: net port must be in 0..65535"), "{call}: {wasm_err}");
@@ -434,8 +417,6 @@ fn main(console: Console):
         let checked = witchy::resolve_std_only_checked(&src).expect("checked Fetch source");
         let artifact = codegen::compile_checked_module_artifact(&checked)
             .expect_lowered("the canonical path lowers Fetch and narrowing");
-        assert!(matches!(codegen::compile_module_binary(&linked),
-            codegen::LoweringOutcome::Unsupported(_)), "raw Fetch encoding must remain unavailable");
         let mut runtime = Runtime::batch().expect("runtime");
         let mut actor = runtime
             .spawn_admitted(
@@ -486,8 +467,6 @@ fn main(console: Console):
         let checked = witchy::resolve_std_only_checked(&source).expect("checked Net-to-Fetch source");
         let artifact = codegen::compile_checked_module_artifact(&checked)
             .expect_lowered("the canonical path lowers Net-to-Fetch derivation");
-        assert!(matches!(codegen::compile_module_binary(&linked),
-            codegen::LoweringOutcome::Unsupported(_)), "raw Net-to-Fetch encoding must remain unavailable");
         let mut runtime = Runtime::batch().expect("runtime");
         let mut actor = runtime
             .spawn_admitted(

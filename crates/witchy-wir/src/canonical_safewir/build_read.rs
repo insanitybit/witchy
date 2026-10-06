@@ -24,7 +24,7 @@ impl CanonicalAbiCatalog {
     pub fn with_build_read_imports(
         mut self, signatures: [FunctionSignatureId; 3], string_layout: LayoutId,
     ) -> Result<Self, String> {
-        use crate::wir_prelude::{AbiImportAuthority, WasmTy};
+        use crate::abi_catalog::{AbiImportAuthority, WasmTy};
         let buffer = |access| HostParameterRole::Buffer {
             value_type: ValueType::Ref(string_layout), access, extent: HostBufferExtent::Slice,
         };
@@ -41,7 +41,7 @@ impl CanonicalAbiCatalog {
     pub fn with_build_env_imports(
         mut self, signatures: [FunctionSignatureId; 4], string_layout: LayoutId,
     ) -> Result<Self, String> {
-        use crate::wir_prelude::{AbiImportAuthority, WasmTy};
+        use crate::abi_catalog::{AbiImportAuthority, WasmTy};
         let read = authenticated_capability_import(
             BUILD_ENV_IMPORT_NAMES[0], &[WasmTy::ExternRef, WasmTy::I32, WasmTy::I32],
             &[WasmTy::ExternRef], signatures[0],
@@ -62,7 +62,7 @@ impl CanonicalAbiCatalog {
     pub fn with_build_exec_imports(
         mut self, signatures: [FunctionSignatureId; 3], string_layout: LayoutId,
     ) -> Result<Self, String> {
-        use crate::wir_prelude::{AbiImportAuthority, WasmTy};
+        use crate::abi_catalog::{AbiImportAuthority, WasmTy};
         let buffer = HostParameterRole::Buffer {
             value_type: ValueType::Ref(string_layout), access: AccessMode::Read, extent: HostBufferExtent::Slice,
         };
@@ -81,7 +81,7 @@ impl CanonicalAbiCatalog {
     pub fn with_build_net_imports(
         mut self, signatures: [FunctionSignatureId; 3], string_layout: LayoutId,
     ) -> Result<Self, String> {
-        use crate::wir_prelude::{AbiImportAuthority, WasmTy};
+        use crate::abi_catalog::{AbiImportAuthority, WasmTy};
         let buffer = HostParameterRole::Buffer {
             value_type: ValueType::Ref(string_layout), access: AccessMode::Read,
             extent: HostBufferExtent::Slice,
@@ -101,7 +101,7 @@ impl CanonicalAbiCatalog {
     fn with_build_response_imports(
         mut self, signatures: [FunctionSignatureId; 2], string_layout: LayoutId,
     ) -> Result<Self, String> {
-        use crate::wir_prelude::WasmTy;
+        use crate::abi_catalog::WasmTy;
         let size = authenticated_internal_service_import(
             BUILD_READ_IMPORT_NAMES[1], &[WasmTy::ExternRef], &[WasmTy::I32], signatures[0],
             vec![HostParameterRole::Capability(BUILD_READ_RESPONSE_KIND)],
@@ -127,7 +127,7 @@ pub mod self_checks {
 
 
     pub fn build_env_catalog_authenticates_root_and_keeps_presence_internal() {
-        use crate::wir_prelude::{AbiImportAuthority, WasmTy};
+        use crate::abi_catalog::{AbiImportAuthority, WasmTy};
         let layout = LayoutId::from_bytes([32; 32]);
         let signatures = [0, 1, 2, 3].map(FunctionSignatureId::new);
         let catalog = CanonicalAbiCatalog { imports: BTreeMap::new() }
@@ -161,7 +161,7 @@ pub mod self_checks {
     }
 
     pub fn build_read_catalog_separates_root_authority_from_bounded_responses() {
-        use crate::wir_prelude::{AbiImportAuthority, WasmTy};
+        use crate::abi_catalog::{AbiImportAuthority, WasmTy};
         let layout = LayoutId::from_bytes([31; 32]);
         let signatures = [FunctionSignatureId::new(0), FunctionSignatureId::new(1), FunctionSignatureId::new(2)];
         let catalog = CanonicalAbiCatalog { imports: BTreeMap::new() }

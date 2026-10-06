@@ -133,7 +133,6 @@ struct CheckedWeb {
     wasm_functions: Value,
     templates: Vec<witchy_lower::codegen::GlamourTemplateMetadata>,
     islands: Vec<witchy_lower::codegen::GlamourIslandMetadata>,
-    development: Option<witchy_lower::codegen::GlamourDevelopmentMetadata>,
     packages: Vec<PackageRecord>,
 }
 
@@ -163,7 +162,6 @@ struct CompiledWeb {
     wasm_functions: Value,
     templates: Vec<witchy_lower::codegen::GlamourTemplateMetadata>,
     islands: Vec<witchy_lower::codegen::GlamourIslandMetadata>,
-    development: Option<witchy_lower::codegen::GlamourDevelopmentMetadata>,
     packages: Vec<PackageRecord>,
 }
 
@@ -1198,7 +1196,6 @@ fn check_loaded_project(
         wasm_functions,
         templates,
         islands,
-        development,
         packages,
     } = compiled;
     let (exports, host_imports) = inspect_wasm(&wasm)?;
@@ -1210,24 +1207,9 @@ fn check_loaded_project(
         }
     }
     for development_export in FORBIDDEN_PRODUCTION_EXPORTS {
-        let present = exports.contains(*development_export);
-        let snapshot_export = matches!(
-            *development_export,
-            "__glamour_dev_snapshot"
-                | "__glamour_dev_snapshot_length"
-                | "__glamour_dev_restore"
-        );
-        let expected = development
-            .as_ref()
-            .is_some_and(|metadata| !snapshot_export || metadata.supports_snapshot());
-        if !expected && present {
+        if exports.contains(*development_export) {
             return Err(WebCommandError::failure(format!(
                 "Wasm exposes unrequested development-only export `{development_export}`"
-            )));
-        }
-        if expected && !present {
-            return Err(WebCommandError::failure(format!(
-                "development Wasm is missing compiler-owned export `{development_export}`"
             )));
         }
     }
@@ -1246,7 +1228,6 @@ fn check_loaded_project(
         wasm_functions,
         templates,
         islands,
-        development,
         packages,
     })
 }
@@ -1271,49 +1252,22 @@ fn compile_project_with_origins(
         .map_err(|error| WebCommandError::failure(error.to_string()))?;
     let islands = witchy_lower::codegen::checked_glamour_islands(&checked)
         .map_err(|error| WebCommandError::failure(error.to_string()))?;
-    let (wasm, development_metadata, source_instructions, source_expressions) = if development {
-        let compiled = super::compile::compile_checked_to_development_wasm_cached(&checked)
-            .map_err(WebCommandError::failure)?;
-        (
-            compiled.wasm,
-            compiled.glamour,
-            compiled.source_instructions,
-            compiled.source_expressions,
-        )
-    } else {
-        (
-            super::compile::compile_checked_to_wasm_cached(&checked)
-                .map_err(WebCommandError::failure)?,
-            None,
-            Vec::new(),
-            Vec::new(),
-        )
-    };
-    let source_graph = if development {
-        development_source_graph(project)?
-    } else {
-        DevelopmentSourceGraph::default()
-    };
-    let wasm_functions = if development {
-        development_wasm_functions(
-            &wasm,
-            &source_graph.functions,
-            &source_instructions,
-            &source_expressions,
-        )?
-    } else {
-        Value::Array(Vec::new())
-    };
+    if development {
+        return Err(WebCommandError::failure(
+            "cannot compile to WASM: unsupported lowering: Glamour development modules are not yet supported by canonical SafeWIR",
+        ));
+    }
+    let wasm = super::compile::compile_checked_to_wasm_cached(&checked)
+        .map_err(WebCommandError::failure)?;
     Ok(CompiledWeb {
         wasm,
         source_origins,
         tagged_origins,
-        compiler_sources: source_graph.paths,
-        source_functions: development_source_function_registry(&source_graph.functions),
-        wasm_functions,
+        compiler_sources: BTreeSet::new(),
+        source_functions: development_source_function_registry(&[]),
+        wasm_functions: Value::Array(Vec::new()),
         templates,
         islands,
-        development: development_metadata,
         packages,
     })
 }
@@ -1465,143 +1419,6 @@ struct DevelopmentSourceGraph {
     functions: Vec<DevelopmentSourceFunction>,
 }
 
-fn development_source_graph(
-    project: &Project,
-) -> Result<DevelopmentSourceGraph, WebCommandError> {
-    use std::collections::VecDeque;
-
-    let mut queue = VecDeque::from([project.entry.clone()]);
-    let mut graph = DevelopmentSourceGraph::default();
-    while let Some(path) = queue.pop_front() {
-        let path = std::fs::canonicalize(&path).map_err(|error| {
-            WebCommandError::failure(format!(
-                "cannot resolve development source `{}`: {error}",
-                path.display()
-            ))
-        })?;
-        if !graph.paths.insert(path.clone()) {
-            continue;
-        }
-        let source = std::fs::read_to_string(&path).map_err(|error| {
-            WebCommandError::failure(format!(
-                "cannot read development source `{}`: {error}",
-                path.display()
-            ))
-        })?;
-        let (parsed, expression_spans) = witchy_syntax::parser::parse_module_with_expression_spans(
-            &source,
-        )
-            .map_err(|error| WebCommandError::failure(format!("{}: {error}", path.display())))?;
-        let module_name = path
-            .file_stem()
-            .and_then(|value| value.to_str())
-            .ok_or_else(|| WebCommandError::failure("development source has no module name"))?
-            .to_string();
-        let module = source_module_name(&project.root, &path.to_string_lossy());
-        let source_lines = u32::try_from(source.lines().count()).unwrap_or(u32::MAX);
-        for (index, item) in parsed.items.iter().enumerate() {
-            let item_end = parsed
-                .item_lines
-                .get(index + 1)
-                .copied()
-                .filter(|line| *line != u32::MAX)
-                .unwrap_or(source_lines.saturating_add(1));
-            match item {
-                witchy_syntax::ast::Item::Function(function) => {
-                    let start_line = function.line;
-                    if start_line == 0 || start_line == u32::MAX {
-                        continue;
-                    }
-                    graph.functions.push(DevelopmentSourceFunction {
-                        module: module.clone(),
-                        name: function.name.clone(),
-                        compiled_names: vec![
-                            function.name.clone(),
-                            format!("{module_name}.{}", function.name),
-                        ],
-                        compiled_suffix: None,
-                        start_line,
-                        end_line: item_end.saturating_sub(1).max(start_line),
-                        expression_spans: expression_spans
-                            .iter()
-                            .filter(|span| {
-                                span.source.start.line >= start_line
-                                    && span.source.end.line
-                                        <= item_end.saturating_sub(1).max(start_line)
-                            })
-                            .cloned()
-                            .collect(),
-                    });
-                }
-                witchy_syntax::ast::Item::Impl(implementation) => {
-                    for (method_index, method) in implementation.methods.iter().enumerate() {
-                        let start_line = method.line;
-                        if start_line == 0 || start_line == u32::MAX {
-                            continue;
-                        }
-                        let end_line = implementation
-                            .methods
-                            .get(method_index + 1)
-                            .map(|next| next.line)
-                            .filter(|line| *line != 0 && *line != u32::MAX)
-                            .unwrap_or(item_end)
-                            .saturating_sub(1)
-                            .max(start_line);
-                        let suffix = format!("__{}__{}", implementation.type_name, method.name);
-                        let compiled_name = if implementation.trait_args.is_empty() {
-                            Some(match &implementation.trait_name {
-                                Some(trait_name) => format!(
-                                    "{trait_name}__{}__{}",
-                                    implementation.type_name, method.name
-                                ),
-                                None => format!("{}__{}", implementation.type_name, method.name),
-                            })
-                        } else {
-                            None
-                        };
-                        let compiled_names = compiled_name
-                            .into_iter()
-                            .flat_map(|name| [name.clone(), format!("{module_name}.{name}")])
-                            .collect();
-                        graph.functions.push(DevelopmentSourceFunction {
-                            module: module.clone(),
-                            name: method.name.clone(),
-                            compiled_names,
-                            compiled_suffix: Some(suffix),
-                            start_line,
-                            end_line,
-                            expression_spans: expression_spans
-                                .iter()
-                                .filter(|span| {
-                                    span.source.start.line >= start_line
-                                        && span.source.end.line <= end_line
-                                })
-                                .cloned()
-                                .collect(),
-                        });
-                    }
-                }
-                _ => {}
-            }
-        }
-        let parent = path.parent().unwrap_or(&project.root);
-        for import in parsed.imports {
-            let sibling = parent.join(format!("{import}.witchy"));
-            if sibling.is_file() {
-                queue.push_back(sibling);
-            }
-        }
-    }
-    graph.functions.sort_by(|left, right| {
-        (&left.module, left.start_line, &left.name).cmp(&(
-            &right.module,
-            right.start_line,
-            &right.name,
-        ))
-    });
-    Ok(graph)
-}
-
 fn development_source_function_registry(functions: &[DevelopmentSourceFunction]) -> Value {
     Value::Array(
         functions
@@ -1624,264 +1441,6 @@ fn development_source_function_registry(functions: &[DevelopmentSourceFunction])
             })
             .collect(),
     )
-}
-
-fn development_wasm_functions(
-    wasm: &[u8],
-    sources: &[DevelopmentSourceFunction],
-    source_instructions: &[witchy_wir::wir_encode::SourceInstructionRange],
-    source_expressions: &[witchy_wir::wir_encode::SourceExpressionInstructionRange],
-) -> Result<Value, WebCommandError> {
-    use wasmparser::{KnownCustom, Name, Payload, TypeRef};
-
-    let mut imported_functions = 0_u32;
-    let mut code_index = 0_u32;
-    let mut names = BTreeMap::new();
-    let mut bodies = Vec::new();
-    for payload in wasmparser::Parser::new(0).parse_all(wasm) {
-        match payload.map_err(|error| WebCommandError::failure(error.to_string()))? {
-            Payload::ImportSection(section) => {
-                for import in section.into_imports() {
-                    let import = import
-                        .map_err(|error| WebCommandError::failure(error.to_string()))?;
-                    if matches!(import.ty, TypeRef::Func(_)) {
-                        imported_functions = imported_functions.saturating_add(1);
-                    }
-                }
-            }
-            Payload::CodeSectionEntry(body) => {
-                let range = body.range();
-                let instruction_offsets = body
-                    .get_operators_reader()
-                    .map_err(|error| WebCommandError::failure(error.to_string()))?
-                    .into_iter_with_offsets()
-                    .map(|operator| {
-                        operator
-                            .map(|(_, offset)| offset)
-                            .map_err(|error| WebCommandError::failure(error.to_string()))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                bodies.push((
-                    imported_functions + code_index,
-                    range.start,
-                    range.end,
-                    instruction_offsets,
-                ));
-                code_index = code_index.saturating_add(1);
-            }
-            Payload::CustomSection(section) => {
-                if let KnownCustom::Name(section) = section.as_known() {
-                    for subsection in section {
-                        let subsection = subsection
-                            .map_err(|error| WebCommandError::failure(error.to_string()))?;
-                        if let Name::Function(map) = subsection {
-                            for naming in map {
-                                let naming = naming
-                                    .map_err(|error| WebCommandError::failure(error.to_string()))?;
-                                names.insert(naming.index, naming.name.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    let mut source_ranges = BTreeMap::<u32, Vec<_>>::new();
-    for range in source_instructions {
-        source_ranges
-            .entry(range.function_index)
-            .or_default()
-            .push(range);
-    }
-    for ranges in source_ranges.values_mut() {
-        ranges.sort_by_key(|range| (range.line, range.instruction_start, range.instruction_end));
-    }
-    let mut expression_ranges = BTreeMap::<u32, Vec<_>>::new();
-    for range in source_expressions {
-        expression_ranges
-            .entry(range.function_index)
-            .or_default()
-            .push(range);
-    }
-    for ranges in expression_ranges.values_mut() {
-        ranges.sort_by_key(|range| {
-            (range.line, range.expression_ordinal, range.instruction_start, range.instruction_end)
-        });
-    }
-    let mut records = Vec::new();
-    for (index, start, end, instruction_offsets) in bodies {
-        let Some(name) = names.get(&index) else {
-            continue;
-        };
-        let tail = name.rsplit('.').next().unwrap_or(name);
-        let candidates = sources
-            .iter()
-            .filter(|source| {
-                source
-                    .compiled_names
-                    .iter()
-                    .any(|candidate| candidate == name || candidate == tail)
-                    || source
-                        .compiled_suffix
-                        .as_ref()
-                        .is_some_and(|suffix| tail.ends_with(suffix))
-            })
-            .collect::<Vec<_>>();
-        let exact = candidates
-            .iter()
-            .copied()
-            .filter(|source| {
-                source
-                    .compiled_names
-                    .iter()
-                    .any(|candidate| candidate == name || candidate == tail)
-            })
-            .collect::<Vec<_>>();
-        let source = (exact.len() == 1)
-            .then(|| exact[0])
-            .or_else(|| (exact.is_empty() && candidates.len() == 1).then(|| candidates[0]));
-        let statements = source
-            .into_iter()
-            .flat_map(|source| {
-                source_ranges
-                    .get(&index)
-                    .into_iter()
-                    .flatten()
-                    .map(move |range| (source, range))
-            })
-            .filter_map(|(source, range)| {
-                if range.line < source.start_line || range.line > source.end_line {
-                    return None;
-                }
-                let instruction_start = usize::try_from(range.instruction_start).ok()?;
-                let instruction_end = usize::try_from(range.instruction_end).ok()?;
-                let byte_start = *instruction_offsets.get(instruction_start)?;
-                let byte_end = *instruction_offsets.get(instruction_end)?;
-                (byte_start < byte_end).then(|| {
-                    json!({
-                        "source": {
-                            "module": &source.module,
-                            "start": {"line": range.line, "column": 1},
-                            "end": {"line": range.line, "column": 1},
-                        },
-                        "instructionStart": range.instruction_start,
-                        "instructionEnd": range.instruction_end,
-                        "byteStart": byte_start,
-                        "byteEnd": byte_end,
-                    })
-                })
-            })
-            .collect::<Vec<_>>();
-
-        let expressions = source
-            .map(|source| {
-                let mut compiler_lines = BTreeMap::<u32, Vec<&witchy_wir::wir_encode::SourceExpressionInstructionRange>>::new();
-                if let Some(ranges) = expression_ranges.get(&index) {
-                    for range in ranges {
-                        compiler_lines.entry(range.line).or_default().push(range);
-                    }
-                }
-                let mut parser_statement_counters = BTreeMap::<u32, usize>::new();
-
-                source
-                    .expression_spans
-                    .iter()
-                    .map(|span| {
-                        let mut record = json!({
-                            "module": &source.module,
-                            "start": {
-                                "line": span.source.start.line,
-                                "column": span.source.start.column,
-                            },
-                            "end": {
-                                "line": span.source.end.line,
-                                "column": span.source.end.column,
-                            },
-                            "statementLine": span.statement_line,
-                        });
-                        let statement_ordinal = {
-                            let entry = parser_statement_counters
-                                .entry(span.statement_line)
-                                .or_default();
-                            let current = *entry;
-                            *entry = entry.saturating_add(1);
-                            current
-                        };
-                        let matching_statement = source_ranges
-                            .get(&index)
-                            .into_iter()
-                            .flatten()
-                            .filter(|range| range.line == span.statement_line)
-                            .collect::<Vec<_>>();
-                        if let [range] = matching_statement.as_slice()
-                            && let (Ok(instruction_start), Ok(instruction_end)) = (
-                                usize::try_from(range.instruction_start),
-                                usize::try_from(range.instruction_end),
-                            )
-                            && let (Some(byte_start), Some(byte_end)) = (
-                                instruction_offsets.get(instruction_start),
-                                instruction_offsets.get(instruction_end),
-                            )
-                        {
-                            record["statementMapping"] = json!({
-                                "instructionStart": range.instruction_start,
-                                "instructionEnd": range.instruction_end,
-                                "byteStart": byte_start,
-                                "byteEnd": byte_end,
-                            });
-                        }
-                        let matched_expression = compiler_lines
-                            .get(&span.statement_line)
-                            .and_then(|matches| matches.get(statement_ordinal))
-                            .or_else(|| {
-                                let line_matches = expression_ranges
-                                    .get(&index)
-                                    .into_iter()
-                                    .flatten()
-                                    .filter(|range| range.line == span.statement_line)
-                                    .collect::<Vec<_>>();
-                                if line_matches.len() == 1 { Some(line_matches[0]) } else { None }
-                            });
-                        if let Some(range) = matched_expression
-                            && let (Ok(instruction_start), Ok(instruction_end)) = (
-                                usize::try_from(range.instruction_start),
-                                usize::try_from(range.instruction_end),
-                            )
-                            && let (Some(byte_start), Some(byte_end)) = (
-                                instruction_offsets.get(instruction_start),
-                                instruction_offsets.get(instruction_end),
-                            )
-                        {
-                            record["expressionMapping"] = json!({
-                                "instructionStart": range.instruction_start,
-                                "instructionEnd": range.instruction_end,
-                                "byteStart": byte_start,
-                                "byteEnd": byte_end,
-                                "expressionOrdinal": range.expression_ordinal,
-                            });
-                        }
-                        record
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        records.push(json!({
-            "functionIndex": index,
-            "name": name,
-            "bodyOffset": start,
-            "bodyEnd": end,
-            "instructionOffsets": instruction_offsets,
-            "statementMappings": statements,
-            "expressionSpans": expressions,
-            "source": source.map(|source| json!({
-                "module": &source.module,
-                "start": {"line": source.start_line, "column": 1},
-                "end": {"line": source.end_line, "column": 1},
-            })),
-        }));
-    }
-    Ok(Value::Array(records))
 }
 
 fn inspect_wasm(
@@ -2329,11 +1888,6 @@ fn write_production(
     checked: &CheckedWeb,
     output: &Path,
 ) -> Result<Vec<ArtifactRecord>, WebCommandError> {
-    if checked.development.is_some() {
-        return Err(WebCommandError::failure(
-            "production writer received development-only Wasm",
-        ));
-    }
     write_artifacts(checked, output, "production")
 }
 
@@ -2433,7 +1987,7 @@ fn populate_artifacts(
     let witchy_runtime = include_str!("../../web/witchy-runtime/witchy-runtime.mjs").as_bytes();
     let witchy_name = content_name("witchy-runtime", "mjs", witchy_runtime);
     let glamour_runtime =
-        bundled_glamour_runtime(&witchy_name, checked.development.is_some());
+        bundled_glamour_runtime(&witchy_name, false);
     let glamour_name = content_name("glamour-runtime", "mjs", glamour_runtime.as_bytes());
 
     write_file(&assets.join(&wasm_name), &wasm)?;
@@ -2492,22 +2046,10 @@ fn populate_artifacts(
     object.insert("routeBase".into(), json!("/"));
     object.insert("features".into(), json!({
         "mode": mode,
-        "developmentExports": checked.development.is_some(),
-        "hotSwap": checked.development.as_ref().is_some_and(|value| value.supports_snapshot()),
+        "developmentExports": false,
+        "hotSwap": false,
         "sourceMaps": mode == "development",
     }));
-    if let Some(development) = &checked.development {
-        object.insert("development".into(), json!({
-            "abi": 1,
-            "snapshotFormat": development.snapshot_format(),
-            "applicationIdentity": application_identity(checked)?,
-            "modelSchema": development.model_schema_hex(),
-            "authorizationSchema": development.authorization_schema_hex(),
-            "templateSchema": template_schema(checked)?,
-            "migrationSchemas": development.migration_schema_hexes(),
-            "maxSnapshotBytes": if development.supports_snapshot() { 1024 * 1024 } else { 0 },
-        }));
-    }
     let mut asset_names = vec![wasm_name.clone(), witchy_name.clone(), glamour_name.clone()];
     if let Some(css) = &css_record {
         asset_names.push(css.clone());
@@ -2621,8 +2163,8 @@ fn populate_artifacts(
         "wasm": {
             "exports": checked.exports,
             "imports": checked.host_imports,
-            "developmentExports": checked.development.is_some(),
-            "hotSwap": checked.development.as_ref().is_some_and(|value| value.supports_snapshot()),
+            "developmentExports": false,
+            "hotSwap": false,
         },
         "sourceMaps": {"emitted": false, "sourcesEmbedded": false},
         "headers": {"crossOriginIsolation": false, "file": "_headers"},

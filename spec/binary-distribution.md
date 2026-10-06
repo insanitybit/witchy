@@ -1,9 +1,9 @@
 # Binary backend & distribution
 
-witchy compiles to a WebAssembly **binary**. Codegen lowers the checked AST to a
-typed IR (`WirModule`) and `wir_encode` emits the `.wasm` bytes directly
-(`compile_module_binary` in `crates/witchy-lower/src/codegen/assembly.rs`); there
-is no WAT text stage and no `wat` crate. A compiled program is a portable `.wasm`
+witchy compiles to a WebAssembly **binary**. The canonical pipeline lowers the
+checked module to SafeWIR, checks it, and admits it to `.wasm` bytes directly
+(`compile_checked_module_artifact` in `crates/witchy-lower/src/codegen/mod.rs`);
+there is no WAT text stage and no `wat` crate. A compiled program is a portable `.wasm`
 module that a trusted `witchy` host instantiates under a delegated capability
 grant - the same enforcement as `witchy sandbox`, frozen into an artifact.
 
@@ -65,7 +65,7 @@ files and their total size to stderr.
 ```
 
 ```
-codegen:  checked AST → WirModule → wasm binary        (no WAT anywhere)
+codegen:  checked module → SafeWIR → admitted wasm     (no WAT anywhere)
 artifact: app.wasm     ("witchy" host imports)
 
 run it:   witchy app.wasm --dir . --net api:443        host = consumer's witchy

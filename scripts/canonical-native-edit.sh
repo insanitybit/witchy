@@ -6,9 +6,8 @@
 # catalog state or parse source for authority pins. Raw encoder features only
 # expose separate test APIs; these predicates do not branch on their absence.
 # Lower's list_string test uses checked-source admission and a fixed Console
-# fixture, with native-test-runtime explicitly enabled below. The recipe's
-# codegen test also enables raw-module-test-api and asserts that the raw build
-# route refuses. Root tests already use this native
+# fixture, with native-test-runtime explicitly enabled below. Root tests
+# already use this native
 # dev-feature union. No disabled-profile assertion is converted to an enabled
 # one: optional runtime-native runs and every noncanonical route stay separate.
 set -euo pipefail

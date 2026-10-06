@@ -119,15 +119,6 @@ impl fmt::Display for CanonicalPipelineError {
 
 impl std::error::Error for CanonicalPipelineError {}
 
-pub(crate) fn validate_checked_module(
-    checked: &CheckedModule,
-) -> Result<ValidatedSafeWir, CanonicalPipelineError> {
-    let source = checked
-        .canonical_source()
-        .ok_or(CanonicalPipelineError::MissingCheckedSourceWitness)?;
-    validate_checked_source(source)
-}
-
 pub(crate) fn validate_checked_source(
     source: &CanonicalCheckedSource,
 ) -> Result<ValidatedSafeWir, CanonicalPipelineError> {

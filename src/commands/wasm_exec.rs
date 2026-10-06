@@ -153,7 +153,7 @@ pub(crate) fn run_wasm_module(
     confinement: witchy_confinement::EnforcementMode,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     use crate::runtime::Capabilities;
-    use witchy_wir::wir_prelude::{abi_import_uses_authority, AbiImportAuthority as Authority};
+    use witchy_wir::abi_catalog::{abi_import_uses_authority, AbiImportAuthority as Authority};
 
     // This is the distribution boundary for user-supplied precompiled guests.
     // WAT has no authenticated binary metadata section, and `Runtime::spawn`
@@ -435,59 +435,9 @@ fn split_exit_code(mut lines: Vec<String>, wasm: &[u8]) -> (Vec<String>, Option<
 /// a separate, deliberate resource-limit demonstration.)
 pub(crate) const RUN_MEMORY_PAGES: usize = 16384;
 
-/// Instantiate a compiled wasm binary under the dev grants and return its
-/// captured output. The browser playground assembles the same binary and runs
-/// *that*; this is the native equivalent.
-pub(crate) fn run_wasm_bytes(bytes: &[u8]) -> Result<Vec<String>, String> {
-    use crate::runtime::{Capabilities, Runtime};
-    use std::cell::RefCell;
-    // Run-to-completion: no scheduler, so use the non-preempting engine, which
-    // omits the per-backedge epoch check and runs tight loops at full speed.
-    // Reuse the engine across calls in this thread — the differential suite
-    // invokes this hundreds of times and Engine::new is Cranelift ISA setup.
-    thread_local! {
-        static RUNTIME: RefCell<Runtime> = RefCell::new(Runtime::batch().expect("runtime"));
-    }
-    RUNTIME.with(|rt| {
-    let mut rt = rt.borrow_mut();
-    let mut vm = rt
-        .spawn(
-            bytes,
-            // The dev/differential path mirrors the interpreter's automatic
-            // grants: output plus the read-only ambient capabilities (Clock/Env)
-            // a `main` may declare. The `sandbox` command is the strict path
-            // that grants exactly the computed footprint.
-            Capabilities {
-                print: true,
-                print_int: true,
-                quiet: true,
-                clock: true,
-                rand: true,
-                env: true,
-                dir_root: Some(std::path::PathBuf::from(".")),
-                dir_read: true,
-                dir_write: true,
-                net_allow: Some(Vec::new()),
-                net_connect: true,
-                net_listen: true,
-                ..Default::default()
-            },
-            RUN_MEMORY_PAGES,
-        )
-        .map_err(|e| e.to_string())?;
-    // (RFC-0045) Surface the ROOT CAUSE, not wasmtime's outer "error while
-    // executing at wasm backtrace…" wrapper — so a routed `__witchy_abort` reads
-    // as the clean, location-prefixed `runtime error` the interpreter produces,
-    // which the differential harness (`parity_check`) compares byte-for-byte.
-    vm.run().map_err(|e| e.root_cause().to_string())?;
-    Ok(vm.output())
-    })
-}
-
-/// [`run_wasm_bytes`] for an admitted canonical artifact (RFC-0165). Same dev
-/// grants, same shared engine; the difference is the entry protocol: the
-/// runtime enters the validated launch entry recorded at admission instead of
-/// a `run` export, so the artifact-typed API is the only way in.
+/// Run an admitted canonical artifact (RFC-0165) under the dev grants on a
+/// shared per-thread engine, entering the validated launch entry recorded at
+/// admission, and require a zero-leak heap audit.
 pub(crate) fn run_admitted_artifact(
     artifact: &witchy_wir::AdmittedCanonicalArtifact,
 ) -> Result<Vec<String>, String> {

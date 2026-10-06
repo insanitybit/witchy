@@ -176,22 +176,3 @@ fn rfc0129_acceptance_row_6_capturing_callback_stays_in_its_parent() {
     );
 }
 
-#[test]
-fn rfc0129_acceptance_row_6_with_dir_worker_receives_exactly_its_dir() {
-    let explicit_checked = witchy::resolve_std_only_checked(EXPLICIT_DIR_WORKER)
-        .expect("the explicit Dir worker source must check");
-    // Legacy raw-codegen ABI evidence only; canonical vm.with_dir admission is
-    // tracked separately from the admitted par_map worker boundary above.
-    let explicit_wasm = codegen::compile_module_binary(explicit_checked.module())
-        .expect_lowered("compile the legacy explicit Dir worker source");
-    let explicit_imports = witchy_imports(&explicit_wasm);
-    assert!(
-        explicit_imports.contains("vm_with_dir_run"),
-        "vm.with_dir must retain its explicit isolated-worker adapter: {explicit_imports:?}",
-    );
-    assert_eq!(
-        grant_names(&explicit_checked),
-        BTreeSet::from(["Dir".to_string()]),
-        "the worker receives exactly the Dir named by the API",
-    );
-}

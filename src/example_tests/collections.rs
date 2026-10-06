@@ -134,11 +134,15 @@ fn main(let console: Console):
                     err.message
                 ),
                 Ok(()) => {
-                    let result = codegen::compile_module_binary(&linked);
-                    assert!(
-                        matches!(result, codegen::LoweringOutcome::Rejected(_)),
-                        "non-Hash dict wrapper must be a hard compiled rejection"
-                    );
+                    // The checked pipeline refuses either while checking or
+                    // while lowering; it never admits the wrapper.
+                    match witchy::resolve_std_only_checked(src) {
+                        Err(error) => assert!(error.to_string().contains("Hash"), "expected a Hash refusal, got: {error}"),
+                        Ok(checked) => assert!(
+                            matches!(codegen::compile_checked_module_artifact(&checked), codegen::LoweringOutcome::Rejected(_)),
+                            "non-Hash dict wrapper must be a hard compiled rejection"
+                        ),
+                    }
                 }
             }
             }));
@@ -161,7 +165,8 @@ fn main(let console: Console):
         let accepted = "import dict\n\nfn id(x: Int) -> Int:\n    x\n\nfn keep(_k: String, _v: Int) -> Bool:\n    true\n\nfn main(console: Console):\n    let d: Dict(String, Int) = dict.new()\n    let values: Dict(String, Int) = dict.new()\n    let _a = d.get(\"one\")\n    let _b = dict.from_pairs([(\"one\", 1)])\n    let _c = d.map_values(id)\n    let _d = d.filter(keep)\n    let _e = d.merge(d)\n    let _f = values.invert()\n    console.print(\"ok\")\n";
         let linked = resolve_fs_std(accepted);
         typeck::check(&linked).expect("bounded dict wrappers type-check");
-        codegen::compile_module_binary(&linked)
+        let checked = witchy::resolve_std_only_checked(accepted).expect("check");
+        codegen::compile_checked_module_artifact(&checked)
             .expect_lowered("bounded dict wrappers lower");
         }));
         for handle in handles {
@@ -190,10 +195,9 @@ fn main(let console: Console):
     /// matching the `xs[i]` READ trap — never a silent no-op. In-bounds still agrees.
     #[test]
     fn oob_list_set_at_traps_on_both_backends() {
-        let compile = |src: &str| -> Vec<u8> {
-            let linked = resolve_std_src(src);
-            typeck::check(&linked).expect("typecheck");
-            codegen::compile_module_binary(&linked).expect_lowered("lowers")
+        let compile = |src: &str| -> witchy_wir::AdmittedCanonicalArtifact {
+            let checked = witchy::resolve_std_only_checked(src).expect("check");
+            codegen::compile_checked_module_artifact(&checked).expect_lowered("lowers")
         };
         for prog in [
             "fn main(console: Console):\n    var xs = [1, 2, 3]\n    xs[5] = 9\n    console.print(\"${xs}\")\n",
@@ -201,8 +205,7 @@ fn main(let console: Console):
             "fn main(console: Console):\n    var xs = [1, 2, 3]\n    list.set_at(xs, 5, 9)\n    console.print(\"${xs}\")\n",
             "fn main(console: Console):\n    var xs = [1, 2, 3]\n    list.update_at(xs, 9, fn(x: Int): x + 1)\n    console.print(\"${xs}\")\n",
         ] {
-            let wasm = compile(prog);
-            assert!(crate::run_wasm_bytes(&wasm).is_err(), "wasm must trap: {prog}");
+            assert!(crate::run_admitted_artifact(&compile(prog)).is_err(), "wasm must trap: {prog}");
         }
         let ok = "fn main(console: Console):\n    var xs = [1, 2, 3]\n    xs[1] = 9\n    console.print(\"${xs}\")\n";
         assert_eq!(wasm_run(ok), ["[1, 9, 3]"], "wasm in-bounds");
@@ -274,16 +277,10 @@ fn main(let console: Console):
     #[test]
     fn list_index_out_of_bounds_errors_on_both_backends() {
         let oob = "fn main(console: Console):\n    let xs = [1, 2, 3]\n    console.print(\"${list.at(xs, 5)}\")\n";
-        let module = parser::parse_module(oob).expect("parse");
-        let bytes = codegen::compile_module_binary(&module)
-            .expect_lowered("the binary path lowers this program");
-        assert!(crate::run_wasm_bytes(&bytes).is_err(), "WASM must trap on OOB index");
+        assert!(crate::run_admitted_artifact(&admitted_artifact(oob)).is_err(), "WASM must trap on OOB index");
         // A negative index likewise traps (it used to read backwards into the heap).
         let neg = "fn main(console: Console):\n    let xs = [1, 2, 3]\n    console.print(\"${list.at(xs, 0 - 1)}\")\n";
-        let nmod = parser::parse_module(neg).expect("parse");
-        let nbytes = codegen::compile_module_binary(&nmod)
-            .expect_lowered("the binary path lowers this program");
-        assert!(crate::run_wasm_bytes(&nbytes).is_err(), "WASM must trap on negative index");
+        assert!(crate::run_admitted_artifact(&admitted_artifact(neg)).is_err(), "WASM must trap on negative index");
         // In-bounds indexing still agrees.
         let ok = "fn main(console: Console):\n    let xs = [10, 20, 30]\n    console.print(\"${list.at(xs, 2)}\")\n";
         assert_eq!(run_on_wasm(ok), vec!["30".to_string()], "compiled WASM must agree");
@@ -371,14 +368,14 @@ fn main(let console: Console):
         ];
 
         for (name, src) in cases {
-            let linked = resolve_std_src(src);
-            typeck::check(&linked).unwrap_or_else(|error| panic!("{name} typechecks: {error}"));
+            let checked = witchy::resolve_std_only_checked(src)
+                .unwrap_or_else(|error| panic!("{name} typechecks: {error}"));
             crate::opt::set_for_tests(Some(crate::opt::OptSet::all()));
-            let compiled = codegen::compile_module_binary(&linked);
+            let compiled = codegen::compile_checked_module_artifact(&checked);
             crate::opt::set_for_tests(None);
-            let bytes = compiled.expect_lowered(name);
+            let artifact = compiled.expect_lowered(name);
             assert!(
-                crate::run_wasm_bytes(&bytes).is_err(),
+                crate::run_admitted_artifact(&artifact).is_err(),
                 "optimized Wasm must retain the bounds trap for {name}",
             );
         }

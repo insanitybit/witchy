@@ -14,7 +14,7 @@ impl CandidateParMap {
 
 impl CanonicalAbiCatalog {
     pub fn with_par_map_imports(mut self, signatures: [FunctionSignatureId; 2], byte_layout: LayoutId) -> Result<Self, String> {
-        use crate::wir_prelude::WasmTy::*;
+        use crate::abi_catalog::WasmTy::*;
         let buffer = |access| HostParameterRole::Buffer {
             value_type: ValueType::Ref(byte_layout), access, extent: HostBufferExtent::Slice,
         };

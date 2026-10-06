@@ -1,5 +1,4 @@
 use super::*;
-use crate::{codegen, typeck};
 
     /// (BUG-326) Whole-valued Float rendering keeps a Float marker without using
     /// Rust's exact fixed-point expansion for large magnitudes. This shared
@@ -24,16 +23,9 @@ use crate::{codegen, typeck};
     /// magnitudes still agree. (Was a stable wrong answer: `-Int.MIN == Int.MIN`.)
     #[test]
     fn math_abs_int_min_aborts_on_both_backends() {
-        let compile = |src: &str| -> Vec<u8> {
-            let linked = resolve_std_src(src);
-            typeck::check(&linked).expect("typecheck");
-            codegen::compile_module_binary(&linked)
-                .expect_lowered("the binary path lowers this program")
-        };
         // Int.MIN: `0 - 9223372036854775807 - 1`.
         let min_src = "import math\n\nfn main(console: Console):\n    console.print(\"${math.abs(0 - 9223372036854775807 - 1)}\")\n";
-        let wasm = compile(min_src);
-        assert!(crate::run_wasm_bytes(&wasm).is_err(), "WASM must abort on math.abs(Int.MIN)");
+        assert!(crate::run_admitted_artifact(&admitted_artifact(min_src)).is_err(), "WASM must abort on math.abs(Int.MIN)");
         // Ordinary magnitudes agree (negative, zero, positive, and Int.MAX).
         let ok_src = "import math\n\nfn main(console: Console):\n    console.print(\"${math.abs(0 - 5)}\")\n    console.print(\"${math.abs(0)}\")\n    console.print(\"${math.abs(7)}\")\n    console.print(\"${math.abs(9223372036854775807)}\")\n";
         let expected = ["5", "0", "7", "9223372036854775807"];
@@ -49,15 +41,8 @@ use crate::{codegen, typeck};
     /// truncation behavior.
     #[test]
     fn math_to_int_nan_aborts_on_both_backends() {
-        let compile = |src: &str| -> Vec<u8> {
-            let linked = resolve_std_src(src);
-            typeck::check(&linked).expect("typecheck");
-            codegen::compile_module_binary(&linked)
-                .expect_lowered("the binary path lowers this program")
-        };
         let nan_src = "import math\n\nfn main(console: Console):\n    console.print(\"${math.to_int(0.0 / 0.0)}\")\n";
-        let wasm = compile(nan_src);
-        let wasm_err = crate::run_wasm_bytes(&wasm)
+        let wasm_err = crate::run_admitted_artifact(&admitted_artifact(nan_src))
             .expect_err("WASM must abort on math.to_int(NaN)")
             .to_string();
         assert!(wasm_err.contains("math.to_int: NaN cannot be converted to Int"), "{wasm_err}");
@@ -79,12 +64,12 @@ use crate::{codegen, typeck};
         let client = r#"
 import math
 
-fn main() -> Float:
+fn main(console: Console):
     let a = (10.0 / 4.0)
     let b = math.float_abs((0.0 - 1.5))
     let c = math.float_max(a, b)
     let d = if (c > 2.0): (c * 2.0) else: 0.0
-    ((d - math.sqrt(4.0)) + math.float_min(2.5, math.sqrt(2.25)) + math.float_clamp(5.0, 0.0, 1.0))
+    console.print(show((d - math.sqrt(4.0)) + math.float_min(2.5, math.sqrt(2.25)) + math.float_clamp(5.0, 0.0, 1.0)))
 "#;
         let sources = [("main", client)];
         let compiled = run_linked_on_wasm(&sources, "main");

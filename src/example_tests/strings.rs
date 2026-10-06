@@ -1,5 +1,5 @@
 use super::*;
-use crate::{codegen, parser, typeck};
+use crate::codegen;
 
     /// (BUG-276) The public hex decoders reject malformed input before it can
     /// reach the private raw byte-level primitives (`encoding.hex_decode_lossy`,
@@ -56,10 +56,7 @@ use crate::{codegen, parser, typeck};
             let src = format!(
                 "fn main(console: Console):\n    console.print(\"${{\"{v}\".to_int()}}\")\n"
             );
-            let module = parser::parse_module(&src).expect("parse");
-            let bytes = codegen::compile_module_binary(&module)
-                .expect_lowered("the binary path lowers this program");
-            assert!(crate::run_wasm_bytes(&bytes).is_err(), "WASM must trap on `{v}`");
+            assert!(crate::run_admitted_artifact(&admitted_artifact(&src)).is_err(), "WASM must trap on `{v}`");
         }
         // The exact i64 boundaries parse identically on both backends.
         let ok = "fn main(console: Console):\n    console.print(\"${\"9223372036854775807\".to_int()}\")\n    console.print(\"${\"-9223372036854775808\".to_int()}\")\n";
@@ -186,14 +183,13 @@ fn main(console: Console):
 
     #[test]
     fn substring_aborts_off_a_boundary_out_of_range_or_inverted() {
-        let compile = |src: &str| -> Vec<u8> {
-            let linked = resolve_std_src(src);
-            typeck::check(&linked).expect("typecheck");
-            codegen::compile_module_binary(&linked).expect_lowered("lowers")
+        let compile = |src: &str| -> witchy_wir::AdmittedCanonicalArtifact {
+            let checked = witchy::resolve_std_only_checked(src).expect("check");
+            codegen::compile_checked_module_artifact(&checked).expect_lowered("lowers")
         };
         for span in ["0, 2", "2, 3", "0, 14", "14, 14", "3, 1", "0 - 1, 1"] {
             let prog = format!("fn main(console: Console):\n    console.print(\"héllo wörld\".substring({span}))\n");
-            assert!(crate::run_wasm_bytes(&compile(&prog)).is_err(), "wasm must trap: {span}");
+            assert!(crate::run_admitted_artifact(&compile(&prog)).is_err(), "wasm must trap: {span}");
         }
     }
 

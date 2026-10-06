@@ -10,7 +10,7 @@ pub const FETCH_IMPORT_NAMES: [&str; 5] = [
 
 impl CanonicalAbiCatalog {
     pub fn with_fetch_imports(mut self, signatures: [FunctionSignatureId; 5], string_layout: LayoutId) -> Result<Self, String> {
-        use crate::wir_prelude::{AbiImportAuthority, WasmTy::*};
+        use crate::abi_catalog::{AbiImportAuthority, WasmTy::*};
         let cap = HostParameterRole::Capability;
         let buffer = |access| HostParameterRole::Buffer {
             value_type: ValueType::Ref(string_layout), access, extent: HostBufferExtent::Slice,

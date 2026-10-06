@@ -42,11 +42,8 @@ wasmtime = { version = "45.0.0", optional = true, default-features = false, feat
 
 [features]
 native = ["dep:wasmtime"]
-# The lowerer is the one remaining production caller of the transitional
-# source-map bridge. Keep that authority separate from the raw test surface.
-legacy-encoder-bridge = []
-# Synthetic WIR and optimizer-oracle tests intentionally encode unchecked
-# modules. Normal dependents receive only the fallible production boundary.
+# In-crate self-checks over private canonical internals, driven by
+# tests/unit.rs. Normal dependents receive only the production boundary.
 raw-encoder-test-api = []
 # SafeWIR cases that judge a real checked source (RFC-0170 P4). witchy-wir
 # cannot depend on the checker, even for tests, so witchy-lower's
@@ -61,7 +58,7 @@ checked-source-test-api = []
 # `--test structural_contracts` therefore avoids Wasmtime and AWS-LC.
 # Dev-dependency features never reach `cargo build`, so the production
 # boundary around the raw encoder is unchanged.
-witchy-wir = { path = ".", features = ["legacy-encoder-bridge", "raw-encoder-test-api", "checked-source-test-api"] }
+witchy-wir = { path = ".", features = ["raw-encoder-test-api", "checked-source-test-api"] }
 syn = { version = "2", features = ["full", "visit"] }
 # No checker crate, not even here (RFC-0170 P4): a dev-dependency reaches every
 # test target, so a checker edit would rebuild them all. Cases that need a real

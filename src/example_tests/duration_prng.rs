@@ -1,5 +1,4 @@
 use super::*;
-use crate::codegen;
 
     /// (BUG-481) Numeric duration constructors are convenience contracts, not
     /// wrapping arithmetic. Oversized counts abort before the intermediate Int
@@ -20,10 +19,7 @@ use crate::codegen;
             ("from_clock", "duration.from_clock(2562047788015, 13, 0)"),
         ] {
             let src = format!("import duration\n\nfn main(console: Console):\n    console.print(\"${{{call}}}\")\n");
-            let linked = resolve_std_src(&src);
-            let wasm = codegen::compile_module_binary(&linked)
-                .expect_lowered("duration overflow program should lower");
-            let wasm_err = crate::run_wasm_bytes(&wasm)
+            let wasm_err = crate::run_admitted_artifact(&admitted_artifact(&src))
                 .expect_err("WASM must abort on duration overflow")
                 .to_string();
             assert!(

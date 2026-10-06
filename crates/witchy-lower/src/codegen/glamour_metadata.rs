@@ -119,22 +119,6 @@ pub struct GlamourIslandMetadata {
     pub mapped_work: Vec<GlamourMappedWorkMetadata>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub(super) struct GlamourDevelopmentMigrationCodec {
-    pub model_schema: [u8; 32],
-    pub source_type: Type,
-    pub decoder: String,
-    pub migration: String,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(super) struct GlamourDevelopmentCodecSpec {
-    pub state_type: Type,
-    pub encoder: String,
-    pub decoder: String,
-    pub migrations: Vec<GlamourDevelopmentMigrationCodec>,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum GlamourBrowserPolicyMetadata {
     Fetch {
@@ -1103,100 +1087,6 @@ fn generated_owner_name(owner: &str, local: &str) -> String {
         local.into()
     } else {
         format!("{owner}.{local}")
-    }
-}
-
-/// Add the typed aggregate snapshot codecs selected by the authenticated
-/// development metadata. These helpers are ordinary checked Witchy functions;
-/// the WIR ABI only moves their bounded `String` result, never representation-
-/// specific aggregate pointers, across builds.
-pub(super) fn checked_glamour_development_codec_module(
-    checked: &witchy_types::pipeline::CheckedModule,
-    spec: &GlamourDevelopmentCodecSpec,
-) -> Result<Module, CodegenError> {
-    const MAXIMUM_BYTES: i64 = 1024 * 1024;
-    let mut module = checked.module().clone();
-    let mut codecs = GlamourCaptureCodecs::new(&module);
-    let (state_encoder, state_decoder) = codecs.codec_for(&spec.state_type)?;
-    let value = "__glamour_value".to_string();
-    module.items.push(Item::Function(generated_development_codec_function(
-        spec.encoder.clone(),
-        value.clone(),
-        spec.state_type.clone(),
-        Type::Named("String".into(), Vec::new()),
-        Expr::Call {
-            name: "glamour.island_capture_to_wire".into(),
-            args: vec![
-                Expr::Call {
-                    name: state_encoder,
-                    args: vec![Expr::Var(value.clone())],
-                },
-                Expr::Int(MAXIMUM_BYTES),
-            ],
-        },
-    )));
-    module.items.push(Item::Function(generated_development_codec_function(
-        spec.decoder.clone(),
-        value.clone(),
-        Type::Named("String".into(), Vec::new()),
-        spec.state_type.clone(),
-        Expr::Call {
-            name: state_decoder,
-            args: vec![Expr::Call {
-                name: "glamour.island_capture_from_wire".into(),
-                args: vec![Expr::Var(value.clone()), Expr::Int(MAXIMUM_BYTES)],
-            }],
-        },
-    )));
-    for migration in &spec.migrations {
-        let old_decoder = codecs.codec_for(&migration.source_type)?.1;
-        module.items.push(Item::Function(generated_development_codec_function(
-            migration.decoder.clone(),
-            value.clone(),
-            Type::Named("String".into(), Vec::new()),
-            spec.state_type.clone(),
-            Expr::Call {
-                name: migration.migration.clone(),
-                args: vec![Expr::Call {
-                    name: old_decoder,
-                    args: vec![Expr::Call {
-                        name: "glamour.island_capture_from_wire".into(),
-                        args: vec![Expr::Var(value.clone()), Expr::Int(MAXIMUM_BYTES)],
-                    }],
-                }],
-            },
-        )));
-    }
-    module.items.extend(codecs.finish()?);
-    module.item_lines.clear();
-    Ok(module)
-}
-
-fn generated_development_codec_function(
-    name: String,
-    parameter: String,
-    parameter_type: Type,
-    return_type: Type,
-    expression: Expr,
-) -> Function {
-    Function {
-        line: 0,
-        public: false,
-        pure: false,
-        comptime_only: false,
-        attributes: Vec::new(),
-        name,
-        type_params: Vec::new(),
-        params: vec![generated_param(parameter, parameter_type)],
-        ret: Some(return_type),
-        body: Block {
-            stmts: vec![Stmt::Expr(expression)],
-            lines: vec![0],
-            region: None,
-        },
-        bounds: Vec::new(),
-        is_gen: false,
-        is_async: false,
     }
 }
 

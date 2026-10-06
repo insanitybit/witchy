@@ -7,7 +7,7 @@ pub const EXEC_IMPORT_NAMES: [&str; 3] = ["exec_run_at", "exec_response_size", "
 
 impl CanonicalAbiCatalog {
     pub fn with_exec_imports(mut self, signatures: [FunctionSignatureId; 3], string_layout: LayoutId) -> Result<Self, String> {
-        use crate::wir_prelude::{WasmTy::*, AbiImportAuthority};
+        use crate::abi_catalog::{WasmTy::*, AbiImportAuthority};
         let cap = HostParameterRole::Capability;
         let read = || HostParameterRole::Buffer { value_type: ValueType::Ref(string_layout), access: AccessMode::Read, extent: HostBufferExtent::Slice };
         let write = HostParameterRole::Buffer { value_type: ValueType::Ref(string_layout), access: AccessMode::Write, extent: HostBufferExtent::Slice };

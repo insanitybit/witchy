@@ -52,7 +52,7 @@ use crate::analysis::{fresh_heap_builtin_offset, Summaries};
 // foldhash (not SipHash): all keys are compiler-internal names/ids, never
 // attacker-chosen collections — see the note in witchy-types/src/typeck.rs.
 use foldhash::{HashMap, HashMapExt as _, HashSet, HashSetExt as _};
-use witchy_syntax::ast::{Block, Expr, Function, Pattern, Stmt};
+use witchy_syntax::ast::{Block, Expr, Function, Stmt};
 use witchy_syntax::intrinsics;
 
 /// Immutable locals bound to a fixed-shape aggregate (record `Ctor` or tuple)
@@ -73,113 +73,6 @@ pub(crate) fn sroa_candidates_block(body: &Block) -> HashSet<String> {
     collect_whole_uses_block(body, &mut whole);
     potential.retain(|n| !whole.contains(n));
     potential
-}
-
-/// Immutable constructor-valued locals whose only whole-value uses are direct
-/// `match` scrutinees. Codegen can keep a closed sum's tag and source-level
-/// payload arguments in scalar locals because no pointer identity crosses the
-/// match boundary. The physical-layout check remains in codegen.
-pub(crate) fn confined_match_sum_candidates_block(body: &Block) -> HashSet<String> {
-    let mut potential = HashSet::new();
-    collect_match_sum_lets(body, &mut potential);
-    if potential.is_empty() {
-        return potential;
-    }
-    let mut matched = HashSet::new();
-    let mut disqualified = HashSet::new();
-    scan_match_sum_uses_block(body, &potential, &mut matched, &mut disqualified);
-    potential.retain(|name| matched.contains(name) && !disqualified.contains(name));
-    potential
-}
-
-fn scalar_sum_value_shape(expr: &Expr) -> bool {
-    match expr {
-        Expr::Ctor { .. } => true,
-        Expr::If {
-            then_block,
-            else_block: Some(else_block),
-            ..
-        } => scalar_sum_tail_shape(then_block) && scalar_sum_tail_shape(else_block),
-        _ => false,
-    }
-}
-
-fn scalar_sum_tail_shape(block: &Block) -> bool {
-    block.region.is_none()
-        && matches!(block.stmts.as_slice(), [Stmt::Expr(value)] if scalar_sum_value_shape(value))
-}
-
-fn collect_match_sum_lets(block: &Block, out: &mut HashSet<String>) {
-    for statement in &block.stmts {
-        if let Stmt::Let {
-            name,
-            mutable: false,
-            value,
-            ..
-        } = statement
-            && scalar_sum_value_shape(value)
-        {
-            out.insert(name.clone());
-        }
-        each_block_in_stmt(statement, &mut |inner| collect_match_sum_lets(inner, out));
-    }
-}
-
-fn scan_match_sum_uses_block(
-    block: &Block,
-    candidates: &HashSet<String>,
-    matched: &mut HashSet<String>,
-    disqualified: &mut HashSet<String>,
-) {
-    for statement in &block.stmts {
-        if let Stmt::Assign { name, .. } = statement
-            && candidates.contains(name)
-        {
-            disqualified.insert(name.clone());
-        }
-        each_expr_in_stmt(statement, &mut |expr| {
-            scan_match_sum_uses_expr(expr, candidates, matched, disqualified)
-        });
-    }
-}
-
-fn scan_match_sum_uses_expr(
-    expr: &Expr,
-    candidates: &HashSet<String>,
-    matched: &mut HashSet<String>,
-    disqualified: &mut HashSet<String>,
-) {
-    if let Expr::Match {
-        scrutinee,
-        arms,
-    } = expr
-        && let Expr::Var(name) = scrutinee.as_ref()
-        && candidates.contains(name)
-    {
-        matched.insert(name.clone());
-        if arms
-            .iter()
-            .any(|arm| !matches!(arm.pattern, Pattern::Ctor { .. } | Pattern::Wildcard))
-        {
-            disqualified.insert(name.clone());
-        }
-        for arm in arms {
-            if let Some(guard) = &arm.guard {
-                scan_match_sum_uses_expr(guard, candidates, matched, disqualified);
-            }
-            scan_match_sum_uses_expr(&arm.body, candidates, matched, disqualified);
-        }
-        return;
-    }
-    if let Expr::Var(name) = expr
-        && candidates.contains(name)
-    {
-        disqualified.insert(name.clone());
-        return;
-    }
-    each_subexpr(expr, &mut |inner| {
-        scan_match_sum_uses_expr(inner, candidates, matched, disqualified)
-    });
 }
 
 /// (RFC-0028 confined Views) Locals bound to a slice of another list — `let w =
@@ -822,34 +715,6 @@ fn collect_record_list_lets(b: &Block, out: &mut HashSet<String>) {
     }
 }
 
-/// (RFC-0027 declared `packed`) Every `let`/`var xs = [Ctor(..), Ctor(..), ..]`
-/// binding whose elements are a non-empty list of record constructors — recorded
-/// as `name -> the FIRST element's constructor name`. The declared-packed codegen
-/// consumer filters these by whether the constructor's type was declared `packed`,
-/// to enforce the layout CONTRACT: a confined such list packs flat, and one that
-/// is used in a position the flat layout cannot support is a clean compile error
-/// (never a silent fall-back to the boxed layout the programmer declared away).
-/// Uniformity of the constructor (all elements the same record) is left to the
-/// codegen consumer's `packable_record_list`, which also performs the layout.
-pub(crate) fn record_list_lets_block(body: &Block) -> HashMap<String, String> {
-    let mut out = HashMap::new();
-    record_list_lets_inner(body, &mut out);
-    out
-}
-
-fn record_list_lets_inner(b: &Block, out: &mut HashMap<String, String>) {
-    for s in &b.stmts {
-        if let Stmt::Let { name, value: Expr::List(items), .. } = s {
-            if let Some(Expr::Ctor { name: ctor, .. }) = items.first() {
-                if items.iter().all(|e| matches!(e, Expr::Ctor { .. })) {
-                    out.insert(name.clone(), ctor.clone());
-                }
-            }
-        }
-        each_block_in_stmt(s, &mut |blk| record_list_lets_inner(blk, out));
-    }
-}
-
 fn mark_non_packed_uses_block(b: &Block, out: &mut HashSet<String>) {
     for s in &b.stmts {
         each_expr_in_stmt(s, &mut |e| mark_non_packed_uses(e, out));
@@ -959,13 +824,6 @@ fn mark_all_vars(e: &Expr, out: &mut HashSet<String>) {
         out.insert(n.clone());
     }
     each_subexpr(e, &mut |s| mark_all_vars(s, out));
-}
-
-/// Public wrapper over [`each_subexpr`]: apply `f` to each immediate sub-expression
-/// of `e` (recursing into nested blocks), for consumers (e.g. codegen) that need to
-/// scan an expression tree without re-deriving the AST shape.
-pub(crate) fn for_each_immediate_subexpr(e: &Expr, f: &mut impl FnMut(&Expr)) {
-    each_subexpr(e, f);
 }
 
 /// Apply `f` to each immediate sub-expression of `e` (no Field/Index special
