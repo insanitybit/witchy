@@ -494,6 +494,8 @@ impl<'a> MemoryChecker<'a> {
                     });
                     if let Some(plan) = affine_result {
                         self.seed_affine_plan(*destination, plan);
+                    } else {
+                        self.attach_unique_result_leaf(*destination, *layout);
                     }
                 }
                 ResultContract::ReallocatesParameter { parameter, layout } => {

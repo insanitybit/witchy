@@ -542,6 +542,17 @@ impl<'a> MemoryChecker<'a> {
         }
     }
 
+    /// A `Unique` call result is a fresh root the callee's own `Return`
+    /// proved sole: it takes the plan its layout binds, like an `Alloc`, but
+    /// only a `Leaf`. A plan with children needs the callee's ABI proof that
+    /// it initialized them.
+    pub(super) fn attach_unique_result_leaf(&mut self, object: ValueId, layout: crate::layout::LayoutId) {
+        let Some(proofs) = self.affine_abi else { return };
+        if let Some(plan @ super::super::AffinePhysicalPlan::Leaf) = proofs.layouts.get(&layout) {
+            self.state.affine_plans.insert(object, plan.clone());
+        }
+    }
+
     pub(super) fn seed_affine_plan(&mut self, object: ValueId, plan: &super::super::AffinePhysicalPlan) {
         self.state.affine_plans.insert(object, plan.clone());
         match plan {
@@ -562,11 +573,10 @@ impl<'a> MemoryChecker<'a> {
         &self, object: ValueId, plan: &super::super::AffinePhysicalPlan,
     ) -> Result<bool, InitialCheckError> {
         let root = self.live_object(object)?;
-        // A leaf has no affine children to prove: its whole obligation is a
-        // unique, sole live root token, whichever source type seeded it.
-        let leaf = matches!(plan, super::super::AffinePhysicalPlan::Leaf);
+        let trivial_raw_leaf = matches!(plan, super::super::AffinePhysicalPlan::Leaf)
+            && self.is_raw_byte_buffer(root.layout)?;
         if root.ownership != Ownership::Unique || !self.is_sole_live_token(object, root.identity)
-            || (!leaf && self.state.affine_plans.get(&object) != Some(plan))
+            || (!trivial_raw_leaf && self.state.affine_plans.get(&object) != Some(plan))
         { return Ok(false); }
         match plan {
             super::super::AffinePhysicalPlan::Leaf => Ok(true),

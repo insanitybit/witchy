@@ -1121,6 +1121,18 @@ pub(super) fn check_unique_root_owner_results(module: &Module) -> Result<(), Typ
                 && parameter.ty.as_ref().is_some_and(is_unique_owner_type)
         }
 
+        fn read_root(&mut self, base: &'m Expr) -> Result<(), TypeError> {
+            match base {
+                Expr::Var(name) => {
+                    if let Some(declared) = self.owners.get_mut(name) {
+                        *declared = None;
+                    }
+                    Ok(())
+                }
+                _ => self.expr(base),
+            }
+        }
+
         fn exprs(&mut self, exprs: &'m [Expr]) -> Result<(), TypeError> {
             for expr in exprs {
                 self.expr(expr)?;
@@ -1154,17 +1166,13 @@ pub(super) fn check_unique_root_owner_results(module: &Module) -> Result<(), Typ
                         }
                     }
                 }
+                // Reading an element or field leaves the root owned, but the
+                // read value may share a nested owner: only the root stays proved.
                 Expr::Index { base, index } => {
-                    if !matches!(base.as_ref(), Expr::Var(_)) {
-                        self.expr(base)?;
-                    }
+                    self.read_root(base)?;
                     self.expr(index)?;
                 }
-                Expr::Field { base, .. } => {
-                    if !matches!(base.as_ref(), Expr::Var(_)) {
-                        self.expr(base)?;
-                    }
-                }
+                Expr::Field { base, .. } => self.read_root(base)?,
                 Expr::Lambda { body, .. } => {
                     // A closure captures by value: everything it names escapes.
                     let owners = &mut self.owners;
