@@ -20756,6 +20756,7 @@ impl FunctionLowerer<'_> {
         object: ValueId,
         layout: witchy_wir::layout::LayoutId,
         length: ValueId,
+        from: (ValueId, ValueId),
         target: ValueId,
     ) -> Result<ValueId, CanonicalLoweringError> {
         let zero = self.push_const_size(0)?;
@@ -20770,7 +20771,12 @@ impl FunctionLowerer<'_> {
         let header = self.new_block(&state)?;
         let check = self.new_block(&state)?;
         let exit = self.new_block(&[ValueType::Size])?;
-        self.finish_current(Terminator::Branch { target: header, arguments: vec![zero, zero_int] })?;
+        // The checker renames a loop argument to the header parameter in
+        // every fact table, so the scan starts from dedicated copies and the
+        // caller's offset keeps its facts.
+        let from_index = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, from.0, zero, OverflowBehavior::Wrap)?;
+        let from_seen = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Add, from.1, zero_int, OverflowBehavior::Wrap)?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![from_index, from_seen] })?;
         let header_values = self.block_parameter_values(header);
         self.current = header;
         let more = self.push_compare(ComparisonOperator::LessUnsigned, header_values[0], length)?;
@@ -20818,8 +20824,9 @@ impl FunctionLowerer<'_> {
 
     /// `string.substring(s, start, end)`: the characters in `[start, end)`,
     /// counted by Unicode scalar and clamped to the string, empty when the
-    /// range is inverted. Two scans find the byte offsets; the bytes between
-    /// them are copied into a fresh string.
+    /// range is inverted. One scan finds the start offset and continues from
+    /// it to the end offset; the bytes between them are copied into a fresh
+    /// string.
     fn lower_substring(
         &mut self,
         object: ValueId,
@@ -20835,8 +20842,15 @@ impl FunctionLowerer<'_> {
         )?;
         let start = self.push_clamp_non_negative(start)?;
         let end = self.push_clamp_non_negative(end)?;
-        let start_offset = self.lower_char_offset(object, layout, length, start)?;
-        let end_offset = self.lower_char_offset(object, layout, length, end)?;
+        let origin = self.push_const_size(0)?;
+        let none_seen = self.push_const_int(0)?;
+        let start_offset = self.lower_char_offset(object, layout, length, (origin, none_seen), start)?;
+        // An inverted range is empty: `end` is at least `start`, so the end
+        // scan only moves forward. Both are non-negative, so this cannot wrap.
+        let past_start = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Subtract, end, start, OverflowBehavior::Wrap)?;
+        let past_start = self.push_clamp_non_negative(past_start)?;
+        let end = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Add, start, past_start, OverflowBehavior::Wrap)?;
+        let end_offset = self.lower_char_offset(object, layout, length, (start_offset, start), end)?;
         let start_int = self.fresh(ValueType::Int)?;
         self.push_operation(Operation::WidenSize { destination: start_int, value: start_offset });
         let end_int = self.fresh(ValueType::Int)?;

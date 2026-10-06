@@ -168,6 +168,14 @@ fn main(console: Console):
     }
 
     #[test]
+    fn substring_clamps_inverted_and_out_of_range_spans() {
+        // The end scan resumes from the start offset; an inverted or
+        // past-the-end span must still clamp, never read backward.
+        let src = "fn main(console: Console):\n    let s = \"héllo wörld ✓!\"\n    console.print(\"[${s.substring(6, 11)}] [${s.substring(4, 2)}] [${s.substring(3, 3)}] [${s.substring(10, 99)}] [${s.substring(99, 120)}] [${s.substring(-3, 2)}]\")\n";
+        assert_eq!(run_on_wasm(src), vec!["[wörld] [] [] [d ✓!] [] [hé]"]);
+    }
+
+    #[test]
     fn substring_is_char_indexed_across_multibyte_on_both_backends() {
         // substring indexes by CHARACTER, not byte: slicing across a 2-byte (é)
         // or 4-byte (emoji) boundary must compute the same char->byte offsets on
