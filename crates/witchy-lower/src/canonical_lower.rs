@@ -4146,6 +4146,7 @@ fn lower_function(
         known_lambda_values: HashMap::new(),
         binding_scopes: vec![HashMap::new()],
         string_lengths: HashMap::new(),
+        reauthenticated_strings: Vec::new(),
         string_capacities: HashMap::new(),
         list_counts: HashMap::new(),
         checked_list_indices: HashMap::new(),
@@ -4556,6 +4557,8 @@ impl LoopRebindings {
 #[derive(Clone)]
 struct FactSnapshot {
     string_lengths: HashMap<ValueId, ValueId>,
+    /// How many reauthentications preceded the snapshot.
+    reauthenticated: usize,
     string_capacities: HashMap<ValueId, ValueId>,
     list_counts: HashMap<ValueId, ValueId>,
     list_capacities: HashMap<ValueId, ValueId>,
@@ -4889,6 +4892,10 @@ struct FunctionLowerer<'a> {
     lambda_path: Vec<ProperTailPathStep>,
     tail_prefix: Vec<ProperTailPathStep>,
     string_lengths: HashMap<ValueId, ValueId>,
+    /// Every String whose extent was reauthenticated from its header, in
+    /// order. A region's join must not reinstate pre-region lanes for these:
+    /// the checker met the region's fresh association away at the join.
+    reauthenticated_strings: Vec<ValueId>,
     string_capacities: HashMap<ValueId, ValueId>,
     list_counts: HashMap<ValueId, ValueId>,
     /// A diagnostic success edge proves an exact index against an exact
@@ -14182,6 +14189,7 @@ impl FunctionLowerer<'_> {
         self.push_operation(Operation::ReauthenticateRawHeaderExtent { object: value, header: length });
         self.string_lengths.insert(value, length);
         self.string_capacities.insert(value, length);
+        self.reauthenticated_strings.push(value);
         Ok(())
     }
 
@@ -20660,6 +20668,7 @@ impl FunctionLowerer<'_> {
     fn snapshot_facts(&self) -> FactSnapshot {
         FactSnapshot {
             string_lengths: self.string_lengths.clone(),
+            reauthenticated: self.reauthenticated_strings.len(),
             string_capacities: self.string_capacities.clone(),
             list_counts: self.list_counts.clone(),
             list_capacities: self.list_capacities.clone(),
@@ -20691,7 +20700,14 @@ impl FunctionLowerer<'_> {
 
     /// Restore the facts from before a region, keeping only the entries the
     /// region's join block itself defines (its parameters' lanes).
-    fn restore_facts(&mut self, snapshot: FactSnapshot, join: BlockId) {
+    fn restore_facts(&mut self, mut snapshot: FactSnapshot, join: BlockId) {
+        // A String reauthenticated inside the region holds a fresh header
+        // association on that path only; its pre-region lanes are stale at
+        // the join, so the next use reauthenticates again.
+        for value in &self.reauthenticated_strings[snapshot.reauthenticated..] {
+            snapshot.string_lengths.remove(value);
+            snapshot.string_capacities.remove(value);
+        }
         let defined = self.blocks[join.get() as usize]
             .parameters
             .iter()

@@ -194,6 +194,17 @@ fn admitted_sum_types_option_and_result_over_scalars_run() {
 }
 
 #[test]
+fn admitted_literal_slices_after_a_search_reauthenticate_its_extent() {
+    // `find` reauthenticates the literal's extent inside its loop region; the
+    // lanes cached before the region are stale at its join, so the slice
+    // after it must reauthenticate rather than reuse them.
+    let output = run_admitted(
+        "fn main(console: Console):\n    let t = \"hello world\"\n    let i = t.find(\"l\", 0)\n    console.print(\"${i}\" + t.substring(0, 3))\n",
+    );
+    assert_eq!(output, vec!["2hel".to_string()]);
+}
+
+#[test]
 fn admitted_string_searches_ordering_find_and_to_int_scan_bytes() {
     // starts_with/ends_with/contains compare byte ranges; ordering is the
     // sign of the first differing byte, then of the lengths; find reports
