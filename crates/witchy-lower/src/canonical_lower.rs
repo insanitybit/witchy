@@ -9289,6 +9289,7 @@ impl FunctionLowerer<'_> {
         let mut names = loop_lane_names(&outer, &rebound);
         self.scalarized_loop_lanes(&mut names);
         let outer = self.detach_shared_write_back_lanes(&names, outer)?;
+        self.authenticate_rebound_list_extents(&names, &outer)?;
         let list_names = names
             .iter()
             .filter_map(|name| {
@@ -9450,6 +9451,25 @@ impl FunctionLowerer<'_> {
         Ok(outer)
     }
 
+    /// A list the loop rebinds crosses its header with count and capacity
+    /// lanes, as a unique lane the body's copying update may replace. An
+    /// earlier loop can leave such a list without extent facts; authenticate
+    /// its header here, before the header is built, or the loop would carry
+    /// an unlaned lane that demands one identity on every edge.
+    fn authenticate_rebound_list_extents(
+        &mut self,
+        names: &[String],
+        outer: &HashMap<String, ValueId>,
+    ) -> Result<(), CanonicalLoweringError> {
+        for name in names {
+            let object = outer[name];
+            if self.tracked_lanes(object).is_none() && self.carries_token(object) {
+                self.ensure_list_extent(object)?;
+            }
+        }
+        Ok(())
+    }
+
     fn lower_while(
         &mut self,
         condition: &Expr,
@@ -9467,6 +9487,7 @@ impl FunctionLowerer<'_> {
         let mut names = loop_lane_names(&outer, &rebound);
         self.scalarized_loop_lanes(&mut names);
         let outer = self.detach_shared_write_back_lanes(&names, outer)?;
+        self.authenticate_rebound_list_extents(&names, &outer)?;
         // An immutable exact-extent object crosses the loop as one
         // reference/count/capacity tuple. Mutable-capacity objects remain on
         // the existing conservative path unless source semantics rebind them.
@@ -9791,6 +9812,7 @@ impl FunctionLowerer<'_> {
                 .flatten()
         });
         let outer = self.detach_shared_write_back_lanes(&names, outer)?;
+        self.authenticate_rebound_list_extents(&names, &outer)?;
         // Authenticate referenced collection roots before the loop. A root
         // that is never rebound and has independent extent lanes can keep the
         // same counted evidence through every backedge.
@@ -10059,6 +10081,7 @@ impl FunctionLowerer<'_> {
         let mut names = loop_lane_names(&outer, &rebound);
         self.scalarized_loop_lanes(&mut names);
         let outer = self.detach_shared_write_back_lanes(&names, outer)?;
+        self.authenticate_rebound_list_extents(&names, &outer)?;
         // An immutable String used by the body keeps its dominating root.
         // Only its authenticated header lanes cross the loop, so a branch
         // cannot manufacture a fresh shared reference identity for it.

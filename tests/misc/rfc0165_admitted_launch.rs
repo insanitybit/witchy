@@ -746,3 +746,36 @@ fn admitted_entry_without_a_dir_or_env_grant_is_refused_before_it_runs() {
     );
     assert!(refused.is_err(), "{refused:?}");
 }
+
+#[test]
+fn admitted_a_list_rebound_after_an_earlier_loop_crosses_the_next_loop_header() {
+    // An earlier loop leaves a list it does not carry without extent facts;
+    // a later loop that rebinds it must authenticate its header first, or
+    // the copying update arrives on the back edge as a new identity.
+    let output = run_admitted(
+        "fn main(console: Console):\n    var xs = [1, 2, 3]\n    var total = 0\n    for i in 0..3:\n        total = total + i\n    for j in 0..3:\n        xs.set_at(j, j * 10)\n    console.print(\"${xs[0]} ${xs[1]} ${xs[2]} ${total}\")\n",
+    );
+    assert_eq!(output, vec!["0 10 20 3".to_string()]);
+}
+
+#[test]
+fn admitted_equal_length_lists_keep_their_own_extent_lanes_in_nested_loops() {
+    // Two lists of the same constant length cross a shared phi. Each bound
+    // must rename to its own lane, not the first lane holding an equal
+    // constant, or the inner loop finds one list on the other's extent.
+    let output = run_admitted(
+        "fn bump(n: Int) -> Int:\n    var a = [1, 2, 3, 4]\n    var c = [5, 5, 5, 5]\n    while true:\n        var advanced = false\n        while !advanced:\n            a.set_at(n, 7)\n            c.set_at(n, 8)\n            advanced = true\n        return a[1] + c[1] + a[0] + c[0]\n    0\n\nfn main(console: Console):\n    console.print(\"${bump(1)}\")\n",
+    );
+    assert_eq!(output, vec!["21".to_string()]);
+}
+
+#[test]
+fn admitted_a_loop_in_a_branch_keeps_the_next_loop_body_extent() {
+    // A loop inside a branch reloads a list's header; the following loop
+    // body receives that reloaded length, and the checker must rename the
+    // body lane's bounds through the same header equality.
+    let output = run_admitted(
+        "fn decrement(n: Int) -> Int:\n    var count = [0, 0, 0]\n    var r = 1\n    while true:\n        if n > 5:\n            for j in 0..n:\n                r = j % 2\n        var advanced = false\n        while !advanced:\n            count.set_at(r, count[r] - 1)\n            advanced = true\n        return count[0] * 10 + count[1]\n    0\n\nfn main(console: Console):\n    console.print(\"${decrement(3)} ${decrement(7)}\")\n",
+    );
+    assert_eq!(output, vec!["-1 -10".to_string()]);
+}

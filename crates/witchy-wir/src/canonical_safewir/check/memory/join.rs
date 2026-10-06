@@ -166,8 +166,11 @@ impl<'a> MemoryChecker<'a> {
         // SSA definition. Transport that equality, not an optimizer annotation.
         // Capacity header reads are deliberately excluded: a shared meet may
         // retain only a conservative capacity bound rather than physical capacity.
+        // An unspecified lane (a loop body renaming its header's object) is the
+        // same object on this edge, so the same equalities transport its bounds;
+        // left unrenamed, they would name values outside the target's scope.
         for (argument, parameter) in arguments.iter().zip(&target.parameters) {
-            if parameter.ownership != Some(Ownership::Shared) {
+            if !matches!(parameter.ownership, Some(Ownership::Shared) | None) {
                 continue;
             }
             let Some(state) = self.state.objects.get(argument) else { continue };
@@ -176,13 +179,21 @@ impl<'a> MemoryChecker<'a> {
                 if renames.contains_key(&bound) {
                     continue;
                 }
-                let replacement = arguments.iter().zip(&target.parameters).find(|(source, target)| {
-                    target.value_type == ValueType::Size
-                        && (self.state.constants.get(&bound).zip(self.state.constants.get(source))
+                // Prefer the lane that carries this bound itself, then this
+                // object's checked length, and only then any lane holding an
+                // equal constant. Equal constants are interchangeable on this
+                // edge, but another object's lane is renamed by its own back
+                // edge: binding to it ties two extents that diverge later.
+                let size_lanes = || arguments.iter().zip(&target.parameters)
+                    .filter(|(_, target)| target.value_type == ValueType::Size);
+                let replacement = size_lanes().find(|(source, _)| **source == bound)
+                    .or_else(|| (bound == count).then(|| size_lanes().find(|(source, _)| {
+                        self.state.header_values.get(&(*argument, HeaderField::Length)) == Some(*source)
+                    })).flatten())
+                    .or_else(|| size_lanes().find(|(source, _)| {
+                        self.state.constants.get(&bound).zip(self.state.constants.get(source))
                             .is_some_and(|(left, right)| left == right)
-                            || (bound == count
-                                && self.state.header_values.get(&(*argument, HeaderField::Length)) == Some(*source)))
-                });
+                    }));
                 if let Some((_, replacement)) = replacement {
                     renames.insert(bound, replacement.value);
                 }
