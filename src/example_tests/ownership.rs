@@ -347,3 +347,17 @@ fn main(console: Console):
         let src = "fn keep_nested(xss: List(List(Int))) -> List(List(Int)):\n    xss\n\nfn keep(xs: List(Int)) -> List(Int):\n    xs\n\nfn bump(var xs: List(Int)):\n    xs.push(9)\n\nfn main(console: Console):\n    var xss = [[1], [2]]\n    let nested = keep_nested(xss)\n    let projected = keep(xss[1])\n    xss[0].push(5)\n    xss[1].push(6)\n    var xs = [1]\n    let kept = keep(xs)\n    bump(xs)\n    console.print(\"${nested} ${projected} ${xss}\")\n    console.print(\"${kept} ${xs}\")\n";
         assert_eq!(wasm_run(src), ["[[1], [2]] [2] [[1, 5], [2, 6]]", "[1] [1, 9]"]);
     }
+
+    /// A constructor moves a fresh temporary into its field and clones a
+    /// value a binding holds, so reusing that binding still sees its value.
+    #[test]
+    fn constructors_move_temporaries_and_share_bound_values() {
+        let src = "type Tree:\n    Leaf\n    Node(Tree, Tree)\n\ntype Box:\n    items: List(Int)\n\nfn size(t: Tree) -> Int:\n    match t:\n        Leaf -> 1\n        Node(l, r) -> size(l) + size(r)\n\nfn make(n: Int) -> List(Int):\n    [n, n]\n\nfn main(console: Console):\n    let a = Node(Leaf, Leaf)\n    let b = Node(a, a)\n    let c = Node(b, a)\n    var xs = [1, 2]\n    let kept = Box(xs)\n    xs.push(3)\n    let made = Box(make(4))\n    console.print(\"${size(a)} ${size(b)} ${size(c)}\")\n    console.print(\"${kept.items} ${xs} ${made.items}\")\n";
+        assert_eq!(wasm_run(src), ["2 4 6", "[1, 2] [1, 2, 3] [4, 4]"]);
+    }
+
+    #[test]
+    fn constructor_fields_from_joins_owned_parameters_and_fresh_results() {
+        let src = "type Box:\n    items: List(Int)\n\nfn rewrap(own b: Box) -> Box:\n    Box(b.items)\n\nfn fresh(n: Int) -> List(Int):\n    var xs: List(Int) = []\n    xs.push(n)\n    xs\n\nfn main(console: Console):\n    let c = 3 > 2\n    let joined = Box(if c: [1] else: [2])\n    let moved = rewrap(Box([5, 6]))\n    let made = Box(fresh(7))\n    console.print(\"${joined.items} ${moved.items} ${made.items}\")\n";
+        assert_eq!(wasm_run(src), ["[1] [5, 6] [7]"]);
+    }

@@ -4836,6 +4836,10 @@ struct SharedFacts {
 struct SharedOperationFacts {
     scanned: Vec<usize>,
     direct: BTreeSet<ValueId>,
+    /// Values whose own definition yields a shared token: a call result
+    /// without a unique contract, a clone, a shared load. Never a clone's
+    /// source, which stays unique on paths without that clone.
+    defined: BTreeSet<ValueId>,
 }
 
 #[derive(Clone)]
@@ -10928,13 +10932,31 @@ impl FunctionLowerer<'_> {
         })
     }
 
+    /// A reference-counted token shared by its own definition (a call result,
+    /// a clone, a shared load), not by a join: a block parameter's declared
+    /// ownership may still be unique to the checker. Static data carries no
+    /// count to share.
+    fn directly_shared_token(&self, value: ValueId) -> bool {
+        if self.static_data_values.contains(&value) {
+            return false;
+        }
+        {
+            let mut facts = self.shared_facts.borrow_mut();
+            if facts.as_ref().is_none_or(|facts| facts.version != self.graph_version) {
+                *facts = Some(self.scan_shared_facts());
+            }
+        }
+        matches!(self.values.get(&value), Some(ValueType::Ref(_)))
+            && self.shared_operation_facts.borrow().defined.contains(&value)
+    }
+
     /// One scan of the graph for `known_shared_value`: the values shared by
     /// their definition, and each unspecified block parameter's incoming
     /// arguments in block order.
     fn scan_shared_facts(&self) -> SharedFacts {
         let mut operation_facts = self.shared_operation_facts.borrow_mut();
         operation_facts.scanned.resize(self.blocks.len(), 0);
-        let SharedOperationFacts { scanned, direct } = &mut *operation_facts;
+        let SharedOperationFacts { scanned, direct, defined } = &mut *operation_facts;
         for (block, scanned) in self.blocks.iter().zip(scanned) {
             for operation in &block.operations[*scanned..] {
                 match operation {
@@ -10944,12 +10966,19 @@ impl FunctionLowerer<'_> {
                     Operation::CloneRef { destination, source } => {
                         direct.insert(*destination);
                         direct.insert(*source);
+                        defined.insert(*destination);
                     }
                     Operation::Load {
                         destination,
-                        transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared | witchy_wir::canonical_safewir::LoadTransfer::ClonePresent | witchy_wir::canonical_safewir::LoadTransfer::TakeLast | witchy_wir::canonical_safewir::LoadTransfer::TakeOwnedField,
+                        transfer: transfer @ (witchy_wir::canonical_safewir::LoadTransfer::CloneShared | witchy_wir::canonical_safewir::LoadTransfer::ClonePresent | witchy_wir::canonical_safewir::LoadTransfer::TakeLast | witchy_wir::canonical_safewir::LoadTransfer::TakeOwnedField),
                         ..
-                    } => { direct.insert(*destination); }
+                    } => {
+                        direct.insert(*destination);
+                        // A taken element or field may be the sole token.
+                        if matches!(transfer, witchy_wir::canonical_safewir::LoadTransfer::CloneShared | witchy_wir::canonical_safewir::LoadTransfer::ClonePresent) {
+                            defined.insert(*destination);
+                        }
+                    }
                     Operation::Dictionary(witchy_wir::canonical_safewir::dictionary::DictionaryOperation::ReadSlot {
                         destination, transfer: witchy_wir::canonical_safewir::LoadTransfer::CloneShared, ..
                     }) => { direct.insert(*destination); }
@@ -10967,6 +10996,7 @@ impl FunctionLowerer<'_> {
                         for (index, destination) in destinations.iter().enumerate() {
                             if !signature.is_some_and(|signature| matches!(signature.contract.results.get(index), Some(ResultContract::Unique { .. }))) {
                                 direct.insert(*destination);
+                                defined.insert(*destination);
                             }
                         }
                     }
@@ -10975,6 +11005,7 @@ impl FunctionLowerer<'_> {
                         for (index, destination) in destinations.iter().enumerate() {
                             if !signature.is_some_and(|signature| matches!(signature.contract.results.get(index), Some(ResultContract::Unique { .. }))) {
                                 direct.insert(*destination);
+                                defined.insert(*destination);
                             }
                         }
                     }
@@ -13937,6 +13968,10 @@ impl FunctionLowerer<'_> {
             extent: witchy_wir::canonical_safewir::Extent::FixedBytes(u64::from(bytes)),
             class: witchy_wir::canonical_safewir::AllocationClass::ReferenceCounted,
         });
+        let occurrences = values.iter().flatten().fold(BTreeMap::<ValueId, usize>::new(), |mut counts, value| {
+            *counts.entry(*value).or_default() += 1;
+            counts
+        });
         for (index, (value, field_type)) in values.into_iter().zip(field_types).enumerate() {
             let expected = self.field_value_type(field_type)?;
             let place = witchy_wir::canonical_safewir::Place::projected(
@@ -13962,7 +13997,20 @@ impl FunctionLowerer<'_> {
                                 "aggregate field lacks checked clone or move operation")),
                         }
                     } else { !move_references };
-                    let (value, transfer) = if reference && clone_reference {
+                    let (value, transfer) = if reference && clone_reference
+                        && occurrences.get(&value) == Some(&1)
+                        && self.binding_holders(value) == 0
+                        && self.sole_token(value)
+                    {
+                        // A fresh temporary token no binding holds moves into
+                        // its slot; nothing else can observe it.
+                        (value, witchy_wir::canonical_safewir::StoreTransfer::MoveUnique)
+                    } else if reference && clone_reference && self.directly_shared_token(value) {
+                        // An already shared token is stored as it is: Store
+                        // retains the field's edge and release placement drops
+                        // the caller's token, with no intermediate clone.
+                        (value, witchy_wir::canonical_safewir::StoreTransfer::CloneShared)
+                    } else if reference && clone_reference {
                         // A field owns one reference, not a deep copy of every
                         // possible variant payload. Cloning the token makes its
                         // shared state explicit; Store retains the field's edge
