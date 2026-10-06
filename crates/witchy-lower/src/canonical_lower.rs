@@ -4191,6 +4191,10 @@ fn lower_function(
         value_types_by_source: std::cell::RefCell::new(HashMap::new()),
     };
     let entry = lowerer.new_block(&signature.parameters)?;
+    // Checker diagnostics name only the `FunctionId`.
+    if std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some() {
+        eprintln!("canonical lowering `{}` as {id:?} ({:?})", function.name, signature.id);
+    }
     for (parameter, contract) in lowerer.blocks[entry.get() as usize]
         .parameters.iter_mut().zip(&signature.contract.parameters)
     {
@@ -4493,7 +4497,10 @@ fn demote_shared_reference_phis(
         }
         if shared.len() == before { break; }
     }
-    for block in &mut function.blocks {
+    // The entry block's parameters are the signature's contract, which the
+    // checker judges at each use; this pass only joins block parameters.
+    let entry = function.entry;
+    for block in function.blocks.iter_mut().filter(|block| block.id != entry) {
         for parameter in &mut block.parameters {
             if parameter.ownership == Some(Ownership::Unique)
                 && matches!(parameter.value_type, ValueType::Ref(_))
@@ -10364,6 +10371,7 @@ impl FunctionLowerer<'_> {
                 for name in self.write_back_parameters.clone() {
                     let value = *self.bindings.get(&name)
                         .ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone()))?;
+                    let value = self.unique_write_back_token(&name, value)?;
                     if values.contains(&value) && matches!(self.values[&value], ValueType::Ref(_)) {
                         // Ordinary write-back results get an independent
                         // value copy. The dedicated returned-exclusive
@@ -10538,6 +10546,14 @@ impl FunctionLowerer<'_> {
                     }
                     Operation::Call { destinations, .. } | Operation::VarCall { destinations, .. } => {
                         direct.extend(destinations.iter().copied());
+                    }
+                    // Each allocates a fresh unique table.
+                    Operation::Dictionary(
+                        witchy_wir::canonical_safewir::dictionary::DictionaryOperation::Initialize { destination, .. }
+                        | witchy_wir::canonical_safewir::dictionary::DictionaryOperation::CloneExact { destination, .. }
+                        | witchy_wir::canonical_safewir::dictionary::DictionaryOperation::Rehash { destination, .. },
+                    ) => {
+                        direct.insert(*destination);
                     }
                     Operation::ClosureOwner(OwnerOperation::ReadEnvironmentField { destination, .. })
                         if matches!(self.values.get(destination), Some(ValueType::Ref(_))) => {

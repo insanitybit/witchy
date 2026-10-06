@@ -562,10 +562,11 @@ impl<'a> MemoryChecker<'a> {
         &self, object: ValueId, plan: &super::super::AffinePhysicalPlan,
     ) -> Result<bool, InitialCheckError> {
         let root = self.live_object(object)?;
-        let trivial_raw_leaf = matches!(plan, super::super::AffinePhysicalPlan::Leaf)
-            && self.is_raw_byte_buffer(root.layout)?;
+        // A leaf has no affine children to prove: its whole obligation is a
+        // unique, sole live root token, whichever source type seeded it.
+        let leaf = matches!(plan, super::super::AffinePhysicalPlan::Leaf);
         if root.ownership != Ownership::Unique || !self.is_sole_live_token(object, root.identity)
-            || (!trivial_raw_leaf && self.state.affine_plans.get(&object) != Some(plan))
+            || (!leaf && self.state.affine_plans.get(&object) != Some(plan))
         { return Ok(false); }
         match plan {
             super::super::AffinePhysicalPlan::Leaf => Ok(true),

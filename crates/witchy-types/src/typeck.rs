@@ -12240,6 +12240,22 @@ fn plain_direct_exclusive_write_back(ty: &ast::Type) -> bool {
 /// has no pending write-back lane; the independent SafeWIR checker still
 /// requires exact result signatures before accepting the edge.
 fn direct_tail_envelope_is_forwarded(expr: &Expr, caller: TailCaller<'_>) -> bool {
+    // A `unique` result leaves through its return, which repairs a shared
+    // value with one copy (RFC-0167 §4). Only a callee that itself returns
+    // `unique` may replace that return with a tail edge. A call through a
+    // value, or to a shared-result callee, therefore keeps its frame.
+    let unique = |ret: Option<&ast::Type>| matches!(ret, Some(ast::Type::Qualified(ast::TypeQual::Unique, _)));
+    if unique(caller.ret) {
+        let target = match expr {
+            Expr::Call { name, .. } if caller.table.local_callee_type(expr).is_none() => {
+                caller.functions.get(name.as_str()).copied()
+            }
+            _ => None,
+        };
+        if !target.is_some_and(|target| unique(target.ret.as_ref())) {
+            return false;
+        }
+    }
     let checked_target = match expr {
         Expr::Call { name, args } => {
             // A local callable may shadow a declaration. Never replace its

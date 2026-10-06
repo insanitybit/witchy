@@ -894,3 +894,49 @@ fn admitted_an_assigned_alias_keeps_its_list_across_an_updating_loop() {
     );
     assert_eq!(output, vec!["1 0".to_string()]);
 }
+
+#[test]
+fn admitted_a_dictionary_built_under_a_condition_in_a_loop() {
+    // One arm inserts into the fresh table and the other leaves it: both
+    // lanes of the join carry the same owner.
+    let output = run_admitted(
+        "fn odd(n: Int) -> unique Dict(Int, Int):\n    var out = dict.new()\n    var i = 0\n    while i < n:\n        if i % 2 == 1:\n            let _ = out.insert(i, i * i)\n        i = i + 1\n    out\n\nfn main(console: Console):\n    let d = odd(6)\n    console.print(\"${d.length()} ${d.get(5) ?? 0}\")\n",
+    );
+    assert_eq!(output, vec!["3 25".to_string()]);
+}
+
+#[test]
+fn admitted_a_unique_write_back_of_a_shared_result_is_copied() {
+    // `xs = halves(xs)` leaves a shared value in a `var unique` parameter;
+    // its write-back lane returns one fresh copy, not the shared token.
+    let output = run_admitted(
+        "fn halves(xs: List(String)) -> List(String):\n    xs\n\nfn keep(var xs: unique List(String)):\n    xs = halves(xs)\n    return\n\nfn main(console: Console):\n    var xs = [\"a\", \"b\"]\n    keep(xs)\n    xs[0] = \"z\"\n    console.print(\"${xs[0]} ${xs[1]}\")\n",
+    );
+    assert_eq!(output, vec!["z b".to_string()]);
+}
+
+#[test]
+fn admitted_a_unique_list_of_strings_written_back_from_a_unique_call() {
+    let output = run_admitted(
+        "fn main(console: Console):\n    var xs = [\"a\", \"b\", \"c\"]\n    xs.reverse()\n    var ys = [3, 1, 2]\n    ys.sort_by(fn(a: Int, b: Int): a < b)\n    console.print(\"${xs[0]} ${ys[0]}\")\n",
+    );
+    assert_eq!(output, vec!["c 1".to_string()]);
+}
+
+#[test]
+fn admitted_a_unique_result_does_not_tail_call_a_shared_one() {
+    // The repair copy runs at the return, so the final call is not a proper
+    // tail edge.
+    let output = run_admitted(
+        "fn padded(n: Int) -> unique String:\n    \"${n}\".pad_left(3, \"0\")\n\nfn main(console: Console):\n    console.print(padded(7))\n",
+    );
+    assert_eq!(output, vec!["007".to_string()]);
+}
+
+#[test]
+fn admitted_unique_dictionary_builders_leave_their_input_unchanged() {
+    let output = run_admitted(
+        "fn main(console: Console):\n    let d = dict.from_pairs([(1, 10), (2, 20), (3, 30)])\n    let kept = d.filter(fn(k, v): k != 2)\n    let doubled = kept.map_values(fn(v): v * 2)\n    let merged = d.merge(doubled)\n    let flipped = merged.invert()\n    console.print(\"${d.length()} ${kept.length()} ${merged.get(3) ?? 0} ${flipped.get(60) ?? 0} ${d.get(3) ?? 0}\")\n",
+    );
+    assert_eq!(output, vec!["3 2 60 3 30".to_string()]);
+}

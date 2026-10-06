@@ -79,4 +79,30 @@ impl FunctionLowerer<'_> {
         }
         Ok(value)
     }
+
+    /// A `var x: unique T` parameter writes back the sole token of its
+    /// storage, under the same rule as a `unique` result: normal mode
+    /// repairs a shared final value (`x = shared_result(x)`) with one copy.
+    pub(super) fn unique_write_back_token(&mut self, name: &str, value: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        let Some(ty) = self.write_back_parameter_types.get(name) else { return Ok(value) };
+        if self.opt_mode
+            || !matches!(ty, Type::Qualified(TypeQual::Unique, _))
+            || !matches!(self.values[&value], ValueType::Ref(_))
+            || self.sole_token(value)
+        {
+            return Ok(value);
+        }
+        let ty = ty.clone();
+        if Some(self.values[&value]) == self.string_layout_id().ok().map(ValueType::Ref) {
+            return self.owned_string_copy(value);
+        }
+        if matches!(ty.unqualified(), Type::Named(head, arguments) if head == "List" && arguments.len() == 1) {
+            return self.clone_list_value_for_storage(value, ty.unqualified());
+        }
+        if self.is_table_dictionary(&ty)? {
+            return self.lower_dict_clone_exact(value);
+        }
+        // No exact copy for this storage: SafeWIR rejects the shared lane.
+        Ok(value)
+    }
 }

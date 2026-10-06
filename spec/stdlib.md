@@ -1020,7 +1020,7 @@ The (key, value) pairs, in insertion order.
 
 The number of entries.
 
-#### `fn from_pairs(entries: List((k, v))) -> Dict(k, v) where k: Hash`
+#### `fn from_pairs(entries: List((k, v))) -> unique Dict(k, v) where k: Hash`
 
 Build a Dict from (key, value) pairs; a later pair overrides an earlier one.
 
@@ -1086,19 +1086,19 @@ The value for `key`, or a runtime error when absent. This is the read half of th
 
 Whether `key` is present. The `_key` suffix is deliberate: a Dict contains key/value pairs, so bare `contains` would be ambiguous between keys and values.
 
-#### `Dict.map_values(f: fn(v) -> w) -> Dict(k, w)`
+#### `Dict.map_values(f: fn(v) -> w) -> unique Dict(k, w)`
 
 A new Dict with every value passed through `f` (keys unchanged).
 
-#### `Dict.filter(keep: fn(k, v) -> Bool) -> Dict(k, v)`
+#### `Dict.filter(keep: fn(k, v) -> Bool) -> unique Dict(k, v)`
 
 Keep only the entries for which `keep(key, value)` holds.
 
-#### `Dict.merge(other: Dict(k, v)) -> Dict(k, v)`
+#### `Dict.merge(other: Dict(k, v)) -> unique Dict(k, v)`
 
 `self` with `other`'s entries laid over it (on a key collision, `other` wins).
 
-#### `Dict.invert() -> Dict(v, k)`
+#### `Dict.invert() -> unique Dict(v, k)`
 
 Swap keys and values. With duplicate values, a later entry wins.
 

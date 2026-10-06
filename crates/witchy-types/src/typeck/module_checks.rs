@@ -704,11 +704,12 @@ fn normal_mode_repairs_unique_result(result: &ast::Type) -> bool {
 }
 
 /// A `unique List` / `unique Dict` result must carry a checked root-owner
-/// token in `mode opt`, and in normal mode when the return cannot repair it. Fresh literals/new storage and direct calls carrying the same result
-/// ABI establish one.  A directly returned `own unique` collection parameter
-/// carries that same token too: uniqueness is ownership of the root, not a
-/// promise of spare list capacity.  Broader local-flow proofs remain outside
-/// this deliberately small source proof surface.
+/// token in `mode opt`, and in normal mode when the return cannot repair it.
+/// Fresh literals/new storage and direct calls carrying the same result ABI
+/// establish one, as does a directly returned `own unique` parameter:
+/// uniqueness is ownership of the root, not a promise of spare capacity. A
+/// local carries the proof while it stays the sole owner of such a value
+/// (`OwnerFlow`).
 pub(super) fn check_unique_root_owner_results(module: &Module) -> Result<(), TypeError> {
     let unique_functions: HashMap<String, ast::Type> = module
         .items
@@ -740,15 +741,79 @@ pub(super) fn check_unique_root_owner_results(module: &Module) -> Result<(), Typ
         })
         .collect();
 
+    /// The owners live at one program point: each local whose current value
+    /// is storage no other binding holds. `Some(ty)` records the exact
+    /// declared type that established it (an `own unique` parameter or a
+    /// direct `unique` call), which proves its nested owners too; `None`
+    /// proves the root alone.
+    type Owners<'m> = HashMap<String, Option<&'m ast::Type>>;
+
+    /// Whether a type names a `unique` owner anywhere inside it.
+    fn mentions_unique(ty: &ast::Type) -> bool {
+        match ty {
+            ast::Type::Qualified(ast::TypeQual::Unique, _) => true,
+            ast::Type::Qualified(_, inner) | ast::Type::Slice(inner) => mentions_unique(inner),
+            ast::Type::Named(_, arguments)
+            | ast::Type::Tuple(arguments)
+            | ast::Type::Dyn(_, arguments) => arguments.iter().any(mentions_unique),
+            ast::Type::RecordCompose { .. } => true,
+            ast::Type::Fn(..) => false,
+        }
+    }
+
+    /// Whether proving the outer root proves all of `expected`: no owner is
+    /// nested inside it. The checker has already unified the value's type
+    /// with `expected`, so a generic declaration need not match it exactly.
+    fn proves_root_alone(expected: &ast::Type) -> bool {
+        matches!(expected, ast::Type::Qualified(ast::TypeQual::Unique, inner) if !mentions_unique(inner))
+    }
+
+    fn is_unique_dict(expected: &ast::Type) -> bool {
+        matches!(
+            expected,
+            ast::Type::Qualified(ast::TypeQual::Unique, inner)
+                if matches!(inner.unqualified(), ast::Type::Named(name, _)
+                    if name.rsplit('.').next() == Some("Dict"))
+        )
+    }
+
+    /// Whether `name` is the dictionary constructor `constructor`, possibly
+    /// specialized or qualified.
+    fn is_dict_constructor(name: &str, constructor: &str, short: &str) -> bool {
+        name == constructor
+            || name.strip_prefix(constructor).is_some_and(|suffix| suffix.starts_with("__"))
+            || name.ends_with(short)
+    }
+
+    /// The owner a call result establishes: a direct `unique` function
+    /// carries its exact declared type; new dictionary storage proves its
+    /// root.
+    fn fresh_call_owner<'m>(
+        name: &str,
+        args: &[Expr],
+        functions: &'m HashMap<String, ast::Type>,
+    ) -> Option<Option<&'m ast::Type>> {
+        if let Some(declared) = functions.get(name) {
+            return Some(Some(declared));
+        }
+        ((args.is_empty() && is_dict_constructor(name, intrinsics::DICT_NEW, ".dict.new"))
+            || (args.len() == 1
+                && is_dict_constructor(name, intrinsics::DICT_WITH_CAPACITY, ".dict.with_capacity")))
+            .then_some(None)
+    }
+
     /// Establishes every `unique` owner named by `expected`, recursively. A
     /// fresh list proves its outer root and then proves each independently
-    /// declared unique element. A direct call/`own` transfer is accepted only
-    /// when its complete declared type exactly matches `expected`.
-    fn produces_root_owner(
+    /// declared unique element. A direct call is accepted only when its
+    /// complete declared type exactly matches `expected`; a local owner
+    /// proves its root, and its nested owners only when the type that
+    /// established it matches exactly. Proving a local consumes it, so one
+    /// owner never proves two results.
+    fn produces_root_owner<'m>(
         expr: &Expr,
         expected: &ast::Type,
-        functions: &HashMap<String, ast::Type>,
-        transferred_parameters: &HashMap<String, ast::Type>,
+        functions: &'m HashMap<String, ast::Type>,
+        owners: &mut Owners<'m>,
     ) -> bool {
         if !is_unique_owner_type(expected) {
             return true;
@@ -763,14 +828,7 @@ pub(super) fn check_unique_root_owner_results(module: &Module) -> Result<(), Typ
                 };
                 name.rsplit('.').next() == Some("List")
                     && arguments.len() == 1
-                    && items.iter().all(|item| {
-                        produces_root_owner(
-                            item,
-                            &arguments[0],
-                            functions,
-                            transferred_parameters,
-                        )
-                    })
+                    && items.iter().all(|item| produces_root_owner(item, &arguments[0], functions, owners))
             }
             Expr::Str(_) => matches!(
                 expected,
@@ -778,41 +836,22 @@ pub(super) fn check_unique_root_owner_results(module: &Module) -> Result<(), Typ
                     if matches!(inner.unqualified(), ast::Type::Named(name, _)
                         if name.rsplit('.').next() == Some("String"))
             ),
-            // This is deliberately only a direct parameter name from the
-            // enclosing function body.  Aliases, projections, aggregate
-            // fields, and nested returns remain unproved rather than silently
-            // inheriting the root-owner token.
-            Expr::Var(name) => transferred_parameters.get(name) == Some(expected),
-            Expr::Call { name, args } => {
-                functions.get(name) == Some(expected)
-                    || (args.is_empty()
-                        && matches!(
-                            expected,
-                            ast::Type::Qualified(ast::TypeQual::Unique, inner)
-                                if matches!(inner.unqualified(), ast::Type::Named(name, _)
-                                    if name.rsplit('.').next() == Some("Dict"))
-                        )
-                        && (name == intrinsics::DICT_NEW
-                            || name
-                                .strip_prefix(intrinsics::DICT_NEW)
-                                .is_some_and(|suffix| suffix.starts_with("__"))
-                            || name.ends_with(".dict.new")))
-                    || (args.len() == 1
-                        && matches!(
-                            expected,
-                            ast::Type::Qualified(ast::TypeQual::Unique, inner)
-                                if matches!(inner.unqualified(), ast::Type::Named(name, _)
-                                    if name.rsplit('.').next() == Some("Dict"))
-                        )
-                        && (name == intrinsics::DICT_WITH_CAPACITY
-                            || name
-                                .strip_prefix(intrinsics::DICT_WITH_CAPACITY)
-                                .is_some_and(|suffix| suffix.starts_with("__"))
-                            || name.ends_with(".dict.with_capacity")))
+            Expr::Var(name) => {
+                let proves = match owners.get(name) {
+                    Some(Some(declared)) => *declared == expected || proves_root_alone(expected),
+                    Some(None) => proves_root_alone(expected),
+                    None => false,
+                };
+                if proves {
+                    owners.remove(name);
+                }
+                proves
             }
-            Expr::Unary { op: UnOp::Move, expr } => {
-                produces_root_owner(expr, expected, functions, transferred_parameters)
-            }
+            Expr::Call { name, args } => match functions.get(name) {
+                Some(declared) => declared == expected || proves_root_alone(expected),
+                None => is_unique_dict(expected) && fresh_call_owner(name, args, functions).is_some(),
+            },
+            Expr::Unary { op: UnOp::Move, expr } => produces_root_owner(expr, expected, functions, owners),
             _ => false,
         }
     }
@@ -826,23 +865,21 @@ pub(super) fn check_unique_root_owner_results(module: &Module) -> Result<(), Typ
         },
     }
 
-    fn return_expr_produces_root_owner(
+    fn return_expr_produces_root_owner<'m>(
         expr: &Expr,
         contract: UniqueReturnContract<'_>,
-        functions: &HashMap<String, ast::Type>,
+        functions: &'m HashMap<String, ast::Type>,
         result_functions: &HashMap<String, ast::Type>,
-        transferred_parameters: &HashMap<String, ast::Type>,
+        owners: &mut Owners<'m>,
     ) -> bool {
         match contract {
-            UniqueReturnContract::Direct(expected) => {
-                produces_root_owner(expr, expected, functions, transferred_parameters)
-            }
+            UniqueReturnContract::Direct(expected) => produces_root_owner(expr, expected, functions, owners),
             UniqueReturnContract::ResultOk { result, payload } => match expr {
                 Expr::Call { name, .. } => result_functions.get(name) == Some(result),
                 Expr::Ctor { name, args }
                     if name.rsplit('.').next() == Some("Ok") && args.len() == 1 =>
                 {
-                    produces_root_owner(&args[0], payload, functions, transferred_parameters)
+                    produces_root_owner(&args[0], payload, functions, owners)
                 }
                 // `Err` has no success payload and therefore no `Ok` owner
                 // root to prove. Its payload remains subject to ordinary type
@@ -857,215 +894,423 @@ pub(super) fn check_unique_root_owner_results(module: &Module) -> Result<(), Typ
         }
     }
 
-    fn block_produces_root_owner(
-        block: &Block,
-        contract: UniqueReturnContract<'_>,
-        functions: &HashMap<String, ast::Type>,
-        result_functions: &HashMap<String, ast::Type>,
-        transferred_parameters: &HashMap<String, ast::Type>,
-    ) -> bool {
-        block_can_complete(block)
-            && matches!(block.stmts.last(), Some(Stmt::Expr(expr))
-                if expr_produces_root_owner(expr, contract, functions, result_functions, transferred_parameters))
+    /// Owners at the meet of two control-flow paths: a local stays an owner
+    /// only when it is one on both, and keeps its exact type only when both
+    /// agree on it.
+    fn meet<'m>(left: &Owners<'m>, right: &Owners<'m>) -> Owners<'m> {
+        left.iter()
+            .filter_map(|(name, declared)| {
+                let other = right.get(name)?;
+                Some((name.clone(), if declared == other { *declared } else { None }))
+            })
+            .collect()
     }
 
-    /// A control-flow expression preserves the root-owner proof only when
-    /// every path which reaches its continuation produces the same direct
-    /// owner. Terminal paths have already been checked at their `return`.
-    fn expr_produces_root_owner(
-        expr: &Expr,
-        contract: UniqueReturnContract<'_>,
-        functions: &HashMap<String, ast::Type>,
-        result_functions: &HashMap<String, ast::Type>,
-        transferred_parameters: &HashMap<String, ast::Type>,
-    ) -> bool {
-        match expr {
-            Expr::If { then_block, else_block: Some(else_block), .. } => {
-                (!block_can_complete(then_block)
-                    || block_produces_root_owner(
-                        then_block,
-                        contract,
-                        functions,
-                        result_functions,
-                        transferred_parameters,
-                    ))
-                    && (!block_can_complete(else_block)
-                        || block_produces_root_owner(
-                            else_block,
-                            contract,
-                            functions,
-                            result_functions,
-                            transferred_parameters,
-                        ))
-            }
-            Expr::Match { arms, .. } if !arms.is_empty() => arms.iter().all(|arm| {
-                !expr_can_complete(&arm.body)
-                    || expr_produces_root_owner(
-                        &arm.body,
-                        contract,
-                        functions,
-                        result_functions,
-                        transferred_parameters,
-                    )
-            }),
-            Expr::Block(block) => {
-                !block_can_complete(block)
-                    || block_produces_root_owner(
-                        block,
-                        contract,
-                        functions,
-                        result_functions,
-                        transferred_parameters,
-                    )
-            }
-            _ => return_expr_produces_root_owner(
-                expr,
-                contract,
-                functions,
-                result_functions,
-                transferred_parameters,
-            ),
+    fn meet_all<'m>(states: Vec<Owners<'m>>, fallback: Owners<'m>) -> Owners<'m> {
+        let mut states = states.into_iter();
+        let Some(first) = states.next() else {
+            return fallback;
+        };
+        states.fold(first, |joined, state| meet(&joined, &state))
+    }
+
+    /// Owner states leaving the loop being walked.
+    #[derive(Default)]
+    struct LoopEdges<'m> {
+        breaks: Vec<Owners<'m>>,
+        continues: Vec<Owners<'m>>,
+    }
+
+    /// A flow-sensitive proof that a returned local is the root owner of its
+    /// value. A local becomes an owner when it binds fresh storage (a
+    /// literal, a `unique` call result, a moved owner) and stays one while
+    /// every use leaves it the sole holder: a place assignment into it, an
+    /// element or field read, or an argument to a `let` borrow or a
+    /// `var ... unique` parameter, which writes back a unique result. Any
+    /// other use (a copy into a binding, an owned argument, a capture, an
+    /// aggregate element) may alias it and ends the proof. Branches meet on
+    /// the locals that are owners on every completing path; loops iterate to
+    /// a fixpoint. The proof is type-independent: the SafeWIR checker still
+    /// adjudicates the token the lowering emits.
+    struct OwnerFlow<'m> {
+        function: &'m str,
+        contract: UniqueReturnContract<'m>,
+        functions: &'m HashMap<String, ast::Type>,
+        result_functions: &'m HashMap<String, ast::Type>,
+        signatures: &'m HashMap<&'m str, &'m [ast::Param]>,
+        owners: Owners<'m>,
+        loops: Vec<LoopEdges<'m>>,
+    }
+
+    impl<'m> OwnerFlow<'m> {
+        fn unproved(&self) -> Result<(), TypeError> {
+            terr(format!(
+                "in `{}`: this `unique` collection return has no root-owner proof — return fresh list/dict storage, the direct result of another `unique` collection function, this function's direct `own unique` parameter, or a local that solely owns one of those",
+                self.function
+            ))
         }
-    }
 
-    fn check_returns_expr(
-        expr: &Expr,
-        function: &str,
-        contract: UniqueReturnContract<'_>,
-        functions: &HashMap<String, ast::Type>,
-        result_functions: &HashMap<String, ast::Type>,
-        transferred_parameters: &HashMap<String, ast::Type>,
-    ) -> Result<(), TypeError> {
-        match expr {
-            Expr::If { cond, then_block, else_block } => {
-                check_returns_expr(cond, function, contract, functions, result_functions, transferred_parameters)?;
-                check_returns_block(then_block, function, contract, functions, result_functions, transferred_parameters)?;
-                if let Some(block) = else_block {
-                    check_returns_block(block, function, contract, functions, result_functions, transferred_parameters)?;
-                }
-            }
-            Expr::Match { scrutinee, arms } => {
-                check_returns_expr(scrutinee, function, contract, functions, result_functions, transferred_parameters)?;
-                for arm in arms {
-                    if let Some(guard) = &arm.guard {
-                        check_returns_expr(guard, function, contract, functions, result_functions, transferred_parameters)?;
+        /// Walks a block, returning whether control reaches its end. A
+        /// `tail` block's final expression leaves the function.
+        fn block(&mut self, block: &'m Block, tail: bool) -> Result<bool, TypeError> {
+            let mut declared = Vec::new();
+            let last = block.stmts.len().saturating_sub(1);
+            for (index, stmt) in block.stmts.iter().enumerate() {
+                match stmt {
+                    Stmt::Expr(expr) if tail && index == last => {
+                        self.value(expr)?;
+                        return Ok(expr_can_complete(expr));
                     }
-                    check_returns_expr(&arm.body, function, contract, functions, result_functions, transferred_parameters)?;
+                    Stmt::Let { name, value, .. } => {
+                        let fresh = self.fresh(value);
+                        self.expr(value)?;
+                        match fresh {
+                            Some(declared_type) => self.owners.insert(name.clone(), declared_type),
+                            None => self.owners.remove(name),
+                        };
+                        declared.push(name.clone());
+                    }
+                    Stmt::Assign { name, value, place_depth } => {
+                        // A place assignment rebuilds the same root: it stays
+                        // its owner, while the value written escapes. Nothing
+                        // proved that value sole, so only the root stays proved.
+                        let fresh = if *place_depth > 0 {
+                            self.owners.get(name).map(|_| None)
+                        } else {
+                            self.fresh(value)
+                        };
+                        self.expr(value)?;
+                        match fresh {
+                            Some(declared_type) => self.owners.insert(name.clone(), declared_type),
+                            None => self.owners.remove(name),
+                        };
+                    }
+                    Stmt::LetPattern { pattern, value } => {
+                        self.expr(value)?;
+                        let mut names = Vec::new();
+                        ast::pattern_binds(pattern, &mut names);
+                        for name in names {
+                            self.owners.remove(&name);
+                            declared.push(name);
+                        }
+                    }
+                    Stmt::Return(Some(expr)) => {
+                        self.value(expr)?;
+                        return Ok(false);
+                    }
+                    Stmt::Return(None) => return Ok(false),
+                    Stmt::Break | Stmt::Continue => {
+                        let state = self.owners.clone();
+                        if let Some(edges) = self.loops.last_mut() {
+                            if matches!(stmt, Stmt::Break) {
+                                edges.breaks.push(state);
+                            } else {
+                                edges.continues.push(state);
+                            }
+                        }
+                        return Ok(false);
+                    }
+                    Stmt::Expr(expr) | Stmt::Yield(expr) => {
+                        self.expr(expr)?;
+                        if !expr_can_complete(expr) {
+                            return Ok(false);
+                        }
+                    }
                 }
             }
-            Expr::Block(block) => {
-                check_returns_block(block, function, contract, functions, result_functions, transferred_parameters)?
+            if tail && !matches!(block.stmts.last(), Some(Stmt::Expr(_))) {
+                return self.unproved().map(|()| false);
             }
-            Expr::While { cond, body } => {
-                check_returns_expr(cond, function, contract, functions, result_functions, transferred_parameters)?;
-                check_returns_block(body, function, contract, functions, result_functions, transferred_parameters)?;
+            // A block-scoped binding may shadow an outer local; the outer one
+            // is conservatively no longer an owner once the block ends.
+            for name in declared {
+                self.owners.remove(&name);
             }
-            Expr::WhileLet { scrutinee, body, .. } => {
-                check_returns_expr(scrutinee, function, contract, functions, result_functions, transferred_parameters)?;
-                check_returns_block(body, function, contract, functions, result_functions, transferred_parameters)?;
-            }
-            Expr::For { iter, body, .. } => {
-                check_returns_expr(iter, function, contract, functions, result_functions, transferred_parameters)?;
-                check_returns_block(body, function, contract, functions, result_functions, transferred_parameters)?;
-            }
-            Expr::Call { args, .. }
-            | Expr::Ctor { args, .. }
-            | Expr::AnonCtor { args, .. }
-            | Expr::List(args)
-            | Expr::Tuple(args) => {
-                for arg in args {
-                    check_returns_expr(arg, function, contract, functions, result_functions, transferred_parameters)?;
-                }
-            }
-            Expr::LabeledCall { args, .. } => {
-                for (_, arg) in args {
-                    check_returns_expr(arg, function, contract, functions, result_functions, transferred_parameters)?;
-                }
-            }
-            Expr::MethodCall { receiver, args, .. } => {
-                check_returns_expr(receiver, function, contract, functions, result_functions, transferred_parameters)?;
-                for arg in args {
-                    check_returns_expr(arg, function, contract, functions, result_functions, transferred_parameters)?;
-                }
-            }
-            Expr::ExistentialCall { receiver, args, .. } => {
-                check_returns_expr(receiver, function, contract, functions, result_functions, transferred_parameters)?;
-                for arg in args {
-                    check_returns_expr(arg, function, contract, functions, result_functions, transferred_parameters)?;
-                }
-            }
-            Expr::Apply { func, args } => {
-                check_returns_expr(func, function, contract, functions, result_functions, transferred_parameters)?;
-                for arg in args {
-                    check_returns_expr(arg, function, contract, functions, result_functions, transferred_parameters)?;
-                }
-            }
-            Expr::Unary { expr, .. }
-            | Expr::Try(expr)
-            | Expr::As { expr, .. }
-            | Expr::Field { base: expr, .. } => {
-                check_returns_expr(expr, function, contract, functions, result_functions, transferred_parameters)?
-            }
-            Expr::Binary { lhs, rhs, .. }
-            | Expr::Range { lo: lhs, hi: rhs, .. }
-            | Expr::Index { base: lhs, index: rhs } => {
-                check_returns_expr(lhs, function, contract, functions, result_functions, transferred_parameters)?;
-                check_returns_expr(rhs, function, contract, functions, result_functions, transferred_parameters)?;
-            }
-            Expr::RecordUpdate { base, fields, .. } => {
-                check_returns_expr(base, function, contract, functions, result_functions, transferred_parameters)?;
-                for (_, value) in fields {
-                    check_returns_expr(value, function, contract, functions, result_functions, transferred_parameters)?;
-                }
-            }
-            Expr::Record { fields, spread, .. } => {
-                for (_, value) in fields {
-                    check_returns_expr(value, function, contract, functions, result_functions, transferred_parameters)?;
-                }
-                if let Some(spread) = spread {
-                    check_returns_expr(spread, function, contract, functions, result_functions, transferred_parameters)?;
-                }
-            }
-            _ => {}
+            Ok(true)
         }
-        Ok(())
-    }
 
-    fn check_returns_block(
-        block: &Block,
-        function: &str,
-        contract: UniqueReturnContract<'_>,
-        functions: &HashMap<String, ast::Type>,
-        result_functions: &HashMap<String, ast::Type>,
-        transferred_parameters: &HashMap<String, ast::Type>,
-    ) -> Result<(), TypeError> {
-        for stmt in &block.stmts {
-            match stmt {
-                Stmt::Return(Some(expr))
-                    if !expr_produces_root_owner(
-                        expr,
-                        contract,
-                        functions,
-                        result_functions,
-                        transferred_parameters,
-                    ) =>
-                {
-                    return terr(format!(
-                        "in `{function}`: this `unique` collection return has no root-owner proof — return fresh list/dict storage, the direct result of another `unique` collection function, or this function's direct `own unique` parameter"
-                    ));
-                }
-                Stmt::Return(Some(expr))
-                | Stmt::Let { value: expr, .. }
-                | Stmt::Assign { value: expr, .. }
-                | Stmt::LetPattern { value: expr, .. }
-                | Stmt::Expr(expr)
-                | Stmt::Yield(expr) => {
-                    check_returns_expr(expr, function, contract, functions, result_functions, transferred_parameters)?
-                }
-                Stmt::Return(None) | Stmt::Break | Stmt::Continue => {}
+        /// The owner a binding receives from `value`, read before the value's
+        /// own uses are walked: a moved local hands over its proof.
+        fn fresh(&mut self, value: &Expr) -> Option<Option<&'m ast::Type>> {
+            match value {
+                Expr::List(_) | Expr::Str(_) => Some(None),
+                Expr::Call { name, args } => fresh_call_owner(name, args, self.functions),
+                Expr::Unary { op: UnOp::Move, expr } => match expr.as_ref() {
+                    Expr::Var(name) => self.owners.remove(name),
+                    other => self.fresh(other),
+                },
+                _ => None,
             }
         }
-        Ok(())
+
+        /// A value leaving the function, at a `return` or a body tail.
+        fn value(&mut self, expr: &'m Expr) -> Result<(), TypeError> {
+            match expr {
+                Expr::If { cond, then_block, else_block: Some(else_block) } => {
+                    self.expr(cond)?;
+                    let entry = self.owners.clone();
+                    self.block(then_block, true)?;
+                    self.owners = entry;
+                    self.block(else_block, true)?;
+                }
+                Expr::Match { scrutinee, arms } if !arms.is_empty() => {
+                    self.expr(scrutinee)?;
+                    let entry = self.arms_entry(arms)?;
+                    for arm in arms {
+                        self.owners = entry.clone();
+                        self.arm_bindings(&arm.pattern);
+                        self.value(&arm.body)?;
+                    }
+                }
+                Expr::Block(block) => {
+                    self.block(block, true)?;
+                }
+                _ => {
+                    if !return_expr_produces_root_owner(
+                        expr,
+                        self.contract,
+                        self.functions,
+                        self.result_functions,
+                        &mut self.owners,
+                    ) {
+                        return self.unproved();
+                    }
+                    self.expr(expr)?;
+                }
+            }
+            Ok(())
+        }
+
+        /// The owners every arm of a match starts from. A failing guard falls
+        /// through to a later arm, so each arm conservatively sees every
+        /// guard's uses; the meet with the entry keeps a guard from
+        /// establishing an owner on a path that skipped it.
+        fn arms_entry(&mut self, arms: &'m [ast::MatchArm]) -> Result<Owners<'m>, TypeError> {
+            let entry = self.owners.clone();
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    let mut names = Vec::new();
+                    ast::pattern_binds(&arm.pattern, &mut names);
+                    let shadowed: Vec<_> = names
+                        .into_iter()
+                        .filter_map(|name| self.owners.remove_entry(&name))
+                        .collect();
+                    self.expr(guard)?;
+                    self.owners.extend(shadowed);
+                }
+            }
+            let guarded = std::mem::take(&mut self.owners);
+            self.owners = entry.clone();
+            Ok(meet(&entry, &guarded))
+        }
+
+        fn arm_bindings(&mut self, pattern: &ast::Pattern) {
+            let mut names = Vec::new();
+            ast::pattern_binds(pattern, &mut names);
+            for name in names {
+                self.owners.remove(&name);
+            }
+        }
+
+        /// Whether passing a local to this parameter leaves it the sole
+        /// owner: a `var unique` parameter writes back a unique result. A
+        /// borrow cannot escape, but the canonical ABI still passes it a
+        /// shared token, so it ends the proof as SafeWIR judges it.
+        fn keeps_owner(parameter: &ast::Param) -> bool {
+            parameter.convention == Convention::Var
+                && parameter.ty.as_ref().is_some_and(is_unique_owner_type)
+        }
+
+        fn exprs(&mut self, exprs: &'m [Expr]) -> Result<(), TypeError> {
+            for expr in exprs {
+                self.expr(expr)?;
+            }
+            Ok(())
+        }
+
+        /// Walks an evaluated expression: every use that may alias a local
+        /// ends its proof.
+        fn expr(&mut self, expr: &'m Expr) -> Result<(), TypeError> {
+            match expr {
+                Expr::Var(name) => {
+                    self.owners.remove(name);
+                }
+                Expr::Call { name, args } => {
+                    let parameters = self.signatures.get(name.as_str()).copied();
+                    for (index, arg) in args.iter().enumerate() {
+                        let kept = matches!(arg, Expr::Var(_))
+                            && parameters
+                                .and_then(|parameters| parameters.get(index))
+                                .is_some_and(Self::keeps_owner);
+                        match arg {
+                            // The write-back is unique at the parameter's
+                            // type, which proves the root alone.
+                            Expr::Var(name) if kept => {
+                                if let Some(declared) = self.owners.get_mut(name) {
+                                    *declared = None;
+                                }
+                            }
+                            _ => self.expr(arg)?,
+                        }
+                    }
+                }
+                Expr::Index { base, index } => {
+                    if !matches!(base.as_ref(), Expr::Var(_)) {
+                        self.expr(base)?;
+                    }
+                    self.expr(index)?;
+                }
+                Expr::Field { base, .. } => {
+                    if !matches!(base.as_ref(), Expr::Var(_)) {
+                        self.expr(base)?;
+                    }
+                }
+                Expr::Lambda { body, .. } => {
+                    // A closure captures by value: everything it names escapes.
+                    let owners = &mut self.owners;
+                    let _ = witchy_syntax::ast::visit::visit_block(body, &mut |expression| -> Result<(), ()> {
+                        if let Expr::Var(name) = expression {
+                            owners.remove(name);
+                        }
+                        Ok(())
+                    });
+                }
+                Expr::If { cond, then_block, else_block } => {
+                    self.expr(cond)?;
+                    let entry = self.owners.clone();
+                    let mut reaching = Vec::new();
+                    if self.block(then_block, false)? {
+                        reaching.push(std::mem::take(&mut self.owners));
+                    }
+                    self.owners = entry.clone();
+                    match else_block {
+                        Some(else_block) => {
+                            if self.block(else_block, false)? {
+                                reaching.push(std::mem::take(&mut self.owners));
+                            }
+                        }
+                        None => reaching.push(entry.clone()),
+                    }
+                    self.owners = meet_all(reaching, entry);
+                }
+                Expr::Match { scrutinee, arms } => {
+                    self.expr(scrutinee)?;
+                    let entry = self.arms_entry(arms)?;
+                    let mut reaching = Vec::new();
+                    for arm in arms {
+                        self.owners = entry.clone();
+                        self.arm_bindings(&arm.pattern);
+                        self.expr(&arm.body)?;
+                        if expr_can_complete(&arm.body) {
+                            reaching.push(std::mem::take(&mut self.owners));
+                        }
+                    }
+                    self.owners = meet_all(reaching, entry);
+                }
+                Expr::Block(block) => {
+                    self.block(block, false)?;
+                }
+                Expr::While { cond, body } => self.repeat(Some(cond), None, body)?,
+                Expr::WhileLet { pattern, scrutinee, body } => self.repeat(Some(scrutinee), Some(pattern), body)?,
+                Expr::For { var, iter, body } => {
+                    self.expr(iter)?;
+                    self.owners.remove(var);
+                    self.repeat(None, None, body)?;
+                    self.owners.remove(var);
+                }
+                Expr::List(values) | Expr::Tuple(values) => self.exprs(values)?,
+                Expr::Ctor { args, .. } | Expr::AnonCtor { args, .. } => self.exprs(args)?,
+                Expr::LabeledCall { args, .. } => {
+                    for (_, arg) in args {
+                        self.expr(arg)?;
+                    }
+                }
+                Expr::LabeledMethodCall { receiver, args, .. } => {
+                    self.expr(receiver)?;
+                    for (_, arg) in args {
+                        self.expr(arg)?;
+                    }
+                }
+                Expr::MethodCall { receiver, args, .. }
+                | Expr::ExistentialCall { receiver, args, .. } => {
+                    self.expr(receiver)?;
+                    self.exprs(args)?;
+                }
+                Expr::Apply { func, args } => {
+                    self.expr(func)?;
+                    self.exprs(args)?;
+                }
+                Expr::Unary { expr, .. }
+                | Expr::Try(expr)
+                | Expr::As { expr, .. }
+                | Expr::ExistentialPack { expr, .. }
+                | Expr::ExistentialUpcast { expr, .. } => self.expr(expr)?,
+                Expr::RecordUpdate { base, fields, .. } => {
+                    self.expr(base)?;
+                    for (_, value) in fields {
+                        self.expr(value)?;
+                    }
+                }
+                Expr::Record { fields, spread, .. } => {
+                    for (_, value) in fields {
+                        self.expr(value)?;
+                    }
+                    if let Some(spread) = spread {
+                        self.expr(spread)?;
+                    }
+                }
+                Expr::Binary { lhs, rhs, .. } | Expr::Range { lo: lhs, hi: rhs, .. } => {
+                    self.expr(lhs)?;
+                    self.expr(rhs)?;
+                }
+                Expr::Int(_)
+                | Expr::Float(_)
+                | Expr::Duration(_)
+                | Expr::Str(_)
+                | Expr::Bool(_)
+                | Expr::TaggedLit { .. } => {}
+            }
+            Ok(())
+        }
+
+        /// A loop: its head state is the meet of the entry and every back
+        /// edge, iterated until it stops shrinking. Owner sets only shrink, so
+        /// this terminates. It leaves through the condition and every `break`.
+        fn repeat(
+            &mut self,
+            condition: Option<&'m Expr>,
+            pattern: Option<&ast::Pattern>,
+            body: &'m Block,
+        ) -> Result<(), TypeError> {
+            loop {
+                let head = self.owners.clone();
+                if let Some(condition) = condition {
+                    self.expr(condition)?;
+                }
+                let leaving = self.owners.clone();
+                if let Some(pattern) = pattern {
+                    self.arm_bindings(pattern);
+                }
+                self.loops.push(LoopEdges::default());
+                let completes = self.block(body, false)?;
+                let edges = self.loops.pop().expect("pushed loop edges");
+                let mut back = edges.continues;
+                if completes {
+                    back.push(std::mem::take(&mut self.owners));
+                }
+                let next = back.iter().fold(head.clone(), |joined, state| meet(&joined, state));
+                if next == head {
+                    let mut exits = edges.breaks;
+                    exits.push(leaving);
+                    self.owners = meet_all(exits, head);
+                    if let Some(pattern) = pattern {
+                        self.arm_bindings(pattern);
+                    }
+                    return Ok(());
+                }
+                self.owners = next;
+            }
+        }
     }
 
     /// `Result` carries its success value in `Ok`.  Its runtime `Ty` erases
@@ -1080,6 +1325,14 @@ pub(super) fn check_unique_root_owner_results(module: &Module) -> Result<(), Typ
             .then(|| &arguments[0])
     }
 
+    let signatures: HashMap<&str, &[ast::Param]> = module
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Function(function) => Some((function.name.as_str(), function.params.as_slice())),
+            _ => None,
+        })
+        .collect();
     for item in &module.items {
         let Item::Function(function) = item else { continue };
         let Some(result) = function.ret.as_ref() else {
@@ -1089,18 +1342,14 @@ pub(super) fn check_unique_root_owner_results(module: &Module) -> Result<(), Typ
         // (RFC-0167 §4) for the storage the lowering can copy; opt mode, and
         // every other unique result, must prove it in source. A `var`
         // parameter's write-back is a second owning output, so returning it
-        // must stay a source-visible rejection (RFC-0167 row E).
+        // must stay a source-visible rejection (RFC-0167 row E): a `var`
+        // parameter never starts as an owner.
         if !witchy_canonical_source::source::source_execution_mode(function, &module.modes).is_opt()
             && normal_mode_repairs_unique_result(result)
             && !function.params.iter().any(|parameter| parameter.convention == Convention::Var)
         {
             continue;
         }
-        let transferred_parameters = function.params.iter().filter_map(|parameter| {
-            (parameter.convention == Convention::Own
-                && parameter.ty.as_ref().is_some_and(is_unique_owner_type))
-                .then(|| (parameter.name.clone(), parameter.ty.clone().expect("own unique type exists")))
-        }).collect::<HashMap<_, _>>();
         let contract = if is_unique_root_owner_result(result) {
             UniqueReturnContract::Direct(result)
         } else if let Some(payload) = result_ok_payload_type(result)
@@ -1110,28 +1359,25 @@ pub(super) fn check_unique_root_owner_results(module: &Module) -> Result<(), Typ
         } else {
             continue;
         };
-        check_returns_block(
-            &function.body,
-            &function.name,
+        let owners = function
+            .params
+            .iter()
+            .filter_map(|parameter| {
+                let ty = parameter.ty.as_ref()?;
+                (parameter.convention == Convention::Own && is_unique_owner_type(ty))
+                    .then(|| (parameter.name.clone(), Some(ty)))
+            })
+            .collect();
+        let mut flow = OwnerFlow {
+            function: &function.name,
             contract,
-            &unique_functions,
-            &unique_result_functions,
-            &transferred_parameters,
-        )?;
-        if block_can_complete(&function.body)
-            && !block_produces_root_owner(
-                &function.body,
-                contract,
-                &unique_functions,
-                &unique_result_functions,
-                &transferred_parameters,
-            )
-        {
-            return terr(format!(
-                "in `{}`: the tail of a `unique` collection return has no root-owner proof — return fresh list/dict storage, the direct result of another `unique` collection function, or this function's direct `own unique` parameter",
-                function.name
-            ));
-        }
+            functions: &unique_functions,
+            result_functions: &unique_result_functions,
+            signatures: &signatures,
+            owners,
+            loops: Vec::new(),
+        };
+        flow.block(&function.body, true)?;
     }
     Ok(())
 }

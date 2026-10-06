@@ -396,6 +396,61 @@ mod tests {
         assert!(method.contains("no root-owner proof"), "{method}");
     }
 
+    // Normal mode cannot repair a `unique Dict` result, so these exercise the
+    // source proof without opt mode's affine bindings rejecting the aliases
+    // first.
+    #[test]
+    fn a_local_that_solely_owns_fresh_storage_proves_a_unique_result() {
+        let build = |body: &str| {
+            format!("fn put(var d: unique Dict(Int, Int), k: Int):\n    return\n\nfn size(let d: Dict(Int, Int)) -> Int:\n    0\n\nfn fresh() -> unique Dict(Int, Int):\n    dict.new()\n\nfn build(n: Int, d: Dict(Int, Int)) -> unique Dict(Int, Int):\n{body}")
+        };
+        check_str(&build(
+            "    var out = dict.new()\n    var i = 0\n    while i < n:\n        if i % 2 == 1:\n            put(out, i)\n        i = i + 1\n    out\n",
+        ))
+        .expect("a `var unique` write-back keeps the local the sole owner across a loop");
+        check_str(&build(
+            "    var out = dict.new()\n    put(out, n)\n    let moved = move out\n    moved\n",
+        ))
+        .expect("a move hands the proof to the new binding");
+        check_str(&build(
+            "    var out = dict.new()\n    if n > 0:\n        out = fresh()\n    out\n",
+        ))
+        .expect("a reassignment from a unique result keeps a proof on every arm");
+    }
+
+    #[test]
+    fn a_local_that_may_be_aliased_does_not_prove_a_unique_result() {
+        let rejected = |body: &str, why: &str| {
+            let source = format!("fn put(var d: unique Dict(Int, Int), k: Int):\n    return\n\nfn size(let d: Dict(Int, Int)) -> Int:\n    0\n\nfn fresh() -> unique Dict(Int, Int):\n    dict.new()\n\nfn build(n: Int, d: Dict(Int, Int)) -> unique Dict(Int, Int):\n{body}");
+            let error = check_str(&source).expect_err(why);
+            assert!(error.contains("no root-owner proof"), "{why}: {error}");
+        };
+        rejected(
+            "    var out = dict.new()\n    let alias = out\n    let _ = size(alias)\n    out\n",
+            "a copy into another binding may share the root",
+        );
+        rejected(
+            "    var out = dict.new()\n    var i = 0\n    var last = dict.new()\n    while i < n:\n        last = out\n        put(out, i)\n        i = i + 1\n    let _ = size(last)\n    out\n",
+            "a loop back edge carries the alias to the return",
+        );
+        rejected(
+            "    var out = dict.new()\n    if n > 0:\n        out = d\n    out\n",
+            "one arm rebinds the local to shared storage",
+        );
+        rejected(
+            "    var out = dict.new()\n    let count = fn(): size(out)\n    let _ = count()\n    out\n",
+            "a closure captures the local",
+        );
+        rejected(
+            "    var out = dict.new()\n    let pair = (out, 1)\n    let _ = pair\n    out\n",
+            "an aggregate element may share the root",
+        );
+        rejected(
+            "    var out = dict.new()\n    let _ = size(out)\n    out\n",
+            "a `let` borrow receives a shared token",
+        );
+    }
+
     #[test]
     fn undeclared_type_names_are_rejected() {
         // A typo'd type used to become an opaque type that mis-unified later

@@ -221,7 +221,7 @@ impl Dict(k, v) where k: Hash:
         dict.contains_key(self, key)
 
     // A new Dict with every value passed through `f` (keys unchanged).
-    pub fn map_values(self, f: fn(v) -> w) -> Dict(k, w):
+    pub fn map_values(self, f: fn(v) -> w) -> unique Dict(k, w):
         var out = dict.new()
         for entry in dict.pairs(self):
             let (key, value) = entry
@@ -229,7 +229,7 @@ impl Dict(k, v) where k: Hash:
         out
 
     // Keep only the entries for which `keep(key, value)` holds.
-    pub fn filter(self, keep: fn(k, v) -> Bool) -> Dict(k, v):
+    pub fn filter(self, keep: fn(k, v) -> Bool) -> unique Dict(k, v):
         var out = dict.new()
         for entry in dict.pairs(self):
             let (key, value) = entry
@@ -239,8 +239,11 @@ impl Dict(k, v) where k: Hash:
 
     // `self` with `other`'s entries laid over it (on a key collision, `other`
     // wins).
-    pub fn merge(self, other: Dict(k, v)) -> Dict(k, v):
-        var out = self
+    pub fn merge(self, other: Dict(k, v)) -> unique Dict(k, v):
+        var out = dict.with_capacity(dict.length(self) + dict.length(other))
+        for entry in dict.pairs(self):
+            let (key, value) = entry
+            let _ = dict.insert(out, key, value)
         for entry in dict.pairs(other):
             let (key, value) = entry
             let _ = dict.insert(out, key, value)
@@ -248,7 +251,7 @@ impl Dict(k, v) where k: Hash:
 
 impl Dict(k, v) where v: Hash:
     // Swap keys and values. With duplicate values, a later entry wins.
-    pub fn invert(self) -> Dict(v, k):
+    pub fn invert(self) -> unique Dict(v, k):
         var out = dict.new()
         for entry in dict.pairs(self):
             let (key, value) = entry
@@ -256,7 +259,7 @@ impl Dict(k, v) where v: Hash:
         out
 
 // Build a Dict from (key, value) pairs; a later pair overrides an earlier one.
-pub fn from_pairs(entries: List((k, v))) -> Dict(k, v) where k: Hash:
+pub fn from_pairs(entries: List((k, v))) -> unique Dict(k, v) where k: Hash:
     var d = dict.new()
     for entry in entries:
         let (key, value) = entry
