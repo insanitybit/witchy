@@ -16,6 +16,9 @@ pub fn length(s: String) -> Int:
 pub fn char_count(s: String) -> Int:
     string.char_count(s)
 
+pub fn char_offset(s: String, n: Int) -> Int:
+    string.char_offset(s, n)
+
 pub fn chars(s: String) -> unique List(String):
     string.chars(s)
 
@@ -74,38 +77,26 @@ pub fn to_int(s: String) -> Int:
 
 // --- Private helpers ---
 
-// The raw search intrinsic (char index of the first occurrence, or -1). Private:
-// public callers use `index_of` (Option) or `contains` (Bool); the std internals
-// below use it directly for tight scan loops where the -1 test is the condition.
-fn find(s: String, needle: String) -> Int:
-    string.find(s, needle)
+// The raw search intrinsic: the byte offset of the first occurrence at or after
+// byte offset `from` (at most the length; aborts past it), or -1. Private: public callers use
+// `index_of` (Option) or `contains` (Bool); the std internals below use it
+// directly for scan loops that resume past a match without copying.
+fn find(s: String, needle: String, from: Int) -> Int:
+    string.find(s, needle, from)
 
-// The raw last-occurrence index (or -1). Private: public callers use
-// `last_index_of` (Option); the std internals here take the raw index directly.
+// The raw last-occurrence byte offset (or -1), scanning non-overlapping matches
+// left to right. Private: public callers use `last_index_of` (Option); the std
+// internals here take the raw offset directly.
 fn rfind(s: String, sep: String) -> Int:
     if string.length(sep) == 0:
         0 - 1
     else:
         var last = 0 - 1
-        var base = 0
-        var rest = s
-        var i = find(rest, sep)
+        var i = find(s, sep, 0)
         while i >= 0:
-            last = base + i
-            base = base + i + string.char_count(sep)
-            rest = string.substring(rest, i + string.char_count(sep), string.char_count(rest))
-            i = find(rest, sep)
+            last = i
+            i = find(s, sep, i + string.length(sep))
         last
-
-// The raw character at `i`, or "" out of range (the clamping `substring` view).
-// Private: the std internals below index with an already-bounds-checked `i`, so
-// the Option would be pure overhead; public callers use `char_at`.
-fn char_or_empty(s: String, i: Int) -> unique String:
-    string.substring(s, i, i + 1)
-
-// Whether `c` is an ASCII whitespace character (space, tab, newline, return).
-fn is_space(c: String) -> Bool:
-    c == " " || c == "\t" || c == "\n" || c == "\r"
 
 // --- impl String: all operations as methods ---
 impl String:
@@ -114,14 +105,31 @@ impl String:
     pub fn length(self) -> Int:
         string.length(self)
 
-    // The number of Unicode scalar values.
+    // The number of Unicode scalar values. Linear in the length.
     pub fn char_count(self) -> Int:
         string.char_count(self)
+
+    // The byte offset where character `n` (counted by Unicode scalar) starts,
+    // or `length()` when the string has `n` or fewer characters; 0 for a
+    // negative `n`. Linear in the offset: to walk characters, use `chars` or
+    // `char_indices`.
+    pub fn char_offset(self, n: Int) -> Int:
+        string.char_offset(self, n)
 
     // The characters, each as a single-character String - one O(n) pass, so
     // callers can index characters in O(1).
     pub fn chars(self) -> unique List(String):
         string.chars(self)
+
+    // Each character with the byte offset where it starts, in order - one O(n)
+    // pass. `"héllo".char_indices()` begins `[(0, "h"), (1, "é"), (3, "l")`.
+    pub fn char_indices(self) -> unique List((Int, String)):
+        var out = []
+        var offset = 0
+        for c in string.chars(self):
+            list.push(out, (offset, c))
+            offset = offset + string.length(c)
+        out
 
     // Split on every occurrence of `sep`.
     pub fn split(self, sep: String) -> unique List(String):
@@ -137,13 +145,13 @@ impl String:
     pub fn ends_with(self, suffix: String) -> Bool:
         string.ends_with(self, suffix)
 
-    // The character index (counted by Unicode scalar) of the first occurrence of
-    // `needle` as `Some`, or `None` when `needle` does not occur (RFC-0044 rule 1:
+    // The byte offset of the first occurrence of `needle` as `Some`, or `None`
+    // when `needle` does not occur (RFC-0044 rule 1:
     // absence is `Option`, never a -1 sentinel). An empty `needle` matches nothing
     // (the module-wide empty-pattern rule, matching `last_index_of`/`count`). For
     // a bare yes/no, use `contains`.
     pub fn index_of(self, needle: String) -> Option(Int):
-        let i = if needle.is_empty(): 0 - 1 else: find(self, needle)
+        let i = if needle.is_empty(): 0 - 1 else: find(self, needle, 0)
         if i < 0:
             None
         else:
@@ -153,8 +161,11 @@ impl String:
     pub fn replace(self, from: String, to: String) -> unique String:
         string.replace(self, from, to)
 
-    // The substring from character index `start` (inclusive) to `end` (exclusive),
-    // counted by Unicode scalar; out-of-range indices clamp.
+    // The bytes from offset `start` (inclusive) to `end` (exclusive). ABORTS
+    // unless `0 <= start <= end <= length()` and both offsets fall on character
+    // boundaries, so a result is always whole characters. Offsets come from
+    // `index_of`, `length`, `char_offset`, or `char_indices`; for a character
+    // count use `take`/`drop`.
     pub fn substring(self, start: Int, end: Int) -> unique String:
         string.substring(self, start, end)
 
@@ -173,20 +184,22 @@ impl String:
     pub fn trim(self) -> unique String:
         string.trim(self)
 
-    // Remove leading whitespace.
+    // Remove leading ASCII whitespace (the set `trim` strips). The trimmed text
+    // begins with a non-space, so its first occurrence starts after the prefix.
     pub fn trim_start(self) -> unique String:
-        var i = 0
-        let n = string.char_count(self)
-        while i < n && is_space(char_or_empty(self, i)):
-            i = i + 1
-        string.substring(self, i, n)
+        let kept = string.trim(self)
+        if string.length(kept) == 0:
+            ""
+        else:
+            string.substring(self, find(self, kept, 0), string.length(self))
 
-    // Remove trailing whitespace.
+    // Remove trailing ASCII whitespace (the set `trim` strips).
     pub fn trim_end(self) -> unique String:
-        var j = string.char_count(self)
-        while j > 0 && is_space(char_or_empty(self, j - 1)):
-            j = j - 1
-        string.substring(self, 0, j)
+        let kept = string.trim(self)
+        if string.length(kept) == 0:
+            ""
+        else:
+            string.substring(self, 0, find(self, kept, 0) + string.length(kept))
 
     // Parse a decimal integer; junk, overflow, or an empty string ABORTS the
     // program (a runtime error, not an `Err`) on every backend. For the total
@@ -216,7 +229,7 @@ impl String:
             if fill.is_empty():
                 fail("string.pad_left: empty `fill` cannot pad to width ${width}")
             let needed = width - len
-            string.substring(fill.repeat(needed), 0, needed) + self
+            fill.repeat(needed).take(needed) + self
 
     // Right-pad `self` with copies of `fill` until it is `width` characters wide; an
     // empty `fill` fails loudly when padding is needed (see `pad_left`).
@@ -228,7 +241,7 @@ impl String:
             if fill.is_empty():
                 fail("string.pad_right: empty `fill` cannot pad to width ${width}")
             let needed = width - len
-            self + string.substring(fill.repeat(needed), 0, needed)
+            self + fill.repeat(needed).take(needed)
 
     // Center `self` in a field `width` characters wide, padding both sides with `fill`;
     // an odd remainder goes on the right. `self` is returned unchanged when already at
@@ -244,13 +257,13 @@ impl String:
             let total = width - len
             let left = total / 2
             let right = total - left
-            string.substring(fill.repeat(left), 0, left) + self + string.substring(fill.repeat(right), 0, right)
+            fill.repeat(left).take(left) + self + fill.repeat(right).take(right)
 
     // Remove `prefix` from the front of `self` when present; otherwise return `self`
     // unchanged. The complement of the `starts_with` builtin.
     pub fn strip_prefix(self, prefix: String) -> String:
         if string.starts_with(self, prefix):
-            string.substring(self, string.char_count(prefix), string.char_count(self))
+            string.substring(self, string.length(prefix), string.length(self))
         else:
             self
 
@@ -258,55 +271,57 @@ impl String:
     // unchanged. The complement of the `ends_with` builtin.
     pub fn strip_suffix(self, suffix: String) -> String:
         if string.ends_with(self, suffix):
-            string.substring(self, 0, string.char_count(self) - string.char_count(suffix))
+            string.substring(self, 0, string.length(self) - string.length(suffix))
         else:
             self
 
     // The single character (as a String) at character index `i` (counted by Unicode
     // scalar) as `Some`, or `None` when `i` is out of range (RFC-0044 rule 1:
-    // absence is `Option`, never a "" sentinel). For a clamping view use `substring`.
+    // absence is `Option`, never a "" sentinel). Linear in `i`: to visit every
+    // character, use `chars` or `char_indices`.
     pub fn char_at(self, i: Int) -> Option(String):
-        if i >= 0 && i < string.char_count(self):
-            Some(string.substring(self, i, i + 1))
-        else:
+        let start = string.char_offset(self, i)
+        if i < 0 || start >= string.length(self):
             None
+        else:
+            Some(string.substring(self, start, string.char_offset(self, i + 1)))
 
     // Whether the string has no characters.
     pub fn is_empty(self) -> Bool:
         string.length(self) == 0
 
-    // The string with its characters in reverse order. Counted by Unicode scalar
-    // (via `char_count`/`substring`), so multi-byte characters stay intact:
-    // `reverse("café")` is `"éfac"`.
+    // The string with its characters in reverse order. Counted by Unicode scalar,
+    // so multi-byte characters stay intact: `reverse("café")` is `"éfac"`.
     pub fn reverse(self) -> unique String:
+        let cs = string.chars(self)
         var out = ""
-        var i = string.char_count(self) - 1
+        var i = cs.length() - 1
         while i >= 0:
-            out = out + string.substring(self, i, i + 1)
+            out = out + cs[i]
             i = i - 1
         out
 
-    // The first `n` characters (the whole string if it is shorter, "" if n <= 0).
+    // The first `n` characters, counted by Unicode scalar (the whole string if it
+    // is shorter, "" if n <= 0). Linear in `n`.
     pub fn take(self, n: Int) -> unique String:
-        string.substring(self, 0, n)
+        string.substring(self, 0, string.char_offset(self, n))
 
-    // All characters after the first `n` ("" if n covers the whole string).
+    // All characters after the first `n`, counted by Unicode scalar ("" if n
+    // covers the whole string). Linear in `n`.
     pub fn drop(self, n: Int) -> unique String:
-        string.substring(self, n, string.char_count(self))
+        string.substring(self, string.char_offset(self, n), string.length(self))
 
     // The number of non-overlapping occurrences of `sub` in `self` (0 for an empty
-    // `sub`). After each match the search resumes past it.
+    // `sub`), scanning left to right.
     pub fn count(self, sub: String) -> Int:
-        if string.char_count(sub) == 0:
+        if string.length(sub) == 0:
             0
         else:
             var total = 0
-            var rest = self
-            var i = find(rest, sub)
+            var i = find(self, sub, 0)
             while i >= 0:
                 total = total + 1
-                rest = string.substring(rest, i + string.char_count(sub), string.char_count(rest))
-                i = find(rest, sub)
+                i = find(self, sub, i + string.length(sub))
             total
 
     // The whitespace-separated words of `self`: tabs, newlines, and carriage
@@ -327,34 +342,34 @@ impl String:
     // empty-pattern rule: `count`/`index_of`/`last_index_of` treat it as absent).
     // (The `replace` builtin replaces every occurrence.)
     pub fn replace_first(self, from: String, to: String) -> String:
-        let i = if from.is_empty(): 0 - 1 else: find(self, from)
+        let i = if from.is_empty(): 0 - 1 else: find(self, from, 0)
         if i < 0:
             self
         else:
-            string.substring(self, 0, i) + to + string.substring(self, i + string.char_count(from), string.char_count(self))
+            string.substring(self, 0, i) + to + string.substring(self, i + string.length(from), string.length(self))
 
     // Split at the first occurrence of `sep` into `Some((before, after))`, with
     // `sep` itself dropped. Returns `None` when `sep` is absent or empty, so parsing
     // code can distinguish a missing separator from a present separator with an empty
-    // side (`"host"` vs `"host:"`). Counted by Unicode scalar.
+    // side (`"host"` vs `"host:"`).
     pub fn split_once_opt(self, sep: String) -> Option((String, String)):
-        let i = if sep.is_empty(): 0 - 1 else: find(self, sep)
+        let i = if sep.is_empty(): 0 - 1 else: find(self, sep, 0)
         if i < 0:
             None
         else:
-            Some((string.substring(self, 0, i), string.substring(self, i + string.char_count(sep), string.char_count(self))))
+            Some((string.substring(self, 0, i), string.substring(self, i + string.length(sep), string.length(self))))
 
     // Split at the first occurrence of `sep` into `(before, after)`, with `sep`
     // itself dropped. Compatibility wrapper: when `sep` is absent - including the
     // empty separator, which matches nothing (mirroring `rsplit_once`) - returns
     // `(s, "")`. Prefer `split_once_opt` for parsers and validators that need to
-    // distinguish absence from a present empty side. Counted by Unicode scalar.
+    // distinguish absence from a present empty side.
     pub fn split_once(self, sep: String) -> (String, String):
         match self.split_once_opt(sep):
             Some(parts) -> parts
             None -> (self, "")
 
-    // The character index of the LAST occurrence of `sep` in `self` as `Some`, or
+    // The byte offset of the LAST occurrence of `sep` in `self` as `Some`, or
     // `None` when absent or `sep` is empty (RFC-0044 rule 1: absence is `Option`,
     // never -1). The right-to-left companion of `index_of`.
     pub fn last_index_of(self, sep: String) -> Option(Int):
@@ -371,7 +386,7 @@ impl String:
         if i < 0:
             None
         else:
-            Some((string.substring(self, 0, i), string.substring(self, i + string.char_count(sep), string.char_count(self))))
+            Some((string.substring(self, 0, i), string.substring(self, i + string.length(sep), string.length(self))))
 
     // Split on the LAST occurrence of `sep` (e.g. a file extension): `rsplit_once`
     // of `"a.b.c"` on `"."` is `("a.b", "c")`. Compatibility wrapper: when `sep`
@@ -387,12 +402,13 @@ impl String:
     // the i64 range) input - so it never traps the way the raw `string_to_int`
     // builtin can.
     pub fn parse_int(self) -> Option(Int):
-        let n = string.char_count(self)
+        let cs = string.chars(self)
+        let n = cs.length()
         if n == 0:
             None
         else:
             var start = 0
-            let first = char_or_empty(self, 0)
+            let first = cs[0]
             let neg = first == "-"
             if first == "-" || first == "+":
                 start = 1
@@ -402,7 +418,7 @@ impl String:
                 var i = start
                 var ok = true
                 while i < n:
-                    let c = char_or_empty(self, i)
+                    let c = cs[i]
                     if c < "0" || c > "9":
                         ok = false
                     i = i + 1
@@ -410,10 +426,12 @@ impl String:
                     None
                 else:
                     var j = start
-                    while j < n - 1 && char_or_empty(self, j) == "0":
+                    while j < n - 1 && cs[j] == "0":
                         j = j + 1
+                    // Every character is an ASCII sign or digit, so the
+                    // character index `j` is also its byte offset.
                     let mag = string.substring(self, j, n)
-                    let mlen = string.char_count(mag)
+                    let mlen = n - j
                     let limit = if neg: "9223372036854775808" else: "9223372036854775807"
                     if mlen > 19 || mlen == 19 && mag > limit:
                         None
@@ -434,8 +452,9 @@ impl str:
     pub fn char_count(self: &str) -> Int:
         string.to_string(self).char_count()
 
-    // The sub-slice from character index `start` (inclusive) to `end` (exclusive),
-    // counted by Unicode scalar; out-of-range indices clamp.
+    // The sub-slice from byte offset `start` (inclusive) to `end` (exclusive).
+    // ABORTS unless `0 <= start <= end <= length()` and both offsets fall on
+    // character boundaries (see `String.substring`).
     pub fn slice(self: &str, start: Int, end: Int) -> &str:
         string.slice(self, start, end)
 

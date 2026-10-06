@@ -650,6 +650,18 @@ impl Codegen<'_> {
             // `string.char_count(s)` — Unicode scalars in `s`, widened to the Int's
             // i64. The `$char_count` helper reads the byte-length header itself, so
             // `s` is evaluated once (binary path only; WAT keeps its legacy arm).
+            // `string.char_offset(s, n)` — the byte offset of character `n`,
+            // clamped to `[0, length]` by the walk itself.
+            (intrinsics::STRING_CHAR_OFFSET, 2) => {
+                let nk = self.kind_of(&args[1]);
+                let s = self.lower_expr(&args[0])?;
+                let n = Self::wir_convert(self.lower_expr(&args[1])?, nk, Kind::I64);
+                Self::wir_convert(
+                    W::Call { func: intrinsic_helper(name).to_string(), args: vec![s, W::ConstI32(0), n] },
+                    Kind::I32,
+                    Kind::I64,
+                )
+            }
             (intrinsics::STRING_CHAR_COUNT, 1) if self.collect_wir => {
                 self.uses_byte_to_char = true;
                 let arg = self.lower_expr(&args[0])?;
@@ -875,11 +887,12 @@ impl Codegen<'_> {
                     rhs: Box::new(W::ConstI32(-1)),
                 }
             }
-            // `index_of(s, sub)` -> Int: the i32 index, sign-extended to i64.
-            (intrinsics::STRING_FIND, 2) => {
+            // `find(s, sub, from)` -> Int: the i32 byte offset, sign-extended to i64.
+            (intrinsics::STRING_FIND, 3) => {
                 self.uses_find_byte = true;
-                self.uses_index_of = true;
-                let inner = self.lower_args(&[&args[0], &args[1]])?;
+                let fk = self.kind_of(&args[2]);
+                let mut inner = self.lower_args(&[&args[0], &args[1]])?;
+                inner.push(Self::wir_convert(self.lower_expr(&args[2])?, fk, Kind::I64));
                 W::ToSlot(
                     Box::new(W::Call { func: intrinsic_helper(name).to_string(), args: inner }),
                     witchy_wir::wir::Kind::I32,
@@ -1172,27 +1185,9 @@ impl Codegen<'_> {
                     self.lower_expr(&args[0])?
                 }
             }
-            (intrinsics::STRING_SUBSTRING, 3) => {
-                self.uses_substring = true;
-                self.uses_substr = true;
-                let sk = self.kind_of(&args[1]);
-                let ek = self.kind_of(&args[2]);
-                let base = if self.kind_of(&args[0]) == Kind::GcRef(PLACE_REFERENCE_ID) {
-                    self.lower_place_reference_read(&args[0], Kind::I32, &args[0])?
-                } else {
-                    self.lower_expr(&args[0])?
-                };
-                // (BUG-011) Pass the char indices at full i64 width — `$str_substring`
-                // clamps them to `[0, char_count]` before narrowing to byte offsets,
-                // exactly like the interpreter. A prior narrow-to-i32 here wrapped huge
-                // indices (near the i64 extremes), diverging from the interpreter.
-                call("str_substring", vec![
-                    base,
-                    Self::wir_convert(self.lower_expr(&args[1])?, sk, Kind::I64),
-                    Self::wir_convert(self.lower_expr(&args[2])?, ek, Kind::I64),
-                ])
-            }
-            (intrinsics::STRING_SLICE, 3) => {
+            // `substring` and `slice` share one byte-offset lowering:
+            // `$str_slice_fast` traps off a character boundary or out of range.
+            (intrinsics::STRING_SUBSTRING, 3) | (intrinsics::STRING_SLICE, 3) => {
                 self.uses_substr = true;
                 let sk = self.kind_of(&args[1]);
                 let ek = self.kind_of(&args[2]);

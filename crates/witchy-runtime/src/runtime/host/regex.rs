@@ -98,16 +98,10 @@ fn spans_into(memory: &mut [u8], pattern: i32, pattern_len: i32,
     let (start, capacity) = (range.start, range.len());
     let regex = compile(&pattern)?;
     let mut encoded = String::new();
-    let mut byte_cursor = 0;
-    let mut char_cursor = 0usize;
     for found in regex.find_iter(&text) {
         use std::fmt::Write;
-        char_cursor += text[byte_cursor..found.start()].chars().count();
-        let begin = char_cursor;
-        char_cursor += text[found.start()..found.end()].chars().count();
-        byte_cursor = found.end();
         if !encoded.is_empty() { encoded.push(';'); }
-        write!(encoded, "{begin},{char_cursor}").expect("writing to String cannot fail");
+        write!(encoded, "{},{}", found.start(), found.end()).expect("writing to String cannot fail");
     }
     let required = i32::try_from(encoded.len()).map_err(|_| Error::msg("regex span output exceeds ABI size"))?;
     if encoded.len() <= capacity {
@@ -131,7 +125,7 @@ pub mod tests {
         assert_eq!(spans_into(&mut memory, 0, 1, 8, 6, 32, 6).unwrap(), 7);
         assert_eq!(memory, original, "short capacity writes nothing");
         assert_eq!(spans_into(&mut memory, 0, 1, 8, 6, 32, 7).unwrap(), 7);
-        assert_eq!(&memory[32..39], b"0,1;1,2");
+        assert_eq!(&memory[32..39], b"0,2;2,6", "spans are byte offsets");
         assert_eq!(memory[31], b'!');
         assert_eq!(memory[39], b'!');
         for (pattern, plen, text, tlen, output, cap) in [

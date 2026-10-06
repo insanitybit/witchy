@@ -2,12 +2,13 @@
 // time, with full alternation `a|b` and grouping `(...)` - and a loud error, not
 // a silent non-match, on an invalid pattern. The native engine powers positional
 // spans plus count and literal global replacement; the remaining public API is
-// built from spans in plain witchy. Positions are character indices.
+// built from spans in plain witchy. Positions are byte offsets, as `substring`
+// takes them.
 
 import bytes
 
 // The native engine: every non-overlapping match of `pattern` in `text`, as
-// character spans encoded "s,e;s,e;..." ("" when there is no match). Overridden
+// byte spans encoded "s,e;s,e;..." ("" when there is no match). Overridden
 // by the native registry / WASM host import; the body is an unreachable stub.
 fn match_spans(pattern: String, text: String) -> String:
     text
@@ -24,7 +25,7 @@ pub fn count(pattern: String, text: String) -> Int:
     text
     0
 
-// The leftmost match as a (start, end) character span - end exclusive - or None.
+// The leftmost match as a (start, end) byte span - end exclusive - or None.
 pub fn find(pattern: String, text: String) -> Option((Int, Int)):
     let all = find_all(pattern, text)
     if list.length(all) == 0:
@@ -89,5 +90,5 @@ pub fn split(pattern: String, text: String) -> unique List(String):
         let (s, e) = span
         list.push(out, text.substring(prev, s))
         prev = e
-    list.push(out, text.drop(prev))
+    list.push(out, text.substring(prev, text.length()))
     out

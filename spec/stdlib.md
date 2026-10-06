@@ -3677,7 +3677,7 @@ Tuples reflect to `MTuple` (a JSON array, or a parenthesized debug). Each suppor
 
 ## `regex`
 
-Regular expressions, powered by the Rust `regex` crate (RE2 semantics): linear time, with full alternation `a|b` and grouping `(...)` - and a loud error, not a silent non-match, on an invalid pattern. The native engine powers positional spans plus count and literal global replacement; the remaining public API is built from spans in plain witchy. Positions are character indices.
+Regular expressions, powered by the Rust `regex` crate (RE2 semantics): linear time, with full alternation `a|b` and grouping `(...)` - and a loud error, not a silent non-match, on an invalid pattern. The native engine powers positional spans plus count and literal global replacement; the remaining public API is built from spans in plain witchy. Positions are byte offsets, as `substring` takes them.
 
 #### `fn matches(pattern: String, text: String) -> Bool`
 
@@ -3689,7 +3689,7 @@ Number of non-overlapping matches. This is native so callers that only need a co
 
 #### `fn find(pattern: String, text: String) -> Option((Int, Int))`
 
-The leftmost match as a (start, end) character span - end exclusive - or None.
+The leftmost match as a (start, end) byte span - end exclusive - or None.
 
 #### `fn find_all(pattern: String, text: String) -> unique List((Int, Int))`
 
@@ -4339,6 +4339,8 @@ The witchy standard string library. Importing it grants no root authority; this 
 
 #### `fn char_count(s: String) -> Int`
 
+#### `fn char_offset(s: String, n: Int) -> Int`
+
 #### `fn chars(s: String) -> unique List(String)`
 
 #### `fn from_code(code: Int) -> unique String`
@@ -4383,11 +4385,19 @@ The string's length in BYTES (UTF-8). For user-perceived characters, see `char_c
 
 #### `String.char_count() -> Int`
 
-The number of Unicode scalar values.
+The number of Unicode scalar values. Linear in the length.
+
+#### `String.char_offset(n: Int) -> Int`
+
+The byte offset where character `n` (counted by Unicode scalar) starts, or `length()` when the string has `n` or fewer characters; 0 for a negative `n`. Linear in the offset: to walk characters, use `chars` or `char_indices`.
 
 #### `String.chars() -> unique List(String)`
 
 The characters, each as a single-character String - one O(n) pass, so callers can index characters in O(1).
+
+#### `String.char_indices() -> unique List((Int, String))`
+
+Each character with the byte offset where it starts, in order - one O(n) pass. `"héllo".char_indices()` begins `[(0, "h"), (1, "é"), (3, "l")`.
 
 #### `String.split(sep: String) -> unique List(String)`
 
@@ -4403,7 +4413,7 @@ Whether `needle` occurs in `self`.
 
 #### `String.index_of(needle: String) -> Option(Int)`
 
-The character index (counted by Unicode scalar) of the first occurrence of `needle` as `Some`, or `None` when `needle` does not occur (RFC-0044 rule 1: absence is `Option`, never a -1 sentinel). An empty `needle` matches nothing (the module-wide empty-pattern rule, matching `last_index_of`/`count`). For a bare yes/no, use `contains`.
+The byte offset of the first occurrence of `needle` as `Some`, or `None` when `needle` does not occur (RFC-0044 rule 1: absence is `Option`, never a -1 sentinel). An empty `needle` matches nothing (the module-wide empty-pattern rule, matching `last_index_of`/`count`). For a bare yes/no, use `contains`.
 
 #### `String.replace(from: String, to: String) -> unique String`
 
@@ -4411,7 +4421,7 @@ Replace every occurrence of `from` with `to`.
 
 #### `String.substring(start: Int, end: Int) -> unique String`
 
-The substring from character index `start` (inclusive) to `end` (exclusive), counted by Unicode scalar; out-of-range indices clamp.
+The bytes from offset `start` (inclusive) to `end` (exclusive). ABORTS unless `0 <= start <= end <= length()` and both offsets fall on character boundaries, so a result is always whole characters. Offsets come from `index_of`, `length`, `char_offset`, or `char_indices`; for a character count use `take`/`drop`.
 
 #### `String.as_str() -> &str`
 
@@ -4429,11 +4439,11 @@ Strip leading and trailing ASCII whitespace.
 
 #### `String.trim_start() -> unique String`
 
-Remove leading whitespace.
+Remove leading ASCII whitespace (the set `trim` strips). The trimmed text begins with a non-space, so its first occurrence starts after the prefix.
 
 #### `String.trim_end() -> unique String`
 
-Remove trailing whitespace.
+Remove trailing ASCII whitespace (the set `trim` strips).
 
 #### `String.to_int() -> Int`
 
@@ -4465,7 +4475,7 @@ Remove `suffix` from the end of `self` when present; otherwise return `self` unc
 
 #### `String.char_at(i: Int) -> Option(String)`
 
-The single character (as a String) at character index `i` (counted by Unicode scalar) as `Some`, or `None` when `i` is out of range (RFC-0044 rule 1: absence is `Option`, never a "" sentinel). For a clamping view use `substring`.
+The single character (as a String) at character index `i` (counted by Unicode scalar) as `Some`, or `None` when `i` is out of range (RFC-0044 rule 1: absence is `Option`, never a "" sentinel). Linear in `i`: to visit every character, use `chars` or `char_indices`.
 
 #### `String.is_empty() -> Bool`
 
@@ -4473,19 +4483,19 @@ Whether the string has no characters.
 
 #### `String.reverse() -> unique String`
 
-The string with its characters in reverse order. Counted by Unicode scalar (via `char_count`/`substring`), so multi-byte characters stay intact: `reverse("café")` is `"éfac"`.
+The string with its characters in reverse order. Counted by Unicode scalar, so multi-byte characters stay intact: `reverse("café")` is `"éfac"`.
 
 #### `String.take(n: Int) -> unique String`
 
-The first `n` characters (the whole string if it is shorter, "" if n <= 0).
+The first `n` characters, counted by Unicode scalar (the whole string if it is shorter, "" if n <= 0). Linear in `n`.
 
 #### `String.drop(n: Int) -> unique String`
 
-All characters after the first `n` ("" if n covers the whole string).
+All characters after the first `n`, counted by Unicode scalar ("" if n covers the whole string). Linear in `n`.
 
 #### `String.count(sub: String) -> Int`
 
-The number of non-overlapping occurrences of `sub` in `self` (0 for an empty `sub`). After each match the search resumes past it.
+The number of non-overlapping occurrences of `sub` in `self` (0 for an empty `sub`), scanning left to right.
 
 #### `String.words() -> unique List(String)`
 
@@ -4497,15 +4507,15 @@ Replace only the first occurrence of `from` with `to`; return `self` unchanged w
 
 #### `String.split_once_opt(sep: String) -> Option((String, String))`
 
-Split at the first occurrence of `sep` into `Some((before, after))`, with `sep` itself dropped. Returns `None` when `sep` is absent or empty, so parsing code can distinguish a missing separator from a present separator with an empty side (`"host"` vs `"host:"`). Counted by Unicode scalar.
+Split at the first occurrence of `sep` into `Some((before, after))`, with `sep` itself dropped. Returns `None` when `sep` is absent or empty, so parsing code can distinguish a missing separator from a present separator with an empty side (`"host"` vs `"host:"`).
 
 #### `String.split_once(sep: String) -> (String, String)`
 
-Split at the first occurrence of `sep` into `(before, after)`, with `sep` itself dropped. Compatibility wrapper: when `sep` is absent - including the empty separator, which matches nothing (mirroring `rsplit_once`) - returns `(s, "")`. Prefer `split_once_opt` for parsers and validators that need to distinguish absence from a present empty side. Counted by Unicode scalar.
+Split at the first occurrence of `sep` into `(before, after)`, with `sep` itself dropped. Compatibility wrapper: when `sep` is absent - including the empty separator, which matches nothing (mirroring `rsplit_once`) - returns `(s, "")`. Prefer `split_once_opt` for parsers and validators that need to distinguish absence from a present empty side.
 
 #### `String.last_index_of(sep: String) -> Option(Int)`
 
-The character index of the LAST occurrence of `sep` in `self` as `Some`, or `None` when absent or `sep` is empty (RFC-0044 rule 1: absence is `Option`, never -1). The right-to-left companion of `index_of`.
+The byte offset of the LAST occurrence of `sep` in `self` as `Some`, or `None` when absent or `sep` is empty (RFC-0044 rule 1: absence is `Option`, never -1). The right-to-left companion of `index_of`.
 
 #### `String.rsplit_once_opt(sep: String) -> Option((String, String))`
 
@@ -4529,11 +4539,11 @@ The string's length in BYTES (UTF-8). For user-perceived characters, see `char_c
 
 #### `str.char_count() -> Int`
 
-The number of Unicode scalar values.
+The number of Unicode scalar values. Linear in the length.
 
 #### `str.slice(start: Int, end: Int) -> &str`
 
-The sub-slice from character index `start` (inclusive) to `end` (exclusive), counted by Unicode scalar; out-of-range indices clamp.
+The sub-slice from byte offset `start` (inclusive) to `end` (exclusive). ABORTS unless `0 <= start <= end <= length()` and both offsets fall on character boundaries (see `String.substring`).
 
 #### `str.is_empty() -> Bool`
 

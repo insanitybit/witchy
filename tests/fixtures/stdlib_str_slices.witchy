@@ -22,12 +22,12 @@ fn main() -> Int:
     let sub = part3.slice(0, 6)
     let s_sub = sub.to_string()
 
-    // Out-of-bounds slicing clamps safely
-    let clamped = sv.slice(13, 999).to_string()
+    // Offsets are bytes; the end may be the whole length
+    let clamped = sv.slice(13, sv.len()).to_string()
 
     // Unicode multi-byte characters
     let uni = "✨witchy🚀lang"
-    let uni_slice = string.as_str(&uni).slice(0, 7)
+    let uni_slice = string.as_str(&uni).slice(0, 9)
     let uni_str = uni_slice.to_string()
 
     if s1 == "hello" && s2 == "world" && s3 == "witchy string slices!" && s_sub == "witchy" && clamped == "witchy string slices!" && l1 == 5 && l_all == 34 && empty && !not_empty && uni_str == "✨witchy":

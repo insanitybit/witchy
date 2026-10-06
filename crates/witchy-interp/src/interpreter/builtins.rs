@@ -2893,6 +2893,18 @@ impl Interpreter {
                 Value::Str(s) => Ok(Some(Value::Int(s.chars().count() as i64))),
                 other => err(format!("char_count expects a String, got `{other}`")),
             },
+            // Byte offset of character `n`, or the byte length when the string
+            // has `n` or fewer characters (negative `n` is offset 0).
+            intrinsics::STRING_CHAR_OFFSET => match args {
+                [Value::Str(s), Value::Int(n)] => {
+                    let offset = s
+                        .char_indices()
+                        .nth((*n).max(0) as usize)
+                        .map_or(s.len(), |(byte, _)| byte);
+                    Ok(Some(Value::Int(offset as i64)))
+                }
+                _ => err("char_offset expects a String and an Int"),
+            },
             // ASCII case mapping (a-z <-> A-Z); non-ASCII bytes are unchanged.
             // Deliberately ASCII-only so the WASM backend can match it byte-for-
             // byte (full Unicode case folding would need large tables).
@@ -2980,32 +2992,30 @@ impl Interpreter {
                 }
                 _ => err("ends_with expects two Strings"),
             },
-            // Char index of the first occurrence of `sub`, or -1 if absent.
+            // Byte offset of the first occurrence of `sub` at or after `from`
+            // (at most the length), or -1 if absent.
             intrinsics::STRING_FIND => match args {
-                [Value::Str(s), Value::Str(sub)] => {
-                    let idx = s
-                        .find(sub.as_str())
-                        .map(|byte| s[..byte].chars().count() as i64)
-                        .unwrap_or(-1);
+                [Value::Str(s), Value::Str(sub), Value::Int(from)] => {
+                    let Some(start) = usize::try_from(*from).ok().filter(|start| *start <= s.len()) else {
+                        return err(format!("find offset {from} is out of range (length {})", s.len()));
+                    };
+                    let idx = if sub.is_empty() {
+                        start as i64
+                    } else {
+                        s.as_bytes()[start..]
+                            .windows(sub.len())
+                            .position(|window| window == sub.as_bytes())
+                            .map_or(-1, |byte| (start + byte) as i64)
+                    };
                     Ok(Some(Value::Int(idx)))
                 }
-                _ => err("index_of expects two Strings"),
+                _ => err("find expects two Strings and an Int offset"),
             },
-            // Characters in the half-open range [start, end), clamped to bounds
-            // (counted by Unicode scalar, so slicing never splits a character).
+            // Bytes in the half-open range [start, end). Both offsets must lie on
+            // character boundaries with start <= end <= length.
             intrinsics::STRING_SUBSTRING => match args {
                 [Value::Str(s), Value::Int(start), Value::Int(end)] => {
-                    let chars: Vec<char> = s.chars().collect();
-                    let lo = (*start).max(0) as usize;
-                    let hi = (*end).max(0) as usize;
-                    let lo = lo.min(chars.len());
-                    let hi = hi.min(chars.len());
-                    let out: String = if lo < hi {
-                        chars[lo..hi].iter().collect()
-                    } else {
-                        String::new()
-                    };
-                    Ok(Some(Value::str(out)))
+                    Ok(Some(Value::str(byte_span(s, *start, *end)?)))
                 }
                 _ => err("substring expects a String and two Int indices"),
             },
@@ -3031,17 +3041,7 @@ impl Interpreter {
                         },
                         other => return err(format!("slice expects a str, got `{other}`")),
                     };
-                    let chars: Vec<char> = s.chars().collect();
-                    let lo = (*start).max(0) as usize;
-                    let hi = (*end).max(0) as usize;
-                    let lo = lo.min(chars.len());
-                    let hi = hi.min(chars.len());
-                    let out: String = if lo < hi {
-                        chars[lo..hi].iter().collect()
-                    } else {
-                        String::new()
-                    };
-                    Ok(Some(Value::str(out)))
+                    Ok(Some(Value::str(byte_span(&s, *start, *end)?)))
                 }
                 _ => err("slice expects a str and two Int indices"),
             },
@@ -4370,6 +4370,23 @@ impl Interpreter {
             )),
             _ => Ok(None),
         }
+    }
+}
+
+/// The bytes of `s` in `[start, end)`; aborts unless both offsets lie on
+/// character boundaries with `0 <= start <= end <= length`.
+fn byte_span(s: &str, start: i64, end: i64) -> Result<String, RuntimeError> {
+    let span = usize::try_from(start)
+        .ok()
+        .zip(usize::try_from(end).ok())
+        .filter(|(lo, hi)| lo <= hi)
+        .and_then(|(lo, hi)| s.get(lo..hi));
+    match span {
+        Some(out) => Ok(out.to_string()),
+        None => err(format!(
+            "string offsets {start}..{end} are out of range or not on a character boundary (length {})",
+            s.len()
+        )),
     }
 }
 

@@ -63,7 +63,7 @@ pub fn ext(p: String) -> Option(String):
     let b = base(p)
     let i = b.last_index_of(".") ?? -1
     if b != ".." && i > 0:
-        Some(b.substring(i + 1, b.char_count()))
+        Some(b.substring(i + 1, b.length()))
     else:
         None
 

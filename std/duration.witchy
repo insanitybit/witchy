@@ -206,10 +206,11 @@ pub fn parse(s: String) -> Result(Duration, DurationParseError):
     var seen_digit = false
     var seen_unit = false
     var i = 0
-    let n = s.char_count()
+    let cs = s.chars()
+    let n = cs.length()
     while i < n:
-        let c = s.substring(i, i + 1)
-        let two = if i + 1 < n: s.substring(i, i + 2) else: ""
+        let c = cs[i]
+        let two = if i + 1 < n: c + cs[i + 1] else: ""
         if c >= "0" && c <= "9":
             match push_digit(cur, c.to_int()):
                 Some(v) -> cur = v
@@ -225,7 +226,7 @@ pub fn parse(s: String) -> Result(Duration, DurationParseError):
                 Some(uf) ->
                     let (mult, width) = uf
                     if !seen_digit:
-                        return Err(UnitWithoutCount(s, s.substring(i, i + width)))
+                        return Err(UnitWithoutCount(s, if width == 2: two else: c))
                     match scale_add(total, cur, mult):
                         Some(v) -> total = v
                         None -> return Err(DurationOverflow(s))

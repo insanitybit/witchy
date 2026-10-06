@@ -143,6 +143,9 @@ pub fn days_in_month(y: Int, mo: Int) -> Int:
 // cases.
 pub fn parse_iso8601(text: String) -> Result(DateTime, TimeError):
     let t = text.trim()
+    // ISO 8601 is ASCII, so past this check byte offsets are character offsets.
+    if t.length() != t.char_count():
+        return Err(InvalidIsoDate(t))
     let (y, mo, da) = parse_date_part(t)?
     if t.length() == 10:
         return civil(y, mo, da, 0, 0, 0)
@@ -157,14 +160,14 @@ pub fn parse_iso8601(text: String) -> Result(DateTime, TimeError):
     let base = civil(y, mo, da, h, mi, s)?
     // The rest: optional `.fraction` (truncated), then `Z`, an offset, or
     // nothing (read as UTC).
-    var rest = t.drop(19)
+    var rest = t.substring(19, t.length())
     if rest.starts_with("."):
         var i = 1
-        while i < rest.char_count() && ascii.is_digit(rest.substring(i, i + 1)):
+        while i < rest.length() && ascii.is_digit(rest.substring(i, i + 1)):
             i = i + 1
         if i == 1:
             return Err(EmptyFractionalSeconds(t))
-        rest = rest.drop(i)
+        rest = rest.substring(i, rest.length())
     if rest == "" || rest == "Z" || rest == "z":
         return Ok(base)
     let sign = rest.substring(0, 1)

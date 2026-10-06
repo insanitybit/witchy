@@ -830,14 +830,14 @@ mod encoding {
 /// time, full alternation `|` and grouping `(...)`). This single native carries
 /// matching. Positional operations use encoded spans; count and literal global
 /// replacement stay native to avoid materializing spans or output fragments.
-/// Positions are CHARACTER indices (witchy strings are char-indexed), converted
-/// from the crate's byte offsets, so they feed `string.substring` directly. An
+/// Positions are the crate's byte offsets, which always fall on character
+/// boundaries, so they feed `string.substring` directly. An
 /// invalid pattern is a loud error on every backend, not a silent non-match.
 mod regexp {
     use super::{intrinsics, type_error, Value};
     use crate::value::NativeError as RuntimeError;
 
-    /// Every non-overlapping match as char-index spans, encoded `"s,e;s,e;..."`
+    /// Every non-overlapping match as byte spans, encoded `"s,e;s,e;..."`
     /// (empty string when there is no match). The host-bridged form used by the
     /// WASM backend (`host_regex_spans`) calls straight through to this.
     pub fn match_spans(args: &[Value]) -> Result<Value, RuntimeError> {
@@ -851,29 +851,12 @@ mod regexp {
             message: format!("invalid regex pattern `{pattern}`: {e}"),
         })?;
         let mut out = String::new();
-        let is_ascii = text.is_ascii();
-        let mut last_byte = 0;
-        let mut last_char = 0i64;
         for m in re.find_iter(text) {
             use std::fmt::Write;
             if !out.is_empty() {
                 out.push(';');
             }
-            let s_char = if is_ascii {
-                m.start() as i64
-            } else {
-                last_char += text[last_byte..m.start()].chars().count() as i64;
-                last_byte = m.start();
-                last_char
-            };
-            let e_char = if is_ascii {
-                m.end() as i64
-            } else {
-                last_char += text[last_byte..m.end()].chars().count() as i64;
-                last_byte = m.end();
-                last_char
-            };
-            let _ = write!(out, "{s_char},{e_char}");
+            let _ = write!(out, "{},{}", m.start(), m.end());
         }
         Ok(Value::Str(out))
     }

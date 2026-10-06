@@ -292,6 +292,53 @@ pub(crate) fn str_cmp_helper() -> WirFunc {
 /// `sub` in `s` (byte-wise), or `-1`; empty `sub` → 0. Vectorized for single-byte
 /// searches with 16-way SIMD bitmask scanning (RFC-0140).
 pub(crate) fn find_byte_helper() -> WirFunc {
+    find_byte_scan("find_byte", false)
+}
+
+/// `$find_byte_from(s: i32, sub: i32, from: i32) -> i32` — `$find_byte` starting
+/// at byte offset `from` (at most `s`'s length); empty `sub` → `from`.
+pub(crate) fn find_byte_from_helper() -> WirFunc {
+    find_byte_scan("find_byte_from", true)
+}
+
+/// `$str_find_from(s, sub, start: i64) -> i32` — the byte offset of the first
+/// `sub` at or after `start`, or `-1`. Traps unless `0 <= start <= length`.
+pub(crate) fn str_find_from_helper() -> WirFunc {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let b64 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I64, lhs: Box::new(l), rhs: Box::new(r) };
+    let trap_if = |cond: E| N::If { cond, then_: vec![N::Unreachable], els: vec![], result: None };
+    let body = vec![
+        N::SetLocal {
+            local: "slen".into(),
+            value: E::SafeLoad {
+                place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("s")),
+                kind: Kind::I32,
+            },
+        },
+        trap_if(b64(BinOp::Lt, getl("start"), E::ConstI64(0))),
+        trap_if(b64(BinOp::Gt, getl("start"), E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(getl("slen")) })),
+        N::Push(E::Call {
+            func: "find_byte_from".into(),
+            args: vec![getl("s"), getl("sub"), E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(getl("start")) }],
+        }),
+    ];
+    WirFunc {
+        name: "str_find_from".into(),
+        params: vec![
+            WirLocal { name: "s".into(), ty: WirTy::Str },
+            WirLocal { name: "sub".into(), ty: WirTy::Str },
+            WirLocal { name: "start".into(), ty: WirTy::Int },
+        ],
+        ret: vec![WirTy::Bool],
+        locals: vec![WirLocal { name: "slen".into(), ty: WirTy::Bool }],
+        body,
+        raw_body: None,
+    }
+}
+
+fn find_byte_scan(name: &str, from: bool) -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
     let getl = |n: &str| E::GetLocal(n.into());
@@ -433,12 +480,17 @@ pub(crate) fn find_byte_helper() -> WirFunc {
         },
         N::Return(Some(i32c(-1))),
     ];
+    let mut params = vec![
+        WirLocal { name: "s".into(), ty: WirTy::Str },
+        WirLocal { name: "sub".into(), ty: WirTy::Str },
+    ];
+    if from {
+        params.push(WirLocal { name: "from".into(), ty: WirTy::Bool });
+    }
+    let origin = if from { getl("from") } else { i32c(0) };
     WirFunc {
-        name: "find_byte".into(),
-        params: vec![
-            WirLocal { name: "s".into(), ty: WirTy::Str },
-            WirLocal { name: "sub".into(), ty: WirTy::Str },
-        ],
+        name: name.into(),
+        params,
         ret: vec![WirTy::Bool],
         locals: vec![
             WirLocal { name: "slen".into(), ty: WirTy::Bool },
@@ -457,11 +509,11 @@ pub(crate) fn find_byte_helper() -> WirFunc {
             setl("sublen", load(getl("sub"))),
             N::If {
                 cond: E::Unary { op: UnOp::Not, kind: Kind::I32, arg: Box::new(getl("sublen")) },
-                then_: vec![N::Return(Some(i32c(0)))],
+                then_: vec![N::Return(Some(origin.clone()))],
                 els: vec![],
                 result: None,
             },
-            setl("i", i32c(0)),
+            setl("i", origin),
             N::If {
                 cond: b(BinOp::Eq, getl("sublen"), i32c(1)),
                 then_: single_byte_branch,
@@ -1133,8 +1185,53 @@ pub(in crate::wir_helpers) fn str_find_byte_helper() -> WirFunc {
     }
 }
 
-/// `$str_slice_fast(s: i32, start: i64, end: i64) -> i32` — byte-indexed O(1) substring slice (RFC-0144).
-/// Clamps `start` and `end` to valid byte bounds in O(1) without iterating characters, then calls `$substr`.
+/// The checks shared by the byte-offset slice helpers: bind `slen`, then trap
+/// unless `0 <= start <= end <= slen` and both offsets lie on character
+/// boundaries (the end of the string, or a byte that is not `10xxxxxx`), and
+/// bind the narrowed offsets to `lo` and `hi`.
+fn byte_span_checks() -> Vec<WirNode> {
+    use WirExpr as E;
+    use WirNode as N;
+    let getl = |n: &str| E::GetLocal(n.into());
+    let i32c = E::ConstI32;
+    let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
+    let b64 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I64, lhs: Box::new(l), rhs: Box::new(r) };
+    let ext = |e: E| E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(e) };
+    let nar = |e: E| E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(e) };
+    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
+    let trap_if = |cond: E| N::If { cond, then_: vec![N::Unreachable], els: vec![], result: None };
+    let boundary = |offset: &str| N::If {
+        cond: b(BinOp::LtU, getl(offset), getl("slen")),
+        then_: vec![trap_if(b(
+            BinOp::Eq,
+            b(BinOp::And, E::SafeLoad8U {
+                place: crate::wir_helpers::layouts::byte_buffer_element_place(
+                    getl("s"), getl(offset), getl("slen"), crate::safewir::AccessMode::Read,
+                ),
+            }, i32c(0xC0)),
+            i32c(0x80),
+        ))],
+        els: vec![],
+        result: None,
+    };
+    vec![
+        setl("slen", E::SafeLoad {
+            place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("s")),
+            kind: Kind::I32,
+        }),
+        trap_if(b64(BinOp::Lt, getl("start"), E::ConstI64(0))),
+        trap_if(b64(BinOp::Lt, getl("end"), getl("start"))),
+        trap_if(b64(BinOp::Gt, getl("end"), ext(getl("slen")))),
+        setl("lo", nar(getl("start"))),
+        setl("hi", nar(getl("end"))),
+        boundary("lo"),
+        boundary("hi"),
+    ]
+}
+
+/// `$str_slice_fast(s: i32, start: i64, end: i64) -> i32` — the bytes of `s` in
+/// `[start, end)` as a fresh string, O(1) apart from the copy. Traps on a span
+/// outside the string or off a character boundary (see `byte_span_checks`).
 pub(in crate::wir_helpers) fn str_slice_fast_helper() -> WirFunc {
     use WirExpr as E;
     use WirNode as N;
@@ -1146,15 +1243,6 @@ pub(in crate::wir_helpers) fn str_slice_fast_helper() -> WirFunc {
         lhs: Box::new(l),
         rhs: Box::new(r),
     };
-    let b64 = |op: BinOp, l: E, r: E| E::Binary {
-        op,
-        kind: Kind::I64,
-        lhs: Box::new(l),
-        rhs: Box::new(r),
-    };
-    let ext = |e: E| E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(e) };
-    let nar = |e: E| E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(e) };
-    let setl = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
 
     WirFunc {
         name: "str_slice_fast".into(),
@@ -1169,38 +1257,9 @@ pub(in crate::wir_helpers) fn str_slice_fast_helper() -> WirFunc {
             WirLocal { name: "lo".into(), ty: WirTy::Bool },
             WirLocal { name: "hi".into(), ty: WirTy::Bool },
         ],
-        body: vec![
-            setl("slen", E::SafeLoad {
-                    place: crate::wir_helpers::layouts::byte_buffer_length_read_place(getl("s")),
-                    kind: Kind::I32,
-                }),
-            // lo = clamp(start, 0, slen)
-            setl("lo", nar(getl("start"))),
-            N::If {
-                cond: b64(BinOp::Lt, getl("start"), E::ConstI64(0)),
-                then_: vec![setl("lo", i32c(0))],
-                els: vec![N::If {
-                    cond: b64(BinOp::Gt, getl("start"), ext(getl("slen"))),
-                    then_: vec![setl("lo", getl("slen"))],
-                    els: vec![],
-                    result: None,
-                }],
-                result: None,
-            },
-            // hi = clamp(end, lo, slen)
-            setl("hi", nar(getl("end"))),
-            N::If {
-                cond: b64(BinOp::Lt, getl("end"), ext(getl("lo"))),
-                then_: vec![setl("hi", getl("lo"))],
-                els: vec![N::If {
-                    cond: b64(BinOp::Gt, getl("end"), ext(getl("slen"))),
-                    then_: vec![setl("hi", getl("slen"))],
-                    els: vec![],
-                    result: None,
-                }],
-                result: None,
-            },
-            N::If {
+        body: {
+            let mut body = byte_span_checks();
+            body.push(N::If {
                 cond: b(BinOp::Ge, getl("lo"), getl("hi")),
                 then_: vec![N::Push(E::Call {
                     func: "substr".into(),
@@ -1211,14 +1270,15 @@ pub(in crate::wir_helpers) fn str_slice_fast_helper() -> WirFunc {
                     args: vec![getl("s"), getl("lo"), b(BinOp::Sub, getl("hi"), getl("lo"))],
                 })],
                 result: Some(WirTy::Str),
-            },
-        ],
+            });
+            body
+        },
         raw_body: None,
     }
 }
 
 /// `$str_slice_view(s, start, end) -> (root, start, len, ptr)` — byte-indexed
-/// borrowed view. The final pointer is retained only for existing direct-view
+/// borrowed view, checked like `$str_slice_fast`. The final pointer is retained only for existing direct-view
 /// consumers. Ownership-taking consumers must use the first three values,
 /// which preserve the source allocation identity and the checked payload range.
 /// Unlike `str_slice_fast` this helper never allocates or constructs an owning
@@ -1229,10 +1289,6 @@ pub(crate) fn str_slice_view_helper() -> WirFunc {
     let get = |n: &str| E::GetLocal(n.into());
     let i32c = E::ConstI32;
     let b = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I32, lhs: Box::new(l), rhs: Box::new(r) };
-    let b64 = |op: BinOp, l: E, r: E| E::Binary { op, kind: Kind::I64, lhs: Box::new(l), rhs: Box::new(r) };
-    let ext = |e: E| E::Convert { from: Kind::I32, to: Kind::I64, arg: Box::new(e) };
-    let nar = |e: E| E::Convert { from: Kind::I64, to: Kind::I32, arg: Box::new(e) };
-    let set = |n: &str, v: E| N::SetLocal { local: n.into(), value: v };
     WirFunc {
         name: "str_slice_view".into(),
         params: vec![
@@ -1246,17 +1302,16 @@ pub(crate) fn str_slice_view_helper() -> WirFunc {
             WirLocal { name: "lo".into(), ty: WirTy::Bool },
             WirLocal { name: "hi".into(), ty: WirTy::Bool },
         ],
-        body: vec![
-            set("slen", E::SafeLoad { place: crate::wir_helpers::layouts::byte_buffer_length_read_place(get("s")), kind: Kind::I32 }),
-            set("lo", nar(get("start"))),
-            N::If { cond: b64(BinOp::Lt, get("start"), E::ConstI64(0)), then_: vec![set("lo", i32c(0))], els: vec![N::If { cond: b64(BinOp::Gt, get("start"), ext(get("slen"))), then_: vec![set("lo", get("slen"))], els: vec![], result: None }], result: None },
-            set("hi", nar(get("end"))),
-            N::If { cond: b64(BinOp::Lt, get("end"), ext(get("lo"))), then_: vec![set("hi", get("lo"))], els: vec![N::If { cond: b64(BinOp::Gt, get("end"), ext(get("slen"))), then_: vec![set("hi", get("slen"))], els: vec![], result: None }], result: None },
-            N::Push(get("s")),
-            N::Push(get("lo")),
-            N::Push(b(BinOp::Sub, get("hi"), get("lo"))),
-            N::Push(b(BinOp::Add, b(BinOp::Add, get("s"), i32c(4)), get("lo"))),
-        ],
+        body: {
+            let mut body = byte_span_checks();
+            body.extend([
+                N::Push(get("s")),
+                N::Push(get("lo")),
+                N::Push(b(BinOp::Sub, get("hi"), get("lo"))),
+                N::Push(b(BinOp::Add, b(BinOp::Add, get("s"), i32c(4)), get("lo"))),
+            ]);
+            body
+        },
         raw_body: None,
     }
 }

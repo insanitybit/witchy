@@ -569,7 +569,7 @@ fn header_no_comment(line: String) -> String:
     if close < 0:
         line
     else:
-        let rest = line.substring(close + 1, line.char_count())
+        let rest = line.substring(close + 1, line.length())
         match rest.index_of("#"):
             Some(h) -> line.substring(0, close + 1 + h).trim()
             None -> line

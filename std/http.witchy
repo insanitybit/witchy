@@ -158,13 +158,13 @@ fn parse_fetch_payload(raw: String) -> Result(Response, HttpError):
             Ok(response) -> Ok(response)
             Err(error) -> Err(MalformedResponse(error))
     else:
-        let failure = raw.substring(prefix.char_count(), raw.char_count())
+        let failure = raw.substring(prefix.length(), raw.length())
         let separator = failure.index_of(":") ?? -1
         if separator < 0:
             Err(UnknownProviderFailure("unknown", failure))
         else:
             let code = failure.substring(0, separator)
-            let message = failure.substring(separator + 1, failure.char_count())
+            let message = failure.substring(separator + 1, failure.length())
             Err(provider_error(code, message))
 
 fn provider_error(code: String, message: String) -> HttpError:
@@ -366,7 +366,7 @@ pub fn try_parse_response_string(raw: String) -> Result(Response, String):
 fn parse_response_inner(raw: String, strict_chunked: Bool, decode_transfer: Bool) -> Result(Response, ResponseParseError):
     let sep = raw.index_of("\r\n\r\n") ?? -1
     let head: String = if sep < 0: raw else: raw.substring(0, sep)
-    let bdy: String = if sep < 0: "" else: raw.substring(sep + 4, raw.char_count())
+    let bdy: String = if sep < 0: "" else: raw.substring(sep + 4, raw.length())
     let lines = head.split("\r\n")
     let status_line = if list.length(lines) > 0: list.at(lines, 0) else: ""
     var hdrs = []
@@ -376,7 +376,7 @@ fn parse_response_inner(raw: String, strict_chunked: Bool, decode_transfer: Bool
         let colon = line.index_of(":") ?? -1
         if colon >= 0:
             let name = line.substring(0, colon).to_lower()
-            let value = line.substring(colon + 1, line.char_count()).trim()
+            let value = line.substring(colon + 1, line.length()).trim()
             list.push(hdrs, (name, value))
         i = i + 1
     // (BUG-269) A `Transfer-Encoding: chunked` response frames its body as a series
@@ -406,7 +406,7 @@ fn status_code(line: String) -> Int:
     if sp < 0:
         0
     else:
-        let rest = line.substring(sp + 1, line.char_count())
+        let rest = line.substring(sp + 1, line.length())
         let sp2 = rest.index_of(" ") ?? -1
         let code: String = if sp2 < 0: rest else: rest.substring(0, sp2)
         // (BUG-203) A malformed/non-HTTP response can carry a non-numeric OR an

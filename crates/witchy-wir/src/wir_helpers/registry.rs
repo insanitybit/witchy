@@ -238,6 +238,20 @@ pub fn wir_helper(name: &str) -> Option<WirHelperSpec> {
             uses_heap: false,
             uses_table: false,
         }),
+        "find_byte_from" => Some(WirHelperSpec {
+            func: find_byte_from_helper(),
+            helper_deps: &[],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
+        "str_find_from" => Some(WirHelperSpec {
+            func: str_find_from_helper(),
+            helper_deps: &["find_byte_from"],
+            import_deps: &[],
+            uses_heap: false,
+            uses_table: false,
+        }),
         "starts_with" => Some(WirHelperSpec {
             func: starts_with_helper(),
             helper_deps: &[],

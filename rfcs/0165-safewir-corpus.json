@@ -191,7 +191,7 @@
     {
       "id": "020-substring_and_trim_scan_characters_and_ascii_whitespace",
       "path": "tests/rfc0165/corpus/020-substring_and_trim_scan_characters_and_ascii_whitespace.witchy",
-      "sha256": "e36da493a6f85cfa604ddc144bb3cc6caab5c77718686b665085d65a0d6cb77f",
+      "sha256": "794ac0124479995421c77a2377dff936ac4f337e27a0a02ff06dbe84fdc531b8",
       "expected_stdout": [
         "[éll] [wörld] [] [hé] []",
         "[hi there] [] [] [x] [ y]",

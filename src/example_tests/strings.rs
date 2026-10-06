@@ -168,32 +168,37 @@ fn main(console: Console):
     }
 
     #[test]
-    fn substring_clamps_inverted_and_out_of_range_spans() {
-        // The end scan resumes from the start offset; an inverted or
-        // past-the-end span must still clamp, never read backward.
-        let src = "fn main(console: Console):\n    let s = \"héllo wörld ✓!\"\n    console.print(\"[${s.substring(6, 11)}] [${s.substring(4, 2)}] [${s.substring(3, 3)}] [${s.substring(10, 99)}] [${s.substring(99, 120)}] [${s.substring(-3, 2)}]\")\n";
-        assert_eq!(run_on_wasm(src), vec!["[wörld] [] [] [d ✓!] [] [hé]"]);
+    fn substring_takes_byte_offsets_on_character_boundaries() {
+        // Offsets are bytes: `é` and `ö` are two bytes, `😀` four. Offsets from
+        // `index_of`, `length` and `char_offset` always land on boundaries.
+        let src = r#"
+fn main(console: Console):
+    let s = "héllo wörld"
+    console.print(s.substring(7, s.length()))
+    console.print(s.substring(1, 3))
+    console.print("[" + s.substring(3, 3) + "]")
+    console.print(s.substring(0, s.index_of(" ") ?? 0))
+    console.print("a😀b".substring(1, 5))
+    console.print("${"a😀b".length()} ${"a😀b".char_count()} ${"a😀b".char_offset(2)}")
+"#;
+        assert_eq!(run_on_wasm(src), vec!["wörld", "é", "[]", "héllo", "😀", "6 3 5"]);
     }
 
     #[test]
-    fn substring_is_char_indexed_across_multibyte_on_both_backends() {
-        // substring indexes by CHARACTER, not byte: slicing across a 2-byte (é)
-        // or 4-byte (emoji) boundary must compute the same char->byte offsets on
-        // both backends, while length (bytes) vs char_count tracks UTF-8 widths.
-        let src = r#"
-fn main(console: Console):
-    console.print("café".substring(0, 3))
-    console.print("café".substring(3, 4))
-    console.print("${"a😀b".length()}")
-    console.print("${"a😀b".char_count()}")
-    console.print("a😀b".substring(1, 2))
-    console.print("a😀b".substring(0, 2))
-"#;
-        assert_eq!(run_on_wasm(src), vec!["caf", "é", "6", "3", "😀", "a😀"]);
+    fn substring_aborts_off_a_boundary_out_of_range_or_inverted() {
+        let compile = |src: &str| -> Vec<u8> {
+            let linked = resolve_std_src(src);
+            typeck::check(&linked).expect("typecheck");
+            codegen::compile_module_binary(&linked).expect_lowered("lowers")
+        };
+        for span in ["0, 2", "2, 3", "0, 14", "14, 14", "3, 1", "0 - 1, 1"] {
+            let prog = format!("fn main(console: Console):\n    console.print(\"héllo wörld\".substring({span}))\n");
+            assert!(crate::run_wasm_bytes(&compile(&prog)).is_err(), "wasm must trap: {span}");
+        }
     }
 
-    // reverse flips character order using char_count + char-based substring, so
-    // it's correct for multi-byte UTF-8 ("café" -> "éfac"), not just ASCII.
+    // reverse flips character order over `chars`, so it's correct for
+    // multi-byte UTF-8 ("café" -> "éfac"), not just ASCII.
     // Char-based take/drop: clamp at the ends and count by Unicode scalar, so
     // they slice "café" correctly (take 2 -> "ca", drop 3 -> "é").
     #[test]

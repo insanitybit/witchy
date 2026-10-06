@@ -169,6 +169,7 @@ pub enum IntrinsicId {
     CryptoShake256,
     StringLength,
     StringCharCount,
+    StringCharOffset,
     StringChars,
     StringFromCode,
     StringSplit,
@@ -267,6 +268,8 @@ pub enum IntrinsicSignature {
     StringStringToString,
     StringToInt,
     StringStringToInt,
+    StringIntToInt,
+    StringStringIntToInt,
     StringStringToBool,
     StringToListString,
     StringStringToListString,
@@ -354,6 +357,8 @@ impl IntrinsicSignature {
                 | Self::StringToInt
                 | Self::StrToInt
                 | Self::StringStringToInt
+                | Self::StringIntToInt
+                | Self::StringStringIntToInt
                 | Self::StringStringStringToInt
                 | Self::FloatToInt
                 | Self::GenericListToInt
@@ -798,6 +803,7 @@ pub const CRYPTO_SHAKE256: &str = "crypto.__shake256";
 
 pub const STRING_LENGTH: &str = "string.length";
 pub const STRING_CHAR_COUNT: &str = "string.char_count";
+pub const STRING_CHAR_OFFSET: &str = "string.char_offset";
 pub const STRING_CHARS: &str = "string.chars";
 pub const STRING_FROM_CODE: &str = "string.from_code";
 pub const STRING_SPLIT: &str = "string.split";
@@ -3286,6 +3292,21 @@ pub const ALL: &[IntrinsicSpec] = &[
         private_callers: NO_PRIVATE_CALLERS,
     },
     IntrinsicSpec {
+        id: IntrinsicId::StringCharOffset,
+        name: STRING_CHAR_OFFSET,
+        arity: 2,
+        signature: IntrinsicSignature::StringIntToInt,
+        effect: IntrinsicEffect::Pure,
+        capability_effect: CapabilityEffect::None,
+        lowering: IntrinsicLowering::Builtin,
+        runtime: IntrinsicRuntime::InterpreterBuiltin,
+        wir_helpers: &["char_to_byte_from"],
+        dynamic_wir_helpers: false,
+        wir_host_call: None,
+        diagnostic_name: STRING_CHAR_OFFSET,
+        private_callers: NO_PRIVATE_CALLERS,
+    },
+    IntrinsicSpec {
         id: IntrinsicId::StringChars,
         name: STRING_CHARS,
         arity: 1,
@@ -3378,13 +3399,13 @@ pub const ALL: &[IntrinsicSpec] = &[
     IntrinsicSpec {
         id: IntrinsicId::StringFind,
         name: STRING_FIND,
-        arity: 2,
-        signature: IntrinsicSignature::StringStringToInt,
+        arity: 3,
+        signature: IntrinsicSignature::StringStringIntToInt,
         effect: IntrinsicEffect::Pure,
         capability_effect: CapabilityEffect::None,
         lowering: IntrinsicLowering::Builtin,
         runtime: IntrinsicRuntime::InterpreterBuiltin,
-        wir_helpers: &["str_index_of"],
+        wir_helpers: &["str_find_from"],
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: STRING_FIND,
@@ -3414,7 +3435,7 @@ pub const ALL: &[IntrinsicSpec] = &[
         capability_effect: CapabilityEffect::None,
         lowering: IntrinsicLowering::Builtin,
         runtime: IntrinsicRuntime::InterpreterBuiltin,
-        wir_helpers: &["str_substring"],
+        wir_helpers: &["str_slice_fast"],
         dynamic_wir_helpers: false,
         wir_host_call: None,
         diagnostic_name: STRING_SUBSTRING,
@@ -4049,6 +4070,7 @@ pub const REGEX_OPERATIONS: &[&str] = &[REGEX_MATCH_SPANS, REGEX_COUNT, REGEX_RE
 pub const STRING_OPERATIONS: &[&str] = &[
     STRING_LENGTH,
     STRING_CHAR_COUNT,
+    STRING_CHAR_OFFSET,
     STRING_CHARS,
     STRING_FROM_CODE,
     STRING_SPLIT,
@@ -4230,6 +4252,7 @@ pub fn is_string_operation(name: &str) -> bool {
             spec.id,
             IntrinsicId::StringLength
                 | IntrinsicId::StringCharCount
+                | IntrinsicId::StringCharOffset
                 | IntrinsicId::StringChars
                 | IntrinsicId::StringFromCode
                 | IntrinsicId::StringSplit

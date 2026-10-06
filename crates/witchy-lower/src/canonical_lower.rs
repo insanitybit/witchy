@@ -12460,6 +12460,17 @@ impl FunctionLowerer<'_> {
                 let object = self.lower_expr(receiver)?;
                 self.lower_char_count(object)
             }
+            Expr::Call { name, args } if name == "string.char_offset" => {
+                let [receiver, target] = args.as_slice() else {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("string.char_offset arity"));
+                };
+                let object = self.lower_expr(receiver)?;
+                let target = self.lower_expr(target)?;
+                if self.values[&target] != ValueType::Int {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("string.char_offset index type"));
+                }
+                self.lower_string_char_offset(object, target)
+            }
             Expr::Call { name, args } if matches!(name.as_str(), "string.substring" | "string.__substring") => {
                 let [receiver, start, end] = args.as_slice() else {
                     return Err(CanonicalLoweringError::UnsupportedExpression("string.substring arity"));
@@ -12579,12 +12590,16 @@ impl FunctionLowerer<'_> {
                 self.lower_string_replace(object, from, to)
             }
             Expr::Call { name, args } if matches!(name.as_str(), "string.find" | "string.__find") => {
-                let [receiver, needle] = args.as_slice() else {
+                let [receiver, needle, from] = args.as_slice() else {
                     return Err(CanonicalLoweringError::UnsupportedExpression("string.find arity"));
                 };
                 let object = self.lower_expr(receiver)?;
                 let needle = self.lower_expr(needle)?;
-                self.lower_string_find(object, needle)
+                let from = self.lower_expr(from)?;
+                if self.values[&from] != ValueType::Int {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("string.find offset type"));
+                }
+                self.lower_string_find(object, needle, from)
             }
             Expr::Call { name, args } if matches!(name.as_str(), "string.to_int" | "string.__to_int") => {
                 let [receiver] = args.as_slice() else {
@@ -20238,7 +20253,11 @@ impl FunctionLowerer<'_> {
         Ok(join_values[0])
     }
 
-    fn lower_string_find(&mut self, object: ValueId, needle: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+    /// `string.find(s, needle, from)`: the byte offset of the first match at
+    /// or after `from`, or -1. Aborts unless `from <= length`. A non-empty
+    /// needle starts with a non-continuation byte, so every match lies on a
+    /// character boundary wherever the scan starts.
+    fn lower_string_find(&mut self, object: ValueId, needle: ValueId, from: ValueId) -> Result<ValueId, CanonicalLoweringError> {
         // This intrinsic builds a diamond and two scan loops by hand.  Its
         // internal header loads are path-local, so they cannot become facts
         // visible at `exit`: a later enclosing join might otherwise reuse a
@@ -20247,6 +20266,11 @@ impl FunctionLowerer<'_> {
         // the checked facts that dominate every path through its exit.
         let facts = self.snapshot_facts();
         let length = self.string_length_of(object)?;
+        // A negative offset traps in the narrowing.
+        let start = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::NarrowSize { destination: start, value: from });
+        let start_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, start, length)?;
+        self.push_guard(start_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
         let needle_length = self.string_length_of(needle)?;
         let missing = self.push_const_int(-1)?;
         let zero = self.push_const_size(0)?;
@@ -20265,7 +20289,10 @@ impl FunctionLowerer<'_> {
         let last_start = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Subtract, length, needle_length, OverflowBehavior::Wrap)?;
         let header = self.new_block(&[ValueType::Size])?;
         let body = self.new_block(&[ValueType::Size])?;
-        self.finish_current(Terminator::Branch { target: header, arguments: vec![zero] })?;
+        // The checker renames a loop argument to the header parameter in
+        // every fact table, so the scan starts from a dedicated copy.
+        let initial = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, start, zero, OverflowBehavior::Wrap)?;
+        self.finish_current(Terminator::Branch { target: header, arguments: vec![initial] })?;
         let cursor = self.block_parameter_values(header)[0];
         self.current = header;
         let more = self.push_compare(ComparisonOperator::LessEqualUnsigned, cursor, last_start)?;
@@ -20289,9 +20316,9 @@ impl FunctionLowerer<'_> {
             else_arguments: Vec::new(),
         })?;
         self.current = found;
-        // The match's character index counts the sequence starts before it.
-        let characters = self.lower_char_count_prefix(object, cursor)?;
-        self.finish_current(Terminator::Branch { target: exit, arguments: vec![characters] })?;
+        let offset = self.fresh(ValueType::Int)?;
+        self.push_operation(Operation::WidenSize { destination: offset, value: cursor });
+        self.finish_current(Terminator::Branch { target: exit, arguments: vec![offset] })?;
         self.current = advance;
         let next = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor, one, OverflowBehavior::Wrap)?;
         self.finish_current(Terminator::Branch { target: header, arguments: vec![next] })?;
@@ -20838,11 +20865,10 @@ impl FunctionLowerer<'_> {
         Ok(self.block_parameter_values(exit)[0])
     }
 
-    /// `string.substring(s, start, end)`: the characters in `[start, end)`,
-    /// counted by Unicode scalar and clamped to the string, empty when the
-    /// range is inverted. One scan finds the start offset and continues from
-    /// it to the end offset; the bytes between them are copied into a fresh
-    /// string.
+    /// `string.substring(s, start, end)`: the bytes in `[start, end)`.
+    /// Aborts unless `start <= end <= length` and both offsets lie on
+    /// character boundaries, so the result is always valid UTF-8. Constant
+    /// time apart from the copy.
     fn lower_substring(
         &mut self,
         object: ValueId,
@@ -20856,29 +20882,80 @@ impl FunctionLowerer<'_> {
         let length = *self.string_lengths.get(&object).ok_or(
             CanonicalLoweringError::UnsupportedExpression("string.substring receiver extent"),
         )?;
-        let start = self.push_clamp_non_negative(start)?;
-        let end = self.push_clamp_non_negative(end)?;
-        let origin = self.push_const_size(0)?;
-        let none_seen = self.push_const_int(0)?;
-        let start_offset = self.lower_char_offset(object, layout, length, (origin, none_seen), start)?;
-        // An inverted range is empty: `end` is at least `start`, so the end
-        // scan only moves forward. Both are non-negative, so this cannot wrap.
-        let past_start = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Subtract, end, start, OverflowBehavior::Wrap)?;
-        let past_start = self.push_clamp_non_negative(past_start)?;
-        let end = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Add, start, past_start, OverflowBehavior::Wrap)?;
-        let end_offset = self.lower_char_offset(object, layout, length, (start_offset, start), end)?;
-        let start_int = self.fresh(ValueType::Int)?;
-        self.push_operation(Operation::WidenSize { destination: start_int, value: start_offset });
-        let end_int = self.fresh(ValueType::Int)?;
-        self.push_operation(Operation::WidenSize { destination: end_int, value: end_offset });
-        let span = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Subtract, end_int, start_int, OverflowBehavior::Wrap)?;
-        let span = self.push_clamp_non_negative(span)?;
-        let byte_count = self.fresh(ValueType::Size)?;
-        self.push_operation(Operation::NarrowSize { destination: byte_count, value: span });
+        // A negative offset traps in the narrowing.
+        let start_offset = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::NarrowSize { destination: start_offset, value: start });
+        let end_offset = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::NarrowSize { destination: end_offset, value: end });
+        let ordered = self.push_compare(ComparisonOperator::LessEqualUnsigned, start_offset, end_offset)?;
+        self.push_guard(ordered, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let end_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, end_offset, length)?;
+        self.push_guard(end_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        self.push_char_boundary_guard(object, layout, length, start_offset)?;
+        self.push_char_boundary_guard(object, layout, length, end_offset)?;
+        // `start <= end` is guarded, so the difference cannot wrap; the copy
+        // still needs `start + count <= length` as its own bounds fact.
+        let byte_count = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Subtract, end_offset, start_offset, OverflowBehavior::Wrap)?;
         let slice_end = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, start_offset, byte_count, OverflowBehavior::Trap)?;
         let slice_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, slice_end, length)?;
         self.push_guard(slice_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
         self.copy_string_slice(object, start_offset, byte_count, layout)
+    }
+
+    /// Abort unless `offset` (at most `length`) is a character boundary: the
+    /// end of the string, or a byte that is not a UTF-8 continuation byte
+    /// (`10xxxxxx`).
+    fn push_char_boundary_guard(
+        &mut self,
+        object: ValueId,
+        layout: witchy_wir::layout::LayoutId,
+        length: ValueId,
+        offset: ValueId,
+    ) -> Result<(), CanonicalLoweringError> {
+        let at_end = self.push_compare(ComparisonOperator::Equal, offset, length)?;
+        let inside = self.new_block(&[])?;
+        let join = self.new_block(&[])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: at_end,
+            then_target: join,
+            then_arguments: Vec::new(),
+            else_target: inside,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = inside;
+        let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, offset, length)?;
+        self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let byte = self.push_string_byte_load(object, offset, layout)?;
+        let byte_int = self.fresh(ValueType::Int)?;
+        self.push_operation(Operation::WidenSize { destination: byte_int, value: byte });
+        let top_bits = self.push_const_int(0xC0)?;
+        let continuation = self.push_const_int(0x80)?;
+        let tag = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitAnd, byte_int, top_bits, OverflowBehavior::Wrap)?;
+        let boundary = self.push_compare(ComparisonOperator::NotEqual, tag, continuation)?;
+        self.push_trap_unless(boundary)?;
+        self.finish_current(Terminator::Branch { target: join, arguments: Vec::new() })?;
+        self.current = join;
+        Ok(())
+    }
+
+    /// `string.char_offset(s, n)`: the byte offset where character `n`
+    /// starts, or the byte length when `s` has `n` or fewer characters.
+    /// Negative `n` is offset 0. Linear in the offset.
+    fn lower_string_char_offset(&mut self, object: ValueId, target: ValueId) -> Result<ValueId, CanonicalLoweringError> {
+        self.ensure_string_extent(object)?;
+        let ValueType::Ref(layout) = self.values[&object] else {
+            return Err(CanonicalLoweringError::UnsupportedExpression("string.char_offset receiver"));
+        };
+        let length = *self.string_lengths.get(&object).ok_or(
+            CanonicalLoweringError::UnsupportedExpression("string.char_offset receiver extent"),
+        )?;
+        let target = self.push_clamp_non_negative(target)?;
+        let origin = self.push_const_size(0)?;
+        let none_seen = self.push_const_int(0)?;
+        let offset = self.lower_char_offset(object, layout, length, (origin, none_seen), target)?;
+        let result = self.fresh(ValueType::Int)?;
+        self.push_operation(Operation::WidenSize { destination: result, value: offset });
+        Ok(result)
     }
 
     /// Scan over ASCII whitespace (space, tab, LF, VT, FF, CR: the set both

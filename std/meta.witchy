@@ -113,14 +113,15 @@ fn __meta_fresh_ident(hint: String) -> unique String:
     __meta_fresh_ident(hint)
 
 pub fn is_identifier(name: String) -> Bool:
-    let n = name.char_count()
+    let cs = name.chars()
+    let n = cs.length()
     if n == 0 || name == "_" || is_keyword(name) || name.contains("__"):
         false
     else:
-        var ok = is_ident_start(name.substring(0, 1))
+        var ok = is_ident_start(cs[0])
         var i = 1
         while i < n:
-            if !is_ident_continue(name.substring(i, i + 1)):
+            if !is_ident_continue(cs[i]):
                 ok = false
             i = i + 1
         ok

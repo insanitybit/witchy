@@ -312,15 +312,16 @@ fn is_digit(c: String) -> Bool:
 // without an intermediate i64, so a large integer part never overflows. Each
 // per-digit `string.to_int` is on a single character, so it can't trap.
 fn digits_to_float(s: String) -> Float:
-    let n = s.char_count()
+    let cs = s.chars()
+    let n = cs.length()
     var i = 0
     var neg = false
-    if n > 0 && s.substring(0, 1) == "-":
+    if n > 0 && cs[0] == "-":
         neg = true
         i = 1
     var acc = 0.0
     while i < n:
-        acc = acc * 10.0 + math.to_float(s.substring(i, i + 1).to_int())
+        acc = acc * 10.0 + math.to_float(cs[i].to_int())
         i = i + 1
     if neg:
         0.0 - acc

@@ -5108,6 +5108,8 @@ impl Checker {
             S::StringIntIntToString => {
                 Some((vec![Ty::String, Ty::Int, Ty::Int], Ty::String))
             }
+            S::StringIntToInt => Some((vec![Ty::String, Ty::Int], Ty::Int)),
+            S::StringStringIntToInt => Some((vec![Ty::String, Ty::String, Ty::Int], Ty::Int)),
             S::StringToStr => {
                 let str_ty = Ty::Named("str".into(), Vec::new().into());
                 Some((

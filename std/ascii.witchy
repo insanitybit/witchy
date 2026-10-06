@@ -43,14 +43,11 @@ pub fn to_digit(c: String) -> Option(Int):
 // True when `s` is non-empty and every character is an ASCII digit - a safe
 // guard before `string_to_int`, which traps on non-numeric input.
 pub fn all_digits(s: String) -> Bool:
-    let n = s.char_count()
-    if n == 0:
+    if s.length() == 0:
         false
     else:
         var ok = true
-        var i = 0
-        while i < n:
-            if !is_digit(s.substring(i, i + 1)):
+        for c in s.chars():
+            if !is_digit(c):
                 ok = false
-            i = i + 1
         ok

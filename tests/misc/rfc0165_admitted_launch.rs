@@ -197,10 +197,10 @@ fn admitted_sum_types_option_and_result_over_scalars_run() {
 fn admitted_string_searches_ordering_find_and_to_int_scan_bytes() {
     // starts_with/ends_with/contains compare byte ranges; ordering is the
     // sign of the first differing byte, then of the lengths; find reports
-    // the character index of the first match; to_int parses a trimmed
+    // the byte offset of the first match at or after an offset; to_int parses a trimmed
     // signed decimal, accumulating negatively so the minimum parses.
     let output = run_admitted(
-        "fn main(console: Console):\n    let s = \"hello world\"\n    console.print(\"${s.starts_with(\"hello\")} ${s.starts_with(\"world\")} ${s.ends_with(\"world\")} ${s.ends_with(\"\")} ${\"\".starts_with(\"a\")}\")\n    console.print(\"${s.contains(\"o w\")} ${s.contains(\"xyz\")} ${s.contains(\"\")} ${\"ab\".contains(\"abc\")}\")\n    console.print(\"${\"apple\" < \"banana\"} ${\"b\" > \"abc\"} ${\"abc\" <= \"abc\"} ${\"abc\" < \"abcd\"} ${\"\" < \"a\"} ${\"z\" >= \"aa\"}\")\n    let t = \"h\u{e9}llo w\u{f6}rld\"\n    console.print(\"${t.find(\"w\u{f6}r\")} ${t.find(\"h\")} ${t.find(\"zz\")} ${t.find(\"\")} ${\"aaa\".find(\"aa\")}\")\n    console.print(\"${\"42\".to_int()} ${\" -17 \".to_int()} ${\"+8\".to_int()} ${\"-9223372036854775808\".to_int()} ${\"0\".to_int()}\")\n",
+        "fn main(console: Console):\n    let s = \"hello world\"\n    console.print(\"${s.starts_with(\"hello\")} ${s.starts_with(\"world\")} ${s.ends_with(\"world\")} ${s.ends_with(\"\")} ${\"\".starts_with(\"a\")}\")\n    console.print(\"${s.contains(\"o w\")} ${s.contains(\"xyz\")} ${s.contains(\"\")} ${\"ab\".contains(\"abc\")}\")\n    console.print(\"${\"apple\" < \"banana\"} ${\"b\" > \"abc\"} ${\"abc\" <= \"abc\"} ${\"abc\" < \"abcd\"} ${\"\" < \"a\"} ${\"z\" >= \"aa\"}\")\n    let t = \"h\u{e9}llo w\u{f6}rld\"\n    console.print(\"${t.find(\"w\u{f6}r\", 0)} ${t.find(\"h\", 0)} ${t.find(\"zz\", 0)} ${t.find(\"\", 0)} ${\"aaa\".find(\"aa\", 0)} ${t.find(\"l\", 4)} ${t.find(\"l\", 5)}\")\n    console.print(\"${\"42\".to_int()} ${\" -17 \".to_int()} ${\"+8\".to_int()} ${\"-9223372036854775808\".to_int()} ${\"0\".to_int()}\")\n",
     );
     assert_eq!(
         output,
@@ -208,7 +208,7 @@ fn admitted_string_searches_ordering_find_and_to_int_scan_bytes() {
             "true false true true false".to_string(),
             "true false true false".to_string(),
             "true true true true true true".to_string(),
-            "6 0 -1 0 0".to_string(),
+            "7 0 -1 0 0 4 11".to_string(),
             "42 -17 8 -9223372036854775808 0".to_string(),
         ]
     );
@@ -362,17 +362,19 @@ fn admitted_while_let_binds_nested_tuple_payloads_until_the_pattern_fails() {
 fn admitted_guard_near_misses_trap_exactly_at_the_boundary() {
     // B3: the last valid index reads; the index equal to the length traps
     // (a guard is a strict unsigned comparison against the logical length,
-    // never the capacity); a negative index and an empty list trap too; a
-    // substring end past the character count is clamped by the language's
-    // rule, not by a guard.
+    // never the capacity); a negative index and an empty list trap too, as
+    // does a substring byte offset past the length. The length itself is a
+    // valid end.
     let output = run_admitted(
-        "fn main(console: Console):\n    let xs = [10, 20, 30]\n    console.print(\"${xs[xs.length() - 1]}\")\n    var grown = xs\n    grown.push(40)\n    console.print(\"${grown[3]} ${grown.length()}\")\n    console.print(\"héllo\".substring(1, 9))\n",
+        "fn main(console: Console):\n    let xs = [10, 20, 30]\n    console.print(\"${xs[xs.length() - 1]}\")\n    var grown = xs\n    grown.push(40)\n    console.print(\"${grown[3]} ${grown.length()}\")\n    console.print(\"héllo\".substring(1, 6))\n",
     );
     assert_eq!(output, vec!["30".to_string(), "40 4".to_string(), "éllo".to_string()]);
     for (label, source) in [
         ("index equal to the length", "fn main(console: Console):\n    let xs = [10, 20, 30]\n    console.print(\"before\")\n    console.print(\"${xs[xs.length()]}\")\n"),
         ("negative index", "fn main(console: Console):\n    let xs = [10, 20, 30]\n    let i = 0 - 1\n    console.print(\"${xs[i]}\")\n"),
         ("first element of an empty list", "pub fn first(xs: List(String)) -> String:\n    xs[0]\n\nfn main(console: Console):\n    console.print(first([]))\n"),
+        ("substring end past the length", "fn main(console: Console):\n    console.print(\"héllo\".substring(1, 7))\n"),
+        ("find from past the length", "fn main(console: Console):\n    console.print(\"${\"héllo\".find(\"l\", 7)}\")\n"),
     ] {
         // After admission the only failure mode is a Wasm trap; the runtime
         // reports it as an execution error with a backtrace.
