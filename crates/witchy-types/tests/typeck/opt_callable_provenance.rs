@@ -455,3 +455,23 @@ async fn main(console: Console):
         propagated.join().expect("propagated callback rejection");
     });
 }
+
+#[test]
+fn generic_pass_through_keeps_a_local_callback_obligation() {
+    // A result type with an unresolved variable is not provably task-free, so
+    // the call keeps its callee summary and the obligation still escapes loudly.
+    let worker = r#"mode opt
+import task
+pub async fn execute(own recipe: task.Task(Int)) -> Int:
+    recipe.await
+pub fn pass(x: a) -> a:
+    x
+pub fn launder() -> fn(own task.Task(Int)) -> task.Task(Int):
+    let relay = fn(own input: task.Task(Int)): execute(input)
+    pass(relay)
+"#;
+    let error = super::source::checked_bundle(
+        vec![("worker", worker), ("main", "import worker\nfn main():\n    ()\n")], "main",
+    ).expect_err("a generic pass-through cannot launder an opt task input obligation");
+    assert!(error.contains("opt"), "{error}");
+}

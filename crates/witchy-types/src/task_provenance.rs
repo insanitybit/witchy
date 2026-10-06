@@ -245,12 +245,50 @@ impl<'a> Analyzer<'a, '_> {
     }
 
     fn opaque_result_may_hide_task_input(&self, expression: &Expr) -> bool {
-        self.checked_result_may_hide_task_input(expression).unwrap_or(false)
+        let Some(ty) = self.table.type_of(expression) else { return false };
+        let Some(source) = ty_to_ast(ty) else { return matches!(ty, Ty::Fn(..)) };
+        self.type_may_hide_task_input(&source)
     }
 
-    /// Whether the checked type of `expression` can reach a task or callable
-    /// input, or None when the expression has no checked type.
-    fn checked_result_may_hide_task_input(&self, expression: &Expr) -> Option<bool> {
+    /// Whether `expression` has a fully concrete checked type whose values
+    /// provably hold no task or callable. A type with an unresolved variable
+    /// (a generic pass-through) does not convert and so is never task-free.
+    fn checked_result_is_task_free(&self, expression: &Expr) -> bool {
+        self.table.type_of(expression)
+            .and_then(ty_to_ast)
+            .is_some_and(|source| self.type_is_task_free(&source))
+    }
+
+    /// Every stored path of `source` ends in a primitive scalar or string.
+    /// A task, callable, existential, opaque type, or a walk past its budget
+    /// is not free. A recursive type revisited on the current path adds no
+    /// new leaves, so the other paths decide.
+    fn type_is_task_free(&self, source: &Type) -> bool {
+        fn free(ty: &Type, definitions: &BTreeMap<String, TypeDef>,
+            active: &mut HashSet<Type>, depth: usize, remaining: &mut usize) -> bool {
+            if depth > 128 || *remaining == 0 { return false; }
+            *remaining -= 1;
+            let source = ty.unqualified();
+            if !active.insert(source.clone()) { return true; }
+            let result = match source {
+                Type::Named(name, arguments) if arguments.is_empty() && matches!(name.as_str(),
+                    "Int" | "Float" | "Bool" | "String" | "Bytes" | "Duration" | "Nil") => true,
+                Type::Named(name, _) if name == "Task" || name == "task.Task" => false,
+                Type::Tuple(fields) if fields.is_empty() => true,
+                Type::Named(..) | Type::Tuple(_) => match stored_children(source, definitions) {
+                    Ok(Some(children)) => children.into_types().iter().all(|child|
+                        free(child, definitions, active, depth + 1, remaining)),
+                    _ => false,
+                },
+                _ => false,
+            };
+            active.remove(source);
+            result
+        }
+        free(source, self.definitions, &mut HashSet::new(), 0, &mut 4_096)
+    }
+
+    fn type_may_hide_task_input(&self, source: &Type) -> bool {
         fn walk(ty: &Type, definitions: &BTreeMap<String, TypeDef>, parameter: bool,
             active: &mut HashSet<(Type, bool)>, depth: usize, remaining: &mut usize) -> bool {
             if depth > 128 || *remaining == 0 { return true; }
@@ -279,9 +317,7 @@ impl<'a> Analyzer<'a, '_> {
             active.remove(&key);
             hidden
         }
-        let ty = self.table.type_of(expression)?;
-        let Some(source) = ty_to_ast(ty) else { return Some(matches!(ty, Ty::Fn(..))) };
-        Some(walk(&source, self.definitions, false, &mut HashSet::new(), 0, &mut 4_096))
+        walk(source, self.definitions, false, &mut HashSet::new(), 0, &mut 4_096)
     }
 
     fn unknown_opaque_result(&self, expression: &Expr) -> Proof {
@@ -652,10 +688,10 @@ impl<'a> Analyzer<'a, '_> {
                 source_execution_mode(function, &self.module.modes),
                 Box::new(body_result),
             )
-        } else if self.checked_result_may_hide_task_input(expression) == Some(false) {
-            // A result whose checked type reaches no task or callable carries
-            // no obligation. Its structural summary only grows through a
-            // recursive callee until the depth budget reads it as one.
+        } else if self.checked_result_is_task_free(expression) {
+            // A result whose checked type stores no task or callable carries
+            // no obligation or task behavior. Its structural summary only grows
+            // through a recursive callee until the depth budget reads it as one.
             Proof::Unknown
         } else {
             self.summaries.get(name).map_or(Proof::Unknown, |summary| {

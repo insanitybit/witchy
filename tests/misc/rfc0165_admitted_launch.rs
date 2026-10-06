@@ -790,3 +790,13 @@ fn admitted_a_recursive_builder_of_a_task_free_type_has_no_callable_obligation()
     );
     assert_eq!(output, vec!["15".to_string()]);
 }
+
+#[test]
+fn admitted_a_recursive_builder_under_an_async_main_has_no_callable_obligation() {
+    // An async program also exports task behavior summaries; the same
+    // task-free result must not nest there until the budget rejects it.
+    let output = run_admitted(
+        "type Tree:\n    Leaf\n    Node(Tree, Tree)\n\nfn build(depth: Int) -> Tree:\n    if depth == 0:\n        Node(Leaf, Leaf)\n    else:\n        Node(build(depth - 1), build(depth - 1))\n\nfn count(t: Tree) -> Int:\n    match t:\n        Leaf -> 0\n        Node(l, r) -> 1 + count(l) + count(r)\n\nasync fn main(console: Console):\n    console.print(\"${count(build(3))}\")\n",
+    );
+    assert_eq!(output, vec!["15".to_string()]);
+}
