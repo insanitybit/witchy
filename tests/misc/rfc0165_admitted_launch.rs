@@ -940,3 +940,13 @@ fn admitted_unique_dictionary_builders_leave_their_input_unchanged() {
     );
     assert_eq!(output, vec!["3 2 60 3 30".to_string()]);
 }
+
+#[test]
+fn admitted_named_functions_share_an_owner_family_with_a_capturing_closure() {
+    // Each named function carries its own declaration signature; both
+    // implement the family's identical callable contract.
+    let output = run_admitted(
+        "fn double(n: Int) -> Int:\n    n * 2\n\nfn square(n: Int) -> Int:\n    n * n\n\nfn apply_all(fs: List(fn(Int) -> Int), n: Int) -> Int:\n    var total = 0\n    for f in fs:\n        total = total + f(n)\n    total\n\nfn main(console: Console):\n    let traced = fn(n: Int):\n        console.print(\"traced ${n}\")\n        n + 1\n    console.print(\"${apply_all([double, square, traced], 5)}\")\n",
+    );
+    assert_eq!(output, vec!["traced 5".to_string(), "41".to_string()]);
+}

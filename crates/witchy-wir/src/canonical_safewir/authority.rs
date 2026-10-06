@@ -1124,7 +1124,7 @@ pub mod self_checks {
         });
         lanes.is_some_and(|lanes| signature_lanes_match(&lanes, target_signature))
             && owner_family.is_none_or(|family| {
-                family.declaration_signature == target_signature.id
+                family.declares(target_signature.id, module.signatures())
                     && family.constructors.iter().any(|constructor| {
                         constructor.function == adapter && constructor.witness.is_none()
                             && constructor.environment_tag == 0 && constructor.captures.is_empty()

@@ -403,6 +403,26 @@ pub struct OwnerFamily {
     pub constructors: Vec<OwnerConstructor>,
 }
 
+impl OwnerFamily {
+    /// Whether `target` implements this family's declaration: the same
+    /// parameters, results, and callable contract. Each source declaration
+    /// has its own signature id, so two named functions of one callable type
+    /// share a family through their identical contract, not their id. Before
+    /// body-derived result contracts are installed both sides may still hold
+    /// placeholders; the final ABI check repeats this comparison on the
+    /// installed contracts, and the adapter body is checked against them.
+    pub fn declares(&self, target: FunctionSignatureId, signatures: &[super::FunctionSignature]) -> bool {
+        if target == self.declaration_signature {
+            return true;
+        }
+        let find = |id| signatures.iter().find(|signature| signature.id == id);
+        matches!((find(target), find(self.declaration_signature)), (Some(target), Some(declared))
+            if target.parameters == declared.parameters
+                && target.results == declared.results
+                && target.contract == declared.contract)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnerConstructor {
     pub id: ConstructorId,

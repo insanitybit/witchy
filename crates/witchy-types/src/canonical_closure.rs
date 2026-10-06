@@ -350,39 +350,58 @@ impl<'a> Builder<'a> {
     fn source_may_contain_qualifier(&self, ty: &Type, depth: usize, remaining: &mut usize) -> bool {
         const NODE_BUDGET: usize = 4_096;
 
-        fn walk(
-            ty: &Type,
-            definitions: &BTreeMap<String, ast::TypeDef>,
-            depth: usize,
-            remaining: &mut usize,
-            active: &mut HashSet<Type>,
-        ) -> bool {
-            if *remaining == 0 || depth >= 128 { return true; }
-            *remaining -= 1;
-            // A repeated exact instantiation contributes no new fields. The
-            // first visit still inspects every sibling, including qualifiers;
-            // expanding generic instantiations retain the resource limits.
-            if !active.insert(ty.clone()) { return false; }
-            let mut child = |ty: &Type| walk(ty, definitions, depth + 1, remaining, active);
-            let contains = match ty {
-                Type::Qualified(ast::TypeQual::Frozen | ast::TypeQual::Unique, _) => true,
-                Type::Qualified(_, inner) | Type::Slice(inner) => child(inner),
-                Type::Tuple(items) | Type::Dyn(_, items) => items.iter().any(&mut child),
-                Type::Named(_, arguments) => {
-                    if arguments.iter().any(&mut child) { true }
-                    else {
-                        match witchy_canonical_source::aggregates::instantiated_declared_fields(ty, definitions) {
-                            Some(Ok(fields)) => fields.iter().any(child),
-                            Some(Err(())) => true,
-                            None => false,
+        /// One walk's memo: a type's answer is fixed once its subtree is
+        /// finished, so a sibling that repeats it costs nothing. `true` is
+        /// always final. `false` is final only when no ancestor still in
+        /// progress cut the subtree short (`cuts` unchanged): a cut answers
+        /// `false` provisionally and its ancestor may yet find a qualifier.
+        struct Walk<'d> {
+            definitions: &'d BTreeMap<String, ast::TypeDef>,
+            active: HashSet<Type>,
+            known: HashMap<Type, bool>,
+            cuts: usize,
+        }
+
+        impl Walk<'_> {
+            fn contains(&mut self, ty: &Type, depth: usize, remaining: &mut usize) -> bool {
+                if let Some(known) = self.known.get(ty) { return *known; }
+                if *remaining == 0 || depth >= 128 { return true; }
+                *remaining -= 1;
+                // A type already being expanded contributes no new fields
+                // here; its own expansion inspects every one.
+                if !self.active.insert(ty.clone()) {
+                    self.cuts += 1;
+                    return false;
+                }
+                let cuts = self.cuts;
+                let mut child = |walk: &mut Self, ty: &Type| walk.contains(ty, depth + 1, remaining);
+                let contains = match ty {
+                    Type::Qualified(ast::TypeQual::Frozen | ast::TypeQual::Unique, _) => true,
+                    Type::Qualified(_, inner) | Type::Slice(inner) => child(self, inner),
+                    Type::Tuple(items) | Type::Dyn(_, items) => items.iter().any(|item| child(self, item)),
+                    Type::Named(_, arguments) => {
+                        if arguments.iter().any(|argument| child(self, argument)) { true }
+                        else {
+                            match witchy_canonical_source::aggregates::instantiated_declared_fields(ty, self.definitions) {
+                                Some(Ok(fields)) => fields.iter().any(|field| child(self, field)),
+                                Some(Err(())) => true,
+                                None => false,
+                            }
                         }
                     }
+                    Type::Fn(parameters, result, _, _) => {
+                        parameters.iter().any(|parameter| child(self, parameter)) || child(self, result)
+                    }
+                    Type::RecordCompose { base, fields } => {
+                        child(self, base) || fields.iter().any(|(_, field)| child(self, field))
+                    }
+                };
+                self.active.remove(ty);
+                if contains || self.cuts == cuts {
+                    self.known.insert(ty.clone(), contains);
                 }
-                Type::Fn(parameters, result, _, _) => parameters.iter().any(&mut child) || child(result),
-                Type::RecordCompose { base, fields } => child(base) || fields.iter().any(|(_, field)| child(field)),
-            };
-            active.remove(ty);
-            contains
+                contains
+            }
         }
         let cacheable = depth == 0 && *remaining == NODE_BUDGET;
         if cacheable
@@ -392,7 +411,8 @@ impl<'a> Builder<'a> {
             return contains;
         }
         let initial_budget = *remaining;
-        let contains = walk(ty, &self.definitions, depth, remaining, &mut HashSet::new());
+        let mut walk = Walk { definitions: &self.definitions, active: HashSet::new(), known: HashMap::new(), cuts: 0 };
+        let contains = walk.contains(ty, depth, remaining);
         if cacheable {
             self.qualifier_cache
                 .borrow_mut()
@@ -615,8 +635,12 @@ impl<'a> Builder<'a> {
                 for name in captures {
                     let Some(binding) = self.resolve_capture(&name)?.cloned() else { continue; };
                     if binding.unproved_qualifier || binding.mutable && binding.ty.as_ref().is_some_and(canonical_abi::has_storage_qualifier) {
+                        let enclosing = match self.module.items.get(callable.item as usize) {
+                            Some(Item::Function(function)) => function.name.as_str(),
+                            _ => "<item>",
+                        };
                         return Err(ClosureWitnessError::UnsupportedType {
-                            context: format!("closure capture `{name}` has no stable checked storage qualifier"),
+                            context: format!("closure capture `{name}` in `{enclosing}` has no stable checked storage qualifier"),
                         });
                     }
                     let checked_type = binding.ty.clone().ok_or_else(|| ClosureWitnessError::MissingCaptureType { name: name.clone() })?;

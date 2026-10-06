@@ -424,7 +424,7 @@ fn validate_candidate_abi_bindings_with<S: ModuleStage>(
             };
             if constructor.environment_tag != 0
                 || !constructor.captures.is_empty()
-                || target.signature != family.declaration_signature
+                || !family.declares(target.signature, candidate.signatures())
             {
                 return Err(CandidateAbiBindingError::AdapterShapeMismatch { adapter: binding.adapter() });
             }

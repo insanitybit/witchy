@@ -7,6 +7,10 @@ use crate::parser;
 fn data_oriented_examples_match_golden_output() {
     let cases: &[(&str, &[&str])] = &[
         (
+            "examples/request_reply/src/request_reply.witchy",
+            &["9 squared is 81"],
+        ),
+        (
             "examples/calc/src/calc.witchy",
             &[
                 "2 + 3 * 4       => 14",

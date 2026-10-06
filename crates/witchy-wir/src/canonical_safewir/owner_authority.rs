@@ -501,7 +501,7 @@ fn validate_adapter_constructor<S: ModuleStage>(
     // checked source and checks the adapter's forwarding body. Candidate names
     // and constructor ordinals cannot substitute for either binding.
     if constructor.witness.is_some() || constructor.environment_tag != 0 || !constructor.captures.is_empty()
-        || adapter.signature != family.signature || target.signature != family.declaration_signature
+        || adapter.signature != family.signature || !family.declares(target.signature, candidate.signatures())
         || !candidate.source_abi_bindings().entries().iter().any(|entry| entry.function() == target.id)
     {
         return Err(refuse());
