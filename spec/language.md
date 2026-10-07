@@ -312,7 +312,8 @@ must sealed type Transaction:
     Transaction(Int)
 
 fn commit(own transaction: Transaction) -> Bool:
-    true
+    match move transaction:
+        Transaction(id) -> id > 0
 
 fn publish(flag: Bool) -> Bool:
     let transaction = Transaction(1)
