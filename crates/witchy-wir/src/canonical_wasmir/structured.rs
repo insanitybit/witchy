@@ -179,9 +179,40 @@ pub(super) struct StructuredEmitter<'a> {
     /// encountered it. Caching refusal is essential for diamond graphs with
     /// a shared cyclic suffix.
     path_facts: RefCell<BTreeMap<Vec<crate::canonical_safewir::BlockId>, std::rc::Rc<RefCell<BTreeMap<crate::canonical_safewir::BlockId, bool>>>>>,
+    /// Blocks from which every path ends in a trap: a failed check's
+    /// diagnostic, and the releases on the way to it.
+    doomed: BTreeSet<crate::canonical_safewir::BlockId>,
+    /// Advisory layout hints for this body, in instruction order.
+    hints: Vec<wasm_encoder::BranchHint>,
 }
 
 impl StructuredEmitter<'_> {
+    /// Hint the `if` about to be emitted when exactly one arm is doomed, so
+    /// the engine lays that arm out of line and a passing check falls
+    /// through. A hint never changes which arm executes.
+    pub(super) fn hint_if(
+        &mut self,
+        then_target: crate::canonical_safewir::BlockId,
+        else_target: crate::canonical_safewir::BlockId,
+    ) {
+        let taken = match (self.doomed.contains(&then_target), self.doomed.contains(&else_target)) {
+            (false, true) => 1,
+            (true, false) => 0,
+            _ => return,
+        };
+        self.hint(taken);
+    }
+
+    /// Hint the `br_if` about to be emitted as not taken: its destination
+    /// is a doomed arm.
+    pub(super) fn hint_cold_branch(&mut self) { self.hint(0); }
+
+    fn hint(&mut self, taken: u32) {
+        if let Ok(branch_func_offset) = u32::try_from(self.body.byte_len()) {
+            self.hints.push(wasm_encoder::BranchHint { branch_func_offset, branch_hint_value: taken });
+        }
+    }
+
     fn block(&self, id: crate::canonical_safewir::BlockId) -> Result<&WasmBlock, EncodeError> {
         self.blocks_by_id
             .get(&id)
@@ -987,6 +1018,7 @@ impl StructuredEmitter<'_> {
         }
         let join = self.find_join(current, then_target, else_target, stop)?;
         emit_get(self.body, self.layout, self.source_function.id, condition)?;
+        self.hint_if(then_target, else_target);
         self.body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
         self.labels.push(StructuredLabel::If);
         self.emit_branch_arguments(then_target, then_arguments)?;
@@ -1062,6 +1094,7 @@ impl StructuredEmitter<'_> {
                 else_arguments,
             } if Some(else_target) == exit => {
                 emit_get(self.body, self.layout, self.source_function.id, condition)?;
+                self.hint_if(then_target, else_target);
                 self.body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
                 self.labels.push(StructuredLabel::If);
                 self.emit_branch_arguments(then_target, &then_arguments)?;
@@ -1149,7 +1182,7 @@ pub(super) fn encode_function(
     owner_bridges: &[AdmittedOwnerBridge],
     owner_cleanup_function: Option<u32>,
     memory_helpers: &std::sync::Arc<outlined_memory::Helpers>,
-) -> Result<WasmFunctionEncoder, EncodeError> {
+) -> Result<(WasmFunctionEncoder, Vec<wasm_encoder::BranchHint>), EncodeError> {
     let mut layout = local_layout(source_function, signature, layouts)?;
     layout.owner_bridges = owner_bridges.iter().collect();
     layout.memory_helpers = Some(memory_helpers.clone());
@@ -1198,6 +1231,9 @@ pub(super) fn encode_function(
             }
         }
     }
+    let doomed = forward_cfg::doomed(&successors_by_block, target_function.blocks.iter()
+        .filter(|block| matches!(block.terminator.operation, ScalarTerminator::Trap | ScalarTerminator::Unreachable))
+        .map(|block| block.id));
     let mut emitter = StructuredEmitter {
         body: &mut body,
         source_function,
@@ -1226,6 +1262,8 @@ pub(super) fn encode_function(
         immediate_dominators: std::cell::OnceCell::new(),
         block_slots: std::cell::OnceCell::new(),
         path_facts: RefCell::new(BTreeMap::new()),
+        doomed,
+        hints: Vec::new(),
     };
     match forward_cfg::schedule(entry, &emitter.successors_by_block).map_err(|_| {
         EncodeError::Lowering(LoweringError::UnsupportedControlFlow {
@@ -1241,6 +1279,7 @@ pub(super) fn encode_function(
             operation: "unstructured or unreachable block",
         }));
     }
+    let hints = std::mem::take(&mut emitter.hints);
     body.instruction(&wasm_encoder::Instruction::End);
-    Ok(body)
+    Ok((body, hints))
 }

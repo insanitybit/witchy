@@ -35,6 +35,50 @@ pub(super) fn schedule(
     Ok(Some(order))
 }
 
+/// Blocks from which every path ends at one of `traps`: a failed check's
+/// diagnostic and the releases on the way to it. A cycle that never exits is
+/// not doomed (least fixpoint). Encoder and planner each derive it from their
+/// own CFG.
+pub(super) fn doomed(
+    edges: &BTreeMap<BlockId, Vec<BlockId>>,
+    traps: impl IntoIterator<Item = BlockId>,
+) -> BTreeSet<BlockId> {
+    let mut predecessors: BTreeMap<BlockId, Vec<BlockId>> = BTreeMap::new();
+    let mut open: BTreeMap<BlockId, usize> = BTreeMap::new();
+    for (block, successors) in edges {
+        open.insert(*block, successors.len());
+        for successor in successors { predecessors.entry(*successor).or_default().push(*block); }
+    }
+    let mut doomed: BTreeSet<BlockId> = traps.into_iter().collect();
+    let mut pending: Vec<BlockId> = doomed.iter().copied().collect();
+    while let Some(block) = pending.pop() {
+        for predecessor in predecessors.get(&block).into_iter().flatten() {
+            let Some(count) = open.get_mut(predecessor) else { continue };
+            *count -= 1;
+            if *count == 0 && doomed.insert(*predecessor) { pending.push(*predecessor); }
+        }
+    }
+    doomed
+}
+
+/// The arm of a forward conditional that only leads to a trap, when exactly
+/// one does and it takes no block arguments: `Some(true)` for `then`. That arm
+/// becomes a hinted `br_if`, so the engine places its continuation out of
+/// line; the other arm's arguments are set only after the branch is not taken.
+pub(super) fn cold_arm(
+    doomed: &BTreeSet<BlockId>,
+    then_target: BlockId,
+    then_arguments: usize,
+    else_target: BlockId,
+    else_arguments: usize,
+) -> Option<bool> {
+    match (doomed.contains(&then_target), doomed.contains(&else_target)) {
+        (true, false) if then_arguments == 0 => Some(true),
+        (false, true) if else_arguments == 0 => Some(false),
+        _ => None,
+    }
+}
+
 /// Remaining labels nest from the last scheduled block to the next one.
 /// A conditional edge has one additional enclosing Wasm `if` label.
 pub(super) fn depth(current: usize, target: usize, conditional: bool) -> Option<u32> {

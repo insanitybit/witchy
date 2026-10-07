@@ -2165,6 +2165,9 @@ impl Runtime {
         config.wasm_tail_call(true);
         config.wasm_memory64(false);
         config.wasm_wide_arithmetic(false);
+        // The encoder hints each check whose failure arm only traps, so
+        // Cranelift lays that arm out of line. Hints never change semantics.
+        config.wasm_branch_hinting(true);
         config.profiler(profiler);
         if profiler != wasmtime::ProfilingStrategy::None {
             config.debug_info(true);
@@ -2239,6 +2242,8 @@ impl Runtime {
         // Wasmtime 49 turned wide arithmetic on by default; witchy emits none
         // of its instructions, so it stays outside the admitted surface.
         config.wasm_wide_arithmetic(false);
+        // Failure arms of checks are hinted cold by the encoder.
+        config.wasm_branch_hinting(true);
         // Support Cranelift profiling strategies for external profilers (Linux perf,
         // VTune, JIT symbol mapping). Configurable via WITCHY_PROFILE or WITCHY_PERF_MAP.
         if let Ok(strat) = std::env::var("WITCHY_PROFILE") {

@@ -26,6 +26,22 @@ impl PlanEmitter<'_> {
                     self.push_branch_arguments(*target, arguments)?;
                     self.plan.push(PlanToken::Br(depth));
                 }
+                Terminator::BranchIf { condition, then_target, then_arguments, else_target, else_arguments }
+                    if let Some(then_cold) = forward_cfg::cold_arm(&self.doomed, *then_target, then_arguments.len(), *else_target, else_arguments.len()) =>
+                {
+                    let (cold, hot, hot_arguments) = if then_cold {
+                        (*then_target, *else_target, else_arguments)
+                    } else {
+                        (*else_target, *then_target, then_arguments)
+                    };
+                    let cold_depth = depth(cold, false)?;
+                    let hot_depth = depth(hot, false)?;
+                    push_get(&mut self.plan, self.layout, *condition)?;
+                    if !then_cold { self.plan.push(PlanToken::I32Eqz); }
+                    self.plan.push(PlanToken::BrIf(cold_depth));
+                    self.push_branch_arguments(hot, hot_arguments)?;
+                    self.plan.push(PlanToken::Br(hot_depth));
+                }
                 Terminator::BranchIf { condition, then_target, then_arguments, else_target, else_arguments } => {
                     let then_depth = depth(*then_target, true)?;
                     let else_depth = depth(*else_target, true)?;

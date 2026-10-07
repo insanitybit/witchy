@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use sha2::{Digest, Sha256};
 use wasm_encoder::{
-    BlockType, CodeSection, ConstExpr, CustomSection, DataSection, ExportKind, ExportSection,
+    BlockType, BranchHints, CodeSection, ConstExpr, CustomSection, DataSection, ExportKind, ExportSection,
     ElementSection, Elements, EntityType, Function as WasmFunctionEncoder, FunctionSection,
     GlobalSection, GlobalType, Ieee64, ImportSection, MemArg, MemorySection, MemoryType,
     Module as WasmModule, RefType, TableSection, TableType, TypeSection, ValType,
@@ -900,11 +900,15 @@ fn encode_checked_unvalidated(checked: &CheckedWasmIr) -> Result<Vec<u8>, Encode
     } else {
         target.functions.iter().map(encode).collect()
     };
+    let mut hints = BranchHints::new();
     for (target_function, encoded) in target.functions.iter().zip(encoded) {
-        let (type_index, body) = encoded?;
+        let (type_index, (body, function_hints)) = encoded?;
         functions.function(type_index);
         exports.export(&format!("f{}", target_function.id.get()), ExportKind::Func, function_indices[&target_function.id]);
         code.function(&body);
+        if !function_hints.is_empty() {
+            hints.function_hints(function_indices[&target_function.id], function_hints);
+        }
     }
     if let (Some(bridge), Some(type_index)) = (owner_cleanup_bridge, owner_cleanup_type) {
         functions.function(type_index);
@@ -932,6 +936,11 @@ fn encode_checked_unvalidated(checked: &CheckedWasmIr) -> Result<Vec<u8>, Encode
         .section(&exports);
     if target.table.is_some() {
         module.section(&elements);
+    }
+    // Advisory code metadata precedes the code it describes. Hints only
+    // place cold arms out of line; admission accepts them as inert.
+    if !hints.is_empty() {
+        module.section(&hints);
     }
     module.section(&code);
     if !target.static_data.is_empty() {

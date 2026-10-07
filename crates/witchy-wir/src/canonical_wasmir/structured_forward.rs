@@ -37,6 +37,23 @@ impl StructuredEmitter<'_> {
                     self.emit_branch_arguments(*target, arguments)?;
                     self.body.instruction(&wasm_encoder::Instruction::Br(depth));
                 }
+                ScalarTerminator::BranchIf { condition, then_target, then_arguments, else_target, else_arguments }
+                    if let Some(then_cold) = forward_cfg::cold_arm(&self.doomed, *then_target, then_arguments.len(), *else_target, else_arguments.len()) =>
+                {
+                    let (cold, hot, hot_arguments) = if then_cold {
+                        (*then_target, *else_target, else_arguments)
+                    } else {
+                        (*else_target, *then_target, then_arguments)
+                    };
+                    let cold_depth = depth(cold, false)?;
+                    let hot_depth = depth(hot, false)?;
+                    emit_get(self.body, self.layout, self.source_function.id, *condition)?;
+                    if !then_cold { self.body.instruction(&wasm_encoder::Instruction::I32Eqz); }
+                    self.hint_cold_branch();
+                    self.body.instruction(&wasm_encoder::Instruction::BrIf(cold_depth));
+                    self.emit_branch_arguments(hot, hot_arguments)?;
+                    self.body.instruction(&wasm_encoder::Instruction::Br(hot_depth));
+                }
                 ScalarTerminator::BranchIf { condition, then_target, then_arguments, else_target, else_arguments } => {
                     let then_depth = depth(*then_target, true)?;
                     let else_depth = depth(*else_target, true)?;

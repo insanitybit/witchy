@@ -39,6 +39,8 @@ pub(super) struct PlanEmitter<'a> {
     /// mirrors the encoder's bounded graph decision, including cached cyclic
     /// refusals, without weakening the independent plan comparison.
     path_facts: RefCell<BTreeMap<Vec<crate::canonical_safewir::BlockId>, std::rc::Rc<RefCell<BTreeMap<crate::canonical_safewir::BlockId, bool>>>>>,
+    /// Blocks that only reach a trap, derived from the source CFG.
+    doomed: BTreeSet<crate::canonical_safewir::BlockId>,
 }
 
 impl<'a> PlanEmitter<'a> {
@@ -953,6 +955,9 @@ pub(super) fn expected_function_plan(
             }
         }
     }
+    let doomed = forward_cfg::doomed(&successors_by_block, function.blocks.iter()
+        .filter(|block| matches!(block.terminator, Terminator::Trap | Terminator::Unreachable))
+        .map(|block| block.id));
     let mut emitter = PlanEmitter {
         source_function: function,
         blocks_by_id: function.blocks.iter().map(|block| (block.id, block)).collect(),
@@ -981,6 +986,7 @@ pub(super) fn expected_function_plan(
         immediate_dominators: std::cell::OnceCell::new(),
         block_slots: std::cell::OnceCell::new(),
         path_facts: RefCell::new(BTreeMap::new()),
+        doomed,
     };
     match forward_cfg::schedule(function.entry, &emitter.successors_by_block)
         .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?
@@ -1283,6 +1289,24 @@ pub(super) fn decode_and_match_plan(
                     actual_data.push((offset, data.data.to_vec()));
                 }
             }
+            // Branch hints are advisory layout metadata: an engine may only
+            // move a hinted arm out of line, never change which arm runs. They
+            // must decode completely so none is silently discarded.
+            wasmparser::Payload::CustomSection(section) if section.name() == "metadata.code.branch_hint" => {
+                let wasmparser::KnownCustom::BranchHints(reader) = section.as_known() else {
+                    return Err(CanonicalAdmissionError::PlanMismatch("branch hint section"));
+                };
+                for function in reader {
+                    let function = function.map_err(|error| CanonicalAdmissionError::WasmValidation(error.to_string()))?;
+                    for hint in function.hints {
+                        hint.map_err(|error| CanonicalAdmissionError::WasmValidation(error.to_string()))?;
+                    }
+                }
+                if section_order.contains(&12) {
+                    return Err(CanonicalAdmissionError::PlanMismatch("duplicate branch hint section"));
+                }
+                section_order.push(12);
+            }
             wasmparser::Payload::CustomSection(section) => match section.name() {
                 "witchy.launch" if actual_launch_contract.replace(section.data().to_vec()).is_none() => {
                     section_order.push(10);
@@ -1307,6 +1331,10 @@ pub(super) fn decode_and_match_plan(
     expected_sections.extend([4, 5, 6]);
     if target.table.is_some() {
         expected_sections.push(7);
+    }
+    // Optional: present exactly when some emitted branch has a doomed arm.
+    if section_order.contains(&12) {
+        expected_sections.push(12);
     }
     expected_sections.push(8);
     if !target.static_data.is_empty() {

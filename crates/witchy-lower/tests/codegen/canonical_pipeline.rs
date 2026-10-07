@@ -153,6 +153,53 @@ fn production_entry_emits_only_admitted_canonical_bytes() {
     assert_eq!(main.call(&mut store, ()).expect("run production Wasm"), 42);
 }
 
+#[test]
+fn trapping_check_arms_are_hinted_cold_at_their_branches() {
+    let checked = checked("fn main() -> Int:\n    [10][1]\n");
+    let artifact = compile_checked_module_artifact(&checked)
+        .expect_lowered("bounds checks permit safe canonical admission");
+    let mut imported = 0;
+    let mut hints = Vec::new();
+    let mut branches = std::collections::BTreeMap::new();
+    let mut function = 0;
+    for payload in wasmparser::Parser::new(0).parse_all(artifact.wasm()) {
+        match payload.expect("valid admitted Wasm") {
+            wasmparser::Payload::ImportSection(section) => imported = section.into_imports().count() as u32,
+            wasmparser::Payload::CustomSection(section) => {
+                if let wasmparser::KnownCustom::BranchHints(reader) = section.as_known() {
+                    for entry in reader {
+                        let entry = entry.expect("branch hint function");
+                        for hint in entry.hints {
+                            let hint = hint.expect("branch hint");
+                            hints.push((entry.func, hint.func_offset, hint.taken));
+                        }
+                    }
+                }
+            }
+            wasmparser::Payload::CodeSectionEntry(body) => {
+                let start = body.range().start;
+                let mut operators = body.get_operators_reader().expect("operators");
+                while !operators.eof() {
+                    let (operator, offset) = operators.read_with_offset().expect("operator");
+                    let kind = match operator {
+                        wasmparser::Operator::If { .. } => "if",
+                        wasmparser::Operator::BrIf { .. } => "br_if",
+                        _ => continue,
+                    };
+                    branches.insert((imported + function, (offset - start) as u32), kind);
+                }
+                function += 1;
+            }
+            _ => {}
+        }
+    }
+    assert!(hints.iter().any(|(func, offset, taken)| !taken && branches.get(&(*func, *offset)) == Some(&"br_if")),
+        "the failed bounds check branches out of line with a not-taken hint: {hints:?}");
+    for (func, offset, _) in &hints {
+        assert!(branches.contains_key(&(*func, *offset)), "hint at {func}:{offset} names no branch");
+    }
+}
+
 #[cfg(feature = "native-test-runtime")]
 #[test]
 fn list_int_out_of_bounds_source_admits_then_traps() {
