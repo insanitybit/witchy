@@ -70,9 +70,8 @@ witchy::rfc0129_scalar_executor_performance packed_aggregate_channel_uses_direct
 # Each is an admitted-family canonical gap, listed so it stays visible:
 # - an indexed structured-join/cancel fan-out: InvalidOwnership in the executor.
 # - comptime `typeinfo` expansion binds `prefix` twice (DuplicateBinding).
-# - `derive` on an enum (Show/Deserialize) has no checked source session yet.
+# - `derive(Deserialize)` has no checked source session yet.
 witchy::bin/witchy example_tests::async_channels::channel_structured_join_cancel_indexed_fanouts_backends_agree
 witchy::bin/witchy example_tests::comptime::comptime_typeinfo_exposes_structured_type_expr_on_both_backends
-witchy::bin/witchy example_tests::interpolation::rfc0053_interpolation_honors_custom_show
 witchy::bin/witchy example_tests::reflection::derive_deserialize_field_names_are_hygienic_on_both_backends
 witchy::bin/witchy example_tests::reflection::derive_deserialize_scalar_list_option_error_and_generic_paths_agree

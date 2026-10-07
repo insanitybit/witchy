@@ -17,9 +17,14 @@ pub fn has_only_direct_record_derives(module: &Module) -> bool {
         let Item::Type(definition) = item else { continue };
         if definition.derives.is_empty() { continue; }
         found = true;
-        if definition.variants.len() != 1 || definition.variants[0].field_names.is_empty()
-            || definition.derives.iter().any(|name| !matches!(name.as_str(),
-                "Eq" | "PartialEq" | "Show" | "PartialOrd" | "Ord")) {
+        let record = definition.variants.len() == 1 && !definition.variants[0].field_names.is_empty();
+        if definition.variants.is_empty()
+            || definition.derives.iter().any(|name| match name.as_str() {
+                "Eq" | "PartialEq" | "Show" => false,
+                "PartialOrd" | "Ord" => !record,
+                _ => true,
+            })
+        {
             return false;
         }
     }
@@ -233,6 +238,103 @@ fn record_show_impl(t: &TypeDef, line: u32) -> Item {
             body: Block { stmts: vec![Stmt::Expr(body)], lines: vec![line], region: None },
             bounds, is_gen: false, is_async: false,
         }],
+    })
+}
+
+fn target_and_bounds(t: &TypeDef, trait_name: &str) -> (Vec<Type>, Vec<(String, String, Vec<Type>)>) {
+    let params = t.params.iter().filter(|name| !name.starts_with('\''))
+        .cloned().collect::<Vec<_>>();
+    let target_args = params.iter().map(|name| Type::Named(name.clone(), Vec::new()))
+        .collect::<Vec<_>>();
+    let bounds = params.iter().map(|name|
+        (name.clone(), trait_name.to_string(), Vec::new())).collect::<Vec<_>>();
+    (target_args, bounds)
+}
+
+/// A constructor pattern binding each payload lane to `{prefix}{index}`.
+/// The `derive_` prefix cannot collide with a constructor or field name the
+/// generated body refers to.
+fn variant_pattern(variant: &Variant, prefix: &str) -> Pattern {
+    Pattern::Ctor {
+        name: variant.name.clone(),
+        args: (0..variant.fields.len()).map(|index| Pattern::Var(format!("{prefix}{index}"))).collect(),
+    }
+}
+
+/// `Show` for a constructor type: `"Name"`, or `"Name(" + show(a) + ", " +
+/// show(b) + ")"` for each variant -- the same text as `meta.derive_show`.
+fn sum_show_impl(t: &TypeDef, line: u32) -> Item {
+    let (target_args, bounds) = target_and_bounds(t, "Show");
+    let target = Type::Named(t.name.clone(), target_args.clone());
+    let arms = t.variants.iter().map(|variant| {
+        let mut body = Expr::Str(variant.name.clone());
+        if !variant.fields.is_empty() {
+            body = Expr::Binary { op: BinOp::Add, lhs: Box::new(body), rhs: Box::new(Expr::Str("(".into())) };
+            for index in 0..variant.fields.len() {
+                if index > 0 {
+                    body = Expr::Binary { op: BinOp::Add, lhs: Box::new(body), rhs: Box::new(Expr::Str(", ".into())) };
+                }
+                body = Expr::Binary { op: BinOp::Add, lhs: Box::new(body), rhs: Box::new(Expr::Call {
+                    name: "show".into(), args: vec![Expr::Var(format!("derive_p{index}"))],
+                }) };
+            }
+            body = Expr::Binary { op: BinOp::Add, lhs: Box::new(body), rhs: Box::new(Expr::Str(")".into())) };
+        }
+        ordering_arm(variant_pattern(variant, "derive_p"), body, line)
+    }).collect();
+    let body = Expr::Match { scrutinee: Box::new(Expr::Var("self".into())), arms };
+    Item::Impl(ImplDef {
+        origin: ImplOrigin::CompilerGenerated, trait_name: Some("Show".into()),
+        trait_args: Vec::new(), type_name: t.name.clone(), target_args,
+        bounds: bounds.clone(), methods: vec![Function {
+            line, public: false, pure: false, comptime_only: false,
+            attributes: Vec::new(), name: "show".into(), type_params: Vec::new(),
+            params: vec![Param { name: "self".into(), ty: Some(target),
+                convention: Convention::Let, default: None }],
+            ret: Some(Type::Named("String".into(), Vec::new())),
+            body: Block { stmts: vec![Stmt::Expr(body)], lines: vec![line], region: None },
+            bounds, is_gen: false, is_async: false,
+        }],
+    })
+}
+
+/// Structural `PartialEq` (or the `Eq` marker) for a constructor type: equal
+/// variants with pairwise-equal payloads, as `meta.derive_partial_eq`.
+fn sum_equality_impl(t: &TypeDef, trait_name: &str, line: u32) -> Item {
+    let (target_args, bounds) = target_and_bounds(t, trait_name);
+    let methods = if trait_name == "Eq" { Vec::new() } else {
+        let target = Type::Named(t.name.clone(), target_args.clone());
+        let arms = t.variants.iter().map(|variant| {
+            let same = (0..variant.fields.len()).map(|index| Expr::Binary {
+                op: BinOp::Eq,
+                lhs: Box::new(Expr::Var(format!("derive_p{index}"))),
+                rhs: Box::new(Expr::Var(format!("derive_o{index}"))),
+            }).reduce(|lhs, rhs| Expr::Binary { op: BinOp::And, lhs: Box::new(lhs), rhs: Box::new(rhs) })
+                .unwrap_or(Expr::Bool(true));
+            let mut inner = vec![ordering_arm(variant_pattern(variant, "derive_o"), same, line)];
+            if t.variants.len() > 1 {
+                inner.push(ordering_arm(Pattern::Wildcard, Expr::Bool(false), line));
+            }
+            ordering_arm(variant_pattern(variant, "derive_p"),
+                Expr::Match { scrutinee: Box::new(Expr::Var("other".into())), arms: inner }, line)
+        }).collect();
+        let body = Expr::Match { scrutinee: Box::new(Expr::Var("self".into())), arms };
+        vec![Function {
+            line, public: false, pure: false, comptime_only: false,
+            attributes: Vec::new(), name: "eq".into(), type_params: Vec::new(),
+            params: ["self", "other"].into_iter().map(|name| Param {
+                name: name.into(), ty: Some(target.clone()),
+                convention: Convention::Borrow, default: None,
+            }).collect(),
+            ret: Some(Type::Named("Bool".into(), Vec::new())),
+            body: Block { stmts: vec![Stmt::Expr(body)], lines: vec![line], region: None },
+            bounds: bounds.clone(), is_gen: false, is_async: false,
+        }]
+    };
+    Item::Impl(ImplDef {
+        origin: ImplOrigin::CompilerGenerated, trait_name: Some(trait_name.into()),
+        trait_args: Vec::new(), type_name: t.name.clone(), target_args,
+        bounds, methods,
     })
 }
 
@@ -517,7 +619,7 @@ fn expand_with_record_ordering(module: &mut Module, direct_ordering: bool, direc
                     generated.push(if record_equality {
                         record_show_impl(&derive_type, source_lines.get(item_index).copied().unwrap_or(0))
                     } else {
-                        derive_item_via_comptime("meta.derive_show", &derive_type)
+                        sum_show_impl(&derive_type, source_lines.get(item_index).copied().unwrap_or(0))
                     });
                     needs_show = true;
                 }
@@ -526,7 +628,7 @@ fn expand_with_record_ordering(module: &mut Module, direct_ordering: bool, direc
                         generated.push(if record_equality {
                             record_equality_impl(&derive_type, "PartialEq", source_lines.get(item_index).copied().unwrap_or(0))
                         } else {
-                            derive_item_via_comptime("meta.derive_partial_eq", &derive_type)
+                            sum_equality_impl(&derive_type, "PartialEq", source_lines.get(item_index).copied().unwrap_or(0))
                         });
                         emitted_partial_eq = true;
                     }
@@ -542,14 +644,14 @@ fn expand_with_record_ordering(module: &mut Module, direct_ordering: bool, direc
                         generated.push(if record_equality {
                             record_equality_impl(&derive_type, "PartialEq", source_lines.get(item_index).copied().unwrap_or(0))
                         } else {
-                            derive_item_via_comptime("meta.derive_partial_eq", &derive_type)
+                            sum_equality_impl(&derive_type, "PartialEq", source_lines.get(item_index).copied().unwrap_or(0))
                         });
                         emitted_partial_eq = true;
                     }
                     generated.push(if record_equality {
                         record_equality_impl(&derive_type, "Eq", source_lines.get(item_index).copied().unwrap_or(0))
                     } else {
-                        derive_item_via_comptime("meta.derive_eq", &derive_type)
+                        sum_equality_impl(&derive_type, "Eq", source_lines.get(item_index).copied().unwrap_or(0))
                     });
                 }
                 "PartialOrd" => {
