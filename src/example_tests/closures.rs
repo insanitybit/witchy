@@ -98,3 +98,30 @@ fn main(console: Console):
 "#;
         assert_eq!(run_on_wasm(src), vec!["33 4"]);
     }
+
+    /// A function may return a `unique` list of closures, and that list
+    /// passes to and from other functions with value semantics.
+    #[test]
+    fn unique_closure_list_crosses_function_boundaries() {
+        let src = r#"fn repeated(f: fn(Int) -> Int, n: Int) -> unique List(fn(Int) -> Int):
+    var out = []
+    for _ in list.range(n):
+        out.push(f)
+    out
+
+fn total(fs: List(fn(Int) -> Int), x: Int) -> Int:
+    var sum = 0
+    for f in fs:
+        sum = sum + f(x)
+    sum
+
+fn main(console: Console):
+    let k = 10
+    var fs = repeated(fn(x: Int) -> Int: x + k, 3)
+    let snapshot = fs
+    fs.push(fn(x: Int) -> Int: x * 100)
+    let mapped = [1, 2].map(fn(n: Int) -> fn(Int) -> Int: fn(x: Int) -> Int: x * n)
+    console.print("${snapshot.length()} ${fs.length()} ${total(snapshot, 1)} ${total(fs, 1)} ${total(mapped, 5)}")
+"#;
+        assert_eq!(run_on_wasm(src), vec!["3 4 33 133 15"]);
+    }

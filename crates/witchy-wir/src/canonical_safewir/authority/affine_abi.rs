@@ -41,13 +41,13 @@ pub(super) fn affine_abi_proofs<S: ModuleStage>(
                 }
                 return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal });
             };
-            proof.parameters[index] = Some(bind_plan(ty, *layout, &shape, &layouts, source, &mut proofs.layouts)
+            proof.parameters[index] = Some(bind_plan(candidate, ty, *layout, &shape, &layouts, source, &mut proofs.layouts)
                 .ok_or(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal })?);
         }
         if let Some(shape) = affine_storage_shape(result, source.type_definitions()) {
             match signature.results.first() {
                 Some(crate::canonical_safewir::ValueType::Ref(layout)) => {
-                    proof.results[0] = Some(bind_plan(result, *layout, &shape, &layouts, source, &mut proofs.layouts)
+                    proof.results[0] = Some(bind_plan(candidate, result, *layout, &shape, &layouts, source, &mut proofs.layouts)
                         .ok_or(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal })?);
                 }
                 Some(crate::canonical_safewir::ValueType::Gc(_)) => {}
@@ -125,13 +125,13 @@ pub(super) fn affine_abi_proofs<S: ModuleStage>(
                 }
                 return Err(refuse());
             };
-            proof.parameters[physical_index] = Some(bind_plan(ty, *layout, &shape, &layouts, source, &mut proofs.layouts)
+            proof.parameters[physical_index] = Some(bind_plan(candidate, ty, *layout, &shape, &layouts, source, &mut proofs.layouts)
                 .ok_or_else(refuse)?);
         }
         if let Some(shape) = affine_storage_shape(result, source.type_definitions()) {
             match signature.results.first() {
                 Some(crate::canonical_safewir::ValueType::Ref(layout)) => {
-                    proof.results[0] = Some(bind_plan(result, *layout, &shape, &layouts, source, &mut proofs.layouts)
+                    proof.results[0] = Some(bind_plan(candidate, result, *layout, &shape, &layouts, source, &mut proofs.layouts)
                         .ok_or_else(refuse)?);
                 }
                 Some(crate::canonical_safewir::ValueType::Gc(_)) => {}
@@ -210,7 +210,7 @@ fn bind_local_allocations<S: ModuleStage>(
             ) { continue; }
             // A failed recursive bind must not leave partial child authority.
             let mut catalog = proofs.layouts.clone();
-            if bind_plan(source_type, layout, &shape, layouts, source, &mut catalog).is_none() {
+            if bind_plan(candidate, source_type, layout, &shape, layouts, source, &mut catalog).is_none() {
                 return Err(CandidateAbiBindingError::MissingCanonicalLayouts);
             }
             proofs.layouts = catalog;
@@ -276,7 +276,7 @@ fn bind_owner_environments<S: ModuleStage>(
                     else { return Err(refuse()) };
                     if *pointee != layout { return Err(refuse()); }
                     let affine = affine_storage_shape(source_field, source.type_definitions()).ok_or_else(refuse)?;
-                    let child = bind_plan(source_field, layout, &affine, layouts, source, &mut proofs.layouts)
+                    let child = bind_plan(candidate, source_field, layout, &affine, layouts, source, &mut proofs.layouts)
                         .ok_or_else(refuse)?;
                     children.push((index, layout, Box::new(child)));
                 } else if !matches!((capture.storage, capture.value_type),
@@ -294,7 +294,8 @@ fn bind_owner_environments<S: ModuleStage>(
     Ok(())
 }
 
-fn bind_plan(
+fn bind_plan<S: ModuleStage>(
+    candidate: &CanonicalModule<S>,
     source_type: &Type,
     layout: crate::layout::LayoutId,
     shape: &AffineStorageShape,
@@ -313,7 +314,12 @@ fn bind_plan(
                 storage = inner;
             }
             if let Type::Qualified(witchy_syntax::ast::TypeQual::Unique, inner) = storage {
-                if !layout_matches_source(layout, inner, layouts, source.type_definitions()) { return None; }
+                // A unique root may hold callables (`unique List(fn(...))`):
+                // match it with the same closure correspondence as its caller.
+                if !layout_matches_source_with_closures(
+                    layout, inner, layouts, source.type_definitions(), candidate.closure_layouts(),
+                    candidate.signatures(), &mut CorrespondenceContext::with_owners(candidate),
+                ) { return None; }
             } else {
                 let source_shape = witchy_canonical_source::aggregates::scalar_aggregate_shape(source_type, source.type_definitions())?;
                 if !matches!(descriptor.kind(), LayoutKind::PackedRecord { .. })
@@ -337,7 +343,7 @@ fn bind_plan(
                     _ => return None,
                 };
                 let child_source = source_shape.fields.get(*index as usize)?;
-                bound.push((*index, pointee, Box::new(bind_plan(child_source, pointee, child, layouts, source, catalog)?)));
+                bound.push((*index, pointee, Box::new(bind_plan(candidate, child_source, pointee, child, layouts, source, catalog)?)));
             }
             AffinePhysicalPlan::NullableFields { fields: bound, allow_absent: source_shape.tagged }
         }
@@ -354,7 +360,7 @@ fn bind_plan(
             let LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned } = layouts.get(*element)?.kind() else { return None };
             AffinePhysicalPlan::Sequence {
                 element: *pointee,
-                child: Box::new(bind_plan(child_source, *pointee, child, layouts, source, catalog)?),
+                child: Box::new(bind_plan(candidate, child_source, *pointee, child, layouts, source, catalog)?),
             }
         }
         AffineStorageShape::Mapping { key, value } => {
@@ -373,7 +379,7 @@ fn bind_plan(
                 let shape = shape.as_ref()?;
                 let LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned } =
                     layouts.get(slot)?.kind() else { return None };
-                Some((*pointee, Box::new(bind_plan(child_source, *pointee, shape, layouts, source, catalog)?)))
+                Some((*pointee, Box::new(bind_plan(candidate, child_source, *pointee, shape, layouts, source, catalog)?)))
             };
             AffinePhysicalPlan::Mapping {
                 key: if key.is_some() { Some(bind_child(key, key_source, *key_slot, catalog)?) } else { None },
