@@ -439,6 +439,14 @@ pub fn select2_frame_loop(a: Receiver(m), b: Receiver(m), frame: List(Int), step
             match b:
                 Receiver(ib) -> task.channel_select2_frame_loop(ia, ib, frame, step, done_fn)
 
+pub fn __select2_lane_frame(a: Receiver(m), b: Receiver(m), frame: List(Int), prepare: fn(Int, var List(Int)) -> Option(List(Int)), resume: fn(own Selected(m), Int, var List(Int)) -> Bool, finish: fn(List(Int)) -> Task(n)) -> Task(n):
+    let decode: fn(own Option((Int, __Msg)), Int, var List(Int)) -> Bool = fn(own o, base: Int, var state):
+        match o:
+            Some((tag, msg)) -> resume(select2_frame_decode(tag, Some(msg)), base, state)
+            None -> resume(select2_frame_decode(0, None), base, state)
+
+    task.__select_lane_frame(frame, prepare, decode, finish)
+
 // Compiler-owned three-way frame bridge. The public spelling keeps the
 // receiver ownership surface typed while task owns the fixed endpoint ids and
 // deterministic source-order wake protocol.

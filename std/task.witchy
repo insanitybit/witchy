@@ -102,6 +102,7 @@ sealed type Step(a):
     ReceiveFrame((Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(a)))
     ReceiveLaneFrame((Int, List(Int), fn(Option(__Msg), Int, var List(Int)) -> Bool, fn(List(Int)) -> Task(a)))
     ProduceFrame((List(Int), fn(Int, var List(Int)) -> Option((Int, __Msg)), fn(Int, var List(Int)) -> Bool, fn(List(Int)) -> Task(a), Int, __Msg))
+    SelectLaneFrame((List(Int), fn(Int, var List(Int)) -> Option(List(Int)), fn(own Option((Int, __Msg)), Int, var List(Int)) -> Bool, fn(List(Int)) -> Task(a), List(Int)))
 
 // A task communicating via channels, producing an `a`.
 sealed type Task(a):
@@ -192,6 +193,8 @@ fn and_then_step(own s: Step(a), own k: fn(own a) -> Task(b)) -> Step(b):
             ReceiveLaneFrame((ch, frame, step, fn(state: List(Int)) -> Task(b): and_then(finish(state), k)))
         ProduceFrame((frame, prepare, resume, finish, ch, msg)) ->
             ProduceFrame((frame, prepare, resume, fn(state: List(Int)) -> Task(b): and_then(finish(state), k), ch, msg))
+        SelectLaneFrame((frame, prepare, resume, finish, channels)) ->
+            SelectLaneFrame((frame, prepare, resume, fn(state: List(Int)) -> Task(b): and_then(finish(state), k), channels))
 
 // Transform a task's result.
 pub fn map(t: Task(a), f: fn(own a) -> b) -> Task(b):
@@ -433,6 +436,7 @@ sealed type Slot:
     ReceiveLaneSlot(Int)
     ProduceFrameSlot(Int)
     JoinFrameSlot(Int)
+    SelectLaneSlot(Int)
 
 fn is_live(s: Slot) -> Bool:
     match s:
@@ -454,6 +458,7 @@ fn is_live(s: Slot) -> Bool:
         ReceiveLaneSlot(_) -> true
         ProduceFrameSlot(_) -> true
         JoinFrameSlot(_) -> true
+        SelectLaneSlot(_) -> true
 
 fn is_parked(s: Slot) -> Bool:
     match s:
@@ -475,6 +480,7 @@ fn is_parked(s: Slot) -> Bool:
         ReceiveLaneSlot(_) -> true
         ProduceFrameSlot(_) -> true
         JoinFrameSlot(_) -> true
+        SelectLaneSlot(_) -> true
 
 // ---- fixed-capacity ring channels (RFC-0059 Stage 2) ----
 //
@@ -648,6 +654,22 @@ fn is_only_live_slot(k: Int, ignored: Int, slots: List(Slot)) -> Bool:
     else:
         is_only_live_slot(k + 1, ignored, slots)
 
+pub fn __prepare_select(t: Task(a)) -> List(Int):
+    match poll(t):
+        Pull2Ready(a, b, _) -> [a, b]
+        _ ->
+            fail("invalid prepared channel select")
+            []
+
+pub fn __select_lane_frame(frame: List(Int), prepare: fn(Int, var List(Int)) -> Option(List(Int)), resume: fn(own Option((Int, __Msg)), Int, var List(Int)) -> Bool, finish: fn(List(Int)) -> Task(a)) -> Task(a):
+    let start: fn() -> Step(a) = fn():
+        var state = frame
+        match prepare(0, state):
+            Some(channels) -> SelectLaneFrame((state, prepare, resume, finish, channels))
+            None -> poll(finish(state))
+
+    Task(start)
+
 // Drive `root` (and everything it spawns) to completion on a deterministic
 // round-robin schedule. An async `main` lowers to a single `run` of its body.
 pub fn run(root: Task(())):
@@ -678,6 +700,12 @@ pub fn run(root: Task(())):
     var send_prepares: List(Option(fn(Int, var List(Int)) -> Option((Int, __Msg)))) = []
     var send_resumes: List(Option(fn(Int, var List(Int)) -> Bool)) = []
     var send_finishes: List(Option(fn(List(Int)) -> Task(()))) = []
+    var select_prepares: List(Option(fn(Int, var List(Int)) -> Option(List(Int)))) = []
+    var select_resumes: List(Option(fn(own Option((Int, __Msg)), Int, var List(Int)) -> Bool)) = []
+    var select_finishes: List(Option(fn(List(Int)) -> Task(()))) = []
+    var select_first_channels: List(Int) = []
+    var select_second_channels: List(Int) = []
+    var select_tags: List(Int) = []
     var slot_live = [true]
     var join_continuations: List(Option(fn(()) -> Task(()))) = []
     var live_count = 1
@@ -790,6 +818,64 @@ pub fn run(root: Task(())):
                         // before proceeding through the exact existing
                         // erased path, so mixed proven/unproven channel
                         // uses retain FIFO and blocking behavior.
+            else if kind == 4:
+                let phase = list.at(frame_phases, i)
+                let recipe = list.at(frame_recipes, i)
+                let base = list.at(frame_bases, i)
+                if phase == 1:
+                    let selected = match list.at(frame_pending, i):
+                        Some(msg) -> Some((list.at(select_tags, recipe), msg))
+                        None -> None
+
+                    match list.at(select_resumes, recipe):
+                        Some(resume) ->
+                            var completed = resume(selected, base, frame_lanes)
+                            if !completed:
+                                match list.at(select_prepares, recipe):
+                                    Some(prepare) ->
+                                        match prepare(base, frame_lanes):
+                                            Some(next_channels) ->
+                                                list.set_at(select_first_channels, recipe, list.at(next_channels, 0))
+                                                list.set_at(select_second_channels, recipe, list.at(next_channels, 1))
+                                                list.set_at(frame_phases, i, 2)
+                                            None -> completed = true
+                                    None -> fail("missing select preparation")
+                            else:
+                                unit()
+                            if completed:
+                                let state = frame_snapshot(base, list.at(frame_lengths, i), frame_lanes)
+                                match list.at(select_finishes, recipe):
+                                    Some(finish) -> list.set_at(slots, i, Active(finish(state)))
+                                    None -> fail("missing select completion")
+
+                                list.set_at(frame_kinds, i, 0)
+                                list.set_at(select_prepares, recipe, None)
+                                list.set_at(select_resumes, recipe, None)
+                                list.set_at(select_finishes, recipe, None)
+                            else:
+                                unit()
+                            list.set_at(frame_pending, i, None)
+                        None -> fail("missing select activation")
+
+                    prog = true
+                else:
+                    let first = list.at(select_first_channels, recipe)
+                    let second = list.at(select_second_channels, recipe)
+                    materialize_typed_i64_channel(first, channels, typed_i64_channels)
+                    materialize_typed_i64_channel(second, channels, typed_i64_channels)
+                    let selected = first_message(0, 2, first, second, 0, 0, channels)
+
+                    match selected:
+                        Some((tag, msg)) ->
+                            if phase == 0:
+                                __rfc0152_wake_claim()
+                            else:
+                                unit()
+                            list.set_at(select_tags, recipe, tag)
+                            list.set_at(frame_pending, i, Some(msg))
+                            list.set_at(frame_phases, i, 1)
+                            prog = true
+                        None -> list.set_at(frame_phases, i, 0)
             else if kind == 3:
                 let target = list.at(frame_channels, i)
                 if !list.at(slot_live, target):
@@ -1442,6 +1528,10 @@ pub fn run(root: Task(())):
                                     list.set_at(send_finishes, recipe, None)
                                 else if kind == 3:
                                     list.set_at(join_continuations, recipe, None)
+                                else if kind == 4:
+                                    list.set_at(select_prepares, recipe, None)
+                                    list.set_at(select_resumes, recipe, None)
+                                    list.set_at(select_finishes, recipe, None)
                                 else:
                                     unit()
                                 list.set_at(frame_kinds, target, 0)
@@ -1481,6 +1571,33 @@ pub fn run(root: Task(())):
                                     prog = true
                                 else:
                                     list.set_at(frame_phases, i, 0)
+                            SelectLaneFrame((frame, prepare, resume, finish, selected_channels)) ->
+                                let recipe = list.length(select_prepares)
+                                let base = append_frame(frame, frame_lanes)
+                                let first = list.at(selected_channels, 0)
+                                let second = list.at(selected_channels, 1)
+                                list.push(select_prepares, Some(prepare))
+                                list.push(select_resumes, Some(resume))
+                                list.push(select_finishes, Some(finish))
+                                list.push(select_first_channels, first)
+                                list.push(select_second_channels, second)
+                                list.push(select_tags, 0)
+                                list.set_at(frame_kinds, i, 4)
+                                list.set_at(frame_bases, i, base)
+                                list.set_at(frame_lengths, i, list.length(frame))
+                                list.set_at(frame_recipes, i, recipe)
+                                list.set_at(slots, i, SelectLaneSlot(i))
+                                materialize_typed_i64_channel(first, channels, typed_i64_channels)
+                                materialize_typed_i64_channel(second, channels, typed_i64_channels)
+                                let selected = first_message(0, 2, first, second, 0, 0, channels)
+
+                                match selected:
+                                    Some((tag, msg)) ->
+                                        list.set_at(select_tags, recipe, tag)
+                                        list.set_at(frame_pending, i, Some(msg))
+                                        list.set_at(frame_phases, i, 1)
+                                        prog = true
+                                    None -> list.set_at(frame_phases, i, 0)
                             ProduceFrame((frame, prepare, resume, finish, ch, msg)) ->
                                 let recipe = list.length(send_prepares)
                                 let base = append_frame(frame, frame_lanes)
@@ -1521,6 +1638,7 @@ pub fn run(root: Task(())):
                     ReceiveLaneSlot(_) -> fail("receive frame reached ordinary dispatch")
                     ProduceFrameSlot(_) -> fail("producer frame reached ordinary dispatch")
                     JoinFrameSlot(_) -> fail("join frame reached ordinary dispatch")
+                    SelectLaneSlot(_) -> fail("select frame reached ordinary dispatch")
 
             i = i + 1
         if prog:
@@ -1599,6 +1717,10 @@ pub fn run(root: Task(())):
                     ReceiveFrameSlot(ch, frame, step, finish, _phase, _pending) ->
                         list.set_at(slots, j, ReceiveFrameSlot(ch, frame, step, finish, 1, None))
                     ReceiveLaneSlot(activation) ->
+                        list.set_at(frame_pending, activation, None)
+                        list.set_at(frame_phases, activation, 1)
+                    SelectLaneSlot(activation) ->
+                        __rfc0152_wake_claim()
                         list.set_at(frame_pending, activation, None)
                         list.set_at(frame_phases, activation, 1)
                     ProduceFrameSlot(activation) ->
