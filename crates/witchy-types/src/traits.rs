@@ -2694,10 +2694,22 @@ impl Ctx<'_> {
                                                     .join(", ")
                                             )
                                         };
-                                        self.missing_impls.borrow_mut().push(format!(
-                                            "`{disp}` does not implement `{trait_name}` \
-                                             (no `impl {trait_name} for {disp}`) — required by a call to `{name}`"
-                                        ));
+                                        // A unit receiver is almost always a value whose
+                                        // type nothing constrained (`show(None)`), which
+                                        // the checker records as unit: ask for the type.
+                                        let message = if disp == "Tuple0<>" {
+                                            format!(
+                                                "cannot infer the type of the value passed to `{name}`; \
+                                                 add a type annotation (as written it is `()`, which does \
+                                                 not implement `{trait_name}`)"
+                                            )
+                                        } else {
+                                            format!(
+                                                "`{disp}` does not implement `{trait_name}` \
+                                                 (no `impl {trait_name} for {disp}`) — required by a call to `{name}`"
+                                            )
+                                        };
+                                        self.missing_impls.borrow_mut().push(message);
                                     }
                                 }
                                 None => {}
