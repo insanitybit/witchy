@@ -401,6 +401,15 @@ fn an_alias_bound_in_a_loop_does_not_carry_its_source_string_exactly() {
 }
 
 #[test]
+fn two_aliases_of_one_string_enter_a_loop_on_their_own_lanes() {
+    // `b` and `c` hold the same lanes; carried on one entry id, the
+    // checker would count both extents by `b`'s header parameter.
+    let source = "fn go(s0: String) -> Int:\n    let b = s0\n    let c = s0\n    var acc = 0\n    var p = 0\n    while p < 3:\n        p = p + 1\n        var q = 0\n        while q < 3:\n            q = q + 1\n            acc = acc + c.substring(1, 2).length()\n        acc = acc + b.substring(1, 2).length()\n    acc\n\nfn main() -> Int:\n    go(\"abcdefgh\") % 256\n";
+    compile_checked_module_artifact(&checked(source))
+        .expect_lowered("aliased Strings carried through nested loops keep checked extents");
+}
+
+#[test]
 fn exact_narrowing_needs_a_proven_bound() {
     // `get`'s index is bounded only by `bytes.at`'s own check.
     let checked = checked("import bytes\n\nfn get(b: Bytes, i: Int) -> Int:\n    b.at(i)\n\nfn main() -> Int:\n    get(bytes.from_string(\"abc\"), 1)\n");

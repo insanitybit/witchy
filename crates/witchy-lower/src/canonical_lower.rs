@@ -9360,10 +9360,16 @@ impl FunctionLowerer<'_> {
     /// count and capacity. A backedge that lost the cached lanes refreshes
     /// them that way; a header whose entry kept a distinct capacity id would
     /// meet the two extents away for storage the shared meet cannot relax
-    /// (static data).
+    /// (static data). Lanes another String also holds (an alias such as
+    /// `let c = b`) are reauthenticated too: the checker renames one entry
+    /// id to one header parameter, so two carried Strings entering on the
+    /// same id would both count the first one's lane.
     fn authenticate_carried_string(&mut self, object: ValueId) -> Result<(), CanonicalLoweringError> {
         self.ensure_string_extent(object)?;
-        if self.tracked_lanes(object).is_some_and(|(count, capacity)| count != capacity) {
+        if self.tracked_lanes(object).is_some_and(|(count, capacity)| {
+            count != capacity
+                || self.string_lengths.iter().any(|(other, lane)| *other != object && *lane == count)
+        }) {
             self.refresh_disjunctive_string_extent(object)?;
         }
         Ok(())
