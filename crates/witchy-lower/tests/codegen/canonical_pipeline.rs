@@ -368,6 +368,23 @@ fn an_invariant_string_survives_a_while_let_with_an_inner_counted_for() {
 }
 
 #[test]
+fn a_static_string_survives_a_counted_for_that_never_mentions_it() {
+    // The inner `for` reauthenticates the literal at its header; the outer
+    // backedge's fresh lanes must meet the entry's, which static data allows
+    // only in the same count-for-capacity form.
+    let source = "fn main() -> Int:\n    let w = \"wxyz\"\n    var acc = 0\n    for i in 0..3:\n        var q = 0\n        while q < w.length():\n            acc = acc + w.substring(q, w.length()).length()\n            q = q + 1\n        for k in 0..2:\n            acc = acc + k\n    acc\n";
+    compile_checked_module_artifact(&checked(source))
+        .expect_lowered("a literal String carried by an outer for keeps a checked extent");
+}
+
+#[test]
+fn an_inner_loop_carries_a_string_only_when_its_enclosing_loop_does() {
+    let source = "import bytes\n\nfn main() -> Int:\n    let b = bytes.from_string(\"abcdefgh\")\n    var acc = 0\n    var i = 0\n    while i < 5:\n        var q = 0\n        while q < b.length():\n            acc = acc + b.at(q)\n            q = q + 1\n        for r in 0..3:\n            acc = acc + b.at(r)\n        i = i + 1\n    acc % 256\n";
+    compile_checked_module_artifact(&checked(source))
+        .expect_lowered("an inner for does not rename lanes its enclosing while keeps at their pre-loop ids");
+}
+
+#[test]
 fn exact_narrowing_needs_a_proven_bound() {
     // `get`'s index is bounded only by `bytes.at`'s own check.
     let checked = checked("import bytes\n\nfn get(b: Bytes, i: Int) -> Int:\n    b.at(i)\n\nfn main() -> Int:\n    get(bytes.from_string(\"abc\"), 1)\n");

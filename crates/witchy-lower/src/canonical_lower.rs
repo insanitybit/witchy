@@ -9276,9 +9276,6 @@ impl FunctionLowerer<'_> {
         }
     }
 
-    /// `while let PATTERN = SCRUTINEE: BODY` as a loop whose header binds
-    /// the scrutinee and tests the pattern; the body sees the pattern's
-    /// bindings. The state tuple is `lower_while`'s.
     /// Immutable Strings bound outside a loop and mentioned in it. Each
     /// crosses the loop as header lanes, authenticated before entry: a
     /// nested loop renames a String's lanes, so no backedge can rely on its
@@ -9296,17 +9293,46 @@ impl FunctionLowerer<'_> {
             .filter_map(|(name, object)| {
                 (!names.contains(name)
                     && matches!(self.values[object], ValueType::Ref(layout) if Some(layout) == string_layout)
-                    && self.known_shared_value(*object))
+                    && self.known_shared_value(*object)
+                    && self.enclosing_loops_carry(name, *object))
                     .then(|| name.clone())
             })
             .collect::<Vec<_>>();
         let invariant = crate::analysis::loop_mentions(condition, body, &candidates);
         for name in &invariant {
-            self.ensure_string_extent(outer[name])?;
+            self.authenticate_carried_string(outer[name])?;
         }
         Ok(invariant)
     }
 
+    /// Whether every enclosing loop that `object` (bound to `name`) predates
+    /// carries its lanes. A loop that carries a String renames its extent at
+    /// the exit; an enclosing loop that does not carry it would meet that
+    /// renamed count against its pre-loop one and forget the extent.
+    fn enclosing_loops_carry(&self, name: &str, object: ValueId) -> bool {
+        self.loop_contexts.iter().all(|context| {
+            self.binding_at_depth(name, context.scope_depth) != Some(object)
+                || context.list_names.iter().any(|carried| carried == name)
+        })
+    }
+
+    /// Establish a carried String's entry lanes in the form a backedge's
+    /// fresh header reauthentication produces, one header word for both
+    /// count and capacity. A backedge that lost the cached lanes refreshes
+    /// them that way; a header whose entry kept a distinct capacity id would
+    /// meet the two extents away for storage the shared meet cannot relax
+    /// (static data).
+    fn authenticate_carried_string(&mut self, object: ValueId) -> Result<(), CanonicalLoweringError> {
+        self.ensure_string_extent(object)?;
+        if self.tracked_lanes(object).is_some_and(|(count, capacity)| count != capacity) {
+            self.refresh_disjunctive_string_extent(object)?;
+        }
+        Ok(())
+    }
+
+    /// `while let PATTERN = SCRUTINEE: BODY` as a loop whose header binds
+    /// the scrutinee and tests the pattern; the body sees the pattern's
+    /// bindings. The state tuple is `lower_while`'s.
     fn lower_while_let(
         &mut self,
         pattern: &Pattern,
@@ -9916,10 +9942,15 @@ impl FunctionLowerer<'_> {
         // `lower_while`: a nested loop renames its lanes, so the pre-loop
         // count cannot stay the extent's count across this backedge.
         let string_layout = self.string_layout_id().ok();
-        list_names.extend(invariant_names.iter().filter(|name| {
+        let carried_strings = invariant_names.iter().filter(|name| {
             matches!(self.values[&outer[*name]], ValueType::Ref(layout) if Some(layout) == string_layout)
                 && self.known_shared_value(outer[*name])
-        }).cloned());
+                && self.enclosing_loops_carry(name, outer[*name])
+        }).cloned().collect::<Vec<_>>();
+        for name in &carried_strings {
+            self.authenticate_carried_string(outer[name])?;
+        }
+        list_names.extend(carried_strings);
         if list_names.iter().any(|name| self.tracked_lanes(outer[name]).is_none()) {
             return Err(CanonicalLoweringError::UnsupportedExpression("for list capacity state"));
         }
