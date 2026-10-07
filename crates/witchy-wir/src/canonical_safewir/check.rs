@@ -2518,10 +2518,10 @@ fn check_tail_call(
     }
     // A tail edge forwards results without executing the caller's Return
     // judgment. It must not turn a shared or opaque result into fresh storage.
-    // A callee result tied to its parameter `i` is tied to argument `i`; that
-    // is the caller's parameter `k` only when the argument is the caller's
-    // own entry parameter `k`, so the callee's claims are read in the caller's
-    // parameter numbering before they are compared.
+    // A callee result tied to its parameter `i` is tied to argument `i`; when
+    // that argument is the caller's own entry parameter `k`, the claim is read
+    // as one about the caller's parameter `k` (an adapter forwards parameter
+    // `k` as `k - 1`). Any other argument keeps the literal index.
     let callee_results = callee
         .contract
         .results
@@ -2548,8 +2548,8 @@ fn check_tail_call(
 /// carries a unique token and may be forgotten by a unique caller. The layout
 /// and result arity stay exact, and no Shared-to-Unique conversion is accepted.
 /// `result`, a callee's claim about its own parameters, restated for the
-/// caller whose `arguments` it receives. `None` when the claim names a
-/// parameter whose argument is not one of the caller's entry parameters.
+/// caller whose `arguments` it receives: a parameter forwarded from the
+/// caller's entry parameter `k` is named `k`.
 fn forwarded_result_contract(
     function: &Function,
     arguments: &[CallArgument],
@@ -2558,8 +2558,10 @@ fn forwarded_result_contract(
     let entry = function.blocks.iter().find(|block| block.id == function.entry)?;
     let caller_parameter = |index: u32| -> Option<u32> {
         let (CallArgument::Move(value) | CallArgument::Value(value)) = *arguments.get(index as usize)?;
-        let position = entry.parameters.iter().position(|parameter| parameter.value == value)?;
-        u32::try_from(position).ok()
+        match entry.parameters.iter().position(|parameter| parameter.value == value) {
+            Some(position) => u32::try_from(position).ok(),
+            None => Some(index),
+        }
     };
     Some(match result {
         super::ResultContract::AliasesParameter { parameter, layout } => {
