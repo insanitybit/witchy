@@ -79,7 +79,7 @@ impl Ctx<'_> {
             name: lane.name.clone(), ty: lane.ty.clone(), mutable: lane.mutable,
             value: decode_lane(call("list.at", vec![Expr::Var(frame.into()), lane_index(index, offset)]), lane),
         }).collect::<Vec<_>>();
-        let stores = |frame: &str| lanes.iter().enumerate().map(|(index, lane)| Stmt::Expr(call("list.set_at",
+        let stores = |frame: &str, count: usize| lanes.iter().take(count).enumerate().map(|(index, lane)| Stmt::Expr(call("list.set_at",
             vec![Expr::Var(frame.into()), lane_index(index, true), encode_lane(Expr::Var(lane.name.clone()), lane)])))
             .collect::<Vec<_>>();
         let mut preparing = body.stmts[..*split].to_vec();
@@ -88,13 +88,15 @@ impl Ctx<'_> {
         let prepared = self.fresh_tmp();
         preparing.push(Stmt::Let { name: prepared.clone(), ty: None, mutable: false,
             value: call("task.__prepare_send", vec![mark_source_task_operand(identity, inner.clone())]) });
-        preparing.extend(stores(&frame));
+        preparing.extend(stores(&frame, lanes.len()));
         preparing.push(Stmt::Expr(Expr::Ctor { name: "Some".into(), args: vec![Expr::Var(prepared)] }));
         preparing_lines.extend(std::iter::repeat_n(send_line, lanes.len() + 2));
+        let mut exiting = stores(&frame, outer_lanes.len());
+        exiting.push(Stmt::Expr(Expr::Ctor { name: "None".into(), args: vec![] }));
         let mut prepare_body = loads(&frame, true, outer_lanes.len());
         prepare_body.push(Stmt::Expr(Expr::If { cond: Box::new(cond.clone()),
             then_block: Block { lines: preparing_lines, stmts: preparing, region: None },
-            else_block: Some(tail_block_at(Expr::Ctor { name: "None".into(), args: vec![] }, cont.line)),
+            else_block: Some(Block { lines: vec![cont.line; exiting.len()], stmts: exiting, region: None }),
         }));
         let prepare = Expr::Lambda { params: vec![Param { name: base.clone(), ty: Some(named("Int")),
             convention: Convention::Let, default: None }, Param { name: frame.clone(), ty: Some(frame_type.clone()),
@@ -106,7 +108,7 @@ impl Ctx<'_> {
         let mut resuming_lines = vec![cont.line; resuming.len()];
         resuming.extend_from_slice(&body.stmts[*split + 1..]);
         resuming_lines.extend((*split + 1..body.stmts.len()).map(|index| line_at(&body.lines, index)));
-        resuming.extend(stores(&frame));
+        resuming.extend(stores(&frame, lanes.len()));
         resuming.push(Stmt::Expr(Expr::Bool(false)));
         resuming_lines.extend(std::iter::repeat_n(body.lines.last().copied().unwrap_or(send_line), lanes.len() + 1));
         let mut attributes = self.frame_attributes();

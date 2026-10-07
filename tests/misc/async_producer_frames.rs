@@ -254,3 +254,30 @@ fn raw_producer_preparation_is_not_source_authority() {
         assert!(error.to_string().contains("private"), "{error}");
     }
 }
+
+#[test]
+fn producer_frame_preserves_false_condition_carry_writeback() {
+    let _reset = Reset;
+    let source = r#"from chan import Sender
+
+fn advance(var value: Int) -> Bool:
+    value = value + 1
+    value < 3
+
+async fn produce(tx: Sender(Int)) -> Int:
+    var i: Int = 0
+    while advance(i):
+        chan.send(tx, i).await
+    i
+
+async fn main(console: Console):
+    let (tx, rx) = chan.channel(4).await
+    let result = produce(tx).await
+    console.print("result ${result}")
+    for await value in rx:
+        console.print("${value}")
+"#;
+    for options in [OptSet::none(), OptSet::all()] {
+        assert_eq!(run(source, options), ["result 3", "1", "2"]);
+    }
+}
