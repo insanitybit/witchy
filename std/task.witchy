@@ -100,6 +100,7 @@ sealed type Step(a):
     // Tagged sums reserve every variant’s fields, so keep this payload behind one field.
     // Body and probe phases preserve the ordinary receive’s round boundaries.
     ReceiveFrame((Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(a)))
+    ProduceFrame((List(Int), fn(var List(Int)) -> Option((Int, __Msg)), fn(var List(Int)) -> Bool, fn(List(Int)) -> Task(a), Int, __Msg))
 
 // A task communicating via channels, producing an `a`.
 sealed type Task(a):
@@ -186,6 +187,8 @@ fn and_then_step(own s: Step(a), own k: fn(own a) -> Task(b)) -> Step(b):
         Cancel(target, cont) -> Cancel(target, fn(u): and_then(cont(u), k))
         ReceiveFrame((ch, frame, step, finish)) ->
             ReceiveFrame((ch, frame, step, fn(state: List(Int)) -> Task(b): and_then(finish(state), k)))
+        ProduceFrame((frame, prepare, resume, finish, ch, msg)) ->
+            ProduceFrame((frame, prepare, resume, fn(state: List(Int)) -> Task(b): and_then(finish(state), k), ch, msg))
 
 // Transform a task's result.
 pub fn map(t: Task(a), f: fn(own a) -> b) -> Task(b):
@@ -308,6 +311,21 @@ pub fn channel_receive_frame(ch: ChannelId, frame: List(Int), step: fn(Option(__
     match ch:
         ChannelId(id) -> Task(fn(): ReceiveFrame((id, frame, step, finish)))
 
+pub fn __prepare_send(t: Task(())) -> (Int, __Msg):
+    match poll(t):
+        Push(ch, msg, _) -> (ch, msg)
+        _ ->
+            fail("invalid prepared channel send")
+            (0, __erase(0))
+
+pub fn __producer_frame(frame: List(Int), prepare: fn(var List(Int)) -> Option((Int, __Msg)), resume: fn(var List(Int)) -> Bool, finish: fn(List(Int)) -> Task(a)) -> Task(a):
+    Task(fn():
+        var state = frame
+        match prepare(state):
+            Some((ch, msg)) -> ProduceFrame((state, prepare, resume, finish, ch, msg))
+            None -> poll(finish(state))
+    )
+
 pub fn channel_recv_frame_loop(ch: ChannelId, frame: List(Int), step: fn(Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(())) -> Task(()):
     __channel_recv_frame_loop(ch, frame, step, done_fn)
 
@@ -404,6 +422,7 @@ sealed type Slot:
     WaitJoin(Int, fn(()) -> Task(()))
     Ended
     ReceiveFrameSlot(Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()), Int, Option(__Msg))
+    ProduceFrameSlot((Int, Int, Int, Option(__Msg)))
 
 fn is_live(s: Slot) -> Bool:
     match s:
@@ -422,6 +441,7 @@ fn is_live(s: Slot) -> Bool:
         WaitAny(_, _) -> true
         WaitJoin(_, _) -> true
         ReceiveFrameSlot(_, _, _, _, _, _) -> true
+        ProduceFrameSlot(_) -> true
 
 fn is_parked(s: Slot) -> Bool:
     match s:
@@ -440,6 +460,7 @@ fn is_parked(s: Slot) -> Bool:
         Active(_) -> false
         Ended -> false
         ReceiveFrameSlot(_, _, _, _, phase, _) -> phase == 0
+        ProduceFrameSlot((_, phase, _, _)) -> phase == 2
 
 // ---- fixed-capacity ring channels (RFC-0059 Stage 2) ----
 //
@@ -579,6 +600,14 @@ fn first_message(k: Int, arity: Int, ch0: Int, ch1: Int, ch2: Int, ch3: Int, var
 // select's source-order probe is semantically equivalent while avoiding one
 // scheduler turn per buffered message.  Any competing active or parked slot
 // keeps the normal one-message round-robin path.
+fn try_producer_send(ch: Int, msg: __Msg, var channels: unique List((List(__Msg), Int, Int, Int))) -> Bool:
+    let (buf, head, count, cap) = list.at(channels, ch)
+    if cap == 0 || count < cap:
+        list.set_at(channels, ch, ring_put(buf, head, count, msg, cap))
+        true
+    else:
+        false
+
 fn is_only_live_slot(k: Int, ignored: Int, slots: List(Slot)) -> Bool:
     if k >= list.length(slots):
         true
@@ -606,6 +635,7 @@ pub fn run(root: Task(())):
     var slots = [Active(root)]
     var channels = []
     var typed_i64_channels = []
+    var producer_frames: List(Option((List(Int), fn(var List(Int)) -> Option((Int, __Msg)), fn(var List(Int)) -> Bool, fn(List(Int)) -> Task(())))) = []
     var go = true
     while go:
         let n = list.length(slots)
@@ -1224,6 +1254,9 @@ pub fn run(root: Task(())):
                             else:
                                 list.set_at(slots, i, WaitJoin(t, cont))
                         Cancel(target, cont) ->
+                            match list.at(slots, target):
+                                ProduceFrameSlot((activation, _, _, _)) -> list.set_at(producer_frames, activation, None)
+                                _ -> unit()
                             list.set_at(slots, target, Ended)
                             list.set_at(slots, i, Active(cont(unit())))
                             prog = true
@@ -1238,6 +1271,15 @@ pub fn run(root: Task(())):
                                 prog = true
                             else:
                                 list.set_at(slots, i, ReceiveFrameSlot(ch, frame, step, finish, 0, None))
+                        ProduceFrame((frame, prepare, resume, finish, ch, msg)) ->
+                            let activation = list.length(producer_frames)
+                            list.push(producer_frames, Some((frame, prepare, resume, finish)))
+                            materialize_typed_i64_channel(ch, channels, typed_i64_channels)
+                            if try_producer_send(ch, msg, channels):
+                                list.set_at(slots, i, ProduceFrameSlot((activation, 1, ch, None)))
+                                prog = true
+                            else:
+                                list.set_at(slots, i, ProduceFrameSlot((activation, 2, ch, Some(msg))))
                 ReceiveFrameSlot(ch, frame, step, finish, phase, pending) ->
                     if phase == 1:
                         var state = frame
@@ -1256,6 +1298,35 @@ pub fn run(root: Task(())):
                             prog = true
                         else:
                             list.set_at(slots, i, ReceiveFrameSlot(ch, frame, step, finish, 0, None))
+                ProduceFrameSlot((activation, phase, ch, pending)) ->
+                    if phase == 1:
+                        match list.at(producer_frames, activation):
+                            Some((frame, prepare, resume, finish)) ->
+                                var state = frame
+                                if resume(state):
+                                    list.set_at(slots, i, Active(finish(state)))
+                                    list.set_at(producer_frames, activation, None)
+                                else:
+                                    match prepare(state):
+                                        Some((next_ch, msg)) ->
+                                            list.set_at(producer_frames, activation, Some((state, prepare, resume, finish)))
+                                            list.set_at(slots, i, ProduceFrameSlot((activation, 2, next_ch, Some(msg))))
+                                        None ->
+                                            list.set_at(slots, i, Active(finish(state)))
+                                            list.set_at(producer_frames, activation, None)
+                            None -> fail("missing producer activation")
+                        prog = true
+                    else:
+                        match pending:
+                            Some(msg) ->
+                                materialize_typed_i64_channel(ch, channels, typed_i64_channels)
+                                if try_producer_send(ch, msg, channels):
+                                    __rfc0152_wake_claim()
+                                    list.set_at(slots, i, ProduceFrameSlot((activation, 1, ch, None)))
+                                    prog = true
+                                else:
+                                    unit()
+                            None -> fail("missing prepared channel message")
             i = i + 1
         if prog:
             go = list.any(slots, fn(s): is_live(s))
@@ -1323,6 +1394,14 @@ pub fn run(root: Task(())):
                         list.set_at(slots, j, Active(cont(unit())))
                     ReceiveFrameSlot(ch, frame, step, finish, _phase, _pending) ->
                         list.set_at(slots, j, ReceiveFrameSlot(ch, frame, step, finish, 1, None))
+                    ProduceFrameSlot((activation, _phase, ch, pending)) ->
+                        match pending:
+                            Some(msg) ->
+                                let (buf, head, count, cap) = list.at(channels, ch)
+                                __rfc0152_wake_claim()
+                                list.set_at(channels, ch, ring_put(buf, head, count, msg, cap))
+                                list.set_at(slots, j, ProduceFrameSlot((activation, 1, ch, None)))
+                            None -> fail("missing parked channel message")
                     _ -> unit()
 
                 j = j + 1
