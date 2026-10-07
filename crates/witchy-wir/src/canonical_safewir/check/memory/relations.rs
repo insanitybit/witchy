@@ -2,13 +2,14 @@ use super::*;
 
 impl<'a> MemoryChecker<'a> {
     pub(super) fn less_than(&self, left: ValueId, right: ValueId) -> bool {
-        self.state.guards
-            .iter()
-            .any(|(operator, guarded_left, guarded_right)| {
-                *operator == ComparisonOperator::LessUnsigned
-                    && self.same_scalar(left, *guarded_left)
-                    && self.same_scalar(right, *guarded_right)
-            })
+        let strict = || self.state.guards.iter().filter(|(operator, guarded_left, _)| {
+            *operator == ComparisonOperator::LessUnsigned && self.same_scalar(left, *guarded_left)
+        });
+        if strict().any(|(_, _, guarded_right)| self.same_scalar(right, *guarded_right)) {
+            return true;
+        }
+        // `left < middle <= right`, as `less_equal` chains its steps.
+        strict().any(|(_, _, guarded_right)| self.less_equal(*guarded_right, right))
     }
 
     pub(super) fn less_than_for_owner(&self, object: ValueId, left: ValueId, right: ValueId) -> bool {
@@ -23,13 +24,25 @@ impl<'a> MemoryChecker<'a> {
             return true;
         }
         let Ok(generation) = self.current_generation(object) else { return false };
-        self.state.guards.iter().any(|(operator, guarded_left, guarded_right)| {
-            *operator == ComparisonOperator::LessUnsigned
-                && self.same_scalar(left, *guarded_left)
-                && self.same_scalar(right, *guarded_right)
+        let current_strict = |guarded_left: &ValueId, guarded_right: &ValueId| {
+            self.same_scalar(left, *guarded_left)
                 && self.state.guard_generations
-                    .get(&(*operator, *guarded_left, *guarded_right))
+                    .get(&(ComparisonOperator::LessUnsigned, *guarded_left, *guarded_right))
                     .is_some_and(|facts| facts.contains(&generation))
+        };
+        let strict = || self.state.guards.iter()
+            .filter(|(operator, _, _)| *operator == ComparisonOperator::LessUnsigned);
+        if strict().any(|(_, guarded_left, guarded_right)| {
+            current_strict(guarded_left, guarded_right) && self.same_scalar(right, *guarded_right)
+        }) {
+            return true;
+        }
+        // `left < middle` and `middle <= right`, both under the owner's current
+        // generation: an index below the logical length is below a capacity
+        // that length is proven not to exceed.
+        let Some(steps) = self.owner_steps(object) else { return false };
+        strict().any(|(_, guarded_left, guarded_right)| {
+            current_strict(guarded_left, guarded_right) && self.less_equal_with(&steps, *guarded_right, right)
         })
     }
 

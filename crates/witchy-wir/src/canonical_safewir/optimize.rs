@@ -513,6 +513,7 @@ fn check_function_relation<'r>(
 #[doc(hidden)]
 pub mod self_checks {
     use super::*;
+    use super::super::{ComparisonOperator, ValueType};
 
     /// Over a lowered module with both proven and unproven conditional
     /// branches: only a proven one folds, and only an unnamed block goes.
@@ -548,6 +549,50 @@ pub mod self_checks {
         function.value_types.retain(|value, _| defined.contains(value));
         assert_eq!(check_rewrite_relation_between(lowered, &dangling, false),
             Err(RewriteRelationError::BlockShapeChanged), "a block a kept branch names cannot go");
+    }
+
+    /// The rewrite removes a write's `index < capacity` guard that
+    /// `index < length` and `length <= capacity` imply. Returns the rewritten
+    /// candidate and a forgery of it that also drops every non-constant
+    /// `<=` guard between `Size` values: with the middle link gone, the
+    /// checker must refuse the write.
+    pub fn strict_bound_through_length(
+        lowered: &CanonicalModule<LoweredCandidate>,
+    ) -> (CanonicalModule<LoweredCandidate>, CanonicalModule<LoweredCandidate>) {
+        let candidate = remove_redundant_bounds_guards_before_check(lowered, &BTreeSet::new())
+            .expect("some guard is implied");
+        let strict_guards = |module: &CanonicalModule<LoweredCandidate>| module.functions.iter().map(|function| {
+            let strict: BTreeSet<_> = function.blocks.iter().flat_map(|block| &block.operations)
+                .filter_map(|operation| match operation {
+                    Operation::Compare { destination, operator: ComparisonOperator::LessUnsigned, .. } => Some(*destination),
+                    _ => None,
+                }).collect();
+            function.blocks.iter().flat_map(|block| &block.operations)
+                .filter(|operation| matches!(operation, Operation::Guard { condition, .. } if strict.contains(condition)))
+                .count()
+        }).sum::<usize>();
+        assert!(strict_guards(&candidate) < strict_guards(lowered), "an implied strict guard is removed");
+        let mut forged = candidate.clone();
+        for function in &mut forged.functions {
+            let constants: BTreeSet<_> = function.blocks.iter().flat_map(|block| &block.operations)
+                .filter_map(|operation| match operation {
+                    Operation::ConstSize { destination, .. } => Some(*destination),
+                    _ => None,
+                }).collect();
+            let links: BTreeSet<_> = function.blocks.iter().flat_map(|block| &block.operations)
+                .filter_map(|operation| match operation {
+                    Operation::Compare { destination, operator: ComparisonOperator::LessEqualUnsigned, left, right }
+                        if function.value_types.get(left) == Some(&ValueType::Size)
+                            && function.value_types.get(right) == Some(&ValueType::Size)
+                            && !constants.contains(left) && !constants.contains(right) && left != right =>
+                        Some(*destination),
+                    _ => None,
+                }).collect();
+            for block in &mut function.blocks {
+                block.operations.retain(|operation| !matches!(operation, Operation::Guard { condition, .. } if links.contains(condition)));
+            }
+        }
+        (candidate, forged)
     }
 
     /// The rewrite marks some narrowings exact. The returned module marks

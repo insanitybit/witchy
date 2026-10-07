@@ -178,6 +178,28 @@ impl Facts {
             .min()
     }
 
+    /// Whether the recorded relations prove `left operator right`: directly
+    /// (a `<` proves `<=`), or, for `<`, as `left < middle <= right` — the
+    /// one chain the checker's strict-bound rule also follows.
+    fn proves(&self, operator: ComparisonOperator, left: Operand, right: Operand) -> bool {
+        let at_most = |left: Operand, right: Operand| {
+            self.relations.contains(&(ComparisonOperator::LessUnsigned, left, right))
+                || self.relations.contains(&(ComparisonOperator::LessEqualUnsigned, left, right))
+        };
+        if self.relations.contains(&(ComparisonOperator::LessUnsigned, left, right))
+            || (operator == ComparisonOperator::LessEqualUnsigned && at_most(left, right))
+        {
+            return true;
+        }
+        operator == ComparisonOperator::LessUnsigned
+            && self.relations.iter().any(|(first, from, middle)| {
+                *first == ComparisonOperator::LessUnsigned
+                    && *from == left
+                    && matches!(middle, Operand::Value(_))
+                    && at_most(*middle, right)
+            })
+    }
+
     fn bound(&mut self, value: ValueId, upper: u64) {
         let upper = self.upper.get(&value).map_or(upper, |bound| (*bound).min(upper));
         self.upper.insert(value, upper);
@@ -355,10 +377,7 @@ pub(super) fn implied_guards(
                     }),
                     _ => false,
                 };
-                let holds = below_constant
-                    || facts.relations.contains(&fact)
-                    || (operator == ComparisonOperator::LessEqualUnsigned
-                        && facts.relations.contains(&(ComparisonOperator::LessUnsigned, left, right)));
+                let holds = below_constant || facts.proves(operator, left, right);
                 implied.insert((block.id, position), holds);
                 if contributes((block.id, position)) {
                     facts.relations.insert(fact);
@@ -376,15 +395,26 @@ pub(super) fn implied_guards(
         // proven, keyed at the terminator's position.
         if let Terminator::BranchIf { condition, .. } = &block.terminator
             && let Some(&(operator, left, right)) = comparisons.get(condition)
+            && matches!(operator, ComparisonOperator::LessUnsigned | ComparisonOperator::LessEqualUnsigned)
             && matches!(value_type(left), Some(ValueType::Int | ValueType::Size))
             && value_type(right) == value_type(left)
-            && let Some(limit) = constants.get(&right).copied()
         {
-            let holds = facts.upper_of(left, &widened_size_bounds(&facts)).is_some_and(|upper| match operator {
-                ComparisonOperator::LessUnsigned => upper < limit,
-                ComparisonOperator::LessEqualUnsigned => upper <= limit,
-                _ => false,
-            });
+            let holds = if let Some(limit) = constants.get(&right).copied() {
+                facts.upper_of(left, &widened_size_bounds(&facts)).is_some_and(|upper| match operator {
+                    ComparisonOperator::LessUnsigned => upper < limit,
+                    _ => upper <= limit,
+                })
+            } else if value_type(left) == Some(ValueType::Int) {
+                // `index < widen(length)` again, after an earlier check of
+                // the same index against the same length (each check widens
+                // the length afresh, so the widened source is the key).
+                widened.get(&right).is_some_and(|size| {
+                    facts.int_bounds.contains(&(ComparisonOperator::LessUnsigned, left, *size))
+                        || facts.int_bounds.contains(&(operator, left, *size))
+                })
+            } else {
+                facts.proves(operator, operand(left), operand(right))
+            };
             implied.insert((block.id, block.operations.len()), holds);
         }
     }

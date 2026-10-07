@@ -428,6 +428,28 @@ fn two_aliases_of_one_string_enter_a_loop_on_their_own_lanes() {
         .expect_lowered("aliased Strings carried through nested loops keep checked extents");
 }
 
+const SWAP_LOOP: &str = "fn flip(var xs: List(Int), k: Int):\n    var lo = 0\n    var hi = k\n    while lo < hi:\n        let a = list.at(xs, lo)\n        let b = list.at(xs, hi)\n        list.set_at(xs, lo, b)\n        list.set_at(xs, hi, a)\n        lo = lo + 1\n        hi = hi - 1\n\nfn main() -> Int:\n    var xs = [1, 2, 3, 4, 5]\n    flip(xs, 4)\n    list.at(xs, 0)\n";
+
+#[test]
+fn a_write_below_the_length_needs_no_capacity_check() {
+    let checked = checked(SWAP_LOOP);
+    let lowered = witchy_lower::canonical_pipeline_checks::lowered_candidate(&checked);
+    let (rewritten, _) = witchy_wir::self_checks::canonical_safewir_optimize::strict_bound_through_length(&lowered);
+    let source = checked.canonical_source().expect("canonical source");
+    witchy_wir::canonical_safewir::check_initial_with_witness(rewritten, &source.view())
+        .expect("index < length <= capacity bounds the write");
+}
+
+#[test]
+fn a_write_bound_through_the_length_needs_the_length_capacity_link() {
+    let checked = checked(SWAP_LOOP);
+    let lowered = witchy_lower::canonical_pipeline_checks::lowered_candidate(&checked);
+    let (_, forged) = witchy_wir::self_checks::canonical_safewir_optimize::strict_bound_through_length(&lowered);
+    let source = checked.canonical_source().expect("canonical source");
+    assert!(witchy_wir::canonical_safewir::check_initial_with_witness(forged, &source.view()).is_err(),
+        "without length <= capacity, index < length does not bound the write");
+}
+
 #[test]
 fn exact_narrowing_needs_a_proven_bound() {
     // `get`'s index is bounded only by `bytes.at`'s own check.
