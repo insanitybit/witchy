@@ -11,23 +11,75 @@ impl<'a> MemoryChecker<'a> {
         let Some(comparison) = self.state.comparisons.get(&condition).copied() else {
             return Ok(());
         };
+        self.assume_true_scalar_bound(comparison)?;
         if comparison.operator != ComparisonOperator::LessUnsigned
             || value_type(self.function, comparison.left)? != ValueType::Size
             || value_type(self.function, comparison.right)? != ValueType::Size
         {
             return Ok(());
         }
-        let relation = (comparison.operator, comparison.left, comparison.right);
+        self.assume_size_guard(comparison.operator, comparison.left, comparison.right);
+        Ok(())
+    }
+
+    /// Record `left operator right` between `Size` values as a guard would,
+    /// under the owner generations its operands carry now.
+    fn assume_size_guard(&mut self, operator: ComparisonOperator, left: ValueId, right: ValueId) {
+        let relation = (operator, left, right);
         self.state.guards.insert(relation);
         let generations = self.state.bound_generations
-            .get(&comparison.left)
+            .get(&left)
             .into_iter()
-            .chain(self.state.bound_generations.get(&comparison.right))
+            .chain(self.state.bound_generations.get(&right))
             .flat_map(|facts| facts.iter().copied())
-            .chain(self.fresh_header_generations(comparison.right))
+            .chain(self.fresh_header_generations(right))
             .collect::<SortedSet<_>>();
         self.state.guard_generations.insert(relation, generations);
+    }
+
+    /// A `Size` read of one raw byte: zero-extended, so at most 255.
+    fn raw_byte_element(&self, place: &Place) -> bool {
+        matches!(place.projection(), Projection::Element { .. })
+            && place.value_type() == ValueType::Size
+            && self.state.objects.get(&place.object())
+                .and_then(|object| self.descriptor(object.layout).ok())
+                .and_then(|descriptor| descriptor.kind().packed_element_layout())
+                .and_then(|element| self.descriptor(element).ok())
+                .is_some_and(|element| element.kind() == &LayoutKind::Scalar(ScalarKind::RawByte))
+    }
+
+    /// The facts a true unsigned comparison proves about its left operand
+    /// beyond a `Size` guard: an upper bound against a constant, and an `Int`
+    /// bound against a widened `Size` that its narrowing will carry.
+    fn assume_true_scalar_bound(&mut self, comparison: Comparison) -> Result<(), InitialCheckError> {
+        let strict = match comparison.operator {
+            ComparisonOperator::LessUnsigned => true,
+            ComparisonOperator::LessEqualUnsigned => false,
+            _ => return Ok(()),
+        };
+        let left_type = value_type(self.function, comparison.left)?;
+        if !matches!(left_type, ValueType::Int | ValueType::Size)
+            || value_type(self.function, comparison.right)? != left_type
+        {
+            return Ok(());
+        }
+        if let Some(limit) = self.state.constants.get(&comparison.right).copied() {
+            let upper = if strict { limit.checked_sub(1) } else { Some(limit) };
+            if let Some(upper) = upper {
+                self.bound_scalar(comparison.left, upper);
+            }
+        }
+        if left_type == ValueType::Int
+            && let Some(size) = self.state.widened_sizes.get(&comparison.right).copied()
+        {
+            self.state.int_size_bounds.insert((comparison.operator, comparison.left, size));
+        }
         Ok(())
+    }
+
+    fn bound_scalar(&mut self, value: ValueId, upper: u64) {
+        let upper = self.state.scalar_upper_bounds.get(&value).map_or(upper, |bound| (*bound).min(upper));
+        self.state.scalar_upper_bounds.insert(value, upper);
     }
 
     pub(super) fn consume_call_move(
@@ -282,6 +334,25 @@ impl<'a> MemoryChecker<'a> {
                 {
                     self.state.constants.insert(*destination, value);
                 }
+                // The narrowed value equals its source, which a completed
+                // narrowing proved fits u32.
+                if let Some(upper) = self.state.scalar_upper_bounds.get(value).copied() {
+                    self.bound_scalar(*destination, upper.min(u64::from(u32::MAX)));
+                }
+                let bounds = self.state.int_size_bounds.iter()
+                    .filter(|(_, left, _)| left == value)
+                    .map(|(operator, _, size)| (*operator, *size))
+                    .collect::<Vec<_>>();
+                for (operator, size) in bounds {
+                    self.assume_size_guard(operator, *destination, size);
+                }
+                Ok(false)
+            }
+            Operation::WidenSize { destination, value } => {
+                self.state.widened_sizes.insert(*destination, *value);
+                if let Some(upper) = self.state.scalar_upper_bounds.get(value).copied() {
+                    self.bound_scalar(*destination, upper);
+                }
                 Ok(false)
             }
             Operation::Arithmetic {
@@ -384,6 +455,9 @@ impl<'a> MemoryChecker<'a> {
             }
             Operation::Load { destination, place, transfer } => {
                 self.load(*destination, place, *transfer)?;
+                if self.raw_byte_element(place) {
+                    self.bound_scalar(*destination, 255);
+                }
                 if matches!(
                     (place.projection(), transfer),
                     (Projection::Header(HeaderField::Length), LoadTransfer::CopyScalar)

@@ -177,7 +177,9 @@ impl<'a> MemoryChecker<'a> {
     /// Whether the path proves `value <= bound`: a constant, or an unsigned
     /// guard against a constant no larger than the bound.
     pub(super) fn proven_at_most(&self, value: ValueId, bound: u64) -> bool {
-        if self.state.constants.get(&value).is_some_and(|constant| *constant <= bound) {
+        if self.state.constants.get(&value).is_some_and(|constant| *constant <= bound)
+            || self.state.scalar_upper_bounds.get(&value).is_some_and(|upper| *upper <= bound)
+        {
             return true;
         }
         self.state.guards.iter().any(|(operator, left, right)| {
@@ -358,6 +360,7 @@ impl<'a> MemoryChecker<'a> {
         facts.constants
             .get(&capacity)
             .is_some_and(|capacity| *capacity <= maximum)
+            || facts.scalar_upper_bounds.get(&capacity).is_some_and(|upper| *upper <= maximum)
             || facts.guards.iter().any(|(operator, left, right)| {
                 *operator == ComparisonOperator::LessEqualUnsigned
                     && *left == capacity

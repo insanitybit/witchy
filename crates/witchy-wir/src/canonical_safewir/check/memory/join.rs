@@ -575,6 +575,17 @@ impl<'a> MemoryChecker<'a> {
                     (*operator, remap_value(&renames, *left), remap_value(&renames, *right))
                 })
                 .collect(),
+            scalar_upper_bounds: self.state.scalar_upper_bounds.iter()
+                .map(|(value, bound)| (remap_value(&renames, *value), *bound))
+                .collect(),
+            widened_sizes: self.state.widened_sizes.iter()
+                .map(|(wide, size)| (remap_value(&renames, *wide), remap_value(&renames, *size)))
+                .collect(),
+            int_size_bounds: self.state.int_size_bounds.iter()
+                .map(|(operator, left, right)| {
+                    (*operator, remap_value(&renames, *left), remap_value(&renames, *right))
+                })
+                .collect(),
             header_values: self
                 .state
                 .header_values
@@ -933,6 +944,9 @@ impl<'a> MemoryChecker<'a> {
             exact_additions: meet_map(&existing.exact_additions, &incoming.exact_additions),
             comparisons: meet_map(&existing.comparisons, &incoming.comparisons),
             guards: meet_set(&existing.guards, &incoming.guards),
+            scalar_upper_bounds: meet_upper_bounds(&existing.scalar_upper_bounds, &incoming.scalar_upper_bounds),
+            widened_sizes: meet_map(&existing.widened_sizes, &incoming.widened_sizes),
+            int_size_bounds: meet_set(&existing.int_size_bounds, &incoming.int_size_bounds),
             header_values: meet_map(&existing.header_values, &incoming.header_values),
             static_data_objects: meet_set(&existing.static_data_objects, &incoming.static_data_objects),
         })

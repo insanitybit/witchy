@@ -243,6 +243,15 @@ pub(super) struct MemoryState {
     exact_additions: CowFacts<SortedMap<ValueId, (ValueId, ValueId)>>,
     comparisons: CowFacts<SortedMap<ValueId, Comparison>>,
     guards: CowFacts<SortedSet<(ComparisonOperator, ValueId, ValueId)>>,
+    /// Proven inclusive upper bounds of scalar values: from a branch on a
+    /// comparison with a constant, a raw-byte load, or a width change of a
+    /// bounded value. Scalar SSA values never change, so these never stale.
+    scalar_upper_bounds: CowFacts<SortedMap<ValueId, u64>>,
+    /// `WidenSize` results and the `Size` each widens.
+    widened_sizes: CowFacts<SortedMap<ValueId, ValueId>>,
+    /// `Int` comparisons proven true against a widened `Size`: `(op, a, c)`
+    /// with `a op widen(c)`. Narrowing `a` turns one into a `Size` guard.
+    int_size_bounds: CowFacts<SortedSet<(ComparisonOperator, ValueId, ValueId)>>,
     header_values: CowFacts<SortedMap<(ValueId, HeaderField), ValueId>>,
     static_data_objects: CowFacts<SortedSet<ValueId>>,
     /// Scalar lanes a Store has initialized, by container value and slot.
@@ -330,6 +339,9 @@ impl<'a> MemoryChecker<'a> {
                 exact_additions: SortedMap::new().into(),
                 comparisons: SortedMap::new().into(),
                 guards: SortedSet::new().into(),
+                scalar_upper_bounds: SortedMap::new().into(),
+                widened_sizes: SortedMap::new().into(),
+                int_size_bounds: SortedSet::new().into(),
                 header_values: SortedMap::new().into(),
                 static_data_objects: SortedSet::new().into(),
                 initialized_scalar_slots: SortedSet::new().into(),
@@ -880,6 +892,19 @@ fn meet_map<K: Ord + Copy, V: Clone + PartialEq>(
         return left.clone();
     }
     intersect_map(left, right).into()
+}
+
+/// Upper bounds both paths prove, at the larger of the two.
+fn meet_upper_bounds(
+    left: &CowFacts<SortedMap<ValueId, u64>>,
+    right: &CowFacts<SortedMap<ValueId, u64>>,
+) -> CowFacts<SortedMap<ValueId, u64>> {
+    if left.iter().all(|(value, bound)| right.get(value).is_some_and(|other| other <= bound)) {
+        return left.clone();
+    }
+    left.iter()
+        .filter_map(|(value, bound)| right.get(value).map(|other| (*value, (*bound).max(*other))))
+        .collect()
 }
 
 fn meet_set<T: Ord + Copy>(

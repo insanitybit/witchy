@@ -116,71 +116,166 @@ enum Operand {
 
 type Relation = (ComparisonOperator, Operand, Operand);
 
-/// Which guards are implied where they stand. A relation between SSA `Size`
-/// values never stops holding once a guard has established it, so a guard
-/// is implied when every path to it passed a guard (or the true edge of a
-/// branch on a `<` comparison) establishing the same relation, a strict one
-/// for `<=`. These are
-/// the facts the memory checker itself carries; it still re-proves the
-/// rewritten body. `contributes` selects which guards establish facts, so the
-/// rewrite checker can ask the same question of the surviving guards alone.
+/// What a path has proven about scalar values, mirroring the facts the memory
+/// checker derives: `Size` relations from guards and from true `<` branches,
+/// upper bounds from true comparisons with a constant, raw-byte loads and
+/// width changes, and `Int` bounds against a widened `Size` that narrowing
+/// turns into a `Size` relation.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct Facts {
+    relations: BTreeSet<Relation>,
+    upper: BTreeMap<ValueId, u64>,
+    int_bounds: BTreeSet<(ComparisonOperator, ValueId, ValueId)>,
+}
+
+impl Facts {
+    fn meet(&self, other: &Self) -> Self {
+        Self {
+            relations: self.relations.intersection(&other.relations).copied().collect(),
+            upper: self.upper.iter()
+                .filter_map(|(value, bound)| other.upper.get(value).map(|other| (*value, (*bound).max(*other))))
+                .collect(),
+            int_bounds: self.int_bounds.intersection(&other.int_bounds).copied().collect(),
+        }
+    }
+
+    fn bound(&mut self, value: ValueId, upper: u64) {
+        let upper = self.upper.get(&value).map_or(upper, |bound| (*bound).min(upper));
+        self.upper.insert(value, upper);
+    }
+
+    /// Facts that survive an edge passing `arguments`. The checker carries
+    /// a fact onto a block parameter only in some cases (never onto a joined
+    /// counted lane, which the lowerer re-guards), so the parameters start
+    /// unproven, and a fact about a passed argument, which the checker
+    /// renames to its parameter, is dropped.
+    fn across(&self, arguments: &[ValueId]) -> Self {
+        let kept = |value: &ValueId| !arguments.contains(value);
+        let operand = |operand: &Operand| match operand {
+            Operand::Value(value) => kept(value),
+            Operand::Constant(_) => true,
+        };
+        Self {
+            relations: self.relations.iter().filter(|(_, left, right)| operand(left) && operand(right)).copied().collect(),
+            upper: self.upper.iter().filter(|(value, _)| kept(value)).map(|(value, bound)| (*value, *bound)).collect(),
+            int_bounds: self.int_bounds.iter().filter(|(_, left, right)| kept(left) && kept(right)).copied().collect(),
+        }
+    }
+}
+
+/// Which guards are implied where they stand: every path to the guard has
+/// proven its relation (or a strict one for `<=`), or bounds its left operand
+/// below a constant right operand. A relation true by its operands alone
+/// (`h <= h`) still counts as a guard: the checker records it, e.g. to
+/// reauthenticate a header it bounds. The checker re-proves the rewritten
+/// body. `contributes` selects which guards establish facts, so the rewrite
+/// checker can ask the same question of the surviving guards alone.
 pub(super) fn implied_guards(
     function: &Function,
     contributes: impl Fn((BlockId, usize)) -> bool,
 ) -> BTreeMap<(BlockId, usize), bool> {
     let mut constants = BTreeMap::new();
     let mut comparisons = BTreeMap::new();
+    let mut widened = BTreeMap::new();
     for block in &function.blocks {
         for operation in &block.operations {
             match operation {
                 Operation::ConstSize { destination, value } => { constants.insert(*destination, *value); }
+                Operation::ConstInt { destination, value } => {
+                    if let Ok(value) = u64::try_from(*value) { constants.insert(*destination, value); }
+                }
                 Operation::Compare { destination, operator, left, right } => {
                     comparisons.insert(*destination, (*operator, *left, *right));
                 }
+                Operation::WidenSize { destination, value } => { widened.insert(*destination, *value); }
                 _ => {}
             }
         }
     }
     let operand = |value: ValueId| constants.get(&value).map_or(Operand::Value(value), |constant| Operand::Constant(*constant));
-    let size = |value: ValueId| function.value_types.get(&value) == Some(&ValueType::Size);
-    let relation = |condition: ValueId, operators: &[ComparisonOperator]| -> Option<Relation> {
+    let value_type = |value: ValueId| function.value_types.get(&value).copied();
+    let size_relation = |condition: ValueId, operators: &[ComparisonOperator]| -> Option<Relation> {
         let (operator, left, right) = *comparisons.get(&condition)?;
-        (operators.contains(&operator) && size(left) && size(right)).then(|| (operator, operand(left), operand(right)))
+        (operators.contains(&operator) && value_type(left) == Some(ValueType::Size) && value_type(right) == Some(ValueType::Size))
+            .then(|| (operator, operand(left), operand(right)))
     };
     let guarded = |operation: &Operation| match operation {
-        Operation::Guard { condition, kind: GuardKind::Bounds | GuardKind::Arithmetic } => relation(
+        Operation::Guard { condition, kind: GuardKind::Bounds | GuardKind::Arithmetic } => size_relation(
             *condition, &[ComparisonOperator::LessUnsigned, ComparisonOperator::LessEqualUnsigned]),
         _ => None,
     };
+    // The facts each operation adds, guards aside.
+    let step = |facts: &mut Facts, operation: &Operation| match operation {
+        Operation::Load { destination, place, .. }
+            if matches!(place.projection(), super::Projection::Element { .. }) && place.value_type() == ValueType::Size =>
+        {
+            facts.bound(*destination, 255);
+        }
+        Operation::WidenSize { destination, value } => {
+            if let Some(upper) = facts.upper.get(value).copied() { facts.bound(*destination, upper); }
+        }
+        Operation::NarrowSize { destination, value } => {
+            if let Some(upper) = facts.upper.get(value).copied() { facts.bound(*destination, upper.min(u64::from(u32::MAX))); }
+            let narrowed = facts.int_bounds.iter().filter(|(_, left, _)| left == value)
+                .map(|(operator, _, size)| (*operator, Operand::Value(*destination), operand(*size)))
+                .collect::<Vec<_>>();
+            facts.relations.extend(narrowed);
+        }
+        _ => {}
+    };
+    // The facts a true branch on `condition` adds.
+    let assume = |facts: &mut Facts, condition: ValueId| {
+        let Some(&(operator, left, right)) = comparisons.get(&condition) else { return };
+        let strict = match operator {
+            ComparisonOperator::LessUnsigned => true,
+            ComparisonOperator::LessEqualUnsigned => false,
+            _ => return,
+        };
+        let kind = value_type(left);
+        if !matches!(kind, Some(ValueType::Int | ValueType::Size)) || value_type(right) != kind { return; }
+        if let Some(limit) = constants.get(&right).copied()
+            && let Some(upper) = if strict { limit.checked_sub(1) } else { Some(limit) }
+        {
+            facts.bound(left, upper);
+        }
+        if kind == Some(ValueType::Int) && let Some(size) = widened.get(&right) {
+            facts.int_bounds.insert((operator, left, *size));
+        }
+        if strict && kind == Some(ValueType::Size) {
+            facts.relations.insert((operator, operand(left), operand(right)));
+        }
+    };
     let index: BTreeMap<BlockId, usize> = function.blocks.iter().enumerate().map(|(at, block)| (block.id, at)).collect();
     // Facts on entry to each block; `None` until some predecessor reaches it.
-    let mut entry: Vec<Option<BTreeSet<Relation>>> = vec![None; function.blocks.len()];
+    let mut entry: Vec<Option<Facts>> = vec![None; function.blocks.len()];
     let Some(&start) = index.get(&function.entry) else { return BTreeMap::new() };
-    entry[start] = Some(BTreeSet::new());
+    entry[start] = Some(Facts::default());
     let mut pending = std::collections::VecDeque::from([start]);
     while let Some(at) = pending.pop_front() {
         let block = &function.blocks[at];
         let mut facts = entry[at].clone().expect("a pending block has entry facts");
         for (position, operation) in block.operations.iter().enumerate() {
             if let Some(fact) = guarded(operation) && contributes((block.id, position)) {
-                facts.insert(fact);
+                facts.relations.insert(fact);
             }
+            step(&mut facts, operation);
         }
-        let edges: Vec<(BlockId, Option<Relation>)> = match &block.terminator {
-            Terminator::Branch { target, .. } => vec![(*target, None)],
-            Terminator::BranchIf { condition, then_target, else_target, .. } => vec![
-                (*then_target, relation(*condition, &[ComparisonOperator::LessUnsigned])),
-                (*else_target, None),
+        let edges: Vec<(BlockId, &[ValueId], Option<ValueId>)> = match &block.terminator {
+            Terminator::Branch { target, arguments } => vec![(*target, arguments, None)],
+            Terminator::BranchIf { condition, then_target, then_arguments, else_target, else_arguments } => vec![
+                (*then_target, then_arguments, Some(*condition)),
+                (*else_target, else_arguments, None),
             ],
             _ => Vec::new(),
         };
-        for (target, edge_fact) in edges {
+        for (target, arguments, condition) in edges {
             let Some(&target) = index.get(&target) else { continue };
             let mut outgoing = facts.clone();
-            outgoing.extend(edge_fact);
+            if let Some(condition) = condition { assume(&mut outgoing, condition); }
+            let outgoing = if arguments.is_empty() { outgoing } else { outgoing.across(arguments) };
             let met = match &entry[target] {
                 None => outgoing,
-                Some(previous) => previous.intersection(&outgoing).copied().collect(),
+                Some(previous) => previous.meet(&outgoing),
             };
             if entry[target].as_ref() != Some(&met) {
                 entry[target] = Some(met);
@@ -192,18 +287,25 @@ pub(super) fn implied_guards(
     for (at, block) in function.blocks.iter().enumerate() {
         let Some(mut facts) = entry[at].clone() else { continue };
         for (position, operation) in block.operations.iter().enumerate() {
-            let Some(fact) = guarded(operation) else { continue };
-            // Only an established relation counts. A relation true by its
-            // operands alone (`h <= h`, two constants) is still a guard the
-            // checker records, e.g. to reauthenticate a header it bounds.
-            let (operator, left, right) = fact;
-            let holds = facts.contains(&fact)
-                || (operator == ComparisonOperator::LessEqualUnsigned
-                    && facts.contains(&(ComparisonOperator::LessUnsigned, left, right)));
-            implied.insert((block.id, position), holds);
-            if contributes((block.id, position)) {
-                facts.insert(fact);
+            if let Some(fact) = guarded(operation) {
+                let (operator, left, right) = fact;
+                let below_constant = match (left, right) {
+                    (Operand::Value(left), Operand::Constant(limit)) => facts.upper.get(&left).is_some_and(|upper| match operator {
+                        ComparisonOperator::LessUnsigned => *upper < limit,
+                        _ => *upper <= limit,
+                    }),
+                    _ => false,
+                };
+                let holds = below_constant
+                    || facts.relations.contains(&fact)
+                    || (operator == ComparisonOperator::LessEqualUnsigned
+                        && facts.relations.contains(&(ComparisonOperator::LessUnsigned, left, right)));
+                implied.insert((block.id, position), holds);
+                if contributes((block.id, position)) {
+                    facts.relations.insert(fact);
+                }
             }
+            step(&mut facts, operation);
         }
     }
     implied
