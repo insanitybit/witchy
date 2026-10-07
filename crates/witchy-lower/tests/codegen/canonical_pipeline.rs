@@ -29,6 +29,135 @@ fn checked(source: &str) -> CheckedModule {
     .expect("checked source")
 }
 
+struct ResetCallbackOptimization;
+
+impl Drop for ResetCallbackOptimization {
+    fn drop(&mut self) { witchy_syntax::opt::set_for_tests(None); }
+}
+
+fn callback_structure(source_text: &str, enabled: bool) -> (usize, usize) {
+    use witchy_syntax::opt::{Opt, OptSet};
+    use witchy_wir::canonical_safewir::Operation;
+    let _reset = ResetCallbackOptimization;
+    let options = if enabled { OptSet::none().with(Opt::ClosureElide) } else { OptSet::none() };
+    witchy_syntax::opt::set_for_tests(Some(options));
+    let checked = checked(source_text);
+    let candidate = witchy_lower::canonical_pipeline_checks::lowered_candidate(&checked);
+    let source = checked.canonical_source().expect("source");
+    let main = candidate.source_abi_bindings().entries().iter().find_map(|binding| {
+        let declaration = source.view().closed_callable_declaration(binding.source_declaration_ordinal())?;
+        (declaration.name == "main").then_some(binding.function())
+    }).expect("main binding");
+    let main = candidate.functions().iter().find(|function| function.id == main).expect("main");
+    let operations = main.blocks.iter().flat_map(|block| &block.operations).collect::<Vec<_>>();
+    let allocations = operations.iter().filter(|operation| matches!(operation, Operation::Alloc { .. })).count();
+    let clones = operations.iter().filter(|operation| matches!(operation, Operation::CloneRef { .. })).count();
+    if source_text == SCALAR_CALLBACK {
+        let expected_name = if enabled { "main.twice" } else { "main.invoke" };
+        let expected = candidate.source_abi_bindings().entries().iter().find_map(|binding| {
+            let declaration = source.view().closed_callable_declaration(binding.source_declaration_ordinal())?;
+            (declaration.name == expected_name).then_some(binding.function())
+        }).expect("checked target binding");
+        let callees = operations.iter().filter_map(|operation| match operation {
+            Operation::Call { callee, .. } => Some(*callee), _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(callees, [expected]);
+    }
+    compile_checked_module_artifact(&checked).expect_lowered("admitted callback forwarder");
+    (allocations, clones)
+}
+
+const SCALAR_CALLBACK: &str = "fn twice(x: Int) -> Int:\n    x * 2\n\nfn invoke(f: fn(Int) -> Int, x: Int) -> Int:\n    f(x)\n\nfn main() -> Int:\n    let value = invoke(twice, 21)\n    value + 1\n";
+
+#[test]
+fn scalar_callback_forwarder_structure() {
+    assert_eq!(callback_structure(SCALAR_CALLBACK, false), (2, 1));
+    assert_eq!(callback_structure(SCALAR_CALLBACK, true), (0, 0));
+}
+
+#[test]
+fn scalar_callback_forwarder_keeps_unsupported_routes() {
+    for source in [
+        SCALAR_CALLBACK.replace("    f(x)", "    f(x) + 1"),
+        SCALAR_CALLBACK.replace("    f(x)", "    f(x) + f(x)"),
+        SCALAR_CALLBACK.replace("    x * 2", "    twice(x - 1)"),
+        SCALAR_CALLBACK.replace("    f(x)", "    let alias = f\n    alias(x)"),
+        SCALAR_CALLBACK.replace("invoke(twice, 21)", "invoke(fn(x: Int): x * 2, 21)"),
+        SCALAR_CALLBACK.replace("    let value = invoke(twice, 21)", "    let callback = twice\n    let value = invoke(callback, 21)"),
+        SCALAR_CALLBACK.replace("    let value = invoke(twice, 21)", "    let twice = fn(x: Int): x + 3\n    let value = invoke(twice, 21)"),
+        SCALAR_CALLBACK.replace("    let value = invoke(twice, 21)", "    let invoke = fn(f: fn(Int) -> Int, x: Int): f(x)\n    let value = invoke(twice, 21)"),
+        SCALAR_CALLBACK.replace("    let value = invoke(twice, 21)\n    value + 1", "    invoke(twice, 21)"),
+    ] {
+        assert_eq!(callback_structure(&source, true), callback_structure(&source, false), "{source}");
+    }
+}
+
+#[cfg(feature = "native-test-runtime")]
+#[test]
+fn scalar_callback_forwarder_runs_admitted_optimized_and_unoptimized_wasm() {
+    use witchy_syntax::opt::{Opt, OptSet};
+    let _reset = ResetCallbackOptimization;
+    for options in [OptSet::none(), OptSet::none().with(Opt::ClosureElide)] {
+        witchy_syntax::opt::set_for_tests(Some(options));
+        assert_eq!(run_callback_result(SCALAR_CALLBACK), 43);
+        let ordered = "fn difference(a: Int, b: Int) -> Int:\n    a - b\n\nfn invoke(f: fn(Int, Int) -> Int, a: Int, b: Int) -> Int:\n    f(a, b)\n\nfn next(var n: Int, digit: Int) -> Int:\n    n = n * 10 + digit\n    digit\n\nfn main() -> Int:\n    var n = 0\n    let result = invoke(difference, next(n, 1), next(n, 2))\n    n * 10 + result\n";
+        assert_eq!(run_callback_result(ordered), 119);
+        for source in [
+            "fn constant() -> Int:\n    42\n\nfn invoke(f: fn() -> Int) -> Int:\n    f()\n\nfn main() -> Int:\n    let result = invoke(constant)\n    result + 1\n",
+            "fn invert(x: Bool) -> Bool:\n    !x\n\nfn invoke(f: fn(Bool) -> Bool, x: Bool) -> Bool:\n    f(x)\n\nfn main() -> Int:\n    let result = invoke(invert, false)\n    if result: 43 else: 0\n",
+            "fn twice(x: Float) -> Float:\n    x * 2.0\n\nfn invoke(f: fn(Float) -> Float, x: Float) -> Float:\n    f(x)\n\nfn main() -> Int:\n    let result = invoke(twice, 21.0)\n    if result == 42.0: 43 else: 0\n",
+        ] {
+            assert_eq!(run_callback_result(source), 43);
+        }
+    }
+}
+
+#[cfg(feature = "native-test-runtime")]
+fn run_callback_result(source_text: &str) -> i64 {
+    run_callback(source_text).expect("callback result")
+}
+
+#[cfg(feature = "native-test-runtime")]
+fn run_callback(source_text: &str) -> Result<i64, String> {
+    let checked = checked(source_text);
+    let candidate = witchy_lower::canonical_pipeline_checks::lowered_candidate(&checked);
+    let source = checked.canonical_source().expect("source");
+    let main = candidate.source_abi_bindings().entries().iter().find_map(|binding| {
+        let declaration = source.view().closed_callable_declaration(binding.source_declaration_ordinal())?;
+        (declaration.name == "main").then_some(binding.function())
+    }).expect("main binding");
+    let artifact = compile_checked_module_artifact(&checked).expect_lowered("admit callback source");
+    let mut config = wasmtime::Config::new();
+    config.compiler_inlining(wasmtime::Inlining::Yes);
+    let engine = wasmtime::Engine::new(&config).expect("optimized engine");
+    let module = wasmtime::Module::new(&engine, artifact.wasm()).expect("compile admitted callback");
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = diagnostic_linker(&engine).instantiate(&mut store, &module).expect("instantiate callback");
+    instance.get_typed_func::<(), i64>(&mut store, &format!("f{}", main.get()))
+        .expect("callback main export").call(&mut store, ()).map_err(|error| error.root_cause().to_string())
+}
+
+#[cfg(feature = "native-test-runtime")]
+#[test]
+fn scalar_callback_forwarder_preserves_traps() {
+    use witchy_syntax::opt::{Opt, OptSet};
+    let _reset = ResetCallbackOptimization;
+    for source in [
+        SCALAR_CALLBACK.replace("x * 2", "x / (x - 21)"),
+        SCALAR_CALLBACK.replace("x * 2", "x % (x - 21)"),
+        SCALAR_CALLBACK.replace("21)", "(-9223372036854775807 - 1))").replace("x * 2", "x / -1"),
+        "fn difference(a: Int, b: Int) -> Int:\n    a - b\n\nfn invoke(f: fn(Int, Int) -> Int, a: Int, b: Int) -> Int:\n    f(a, b)\n\nfn first() -> Int:\n    fail(\"first argument\")\n    0\n\nfn second() -> Int:\n    fail(\"second argument\")\n    0\n\nfn main() -> Int:\n    let result = invoke(difference, first(), second())\n    result + 1\n".to_owned(),
+    ] {
+        let source = source.replace("fn main() -> Int:\n", "fn main() -> Int:\n    let marker: String = \"trap\"\n    let _ = marker\n");
+        witchy_syntax::opt::set_for_tests(Some(OptSet::none()));
+        let baseline = run_callback(&source).expect_err("unoptimized trap");
+        witchy_syntax::opt::set_for_tests(Some(OptSet::none().with(Opt::ClosureElide)));
+        let optimized = run_callback(&source).expect_err("optimized trap");
+        assert_eq!(optimized, baseline, "{source}");
+        if source.contains("first argument") { assert!(optimized.contains("first argument"), "{optimized}"); }
+    }
+}
+
 /// Deliberately link only the exact canonical diagnostic ABIs. Unknown imports
 /// or mismatched signatures must still fail instantiation. These imports
 /// always terminate; a no-op host would conceal failed guards.

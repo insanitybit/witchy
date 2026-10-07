@@ -1,0 +1,18 @@
+mode opt
+
+fn residue(x: Int) -> Int:
+    x % 7
+
+fn invoke(f: fn(Int) -> Int, x: Int) -> Int:
+    f(x)
+
+fn main(let console: Console, let clock: Clock):
+    let start = clock.now_monotonic()
+    var total = 0
+    var i = 0
+    while i < 2000000:
+        total = total + invoke(residue, i)
+        i = i + 1
+    let finish = clock.now_monotonic()
+    console.print("${total}")
+    console.print("bench_ns=${finish - start}")

@@ -27,6 +27,8 @@ mod vm_service;
 mod par_map;
 #[path = "canonical_quote_holes.rs"]
 mod quote_holes;
+#[path = "canonical_scalar_callback.rs"]
+mod scalar_callback;
 
 #[path = "canonical_abort.rs"]
 mod abort;
@@ -1649,6 +1651,7 @@ if capability_imports.contains("build_out_write_at") {
     let forwarded_dict_intrinsics = IntrinsicForwarders {
         dict: checked_dict_forwarders(typed.module()),
         byte_write_backs: checked_byte_write_back_forwarders(typed.module()),
+        scalar_callbacks: scalar_callback::Forwarders::new(typed.module()),
     };
     let call_tables = owned::CallTables::new(&signatures, &functions_by_name);
     let mut functions = Vec::new();
@@ -4078,9 +4081,9 @@ fn checked_dict_forwarders(module: &witchy_syntax::ast::Module) -> HashMap<Strin
     }).collect()
 }
 
-/// Checked std wrappers whose whole body is one intrinsic call over their
-/// parameters, in order. A call lowers as that intrinsic at the caller.
+/// Checked forwarding plans that lower directly over the caller's value lanes.
 struct IntrinsicForwarders {
+    scalar_callbacks: scalar_callback::Forwarders,
     /// Scalar dictionary wrappers (`checked_dict_forwarders`).
     dict: HashMap<String, String>,
     /// `fn f(var b, ...): b = __bytes_k(b, ...)` -> `__bytes_k`.
@@ -12404,6 +12407,11 @@ impl FunctionLowerer<'_> {
     }
 
     fn lower_expr(&mut self, expression: &Expr) -> Result<ValueId, CanonicalLoweringError> {
+        if let Expr::Call { name, args } = expression
+            && let Some(value) = self.try_lower_scalar_callback(expression, name, args)?
+        {
+            return Ok(value);
+        }
         if let Expr::Call { name, args } = expression
             && let Some(target) = self.forwarded_dict_intrinsic(expression, name, args.len())
         {

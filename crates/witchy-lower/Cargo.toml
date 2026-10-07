@@ -11,6 +11,10 @@ description = "witchy compiler — AST→WIR lowering (the compiled backend's fr
 test = false
 doctest = false
 
+[[example]]
+name = "scalar_callback_codegen"
+required-features = ["native-test-runtime"]
+
 [features]
 # Wasmtime execution is a separate, explicitly selected conformance layer.
 # Ordinary lowerer tests inspect the emitted WIR/Wasm and rejection contracts
