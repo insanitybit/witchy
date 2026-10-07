@@ -505,38 +505,24 @@
         blocks
     }
 
-    /// The Markdown docs whose ```` ```witchy ```` blocks are validated + classified: the
-    /// root docs, `spec/`, and `book/src/` (sorted for a stable manifest).
+    /// The Markdown docs whose ```` ```witchy ```` blocks are validated: the root docs
+    /// and the language specification. The book is not a language contract and is not
+    /// swept.
     fn doc_markdown_files() -> Vec<std::path::PathBuf> {
-        let full_sweep = std::env::var_os("BLESS_EXAMPLES").is_some()
-            || std::env::var_os("WITCHY_FULL_DOCS_SWEEP").is_some_and(|v| v == "1")
-            || std::env::var_os("WITCHY_NIGHTLY").is_some_and(|v| v == "1");
-        if full_sweep {
-            let mut files: Vec<std::path::PathBuf> = vec![
-                "README.md".into(),
-                "CONTRIBUTING.md".into(),
-                "examples/README.md".into(),
-            ];
-            for dir in ["spec", "book/src"] {
-                let Ok(entries) = std::fs::read_dir(dir) else { continue };
-                let mut md: Vec<_> = entries
-                    .filter_map(|e| e.ok().map(|e| e.path()))
-                    .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md"))
-                    .collect();
-                md.sort();
-                files.extend(md);
-            }
-            files
-        } else {
-            // Representative core set covering fundamentals, capabilities, async, and spec definitions.
-            vec![
-                "README.md".into(),
-                "book/src/getting-started-hello.md".into(),
-                "book/src/tour-functions.md".into(),
-                "book/src/capabilities-authority.md".into(),
-                "spec/language.md".into(),
-            ]
+        let mut files: Vec<std::path::PathBuf> = vec![
+            "README.md".into(),
+            "CONTRIBUTING.md".into(),
+            "examples/README.md".into(),
+        ];
+        if let Ok(entries) = std::fs::read_dir("spec") {
+            let mut md: Vec<_> = entries
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("md"))
+                .collect();
+            md.sort();
+            files.extend(md);
         }
+        files
     }
 
     fn main_declares_console_read(module: &ast::Module) -> bool {

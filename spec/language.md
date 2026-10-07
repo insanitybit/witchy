@@ -1853,7 +1853,12 @@ in a hole points back **into the literal** at that `${…}`, not at generated co
 A typed HTML tag can use this to turn a `${userInput}` in text position into a
 `text(…)` **node** rather than markup.
 
-```witchy
+Not yet implemented: the canonical compile-time session admits static,
+hole-free local tags, but a tag with expression holes (as below) is still
+refused with "requires authenticated prior expansion" (RFC-0167 acceptance
+ledger, row Q). The example states the target contract and is not executed.
+
+```witchy-static
 import meta
 
 // A tag receives the static parts and an opaque MARKER per hole; it places each
