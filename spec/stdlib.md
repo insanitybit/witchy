@@ -434,6 +434,8 @@ Four-way counterpart of `select3`, retaining the same deterministic first-ready 
 
 #### `fn select2_frame_loop(a: Receiver(m), b: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(())) -> Task(())`
 
+#### `fn __select2_lane_frame(a: Receiver(m), b: Receiver(m), frame: List(Int), prepare: fn(Int, var List(Int)) -> Option(List(Int)), resume: fn(own Selected(m), Int, var List(Int)) -> Bool, finish: fn(List(Int)) -> Task(n)) -> Task(n)`
+
 #### `fn select3_frame_loop(a: Receiver(m), b: Receiver(m), c: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(())) -> Task(())`
 
 Compiler-owned three-way frame bridge. The public spelling keeps the receiver ownership surface typed while task owns the fixed endpoint ids and deterministic source-order wake protocol.
@@ -443,6 +445,8 @@ Compiler-owned three-way frame bridge. The public spelling keeps the receiver ow
 Compiler-owned one-way frame bridge for a payload-free receive loop. A final `None` is delivered exactly once by task's close pass.
 
 #### `fn recv_typed_frame_loop(rx: Receiver(m), frame: List(Int), step: fn(own Option(m), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(a)) -> Task(a)`
+
+#### `fn __recv_lane_frame_loop(rx: Receiver(m), frame: List(Int), step: fn(own Option(m), Int, var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(a)) -> Task(a)`
 
 #### `fn select4_frame_loop(a: Receiver(m), b: Receiver(m), c: Receiver(m), d: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(())) -> Task(())`
 
@@ -4617,6 +4621,9 @@ What a task yields to the executor when stepped. `a` is the task's own result. T
 - `Wait(Int, fn(()) -> Task(a))`
 - `Cancel(Int, fn(()) -> Task(a))`
 - `ReceiveFrame((Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(a)))`
+- `ReceiveLaneFrame((Int, List(Int), fn(Option(__Msg), Int, var List(Int)) -> Bool, fn(List(Int)) -> Task(a)))`
+- `ProduceFrame((List(Int), fn(Int, var List(Int)) -> Option((Int, __Msg)), fn(Int, var List(Int)) -> Bool, fn(List(Int)) -> Task(a), Int, __Msg))`
+- `SelectLaneFrame((List(Int), fn(Int, var List(Int)) -> Option(List(Int)), fn(own Option((Int, __Msg)), Int, var List(Int)) -> Bool, fn(List(Int)) -> Task(a), List(Int)))`
 
 #### `sealed type Task(a)`
 
@@ -4653,6 +4660,10 @@ A scheduling slot: running, parked on a channel recv/send or on a join, or done.
 - `WaitJoin(Int, fn(()) -> Task(()))`
 - `Ended`
 - `ReceiveFrameSlot(Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()), Int, Option(__Msg))`
+- `ReceiveLaneSlot(Int)`
+- `ProduceFrameSlot(Int)`
+- `JoinFrameSlot(Int)`
+- `SelectLaneSlot(Int)`
 
 #### `type __TypedI64Ring = (List(Int), Int, Int, Int)`
 
@@ -4706,6 +4717,12 @@ Fixed-arity scheduler forms intentionally retain their endpoints as separate fie
 
 #### `fn channel_receive_frame(ch: ChannelId, frame: List(Int), step: fn(Option(__Msg), var List(Int)) -> Bool, finish: fn(List(Int)) -> Task(a)) -> Task(a)`
 
+#### `fn __receive_lane_frame(ch: ChannelId, frame: List(Int), step: fn(Option(__Msg), Int, var List(Int)) -> Bool, finish: fn(List(Int)) -> Task(a)) -> Task(a)`
+
+#### `fn __prepare_send(t: Task(())) -> (Int, __Msg)`
+
+#### `fn __producer_frame(frame: List(Int), prepare: fn(Int, var List(Int)) -> Option((Int, __Msg)), resume: fn(Int, var List(Int)) -> Bool, finish: fn(List(Int)) -> Task(a)) -> Task(a)`
+
 #### `fn channel_recv_frame_loop(ch: ChannelId, frame: List(Int), step: fn(Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(())) -> Task(())`
 
 #### `fn channel_select3_frame_loop(a: ChannelId, b: ChannelId, c: ChannelId, frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(())) -> Task(())`
@@ -4735,6 +4752,10 @@ Wait for the spawned task behind `h` while the executor can make progress. If th
 #### `fn cancel(own h: Handle) -> Task(())`
 
 Cancel the spawned task behind `h`: it is stepped no further and is treated as finished, so anyone `join`ing it unblocks. Shallow (stops this one task, not its descendants) and idempotent (already-finished is a no-op). Deterministic on the round-robin schedule, hence byte-identical on both backends.
+
+#### `fn __prepare_select(t: Task(a)) -> List(Int)`
+
+#### `fn __select_lane_frame(frame: List(Int), prepare: fn(Int, var List(Int)) -> Option(List(Int)), resume: fn(own Option((Int, __Msg)), Int, var List(Int)) -> Bool, finish: fn(List(Int)) -> Task(a)) -> Task(a)`
 
 #### `fn run(root: Task(()))`
 

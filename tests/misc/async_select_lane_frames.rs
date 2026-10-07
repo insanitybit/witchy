@@ -125,6 +125,7 @@ fn select_lane_recipe_replay_has_fresh_scalar_carries() {
     let _reset = Reset;
     for options in [OptSet::none(), OptSet::all()] {
         assert_eq!(run(REPLAY, options), ["12 0"]);
+        assert_eq!(selected(REPLAY), options == OptSet::all());
     }
 }
 
@@ -150,11 +151,12 @@ fn select_lane_keeps_reference_payloads_and_ordinary_channel_use() {
         .replace("chan.send(first_tx, 2)", "chan.send(first_tx, \"q\")");
     for options in [OptSet::none(), OptSet::all()] {
         assert_eq!(run(&source, options), ["6 0"]);
+        assert_eq!(selected(&source), options == OptSet::all());
     }
 }
 
 #[test]
-fn select_lane_mixes_flat_and_materialized_reference_rings() {
+fn select_lane_keeps_pooled_and_ordinary_reference_channel_use() {
     let _reset = Reset;
     let source = TRACE.replace("Sender(Int)", "Sender(String)")
         .replace("Receiver(Int)", "Receiver(String)")
@@ -203,6 +205,7 @@ async fn main(console: Console):
     let reference = run(source, OptSet::none());
     assert_eq!(reference, ["Some(-1)", "end"]);
     assert_eq!(run(source, OptSet::all()), reference);
+    assert!(selected(source));
 }
 
 #[test]
@@ -216,4 +219,44 @@ fn select_lane_keeps_prepare_and_resume_trap_locations() {
         assert!(reference.contains("division by zero"), "{reference}");
         assert_eq!(attempt(&source, OptSet::all()).expect_err("select lane division must trap"), reference);
     }
+}
+
+#[test]
+fn select_lane_keeps_capability_message_payloads_fail_closed() {
+    let _reset = Reset;
+    let source = r#"from chan import Receiver
+
+async fn consume(a: Receiver(Console), b: Receiver(Console)) -> Int:
+    var count: Int = 0
+    var alive: Bool = true
+    while alive:
+        let selected = chan.select(a, b).await
+        match selected:
+            First(value) ->
+                let output: Console = value
+                output.print("first")
+                count = count + 1
+            Second(value) ->
+                let output: Console = value
+                output.print("second")
+                count = count + 1
+            Closed -> alive = false
+    count
+
+async fn main(console: Console):
+    let (first_tx, first_rx) = chan.channel(4).await
+    let (second_tx, second_rx) = chan.channel(4).await
+    chan.send(first_tx, console).await
+    chan.send(second_tx, console).await
+    let count = consume(first_rx, second_rx).await
+    console.print("${count}")
+"#;
+    let mut errors = Vec::new();
+    for options in [OptSet::none(), OptSet::all()] {
+        witchy::opt::set_for_tests(Some(options));
+        let error = witchy::resolve_std_only_checked(source).expect_err("capability message descriptors remain unsupported").to_string();
+        assert!(error.contains("capability type `Console` cannot have a runtime descriptor"), "{error}");
+        errors.push(error);
+    }
+    assert_eq!(errors[0], errors[1]);
 }
