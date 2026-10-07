@@ -22,6 +22,14 @@ pub(super) fn checked_bundle(
     user_sources: Vec<(&str, &str)>,
     entry: &str,
 ) -> Result<witchy_types::pipeline::CheckedModule, String> {
+    checked_bundle_with_std_override(user_sources, entry, None)
+}
+
+pub(super) fn checked_bundle_with_std_override(
+    user_sources: Vec<(&str, &str)>,
+    entry: &str,
+    std_override: Option<(&str, &str)>,
+) -> Result<witchy_types::pipeline::CheckedModule, String> {
     let user_source_by_name = user_sources
         .iter()
         .map(|(name, source)| ((*name).to_string(), *source))
@@ -49,7 +57,8 @@ pub(super) fn checked_bundle(
                 );
                 continue;
             }
-            let bundled = witchy_syntax::linker::bundled_source(&name)
+            let bundled = std_override.filter(|(module, _)| *module == name).map(|(_, source)| source)
+                .or_else(|| witchy_syntax::linker::bundled_source(&name))
                 .ok_or_else(|| format!("unknown bundled module `{name}`"))?;
             let parsed = witchy_syntax::parser::parse_module(bundled)
                 .map_err(|error| error.to_string())?;

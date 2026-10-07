@@ -139,7 +139,9 @@ pub(crate) fn bind_send_preparations(checked: &CheckedModule) -> Result<BTreeMap
         })?;
     }
     if preparations.is_empty() { return Ok(BTreeMap::new()); }
-    if !plain_send_implementation(checked.module()) { return Ok(BTreeMap::new()); }
+    if !plain_send_implementation(checked.module()) {
+        return Err("compiler producer frame requires the exact checked standard send implementation".into());
+    }
     let sites = checked_channel_send_sites(checked)?;
     let catalog = checked.runtime_declaration_catalog().map_err(|error| error.to_string())?;
     let view = canonical.view();
@@ -186,11 +188,12 @@ fn plain_send_implementation(module: &witchy_syntax::ast::Module) -> bool {
     fn tail(block: &Block) -> Option<&Expr> {
         match block.stmts.as_slice() { [Stmt::Expr(expression)] => Some(expression), _ => None }
     }
-    fn single_match<'a>(function: &'a Function, parameter: &str) -> Option<(&'a str, &'a Expr)> {
+    fn single_match<'a>(function: &'a Function, parameter: &str, constructor: &str) -> Option<(&'a str, &'a Expr)> {
         let Expr::Match { scrutinee, arms } = tail(&function.body)? else { return None };
         if !matches!(scrutinee.as_ref(), Expr::Var(name) if name == parameter) { return None; }
         let [arm] = arms.as_slice() else { return None };
-        let Pattern::Ctor { args, .. } = &arm.pattern else { return None };
+        let Pattern::Ctor { name, args } = &arm.pattern else { return None };
+        if !crate::suspension_carrier::call_family(name, constructor) { return None; }
         let [Pattern::Var(binding)] = args.as_slice() else { return None };
         if arm.guard.is_some() { return None; }
         Some((binding, &arm.body))
@@ -202,9 +205,71 @@ fn plain_send_implementation(module: &witchy_syntax::ast::Module) -> bool {
             _ => None,
         }
     }
+    let Some(unit) = function(module, "task.unit") else { return false };
+    if !unit.params.is_empty() || !matches!(unit.body.stmts.as_slice(),
+        [Stmt::Let { name, mutable: false, value: Expr::Int(0), .. }]
+        | [Stmt::LetPattern { pattern: Pattern::Var(name), value: Expr::Int(0) }] if name == "_ignore")
+    { return false; }
+    let Some(ready) = function(module, "task.ready_unit") else { return false };
+    let Some([Expr::Lambda { params, body, .. }]) = tail(&ready.body)
+        .and_then(|expression| ctor_args(expression, "task.Task")) else { return false };
+    if !ready.params.is_empty() || !params.is_empty() { return false; }
+    let Some([Expr::Call { name, args }]) = tail(body)
+        .and_then(|expression| ctor_args(expression, "task.Done")) else { return false };
+    if !crate::suspension_carrier::call_family(name, "task.unit") || !args.is_empty() { return false; }
+    let Some(poll) = function(module, "task.poll") else { return false };
+    let [task] = poll.params.as_slice() else { return false };
+    let Some((thunk, expression)) = single_match(poll, &task.name, "task.Task") else { return false };
+    if !matches!(expression, Expr::Call { name, args } if name == thunk && args.is_empty()) { return false; }
+    let Some(sequence) = function(module, "task.and_then") else { return false };
+    let [task, continuation] = sequence.params.as_slice() else { return false };
+    let Some([Expr::Lambda { params, body, .. }]) = tail(&sequence.body)
+        .and_then(|expression| ctor_args(expression, "task.Task")) else { return false };
+    let Some(Expr::Call { name, args }) = tail(body) else { return false };
+    if !params.is_empty() || !crate::suspension_carrier::call_family(name, "task.and_then_step")
+        || !matches!(args.as_slice(), [Expr::Call { name, args }, Expr::Var(k)]
+            if crate::suspension_carrier::call_family(name, "task.poll")
+            && matches!(args.as_slice(), [Expr::Var(t)] if t == &task.name) && k == &continuation.name)
+    { return false; }
+    let Some(sequence_step) = function(module, "task.and_then_step") else { return false };
+    let [step, continuation] = sequence_step.params.as_slice() else { return false };
+    let Some(Expr::Match { scrutinee, arms }) = tail(&sequence_step.body) else { return false };
+    if !matches!(scrutinee.as_ref(), Expr::Var(name) if name == &step.name) { return false; }
+    if arms.iter().any(|arm| !matches!(arm.pattern, Pattern::Ctor { .. })) { return false; }
+    let done = arms.iter().filter(|arm| matches!(&arm.pattern, Pattern::Ctor { name, .. }
+        if crate::suspension_carrier::call_family(name, "task.Done"))).collect::<Vec<_>>();
+    let [done] = done.as_slice() else { return false };
+    let Pattern::Ctor { args, .. } = &done.pattern else { return false };
+    let [Pattern::Var(value)] = args.as_slice() else { return false };
+    let Some([Expr::Call { name, args }]) = ctor_args(&done.body, "task.Yield") else { return false };
+    if done.guard.is_some() || name != &continuation.name
+        || !matches!(args.as_slice(), [Expr::Var(argument)] if argument == value) { return false; }
+    let yielded = arms.iter().filter(|arm| matches!(&arm.pattern, Pattern::Ctor { name, .. }
+        if crate::suspension_carrier::call_family(name, "task.Yield"))).collect::<Vec<_>>();
+    let [yielded] = yielded.as_slice() else { return false };
+    let Pattern::Ctor { args, .. } = &yielded.pattern else { return false };
+    let [Pattern::Var(task)] = args.as_slice() else { return false };
+    let Some([Expr::Call { name, args }]) = ctor_args(&yielded.body, "task.Yield") else { return false };
+    if yielded.guard.is_some() || !crate::suspension_carrier::call_family(name, "task.and_then")
+        || !matches!(args.as_slice(), [Expr::Var(argument), Expr::Var(k)]
+            if argument == task && k == &continuation.name) { return false; }
+    let push = arms.iter().filter(|arm| matches!(&arm.pattern, Pattern::Ctor { name, .. }
+        if crate::suspension_carrier::call_family(name, "task.Push"))).collect::<Vec<_>>();
+    let [push] = push.as_slice() else { return false };
+    let Pattern::Ctor { args, .. } = &push.pattern else { return false };
+    let [Pattern::Var(channel), Pattern::Var(payload), Pattern::Var(next)] = args.as_slice() else { return false };
+    let Some([Expr::Var(channel_arg), Expr::Var(payload_arg), Expr::Lambda { params, body, .. }])
+        = ctor_args(&push.body, "task.Push") else { return false };
+    let [unit] = params.as_slice() else { return false };
+    if push.guard.is_some() || channel_arg != channel || payload_arg != payload { return false; }
+    let Some(Expr::Call { name, args }) = tail(body) else { return false };
+    if !crate::suspension_carrier::call_family(name, "task.and_then")
+        || !matches!(args.as_slice(), [Expr::Call { name, args }, Expr::Var(k)]
+            if name == next && matches!(args.as_slice(), [Expr::Var(value)] if value == &unit.name)
+            && k == &continuation.name) { return false; }
     let Some(send) = function(module, "chan.send") else { return false };
     let [endpoint, payload] = send.params.as_slice() else { return false };
-    let Some((channel, body)) = single_match(send, &endpoint.name) else { return false };
+    let Some((channel, body)) = single_match(send, &endpoint.name, "chan.Sender") else { return false };
     let Some([Expr::Var(channel_arg), erased]) = ctor_args(body, "task.__channel_send") else { return false };
     if channel_arg != channel { return false; }
     let Expr::Call { name, args } = erased else { return false };
@@ -213,7 +278,7 @@ fn plain_send_implementation(module: &witchy_syntax::ast::Module) -> bool {
     }) || !matches!(args.as_slice(), [Expr::Var(name)] if name == &payload.name) { return false; }
     let Some(sender) = function(module, "task.__channel_send") else { return false };
     let [endpoint, payload] = sender.params.as_slice() else { return false };
-    let Some((channel, body)) = single_match(sender, &endpoint.name) else { return false };
+    let Some((channel, body)) = single_match(sender, &endpoint.name, "task.ChannelId") else { return false };
     let Some([Expr::Lambda { params, body, .. }]) = ctor_args(body, "task.Task") else { return false };
     if !params.is_empty() { return false; }
     let Some(body) = tail(body) else { return false };
@@ -229,7 +294,8 @@ fn plain_send_implementation(module: &witchy_syntax::ast::Module) -> bool {
         if crate::suspension_carrier::call_family(name, "task.poll")
         && matches!(args.as_slice(), [Expr::Var(name)] if name == &task.name)) { return false; }
     let [success, _] = arms.as_slice() else { return false };
-    let Pattern::Ctor { args, .. } = &success.pattern else { return false };
+    let Pattern::Ctor { name, args } = &success.pattern else { return false };
+    if !crate::suspension_carrier::call_family(name, "task.Push") { return false; }
     let [Pattern::Var(channel), Pattern::Var(payload), Pattern::Wildcard] = args.as_slice() else { return false };
     success.guard.is_none() && matches!(&success.body, Expr::Tuple(fields)
         if matches!(fields.as_slice(), [Expr::Var(first), Expr::Var(second)] if first == channel && second == payload))

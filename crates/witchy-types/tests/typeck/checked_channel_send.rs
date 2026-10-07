@@ -54,3 +54,26 @@ fn send_sites_distinguish_shadowed_payload_bindings_and_prior_awaits() {
     assert_ne!(sites[0].expression(), sites[1].expression());
     assert!(!std::ptr::eq(sites[0].payload(), sites[1].payload()));
 }
+
+#[test]
+fn producer_preparation_rejects_changed_send_continuation_effects() {
+    struct Reset;
+    impl Drop for Reset { fn drop(&mut self) { witchy_syntax::opt::set_for_tests(None); } }
+    let _reset = Reset;
+    let task = witchy_syntax::linker::bundled_source("task").expect("bundled task");
+    let changed_continuation = task.replacen("Push(id, msg, fn(_done): ready_unit())",
+        "Push(id, msg, fn(_done): changed_send_continuation())", 1)
+        + "\nfn changed_send_continuation() -> Task(()):\n    fail(\"changed send continuation ran\")\n    ready_unit()\n";
+    assert_ne!(changed_continuation, task);
+    let changed_unit = task.replacen("    let _ignore = 0", "    fail(\"changed unit ran\")\n    let _ignore = 0", 1);
+    let source = "from chan import Sender\n\nasync fn produce(tx: Sender(Int)):\n    var i: Int = 0\n    while i < 2:\n        chan.send(tx, i).await\n        i = i + 1\n    ()\n\nfn main():\n    ()\n";
+    for changed in [changed_continuation, changed_unit] {
+        witchy_syntax::opt::set_for_tests(Some(witchy_syntax::opt::OptSet::none()));
+        super::source::checked_bundle_with_std_override(vec![("main", source)], "main", Some(("task", &changed)))
+            .expect("ordinary send retains changed continuation");
+        witchy_syntax::opt::set_for_tests(Some(witchy_syntax::opt::OptSet::all()));
+        let error = super::source::checked_bundle_with_std_override(vec![("main", source)], "main", Some(("task", &changed)))
+            .expect_err("producer frame cannot discard a changed send continuation");
+        assert!(error.contains("compiler producer frame requires the exact checked standard send implementation"), "{error}");
+    }
+}
