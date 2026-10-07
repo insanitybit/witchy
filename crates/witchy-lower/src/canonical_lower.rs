@@ -9367,8 +9367,12 @@ impl FunctionLowerer<'_> {
     fn authenticate_carried_string(&mut self, object: ValueId) -> Result<(), CanonicalLoweringError> {
         self.ensure_string_extent(object)?;
         if self.tracked_lanes(object).is_some_and(|(count, capacity)| {
+            let shared = |table: &HashMap<ValueId, ValueId>| {
+                table.iter().any(|(other, lane)| *other != object && (*lane == count || *lane == capacity))
+            };
             count != capacity
-                || self.string_lengths.iter().any(|(other, lane)| *other != object && *lane == count)
+                || shared(&self.string_lengths) || shared(&self.string_capacities)
+                || shared(&self.list_counts) || shared(&self.list_capacities)
         }) {
             self.refresh_disjunctive_string_extent(object)?;
         }
