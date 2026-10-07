@@ -456,9 +456,9 @@ pub fn recv_frame_loop(rx: Receiver(m), frame: List(Int), step: fn(Option(__Msg)
     match rx:
         Receiver(id) -> task.channel_recv_frame_loop(id, frame, step, done_fn)
 
-pub fn recv_typed_frame_loop(rx: Receiver(m), frame: List(Int), step: fn(own Option(m), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(a)) -> Task(a):
+pub fn recv_typed_frame_loop(rx: Receiver(m), frame: List(Int), step: fn(own Option(m), Int, var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(a)) -> Task(a):
     match rx:
-        Receiver(id) -> task.channel_receive_frame(id, frame, fn(o, var state): step(unerase_option(o), state), done_fn)
+        Receiver(id) -> task.channel_receive_frame(id, frame, fn(o, base: Int, var state): step(unerase_option(o), base, state), done_fn)
 
 pub fn select4_frame_loop(a: Receiver(m), b: Receiver(m), c: Receiver(m), d: Receiver(m), frame: List(Int), step: fn(Int, Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(())) -> Task(()):
     match a:

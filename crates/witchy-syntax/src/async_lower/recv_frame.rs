@@ -86,6 +86,11 @@ impl Ctx<'_> {
 
         let frame = self.fresh_tmp();
         let option = self.fresh_tmp();
+        let base = typed_payload.then(|| self.fresh_tmp());
+        let lane_index = |index: usize| match &base {
+            Some(base) => Expr::Binary { op: BinOp::Add, lhs: Box::new(Expr::Var(base.clone())), rhs: Box::new(Expr::Int(index as i64)) },
+            None => Expr::Int(index as i64),
+        };
         let frame_ty = Type::Named("List".to_string(), vec![Type::Named("Int".to_string(), vec![])]);
         let frame_val = if lanes.is_empty() {
             call("list.repeat", vec![Expr::Int(0), Expr::Int(0)])
@@ -100,14 +105,14 @@ impl Ctx<'_> {
         for (index, lane) in lanes.iter().enumerate() {
             some_stmts.push(Stmt::Let {
                 name: lane.name.clone(), ty: lane.ty.clone(), mutable: true,
-                value: decode_lane(call("list.at", vec![Expr::Var(frame.clone()), Expr::Int(index as i64)]), lane),
+                value: decode_lane(call("list.at", vec![Expr::Var(frame.clone()), lane_index(index)]), lane),
             });
         }
         let mut some_lines = vec![first_line(&body.lines); some_stmts.len()];
         some_stmts.extend(body.stmts.iter().cloned());
         some_lines.extend((0..body.stmts.len()).map(|index| line_at(&body.lines, index)));
         for (index, lane) in lanes.iter().enumerate() {
-            some_stmts.push(Stmt::Expr(call("list.set_at", vec![Expr::Var(frame.clone()), Expr::Int(index as i64), encode_lane(Expr::Var(lane.name.clone()), lane)])));
+            some_stmts.push(Stmt::Expr(call("list.set_at", vec![Expr::Var(frame.clone()), lane_index(index), encode_lane(Expr::Var(lane.name.clone()), lane)])));
         }
         some_lines.extend(std::iter::repeat_n(body.lines.last().copied().unwrap_or(cont.line), lanes.len() + 1));
         some_stmts.push(Stmt::Expr(Expr::Bool(false)));
@@ -119,13 +124,13 @@ impl Ctx<'_> {
             ],
         };
         let step = self.fresh_tmp();
+        let mut step_params = vec![Param { name: option, ty: None, convention: if typed_payload { Convention::Own } else { Convention::Let }, default: None }];
+        if let Some(base) = base { step_params.push(Param { name: base, ty: Some(Type::Named("Int".into(), vec![])), convention: Convention::Let, default: None }); }
+        step_params.push(Param { name: frame.clone(), ty: Some(frame_ty.clone()), convention: Convention::Var, default: None });
         setup.push(Stmt::Let {
             name: step.clone(), ty: None, mutable: false,
             value: Expr::Lambda {
-                params: vec![
-                    Param { name: option, ty: None, convention: if typed_payload { Convention::Own } else { Convention::Let }, default: None },
-                    Param { name: frame.clone(), ty: Some(frame_ty.clone()), convention: Convention::Var, default: None },
-                ],
+                params: step_params,
                 body: tail_block_at(step_body, first_line(&body.lines)), ret: Some(Type::Named("Bool".into(), vec![])), qualifiers: CallableQualifiers::ORDINARY,
             },
         });
