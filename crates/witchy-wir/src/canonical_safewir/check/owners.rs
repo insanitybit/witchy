@@ -732,7 +732,13 @@ pub(super) fn check_owned_gc_origins<S: ModuleStage>(
                 }
                 Operation::ClosureOwner(OwnerOperation::ListPush { destination, list, value, .. }
                     | OwnerOperation::ListSet { destination, list, value, .. }) => {
-                    if owned.contains(list) && owned.contains(value) { granted.insert(*destination); }
+                    // The list token passes its ownership to the result. As
+                    // for NewList, an element needs none: owner lists exist
+                    // only for families that are not affine-bearing
+                    // (`list_family`), and the linear check consumes the
+                    // element token either way.
+                    if owned.contains(list) { granted.insert(*destination); }
+                    owned.remove(value);
                 }
                 Operation::Call { destinations, callee, arguments } => {
                     let callee = module.functions().iter().find(|entry| entry.id == *callee)

@@ -4383,6 +4383,7 @@ fn lower_function(
             eprintln!("canonical refused body `{}`: {error:?}", function.name);
         }
     })?;
+    lowerer.demote_owner_list_lanes_fed_aliases();
     let blocks = lowerer
         .blocks
         .into_iter()
@@ -7032,8 +7033,10 @@ impl FunctionLowerer<'_> {
         outer: &HashMap<String, ValueId>,
     ) {
         for (index, name) in names.iter().enumerate() {
-            if let ValueType::Gc(family) = self.values[&outer[name]]
-                && self.affine_gc_family(family)
+            let object = outer[name];
+            if let ValueType::Gc(family) = self.values[&object]
+                && (self.affine_gc_family(family)
+                    || self.owner_list_family(object).is_some() && self.owned_gc_token(object))
             {
                 self.blocks[block.get() as usize].parameters[index].ownership = Some(Ownership::Unique);
             }
@@ -15251,10 +15254,14 @@ impl FunctionLowerer<'_> {
             if self.values[&value] != ValueType::Gc(family.owner_type) {
                 return Err(CanonicalLoweringError::UnsupportedExpression("opaque list push element type"));
             }
-            // The runtime kernel consumes its two input tokens. Separate
-            // tokens preserve every source binding and enforce copy-on-write.
-            let list = self.clone_reference_token(old_object)?;
-            let value = self.clone_reference_token(value)?;
+            // The runtime kernel consumes its two input tokens. The list
+            // binding's own token moves in when no other binding holds it;
+            // otherwise separate tokens preserve every source binding and
+            // enforce copy-on-write. A fresh element token moves in.
+            let list = if self.binding_holders(old_object) == 1 { old_object }
+                else { self.clone_reference_token(old_object)? };
+            let value = if self.binding_holders(value) == 0 { value }
+                else { self.clone_reference_token(value)? };
             let destination = self.fresh(ValueType::Gc(family.list_type))?;
             self.push_operation(Operation::ClosureOwner(OwnerOperation::ListPush {
                 destination, list, value, family: family.signature,

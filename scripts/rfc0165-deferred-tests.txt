@@ -64,9 +64,3 @@ witchy::rfc0129_scalar_executor_performance packed_aggregate_channel_uses_direct
 # RFC-0167 foundation (2026-09-20): the canonical route defers the `own unique`
 # FIP entry contract, so the RFC-0089 kernel catalog cannot be exercised until
 # that track re-admits it. Re-admit with the track, never silently.
-
-# Exposed when the legacy WIR pipeline was deleted (2026-10-06): these ran only
-# through it, and `witchy <file>` on master already refused the same programs.
-# Each is an admitted-family canonical gap, listed so it stays visible:
-# - an indexed structured-join/cancel fan-out: InvalidOwnership in the executor.
-witchy::bin/witchy example_tests::async_channels::channel_structured_join_cancel_indexed_fanouts_backends_agree

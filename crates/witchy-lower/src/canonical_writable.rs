@@ -15,6 +15,89 @@ impl FunctionLowerer<'_> {
             && self.binding_holders(source) <= 1
     }
 
+    /// An owner-family token the checker's owned-origin flow grants
+    /// (`check/owners.rs`): a fresh owner list, a push or set into an owned
+    /// list, an owned-GC call result, or a unique lane. Any other
+    /// token may be aliased, so an owned-GC contract cannot accept it.
+    pub(super) fn owned_gc_token(&self, value: ValueId) -> bool {
+        self.owned_gc_token_via(value, &mut BTreeSet::new())
+    }
+
+    fn owned_gc_token_via(&self, value: ValueId, visited: &mut BTreeSet<ValueId>) -> bool {
+        if !visited.insert(value) {
+            return false;
+        }
+        let owned_result = |signature: FunctionSignatureId, destinations: &[ValueId]| {
+            let Some(index) = destinations.iter().position(|destination| *destination == value) else { return false };
+            self.signatures.iter().find(|entry| entry.id == signature).is_some_and(|entry|
+                matches!(entry.contract.results.get(index), Some(ResultContract::OwnedGc { .. })))
+        };
+        for block in &self.blocks {
+            if let Some(parameter) = block.parameters.iter().find(|parameter| parameter.value == value) {
+                return parameter.ownership == Some(Ownership::Unique);
+            }
+            for operation in &block.operations {
+                match operation {
+                    Operation::ClosureOwner(OwnerOperation::NewList { destination, .. }) if *destination == value => {
+                        return true;
+                    }
+                    Operation::ClosureOwner(
+                        OwnerOperation::ListPush { destination, list, .. }
+                        | OwnerOperation::ListSet { destination, list, .. },
+                    ) if *destination == value => {
+                        return self.owned_gc_token_via(*list, visited);
+                    }
+                    Operation::VarCall { destinations, signature, .. } if destinations.contains(&value) => {
+                        return owned_result(*signature, destinations);
+                    }
+                    Operation::Call { destinations, callee, .. } if destinations.contains(&value) => {
+                        return self.functions.values().find(|(id, _)| id == callee)
+                            .is_some_and(|(_, signature)| owned_result(*signature, destinations));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        false
+    }
+
+    /// A non-affine owner list carried through a loop is a unique lane while
+    /// every edge into it brings an owned token. Demote each lane that some
+    /// edge feeds an aliased token, and repeat: a demoted lane is no longer
+    /// owned, so the lanes it feeds may need demoting in turn.
+    pub(super) fn demote_owner_list_lanes_fed_aliases(&mut self) {
+        loop {
+            let mut demote = Vec::new();
+            for block in &self.blocks {
+                let edges = match &block.terminator {
+                    Some(Terminator::Branch { target, arguments }) => vec![(*target, arguments)],
+                    Some(Terminator::BranchIf { then_target, then_arguments, else_target, else_arguments, .. }) =>
+                        vec![(*then_target, then_arguments), (*else_target, else_arguments)],
+                    _ => continue,
+                };
+                for (target, arguments) in edges {
+                    for (index, argument) in arguments.iter().enumerate() {
+                        let parameter = &self.blocks[target.get() as usize].parameters[index];
+                        if parameter.ownership == Some(Ownership::Unique)
+                            && let ValueType::Gc(family) = parameter.value_type
+                            && self.owner_list_family(*argument).is_some()
+                            && !self.affine_gc_family(family)
+                            && !self.owned_gc_token(*argument)
+                        {
+                            demote.push((target, index));
+                        }
+                    }
+                }
+            }
+            if demote.is_empty() {
+                return;
+            }
+            for (block, index) in demote {
+                self.blocks[block.get() as usize].parameters[index].ownership = Some(Ownership::Shared);
+            }
+        }
+    }
+
     /// How many bindings hold `value`, counting an outer binding a nested
     /// `let` has shadowed: it is restored when the block ends and still
     /// observes the value.

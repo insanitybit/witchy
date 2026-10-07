@@ -38,3 +38,42 @@ fn main(console: Console):
         assert_eq!(run_on_wasm(src), vec!["12", "42"]); // (5+1)*2, (20+1)*2
     }
 
+    /// Pushing onto a list of closures leaves an earlier alias of the list
+    /// unchanged.
+    #[test]
+    fn closure_list_push_keeps_aliases() {
+        let src = r#"fn main(console: Console):
+    let k = 10
+    var fs = [fn(x: Int) -> Int: x + k]
+    let snapshot = fs
+    fs.push(fn(x: Int) -> Int: x * 100)
+    var sum = 0
+    for f in fs:
+        sum = sum + f(1)
+    console.print("${snapshot.length()} ${fs.length()} ${sum}")
+"#;
+        assert_eq!(run_on_wasm(src), vec!["1 2 111"]);
+    }
+
+    /// A list of closures carried through a loop, aliased mid-loop and pushed
+    /// a bound closure each iteration, keeps value semantics for the alias.
+    #[test]
+    fn closure_list_loop_alias_keeps_value_semantics() {
+        let src = r#"fn main(console: Console):
+    let k = 10
+    let add = fn(x: Int) -> Int: x + k
+    var fs = [add]
+    var snapshots = 0
+    var first = [add]
+    for i in [1, 2, 3]:
+        if i == 2:
+            first = fs
+        fs.push(add)
+        snapshots = snapshots + first.length()
+    var sum = 0
+    for f in fs:
+        sum = sum + f(1)
+    console.print("${first.length()} ${fs.length()} ${snapshots} ${sum}")
+"#;
+        assert_eq!(run_on_wasm(src), vec!["2 4 5 44"]);
+    }
