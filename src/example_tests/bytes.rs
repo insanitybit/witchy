@@ -172,3 +172,33 @@ fn run_admitted_bytes(source: &str) -> Result<Vec<String>, String> {
             assert!(!error.is_empty(), "program {idx} must report its failure");
         }
     }
+
+    /// `set_at` and `swap` on a local `var` lower in place at the caller, yet
+    /// an alias, a copy and a `var` argument each keep value semantics, and
+    /// the in-place loop leaks nothing.
+    #[test]
+    fn forwarded_byte_updates_keep_value_semantics() {
+        let src = r#"import bytes
+
+fn edit(var b: Bytes) -> Int:
+    b.set_at(0, 7)
+    b.at(0)
+
+fn main(console: Console):
+    var b = bytes.from_string("abc")
+    let snap = b
+    b.set_at(0, 65)
+    b.swap(1, 2)
+    var c = b
+    c.set_at(2, 90)
+    let param = bytes.from_string("xyz")
+    var q = param
+    let edited = edit(q)
+    var i = 0
+    while i < 3:
+        b.set_at(i, b.at(i) + 1)
+        i = i + 1
+    console.print("${snap.to_string()} ${b.to_string()} ${c.to_string()} ${param.to_string()} ${q.at(0)} ${edited}")
+"#;
+        assert_eq!(run_admitted_bytes(src).expect("run forwarded byte updates"), ["abc Bdc AcZ xyz 7 7"]);
+    }

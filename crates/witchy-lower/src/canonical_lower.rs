@@ -1646,7 +1646,10 @@ if capability_imports.contains("build_out_write_at") {
         names.sort();
         eprintln!("canonical scope: {names:?}");
     }
-    let forwarded_dict_intrinsics = checked_dict_forwarders(typed.module());
+    let forwarded_dict_intrinsics = IntrinsicForwarders {
+        dict: checked_dict_forwarders(typed.module()),
+        byte_write_backs: checked_byte_write_back_forwarders(typed.module()),
+    };
     let call_tables = owned::CallTables::new(&signatures, &functions_by_name);
     let mut functions = Vec::new();
     let mut proper_tail_locations = BTreeMap::new();
@@ -4075,6 +4078,44 @@ fn checked_dict_forwarders(module: &witchy_syntax::ast::Module) -> HashMap<Strin
     }).collect()
 }
 
+/// Checked std wrappers whose whole body is one intrinsic call over their
+/// parameters, in order. A call lowers as that intrinsic at the caller.
+struct IntrinsicForwarders {
+    /// Scalar dictionary wrappers (`checked_dict_forwarders`).
+    dict: HashMap<String, String>,
+    /// `fn f(var b, ...): b = __bytes_k(b, ...)` -> `__bytes_k`.
+    byte_write_backs: HashMap<String, String>,
+}
+
+/// A byte kernel wrapper whose body writes its `var` buffer back:
+/// `b = __bytes_k(b, rest...)` (then `return`). Its call `f(x, rest...)` is the
+/// assignment `x = __bytes_k(x, rest...)`, which updates `x` in place under the
+/// same copy-on-write rule as that assignment written out.
+fn checked_byte_write_back_forwarders(module: &witchy_syntax::ast::Module) -> HashMap<String, String> {
+    module.items.iter().filter_map(|item| {
+        let Item::Function(function) = item else { return None };
+        let (first, rest) = function.params.split_first()?;
+        if first.convention != Convention::Var || first.default.is_some()
+            || rest.iter().any(|parameter| {
+                !matches!(parameter.convention, Convention::Let | Convention::Borrow) || parameter.default.is_some()
+            })
+        {
+            return None;
+        }
+        let (Stmt::Assign { name, value: Expr::Call { name: target, args }, place_depth: 0 }, tail) =
+            function.body.stmts.split_first()? else { return None };
+        if !matches!(tail, [] | [Stmt::Return(None)]) || name != &first.name || !target.starts_with("__bytes_")
+            || args.len() != function.params.len()
+            || !args.iter().zip(&function.params).all(|(argument, parameter)| {
+                matches!(argument, Expr::Var(name) if name == &parameter.name)
+            })
+        {
+            return None;
+        }
+        Some((function.name.clone(), target.clone()))
+    }).collect()
+}
+
 fn lower_function(
     function: &witchy_syntax::ast::Function,
     body: &witchy_syntax::ast::Block,
@@ -4085,7 +4126,7 @@ fn lower_function(
     lambda_names: &HashMap<usize, String>,
     signature: &FunctionSignature,
     functions: &HashMap<String, (FunctionId, FunctionSignatureId)>,
-    forwarded_dict_intrinsics: &HashMap<String, String>,
+    forwarded_dict_intrinsics: &IntrinsicForwarders,
     direct_shared_alias_callees: &HashMap<String, FunctionSignatureId>,
     checked_parameter_conventions: &HashMap<FunctionSignatureId, Vec<Convention>>,
     signatures: &[FunctionSignature],
@@ -4967,7 +5008,7 @@ struct FunctionLowerer<'a> {
     /// optimized functions and explicit moves transfer the existing token.
     opt_mode: bool,
     functions: &'a HashMap<String, (FunctionId, FunctionSignatureId)>,
-    forwarded_dict_intrinsics: &'a HashMap<String, String>,
+    forwarded_dict_intrinsics: &'a IntrinsicForwarders,
     /// Declaration-specific direct shared aliases: sealed generic
     /// specializations or exact monomorphic forwarding declarations.
     direct_shared_alias_callees: &'a HashMap<String, FunctionSignatureId>,
@@ -5852,7 +5893,7 @@ impl FunctionLowerer<'_> {
 
     fn lower_effect_expr(&mut self, expression: &Expr) -> Result<(), CanonicalLoweringError> {
         if let Expr::Call { name, args } = expression
-            && self.try_lower_forwarded_byte_writeback_call(name, args)?
+            && self.try_lower_forwarded_byte_writeback_call(expression, name, args)?
         {
             return Ok(());
         }
@@ -12355,7 +12396,7 @@ impl FunctionLowerer<'_> {
         if !name.starts_with("dict.") || scalar_type(&self.expression_type(expression).ok()?).is_err() {
             return None;
         }
-        let target = self.forwarded_dict_intrinsics.get(name)?;
+        let target = self.forwarded_dict_intrinsics.dict.get(name)?;
         if self.functions.contains_key(target.as_str()) || self.checked_parameter_conventions.get(&self.functions.get(name)?.1).map(Vec::len) != Some(arity) {
             return None;
         }
@@ -18843,34 +18884,37 @@ impl FunctionLowerer<'_> {
     /// sequence append rule to any String expression of the form `x = x + y`;
     /// the right side is unrestricted and evaluated exactly once. If it aliases
     /// or shares the left buffer, use the ordinary snapshot-preserving concat.
+    /// A call of a byte write-back wrapper (`checked_byte_write_back_forwarders`)
+    /// whose buffer argument is a local `var`: lower the assignment it performs
+    /// here, so the kernel works on the caller's lanes instead of a call.
     fn try_lower_forwarded_byte_writeback_call(
         &mut self,
+        expression: &Expr,
         callee: &str,
         arguments: &[Expr],
     ) -> Result<bool, CanonicalLoweringError> {
-        let [Expr::Var(receiver), Expr::Var(suffix)] = arguments else { return Ok(false) };
-        if !self.mutable_bindings.contains(receiver) || !self.bindings.contains_key(suffix) {
+        let Some(target) = self.forwarded_dict_intrinsics.byte_write_backs.get(callee) else { return Ok(false) };
+        let Some(Expr::Var(receiver)) = arguments.first() else { return Ok(false) };
+        if !self.mutable_bindings.contains(receiver) || self.functions.contains_key(target.as_str()) {
             return Ok(false);
         }
-        let forwards_append = self.checked_module.items.iter().any(|item| {
-            let Item::Function(function) = item else { return false };
-            let [first, second] = function.params.as_slice() else { return false };
-            let [Stmt::Assign { name, value: Expr::Call { name: target, args }, place_depth: 0 }, Stmt::Return(None)] = function.body.stmts.as_slice() else { return false };
-            function.name == callee
-                && first.convention == Convention::Var
-                && matches!(second.convention, Convention::Let | Convention::Borrow)
-                && name == &first.name
-                && target == "__bytes_append"
-                && matches!(args.as_slice(), [Expr::Var(a), Expr::Var(b)] if a == &first.name && b == &second.name)
-        });
-        if !forwards_append { return Ok(false) }
-        let left = self.lower_expr(&arguments[0])?;
-        let right = self.lower_expr(&arguments[1])?;
-        let result = if left != right && !self.known_shared_value(left) && !self.aliased_binding(receiver, left) {
-            self.append_owned_byte_sequence(left, right)?
+        let result = if let ("__bytes_append", [_, suffix]) = (target.as_str(), arguments) {
+            let left = self.lower_expr(&arguments[0])?;
+            let right = self.lower_expr(suffix)?;
+            if left != right && !self.known_shared_value(left) && !self.aliased_binding(receiver, left) {
+                self.append_owned_byte_sequence(left, right)?
+            } else {
+                self.concat_string_values(left, right)?
+            }
         } else {
-            self.concat_string_values(left, right)?
+            let previous = self.rebinding.replace((receiver.clone(), std::ptr::from_ref(expression)));
+            let result = self.lower_bytes_call(expression, target, arguments);
+            self.rebinding = previous;
+            result?
         };
+        if self.values[&self.bindings[receiver]] != self.values[&result] {
+            return Err(CanonicalLoweringError::UnsupportedExpression("byte write-back changes checked storage layout"));
+        }
         self.bindings.insert(receiver.clone(), result);
         Ok(true)
     }
