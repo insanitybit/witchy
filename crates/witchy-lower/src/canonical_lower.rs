@@ -10539,6 +10539,13 @@ impl FunctionLowerer<'_> {
     /// a callee, or returned as an owned result. Where the ABI needs a token the
     /// lowering materializes a fresh reference-counted copy, which is
     /// source-unobservable under value semantics (RFC-0165 static class).
+    /// An entry parameter the caller passed as a shared (non-unique) token.
+    /// The entry block is the first block lowered.
+    fn is_shared_entry_parameter(&self, value: ValueId) -> bool {
+        self.blocks.first().is_some_and(|entry| entry.parameters.iter()
+            .any(|parameter| parameter.value == value && parameter.ownership != Some(Ownership::Unique)))
+    }
+
     fn is_static_string(&self, value: ValueId) -> bool {
         self.static_data_values.contains(&value)
     }
@@ -13699,6 +13706,17 @@ impl FunctionLowerer<'_> {
             Some(RetainedElementTransfer::MaterializeOwnedBuffer) => {
                 self.ensure_string_extent(value)?;
                 return self.clone_string_for_storage(value);
+            }
+            // A shared parameter may be static data to the checker, so its
+            // token cannot become a stored child; a Dict table is copied
+            // exactly (as a String or List parameter is) and the copy shared.
+            Some(RetainedElementTransfer::RetainReference)
+                if self.is_shared_entry_parameter(value)
+                    && matches!(ty.unqualified(), Type::Named(name, arguments) if name == "Dict" && arguments.len() == 2)
+                    && self.is_table_dictionary(ty)? =>
+            {
+                let copy = self.lower_dict_clone_exact(value)?;
+                return self.clone_reference_token(copy);
             }
             Some(RetainedElementTransfer::RetainReference) => return self.clone_reference_token(value),
             None => {}

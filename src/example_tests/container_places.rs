@@ -3,6 +3,14 @@ use super::*;
     /// (BUG-317/BUG-336) Dict subscripts are real read places, not a list-only
     /// parser desugar. That makes direct reads, compound assignment, and nested
     /// place assignment through a Dict retain their value semantics.
+    /// A Dict parameter stored in a container is copied, like a String or
+    /// List parameter, so the caller's later writes stay its own.
+    #[test]
+    fn dict_parameters_store_into_dicts_and_lists() {
+        let src = "fn put(var d: Dict(String, Dict(String, Int)), v: Dict(String, Int)):\n    d[\"k\"] = v\n\nfn add(var xs: List(Dict(String, Int)), v: Dict(String, Int)):\n    xs.push(v)\n\nfn main(console: Console):\n    var nested: Dict(String, Dict(String, Int)) = dict.new()\n    var rows: List(Dict(String, Int)) = []\n    var inner: Dict(String, Int) = dict.new()\n    inner[\"x\"] = 3\n    put(nested, inner)\n    add(rows, inner)\n    inner[\"x\"] = 4\n    console.print(\"${nested[\"k\"][\"x\"]} ${rows[0][\"x\"]} ${inner[\"x\"]}\")\n";
+        assert_eq!(run_linked_on_wasm(&[("main", src)], "main"), ["3 3 4"]);
+    }
+
     #[test]
     fn dict_subscript_read_and_nested_place_assignment_work() {
         let src = "import dict\n\nfn main(console: Console):\n    var counts: Dict(String, Int) = dict.new()\n    counts[\"a\"] = 1\n    counts[\"a\"] += 2\n    console.print(\"${counts[\"a\"]}\")\n\n    var nested: Dict(String, Dict(String, Int)) = dict.new()\n    var inner: Dict(String, Int) = dict.new()\n    let _ = dict.insert(inner, \"inner\", 1)\n    nested[\"outer\"] = inner\n    nested[\"outer\"][\"inner\"] = 7\n    console.print(\"${nested[\"outer\"][\"inner\"]}\")\n\n    var rows: Dict(String, List(Int)) = dict.new()\n    rows[\"r\"] = [1, 2, 3]\n    rows[\"r\"][1] = 9\n    console.print(\"${rows[\"r\"]}\")\n";
