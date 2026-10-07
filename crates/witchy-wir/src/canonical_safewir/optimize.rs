@@ -240,8 +240,12 @@ pub fn remove_redundant_bounds_guards_before_check(
         for block in &mut function.blocks {
             let block_id = block.id;
             let mut operation_index = 0;
-            block.operations.retain(|_| {
-                let keep = redundant.get(&(block_id, operation_index)) != Some(&true);
+            // Only a bounds guard: the initial check re-proves memory safety,
+            // but nothing re-proves an arithmetic trap the analysis judged
+            // implied. The checked pass removes those with its own re-proof.
+            block.operations.retain(|operation| {
+                let keep = redundant.get(&(block_id, operation_index)) != Some(&true)
+                    || !matches!(operation, Operation::Guard { kind: GuardKind::Bounds, .. });
                 operation_index += 1;
                 keep
             });

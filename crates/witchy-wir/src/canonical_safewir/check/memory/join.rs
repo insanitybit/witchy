@@ -449,16 +449,22 @@ impl<'a> MemoryChecker<'a> {
                 .extend(origins);
         }
 
-        // A stored child is an obligation, not a fact: one recorded at a slot
-        // whose index the edge rebinds cannot be dropped or renamed, so the
-        // join is refused.
-        if let Some(((container, _), _)) = self.state.stored_objects.iter()
-            .find(|((_, slot), _)| matches!(slot, SlotIdentity::Dynamic(index) if !current(index)))
+        // A stored child or nullable slot state is an obligation, not a fact:
+        // one recorded at a slot whose index the edge rebinds cannot be
+        // dropped or renamed, so the join is refused.
+        let stale_slot = |slot: &SlotIdentity| matches!(slot, SlotIdentity::Dynamic(index) if !current(index));
+        if let Some(container) = self.state.stored_objects.keys()
+            .filter(|(_, slot)| stale_slot(slot))
+            .chain(self.state.nullable_unique_slots.iter().filter(|(_, slot)| stale_slot(slot)))
+            .chain(self.state.nullable_present_slots.iter().filter(|(_, slot)| stale_slot(slot)))
+            .chain(self.state.nullable_absent_slots.iter().filter(|(_, slot)| stale_slot(slot)))
+            .map(|(container, _)| *container)
+            .next()
         {
             return Err(InitialCheckError::IncompatibleMemoryJoin {
                 function: self.function.id,
                 block: target.id,
-                object: *container,
+                object: container,
             });
         }
         // The loop invariant the dropped facts stood in for: when this

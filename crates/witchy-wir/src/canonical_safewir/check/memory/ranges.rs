@@ -276,14 +276,12 @@ impl<'a> MemoryChecker<'a> {
             }
             match slot {
                 SlotIdentity::Dynamic(index) => {
-                    (self.same_scalar(index, identity.start)
+                    (!range.zero_start
+                        && self.same_scalar(index, identity.start)
                         && self.state.constants.get(&identity.length) == Some(&1))
                         || (range.zero_start && self.strict_less(index, identity.length))
                 }
-                SlotIdentity::Constant(index) => self
-                    .state
-                    .constants
-                    .get(&identity.start)
+                SlotIdentity::Constant(index) => (if range.zero_start { Some(&0) } else { self.state.constants.get(&identity.start) })
                     .zip(self.state.constants.get(&identity.length))
                     .is_some_and(|(start, length)| {
                         index >= *start && index - *start < *length
@@ -518,14 +516,12 @@ impl<'a> MemoryChecker<'a> {
             }
             match slot {
                 SlotIdentity::Dynamic(index) => {
-                    (self.same_scalar(index, identity.start)
+                    (!range.zero_start
+                        && self.same_scalar(index, identity.start)
                         && self.state.constants.get(&identity.length) == Some(&1))
                         || (range.zero_start && self.strict_less(index, identity.length))
                 }
-                SlotIdentity::Constant(index) => self
-                    .state
-                    .constants
-                    .get(&identity.start)
+                SlotIdentity::Constant(index) => (if range.zero_start { Some(&0) } else { self.state.constants.get(&identity.start) })
                     .zip(self.state.constants.get(&identity.length))
                     .is_some_and(|(start, length)| {
                         index >= *start && index - *start < *length
@@ -545,7 +541,7 @@ impl<'a> MemoryChecker<'a> {
             || self.state.static_data_objects.contains(&range.object)
             || self.state.range_states.iter().any(|(identity, state)| {
                 self.same_allocation(range.object, identity.object)
-                    && self.same_scalar(range.start, identity.start)
+                    && self.range_start_matches(identity, state, range.start)
                     && self.same_scalar(range.length, identity.length)
                     && state.element == range.element
                     && state.initialized
