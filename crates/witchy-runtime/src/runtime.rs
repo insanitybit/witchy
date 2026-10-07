@@ -2164,6 +2164,7 @@ impl Runtime {
         // changes nothing for them. RFC-0090's resource probes still gate B4.
         config.wasm_tail_call(true);
         config.wasm_memory64(false);
+        config.wasm_wide_arithmetic(false);
         config.profiler(profiler);
         if profiler != wasmtime::ProfilingStrategy::None {
             config.debug_info(true);
@@ -2235,6 +2236,9 @@ impl Runtime {
         // changes nothing for them. RFC-0090's resource probes still gate B4.
         config.wasm_tail_call(true);
         config.wasm_memory64(false);
+        // Wasmtime 49 turned wide arithmetic on by default; witchy emits none
+        // of its instructions, so it stays outside the admitted surface.
+        config.wasm_wide_arithmetic(false);
         // Support Cranelift profiling strategies for external profilers (Linux perf,
         // VTune, JIT symbol mapping). Configurable via WITCHY_PROFILE or WITCHY_PERF_MAP.
         if let Ok(strat) = std::env::var("WITCHY_PROFILE") {
