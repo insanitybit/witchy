@@ -696,9 +696,32 @@ if cargo nextest --version >/dev/null 2>&1; then
     # partition, each inside that partition's own Cargo scope and each falling
     # back to its own legacy command. The second partition's report is
     # telemetry only, like the first's.
-    dtest_cmd=()
-    dtest_extra_cmd=()
-    if [ -n "${WITCHY_GATE_DTEST_FROM:-}" ] \
+dtest_cmd=()
+dtest_extra_cmd=()
+dtest_single_package() {
+    local package_name="" package_count=0 index=0
+    local -a selectors=("$@")
+    while [ "$index" -lt "${#selectors[@]}" ]; do
+        case "${selectors[$index]}" in
+            -p | --package)
+                if [ "$((index + 1))" -lt "${#selectors[@]}" ]; then
+                    package_name="${selectors[$((index + 1))]}"
+                    package_count=$((package_count + 1))
+                    index=$((index + 1))
+                fi
+                ;;
+            --package=*)
+                package_name="${selectors[$index]#--package=}"
+                package_count=$((package_count + 1))
+                ;;
+        esac
+        index=$((index + 1))
+    done
+    if [ "$package_count" -eq 1 ] && [[ "$package_name" =~ ^[A-Za-z0-9_-]+$ ]]; then
+        printf '%s' "$package_name"
+    fi
+}
+if [ -n "${WITCHY_GATE_DTEST_FROM:-}" ] \
         && [ -n "${WITCHY_GATE_DTEST_REPORT:-}" ] \
         && [ "$main_queue_only" -eq 0 ] \
         && command -v dtest >/dev/null 2>&1; then
@@ -706,6 +729,11 @@ if cargo nextest --version >/dev/null 2>&1; then
             --from "$WITCHY_GATE_DTEST_FROM" --to HEAD --assume-clean
             --caller-scope --narrow-single-partition --ignore-config-runner-args
             --quiet)
+        # When the mapper has an exact single-package scope, let dtest narrow
+        # its selected set to match the Cargo/Nextest command too. Preserve the
+        # mapper-owned target/feature flags after `--` as before.
+        dtest_package="$(dtest_single_package "${nextest_sel[@]}")"
+        [ -z "$dtest_package" ] || dtest_base+=(--package "$dtest_package")
         [ -z "$main_expr" ] || dtest_base+=(--filter-expr "$main_expr")
         # Reuse the mapper's validated Cargo target and feature scope, dropping
         # only the `cargo nextest run` executable prefix. Dtest contributes the
@@ -714,7 +742,15 @@ if cargo nextest --version >/dev/null 2>&1; then
             -- "${nextest_cmd[@]:3}")
         [ "$explicit_targets_only" -eq 0 ] || dtest_cmd+=(--no-tests=warn)
         if [ "${#nextest_extra_cmd[@]}" -gt 0 ]; then
-            dtest_extra_cmd=("${dtest_base[@]}"
+            dtest_extra_base=(dtest --workspace . run
+                --from "$WITCHY_GATE_DTEST_FROM" --to HEAD --assume-clean
+                --caller-scope --narrow-single-partition --ignore-config-runner-args
+                --quiet)
+            dtest_extra_package="$(dtest_single_package "${nextest_extra_sel[@]}")"
+            [ -z "$dtest_extra_package" ] \
+                || dtest_extra_base+=(--package "$dtest_extra_package")
+            [ -z "$main_expr" ] || dtest_extra_base+=(--filter-expr "$main_expr")
+            dtest_extra_cmd=("${dtest_extra_base[@]}"
                 --report "${WITCHY_GATE_DTEST_REPORT%.json}.partition.json"
                 -- "${nextest_extra_cmd[@]:3}")
         fi

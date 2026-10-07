@@ -1179,6 +1179,8 @@ fn fast_gate_emits_structured_foreground_and_background_timings() {
     assert!(
         dtest_runs.len() == 2
             && dtest_runs.iter().all(|line| line.ends_with(&pure_target))
+            && dtest_runs.iter().any(|line| line.contains("--package witchy-wir"))
+            && dtest_runs.iter().any(|line| line.contains("--package witchy-lower"))
             && dtest_runs.iter().any(|line| line.contains("-p witchy-wir --test unit"))
             && dtest_runs.iter().any(|line| line.contains("-p witchy-lower --no-default-features")),
         "each partition must run through dtest in the pure target: {partitioned_args}",
