@@ -392,6 +392,15 @@ fn a_while_refreshes_a_string_its_enclosing_loop_does_not_carry() {
 }
 
 #[test]
+fn an_alias_bound_in_a_loop_does_not_carry_its_source_string_exactly() {
+    // `c` is a fresh reference to `b`'s extent; the outer loop carries
+    // neither, so the inner loop must not rename that extent's lanes.
+    let source = "fn go(n: Int) -> Int:\n    let b = \"abcdefg\" + \"h\"\n    var acc = 0\n    for i in 0..n:\n        let c = b\n        var q = 0\n        while q < 3:\n            q = q + 1\n            acc = acc + c.substring(q, q + 1).length()\n    acc\n\nfn main() -> Int:\n    go(3)\n";
+    compile_checked_module_artifact(&checked(source))
+        .expect_lowered("an inner loop under a loop that does not carry the extent refreshes the alias");
+}
+
+#[test]
 fn exact_narrowing_needs_a_proven_bound() {
     // `get`'s index is bounded only by `bytes.at`'s own check.
     let checked = checked("import bytes\n\nfn get(b: Bytes, i: Int) -> Int:\n    b.at(i)\n\nfn main() -> Int:\n    get(bytes.from_string(\"abc\"), 1)\n");

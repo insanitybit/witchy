@@ -9311,7 +9311,7 @@ impl FunctionLowerer<'_> {
         let mut refreshed = Vec::new();
         for name in crate::analysis::loop_mentions(condition, body, &candidates) {
             let object = outer[&name];
-            if self.enclosing_loops_carry(&name, object) {
+            if self.enclosing_loops_carry(object) {
                 self.authenticate_carried_string(object)?;
             } else if refresh {
                 self.ensure_string_extent(object)?;
@@ -9326,15 +9326,33 @@ impl FunctionLowerer<'_> {
         Ok((carried, refreshed))
     }
 
-    /// Whether every enclosing loop that `object` (bound to `name`) predates
-    /// carries its lanes. A loop that carries a String renames its extent at
-    /// the exit; an enclosing loop that does not carry it would meet that
-    /// renamed count against its pre-loop one and forget the extent.
-    fn enclosing_loops_carry(&self, name: &str, object: ValueId) -> bool {
+    /// Whether every enclosing loop that `object` predates carries its
+    /// lanes exactly. A loop that carries a String renames its extent at
+    /// the exit; an enclosing loop that did not carry it would meet that
+    /// renamed count against its pre-loop one and forget the extent. The
+    /// judgment is about the extent, not a name: an alias bound inside the
+    /// enclosing loop (even a fresh reference from `CloneRef`) shares the
+    /// extent and its lanes, so the current count must also be defined
+    /// inside every enclosing loop, by its header or its body.
+    fn enclosing_loops_carry(&self, object: ValueId) -> bool {
+        if self.edge_refreshed_strings.contains(&object) {
+            return false;
+        }
+        let Some((count, _)) = self.tracked_lanes(object) else {
+            return self.loop_contexts.is_empty();
+        };
+        let names = self.bindings.keys()
+            .chain(self.binding_scopes.iter().flat_map(|scope| scope.keys()))
+            .collect::<BTreeSet<_>>();
         self.loop_contexts.iter().all(|context| {
-            self.binding_at_depth(name, context.scope_depth) != Some(object)
-                || context.list_names.iter().any(|carried| carried == name)
-        }) && !self.edge_refreshed_strings.contains(&object)
+            let bound = |name: &String| self.binding_at_depth(name, context.scope_depth) == Some(object);
+            let carried = !names.iter().any(|name| bound(name)) || context.list_names.iter().any(bound);
+            // Value ids are allocated in order; the header's parameters are
+            // the loop's first values.
+            let defined_inside = self.blocks[context.header.get() as usize].parameters.first()
+                .is_some_and(|parameter| count >= parameter.value);
+            carried && defined_inside
+        })
     }
 
     /// Establish a carried String's entry lanes in the form a backedge's
@@ -9969,7 +9987,7 @@ impl FunctionLowerer<'_> {
         let carried_strings = invariant_names.iter().filter(|name| {
             matches!(self.values[&outer[*name]], ValueType::Ref(layout) if Some(layout) == string_layout)
                 && self.known_shared_value(outer[*name])
-                && self.enclosing_loops_carry(name, outer[*name])
+                && self.enclosing_loops_carry(outer[*name])
         }).cloned().collect::<Vec<_>>();
         for name in &carried_strings {
             self.authenticate_carried_string(outer[name])?;
