@@ -2518,7 +2518,17 @@ fn check_tail_call(
     }
     // A tail edge forwards results without executing the caller's Return
     // judgment. It must not turn a shared or opaque result into fresh storage.
-    if !tail_result_contracts_compatible(&callee.contract.results, &caller.contract.results) {
+    // A callee result tied to its parameter `i` is tied to argument `i`; that
+    // is the caller's parameter `k` only when the argument is the caller's
+    // own entry parameter `k`, so the callee's claims are read in the caller's
+    // parameter numbering before they are compared.
+    let callee_results = callee
+        .contract
+        .results
+        .iter()
+        .map(|result| forwarded_result_contract(function, arguments, result))
+        .collect::<Option<Vec<_>>>();
+    if !callee_results.is_some_and(|results| tail_result_contracts_compatible(&results, &caller.contract.results)) {
         return Err(InitialCheckError::CallableContractMismatch {
             signature: caller.id,
         });
@@ -2537,6 +2547,51 @@ fn check_tail_call(
 /// lane only weakens the receiver's authority.  A reallocation proof likewise
 /// carries a unique token and may be forgotten by a unique caller. The layout
 /// and result arity stay exact, and no Shared-to-Unique conversion is accepted.
+/// `result`, a callee's claim about its own parameters, restated for the
+/// caller whose `arguments` it receives. `None` when the claim names a
+/// parameter whose argument is not one of the caller's entry parameters.
+fn forwarded_result_contract(
+    function: &Function,
+    arguments: &[CallArgument],
+    result: &super::ResultContract,
+) -> Option<super::ResultContract> {
+    let entry = function.blocks.iter().find(|block| block.id == function.entry)?;
+    let caller_parameter = |index: u32| -> Option<u32> {
+        let (CallArgument::Move(value) | CallArgument::Value(value)) = *arguments.get(index as usize)?;
+        let position = entry.parameters.iter().position(|parameter| parameter.value == value)?;
+        u32::try_from(position).ok()
+    };
+    Some(match result {
+        super::ResultContract::AliasesParameter { parameter, layout } => {
+            super::ResultContract::AliasesParameter { parameter: caller_parameter(*parameter)?, layout: *layout }
+        }
+        super::ResultContract::AliasesWriteBackParameter { parameter, layout, projection } => {
+            super::ResultContract::AliasesWriteBackParameter {
+                parameter: caller_parameter(*parameter)?,
+                layout: *layout,
+                projection: *projection,
+            }
+        }
+        super::ResultContract::AliasesOneOfWriteBackParameters { parameters, layout } => {
+            super::ResultContract::AliasesOneOfWriteBackParameters {
+                parameters: parameters.iter().map(|parameter| caller_parameter(*parameter)).collect::<Option<_>>()?,
+                layout: *layout,
+            }
+        }
+        super::ResultContract::DisjunctiveWriteBackSelector { carrier_result, parameters, selector_parameter } => {
+            super::ResultContract::DisjunctiveWriteBackSelector {
+                carrier_result: *carrier_result,
+                parameters: parameters.iter().map(|parameter| caller_parameter(*parameter)).collect::<Option<_>>()?,
+                selector_parameter: caller_parameter(*selector_parameter)?,
+            }
+        }
+        super::ResultContract::ReallocatesParameter { parameter, layout } => {
+            super::ResultContract::ReallocatesParameter { parameter: caller_parameter(*parameter)?, layout: *layout }
+        }
+        other => other.clone(),
+    })
+}
+
 fn tail_result_contracts_compatible(
     callee: &[super::ResultContract],
     caller: &[super::ResultContract],

@@ -7514,7 +7514,7 @@ impl Checker {
                     .cloned()
                     .unwrap_or_else(|| vec![Convention::Let; callback_params.len()]);
                 let callback_param_count = callback_params.len();
-                Ok(Ty::Fn(
+                let callback = Ty::Fn(
                     callback_params.into(),
                     Box::new(callback_ret).into(),
                     conventions.into(),
@@ -7523,7 +7523,14 @@ impl Checker {
                         .get(function)
                         .copied()
                         .unwrap_or(CallableQualifiers::ORDINARY),
-                ))
+                );
+                // The callback is a named function value like any other: record
+                // it so lowering builds (and the tail manifest covers) its adapter.
+                if let Some(record) = &mut self.type_record {
+                    record.insert(arg as *const Expr as usize, (callback.clone(), false, None));
+                    self.declared_function_values.insert(arg as *const Expr as usize, function.clone());
+                }
+                Ok(callback)
             } else if exact_generic || (index == 0 && rooted_slice_read_intrinsic) {
                 self.infer(arg)
             } else {
