@@ -120,7 +120,8 @@ pub(crate) fn value_type_matches_source(
         return false;
     }
     if let super::super::ValueType::Gc(id) = actual {
-        let Some(family) = context.owner_families.iter().find(|f| f.owner_type == id || f.list_type == id).cloned() else { return false };
+        let families = context.owner_families;
+        let Some(family) = families.iter().find(|f| f.owner_type == id || f.list_type == id) else { return false };
         if let super::super::closure_owner_contract::OwnerFamilySource::SharedReference(expected) = &family.source {
             let expected_id = match StoragePlan::classify(expected, records, |_| Some(0)) {
                 StoragePlan::RootedView(plan) => plan.owner_family_id(),

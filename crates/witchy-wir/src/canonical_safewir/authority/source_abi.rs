@@ -113,8 +113,8 @@ pub(super) fn record_root_plans_in_signature(
 }
 
 #[derive(Default)]
-pub(crate) struct CorrespondenceContext {
-    pub(super) owner_families: Vec<super::super::closure_owner_contract::OwnerFamily>,
+pub(crate) struct CorrespondenceContext<'a> {
+    pub(super) owner_families: &'a [super::super::closure_owner_contract::OwnerFamily],
     active_callable: HashSet<(super::super::FunctionSignatureId, witchy_syntax::ast::Type)>,
     completed_callable: HashSet<(super::super::FunctionSignatureId, witchy_syntax::ast::Type)>,
     active_layout: HashSet<(crate::layout::LayoutId, witchy_syntax::ast::Type)>,
@@ -129,9 +129,9 @@ pub(super) enum CorrespondenceVisit {
     Limit,
 }
 
-impl CorrespondenceContext {
-    pub(crate) fn with_owners<S: ModuleStage>(candidate: &CanonicalModule<S>) -> Self {
-        Self { owner_families: candidate.owner_families().to_vec(), ..Self::default() }
+impl<'a> CorrespondenceContext<'a> {
+    pub(crate) fn with_owners<S: ModuleStage>(candidate: &'a CanonicalModule<S>) -> Self {
+        Self { owner_families: candidate.owner_families(), ..Self::default() }
     }
     pub(super) fn enter_callable(
         &mut self,
