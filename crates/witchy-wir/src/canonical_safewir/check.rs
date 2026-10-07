@@ -2521,7 +2521,7 @@ fn check_tail_call(
     // A callee result tied to its parameter `i` is tied to argument `i`; when
     // that argument is the caller's own entry parameter `k`, the claim is read
     // as one about the caller's parameter `k` (an adapter forwards parameter
-    // `k` as `k - 1`). Any other argument keeps the literal index.
+    // `k` as `k - 1`). A claim naming any other argument stays literal.
     let callee_results = callee
         .contract
         .results
@@ -2541,59 +2541,60 @@ fn check_tail_call(
     }, memory)
 }
 
-/// A normal `var` relay can repair a shared input by copying it and tail-call a
-/// `var unique` worker. The worker returns the fresh replacement as a unique
-/// token; forwarding that token through the relay's declared shared write-back
-/// lane only weakens the receiver's authority.  A reallocation proof likewise
-/// carries a unique token and may be forgotten by a unique caller. The layout
-/// and result arity stay exact, and no Shared-to-Unique conversion is accepted.
 /// `result`, a callee's claim about its own parameters, restated for the
-/// caller whose `arguments` it receives: a parameter forwarded from the
-/// caller's entry parameter `k` is named `k`.
+/// caller whose `arguments` it receives. A claim is renumbered only when
+/// every parameter it names is forwarded from one of the caller's entry
+/// parameters (an adapter forwards entry parameter `k` as `k - 1`); any other
+/// claim is kept whole, exactly as written, so one claim never mixes the two
+/// numberings.
 fn forwarded_result_contract(
     function: &Function,
     arguments: &[CallArgument],
     result: &super::ResultContract,
 ) -> Option<super::ResultContract> {
     let entry = function.blocks.iter().find(|block| block.id == function.entry)?;
-    let caller_parameter = |index: u32| -> Option<u32> {
+    let entry_parameter = |index: u32| -> Option<u32> {
         let (CallArgument::Move(value) | CallArgument::Value(value)) = *arguments.get(index as usize)?;
-        match entry.parameters.iter().position(|parameter| parameter.value == value) {
-            Some(position) => u32::try_from(position).ok(),
-            None => Some(index),
-        }
+        let position = entry.parameters.iter().position(|parameter| parameter.value == value)?;
+        u32::try_from(position).ok()
     };
-    Some(match result {
-        super::ResultContract::AliasesParameter { parameter, layout } => {
-            super::ResultContract::AliasesParameter { parameter: caller_parameter(*parameter)?, layout: *layout }
-        }
-        super::ResultContract::AliasesWriteBackParameter { parameter, layout, projection } => {
-            super::ResultContract::AliasesWriteBackParameter {
-                parameter: caller_parameter(*parameter)?,
+    let renumbered = match result {
+        super::ResultContract::AliasesParameter { parameter, layout } => entry_parameter(*parameter)
+            .map(|parameter| super::ResultContract::AliasesParameter { parameter, layout: *layout }),
+        super::ResultContract::AliasesWriteBackParameter { parameter, layout, projection } => entry_parameter(*parameter)
+            .map(|parameter| super::ResultContract::AliasesWriteBackParameter {
+                parameter,
                 layout: *layout,
                 projection: *projection,
-            }
-        }
-        super::ResultContract::AliasesOneOfWriteBackParameters { parameters, layout } => {
-            super::ResultContract::AliasesOneOfWriteBackParameters {
-                parameters: parameters.iter().map(|parameter| caller_parameter(*parameter)).collect::<Option<_>>()?,
-                layout: *layout,
-            }
-        }
-        super::ResultContract::DisjunctiveWriteBackSelector { carrier_result, parameters, selector_parameter } => {
-            super::ResultContract::DisjunctiveWriteBackSelector {
+            }),
+        super::ResultContract::AliasesOneOfWriteBackParameters { parameters, layout } => parameters
+            .iter()
+            .map(|parameter| entry_parameter(*parameter))
+            .collect::<Option<Vec<_>>>()
+            .map(|parameters| super::ResultContract::AliasesOneOfWriteBackParameters { parameters, layout: *layout }),
+        super::ResultContract::DisjunctiveWriteBackSelector { carrier_result, parameters, selector_parameter } => parameters
+            .iter()
+            .map(|parameter| entry_parameter(*parameter))
+            .collect::<Option<Vec<_>>>()
+            .zip(entry_parameter(*selector_parameter))
+            .map(|(parameters, selector_parameter)| super::ResultContract::DisjunctiveWriteBackSelector {
                 carrier_result: *carrier_result,
-                parameters: parameters.iter().map(|parameter| caller_parameter(*parameter)).collect::<Option<_>>()?,
-                selector_parameter: caller_parameter(*selector_parameter)?,
-            }
-        }
-        super::ResultContract::ReallocatesParameter { parameter, layout } => {
-            super::ResultContract::ReallocatesParameter { parameter: caller_parameter(*parameter)?, layout: *layout }
-        }
-        other => other.clone(),
-    })
+                parameters,
+                selector_parameter,
+            }),
+        super::ResultContract::ReallocatesParameter { parameter, layout } => entry_parameter(*parameter)
+            .map(|parameter| super::ResultContract::ReallocatesParameter { parameter, layout: *layout }),
+        _ => None,
+    };
+    Some(renumbered.unwrap_or_else(|| result.clone()))
 }
 
+/// A normal `var` relay can repair a shared input by copying it and tail-call a
+/// `var unique` worker. The worker returns the fresh replacement as a unique
+/// token; forwarding that token through the relay's declared shared write-back
+/// lane only weakens the receiver's authority.  A reallocation proof likewise
+/// carries a unique token and may be forgotten by a unique caller. The layout
+/// and result arity stay exact, and no Shared-to-Unique conversion is accepted.
 fn tail_result_contracts_compatible(
     callee: &[super::ResultContract],
     caller: &[super::ResultContract],
