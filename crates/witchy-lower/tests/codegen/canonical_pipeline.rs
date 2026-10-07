@@ -29,6 +29,36 @@ fn checked(source: &str) -> CheckedModule {
     .expect("checked source")
 }
 
+#[test]
+fn opaque_sum_match_authenticates_tag_once_across_alternatives() {
+    use witchy_wir::canonical_safewir::{Operation, closure_owner_contract::OwnerOperation};
+    let input = checked("type Choice:\n    A(Console)\n    B(Console)\n    C(Console)\n    D(Console)\n\nfn classify(value: Choice) -> Int:\n    match value:\n        A(_) -> 1\n        B(_) -> 2\n        C(_) -> 3\n        D(_) -> 4\n\nfn main(console: Console) -> Int:\n    classify(D(console))\n");
+    let candidate = witchy_lower::canonical_pipeline_checks::lowered_candidate(&input);
+    let source = input.canonical_source().expect("source");
+    let id = candidate.source_abi_bindings().entries().iter().find_map(|binding| {
+        let declaration = source.view().closed_callable_declaration(binding.source_declaration_ordinal())?;
+        (declaration.name == "main.classify").then_some(binding.function())
+    }).expect("classify binding");
+    let function = candidate.functions().iter().find(|function| function.id == id).expect("classify");
+    let reads = function.blocks.iter().flat_map(|block| &block.operations).filter(|operation|
+        matches!(operation, Operation::ClosureOwner(OwnerOperation::ReadTag { .. }))).count();
+    assert_eq!(reads, 1);
+    compile_checked_module_artifact(&input).expect_lowered("admit reused owner tag");
+}
+
+#[test]
+fn opaque_sum_tag_facts_keep_branch_and_loop_dominance() {
+    let declarations = "type Choice:\n    A(Console)\n    B(Console)\n\nfn classify(value: Choice) -> Int:\n    match value:\n        A(_) -> 1\n        B(_) -> 2\n\n";
+    for body in [
+        "fn main(console: Console) -> Int:\n    let value = B(console)\n    let first = if true:\n        match value:\n            A(_) -> 1\n            B(_) -> 2\n    else: 0\n    let second = match value:\n        A(_) -> 3\n        B(_) -> 4\n    first + second\n",
+        "fn main(console: Console) -> Int:\n    var value = A(console)\n    var count = 0\n    while count < 3:\n        let increment = match value:\n            A(_) -> 1\n            B(_) -> 2\n        count = count + increment\n        value = B(console)\n    let last = match value:\n        A(_) -> 3\n        B(_) -> 4\n    last + count\n",
+        "fn main(console: Console) -> Int:\n    let value = B(console)\n    match value:\n        A(_) -> match value:\n            A(_) -> 1\n            B(_) -> 2\n        B(_) -> match value:\n            A(_) -> 3\n            B(_) -> 4\n",
+    ] {
+        let input = checked(&format!("{declarations}{body}"));
+        compile_checked_module_artifact(&input).expect_lowered("admit branch-local tag facts");
+    }
+}
+
 struct ResetCallbackOptimization;
 
 impl Drop for ResetCallbackOptimization {

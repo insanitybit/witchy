@@ -4221,6 +4221,7 @@ fn lower_function(
         known_lambda_values: HashMap::new(),
         binding_scopes: vec![HashMap::new()],
         string_lengths: HashMap::new(),
+        opaque_tags: HashMap::new(),
         reauthenticated_strings: Vec::new(),
         edge_refreshed_strings: BTreeSet::new(),
         string_capacities: HashMap::new(),
@@ -4642,6 +4643,7 @@ impl LoopRebindings {
 /// Cached extent facts (see `snapshot_facts`).
 #[derive(Clone)]
 struct FactSnapshot {
+    opaque_tags: HashMap<ValueId, ValueId>,
     string_lengths: HashMap<ValueId, ValueId>,
     /// How many reauthentications preceded the snapshot.
     reauthenticated: usize,
@@ -4984,6 +4986,7 @@ struct FunctionLowerer<'a> {
     /// prefix its body statements are addressed under.
     lambda_path: Vec<ProperTailPathStep>,
     tail_prefix: Vec<ProperTailPathStep>,
+    opaque_tags: HashMap<ValueId, ValueId>,
     string_lengths: HashMap<ValueId, ValueId>,
     /// Every String whose lanes were replaced, in order: reauthenticated
     /// from its header, or renamed through a loop's header and exit lanes.
@@ -7803,6 +7806,12 @@ impl FunctionLowerer<'_> {
             self.retire_consumed_aggregate_parameter(scrutinee, scrutinee_value);
         }
         let scrutinee = scrutinee_value;
+        if matches!(self.values[&scrutinee], ValueType::Gc(_))
+            && scalar_aggregate_shape(&scrutinee_type, self.definitions).is_some_and(|shape| shape.tagged)
+            && arms.iter().any(|arm| matches!(arm.pattern, Pattern::Ctor { .. } | Pattern::AnonCtor { .. }))
+        {
+            self.opaque_aggregate_tag(scrutinee, &scrutinee_type)?;
+        }
         let string_layout = self.string_layout_id().ok();
         let facts = self.snapshot_facts();
         let outer = self.bindings.clone();
@@ -11805,6 +11814,7 @@ impl FunctionLowerer<'_> {
         object: ValueId,
         source: &Type,
     ) -> Result<ValueId, CanonicalLoweringError> {
+        if let Some(tag) = self.opaque_tags.get(&object) { return Ok(*tag); }
         let (_, owner) = self.opaque_aggregate_family(source)?;
         let destination = self.fresh(ValueType::Int)?;
         self.push_operation(Operation::ClosureOwner(OwnerOperation::ReadTag {
@@ -11812,6 +11822,7 @@ impl FunctionLowerer<'_> {
             owner: object,
             family: owner.signature,
         }));
+        self.opaque_tags.insert(object, destination);
         Ok(destination)
     }
 
@@ -20988,6 +20999,7 @@ impl FunctionLowerer<'_> {
     /// produced a use the value did not dominate.
     fn snapshot_facts(&self) -> FactSnapshot {
         FactSnapshot {
+            opaque_tags: self.opaque_tags.clone(),
             string_lengths: self.string_lengths.clone(),
             reauthenticated: self.reauthenticated_strings.len(),
             string_capacities: self.string_capacities.clone(),
@@ -20998,6 +21010,7 @@ impl FunctionLowerer<'_> {
     }
 
     fn restore_snapshot(&mut self, snapshot: FactSnapshot) {
+        self.opaque_tags = snapshot.opaque_tags;
         self.string_lengths = snapshot.string_lengths;
         self.string_capacities = snapshot.string_capacities;
         self.list_counts = snapshot.list_counts;
@@ -21022,6 +21035,7 @@ impl FunctionLowerer<'_> {
     /// Restore the facts from before a region, keeping only the entries the
     /// region's join block itself defines (its parameters' lanes).
     fn restore_facts(&mut self, mut snapshot: FactSnapshot, join: BlockId) {
+        self.opaque_tags = snapshot.opaque_tags.clone();
         // A String reauthenticated inside the region holds a fresh header
         // association on that path only; its pre-region lanes are stale at
         // the join, so the next use reauthenticates again.
