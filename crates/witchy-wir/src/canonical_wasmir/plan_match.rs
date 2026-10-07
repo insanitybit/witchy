@@ -707,6 +707,15 @@ impl<'a> PlanEmitter<'a> {
         }
         let join = self.find_join(current, then_target, else_target, stop)?;
         push_get(&mut self.plan, self.layout, condition)?;
+        // Mirror of the encoder: an `else` that leaves the innermost loop is
+        // tested first under a negated condition.
+        let (then_target, then_arguments, else_target, else_arguments) =
+            if self.leaves_innermost_loop(else_target) && !self.leaves_innermost_loop(then_target) {
+                self.plan.push(PlanToken::I32Eqz);
+                (else_target, else_arguments, then_target, then_arguments)
+            } else {
+                (then_target, then_arguments, else_target, else_arguments)
+            };
         self.plan.push(PlanToken::If("Empty".to_owned()));
         self.labels.push(StructuredLabel::If);
         self.push_branch_arguments(then_target, then_arguments)?;
@@ -720,6 +729,10 @@ impl<'a> PlanEmitter<'a> {
             Some(join) => self.emit_path(join, stop),
             None => Ok(()),
         }
+    }
+
+    fn leaves_innermost_loop(&self, target: crate::canonical_safewir::BlockId) -> bool {
+        self.loop_exits.last().is_some_and(|(exit, _)| *exit == target)
     }
 
     fn emit_loop(&mut self, header: crate::canonical_safewir::BlockId, stop: Option<crate::canonical_safewir::BlockId>) -> Result<(), CanonicalAdmissionError> {

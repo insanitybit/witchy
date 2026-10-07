@@ -1018,6 +1018,16 @@ impl StructuredEmitter<'_> {
         }
         let join = self.find_join(current, then_target, else_target, stop)?;
         emit_get(self.body, self.layout, self.source_function.id, condition)?;
+        // Cranelift lays a conditional's first successor out last. When the
+        // `else` side leaves the innermost loop, test the negation so the
+        // exit is that successor and the loop's own path stays inline.
+        let (then_target, then_arguments, else_target, else_arguments) =
+            if self.leaves_innermost_loop(else_target) && !self.leaves_innermost_loop(then_target) {
+                self.body.instruction(&wasm_encoder::Instruction::I32Eqz);
+                (else_target, else_arguments, then_target, then_arguments)
+            } else {
+                (then_target, then_arguments, else_target, else_arguments)
+            };
         self.hint_if(then_target, else_target);
         self.body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
         self.labels.push(StructuredLabel::If);
@@ -1032,6 +1042,10 @@ impl StructuredEmitter<'_> {
             Some(join) => self.emit_path(join, stop),
             None => Ok(()),
         }
+    }
+
+    fn leaves_innermost_loop(&self, target: crate::canonical_safewir::BlockId) -> bool {
+        self.loop_exits.last().is_some_and(|(exit, _)| *exit == target)
     }
 
     fn emit_loop(
