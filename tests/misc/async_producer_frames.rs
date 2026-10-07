@@ -214,6 +214,37 @@ async fn main(console: Console):
 }
 
 #[test]
+fn producer_frame_bare_test_recipe_uses_general_scheduler() {
+    let temp = super::temp_dir::TempDir::new("producer-frame-test-driver");
+    let file = temp.write("suite.witchy", r#"import testing
+
+async fn test_producer_frame():
+    let (tx, rx) = chan.channel(4).await
+    var i: Int = 0
+    while i < 3:
+        chan.send(tx, i).await
+        i = i + 1
+    let first = chan.recv(rx).await
+    let second = chan.recv(rx).await
+    let third = chan.recv(rx).await
+    match first:
+        Some(value) -> testing.assert(value == 0, "first message")
+        None -> testing.assert(false, "missing first message")
+    match second:
+        Some(value) -> testing.assert(value == 1, "second message")
+        None -> testing.assert(false, "missing second message")
+    match third:
+        Some(value) -> testing.assert(value == 2, "third message")
+        None -> testing.assert(false, "missing third message")
+"#);
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_witchy"))
+        .arg("test").arg(&file).output().expect("execute real test driver");
+    let text = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(output.status.success(), "{text}");
+    assert!(text.contains("1 passed"), "{text}");
+}
+
+#[test]
 fn raw_producer_preparation_is_not_source_authority() {
     for source in [
         "import task\n\nfn main():\n    let _ = task.__prepare_send(task.ready_unit())\n",

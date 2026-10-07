@@ -1,11 +1,11 @@
-//! Integration recipe v5 (v6 with admitted expansion): real grants are a launch concern, never source proof.
+//! Integration recipe v7 (v8 with admitted expansion): real grants are a launch concern, never source proof.
 //! Select one declaration from retained entry bytes, generate an explicit Unit
 //! entry, and rederive every witness through the ordinary source pipeline.
 use super::*;
 use crate::typeck::Ty;
 use witchy_syntax::ast::Convention;
 
-const INTEGRATION_RECIPE_VERSION: u32 = 5;
+const INTEGRATION_RECIPE_VERSION: u32 = 7;
 
 pub fn check_integration_test_driver(
     suite: &CheckedTestSuite, selected: &str, expand: ComptimeExpander,
