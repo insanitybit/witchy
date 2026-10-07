@@ -93,6 +93,17 @@ pub(super) fn candidate_signature_matches_source_inner(
         {
             return actual.ownership == super::super::ParameterOwnership::Value;
         }
+        // An explicit `let` reference may be lent as a read-only handle
+        // (`Value`: the call is checked only while the caller keeps its own
+        // live token) or transferred as an owned token (`Shared`), as a view
+        // may.
+        if convention == witchy_syntax::ast::Convention::Borrow
+            && matches!(actual.value_type, super::super::ValueType::Ref(_))
+            && !matches!(source, witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::Unique, _))
+        {
+            return matches!(actual.ownership,
+                super::super::ParameterOwnership::Value | super::super::ParameterOwnership::Shared);
+        }
         if (affine_owner || matches!(source, witchy_syntax::ast::Type::Qualified(
             witchy_syntax::ast::TypeQual::Unique, _
         ))) && convention == witchy_syntax::ast::Convention::Own {

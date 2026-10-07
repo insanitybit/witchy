@@ -13,6 +13,17 @@ pub fn lowered_candidate(
         .with_launch_contract_payload(source.launch_contract_payload().to_vec())
 }
 
+/// The candidate under the borrowed-view ABI, the pipeline's first attempt:
+/// an explicit `let` reference is lent to a callee that cannot keep it.
+pub fn lowered_borrowed_candidate(
+    checked: &witchy_types::pipeline::CheckedModule,
+) -> witchy_wir::canonical_safewir::CanonicalModule<witchy_wir::canonical_safewir::LoweredCandidate> {
+    let source = checked.canonical_source().expect("canonical source");
+    let layouts = crate::canonical_layouts::derive_layout_bundle(source).expect("checked layouts");
+    crate::canonical_lower::lower_typed_module_with_borrowed_views(source, layouts, true).expect("borrowed candidate")
+        .with_launch_contract_payload(source.launch_contract_payload().to_vec())
+}
+
 pub fn task_producer_substitution_requires_actual_execution_provenance() {
     use witchy_types::runtime_type::{
         AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource,

@@ -2869,6 +2869,31 @@ fn signature_from_type(
     let mut contract_parameters = Vec::with_capacity(parameters.len());
     let mut parameter_effects = BTreeMap::new();
     let scalar_result = is_inline_scalar(source_value_type(result, layout_bundle, layouts, closure_layouts, definitions)?);
+    // A `let` reference is lent only to a function that cannot keep it: no
+    // result or write-back lane can carry a share of it, and no parameter is a
+    // carrier that could pass one on. A reference lane can carry a share only
+    // if its layout holds a reference or is reachable from a reference
+    // parameter's layout. The memory checker makes the same judgment of the
+    // contract, so a lent argument leaves the caller's token exclusive.
+    let lend_borrows = borrow_views && {
+        let parameter_types = parameters.iter()
+            .map(|parameter| source_value_type(parameter, layout_bundle, layouts, closure_layouts, definitions))
+            .collect::<Result<Vec<_>, _>>()?;
+        let holds_none = |value_type: ValueType| match value_type {
+            ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit | ValueType::Size | ValueType::V128 => true,
+            ValueType::InlineAggregate(layout) => layouts.holds_no_reference(layout),
+            ValueType::Ref(layout) => layouts.holds_no_reference(layout)
+                && !parameter_types.iter().any(|parameter| matches!(parameter,
+                    ValueType::Ref(lent) if layouts.may_reach(*lent, layout))),
+            ValueType::Gc(_) | ValueType::Capability(_) | ValueType::NullableCapability(_) | ValueType::Callable(_) => false,
+        };
+        holds_none(source_value_type(result, layout_bundle, layouts, closure_layouts, definitions)?)
+            && parameter_types.iter().zip(&conventions).all(|(value_type, convention)| match convention {
+                Convention::Var => holds_none(*value_type),
+                _ => !matches!(value_type, ValueType::Gc(_) | ValueType::Capability(_)
+                    | ValueType::NullableCapability(_) | ValueType::Callable(_)),
+            })
+    };
     for (index, (parameter, convention)) in parameters.iter().zip(conventions).enumerate() {
         // A checked aggregate layout carries the same owned token as a string
         // or closure. Deferred qualifiers were rejected above; mapping must
@@ -2898,6 +2923,11 @@ fn signature_from_type(
             (ValueType::Ref(_), Convention::Borrow) if affine_owner => {
                 ParameterOwnership::Value
             }
+            // An explicit `let` cannot escape the call (the type checker's
+            // rule), so the borrowed-view ABI passes the caller's reference
+            // without a token: no clone, no release, and a caller's unique
+            // binding stays unique across the call.
+            (ValueType::Ref(_), Convention::Borrow) if lend_borrows => ParameterOwnership::Value,
             (ValueType::Gc(_), Convention::Let | Convention::Borrow)
                 if rooted_gc_view_owner_type(parameter, closure_layouts, definitions).is_some() =>
             {
@@ -4200,6 +4230,7 @@ fn lower_function(
         list_capacities: HashMap::new(),
         known_list_lengths: HashMap::new(),
         owned_parameters: Vec::new(),
+        lent_parameters: BTreeSet::new(),
         token_join_parameters: BTreeSet::new(),
         graph_version: 0,
         token_facts: std::cell::RefCell::new(None),
@@ -4274,6 +4305,14 @@ fn lower_function(
                 && matches!(contract.ownership, ParameterOwnership::Unique | ParameterOwnership::UniqueWriteBack | ParameterOwnership::Shared | ParameterOwnership::WriteBack))
             .then_some(parameter.value)
         })
+        .collect();
+    lowerer.lent_parameters = parameters
+        .iter()
+        .zip(&signature.contract.parameters)
+        .filter(|(parameter, contract)| {
+            matches!(parameter.value_type, ValueType::Ref(_)) && contract.ownership == ParameterOwnership::Value
+        })
+        .map(|(parameter, _)| parameter.value)
         .collect();
     for (source, parameter) in function.params.iter().zip(&parameters) {
         if lowerer.bindings.insert(source.name.clone(), parameter.value).is_some() {
@@ -4968,6 +5007,9 @@ struct FunctionLowerer<'a> {
     list_capacities: HashMap<ValueId, ValueId>,
     known_list_lengths: HashMap<ValueId, u64>,
     owned_parameters: Vec<ValueId>,
+    /// Reference parameters lent by the caller (`ParameterOwnership::Value`):
+    /// no token of their own, so a consuming use takes a clone.
+    lent_parameters: BTreeSet<ValueId>,
     /// Join parameters whose every lane carried a reference-count token, so
     /// the parameter carries one too (see `carries_token`).
     token_join_parameters: BTreeSet<ValueId>,
@@ -9301,9 +9343,11 @@ impl FunctionLowerer<'_> {
         let candidates = outer
             .iter()
             .filter_map(|(name, object)| {
+                // An invariant String is never rebound in the loop, and only a
+                // write-back that rebinds a String mutates it: its extent is
+                // fixed across the loop whether its token is shared or unique.
                 (!names.contains(name)
-                    && matches!(self.values[object], ValueType::Ref(layout) if Some(layout) == string_layout)
-                    && self.known_shared_value(*object))
+                    && matches!(self.values[object], ValueType::Ref(layout) if Some(layout) == string_layout))
                     .then(|| name.clone())
             })
             .collect::<Vec<_>>();
@@ -9996,7 +10040,6 @@ impl FunctionLowerer<'_> {
         let string_layout = self.string_layout_id().ok();
         let carried_strings = invariant_names.iter().filter(|name| {
             matches!(self.values[&outer[*name]], ValueType::Ref(layout) if Some(layout) == string_layout)
-                && self.known_shared_value(outer[*name])
                 && self.enclosing_loops_carry(outer[*name])
         }).cloned().collect::<Vec<_>>();
         for name in &carried_strings {
@@ -10257,9 +10300,11 @@ impl FunctionLowerer<'_> {
         let invariant_candidates = outer
             .iter()
             .filter_map(|(name, object)| {
+                // An invariant String is never rebound in the loop, and only a
+                // write-back that rebinds a String mutates it: its extent is
+                // fixed across the loop whether its token is shared or unique.
                 (!names.contains(name)
-                    && matches!(self.values[object], ValueType::Ref(layout) if Some(layout) == string_layout)
-                    && self.known_shared_value(*object))
+                    && matches!(self.values[object], ValueType::Ref(layout) if Some(layout) == string_layout))
                     .then(|| name.clone())
             })
             .collect::<Vec<_>>();
@@ -12262,9 +12307,10 @@ impl FunctionLowerer<'_> {
                             ).is_some() || StoragePlan::classify(
                                 &source_type, self.definitions, |_| Some(0),
                             ).requires_affine_owner_token();
-                            let moved = if !self.opt_mode
-                                && !matches!(argument, Expr::Unary { op: UnOp::Move, .. })
-                                && !affine
+                            let moved = if self.lent_parameters.contains(&value) && !affine
+                                || !self.opt_mode
+                                    && !matches!(argument, Expr::Unary { op: UnOp::Move, .. })
+                                    && !affine
                             {
                                 self.owned_for_storage(value, &source_type)?
                             } else {
@@ -12286,9 +12332,10 @@ impl FunctionLowerer<'_> {
                         ).is_some() || StoragePlan::classify(
                             &source_type, self.definitions, |_| Some(0),
                         ).requires_affine_owner_token();
-                        if !self.opt_mode
-                            && !matches!(argument, Expr::Unary { op: UnOp::Move, .. })
-                            && !affine
+                        if self.lent_parameters.contains(&value) && !affine
+                            || !self.opt_mode
+                                && !matches!(argument, Expr::Unary { op: UnOp::Move, .. })
+                                && !affine
                         {
                             let owned = self.owned_for_storage(value, &source_type)?;
                             return Ok(CallArgument::Move(owned));
@@ -12342,6 +12389,10 @@ impl FunctionLowerer<'_> {
                             }
                         }
                         ParameterOwnership::Value if matches!(actual, ValueType::Ref(_)) => {
+                            // A borrowed `let` lends the caller's live token.
+                            if conventions[parameter] == Convention::Borrow {
+                                return Ok(CallArgument::Value(value));
+                            }
                             let source_type = self.expression_type(argument)?;
                             if StoragePlan::classify(source_type.unqualified(), self.definitions, |_| Some(0))
                                 .requires_affine_owner_token()
@@ -12375,7 +12426,7 @@ impl FunctionLowerer<'_> {
                             let owned = self.clone_string_for_storage(value)?;
                             Ok(CallArgument::Move(owned))
                         }
-                        ParameterOwnership::Shared if tail => Ok(CallArgument::Move(value)),
+                        ParameterOwnership::Shared if tail && !self.lent_parameters.contains(&value) => Ok(CallArgument::Move(value)),
                         // A `var` binding of an owned carrier shares its token
                         // too: the clone marks it shared, so a later in-place
                         // update of the binding copies once (canonical_writable.rs)

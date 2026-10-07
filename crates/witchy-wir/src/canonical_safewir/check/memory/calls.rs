@@ -32,7 +32,12 @@ impl<'a> MemoryChecker<'a> {
                     .and_then(|proofs| proofs.get(&self.signature.id))
                     .and_then(|proof| proof.parameters.get(index))
                     .and_then(Option::as_ref).is_some();
-                (scalar_result || affine_borrow)
+                // A lent handle is the caller's: this function may clone it but
+                // never returns it, unless its contract says a result aliases
+                // the parameter (the one-in/one-out alias ABI consumes it).
+                let lent = !self.signature.contract.results.iter().any(|result| matches!(result,
+                    ResultContract::AliasesParameter { parameter, .. } if usize::try_from(*parameter).ok() == Some(index)));
+                (scalar_result || affine_borrow || lent)
                     && self.signature.contract.parameters.get(index).is_some_and(|parameter|
                         matches!(parameter.value_type, ValueType::Ref(_))
                             && parameter.ownership == ParameterOwnership::Value)
@@ -269,6 +274,41 @@ impl<'a> MemoryChecker<'a> {
         }
     }
 
+    /// Whether a callee with this contract can keep anything it was lent
+    /// past the call. Retention needs somewhere to put a reference: a result,
+    /// a write-back lane, or a callable, capability, or GC carrier that could
+    /// hand one on. A reference lane can carry a share of a lent object only
+    /// if its layout holds a reference or is reachable from a reference
+    /// parameter's layout. A contract with no such lane keeps nothing, so the
+    /// caller's token keeps its exclusive authority.
+    pub(super) fn cannot_retain_borrow(&self, parameters: &[ParameterContract], results: &[ResultContract]) -> bool {
+        results.iter().all(|result| match result {
+            ResultContract::Value(value_type) => self.lane_cannot_retain(*value_type, parameters),
+            ResultContract::CheckedValue { layout }
+            | ResultContract::Fresh { layout, .. }
+            | ResultContract::Shared { layout }
+            | ResultContract::Unique { layout }
+            | ResultContract::StaticData { layout } => self.lane_cannot_retain(ValueType::Ref(*layout), parameters),
+            _ => false,
+        }) && parameters.iter().all(|parameter| match parameter.ownership {
+            ParameterOwnership::WriteBack | ParameterOwnership::UniqueWriteBack =>
+                self.lane_cannot_retain(parameter.value_type, parameters),
+            _ => !matches!(parameter.value_type,
+                ValueType::Gc(_) | ValueType::Capability(_) | ValueType::NullableCapability(_) | ValueType::Callable(_)),
+        })
+    }
+
+    fn lane_cannot_retain(&self, value_type: ValueType, parameters: &[ParameterContract]) -> bool {
+        match value_type {
+            ValueType::Int | ValueType::Float | ValueType::Bool | ValueType::Unit | ValueType::Size | ValueType::V128 => true,
+            ValueType::InlineAggregate(layout) => self.layouts.holds_no_reference(layout),
+            ValueType::Ref(layout) => self.layouts.holds_no_reference(layout)
+                && !parameters.iter().any(|parameter| matches!(parameter.value_type,
+                    ValueType::Ref(lent) if self.layouts.may_reach(lent, layout))),
+            ValueType::Gc(_) | ValueType::Capability(_) | ValueType::NullableCapability(_) | ValueType::Callable(_) => false,
+        }
+    }
+
     pub(crate) fn check_call(
         &mut self,
         callee_signature: &FunctionSignature,
@@ -381,6 +421,8 @@ impl<'a> MemoryChecker<'a> {
                     && (results.iter().all(|result| matches!(result,
                         ResultContract::Value(ValueType::Int | ValueType::Float | ValueType::Bool
                             | ValueType::Unit | ValueType::Size | ValueType::V128)))
+                        || !results.iter().any(|result| matches!(result,
+                            ResultContract::AliasesParameter { parameter, .. } if usize::try_from(*parameter).ok() == Some(parameter_index)))
                         || affine_proof.and_then(|proof| proof.parameters.get(parameter_index))
                             .and_then(Option::as_ref).is_some()
                             && !results.iter().any(|result| matches!(result,
@@ -397,7 +439,7 @@ impl<'a> MemoryChecker<'a> {
                         if !borrowed_affine && !self.require_affine_plan(*value, plan)? {
                             return self.unsupported("Call(borrowed affine argument without recursive proof)");
                         }
-                    } else {
+                    } else if !self.cannot_retain_borrow(parameters, results) {
                         // An ordinary borrowed read may retain a clone. The
                         // caller keeps its token but loses exclusive authority.
                         self.share_allocation_tokens(*value)?;

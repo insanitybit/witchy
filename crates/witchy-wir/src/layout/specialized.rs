@@ -994,6 +994,83 @@ impl LayoutInterner {
         self.descriptors.is_empty()
     }
 
+    /// Whether storage of `id` can hold no reference at all: scalars, and
+    /// records, sums, and sequences built only from them. Any other layout,
+    /// including a recursive or unknown one, may. Lowering and the memory
+    /// checker both decide a `let` borrow's retention by this one judgment.
+    pub fn holds_no_reference(&self, id: LayoutId) -> bool {
+        self.holds_no_reference_within(id, &mut Vec::new())
+    }
+
+    fn holds_no_reference_within(&self, id: LayoutId, visiting: &mut Vec<LayoutId>) -> bool {
+        let Ok(id) = self.resolve_nominal(id) else { return false };
+        let Some(descriptor) = self.get(id) else { return false };
+        if visiting.contains(&id)
+            || descriptor.fields().iter().any(|field| matches!(field.kind(), FieldKind::Pointer { .. }))
+        {
+            return false;
+        }
+        visiting.push(id);
+        let holds_none = match descriptor.kind() {
+            LayoutKind::Scalar(_) => true,
+            LayoutKind::Tuple { fields } | LayoutKind::PackedRecord { fields } =>
+                fields.iter().all(|field| self.holds_no_reference_within(*field, visiting)),
+            LayoutKind::ClosedSum { variants } | LayoutKind::RuntimeClosedSum { variants } =>
+                variants.iter().flatten().all(|field| self.holds_no_reference_within(*field, visiting)),
+            LayoutKind::PackedList { element, .. } | LayoutKind::RuntimeBuffer { element } | LayoutKind::ScratchBuffer { element } =>
+                self.holds_no_reference_within(*element, visiting),
+            LayoutKind::RuntimeValueSlot { value } => self.holds_no_reference_within(*value, visiting),
+            _ => false,
+        };
+        visiting.pop();
+        holds_none
+    }
+
+    /// Whether an allocation of layout `target` can be the object of `from`
+    /// or be reachable from it through fields, elements, slots, or pointers.
+    /// A layout this walk cannot read reaches everything.
+    pub fn may_reach(&self, from: LayoutId, target: LayoutId) -> bool {
+        let Ok(target) = self.resolve_nominal(target) else { return true };
+        self.may_reach_within(from, target, &mut Vec::new())
+    }
+
+    fn may_reach_within(&self, from: LayoutId, target: LayoutId, visited: &mut Vec<LayoutId>) -> bool {
+        let Ok(from) = self.resolve_nominal(from) else { return true };
+        if from == target {
+            return true;
+        }
+        if visited.contains(&from) {
+            return false;
+        }
+        visited.push(from);
+        let Some(descriptor) = self.get(from) else { return true };
+        let mut children = Vec::new();
+        for field in descriptor.fields() {
+            match field.kind() {
+                FieldKind::Scalar(_) => {}
+                FieldKind::Inline(layout) | FieldKind::Pointer { pointee: layout, .. } => children.push(layout),
+            }
+        }
+        match descriptor.kind() {
+            LayoutKind::Scalar(_) | LayoutKind::OpaqueNominal { .. } => {}
+            LayoutKind::Tuple { fields } | LayoutKind::PackedRecord { fields } => children.extend(fields),
+            LayoutKind::ClosedSum { variants } | LayoutKind::RuntimeClosedSum { variants } =>
+                children.extend(variants.iter().flatten()),
+            LayoutKind::PackedList { element, .. } | LayoutKind::RuntimeBuffer { element }
+            | LayoutKind::ScratchBuffer { element } => children.push(*element),
+            LayoutKind::RuntimePointerBuffer { pointee, .. } | LayoutKind::RuntimePointerValueSlot { pointee, .. } =>
+                children.push(*pointee),
+            LayoutKind::RuntimeDictionaryBody { key, value, row }
+            | LayoutKind::CanonicalDictionary { key, value, row } => children.extend([*key, *value, *row]),
+            LayoutKind::RuntimeDictionaryRow { key, value } | LayoutKind::RuntimeDictionaryIndex { key, value }
+            | LayoutKind::CanonicalDictionaryRow { key, value } => children.extend([*key, *value]),
+            LayoutKind::RuntimeValueSlot { value } => children.push(*value),
+            LayoutKind::ClosureEnvironment { captures } => children.extend(captures),
+            LayoutKind::ExposedRoot { body, .. } => children.push(*body),
+        }
+        children.into_iter().any(|child| self.may_reach_within(child, target, visited))
+    }
+
     pub fn get(&self, id: LayoutId) -> Option<&LayoutDescriptor> {
         self.descriptors.get(&id)
     }

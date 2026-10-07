@@ -174,33 +174,37 @@ fn validate_checked_source_inner(
     let layouts = derive_layout_bundle(source).map_err(CanonicalPipelineError::Layout)?;
     // Borrowed view calls are an optional whole-module ABI choice. Keep the
     // ordinary owned-call graph as the checked fallback when a proper-tail or
-    // another ownership obligation needs token transfer.
-    if !source_uses_opt(source) {
-        let borrowed_attempt = lower_typed_module_with_borrowed_views(source, layouts.clone(), true);
-        if let Err(error) = &borrowed_attempt {
-            if std::env::var_os("WIRDIAG").is_some() { eprintln!("WIRBAIL borrowed-view-lowering: {error:?}"); }
+    // another ownership obligation needs token transfer. The bounds-guard
+    // pass runs on either ABI exactly when `use_bounds_guard_pass` allows it.
+    let borrowed_attempt = lower_typed_module_with_borrowed_views(source, layouts.clone(), true);
+    if let Err(error) = &borrowed_attempt {
+        if std::env::var_os("WIRDIAG").is_some() { eprintln!("WIRBAIL borrowed-view-lowering: {error:?}"); }
+    }
+    if let Ok(candidate) = borrowed_attempt {
+        let candidate = candidate.with_launch_contract_payload(source.launch_contract_payload().to_vec());
+        if use_bounds_guard_pass(source)
+            && let Some(validated) = validate_guard_free_first(&candidate, source)
+        {
+            return Ok(validated);
         }
-        if let Ok(candidate) = borrowed_attempt {
-            let candidate = candidate.with_launch_contract_payload(source.launch_contract_payload().to_vec());
-            if let Some(validated) = validate_guard_free_first(&candidate, source) {
+        let checked_attempt = check_initial_with_witness(candidate, &source.view());
+        if let Err(error) = &checked_attempt {
+            if std::env::var_os("WIRDIAG").is_some() { eprintln!("WIRBAIL borrowed-view-check: {error:?}"); }
+        }
+        if let Ok(checked) = checked_attempt {
+            // This checked pass removes only a later identical Size guard
+            // in the same block. Its independent rewrite checker and final
+            // validation must both succeed before the result is admitted.
+            let final_attempt = if use_bounds_guard_pass(source) {
+                run_checked_pass(checked, PassId::SameBlockBoundsGuards).validate_final(&source.view())
+            } else {
+                validate_final(checked, &source.view())
+            };
+            if let Err(error) = &final_attempt {
+                if std::env::var_os("WIRDIAG").is_some() { eprintln!("WIRBAIL borrowed-view-final: {error:?}"); }
+            }
+            if let Ok(validated) = final_attempt {
                 return Ok(validated);
-            }
-            let checked_attempt = check_initial_with_witness(candidate, &source.view());
-            if let Err(error) = &checked_attempt {
-                if std::env::var_os("WIRDIAG").is_some() { eprintln!("WIRBAIL borrowed-view-check: {error:?}"); }
-            }
-            if let Ok(checked) = checked_attempt {
-                // This checked pass removes only a later identical Size guard
-                // in the same block. Its independent rewrite checker and final
-                // validation must both succeed before the result is admitted.
-                let final_attempt = run_checked_pass(checked, PassId::SameBlockBoundsGuards)
-                    .validate_final(&source.view());
-                if let Err(error) = &final_attempt {
-                    if std::env::var_os("WIRDIAG").is_some() { eprintln!("WIRBAIL borrowed-view-final: {error:?}"); }
-                }
-                if let Ok(validated) = final_attempt {
-                    return Ok(validated);
-                }
             }
         }
     }

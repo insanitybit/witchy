@@ -640,3 +640,50 @@ fn dynamic_construction_rejects_a_transitive_capability_before_lowering() {
     assert!(message.contains("Console"), "{message}");
     assert!(message.contains("Holder[0]"), "{message}");
 }
+
+const LENT_DICT: &str = "fn keep(let d: Dict(String, Int), var out: List(Dict(String, Int))):\n    out.push(d)\n\nfn size_of(let d: Dict(String, Int)) -> Int:\n    d.length()\n\nfn main() -> Int:\n    var d: Dict(String, Int) = dict.with_capacity(4)\n    var kept: List(Dict(String, Int)) = []\n    var i = 0\n    while i < 100:\n        let n = d.get(\"a\") ?? 0\n        let _ = d.insert(\"a\", n + size_of(d))\n        i = i + 1\n    keep(d, kept)\n    d.get_or(\"a\", 0) + kept.length()\n";
+
+#[test]
+fn a_let_borrowed_dictionary_is_read_without_a_copy() {
+    // `get` and `size_of` cannot keep their `let` receiver, so the loop lends
+    // the unique table instead of copying it before every call.
+    use witchy_wir::canonical_safewir::{DictionaryOperation, Operation};
+    let checked = checked("fn size_of(let d: Dict(String, Int)) -> Int:\n    d.length()\n\nfn main() -> Int:\n    var d: Dict(String, Int) = dict.with_capacity(4)\n    var i = 0\n    while i < 100:\n        let n = d.get(\"a\") ?? 0\n        let _ = d.insert(\"a\", n + size_of(d))\n        i = i + 1\n    d.get_or(\"a\", 0)\n");
+    let lowered = witchy_lower::canonical_pipeline_checks::lowered_borrowed_candidate(&checked);
+    let copies = lowered.functions().iter()
+        .flat_map(|function| &function.blocks)
+        .flat_map(|block| &block.operations)
+        .filter(|operation| matches!(operation, Operation::Dictionary(DictionaryOperation::CloneExact { .. })))
+        .count();
+    assert_eq!(copies, 0, "a lent dictionary is never copied");
+    let source = checked.canonical_source().expect("canonical source");
+    witchy_wir::canonical_safewir::check_initial_with_witness(lowered, &source.view())
+        .expect("the lent calls are admitted");
+}
+
+#[test]
+fn a_callee_that_can_keep_its_let_argument_is_not_lent_it() {
+    // `keep` can store `d` in its write-back list, so it takes an owned token.
+    use witchy_wir::canonical_safewir::{CallArgument, Operation, ParameterOwnership, ValueType};
+    let checked = checked(LENT_DICT);
+    let lowered = witchy_lower::canonical_pipeline_checks::lowered_borrowed_candidate(&checked);
+    let signatures: std::collections::BTreeMap<_, _> = lowered.signatures().iter()
+        .map(|signature| (signature.id, signature)).collect();
+    let callee_signature: std::collections::BTreeMap<_, _> = lowered.functions().iter()
+        .map(|function| (function.id, function.signature)).collect();
+    let mut keeping_calls = 0;
+    for function in lowered.functions() {
+        for operation in function.blocks.iter().flat_map(|block| &block.operations) {
+            let Operation::Call { callee, arguments, .. } = operation else { continue };
+            let signature = signatures[&callee_signature[callee]];
+            let can_keep = signature.contract.parameters.iter().any(|parameter|
+                parameter.ownership == ParameterOwnership::WriteBack && matches!(parameter.value_type, ValueType::Ref(_)));
+            if !can_keep { continue }
+            keeping_calls += 1;
+            assert!(!arguments.iter().zip(&signature.contract.parameters).any(|(argument, parameter)|
+                matches!(argument, CallArgument::Value(_)) && matches!(parameter.value_type, ValueType::Ref(_))),
+                "a callee that can keep a reference is never lent one");
+        }
+    }
+    assert!(keeping_calls > 0, "the program calls a retaining callee");
+}
