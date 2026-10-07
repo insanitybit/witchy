@@ -9279,6 +9279,34 @@ impl FunctionLowerer<'_> {
     /// `while let PATTERN = SCRUTINEE: BODY` as a loop whose header binds
     /// the scrutinee and tests the pattern; the body sees the pattern's
     /// bindings. The state tuple is `lower_while`'s.
+    /// Immutable Strings bound outside a loop and mentioned in it. Each
+    /// crosses the loop as header lanes, authenticated before entry: a
+    /// nested loop renames a String's lanes, so no backedge can rely on its
+    /// pre-loop count staying the extent's count.
+    fn invariant_string_lanes(
+        &mut self,
+        outer: &HashMap<String, ValueId>,
+        names: &[String],
+        condition: &Expr,
+        body: &witchy_syntax::ast::Block,
+    ) -> Result<Vec<String>, CanonicalLoweringError> {
+        let string_layout = self.string_layout_id().ok();
+        let candidates = outer
+            .iter()
+            .filter_map(|(name, object)| {
+                (!names.contains(name)
+                    && matches!(self.values[object], ValueType::Ref(layout) if Some(layout) == string_layout)
+                    && self.known_shared_value(*object))
+                    .then(|| name.clone())
+            })
+            .collect::<Vec<_>>();
+        let invariant = crate::analysis::loop_mentions(condition, body, &candidates);
+        for name in &invariant {
+            self.ensure_string_extent(outer[name])?;
+        }
+        Ok(invariant)
+    }
+
     fn lower_while_let(
         &mut self,
         pattern: &Pattern,
@@ -9298,13 +9326,15 @@ impl FunctionLowerer<'_> {
         let outer = self.detach_shared_write_back_lanes(&names, outer)?;
         let outer = self.unshare_mutated_list_lanes(&names, outer, &rebound)?;
         self.authenticate_rebound_list_extents(&names, &outer)?;
-        let list_names = names
+        let invariant_names = self.invariant_string_lanes(&outer, &names, scrutinee, body)?;
+        let mut list_names = names
             .iter()
             .filter_map(|name| {
                 let object = outer[name];
                 self.tracked_lanes(object).is_some().then(|| name.clone())
             })
             .collect::<Vec<_>>();
+        list_names.extend(invariant_names);
         let mut state_types = names
             .iter()
             .map(|name| self.values[&outer[name]])
@@ -9550,20 +9580,7 @@ impl FunctionLowerer<'_> {
         // An immutable String keeps its dominating root. Only its
         // authenticated header lanes cross the loop, so the header cannot
         // create a second shared reference identity for an unchanged value.
-        let string_layout = self.string_layout_id().ok();
-        let invariant_candidates = outer
-            .iter()
-            .filter_map(|(name, object)| {
-                (!names.contains(name)
-                    && matches!(self.values[object], ValueType::Ref(layout) if Some(layout) == string_layout)
-                    && self.known_shared_value(*object))
-                    .then(|| name.clone())
-            })
-            .collect::<Vec<_>>();
-        let invariant_names = crate::analysis::loop_mentions(condition, body, &invariant_candidates);
-        for name in &invariant_names {
-            self.ensure_string_extent(outer[name])?;
-        }
+        let invariant_names = self.invariant_string_lanes(&outer, &names, condition, body)?;
         let mut list_names = names
             .iter()
             .filter_map(|name| self.tracked_lanes(outer[name]).is_some().then(|| name.clone()))

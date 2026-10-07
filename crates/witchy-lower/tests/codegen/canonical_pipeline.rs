@@ -351,6 +351,22 @@ fn an_invariant_string_survives_a_quadratic_scan() {
         .expect_lowered("a parameter String scanned by nested loops keeps a checked extent");
 }
 
+const STEP: &str = "fn step(i: Int) -> Option(Int):\n    if i < 3: Some(i) else: None\n\n";
+
+#[test]
+fn an_invariant_string_survives_a_while_let_with_an_inner_loop() {
+    let source = format!("{INVARIANT_TABLE}{STEP}fn sum(t: Bytes) -> Int:\n    var total = 0\n    var i = 0\n    while let Some(x) = step(i):\n        var j = 0\n        while j < 4:\n            total = total + t.at(j)\n            j = j + 1\n        i = i + 1\n    total\n\nfn main() -> Int:\n    sum(table())\n");
+    compile_checked_module_artifact(&checked(&source))
+        .expect_lowered("a while let carries an invariant String's lanes past an inner while");
+}
+
+#[test]
+fn an_invariant_string_survives_a_while_let_with_an_inner_counted_for() {
+    let source = format!("{INVARIANT_TABLE}{STEP}fn sum(t: Bytes) -> Int:\n    var total = 0\n    var i = 0\n    while let Some(x) = step(i):\n        for y in 0..2:\n            total = total + t.at(y + x % 2)\n        i = i + 1\n    total\n\nfn main() -> Int:\n    sum(table())\n");
+    compile_checked_module_artifact(&checked(&source))
+        .expect_lowered("a while let carries an invariant String's lanes past an inner counted for");
+}
+
 #[test]
 fn exact_narrowing_needs_a_proven_bound() {
     // `get`'s index is bounded only by `bytes.at`'s own check.
