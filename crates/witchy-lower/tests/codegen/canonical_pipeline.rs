@@ -385,6 +385,13 @@ fn an_inner_loop_carries_a_string_only_when_its_enclosing_loop_does() {
 }
 
 #[test]
+fn a_while_refreshes_a_string_its_enclosing_loop_does_not_carry() {
+    let source = "import bytes\n\nfn main() -> Int:\n    let b = bytes.from_string(\"abcdefgh\")\n    var acc = 0\n    var i = 0\n    while i < 3:\n        for k in 0..b.length():\n            var q = 0\n            while q < 3:\n                acc = acc + b.at(k)\n                q = q + 1\n        acc = acc + b.at(1)\n        i = i + 1\n    acc % 256\n";
+    compile_checked_module_artifact(&checked(source))
+        .expect_lowered("an inner while under an uncarrying loop reauthenticates its String at every edge");
+}
+
+#[test]
 fn exact_narrowing_needs_a_proven_bound() {
     // `get`'s index is bounded only by `bytes.at`'s own check.
     let checked = checked("import bytes\n\nfn get(b: Bytes, i: Int) -> Int:\n    b.at(i)\n\nfn main() -> Int:\n    get(bytes.from_string(\"abc\"), 1)\n");

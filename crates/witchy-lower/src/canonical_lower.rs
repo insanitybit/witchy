@@ -4192,6 +4192,7 @@ fn lower_function(
         binding_scopes: vec![HashMap::new()],
         string_lengths: HashMap::new(),
         reauthenticated_strings: Vec::new(),
+        edge_refreshed_strings: BTreeSet::new(),
         string_capacities: HashMap::new(),
         list_counts: HashMap::new(),
         checked_list_indices: HashMap::new(),
@@ -4951,6 +4952,11 @@ struct FunctionLowerer<'a> {
     /// checker's extent counts the region's lanes on that path, and the join
     /// met that association away.
     reauthenticated_strings: Vec<ValueId>,
+    /// Invariant Strings a `while` carries while some enclosing loop does
+    /// not carry them exactly. Every edge of such a loop reauthenticates the
+    /// header rather than keeping lanes, since the enclosing loop meets this
+    /// loop's renamed count against its own pre-loop one.
+    edge_refreshed_strings: BTreeSet<ValueId>,
     string_capacities: HashMap<ValueId, ValueId>,
     list_counts: HashMap<ValueId, ValueId>,
     /// A diagnostic success edge proves an exact index against an exact
@@ -9197,15 +9203,15 @@ impl FunctionLowerer<'_> {
             // ones the header bound, which the checker renames across the
             // edge with the extent they count: reloading them every iteration
             // only re-proves an unchanged header.
-            if self.tracked_lanes(object).is_none() {
-                let invariant_string = !names.contains(name)
-                    && matches!(self.values[&object], ValueType::Ref(layout) if Some(layout) == string_layout);
-                if invariant_string {
-                    self.refresh_disjunctive_string_extent(object)?;
-                } else {
-                    self.ensure_list_extent(object)?;
-                    self.ensure_string_extent(object)?;
-                }
+            let invariant_string = !names.contains(name)
+                && matches!(self.values[&object], ValueType::Ref(layout) if Some(layout) == string_layout);
+            if invariant_string
+                && (self.tracked_lanes(object).is_none() || self.edge_refreshed_strings.contains(&object))
+            {
+                self.refresh_disjunctive_string_extent(object)?;
+            } else if self.tracked_lanes(object).is_none() {
+                self.ensure_list_extent(object)?;
+                self.ensure_string_extent(object)?;
             }
             let (count, capacity) = self.tracked_lanes(object).ok_or(
                 CanonicalLoweringError::UnsupportedExpression("loop edge list count state"),
@@ -9279,30 +9285,45 @@ impl FunctionLowerer<'_> {
     /// Immutable Strings bound outside a loop and mentioned in it. Each
     /// crosses the loop as header lanes, authenticated before entry: a
     /// nested loop renames a String's lanes, so no backedge can rely on its
-    /// pre-loop count staying the extent's count.
+    /// pre-loop count staying the extent's count. A String some enclosing
+    /// loop does not carry exactly is carried only with `refresh`, as an
+    /// edge-refreshed String (returned second, for the caller to retire
+    /// after the body).
     fn invariant_string_lanes(
         &mut self,
         outer: &HashMap<String, ValueId>,
         names: &[String],
         condition: &Expr,
         body: &witchy_syntax::ast::Block,
-    ) -> Result<Vec<String>, CanonicalLoweringError> {
+        refresh: bool,
+    ) -> Result<(Vec<String>, Vec<ValueId>), CanonicalLoweringError> {
         let string_layout = self.string_layout_id().ok();
         let candidates = outer
             .iter()
             .filter_map(|(name, object)| {
                 (!names.contains(name)
                     && matches!(self.values[object], ValueType::Ref(layout) if Some(layout) == string_layout)
-                    && self.known_shared_value(*object)
-                    && self.enclosing_loops_carry(name, *object))
+                    && self.known_shared_value(*object))
                     .then(|| name.clone())
             })
             .collect::<Vec<_>>();
-        let invariant = crate::analysis::loop_mentions(condition, body, &candidates);
-        for name in &invariant {
-            self.authenticate_carried_string(outer[name])?;
+        let mut carried = Vec::new();
+        let mut refreshed = Vec::new();
+        for name in crate::analysis::loop_mentions(condition, body, &candidates) {
+            let object = outer[&name];
+            if self.enclosing_loops_carry(&name, object) {
+                self.authenticate_carried_string(object)?;
+            } else if refresh {
+                self.ensure_string_extent(object)?;
+                if self.edge_refreshed_strings.insert(object) {
+                    refreshed.push(object);
+                }
+            } else {
+                continue;
+            }
+            carried.push(name);
         }
-        Ok(invariant)
+        Ok((carried, refreshed))
     }
 
     /// Whether every enclosing loop that `object` (bound to `name`) predates
@@ -9313,7 +9334,7 @@ impl FunctionLowerer<'_> {
         self.loop_contexts.iter().all(|context| {
             self.binding_at_depth(name, context.scope_depth) != Some(object)
                 || context.list_names.iter().any(|carried| carried == name)
-        })
+        }) && !self.edge_refreshed_strings.contains(&object)
     }
 
     /// Establish a carried String's entry lanes in the form a backedge's
@@ -9352,7 +9373,7 @@ impl FunctionLowerer<'_> {
         let outer = self.detach_shared_write_back_lanes(&names, outer)?;
         let outer = self.unshare_mutated_list_lanes(&names, outer, &rebound)?;
         self.authenticate_rebound_list_extents(&names, &outer)?;
-        let invariant_names = self.invariant_string_lanes(&outer, &names, scrutinee, body)?;
+        let (invariant_names, _) = self.invariant_string_lanes(&outer, &names, scrutinee, body, false)?;
         let mut list_names = names
             .iter()
             .filter_map(|name| {
@@ -9606,7 +9627,7 @@ impl FunctionLowerer<'_> {
         // An immutable String keeps its dominating root. Only its
         // authenticated header lanes cross the loop, so the header cannot
         // create a second shared reference identity for an unchanged value.
-        let invariant_names = self.invariant_string_lanes(&outer, &names, condition, body)?;
+        let (invariant_names, edge_refreshed) = self.invariant_string_lanes(&outer, &names, condition, body, true)?;
         let mut list_names = names
             .iter()
             .filter_map(|name| self.tracked_lanes(outer[name]).is_some().then(|| name.clone()))
@@ -9787,6 +9808,9 @@ impl FunctionLowerer<'_> {
             let carried = self.loop_edge_arguments(&names, &list_names)?;
             self.demote_unique_lanes_carrying_shared(header, exit, &carried);
             self.finish_current(Terminator::Branch { target: header, arguments: carried })?;
+        }
+        for object in edge_refreshed {
+            self.edge_refreshed_strings.remove(&object);
         }
         // A nested join can supersede an invariant's header evidence even
         // when this loop carries only scalars. Restoring the entry snapshot
