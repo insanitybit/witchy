@@ -19827,111 +19827,48 @@ impl FunctionLowerer<'_> {
         self.push_guard(sign_in_table, witchy_wir::canonical_safewir::GuardKind::Bounds);
         self.push_byte_copy(object, zero, minus, zero, sign_len, layout);
 
-        // Emit the at-most-19 decimal writes directly. A back edge that
-        // carries a mutable owner would meet distinct owner generations, and
-        // must remain invalid: every write below instead observes, proves,
-        // and then advances one linear owner generation.
-        let render_slots = self.push_const_size(MAX_RENDERED_INT_BYTES)?;
-        let all_slot_ends = self.push_arithmetic(
-            ValueType::Size,
-            ArithmeticOperator::Multiply,
-            digit_count,
-            render_slots,
-            OverflowBehavior::Wrap,
-        )?;
-        let last_slot_end = self.push_arithmetic(
-            ValueType::Size,
-            ArithmeticOperator::Subtract,
-            all_slot_ends,
-            one,
-            OverflowBehavior::Wrap,
-        )?;
-        for exponent in (0..19_u32).rev() {
-            let exponent_size = self.push_const_size(u64::from(exponent))?;
-            // `20 * digit_count - 1 - exponent` is always non-negative.
-            // Its remainder gives a valid digit slot even for leading writes;
-            // those writes happen first and the actual decimal digits replace
-            // every logical slot afterward.
-            let slot_numerator = self.push_arithmetic(
-                ValueType::Size,
-                ArithmeticOperator::Subtract,
-                last_slot_end,
-                exponent_size,
-                OverflowBehavior::Wrap,
-            )?;
-            let digit_slot = self.push_arithmetic(
-                ValueType::Size,
-                ArithmeticOperator::RemainderUnsigned,
-                slot_numerator,
-                digit_count,
-                OverflowBehavior::Trap,
-            )?;
-            let position = self.push_arithmetic(
-                ValueType::Size,
-                ArithmeticOperator::Add,
-                sign_len,
-                digit_slot,
-                OverflowBehavior::Trap,
-            )?;
-            let divisor = self.push_const_int(10_i64.pow(exponent))?;
-            let quotient = self.push_arithmetic(
-                ValueType::Int,
-                ArithmeticOperator::DivideSigned,
-                value,
-                divisor,
-                OverflowBehavior::Trap,
-            )?;
-            let remainder = self.push_arithmetic(
-                ValueType::Int,
-                ArithmeticOperator::RemainderSigned,
-                quotient,
-                ten_int,
-                OverflowBehavior::Trap,
-            )?;
-            let digit_int = self.push_arithmetic(
-                ValueType::Int,
-                ArithmeticOperator::Multiply,
-                remainder,
-                sign,
-                OverflowBehavior::Wrap,
-            )?;
-            let digit = self.fresh(ValueType::Size)?;
-            self.push_operation(Operation::NarrowSize { destination: digit, value: digit_int, exact: false });
-            let digit_end = self.push_arithmetic(
-                ValueType::Size,
-                ArithmeticOperator::Add,
-                digit,
-                one,
-                OverflowBehavior::Trap,
-            )?;
-            let digit_in_table = self.push_compare(
-                ComparisonOperator::LessEqualUnsigned,
-                digit_end,
-                digit_table_count,
-            )?;
-            self.push_guard(digit_in_table, witchy_wir::canonical_safewir::GuardKind::Bounds);
-            let position_end = self.push_arithmetic(
-                ValueType::Size,
-                ArithmeticOperator::Add,
-                position,
-                one,
-                OverflowBehavior::Trap,
-            )?;
-            let position_fits = self.push_compare(
-                ComparisonOperator::LessEqualUnsigned,
-                position_end,
-                total,
-            )?;
-            self.push_guard(position_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
-            let capacity_is_current = self.push_compare(
-                ComparisonOperator::LessEqualUnsigned,
-                total,
-                render_limit,
-            )?;
-            self.push_guard(capacity_is_current, witchy_wir::canonical_safewir::GuardKind::Bounds);
-            self.push_byte_copy(object, position, digits, digit, one, layout);
-        }
-
+        // Write the digits from the end down to the sign, one per
+        // iteration. Each write advances the owner's generation, so the
+        // header meets the entry's generation with the back edge's at one
+        // joined epoch; every write therefore re-proves its slot and the
+        // allocation's capacity before it lands.
+        let write_state = [ValueType::Int, ValueType::Size];
+        let write_header = self.new_block(&write_state)?;
+        let write_body = self.new_block(&write_state)?;
+        let write_exit = self.new_block(&[])?;
+        // A dedicated copy: `total` itself is needed after the loop.
+        let start_position = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, total, zero, OverflowBehavior::Wrap)?;
+        self.finish_current(Terminator::Branch { target: write_header, arguments: vec![value, start_position] })?;
+        let header_values = self.block_parameter_values(write_header);
+        self.current = write_header;
+        let more_positions = self.push_compare(ComparisonOperator::LessUnsigned, sign_len, header_values[1])?;
+        self.finish_current(Terminator::BranchIf {
+            condition: more_positions,
+            then_target: write_body,
+            then_arguments: header_values.clone(),
+            else_target: write_exit,
+            else_arguments: Vec::new(),
+        })?;
+        let body_values = self.block_parameter_values(write_body);
+        self.current = write_body;
+        let rest = body_values[0];
+        let position = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Subtract, body_values[1], one, OverflowBehavior::Wrap)?;
+        let remainder = self.push_arithmetic(ValueType::Int, ArithmeticOperator::RemainderSigned, rest, ten_int, OverflowBehavior::Trap)?;
+        let digit_int = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Multiply, remainder, sign, OverflowBehavior::Wrap)?;
+        let digit = self.fresh(ValueType::Size)?;
+        self.push_operation(Operation::NarrowSize { destination: digit, value: digit_int, exact: false });
+        let digit_end = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, digit, one, OverflowBehavior::Trap)?;
+        let digit_in_table = self.push_compare(ComparisonOperator::LessEqualUnsigned, digit_end, digit_table_count)?;
+        self.push_guard(digit_in_table, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let position_end = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, position, one, OverflowBehavior::Trap)?;
+        let position_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, position_end, total)?;
+        self.push_guard(position_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let capacity_is_current = self.push_compare(ComparisonOperator::LessEqualUnsigned, total, render_limit)?;
+        self.push_guard(capacity_is_current, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        self.push_byte_copy(object, position, digits, digit, one, layout);
+        let next_rest = self.push_arithmetic(ValueType::Int, ArithmeticOperator::DivideSigned, rest, ten_int, OverflowBehavior::Trap)?;
+        self.finish_current(Terminator::Branch { target: write_header, arguments: vec![next_rest, position] })?;
+        self.current = write_exit;
         self.string_lengths.insert(object, total);
         self.string_capacities.insert(object, render_limit);
         Ok(object)

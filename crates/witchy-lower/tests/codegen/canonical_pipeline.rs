@@ -290,6 +290,25 @@ fn only_proven_branches_fold_before_the_check() {
 }
 
 #[test]
+fn an_int_renders_one_digit_per_written_byte() {
+    // Digits are written by a loop over the rendered length, not by 19
+    // unrolled writes whose slots each cost a division by the digit count.
+    use witchy_wir::canonical_safewir::{ArithmeticOperator, Operation};
+    let lowered = witchy_lower::canonical_pipeline_checks::lowered_candidate(&checked(
+        "fn main() -> Int:\n    let n = 42\n    \"${n}\".length()\n"));
+    let operations = lowered.functions().iter()
+        .flat_map(|function| &function.blocks)
+        .flat_map(|block| &block.operations)
+        .collect::<Vec<_>>();
+    let copies = operations.iter().filter(|operation| matches!(operation, Operation::CopyBytes { .. })).count();
+    // The unrolled form copied one byte for each of 19 decimal places.
+    assert!(copies < 19, "rendering one Int copies {copies} byte ranges");
+    assert!(!operations.iter().any(|operation| matches!(operation,
+        Operation::Arithmetic { operator: ArithmeticOperator::RemainderUnsigned, .. })),
+        "digit slots are computed by a division");
+}
+
+#[test]
 fn an_invariant_string_is_not_reauthenticated_every_iteration() {
     use witchy_wir::canonical_safewir::{Operation, Terminator};
     let lowered = witchy_lower::canonical_pipeline_checks::lowered_candidate(&checked(
