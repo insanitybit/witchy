@@ -202,3 +202,24 @@ fn main(console: Console):
 "#;
         assert_eq!(run_admitted_bytes(src).expect("run forwarded byte updates"), ["abc Bdc AcZ xyz 7 7"]);
     }
+
+    /// Forwarded byte updates on a `var` parameter leave the caller's earlier
+    /// snapshot of the buffer unchanged.
+    #[test]
+    fn forwarded_byte_updates_on_var_parameter_keep_caller_snapshot() {
+        let src = r#"import bytes
+
+fn grow(var b: Bytes):
+    b.push(1)
+    b.set_at(0, 90)
+    b.swap(0, 1)
+
+fn main(console: Console):
+    var b = bytes.from_string("ab")
+    let snap = b
+    grow(b)
+    grow(b)
+    console.print("${snap.length()} ${bytes.to_string(snap)} ${b.length()} ${b.at(0)} ${b.at(1)}")
+"#;
+        assert_eq!(run_admitted_bytes(src).expect("run var-parameter byte updates"), ["2 ab 4 90 90"]);
+    }
