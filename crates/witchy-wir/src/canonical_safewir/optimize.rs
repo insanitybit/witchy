@@ -236,12 +236,15 @@ pub fn remove_redundant_bounds_guards_before_check(
         return None;
     }
     let mut candidate = lowered.clone();
-    for (function, redundant) in candidate.functions.iter_mut().zip(&redundant) {
+    for ((function, original), redundant) in candidate.functions.iter_mut().zip(&lowered.functions).zip(&redundant) {
+        // A branch folds only on evidence that survives this rewrite, as
+        // the relation re-proves it: never on a guard removed alongside it.
+        let foldable = foldable_branches(original, redundant, &raw_bytes);
         for block in &mut function.blocks {
             let block_id = block.id;
             // A conditional branch whose condition every path has proven
             // always takes its true edge.
-            if redundant.get(&(block_id, block.operations.len())) == Some(&true)
+            if foldable.contains(&(block_id, block.operations.len()))
                 && let Terminator::BranchIf { then_target, then_arguments, .. } = &mut block.terminator
             {
                 let (target, arguments) = (*then_target, std::mem::take(then_arguments));
@@ -265,6 +268,32 @@ pub fn remove_redundant_bounds_guards_before_check(
     }
     check_rewrite_relation_between(lowered, &candidate, false).ok()?;
     Some(candidate)
+}
+
+fn foldable_branches(
+    function: &Function,
+    redundant: &BTreeMap<(BlockId, usize), bool>,
+    raw_bytes: &BTreeSet<crate::layout::LayoutId>,
+) -> BTreeSet<(BlockId, usize)> {
+    let mut removed = BTreeSet::new();
+    let mut branches = BTreeSet::new();
+    for block in &function.blocks {
+        for (index, operation) in block.operations.iter().enumerate() {
+            if matches!(operation, Operation::Guard { kind: GuardKind::Bounds, .. })
+                && redundant.get(&(block.id, index)) == Some(&true)
+            {
+                removed.insert((block.id, index));
+            }
+        }
+        let point = (block.id, block.operations.len());
+        if matches!(block.terminator, Terminator::BranchIf { .. }) && redundant.get(&point) == Some(&true) {
+            branches.insert(point);
+        }
+    }
+    if branches.is_empty() || removed.is_empty() { return branches; }
+    let implied = super::analysis::implied_guards(function, raw_bytes, |point| !removed.contains(&point));
+    branches.retain(|point| implied.get(point) == Some(&true));
+    branches
 }
 
 fn reachable_blocks(function: &Function) -> BTreeSet<BlockId> {
@@ -361,6 +390,9 @@ fn check_function_relation<'r>(
     // `after` keeps `before`'s blocks in order, less some that a folded
     // branch left unreachable: `after` names no block it lacks.
     let kept: BTreeSet<_> = after.blocks.iter().map(|block| block.id).collect();
+    if !kept.contains(&before.entry) {
+        return Err(RewriteRelationError::BlockShapeChanged);
+    }
     let mut before_blocks = before.blocks.iter();
     let mut pairs = Vec::with_capacity(after.blocks.len());
     for after in &after.blocks {
