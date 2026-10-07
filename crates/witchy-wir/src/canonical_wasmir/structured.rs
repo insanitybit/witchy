@@ -1094,7 +1094,6 @@ impl StructuredEmitter<'_> {
                 else_arguments,
             } if Some(else_target) == exit => {
                 emit_get(self.body, self.layout, self.source_function.id, condition)?;
-                self.hint_if(then_target, else_target);
                 self.body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
                 self.labels.push(StructuredLabel::If);
                 self.emit_branch_arguments(then_target, &then_arguments)?;
