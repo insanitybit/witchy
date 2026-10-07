@@ -15258,8 +15258,9 @@ impl FunctionLowerer<'_> {
             // binding's own token moves in when no other binding holds it;
             // otherwise separate tokens preserve every source binding and
             // enforce copy-on-write. A fresh element token moves in.
-            let list = if self.binding_holders(old_object) == 1 { old_object }
-                else { self.clone_reference_token(old_object)? };
+            // Lowering the element may have rebound `name` (a `var` call).
+            let sole = self.bindings.get(name) == Some(&old_object) && self.binding_holders(old_object) == 1;
+            let list = if sole { old_object } else { self.clone_reference_token(old_object)? };
             let value = if self.binding_holders(value) == 0 { value }
                 else { self.clone_reference_token(value)? };
             let destination = self.fresh(ValueType::Gc(family.list_type))?;

@@ -17,14 +17,31 @@ impl FunctionLowerer<'_> {
 
     /// An owner-family token the checker's owned-origin flow grants
     /// (`check/owners.rs`): a fresh owner list, a push or set into an owned
-    /// list, an owned-GC call result, or a unique lane. Any other
-    /// token may be aliased, so an owned-GC contract cannot accept it.
+    /// list, an owned-GC call result, or a unique lane, that no clone, read,
+    /// capture or list element has since aliased. Any other token may be
+    /// aliased, so an owned-GC contract cannot accept it.
     pub(super) fn owned_gc_token(&self, value: ValueId) -> bool {
         self.owned_gc_token_via(value, &mut BTreeSet::new())
     }
 
+    /// A use after which the checker no longer counts `value` as owned.
+    /// Position is ignored: any such use anywhere disqualifies the token.
+    fn gc_token_aliased(&self, value: ValueId) -> bool {
+        self.blocks.iter().flat_map(|block| &block.operations).any(|operation| match operation {
+            Operation::ClosureOwner(
+                OwnerOperation::Clone { owner: used, .. }
+                | OwnerOperation::ReadOwner { owner: used, .. }
+                | OwnerOperation::CloneList { list: used, .. }
+                | OwnerOperation::ListGet { list: used, .. },
+            ) => *used == value,
+            Operation::ClosureOwner(OwnerOperation::NewList { elements: used, .. }
+                | OwnerOperation::Construct { captures: used, .. }) => used.contains(&value),
+            _ => false,
+        })
+    }
+
     fn owned_gc_token_via(&self, value: ValueId, visited: &mut BTreeSet<ValueId>) -> bool {
-        if !visited.insert(value) {
+        if !visited.insert(value) || self.gc_token_aliased(value) {
             return false;
         }
         let owned_result = |signature: FunctionSignatureId, destinations: &[ValueId]| {

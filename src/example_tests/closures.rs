@@ -77,3 +77,24 @@ fn main(console: Console):
 "#;
         assert_eq!(run_on_wasm(src), vec!["2 4 5 44"]);
     }
+
+    /// A closure list pushed in a loop and also read, captured and iterated
+    /// there stays a shared loop lane: each of those uses aliases the token.
+    #[test]
+    fn closure_list_read_in_loop_after_push() {
+        let src = r#"fn main(console: Console):
+    var fs = [fn(x: Int) -> Int: x + 1]
+    var i = 0
+    var total = 0
+    while i < 3:
+        fs.push(fn(x: Int) -> Int: x * 2)
+        total = total + fs[0](i)
+        let g = fn(x: Int) -> Int: fs.length() + x
+        total = total + g(0)
+        for f in fs:
+            total = total + f(1)
+        i = i + 1
+    console.print("${total} ${fs.length()}")
+"#;
+        assert_eq!(run_on_wasm(src), vec!["33 4"]);
+    }
