@@ -111,7 +111,7 @@ fn unoptimized() -> ResetOptimization {
         let src_path = root.join("reader.witchy");
         std::fs::write(
             &src_path,
-            "fn main(console: Console, dir: Dir, args: List(String)) -> Int:\n    dir.write(list.at(args, 0), \"x\")\n    0\n",
+            "fn main(console: Console, dir: Dir, args: List(String)) -> Int:\n    match dir.write(list.at(args, 0), \"x\"):\n        Ok(_) -> ()\n        Err(error) -> fail(\"${error}\")\n    0\n",
         )
         .unwrap();
         let err = crate::run_file_sandboxed(
@@ -129,7 +129,7 @@ fn unoptimized() -> ResetOptimization {
         )
         .expect_err("a `..` traversal must be denied");
         assert!(
-            err.contains("escapes the Dir capability"),
+            err.contains("is not covered by this Dir capability"),
             "the denial should cite the Dir capability, got: {err}"
         );
         assert!(

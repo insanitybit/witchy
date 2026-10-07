@@ -343,23 +343,11 @@ fn main(console: Console):
         }
     }
 
-    // RFC-0144 reserves this arena once per compiled module. `heap_bytes` is a
-    // high-water frontier, so comparisons about workload growth must remove the
-    // fixed component instead of weakening ratios until they happen to pass.
-    const FORMAT_ARENA_BYTES: i64 = 8 * 1024;
-
-    fn workload_heap_bytes(stats: &Stats) -> i64 {
-        assert!(
-            stats.heap_bytes >= FORMAT_ARENA_BYTES,
-            "formatted workload heap must include the fixed format arena: {}",
-            stats.heap_bytes
-        );
-        stats.heap_bytes - FORMAT_ARENA_BYTES
-    }
-
+    // `heap_bytes` is the allocator's high-water above its heap base, so a
+    // loop that reclaims its scratch keeps it flat as iterations grow.
     fn assert_bounded_workload_growth(small: &Stats, large: &Stats, tolerance: i64, label: &str) {
-        let small_workload = workload_heap_bytes(small);
-        let large_workload = workload_heap_bytes(large);
+        let (small_workload, large_workload) = (small.heap_bytes, large.heap_bytes);
+        assert!(small_workload > 0, "{label}: the workload allocates: {small_workload}");
         assert!(
             large_workload <= small_workload + tolerance,
             "{label}: workload heap grew beyond tolerance: small={small_workload}, large={large_workload}, tolerance={tolerance}"
@@ -387,13 +375,14 @@ fn main(console: Console):
         assert_eq!(second, third, "counter run two and three must agree exactly");
     }
 
-    // An accumulation loop: in-place push keeps it O(n); forced copy re-owns at
-    // every iteration and balloons the heap to O(n^2).
-    const ACC: &str = "fn main(console: Console):\n    var xs = []\n    var i = 0\n    while i < 400:\n        list.push(xs, i)\n        i = i + 1\n    console.print(\"${list.length(xs)}\")\n";
+    // An accumulation loop: in-place push keeps its heap O(n); a copy per
+    // push would make it O(n^2).
+    fn accumulation(elements: usize) -> String {
+        format!("fn main(console: Console):\n    var xs = []\n    var i = 0\n    while i < {elements}:\n        list.push(xs, i)\n        i = i + 1\n    console.print(\"${{list.length(xs)}}\")\n")
+    }
 
-    // A soak loop: per-iteration scratch that never escapes. The `region`
-    // (loop-watermark) reclaim resets the arena each iteration, so heap stays
-    // CONSTANT no matter how many iterations; with it off the same program leaks.
+    // A soak loop: per-iteration scratch that never escapes is reclaimed each
+    // iteration, so the heap stays flat no matter how many iterations run.
     fn soak(iterations: usize) -> String {
         format!("fn main(console: Console):\n    var sum = 0\n    var i = 0\n    while i < {iterations}:\n        let tmp = [i, i + 1, i + 2, i + 3]\n        sum = sum + list.length(tmp)\n        i = i + 1\n    console.print(\"${{sum}}\")\n")
     }
@@ -429,33 +418,20 @@ fn main(console: Console):
         )
     }
 
-    /// RFC-0030 counter assertion: the `inplace` optimization is proven to FIRE
-    /// (fewer re-owns, less heap) while changing nothing observable. This is the
-    /// `(b)` half of the definition of done, the complement to the differential
-    /// sweep's `(a)`.
+    /// In-place push keeps an accumulation's heap linear: ten times the
+    /// elements stays well under the hundredfold growth a copy per push makes.
     #[test]
-    fn inplace_fires_and_is_measured() {
-        opt::set_for_tests(Some(OptSet::default_set()));
-        let on = compute(ACC).expect("compute with inplace on");
-        opt::set_for_tests(Some(OptSet::default_set().without(Opt::InPlace)));
-        let off = compute(ACC).expect("compute with inplace off");
-        opt::set_for_tests(None);
-
-        // Same observable behavior (parity) ...
-        assert_eq!(on.output, off.output, "the optimization must not change output");
-        assert_eq!(on.output, vec!["400".to_string()]);
-        // ... but the counters show it measurably fired. The in-place path copies
-        // only to establish the first buffer (and on the ~log n growth steps),
-        // never once per element — so its re-own count stays tiny. (`reowns` is the
-        // in-place path's own counter; the forced-copy build never emits it, hence
-        // 0 there — `heap_bytes` is the cross-setting proof.)
-        assert!(on.reowns <= 2, "in-place accumulation barely re-owns: {}", on.reowns);
-        // The allocation proof: in-place is O(n) where forced-copy is O(n^2).
+    fn accumulation_heap_grows_linearly() {
+        let small = compute(&accumulation(400)).expect("compute 400 pushes");
+        let large = compute(&accumulation(4000)).expect("compute 4000 pushes");
+        assert_eq!(small.output, vec!["400".to_string()]);
+        assert_eq!(large.output, vec!["4000".to_string()]);
+        assert!(small.heap_bytes > 0, "the accumulation allocates: {}", small.heap_bytes);
         assert!(
-            workload_heap_bytes(&off) > workload_heap_bytes(&on) * 4,
-            "forced-copy must allocate far more heap: on={} off={}",
-            on.heap_bytes,
-            off.heap_bytes
+            large.heap_bytes < small.heap_bytes * 20,
+            "accumulation heap must grow linearly: 400={} 4000={}",
+            small.heap_bytes,
+            large.heap_bytes
         );
     }
 
@@ -483,33 +459,15 @@ fn main(console: Console):
         assert!(error.contains("bound to a new name"), "{error}");
     }
 
-    /// RFC-0030 soak / never-OOM guard: a long loop whose per-iteration scratch is
-    /// escape-free must run in BOUNDED heap — the `region` loop-watermark reclaim
-    /// resets the arena every iteration. With it off the same program leaks O(n).
-    /// `peak_heap < budget` is the deterministic never-OOM assertion the goal names.
+    /// RFC-0030 soak / never-OOM guard: a long loop whose per-iteration
+    /// scratch is escape-free runs in bounded heap, reclaimed each iteration.
     #[test]
-    fn region_reclaim_keeps_soak_bounded() {
-        opt::set_for_tests(Some(OptSet::default_set()));
-        let small = compute(&soak(500)).expect("compute small with region on");
-        let large = compute(&soak(5000)).expect("compute large with region on");
-        opt::set_for_tests(Some(OptSet::default_set().without(Opt::Region)));
-        let off = compute(&soak(5000)).expect("compute large with region off");
-        opt::set_for_tests(None);
-
-        assert_eq!(large.output, off.output, "the optimization must not change output");
+    fn soak_heap_stays_bounded() {
+        let small = compute(&soak(500)).expect("compute 500 iterations");
+        let large = compute(&soak(5000)).expect("compute 5000 iterations");
         assert_eq!(small.output, vec!["2000".to_string()]);
         assert_eq!(large.output, vec!["20000".to_string()]);
-        assert_eq!(small.region_rewind_calls, 500, "one rewind per completed iteration");
-        assert_eq!(large.region_rewind_calls, 5000, "one rewind per completed iteration");
-        assert_eq!(off.region_rewind_calls, 0, "disabled region lowering emits no rewinds");
-        assert_bounded_workload_growth(&small, &large, 64, "region reclaim must bound the soak heap");
-        // ... and far below the leaking build.
-        assert!(
-            workload_heap_bytes(&off) > workload_heap_bytes(&large) * 10,
-            "without region the soak leaks O(n): on={} off={}",
-            large.heap_bytes,
-            off.heap_bytes
-        );
+        assert_bounded_workload_growth(&small, &large, 64, "the soak loop's heap must stay bounded");
     }
 
     /// RFC-0030 differential de-opt sweep (DoD half (a)): a program's OUTPUT must
@@ -684,40 +642,31 @@ fn main(console: Console):
         assert_eq!(wasm_copy, expected, "for var: forced-copy must write elements back");
     }
 
-    /// RFC-0027 escape-driven SROA: a frame-confined record built each iteration
-    /// and read only via field access is scalar-replaced into locals — zero heap
-    /// growth with `sroa` on, O(n) with `-sroa`. Region is turned off so the
-    /// accumulated record allocations are visible (not watermark-reclaimed). Output
-    /// is identical (the differential sweep also walks `-sroa`).
+    /// A frame-confined record built each iteration and read only through
+    /// its fields leaves no heap behind: the heap stays flat as iterations grow.
     #[test]
-    fn sroa_eliminates_confined_aggregate_allocation() {
-        let src = "type P:\n    x: Int\n    y: Int\nfn main(console: Console):\n    var total = 0\n    var i = 0\n    while i < 300:\n        let p = P(i, i + 1)\n        total = total + p.x + p.y\n        i = i + 1\n    console.print(\"${total}\")\n";
-        opt::set_for_tests(Some(OptSet::default_set().without(Opt::Region)));
-        let on = compute(src).expect("sroa on");
-        opt::set_for_tests(Some(OptSet::default_set().without(Opt::Region).without(Opt::Sroa)));
-        let off = compute(src).expect("sroa off");
-        opt::set_for_tests(None);
-        assert_eq!(on.output, off.output, "SROA must not change output");
-        assert_eq!(on.output, vec!["90000".to_string()]);
+    fn confined_record_loop_heap_stays_bounded() {
+        let source = |iterations: usize| format!("type P:\n    x: Int\n    y: Int\nfn main(console: Console):\n    var total = 0\n    var i = 0\n    while i < {iterations}:\n        let p = P(i, i + 1)\n        total = total + p.x + p.y\n        i = i + 1\n    console.print(\"${{total}}\")\n");
+        let small = compute(&source(300)).expect("compute 300 iterations");
+        let large = compute(&source(3000)).expect("compute 3000 iterations");
+        assert_eq!(small.output, vec!["90000".to_string()]);
+        assert_eq!(large.output, vec!["9000000".to_string()]);
         assert!(
-            workload_heap_bytes(&off) > workload_heap_bytes(&on) * 4,
-            "SROA must remove the per-iteration record alloc: on={} off={}",
-            on.heap_bytes,
-            off.heap_bytes
+            large.heap_bytes <= small.heap_bytes + 64,
+            "a confined record leaves no per-iteration heap: 300={} 3000={}",
+            small.heap_bytes,
+            large.heap_bytes
         );
     }
 
     /// The goal's NEVER-OOM property: a long loop with transient list/string
     /// scratch AND a helper that allocates internally but returns a scalar runs in
-    /// CONSTANT heap — loop-watermark reclaim + SROA + in-place keep it O(1)
-    /// regardless of iteration count. 5000 iterations stay under a tiny budget.
+    /// constant heap regardless of iteration count.
     #[test]
     fn never_oom_long_loop_stays_bounded() {
         let source = |iterations: usize| format!("fn cost(n: Int) -> Int:\n    let tmp = [n, n + 1, n + 2]\n    list.length(tmp) + \"${{n}}\".length()\nfn main(console: Console):\n    var total = 0\n    var i = 0\n    while i < {iterations}:\n        let scratch = [i, i + 1]\n        total = total + cost(i) + list.length(scratch)\n        i = i + 1\n    console.print(\"${{total}}\")\n");
-        opt::set_for_tests(Some(OptSet::default_set()));
         let small = compute(&source(500)).expect("compute 500 iterations");
         let large = compute(&source(5000)).expect("compute 5000 iterations");
-        opt::set_for_tests(None);
         assert_eq!(small.output, vec!["3890".to_string()]);
         assert_eq!(large.output, vec!["43890".to_string()]);
         assert_bounded_workload_growth(

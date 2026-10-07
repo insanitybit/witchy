@@ -2025,17 +2025,20 @@ impl Vm {
     pub fn dict_order_bytes_moved(&mut self) -> Option<i64> { self.i64_counter("__witchy_dict_order_bytes_moved") }
     pub fn dict_index_bytes(&mut self) -> Option<i64> { self.i64_counter("__witchy_dict_index_bytes") }
 
-    /// (RFC-0030) The final value of the `$heap` bump-pointer (exported as
-    /// `__heap`): the live heap frontier in bytes at program end. With no
-    /// region/watermark reclaim this is the peak. For a fixed program the delta
+    /// (RFC-0030) The allocator's bump frontier above its heap base at
+    /// program end: the heap high-water in bytes, since reclaimed objects are
+    /// reused from the free list below it. For a fixed program the delta
     /// across `WITCHY_OPT` settings shows an allocation optimization firing — e.g.
     /// in-place push keeps an accumulation O(n) where forced-copy is O(n^2). A
     /// test/diagnostic API consumed by `witchy stats`.
     pub fn heap_bytes(&mut self) -> Option<i64> {
-        self.instance
-            .get_global(&mut self.store, "__heap")
-            .and_then(|g| g.get(&mut self.store).i32())
-            .map(i64::from)
+        let mut read_global = |name: &str| -> Option<u32> {
+            let global = self.instance.get_global(&mut self.store, name)?;
+            global.get(&mut self.store).i32().map(|value| value as u32)
+        };
+        let top = read_global(witchy_wir::HEAP_TOP_EXPORT)?;
+        let base = read_global(witchy_wir::HEAP_BASE_EXPORT)?;
+        Some(i64::from(top) - i64::from(base))
     }
 
     /// The current capacity in bytes of Wasmtime's GC backing heap.
