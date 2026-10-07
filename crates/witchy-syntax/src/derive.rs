@@ -21,7 +21,7 @@ pub fn has_only_direct_record_derives(module: &Module) -> bool {
         if definition.variants.is_empty()
             || definition.derives.iter().any(|name| match name.as_str() {
                 "Eq" | "PartialEq" | "Show" => false,
-                "PartialOrd" | "Ord" => !record,
+                "PartialOrd" | "Ord" | "Deserialize" => !record,
                 _ => true,
             })
         {
@@ -336,6 +336,64 @@ fn sum_equality_impl(t: &TypeDef, trait_name: &str, line: u32) -> Item {
         trait_args: Vec::new(), type_name: t.name.clone(), target_args,
         bounds, methods,
     })
+}
+
+/// `derive(Deserialize)` for a record, built directly: the `from_json` that
+/// `meta.derive_deserialize` generates, rendered as source and parsed. Each
+/// field is required (an `Option` field may be absent or null) and decoded
+/// by its type, returning the first error.
+fn record_deserialize_impl(t: &TypeDef, line: u32) -> Result<Item, String> {
+    fn decode_value(ty: &Type, value: &str, depth: usize) -> String {
+        let lambda = |element: &Type, depth: usize| {
+            let parameter = format!("derive_e{depth}");
+            format!("fn({parameter}: json.Json) -> Result({}, json.DeserializeError): {}",
+                crate::format::type_str(element), decode_value(element, &parameter, depth + 1))
+        };
+        match ty {
+            Type::Named(name, args) => match (name.as_str(), args.as_slice()) {
+                ("Int", []) => format!("json.int_of({value})"),
+                ("Float", []) => format!("json.float_of({value})"),
+                ("Bool", []) => format!("json.bool_of({value})"),
+                ("String", []) => format!("json.string_of({value})"),
+                ("List", [element]) => format!("result.all(list.map(json.array_of({value})?, {}))", lambda(element, depth)),
+                ("Option", [element]) => format!("json.optional(Some({value}), {})", lambda(element, depth)),
+                _ => format!("{name}.from_json({value})"),
+            },
+            Type::Qualified(_, inner) => decode_value(inner, value, depth),
+            _ => "fail(\"derive(Deserialize): unsupported field type\")".into(),
+        }
+    }
+    let params = t.params.iter().filter(|name| !name.starts_with('\'')).cloned().collect::<Vec<_>>();
+    let target = if t.params.is_empty() { t.name.clone() } else { format!("{}({})", t.name, t.params.join(", ")) };
+    let bounds = if params.is_empty() { String::new() } else {
+        format!(" where {}", params.iter().map(|name| format!("{name}: Deserialize")).collect::<Vec<_>>().join(", "))
+    };
+    let variant = &t.variants[0];
+    let mut source = format!(
+        "impl Deserialize for {target}{bounds}:\n    fn from_json(derive_json: json.Json) -> Result({target}, json.DeserializeError):\n");
+    for (index, (name, ty)) in variant.field_names.iter().zip(&variant.fields).enumerate() {
+        let decoded = match ty.unqualified() {
+            Type::Named(option, args) if option == "Option" && args.len() == 1 => {
+                let parameter = "derive_e0";
+                format!("json.optional(json.get(derive_json, {name:?}), fn({parameter}: json.Json) -> Result({}, json.DeserializeError): {})?",
+                    crate::format::type_str(&args[0]), decode_value(&args[0], parameter, 1))
+            }
+            _ => format!("{}?", decode_value(ty, &format!("json.require(derive_json, {name:?})?"), 0)),
+        };
+        source.push_str(&format!("        let derive_f{index} = {decoded}\n"));
+    }
+    let fields = (0..variant.fields.len()).map(|index| format!("derive_f{index}")).collect::<Vec<_>>().join(", ");
+    source.push_str(&format!("        Ok({}({fields}))\n", t.name));
+    let module = crate::parser::parse_module(&source)
+        .map_err(|error| format!("type `{}`: derive(Deserialize) produced unparsable source: {error}", t.name))?;
+    let Some(Item::Impl(mut implementation)) = module.items.into_iter().next() else {
+        return Err(format!("type `{}`: derive(Deserialize) produced no impl", t.name));
+    };
+    implementation.origin = ImplOrigin::CompilerGenerated;
+    for method in &mut implementation.methods {
+        method.line = line;
+    }
+    Ok(Item::Impl(implementation))
 }
 
 /// A local user generator already has a typed result contract. Imported or
@@ -719,10 +777,8 @@ fn expand_with_record_ordering(module: &mut Module, direct_ordering: bool, direc
                             t.name, shape, field
                         ));
                     }
-                    generated.push(derive_item_via_comptime(
-                        "meta.derive_deserialize",
-                        &derive_type,
-                    ));
+                    generated.push(record_deserialize_impl(&derive_type,
+                        source_lines.get(item_index).copied().unwrap_or(0))?);
                     needs_deserialize = true;
                 }
                 "PublicState" => {
