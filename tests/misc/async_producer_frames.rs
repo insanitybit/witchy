@@ -28,6 +28,10 @@ async fn main(console: Console):
 "#;
 
 fn run(source: &str, options: OptSet) -> Vec<String> {
+    attempt(source, options).expect("execute producer frame fixture")
+}
+
+fn attempt(source: &str, options: OptSet) -> Result<Vec<String>, String> {
     witchy::opt::set_for_tests(Some(options));
     let checked = witchy::resolve_std_only_checked(source)
         .unwrap_or_else(|error| panic!("check producer frame fixture with {options:?}: {error}"));
@@ -37,9 +41,9 @@ fn run(source: &str, options: OptSet) -> Vec<String> {
     let mut vm = runtime.spawn_admitted(&artifact,
         Capabilities { print: true, print_int: true, quiet: true, ..Capabilities::none() }, 256)
         .expect("spawn admitted producer frame fixture");
-    vm.run().expect("execute producer frame fixture");
+    vm.run().map_err(|error| error.to_string())?;
     assert_eq!(vm.canonical_heap_leaks().expect("heap audit"), Some(0));
-    vm.output()
+    Ok(vm.output())
 }
 
 #[test]
@@ -130,6 +134,59 @@ async fn main(console: Console):
     let reference = run(source, OptSet::none());
     assert_eq!(reference, ["before 0", "winner Some(-1)", "seed"]);
     assert_eq!(run(source, OptSet::all()), reference);
+}
+
+#[test]
+fn producer_frame_offsets_isolate_interleaved_scalar_lanes() {
+    let _reset = Reset;
+    let source = r#"from chan import Sender
+
+async fn produce(tx: Sender(Int), start: Int):
+    var i: Int = start
+    var positive: Bool = true
+    while i < start + 2:
+        chan.send(tx, if positive: i else: -i).await
+        i = i + 1
+        positive = !positive
+    ()
+
+async fn main(console: Console):
+    let (tx, rx) = chan.channel(4).await
+    chan.scope([produce(tx, 10), produce(tx, 20)]).await
+    for await value in rx:
+        console.print("${value}")
+"#;
+    let reference = run(source, OptSet::none());
+    let mut values = reference.clone();
+    values.sort();
+    assert_eq!(values, ["-11", "-21", "10", "20"]);
+    assert_eq!(run(source, OptSet::all()), reference);
+}
+
+#[test]
+fn producer_frame_keeps_payload_and_resume_trap_locations() {
+    let _reset = Reset;
+    for source in [
+        TRACE.replace("chan.send(tx, i)", "chan.send(tx, 42 / (i - i))"),
+        TRACE.replace("        i = i + 1", "        i = 42 / (i - i)"),
+    ] {
+        let reference = attempt(&source, OptSet::none()).expect_err("division must trap");
+        assert!(reference.contains("division by zero"), "{reference}");
+        assert_eq!(attempt(&source, OptSet::all()).expect_err("frame division must trap"), reference);
+    }
+}
+
+#[test]
+fn producer_frame_range_prefix_locals_have_correct_liveness() {
+    let _reset = Reset;
+    for suffix in ["", "        emit(\"after ${i}\")\n"] {
+        let source = TRACE.replace("    var i: Int = 0\n    while i < 3:\n", "    for i in 0..3:\n")
+            .replace("        emit(\"after ${i}\")\n        i = i + 1\n", suffix);
+        let reference = run(&source, OptSet::none());
+        let values = reference.iter().filter(|line| line.starts_with("value ")).cloned().collect::<Vec<_>>();
+        assert_eq!(values, ["value 0", "value 1", "value 2"]);
+        assert_eq!(run(&source, OptSet::all()), reference);
+    }
 }
 
 #[test]

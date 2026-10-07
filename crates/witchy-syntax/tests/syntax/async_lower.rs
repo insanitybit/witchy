@@ -136,10 +136,28 @@ fn producer_frames_keep_exact_send_operand_and_resume_identity() {
             let mut sends = 0;
             for item in &module.items {
                 if let witchy_syntax::ast::Item::Function(function) = item {
+                    if witchy_syntax::suspension::source_suspension(function) == Some(0) {
+                        let assignment = function.body.stmts.iter().position(|statement|
+                            matches!(statement, witchy_syntax::ast::Stmt::Assign { name, .. } if name == "i"))
+                            .expect("resume keeps source mutation");
+                        assert_eq!(function.body.lines[assignment], 7);
+                    }
                     witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
                         if let witchy_syntax::ast::Expr::Call { name, .. } = expression {
                             prepares += usize::from(name == "task.__prepare_send");
                             sends += usize::from(name == "chan.send");
+                        }
+                        if let witchy_syntax::ast::Expr::Call { name, args } = expression
+                            && name == "task.__producer_frame"
+                        {
+                            for callback in &args[1..3] {
+                                let witchy_syntax::ast::Expr::Lambda { params, .. } = callback else {
+                                    panic!("producer callbacks are generated lambdas");
+                                };
+                                assert_eq!(params.len(), 2);
+                                assert_eq!(params[0].ty, Some(witchy_syntax::ast::Type::Named("Int".into(), vec![])));
+                                assert_eq!(params[1].convention, witchy_syntax::ast::Convention::Var);
+                            }
                         }
                         Ok::<_, ()>(())
                     }).unwrap();
@@ -150,5 +168,21 @@ fn producer_frames_keep_exact_send_operand_and_resume_identity() {
         }
         let text = witchy_syntax::format::module(&module, &[]);
         assert_eq!(text.contains("task.__producer_frame"), enabled, "{text}");
+    }
+}
+
+#[test]
+fn producer_frames_lower_range_prefix_locals() {
+    struct Reset;
+    impl Drop for Reset { fn drop(&mut self) { witchy_syntax::opt::set_for_tests(None); } }
+    let _reset = Reset;
+    witchy_syntax::opt::set_for_tests(Some(witchy_syntax::opt::OptSet::all()));
+    for suffix in ["", "        let next: Int = i + 1\n        let _ = next\n"] {
+        let source = format!("from chan import Sender\n\nasync fn produce(tx: Sender(Int), limit: Int):\n    for i in 0..limit:\n        chan.send(tx, i).await\n{suffix}    ()\n");
+        let module = lower_module(witchy_syntax::parser::parse_module(&source).expect("parse range producer"))
+            .expect("lower range producer");
+        let text = witchy_syntax::format::module(&witchy_syntax::records::lower(module)
+            .expect("lower records").into_module(), &[]);
+        assert!(text.contains("task.__producer_frame"), "{text}");
     }
 }
