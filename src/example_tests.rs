@@ -576,8 +576,26 @@
                         let mut footprint_module = module.clone();
                         crate::comptime::expand("main", &mut footprint_module)
                             .unwrap_or_else(|e| panic!("{context} fails compile-time expansion: {e}"));
-                        let checked = witchy::resolve_std_only_checked(&snippet)
-                            .unwrap_or_else(|e| panic!("{context} fails to link or type-check: {e}"));
+                        // The in-memory resolver refuses `comptime`, which needs the
+                        // native expansion session: such a block is checked from a
+                        // file through the same path as `witchy <file>`.
+                        let checked = if snippet.contains("comptime") {
+                            let dir = std::env::temp_dir().join(format!(
+                                "witchy_doc_{}_{}_{}", std::process::id(),
+                                file.file_stem().and_then(|stem| stem.to_str()).unwrap_or("doc"), idx + 1,
+                            ));
+                            std::fs::create_dir_all(&dir).expect("create doc block directory");
+                            let path = dir.join("main.witchy");
+                            std::fs::write(&path, &snippet).expect("write doc block");
+                            let checked = crate::source::link_file_checked(path.to_str().expect("utf-8 path"))
+                                .map(|(checked, _)| checked)
+                                .unwrap_or_else(|e| panic!("{context} fails to link or type-check: {e}"));
+                            let _ = std::fs::remove_dir_all(&dir);
+                            checked
+                        } else {
+                            witchy::resolve_std_only_checked(&snippet)
+                                .unwrap_or_else(|e| panic!("{context} fails to link or type-check: {e}"))
+                        };
                         let linked = checked.module();
 
                         let has_main = linked
@@ -640,31 +658,18 @@
                                 }
                             })
                             .collect();
+                        // Admitted Wasm is the production runtime and the one executable
+                        // reference for documented behavior (RFC-0167); the frozen source
+                        // interpreter is not acceptance evidence. The pinned `output`
+                        // comes from the admitted run.
                         let interpreted = if runnable || parity_runnable {
-                            Some(
-                                interpreter::run_checked_module(
-                                    &checked,
-                                    std::path::Path::new("."),
-                                    Vec::new(),
-                                )
-                                .unwrap_or_else(|e| {
-                                    panic!("{context} fails on the interpreter: {e}")
-                                }),
-                            )
+                            let artifact = codegen::compile_checked_module_artifact(&checked)
+                                .expect_lowered(&format!("{context} compiles to WASM"));
+                            Some(crate::run_admitted_artifact(&artifact)
+                                .unwrap_or_else(|e| panic!("{context} fails on WASM: {e}")))
                         } else {
                             None
                         };
-                        if parity_runnable {
-                            let artifact = codegen::compile_checked_module_artifact(&checked)
-                                .expect_lowered(&format!("{context} compiles to WASM"));
-                            let compiled = crate::run_admitted_artifact(&artifact)
-                                .unwrap_or_else(|e| panic!("{context} fails on WASM: {e}"));
-                            assert_eq!(
-                                interpreted.as_ref().expect("parity examples run"),
-                                &compiled,
-                                "{context}: the backends DIVERGE"
-                            );
-                        }
                         let output = if runnable { interpreted.unwrap() } else { Vec::new() };
                         file_entries.push(serde_json::json!({
                             "file": file.display().to_string(),

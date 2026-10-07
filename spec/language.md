@@ -1266,12 +1266,12 @@ A view is a snapshot value. Taking a view from a `var` does not freeze that
 binding and does not create a mutable alias. In normal mode a later assignment, field/index update, or `var` call uses copy-on-write when necessary, preserving the root held by existing views. In opt mode a `var unique List(Int)` call after a view of the argument root is refused if preserving the view would need a hidden copy:
 
 ```witchy
-fn main() -> Int:
+fn main(console: Console):
     var values = [7]
     let first = &values[0]
     values.push(9)
     let snapshot_value = *first
-    snapshot_value
+    console.print("${snapshot_value}")
 ```
 
 This returns `7`. Normal and opt mode have the same observable behavior. Opt
