@@ -500,15 +500,10 @@ pub(super) fn emit_narrow_size(
     destination: ValueId,
     value: ValueId,
 ) -> Result<(), EncodeError> {
-    emit_get(body, layout, function.id, value)?;
-    body.instruction(&wasm_encoder::Instruction::I64Const(0));
-    body.instruction(&wasm_encoder::Instruction::I64LtS);
-    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
-    body.instruction(&wasm_encoder::Instruction::Unreachable);
-    body.instruction(&wasm_encoder::Instruction::End);
+    // One unsigned comparison: a negative Int is above u32::MAX as a u64.
     emit_get(body, layout, function.id, value)?;
     body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(u32::MAX)));
-    body.instruction(&wasm_encoder::Instruction::I64GtS);
+    body.instruction(&wasm_encoder::Instruction::I64GtU);
     body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
     body.instruction(&wasm_encoder::Instruction::Unreachable);
     body.instruction(&wasm_encoder::Instruction::End);

@@ -1458,16 +1458,8 @@ pub(super) fn expected_block_operations_plan(
             Operation::NarrowSize { destination, value } => {
                 push_get(&mut plan, &layout, *value)?;
                 plan.extend([
-                    PlanToken::I64Const(0),
-                    PlanToken::I64LtS,
-                    PlanToken::If("Empty".to_owned()),
-                    PlanToken::Unreachable,
-                    PlanToken::End,
-                ]);
-                push_get(&mut plan, &layout, *value)?;
-                plan.extend([
                     PlanToken::I64Const(i64::from(u32::MAX)),
-                    PlanToken::I64GtS,
+                    PlanToken::I64GtU,
                     PlanToken::If("Empty".to_owned()),
                     PlanToken::Unreachable,
                     PlanToken::End,
