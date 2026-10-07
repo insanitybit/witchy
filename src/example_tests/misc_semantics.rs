@@ -217,3 +217,41 @@ fn main(console: Console):
 "#;
         assert_eq!(run_on_wasm(src), vec!["2 [1, 2, 3] [10, 20, 30, 4] 105 20 12 outer"]);
     }
+
+    /// `break` and `continue` carry a loop's `var`, not a body `let` that
+    /// shadows it: the shadow ends with the body.
+    #[test]
+    fn loop_edges_carry_the_var_a_body_let_shadows() {
+        let src = r#"fn continued() -> Int:
+    var n = 0
+    while n < 5:
+        n = n + 1
+        let n = 100
+        let _ = n
+        continue
+    n
+
+fn broken() -> Int:
+    var n = 0
+    while true:
+        n = n + 1
+        if n == 3:
+            let n = 100
+            let _ = n
+            break
+    n
+
+fn lists() -> String:
+    var xs = [0]
+    for i in [1, 2, 3]:
+        xs.push(i)
+        let xs = [9, 9, 9, 9, 9]
+        if xs.length() > i:
+            continue
+    "${xs}"
+
+fn main(console: Console):
+    console.print("${continued()} ${broken()} ${lists()}")
+"#;
+        assert_eq!(run_on_wasm(src), vec!["5 3 [0, 1, 2, 3]"]);
+    }

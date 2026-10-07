@@ -4587,6 +4587,9 @@ struct LoopContext {
     exit: BlockId,
     names: Vec<String>,
     list_names: Vec<String>,
+    /// Lexical scopes open outside the body. A `break` or `continue` carries
+    /// each name's binding at this depth, not a body `let` shadowing it.
+    scope_depth: usize,
     advance: LoopAdvance,
     /// A counted cursor below an invariant list's observed length. SafeWIR
     /// still checks every element load against the retained count.
@@ -9111,13 +9114,27 @@ impl FunctionLowerer<'_> {
     /// block: every loop-state binding's current value, then each tracked
     /// list's split count/capacity lanes.
     fn loop_edge_arguments(&mut self, names: &[String], list_names: &[String]) -> Result<Vec<ValueId>, CanonicalLoweringError> {
+        self.loop_edge_arguments_at(names, list_names, self.binding_scopes.len())
+    }
+
+    /// The binding `name` had when `depth` scopes were open: the entry saved
+    /// by the outermost deeper scope that shadows it, else the current one.
+    fn binding_at_depth(&self, name: &str, depth: usize) -> Option<ValueId> {
+        match self.binding_scopes[depth..].iter().find_map(|scope| scope.get(name)) {
+            Some((previous, _)) => *previous,
+            None => self.bindings.get(name).copied(),
+        }
+    }
+
+    fn loop_edge_arguments_at(&mut self, names: &[String], list_names: &[String], depth: usize) -> Result<Vec<ValueId>, CanonicalLoweringError> {
         let mut arguments = names
             .iter()
-            .map(|name| self.bindings.get(name).copied().ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone())))
+            .map(|name| self.binding_at_depth(name, depth).ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone())))
             .collect::<Result<Vec<_>, _>>()?;
         let string_layout = self.string_layout_id().ok();
         for name in list_names {
-            let object = self.bindings[name];
+            let object = self.binding_at_depth(name, depth)
+                .ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone()))?;
             // Nested control flow can invalidate an outer lane's cached
             // extent without changing its current token. An invariant String
             // retains its dominating root instead of receiving a loop phi, so
@@ -9147,12 +9164,12 @@ impl FunctionLowerer<'_> {
         let Some(context) = self.loop_contexts.last() else {
             return Err(CanonicalLoweringError::UnsupportedStatement("break outside a loop"));
         };
-        let (exit, names, list_names, size_counter) = (context.exit, context.names.clone(), context.list_names.clone(), context.size_counter);
+        let (exit, names, list_names, size_counter, depth) = (context.exit, context.names.clone(), context.list_names.clone(), context.size_counter, context.scope_depth);
         let counter = match context.advance {
             LoopAdvance::IntCounter(counter) => Some(counter),
             _ => None,
         };
-        let mut arguments = self.loop_edge_arguments(&names, &list_names)?;
+        let mut arguments = self.loop_edge_arguments_at(&names, &list_names, depth)?;
         arguments.extend(counter);
         arguments.extend(size_counter);
         self.finish_current(Terminator::Branch { target: exit, arguments })
@@ -9164,7 +9181,7 @@ impl FunctionLowerer<'_> {
         let Some(context) = self.loop_contexts.last() else {
             return Err(CanonicalLoweringError::UnsupportedStatement("continue outside a loop"));
         };
-        let (header, names, list_names, size_counter) = (context.header, context.names.clone(), context.list_names.clone(), context.size_counter);
+        let (header, names, list_names, size_counter, depth) = (context.header, context.names.clone(), context.list_names.clone(), context.size_counter, context.scope_depth);
         let advance = match context.advance {
             LoopAdvance::Condition => None,
             LoopAdvance::ListCursor(cursor) => {
@@ -9176,7 +9193,7 @@ impl FunctionLowerer<'_> {
                 Some(self.push_arithmetic(ValueType::Int, ArithmeticOperator::Add, counter, one, OverflowBehavior::Wrap)?)
             }
         };
-        let mut arguments = self.loop_edge_arguments(&names, &list_names)?;
+        let mut arguments = self.loop_edge_arguments_at(&names, &list_names, depth)?;
         arguments.extend(advance);
         if let Some(size_counter) = size_counter {
             let one = self.push_const_size(1)?;
@@ -9324,6 +9341,7 @@ impl FunctionLowerer<'_> {
             self.bindings.insert(name, bound);
         }
         self.loop_contexts.push(LoopContext {
+            scope_depth: self.binding_scopes.len(),
             header,
             exit,
             names: names.clone(),
@@ -9639,6 +9657,7 @@ impl FunctionLowerer<'_> {
             metadata_index += 2;
         }
         self.loop_contexts.push(LoopContext {
+            scope_depth: self.binding_scopes.len(),
             header,
             exit,
             names: names.clone(),
@@ -9940,6 +9959,7 @@ impl FunctionLowerer<'_> {
         let body_counter = body_values[body_values.len() - 1 - usize::from(bounded_list_index.is_some())];
         let size_counter = bounded_list_index.as_ref().map(|_| *body_values.last().expect("size lane"));
         self.loop_contexts.push(LoopContext {
+            scope_depth: self.binding_scopes.len(),
             header,
             exit,
             names: names.clone(),
@@ -10284,6 +10304,7 @@ impl FunctionLowerer<'_> {
         };
         self.ensure_string_extent(element)?;
         self.loop_contexts.push(LoopContext {
+            scope_depth: self.binding_scopes.len(),
             header,
             exit,
             names: names.clone(),
