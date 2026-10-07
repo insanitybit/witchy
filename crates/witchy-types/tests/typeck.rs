@@ -2277,3 +2277,5 @@ mod expression_operand_specialization;
 
 #[path = "typeck/checked_channel_send.rs"]
 mod checked_channel_send;
+#[path = "typeck/checked_channel_select.rs"]
+mod checked_channel_select;

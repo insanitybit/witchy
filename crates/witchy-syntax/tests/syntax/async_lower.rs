@@ -186,3 +186,59 @@ fn producer_frames_lower_range_prefix_locals() {
         assert!(text.contains("task.__producer_frame"), "{text}");
     }
 }
+
+#[test]
+fn select_lane_frames_bind_awaited_result_and_preserve_operand() {
+    struct Reset;
+    impl Drop for Reset { fn drop(&mut self) { witchy_syntax::opt::set_for_tests(None); } }
+    let _reset = Reset;
+    let source = "async fn consume():\n    let (tx, a) = chan.channel(4).await\n    let (other, b) = chan.channel(4).await\n    var count: Int = 0\n    while count < 3:\n        let selected = chan.select(a, b).await\n        let _ = selected\n        count = count + 1\n    ()\n";
+    witchy_syntax::opt::set_for_tests(Some(witchy_syntax::opt::OptSet::all()));
+    let module = lower_module(witchy_syntax::parser::parse_module(source).expect("parse select loop"))
+        .expect("lower select loop");
+    let module = witchy_syntax::records::lower(module).expect("lower records").into_module();
+    let mut factory = 0;
+    let mut preparation = 0;
+    let mut original = 0;
+    for item in &module.items {
+        let witchy_syntax::ast::Item::Function(function) = item else { continue };
+        witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
+            if let witchy_syntax::ast::Expr::Call { name, args } = expression {
+                preparation += usize::from(name == "task.__prepare_select");
+                original += usize::from(name == "chan.select");
+                if name == "chan.__select2_lane_frame" {
+                    factory += 1;
+                    let [_, _, _, _, witchy_syntax::ast::Expr::Lambda { params, .. }, _] = args.as_slice()
+                        else { panic!("exact typed select factory arguments") };
+                    assert_eq!(params.len(), 3);
+                    assert_eq!(params[0].name, "selected");
+                    assert_eq!(params[0].convention, witchy_syntax::ast::Convention::Own);
+                    assert_eq!(params[2].convention, witchy_syntax::ast::Convention::Var);
+                }
+            }
+            Ok::<_, ()>(())
+        }).unwrap();
+    }
+    assert_eq!((factory, preparation, original), (1, 1, 1));
+    assert!(module.items.iter().any(|item| matches!(item,
+        witchy_syntax::ast::Item::Function(function)
+            if witchy_syntax::suspension::source_suspension(function) == Some(2)
+            && function.params.iter().any(|parameter| parameter.name == "selected"))));
+}
+
+#[test]
+fn select_lane_frames_keep_prefix_endpoint_bindings_in_scope() {
+    struct Reset;
+    impl Drop for Reset { fn drop(&mut self) { witchy_syntax::opt::set_for_tests(None); } }
+    let _reset = Reset;
+    witchy_syntax::opt::set_for_tests(Some(witchy_syntax::opt::OptSet::all()));
+    for prefix in ["let target = a", "let a = b", "let (a, unused) = (b, 0)"] {
+        let first = if prefix == "let target = a" { "target" } else { "a" };
+        let source = format!("from chan import Receiver\n\nasync fn consume(a: Receiver(Int), b: Receiver(Int)):\n    var count: Int = 0\n    while count < 2:\n        {prefix}\n        let selected = chan.select({first}, b).await\n        let _ = selected\n        count = count + 1\n    ()\n");
+        let module = lower_module(witchy_syntax::parser::parse_module(&source).expect("parse endpoint scope"))
+            .expect("ordinary endpoint lowering");
+        let text = format!("{module:?}");
+        assert!(!text.contains("chan.__select2_lane_frame"), "{prefix}: {text}");
+        assert!(text.contains("chan.select"));
+    }
+}

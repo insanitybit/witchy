@@ -1545,12 +1545,9 @@ impl<'a> Ctx<'a> {
         body: &Block,
         cont: Continuation<'_>,
     ) -> Result<Expr, String> {
-        if let Some(frame_loop) = self.try_lower_send_frame_loop(cond, body, cont)? {
+        if let Some(frame_loop) = self.try_lower_channel_frame_loop(cond, body, cont)? {
             return Ok(frame_loop);
         }
-        // The select-frame rewrite has no checked source-task operand binding.
-        // Keep this loop on named segments until that optional path can carry
-        // the same proof as ordinary awaits.
         if block_contains_return(body) {
             // See `lower_for_await`: normal exit and early return must share the
             // enclosing async function's result type.

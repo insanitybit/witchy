@@ -33,6 +33,9 @@ mod scalar_callback;
 #[path = "canonical_send_preparation.rs"]
 mod send_preparation;
 
+#[path = "canonical_select_preparation.rs"]
+mod select_preparation;
+
 #[path = "canonical_abort.rs"]
 mod abort;
 
@@ -13010,6 +13013,9 @@ impl FunctionLowerer<'_> {
                 self.lower_render(argument)
             }
             Expr::Call { name, args } => {
+                if let Some(prepared) = self.lower_checked_select_preparation(expression, args)? {
+                    return Ok(prepared);
+                }
                 if let Some(prepared) = self.lower_checked_send_preparation(expression, args)? {
                     return Ok(prepared);
                 }

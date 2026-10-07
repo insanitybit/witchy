@@ -160,9 +160,15 @@ pub struct CanonicalCheckedSource {
     final_task_behaviors: BTreeMap<u32, TaskBehaviorContract>,
     deferred_task_role: Option<DeferredTaskRole>,
     send_preparations: BTreeMap<usize, crate::checked_channel_send::CheckedSendPreparation>,
+    select_preparations: BTreeMap<usize, crate::checked_channel_select::CheckedSelectPreparation>,
 }
 
 impl CanonicalCheckedSource {
+    pub fn checked_select_preparation(&self, expression: &witchy_syntax::ast::Expr)
+        -> Option<&crate::checked_channel_select::CheckedSelectPreparation>
+    {
+        self.select_preparations.get(&(expression as *const _ as usize))
+    }
     pub fn checked_send_preparation(&self, expression: &witchy_syntax::ast::Expr)
         -> Option<&crate::checked_channel_send::CheckedSendPreparation>
     {
@@ -1229,9 +1235,13 @@ fn bind_task_await_proofs(
                 marked_operands.insert(expression as *const _ as usize, proof);
             }
             let witchy_syntax::ast::Expr::Call { name, args } = expression else { return Ok(()) };
-            if crate::suspension_carrier::call_family(name, "task.__producer_frame") {
+            if crate::suspension_carrier::call_family(name, "task.__producer_frame")
+                || crate::suspension_carrier::call_family(name, "chan.__select2_lane_frame")
+            {
+                let select = crate::suspension_carrier::call_family(name, "chan.__select2_lane_frame");
+                let callbacks = if select { args.get(2..).unwrap_or(&[]) } else { args.as_slice() };
                 let [_, witchy_syntax::ast::Expr::Lambda { body: prepare, .. },
-                    witchy_syntax::ast::Expr::Lambda { body: resume, .. }, _] = args.as_slice() else {
+                    witchy_syntax::ast::Expr::Lambda { body: resume, .. }, _] = callbacks else {
                     return Err(refuse("compiler producer frame lacks exact prepare/resume callbacks".into()));
                 };
                 let [witchy_syntax::ast::Stmt::Expr(witchy_syntax::ast::Expr::Call { name: target, .. })]
@@ -1243,7 +1253,7 @@ fn bind_task_await_proofs(
                 let mut prepared = Vec::new();
                 witchy_syntax::ast::visit::visit_block(prepare, &mut |expression| {
                     if let witchy_syntax::ast::Expr::Call { name, args } = expression
-                        && crate::suspension_carrier::call_family(name, "task.__prepare_send")
+                        && crate::suspension_carrier::call_family(name, if select { "task.__prepare_select" } else { "task.__prepare_send" })
                     {
                         let [task] = args.as_slice() else {
                             return Err(refuse("compiler send preparation lacks exact task operand".into()));
@@ -1255,7 +1265,7 @@ fn bind_task_await_proofs(
                             = block.stmts.last() else {
                             return Err(refuse("compiler send preparation does not contain a direct send".into()));
                         };
-                        if !crate::suspension_carrier::call_family(name, "chan.send") || args.len() != 2 {
+                        if !crate::suspension_carrier::call_family(name, if select { "chan.select" } else { "chan.send" }) || args.len() != 2 {
                             return Err(refuse("compiler send preparation does not contain a direct send".into()));
                         }
                         prepared.push(task as *const _ as usize);
@@ -1490,10 +1500,14 @@ fn attach_canonical_source(
         final_task_behaviors,
         deferred_task_role,
         send_preparations: BTreeMap::new(),
+        select_preparations: BTreeMap::new(),
     });
     let send_preparations = crate::checked_channel_send::bind_send_preparations(&checked)
         .map_err(|message| PipelineError::Type(TypeError { message }))?;
     checked.canonical_source.as_mut().expect("canonical source was installed").send_preparations = send_preparations;
+    let select_preparations = crate::checked_channel_select::bind_select_preparations(&checked)
+        .map_err(|message| PipelineError::Type(TypeError { message }))?;
+    checked.canonical_source.as_mut().expect("canonical source was installed").select_preparations = select_preparations;
     Ok(checked)
 }
 
