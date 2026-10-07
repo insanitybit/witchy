@@ -812,11 +812,35 @@ fi
 run_dtest_partition() {
     local report="$1"
     shift
+    # Dtest reads each freshly written JUnit report before the next partition
+    # can replace it, then stores actual test identities beside its selection.
+    # This uses Nextest's existing report configuration and adds no discovery
+    # pass. Pure SafeWIR gates use their isolated target directory.
+    local junit_target_dir="$target_dir"
+    local command_arg
+    for command_arg in "$@"; do
+        if [ "$command_arg" = "CARGO_TARGET_DIR=${target_dir}-pure" ]; then
+            junit_target_dir="${target_dir}-pure"
+            break
+        fi
+    done
+    local junit_report="${junit_target_dir}/nextest/${NEXTEST_PROFILE:-default}/junit.xml"
+    local -a dtest_invocation=("$@")
+    local -a with_junit_report=()
+    local report_arg_added=0
+    for command_arg in "${dtest_invocation[@]}"; do
+        if [ "$command_arg" = "--" ] && [ "$report_arg_added" -eq 0 ]; then
+            with_junit_report+=(--junit-report "$junit_report")
+            report_arg_added=1
+        fi
+        with_junit_report+=("$command_arg")
+    done
+    [ "$report_arg_added" -eq 0 ] || dtest_invocation=("${with_junit_report[@]}")
     dtest_fell_back=0
     rm -f "$report"
     local dtest_status=0 selected_tests="" dtest_output
     dtest_output="$(mktemp)"
-    "$@" >"$dtest_output" 2>&1 || dtest_status=$?
+    "${dtest_invocation[@]}" >"$dtest_output" 2>&1 || dtest_status=$?
     cat "$dtest_output"
     # dtest wraps nextest's empty-selection exit 4 in its own exit code.
     # Require both diagnostics so an ordinary test failure remains red.

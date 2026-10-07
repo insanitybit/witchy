@@ -172,6 +172,8 @@ gate_dtest_elapsed_ms=""
 gate_dtest_changed_files=""
 gate_dtest_changed_definitions=""
 gate_dtest_selected_tests=""
+gate_dtest_executed_tests=""
+gate_dtest_selected_not_observed_tests=""
 gate_dtest_index_ms=""
 gate_dtest_index_load_ms=""
 gate_dtest_index_git_ms=""
@@ -609,6 +611,8 @@ record_attempt() { # event branch start prepared locked gate-start gate-end fini
     [ -n "${gate_dtest_changed_files:-}" ] && selection+=(dtest_changed_files "$gate_dtest_changed_files")
     [ -n "${gate_dtest_changed_definitions:-}" ] && selection+=(dtest_changed_definitions "$gate_dtest_changed_definitions")
     [ -n "${gate_dtest_selected_tests:-}" ] && selection+=(dtest_selected_tests "$gate_dtest_selected_tests")
+    [ -n "${gate_dtest_executed_tests:-}" ] && selection+=(dtest_executed_tests "$gate_dtest_executed_tests")
+    [ -n "${gate_dtest_selected_not_observed_tests:-}" ] && selection+=(dtest_selected_not_observed_tests "$gate_dtest_selected_not_observed_tests")
     [ -n "${gate_dtest_index_ms:-}" ] && selection+=(dtest_index_ms "$gate_dtest_index_ms")
     [ -n "${gate_dtest_index_load_ms:-}" ] && selection+=(dtest_index_load_ms "$gate_dtest_index_load_ms")
     [ -n "${gate_dtest_index_git_ms:-}" ] && selection+=(dtest_index_git_ms "$gate_dtest_index_git_ms")
@@ -2780,6 +2784,8 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
     gate_dtest_changed_files=""
     gate_dtest_changed_definitions=""
     gate_dtest_selected_tests=""
+    gate_dtest_executed_tests=""
+    gate_dtest_selected_not_observed_tests=""
     gate_dtest_index_ms=""
     gate_dtest_index_load_ms=""
     gate_dtest_index_git_ms=""
@@ -3423,7 +3429,12 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
                    .timings.index.index_overlay_entries,
                    .timings.index.index_overlay_compacted,
                    .run.target_narrowed, .run.exact_filter,
-                   .run.filter_bytes, .run.required_filter_bytes, .run.commands]
+                   .run.filter_bytes, .run.required_filter_bytes, .run.commands,
+                   (if .execution.test_identity_source == "junit"
+                    then (.execution.executed_tests|length) else "" end),
+                   (if .execution.test_identity_source == "junit"
+                        and (.execution.selected_not_observed_tests|type) == "number"
+                    then .execution.selected_not_observed_tests else "" end)]
                 | map(if . == null then "" else tostring end) | join("\u001f")
             ' "$gate_dtest_report" 2>/dev/null)"; then
             IFS=$'\x1f' read -r gate_dtest_elapsed_ms gate_dtest_changed_files \
@@ -3443,7 +3454,26 @@ process_one() { # process_one <queue-file>; returns 0 if the file was consumed
                 gate_dtest_index_overlay_entries gate_dtest_index_overlay_compacted \
                 gate_dtest_target_narrowed gate_dtest_exact_filter \
                 gate_dtest_filter_bytes gate_dtest_required_filter_bytes \
-                gate_dtest_commands <<<"$dtest_values"
+                gate_dtest_commands gate_dtest_executed_tests \
+                gate_dtest_selected_not_observed_tests <<<"$dtest_values"
+            local -a dtest_report_files=("$gate_dtest_report")
+            local dtest_partition_report="${gate_dtest_report%.json}.partition.json"
+            [ ! -s "$dtest_partition_report" ] \
+                || dtest_report_files+=("$dtest_partition_report")
+            local dtest_summary_values=""
+            if dtest_summary_values="$(jq -sr '
+                map(select(.schema == 1 and (.tests|type) == "array")) as $reports
+                | [($reports|map(.tests|length)|add // 0),
+                   ($reports|map(select(.execution.test_identity_source == "junit")
+                                  | .execution.executed_tests|length)|add // null),
+                   ($reports|map(select(.execution.test_identity_source == "junit")
+                                  | .execution.selected_not_observed_tests)|add // null)]
+                | map(if . == null then "" else tostring end) | @tsv
+            ' "${dtest_report_files[@]}" 2>/dev/null)"; then
+                IFS=$'\t' read -r gate_dtest_selected_tests \
+                    gate_dtest_executed_tests gate_dtest_selected_not_observed_tests \
+                    <<<"$dtest_summary_values"
+            fi
             if [ "$gate_dtest_selected_tests" -gt 0 ]; then
                 gate_dtest_status="selected"
             else
