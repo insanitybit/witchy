@@ -350,19 +350,22 @@ pub(super) fn push_projected_address_plan(
     Ok(())
 }
 
-/// The plan of `emit_access_base`: an indexed access's checked address, or a
-/// field or header access's bare base with its offset left for the immediate.
+/// The plan of `emit_access_base`: the base, plus `index * stride` in i32 for
+/// an element, with the offset left for the immediate.
 pub(super) fn push_access_base_plan(
     plan: &mut Vec<PlanToken>,
-    function: &Function,
+    _function: &Function,
     layout: &LocalLayout,
     access: MemoryAccess,
 ) -> Result<u64, CanonicalAdmissionError> {
-    if access.index.is_some() {
-        push_projected_address_plan(plan, function, layout, access)?;
-        return Ok(0);
-    }
     push_get(plan, layout, access.object)?;
+    if let Some(index) = access.index {
+        push_get(plan, layout, index)?;
+        if access.collection.stride != 1 {
+            plan.extend([PlanToken::I32Const(access.collection.stride as i32), PlanToken::I32Mul]);
+        }
+        plan.push(PlanToken::I32Add);
+    }
     Ok(u64::from(access.offset))
 }
 

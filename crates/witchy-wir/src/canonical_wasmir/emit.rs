@@ -154,19 +154,27 @@ pub(super) fn memarg_at(width: u32, offset: u64) -> MemArg {
 /// access needs no overflow check of its own: every address the checked sum
 /// trapped on lies past any wasm32 memory, so the access still traps (an
 /// access ending exactly at byte 2^32 of a full 4 GiB memory, which that
-/// check refused, is in bounds and now succeeds). An indexed access keeps
-/// its checked i64 address and an offset of zero.
+/// check refused, is in bounds and now succeeds).
+///
+/// An element access adds `index * stride` to the base in i32: the checker
+/// admits an element read only below the object's count and a write only
+/// below its capacity, whose whole allocation lies inside memory, so that
+/// sum cannot wrap. The immediate carries the element offset.
 pub(super) fn emit_access_base(
     body: &mut wasm_encoder::Function,
     function: &Function,
     layout: &LocalLayout,
     access: MemoryAccess,
 ) -> Result<u64, EncodeError> {
-    if access.index.is_some() {
-        emit_projected_address(body, function, layout, access)?;
-        return Ok(0);
-    }
     emit_get(body, layout, function.id, access.object)?;
+    if let Some(index) = access.index {
+        emit_get(body, layout, function.id, index)?;
+        if access.collection.stride != 1 {
+            body.instruction(&wasm_encoder::Instruction::I32Const(access.collection.stride as i32));
+            body.instruction(&wasm_encoder::Instruction::I32Mul);
+        }
+        body.instruction(&wasm_encoder::Instruction::I32Add);
+    }
     Ok(u64::from(access.offset))
 }
 
