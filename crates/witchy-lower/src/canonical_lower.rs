@@ -9183,17 +9183,23 @@ impl FunctionLowerer<'_> {
             let object = self.binding_at_depth(name, depth)
                 .ok_or_else(|| CanonicalLoweringError::MissingBinding(name.clone()))?;
             // Nested control flow can invalidate an outer lane's cached
-            // extent without changing its current token. An invariant String
-            // retains its dominating root instead of receiving a loop phi, so
-            // its edge lanes must come from a fresh authenticated header
-            // observation, rather than stale side-table scalar ids.
-            let invariant_string = !names.contains(name)
-                && matches!(self.values[&object], ValueType::Ref(layout) if Some(layout) == string_layout);
-            if invariant_string {
-                self.refresh_disjunctive_string_extent(object)?;
-            } else if self.tracked_lanes(object).is_none() {
-                self.ensure_list_extent(object)?;
-                self.ensure_string_extent(object)?;
+            // extent without changing its current token; it then drops the
+            // cached lanes (`restore_facts`, `invalidate_dynamic_count`). An
+            // invariant String retains its dominating root instead of
+            // receiving a loop phi, so lanes it lost come from a fresh
+            // authenticated header observation. Lanes it still holds are the
+            // ones the header bound, which the checker renames across the
+            // edge with the extent they count: reloading them every iteration
+            // only re-proves an unchanged header.
+            if self.tracked_lanes(object).is_none() {
+                let invariant_string = !names.contains(name)
+                    && matches!(self.values[&object], ValueType::Ref(layout) if Some(layout) == string_layout);
+                if invariant_string {
+                    self.refresh_disjunctive_string_extent(object)?;
+                } else {
+                    self.ensure_list_extent(object)?;
+                    self.ensure_string_extent(object)?;
+                }
             }
             let (count, capacity) = self.tracked_lanes(object).ok_or(
                 CanonicalLoweringError::UnsupportedExpression("loop edge list count state"),

@@ -290,6 +290,38 @@ fn only_proven_branches_fold_before_the_check() {
 }
 
 #[test]
+fn an_invariant_string_is_not_reauthenticated_every_iteration() {
+    use witchy_wir::canonical_safewir::{Operation, Terminator};
+    let lowered = witchy_lower::canonical_pipeline_checks::lowered_candidate(&checked(
+        "import bytes\n\nfn table() -> Bytes:\n    bytes.from_string(\"abcd\")\n\nfn main() -> Int:\n    let t = table()\n    var i = 0\n    var total = 0\n    while i < 1000:\n        total = total + t.at(i % 4)\n        i = i + 1\n    total\n"));
+    let successors = |terminator: &Terminator| match terminator {
+        Terminator::Branch { target, .. } => vec![*target],
+        Terminator::BranchIf { then_target, else_target, .. } => vec![*then_target, *else_target],
+        _ => Vec::new(),
+    };
+    for function in lowered.functions() {
+        let edges: std::collections::BTreeMap<_, _> = function.blocks.iter()
+            .map(|block| (block.id, successors(&block.terminator))).collect();
+        // A block on a cycle reaches itself.
+        let cyclic = |start| {
+            let mut seen = std::collections::BTreeSet::new();
+            let mut pending = edges[&start].clone();
+            while let Some(block) = pending.pop() {
+                if block == start { return true; }
+                if seen.insert(block) { pending.extend(edges[&block].iter().copied()); }
+            }
+            false
+        };
+        for block in &function.blocks {
+            let reauthenticates = block.operations.iter()
+                .any(|operation| matches!(operation, Operation::ReauthenticateRawHeaderExtent { .. }));
+            assert!(!(reauthenticates && cyclic(block.id)),
+                "{:?} reloads an unchanged header inside a loop at {:?}", function.id, block.id);
+        }
+    }
+}
+
+#[test]
 fn exact_narrowing_needs_a_proven_bound() {
     // `get`'s index is bounded only by `bytes.at`'s own check.
     let checked = checked("import bytes\n\nfn get(b: Bytes, i: Int) -> Int:\n    b.at(i)\n\nfn main() -> Int:\n    get(bytes.from_string(\"abc\"), 1)\n");
