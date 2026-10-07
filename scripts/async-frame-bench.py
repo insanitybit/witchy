@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import shutil
 import statistics
 import subprocess
 import time
@@ -28,6 +29,7 @@ def main():
     for name in ["baseline", "candidate", "baseline-std", "candidate-std", "output"]:
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--runs", type=int, default=12)
+    parser.add_argument("--workload", action="append", choices=["packet-1000", "packet-10000", "scalar-1000", "scalar-10000", "select_fanin"])
     args = parser.parse_args()
     if args.runs < 3:
         parser.error("at least three measured pairs are required")
@@ -58,16 +60,19 @@ def main():
         for index in range(2048):
             checksum = (checksum * 257 + index * 2 + offset) % 1000000007
     fixtures.append((select.stem, select, f"count=4096 checksum={checksum} order=ok"))
+    if args.workload:
+        fixtures = [fixture for fixture in fixtures if fixture[0] in args.workload]
     environment = os.environ.copy()
-    for variable in ["WIRDIAG", "WITCHY_CANONICAL_LOWER_DEBUG", "WITCHY_PROFILE", "WITCHY_PERF_MAP"]:
+    for variable in ["WIRDIAG", "WITCHY_CANONICAL_LOWER_DEBUG", "WITCHY_PROFILE", "WITCHY_PERF_MAP", "WITCHY_DEBUG_INFO", "WITCHY_POOL"]:
         environment.pop(variable, None)
     environment["WITCHY_OPT"] = "all"
     environments = {}
     metadata = {"platform": platform.platform(), "machine": platform.machine(), "runs": args.runs,
-        "warmups": 2, "optimization": "all", "std_loading": "release binaries embed std; snapshots record build provenance", "harness_sha256": digest(Path(__file__)), "variants": {}}
+        "warmups": 2, "optimization": "all", "cpu_count": os.cpu_count(), "load_average_start": os.getloadavg(), "native_cache": "cold per process; only the runner-owned Wasmtime cache is cleared", "std_loading": "release binaries embed std; snapshots record build provenance", "harness_sha256": digest(Path(__file__)), "variants": {}}
     for variant, (binary, std) in variants.items():
         cache = output / (variant + "-verdict-cache")
-        environments[variant] = environment | {"WITCHY_SAFEWIR_CHECK_CACHE": str(cache)}
+        cache_home = output / (variant + "-cache-home")
+        environments[variant] = environment | {"WITCHY_SAFEWIR_CHECK_CACHE": str(cache), "XDG_CACHE_HOME": str(cache_home)}
         metadata["variants"][variant] = {"binary": str(binary), "binary_sha256": digest(binary), "std": str(std),
             "std_files": {str(path.relative_to(std)): digest(path) for path in sorted(std.rglob("*.witchy"))}}
     metadata["fixtures"] = {label: digest(path) for label, path, _ in fixtures}
@@ -79,6 +84,10 @@ def main():
             order = ["baseline", "candidate"] if iteration % 2 == 0 else ["candidate", "baseline"]
             for variant in order:
                 prefix = output / f"{label}-{iteration}-{variant}"
+                native_cache = Path(environments[variant]["XDG_CACHE_HOME"]) / "witchy/wasm"
+                if native_cache.exists():
+                    shutil.rmtree(native_cache)
+                native_cache.mkdir(parents=True)
                 start = time.monotonic_ns()
                 run = subprocess.run(["/usr/bin/time", "-lp", str(variants[variant][0]), "sandbox", str(fixture)],
                     cwd=ROOT, env=environments[variant], text=True, capture_output=True, timeout=180)
@@ -91,7 +100,8 @@ def main():
                     raise RuntimeError(f"{label}/{variant}: invalid result: {run.stdout!r}; {run.stderr[-1500:]}")
                 rss = re.search(r"^\s*(\d+)\s+maximum resident set size$", run.stderr, re.M)
                 sample = {"workload": label, "variant": variant, "iteration": iteration, "kernel_ns": int(kernel[0]),
-                    "wall_ns": wall, "rss_bytes": int(rss[1]) if rss else None}
+                    "wall_ns": wall, "rss_bytes": int(rss[1]) if rss else None,
+                    "native_cache_entries_after": sum(path.is_file() for path in native_cache.rglob("*"))}
                 for key, name in [("instructions_retired", "instructions retired"), ("cycles_elapsed", "cycles elapsed"),
                     ("peak_memory_bytes", "peak memory footprint")]:
                     match = re.search(r"^\s*(\d+)\s+" + name + r"$", run.stderr, re.M)
@@ -112,7 +122,7 @@ def main():
         rows.append(row)
         (output / "results.json").write_text(json.dumps({"metadata": metadata, "workloads": rows}, indent=2) + "\n")
         print(label, json.dumps(row["kernel_ns"]), flush=True)
-    report = ["# Async receive frame measurements", "", "Saved release compilers with embedded std; build-source snapshots; all optimizations; warm verdict caches.", "",
+    report = ["# Async receive frame measurements", "", "Saved release compilers with embedded std; build-source snapshots; all optimizations; warm verdict caches; cold native Wasmtime cache on both sides.", "",
         "| Workload | Before ms | After ms | Speedup (95% CI) |", "| --- | ---: | ---: | ---: |"]
     for row in rows:
         kernel = row["kernel_ns"]
@@ -120,6 +130,8 @@ def main():
         report.append(f"| {row['workload']} | {kernel['baseline']['median'] / 1e6:.3f} | {kernel['candidate']['median'] / 1e6:.3f} | {kernel['baseline_over_candidate']:.2f}× ({interval[0]:.2f}–{interval[1]:.2f}) |")
     report.extend(["", "Process wall includes startup, checking, admission, JIT, execution, and the time wrapper; RSS is whole-process peak, not guest allocation bytes.",
         "Raw samples, validated outputs, source hashes, binary hashes, and std hashes are retained beside this report. Timing is not allocation-count evidence.", ""])
+    metadata["load_average_end"] = os.getloadavg()
+    (output / "results.json").write_text(json.dumps({"metadata": metadata, "workloads": rows}, indent=2) + "\n")
     (output / "report.md").write_text("\n".join(report))
 
 

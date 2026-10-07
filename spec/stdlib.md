@@ -4585,7 +4585,6 @@ What a task yields to the executor when stepped. `a` is the task's own result. T
 - `Pull4(Int, Int, Int, Int, fn(Int, Option(__Msg)) -> Task(a))`
 - `Pull2Ready(Int, Int, fn(Int, Option(__Msg)) -> Task(a))`
 - `Pull2Frame(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, Task(()))`
-- `ReceiveFrame(Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(a))`
 - `PullFrameLoop(Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))`
 - `PullReadyFrameLoop(Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))`
 - `Pull2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))`
@@ -4597,6 +4596,7 @@ What a task yields to the executor when stepped. `a` is the task's own result. T
 - `PullAny(List(Int), fn(Option((Int, __Msg))) -> Task(a))`
 - `Wait(Int, fn(()) -> Task(a))`
 - `Cancel(Int, fn(()) -> Task(a))`
+- `ReceiveFrame((Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(a)))`
 
 #### `sealed type Task(a)`
 
@@ -4625,7 +4625,6 @@ A scheduling slot: running, parked on a channel recv/send or on a join, or done.
 - `Wait3(Int, Int, Int, fn(Int, Option(__Msg)) -> Task(()))`
 - `Wait4(Int, Int, Int, Int, fn(Int, Option(__Msg)) -> Task(()))`
 - `Wait2Frame(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, Task(()))`
-- `ReceiveFrameSlot(Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()), Int, Option(__Msg))`
 - `WaitFrameLoop(Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))`
 - `Wait2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))`
 - `Wait3FrameLoop(Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))`
@@ -4633,6 +4632,7 @@ A scheduling slot: running, parked on a channel recv/send or on a join, or done.
 - `WaitAny(List(Int), fn(Option((Int, __Msg))) -> Task(()))`
 - `WaitJoin(Int, fn(()) -> Task(()))`
 - `Ended`
+- `ReceiveFrameSlot(Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()), Int, Option(__Msg))`
 
 #### `type __TypedI64Ring = (List(Int), Int, Int, Int)`
 
