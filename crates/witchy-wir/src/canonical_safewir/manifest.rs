@@ -762,7 +762,7 @@ pub const RFC_KERNEL_CROSSWALK: &[RfcKernelEntry] = &[
     RfcKernelEntry { kernel: RfcKernelId::CloneRange, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::CloneRange], scope: "typed scalar or initialized pointer prefixes" } },
     RfcKernelEntry { kernel: RfcKernelId::UpdateCount, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::UpdateCount], scope: "counted logical length under capacity and initialization facts" } },
     RfcKernelEntry { kernel: RfcKernelId::Guard, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::Guard], scope: "typed false-condition traps and dominating bounds facts" } },
-    RfcKernelEntry { kernel: RfcKernelId::CheckedNarrow, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::NarrowSize], scope: "Int to i32-width Size conversion" } },
+    RfcKernelEntry { kernel: RfcKernelId::CheckedNarrow, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::NarrowSize], scope: "Int to i32-width Size conversion; untested only where the checker proves it fits" } },
     RfcKernelEntry { kernel: RfcKernelId::Call, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::Call], scope: "authenticated direct calls" } },
     RfcKernelEntry { kernel: RfcKernelId::VarCall, disposition: RfcKernelDisposition::ExactAlias { rules: &[CanonicalRuleId::VarCall], scope: "authenticated indirect calls under v1 argument restrictions" } },
     RfcKernelEntry { kernel: RfcKernelId::TailCall, disposition: RfcKernelDisposition::Composite { rules: &[CanonicalRuleId::TailCall, CanonicalRuleId::VarTailCall], scope: "direct and indirect checked proper-tail sites" } },

@@ -77,9 +77,9 @@ fn digest_bytes(domain: &[u8], bytes: &[u8]) -> ModuleDigest {
     ModuleDigest(hasher.finalize().into())
 }
 
-const MODULE_SERIALIZATION_VERSION: u32 = 7;
-const MODULE_DOMAIN: &[u8] = b"witchy/canonical-safewir/module/v7";
-const MODULE_DIGEST_DOMAIN: &[u8] = b"witchy/canonical-safewir/module-sha256/v7";
+const MODULE_SERIALIZATION_VERSION: u32 = 8;
+const MODULE_DOMAIN: &[u8] = b"witchy/canonical-safewir/module/v8";
+const MODULE_DIGEST_DOMAIN: &[u8] = b"witchy/canonical-safewir/module-sha256/v8";
 
 /// Deterministic, tagged serialization for the fields that define a
 /// CanonicalModule's identity. This deliberately does not use `Debug`: a

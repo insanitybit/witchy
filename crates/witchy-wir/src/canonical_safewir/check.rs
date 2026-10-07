@@ -1599,7 +1599,7 @@ fn insert_definition(
     Ok(())
 }
 
-fn operation_destinations(operation: &Operation) -> Vec<ValueId> {
+pub(super) fn operation_destinations(operation: &Operation) -> Vec<ValueId> {
     match operation {
         Operation::ClosureOwner(owner) => owner.destinations(),
         Operation::Dictionary(dictionary) => dictionary.destinations(),

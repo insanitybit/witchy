@@ -274,6 +274,8 @@ pub fn remove_redundant_bounds_guards_before_check(
         // diagnostic; the encoder admits no unreachable block.
         let reachable = reachable_blocks(function);
         function.blocks.retain(|block| reachable.contains(&block.id));
+        let defined = defined_values(function);
+        function.value_types.retain(|value, _| defined.contains(value));
     }
     // A dropped diagnostic may have been the only use of its message.
     let referenced = referenced_static_data(&candidate);
@@ -315,6 +317,14 @@ fn foldable_branches(
     let implied = super::analysis::implied_guards(function, raw_bytes, |point| !removed.contains(&point));
     branches.retain(|point| implied.get(point) == Some(&true));
     branches
+}
+
+/// Every value a block parameter or operation of `function` defines.
+fn defined_values(function: &Function) -> BTreeSet<super::ValueId> {
+    function.blocks.iter().flat_map(|block| {
+        block.parameters.iter().map(|parameter| parameter.value)
+            .chain(block.operations.iter().flat_map(super::check::operation_destinations))
+    }).collect()
 }
 
 fn reachable_blocks(function: &Function) -> BTreeSet<BlockId> {
@@ -414,8 +424,13 @@ fn check_function_relation<'r>(
     if before.id != after.id
         || before.signature != after.signature
         || before.entry != after.entry
-        || before.value_types != after.value_types
     {
+        return Err(RewriteRelationError::FunctionShapeChanged);
+    }
+    // `after` declares exactly `before`'s types for the values it still
+    // defines: a deleted block takes its definitions with it.
+    let defined = defined_values(after);
+    if !before.value_types.iter().filter(|(value, _)| defined.contains(value)).eq(after.value_types.iter()) {
         return Err(RewriteRelationError::FunctionShapeChanged);
     }
     // `after` keeps `before`'s blocks in order, less some that a folded
@@ -460,8 +475,10 @@ fn check_function_relation<'r>(
                 after_index += 1;
                 continue;
             }
-            // A narrowing may become exact; the checker proves it fits.
-            if let (Operation::NarrowSize { destination, value, exact: false },
+            // Before the initial check a narrowing may become exact; that
+            // check proves it fits. A checked pass never flips one.
+            if !reprove_guards
+                && let (Operation::NarrowSize { destination, value, exact: false },
                 Some(Operation::NarrowSize { destination: after_destination, value: after_value, exact: true }))
                 = (operation, after.operations.get(after_index))
                 && destination == after_destination && value == after_value
@@ -527,49 +544,73 @@ pub mod self_checks {
         let named = function.blocks.iter().flat_map(|block| super::super::check::successors(&block.terminator))
             .next().expect("a branch target");
         function.blocks.retain(|block| block.id != named);
+        let defined = defined_values(function);
+        function.value_types.retain(|value, _| defined.contains(value));
         assert_eq!(check_rewrite_relation_between(lowered, &dangling, false),
             Err(RewriteRelationError::BlockShapeChanged), "a block a kept branch names cannot go");
     }
 
-    /// The rewrite marks some narrowing exact. The returned module instead
-    /// folds, unproven, every branch that bounds a narrowed value, and marks
-    /// every narrowing exact: the checker must refuse it.
+    /// The rewrite marks some narrowings exact. The returned module marks
+    /// exactly those, then folds away, unproven, every check of their values
+    /// that only guards a trap: the evidence the checker needs is gone, so it
+    /// must refuse the module.
     pub fn unproven_exact_narrowing(lowered: &CanonicalModule<LoweredCandidate>) -> CanonicalModule<LoweredCandidate> {
         let candidate = remove_redundant_bounds_guards_before_check(lowered, &BTreeSet::new())
             .expect("some guard or narrowing is implied");
-        assert!(candidate.functions.iter().flat_map(|function| &function.blocks)
-            .flat_map(|block| &block.operations)
-            .any(|operation| matches!(operation, Operation::NarrowSize { exact: true, .. })),
-            "a narrowing below a widened Size becomes exact");
+        let flipped: BTreeSet<_> = candidate.functions.iter().flat_map(|function| {
+            function.blocks.iter().flat_map(|block| &block.operations).filter_map(move |operation| match operation {
+                Operation::NarrowSize { destination, exact: true, .. } => Some((function.id, *destination)),
+                _ => None,
+            })
+        }).collect();
+        assert!(!flipped.is_empty(), "a narrowing below a widened Size becomes exact");
         let mut forged = lowered.clone();
+        let mut folded = 0;
         for function in &mut forged.functions {
-            let narrowed: BTreeSet<_> = function.blocks.iter().flat_map(|block| &block.operations)
-                .filter_map(|operation| match operation {
-                    Operation::NarrowSize { value, .. } => Some(*value),
-                    _ => None,
-                }).collect();
+            let id = function.id;
+            let mut narrowed = BTreeSet::new();
+            for operation in function.blocks.iter_mut().flat_map(|block| &mut block.operations) {
+                if let Operation::NarrowSize { destination, value, exact } = operation
+                    && flipped.contains(&(id, *destination))
+                {
+                    *exact = true;
+                    narrowed.insert(*value);
+                }
+            }
             let bounding: BTreeSet<_> = function.blocks.iter().flat_map(|block| &block.operations)
                 .filter_map(|operation| match operation {
                     Operation::Compare { destination, left, .. } if narrowed.contains(left) => Some(*destination),
                     _ => None,
                 }).collect();
-            let traps: BTreeSet<_> = function.blocks.iter()
-                .filter(|block| block.operations.is_empty() && matches!(block.terminator, Terminator::Trap))
-                .map(|block| block.id).collect();
-            for block in &mut function.blocks {
-                for operation in &mut block.operations {
-                    if let Operation::NarrowSize { exact, .. } = operation { *exact = true; }
+            // Blocks from which every path ends in a trap.
+            let mut traps = BTreeSet::new();
+            loop {
+                let before = traps.len();
+                for block in &function.blocks {
+                    let successors = super::super::check::successors(&block.terminator);
+                    if matches!(block.terminator, Terminator::Trap | Terminator::Unreachable)
+                        || (!successors.is_empty() && successors.iter().all(|successor| traps.contains(successor)))
+                    {
+                        traps.insert(block.id);
+                    }
                 }
+                if traps.len() == before { break; }
+            }
+            for block in &mut function.blocks {
                 if let Terminator::BranchIf { condition, then_target, then_arguments, else_target, .. } = &mut block.terminator
                     && bounding.contains(condition) && traps.contains(else_target)
                 {
                     let (target, arguments) = (*then_target, std::mem::take(then_arguments));
                     block.terminator = Terminator::Branch { target, arguments };
+                    folded += 1;
                 }
             }
             let reachable = reachable_blocks(function);
             function.blocks.retain(|block| reachable.contains(&block.id));
+            let defined = defined_values(function);
+            function.value_types.retain(|value, _| defined.contains(value));
         }
+        assert!(folded > 0, "the forge removes some check of an exact narrowing's value");
         let referenced = referenced_static_data(&forged);
         forged.static_data_segments.retain(|segment| referenced.contains(&segment.id()));
         forged

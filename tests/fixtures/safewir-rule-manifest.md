@@ -83,7 +83,7 @@ Opaque-owner operation variants: Construct, Deconstruct, ReadCapability, ReadOwn
 | `CloneRange` | exact scoped alias | `CloneRange` | typed scalar or initialized pointer prefixes |
 | `UpdateCount` | exact scoped alias | `UpdateCount` | counted logical length under capacity and initialization facts |
 | `Guard` | exact scoped alias | `Guard` | typed false-condition traps and dominating bounds facts |
-| `CheckedNarrow` | exact scoped alias | `NarrowSize` | Int to i32-width Size conversion |
+| `CheckedNarrow` | exact scoped alias | `NarrowSize` | Int to i32-width Size conversion; untested only where the checker proves it fits |
 | `Call` | exact scoped alias | `Call` | authenticated direct calls |
 | `VarCall` | exact scoped alias | `VarCall` | authenticated indirect calls under v1 argument restrictions |
 | `TailCall` | composite | `TailCall`, `VarTailCall` | direct and indirect checked proper-tail sites |

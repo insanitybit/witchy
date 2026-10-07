@@ -162,7 +162,8 @@ fn only_proven_branches_fold_before_the_check() {
 
 #[test]
 fn exact_narrowing_needs_a_proven_bound() {
-    let checked = checked("import bytes\n\nfn make(n: Int) -> Int:\n    bytes.repeat(0, n).length()\n\nfn main() -> Int:\n    let b = bytes.from_string(\"abc\")\n    var i = 0\n    var total = 0\n    while i < b.length():\n        total = total + b.at(i)\n        i = i + 1\n    total + make(3)\n");
+    // `get`'s index is bounded only by `bytes.at`'s own check.
+    let checked = checked("import bytes\n\nfn get(b: Bytes, i: Int) -> Int:\n    b.at(i)\n\nfn main() -> Int:\n    get(bytes.from_string(\"abc\"), 1)\n");
     let lowered = witchy_lower::canonical_pipeline_checks::lowered_candidate(&checked);
     let forged = witchy_wir::self_checks::canonical_safewir_optimize::unproven_exact_narrowing(&lowered);
     let source = checked.canonical_source().expect("canonical source");
