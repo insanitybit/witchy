@@ -140,12 +140,27 @@ fn validate_guard_free_first(
     candidate: &CanonicalModule<LoweredCandidate>,
     source: &CanonicalCheckedSource,
 ) -> Option<ValidatedSafeWir> {
-    let optimized = remove_redundant_bounds_guards_before_check(candidate)?;
-    let checked = check_initial_with_witness(optimized, &source.view());
-    if let Err(error) = &checked {
-        if std::env::var_os("WIRDIAG").is_some() { eprintln!("WIRBAIL guard-free-first: {error:?}"); }
-    }
-    let validated = validate_final(checked.ok()?, &source.view());
+    // A rejection names its function: keep that one as lowered and retry, so
+    // one function the checker cannot re-prove without its guards does not
+    // cost every other function its eliminated guards. Unchanged functions
+    // replay their memoized verdicts, so a retry re-checks little.
+    const RETRIES: usize = 4;
+    let mut excluded = std::collections::BTreeSet::new();
+    let checked = loop {
+        let optimized = remove_redundant_bounds_guards_before_check(candidate, &excluded)?;
+        match check_initial_with_witness(optimized, &source.view()) {
+            Ok(checked) => break checked,
+            Err(error) => {
+                if std::env::var_os("WIRDIAG").is_some() { eprintln!("WIRBAIL guard-free-first: {error:?}"); }
+                let witchy_wir::canonical_safewir::InitialWitnessError::Safety(error) = &error else { return None };
+                let function = error.function()?;
+                if excluded.len() == RETRIES || !excluded.insert(function) {
+                    return None;
+                }
+            }
+        }
+    };
+    let validated = validate_final(checked, &source.view());
     if let Err(error) = &validated {
         if std::env::var_os("WIRDIAG").is_some() { eprintln!("WIRBAIL guard-free-first-final: {error:?}"); }
     }

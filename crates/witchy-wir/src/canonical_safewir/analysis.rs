@@ -10,8 +10,8 @@ use std::any::{Any, TypeId};
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::{
-    BlockId, CanonicalModule, Function, FunctionId, GuardKind, InitialValid,
-    Operation, Revision,
+    BlockId, CanonicalModule, ComparisonOperator, Function, FunctionId, GuardKind,
+    InitialValid, Operation, Revision, Terminator, ValueId, ValueType,
 };
 
 /// The point immediately before an operation, or the terminator when
@@ -81,10 +81,9 @@ impl<'module> AnalysisDb<'module> {
     }
 }
 
-/// Whether a bounds guard repeats an earlier bounds guard on the same scalar
-/// SSA comparison in this block. Scalar definitions do not change across calls;
-/// loaded values and comparisons with different definitions remain distinct.
-/// This analysis proposes deletions. The separate rewrite checker verifies them.
+/// Whether a bounds or arithmetic guard is already implied on every path to
+/// it (`implied_guards`). This analysis proposes deletions. The separate
+/// rewrite checker verifies them and the checker re-proves the module.
 pub struct BoundsGuardRedundancy;
 
 impl Analysis for BoundsGuardRedundancy {
@@ -101,27 +100,111 @@ impl Analysis for BoundsGuardRedundancy {
     }
 }
 
-/// [`BoundsGuardRedundancy`]'s facts for one function: each bounds guard,
-/// keyed by its block and operation index, and whether it repeats an earlier
-/// guard of the same comparison. A syntactic fact of the body alone.
+/// [`BoundsGuardRedundancy`]'s facts for one function: each bounds or
+/// arithmetic guard, keyed by its block and operation index, and whether an
+/// earlier guard already implies it on every path. A syntactic fact of the body.
 pub(super) fn redundant_bounds_guards(function: &Function) -> BTreeMap<(BlockId, usize), bool> {
-    let mut facts = BTreeMap::new();
+    implied_guards(function, |_| true)
+}
+
+/// A guard operand: an SSA value, or a `Size` constant compared by value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Operand {
+    Value(ValueId),
+    Constant(u64),
+}
+
+type Relation = (ComparisonOperator, Operand, Operand);
+
+/// Which guards are implied where they stand. A relation between SSA `Size`
+/// values never stops holding once a guard has established it, so a guard
+/// is implied when every path to it passed a guard (or the true edge of a
+/// branch on a `<` comparison) establishing the same relation, a strict one
+/// for `<=`. These are
+/// the facts the memory checker itself carries; it still re-proves the
+/// rewritten body. `contributes` selects which guards establish facts, so the
+/// rewrite checker can ask the same question of the surviving guards alone.
+pub(super) fn implied_guards(
+    function: &Function,
+    contributes: impl Fn((BlockId, usize)) -> bool,
+) -> BTreeMap<(BlockId, usize), bool> {
+    let mut constants = BTreeMap::new();
+    let mut comparisons = BTreeMap::new();
     for block in &function.blocks {
-        let mut comparisons = BTreeMap::new();
-        let mut guarded = BTreeSet::new();
-        for (index, operation) in block.operations.iter().enumerate() {
+        for operation in &block.operations {
             match operation {
+                Operation::ConstSize { destination, value } => { constants.insert(*destination, *value); }
                 Operation::Compare { destination, operator, left, right } => {
                     comparisons.insert(*destination, (*operator, *left, *right));
-                }
-                Operation::Guard { condition, kind: GuardKind::Bounds } => {
-                    let redundant = comparisons.get(condition)
-                        .is_some_and(|comparison| !guarded.insert(*comparison));
-                    facts.insert((block.id, index), redundant);
                 }
                 _ => {}
             }
         }
     }
-    facts
+    let operand = |value: ValueId| constants.get(&value).map_or(Operand::Value(value), |constant| Operand::Constant(*constant));
+    let size = |value: ValueId| function.value_types.get(&value) == Some(&ValueType::Size);
+    let relation = |condition: ValueId, operators: &[ComparisonOperator]| -> Option<Relation> {
+        let (operator, left, right) = *comparisons.get(&condition)?;
+        (operators.contains(&operator) && size(left) && size(right)).then(|| (operator, operand(left), operand(right)))
+    };
+    let guarded = |operation: &Operation| match operation {
+        Operation::Guard { condition, kind: GuardKind::Bounds | GuardKind::Arithmetic } => relation(
+            *condition, &[ComparisonOperator::LessUnsigned, ComparisonOperator::LessEqualUnsigned]),
+        _ => None,
+    };
+    let index: BTreeMap<BlockId, usize> = function.blocks.iter().enumerate().map(|(at, block)| (block.id, at)).collect();
+    // Facts on entry to each block; `None` until some predecessor reaches it.
+    let mut entry: Vec<Option<BTreeSet<Relation>>> = vec![None; function.blocks.len()];
+    let Some(&start) = index.get(&function.entry) else { return BTreeMap::new() };
+    entry[start] = Some(BTreeSet::new());
+    let mut pending = std::collections::VecDeque::from([start]);
+    while let Some(at) = pending.pop_front() {
+        let block = &function.blocks[at];
+        let mut facts = entry[at].clone().expect("a pending block has entry facts");
+        for (position, operation) in block.operations.iter().enumerate() {
+            if let Some(fact) = guarded(operation) && contributes((block.id, position)) {
+                facts.insert(fact);
+            }
+        }
+        let edges: Vec<(BlockId, Option<Relation>)> = match &block.terminator {
+            Terminator::Branch { target, .. } => vec![(*target, None)],
+            Terminator::BranchIf { condition, then_target, else_target, .. } => vec![
+                (*then_target, relation(*condition, &[ComparisonOperator::LessUnsigned])),
+                (*else_target, None),
+            ],
+            _ => Vec::new(),
+        };
+        for (target, edge_fact) in edges {
+            let Some(&target) = index.get(&target) else { continue };
+            let mut outgoing = facts.clone();
+            outgoing.extend(edge_fact);
+            let met = match &entry[target] {
+                None => outgoing,
+                Some(previous) => previous.intersection(&outgoing).copied().collect(),
+            };
+            if entry[target].as_ref() != Some(&met) {
+                entry[target] = Some(met);
+                pending.push_back(target);
+            }
+        }
+    }
+    let mut implied = BTreeMap::new();
+    for (at, block) in function.blocks.iter().enumerate() {
+        let Some(mut facts) = entry[at].clone() else { continue };
+        for (position, operation) in block.operations.iter().enumerate() {
+            let Some(fact) = guarded(operation) else { continue };
+            // Only an established relation counts. A relation true by its
+            // operands alone (`h <= h`, two constants) is still a guard the
+            // checker records, e.g. to reauthenticate a header it bounds.
+            let (operator, left, right) = fact;
+            let holds = facts.contains(&fact)
+                || (operator == ComparisonOperator::LessEqualUnsigned
+                    && facts.contains(&(ComparisonOperator::LessUnsigned, left, right)));
+            implied.insert((block.id, position), holds);
+            if contributes((block.id, position)) {
+                facts.insert(fact);
+            }
+        }
+    }
+    implied
 }

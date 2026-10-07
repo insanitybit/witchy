@@ -144,6 +144,57 @@ pub enum InitialCheckError {
     UnsupportedScalarOperation { function: FunctionId, operation: &'static str },
 }
 
+impl InitialCheckError {
+    /// The function this rejection is about, when it is about one.
+    pub fn function(&self) -> Option<FunctionId> {
+        match self {
+            Self::InvalidExtent { function, .. }
+            | Self::InvalidProjection { function, .. }
+            | Self::MissingBoundsGuard { function, .. }
+            | Self::MissingCapacityGuard { function, .. }
+            | Self::MissingAllocationSizeGuard { function, .. }
+            | Self::InvalidGuard { function, .. }
+            | Self::InvalidOwnership { function, .. }
+            | Self::UnconsumedReference { function, .. }
+            | Self::InvalidAllocationClass { function, .. }
+            | Self::UseAfterConsume { function, .. }
+            | Self::IncompatibleMemoryJoin { function, .. }
+            | Self::MemoryDataflowNonConvergence { function, .. }
+            | Self::UnsupportedMemoryControlFlow { function, .. }
+            | Self::DuplicateBlock { function, .. }
+            | Self::DuplicateValue { function, .. }
+            | Self::MissingBlock { function, .. }
+            | Self::MissingValueType { function, .. }
+            | Self::UndeclaredValue { function, .. }
+            | Self::ValueDoesNotDominateUse { function, .. }
+            | Self::TypeMismatch { function, .. }
+            | Self::UnsupportedMemoryOperation { function, .. }
+            | Self::MissingStaticDataId { function, .. }
+            | Self::StaticDataExtentMismatch { function, .. }
+            | Self::InvalidStaticDataEncoding { function, .. }
+            | Self::PointerBearingStaticData { function, .. }
+            | Self::WritableStaticData { function, .. }
+            | Self::UnsupportedHostCall { function, .. }
+            | Self::UnsupportedExternalCall { function, .. }
+            | Self::MissingImportContract { function, .. }
+            | Self::HostParameterRoleMismatch { function, .. }
+            | Self::HostResultRoleMismatch { function, .. }
+            | Self::HostBufferExtentMismatch { function, .. }
+            | Self::UnsupportedHostBuffer { function, .. }
+            | Self::UnsupportedBorrowArgument { function, .. }
+            | Self::UnsupportedIndirectCall { function, .. }
+            | Self::UnknownCallableContract { function, .. }
+            | Self::UnsupportedInlineAggregateControlFlow { function, .. }
+            | Self::ReachableUnreachable { function, .. }
+            | Self::InvalidInlineAggregateLayout { function, .. }
+            | Self::InvalidClosureSlot { function, .. }
+            | Self::UnsupportedScalarOperation { function, .. }
+                => Some(*function),
+            _ => None,
+        }
+    }
+}
+
 impl fmt::Display for InitialCheckError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "canonical SafeWIR initial validation failed: {self:?}")

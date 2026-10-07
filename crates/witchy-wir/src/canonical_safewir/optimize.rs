@@ -203,7 +203,7 @@ fn rewrite(
                     operation: operation_index,
                 };
                 operation_index += 1;
-                if !matches!(operation, Operation::Guard { kind: GuardKind::Bounds, .. }) {
+                if !matches!(operation, Operation::Guard { kind: GuardKind::Bounds | GuardKind::Arithmetic, .. }) {
                     return true;
                 }
                 analyses.query::<BoundsGuardRedundancy>(point) != Some(&true)
@@ -214,19 +214,22 @@ fn rewrite(
     changed
 }
 
-/// The same-block bounds-guard rewrite on a lowered candidate, before any
-/// check. Nothing here grants authority: the result is an ordinary lowered
-/// candidate that must pass the complete initial check, and the independent
-/// rewrite relation must hold against `lowered`. Checking this module first
-/// spares checking the guarded one whenever it is admitted; a caller that
-/// sees it rejected checks `lowered` instead. `None` when no guard is
-/// redundant or the relation fails.
+/// The implied-guard rewrite on a lowered candidate, before any check.
+/// Nothing here grants authority: the result is an ordinary lowered candidate
+/// that must pass the complete initial check, and the independent rewrite
+/// relation must hold against `lowered`. Checking this module first spares
+/// checking the guarded one whenever it is admitted; a caller that sees one
+/// function rejected retries with that function left `excluded` (as
+/// lowered), and checks `lowered` itself as the last resort. `None` when no
+/// guard is implied or the relation fails.
 pub fn remove_redundant_bounds_guards_before_check(
     lowered: &CanonicalModule<LoweredCandidate>,
+    excluded: &BTreeSet<super::FunctionId>,
 ) -> Option<CanonicalModule<LoweredCandidate>> {
     // Copy the module only once some guard is known to go.
     let redundant = lowered.functions.iter()
-        .map(super::analysis::redundant_bounds_guards)
+        .map(|function| if excluded.contains(&function.id) { BTreeMap::new() }
+            else { super::analysis::redundant_bounds_guards(function) })
         .collect::<Vec<_>>();
     if !redundant.iter().any(|facts| facts.values().any(|&redundant| redundant)) {
         return None;
@@ -316,6 +319,8 @@ fn check_function_relation(
         return Err(RewriteRelationError::FunctionShapeChanged);
     }
     let mut changed = false;
+    let mut removed = BTreeSet::new();
+    let function = before;
     for (before, after) in before.blocks.iter().zip(&after.blocks) {
         if before.id != after.id
             || before.parameters != after.parameters
@@ -324,53 +329,31 @@ fn check_function_relation(
             return Err(RewriteRelationError::BlockShapeChanged);
         }
 
-        let mut comparisons = BTreeMap::new();
-        let mut surviving = BTreeSet::new();
+        // `after` keeps every operation of `before` in order, less some
+        // guards; record which.
         let mut after_index = 0;
-        for operation in &before.operations {
-            if let Operation::Compare {
-                destination,
-                operator,
-                left,
-                right,
-            } = operation
-            {
-                comparisons.insert(*destination, (*operator, *left, *right));
-            }
-
+        for (index, operation) in before.operations.iter().enumerate() {
             if after.operations.get(after_index) == Some(operation) {
-                if let Operation::Guard {
-                    condition,
-                    kind: GuardKind::Bounds,
-                } = operation
-                {
-                    if let Some(key) = comparisons.get(condition).copied() {
-                        surviving.insert(key);
-                    }
-                }
                 after_index += 1;
                 continue;
             }
-
-            let Operation::Guard {
-                condition,
-                kind: GuardKind::Bounds,
-            } = operation
-            else {
+            if !matches!(operation, Operation::Guard { kind: GuardKind::Bounds | GuardKind::Arithmetic, .. }) {
                 return Err(RewriteRelationError::OperationChanged);
-            };
-            let key = comparisons
-                .get(condition)
-                .copied()
-                .ok_or(RewriteRelationError::GuardHasNoLocalComparison)?;
-            if !surviving.contains(&key) {
-                return Err(RewriteRelationError::GuardHasNoEarlierSurvivingMatch);
             }
+            removed.insert((before.id, index));
         }
         if after_index != after.operations.len() {
             return Err(RewriteRelationError::OperationChanged);
         }
         changed |= before.operations.len() != after.operations.len();
+    }
+    // Each removed guard is implied by the guards that remain, not by itself
+    // or another removed guard.
+    if !removed.is_empty() {
+        let implied = super::analysis::implied_guards(function, |point| !removed.contains(&point));
+        if removed.iter().any(|point| implied.get(point) != Some(&true)) {
+            return Err(RewriteRelationError::GuardHasNoEarlierSurvivingMatch);
+        }
     }
     Ok(changed)
 }
