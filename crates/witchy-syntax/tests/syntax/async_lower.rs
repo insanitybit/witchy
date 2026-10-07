@@ -118,3 +118,37 @@ fn typed_receive_frames_keep_nested_escapes_on_the_existing_route() {
         assert_eq!(errors[0], errors[1], "optimization keeps existing escape behavior");
     }
 }
+
+#[test]
+fn producer_frames_keep_exact_send_operand_and_resume_identity() {
+    struct Reset;
+    impl Drop for Reset { fn drop(&mut self) { witchy_syntax::opt::set_for_tests(None); } }
+    let _reset = Reset;
+    let source = "from chan import Sender\n\nasync fn produce(tx: Sender(Int), limit: Int):\n    var i: Int = 0\n    while i < limit:\n        chan.send(tx, i + 1).await\n        i = i + 1\n    ()\n";
+    for enabled in [false, true] {
+        witchy_syntax::opt::set_for_tests(Some(if enabled { witchy_syntax::opt::OptSet::all() }
+            else { witchy_syntax::opt::OptSet::none() }));
+        let module = lower_module(witchy_syntax::parser::parse_module(source).expect("parse producer"))
+            .expect("lower producer");
+        let module = witchy_syntax::records::lower(module).expect("lower records").into_module();
+        if enabled {
+            let mut prepares = 0;
+            let mut sends = 0;
+            for item in &module.items {
+                if let witchy_syntax::ast::Item::Function(function) = item {
+                    witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
+                        if let witchy_syntax::ast::Expr::Call { name, .. } = expression {
+                            prepares += usize::from(name == "task.__prepare_send");
+                            sends += usize::from(name == "chan.send");
+                        }
+                        Ok::<_, ()>(())
+                    }).unwrap();
+                }
+            }
+            assert_eq!(prepares, 1);
+            assert_eq!(sends, 1);
+        }
+        let text = witchy_syntax::format::module(&module, &[]);
+        assert_eq!(text.contains("task.__producer_frame"), enabled, "{text}");
+    }
+}

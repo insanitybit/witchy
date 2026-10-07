@@ -50,6 +50,7 @@ use foldhash::{HashMap, HashSet, HashSetExt as _};
 
 mod hoist;
 mod recv_frame;
+mod send_frame;
 
 /// Nominal identities whose values carry a declared lifetime relation. Async
 /// lowering runs before typeck, so this deliberately records only declarations
@@ -1544,6 +1545,9 @@ impl<'a> Ctx<'a> {
         body: &Block,
         cont: Continuation<'_>,
     ) -> Result<Expr, String> {
+        if let Some(frame_loop) = self.try_lower_send_frame_loop(cond, body, cont)? {
+            return Ok(frame_loop);
+        }
         // The select-frame rewrite has no checked source-task operand binding.
         // Keep this loop on named segments until that optional path can carry
         // the same proof as ordinary awaits.

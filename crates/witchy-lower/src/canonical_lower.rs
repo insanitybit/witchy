@@ -30,6 +30,9 @@ mod quote_holes;
 #[path = "canonical_scalar_callback.rs"]
 mod scalar_callback;
 
+#[path = "canonical_send_preparation.rs"]
+mod send_preparation;
+
 #[path = "canonical_abort.rs"]
 mod abort;
 
@@ -1770,6 +1773,7 @@ if capability_imports.contains("build_out_write_at") {
             &definitions,
             &closure_context,
             None,
+            source,
         );
         functions.push(lowered?);
     }
@@ -1833,6 +1837,7 @@ if capability_imports.contains("build_out_write_at") {
             &definitions,
             &closure_context,
             Some(&ClosureEnvironment { tag: lambda.environment_tag, captures: lambda.captures.clone() }),
+            source,
         )?);
         closure_bindings.push(CandidateClosureBinding::new(lambda.function_id, lambda.witness_index));
     }
@@ -4220,6 +4225,7 @@ fn lower_function(
     definitions: &BTreeMap<String, TypeDef>,
     closures: &ClosureContext,
     environment: Option<&ClosureEnvironment>,
+    canonical_source: &CanonicalCheckedSource,
 ) -> Result<Function, CanonicalLoweringError> {
     let entry_exclusive_reference_params = access_facts
         .declaration(&function.name)
@@ -4244,6 +4250,7 @@ fn lower_function(
         function: function.name.clone(),
         function_id: id,
         source_body: body,
+        canonical_source,
         next_value: 0,
         values: BTreeMap::new(),
         static_data_values: HashSet::new(),
@@ -4981,6 +4988,7 @@ struct ScalarizedRecord {
 }
 
 struct FunctionLowerer<'a> {
+    canonical_source: &'a CanonicalCheckedSource,
     function: String,
     function_id: FunctionId,
     /// Original checked nodes, never cloned: explicit returns in ordinary
@@ -13002,6 +13010,9 @@ impl FunctionLowerer<'_> {
                 self.lower_render(argument)
             }
             Expr::Call { name, args } => {
+                if let Some(prepared) = self.lower_checked_send_preparation(expression, args)? {
+                    return Ok(prepared);
+                }
                 if let Some(value) = self.lower_elided_lambda_call(name, args)? {
                     return Ok(value);
                 }

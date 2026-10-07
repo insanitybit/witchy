@@ -40,6 +40,7 @@ pub mod suspension_carrier;
 pub mod traits;
 pub mod typed_execution;
 pub mod typed_async_lowering;
+pub mod checked_channel_send;
 pub mod std_pruning;
 /// Generated census of std names the compiler spells; public only so the
 /// integration test `std_pruning::tests::pruning_roots_cover_every_compiler_std_literal`

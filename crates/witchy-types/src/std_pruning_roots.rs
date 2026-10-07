@@ -353,6 +353,8 @@ pub const COMPILER_STD_NAMES: &[&str] = &[
     "task.and_then",
     "task.cancel",
     "task.channel_receive_frame",
+    "task.__prepare_send",
+    "task.__producer_frame",
     "task.done",
     "task.for_each",
     "task.join",

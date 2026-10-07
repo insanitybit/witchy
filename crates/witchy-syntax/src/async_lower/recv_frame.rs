@@ -165,7 +165,7 @@ impl Ctx<'_> {
 
 }
 
-fn has_loop_escape(block: &Block) -> bool {
+pub(super) fn has_loop_escape(block: &Block) -> bool {
     if block.stmts.iter().any(|statement| matches!(statement, Stmt::Break | Stmt::Continue)) {
         return true;
     }

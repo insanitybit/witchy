@@ -159,9 +159,15 @@ pub struct CanonicalCheckedSource {
     task_behaviors: BTreeMap<u32, TaskBehaviorContract>,
     final_task_behaviors: BTreeMap<u32, TaskBehaviorContract>,
     deferred_task_role: Option<DeferredTaskRole>,
+    send_preparations: BTreeMap<usize, crate::checked_channel_send::CheckedSendPreparation>,
 }
 
 impl CanonicalCheckedSource {
+    pub fn checked_send_preparation(&self, expression: &witchy_syntax::ast::Expr)
+        -> Option<&crate::checked_channel_send::CheckedSendPreparation>
+    {
+        self.send_preparations.get(&(expression as *const _ as usize))
+    }
     /// The read-only projection SafeWIR and the Wasm emitter consume. This is
     /// the only construction site of [`CanonicalSourceView`].
     pub fn view(&self) -> CanonicalSourceView<'_> {
@@ -1223,6 +1229,48 @@ fn bind_task_await_proofs(
                 marked_operands.insert(expression as *const _ as usize, proof);
             }
             let witchy_syntax::ast::Expr::Call { name, args } = expression else { return Ok(()) };
+            if crate::suspension_carrier::call_family(name, "task.__producer_frame") {
+                let [_, witchy_syntax::ast::Expr::Lambda { body: prepare, .. },
+                    witchy_syntax::ast::Expr::Lambda { body: resume, .. }, _] = args.as_slice() else {
+                    return Err(refuse("compiler producer frame lacks exact prepare/resume callbacks".into()));
+                };
+                let [witchy_syntax::ast::Stmt::Expr(witchy_syntax::ast::Expr::Call { name: target, .. })]
+                    = resume.stmts.as_slice() else {
+                    return Err(refuse("compiler producer frame lacks a named resume state".into()));
+                };
+                let proof = continuation_names.get(target).copied()
+                    .ok_or_else(|| refuse("compiler producer resume lacks checked source await".into()))?;
+                let mut prepared = Vec::new();
+                witchy_syntax::ast::visit::visit_block(prepare, &mut |expression| {
+                    if let witchy_syntax::ast::Expr::Call { name, args } = expression
+                        && crate::suspension_carrier::call_family(name, "task.__prepare_send")
+                    {
+                        let [task] = args.as_slice() else {
+                            return Err(refuse("compiler send preparation lacks exact task operand".into()));
+                        };
+                        let witchy_syntax::ast::Expr::Block(block) = task else {
+                            return Err(refuse("compiler send preparation lacks marked task operand".into()));
+                        };
+                        let Some(witchy_syntax::ast::Stmt::Expr(witchy_syntax::ast::Expr::Call { name, args }))
+                            = block.stmts.last() else {
+                            return Err(refuse("compiler send preparation does not contain a direct send".into()));
+                        };
+                        if !crate::suspension_carrier::call_family(name, "chan.send") || args.len() != 2 {
+                            return Err(refuse("compiler send preparation does not contain a direct send".into()));
+                        }
+                        prepared.push(task as *const _ as usize);
+                    }
+                    Ok(())
+                })?;
+                let [task] = prepared.as_slice() else {
+                    return Err(refuse("compiler producer frame lacks one unique prepared send".into()));
+                };
+                scheduler_operands.push((*task, proof));
+                let count = scheduler_edges.entry(proof).or_default();
+                *count = count.checked_add(1)
+                    .ok_or_else(|| refuse("async scheduler edge count exceeds u32".into()))?;
+                return Ok(());
+            }
             if !crate::suspension_carrier::call_family(name, "task.and_then")
                 && !crate::suspension_carrier::call_family(name, "chan.__select2_map")
             { return Ok(()); }
@@ -1441,7 +1489,11 @@ fn attach_canonical_source(
         task_behaviors,
         final_task_behaviors,
         deferred_task_role,
+        send_preparations: BTreeMap::new(),
     });
+    let send_preparations = crate::checked_channel_send::bind_send_preparations(&checked)
+        .map_err(|message| PipelineError::Type(TypeError { message }))?;
+    checked.canonical_source.as_mut().expect("canonical source was installed").send_preparations = send_preparations;
     Ok(checked)
 }
 

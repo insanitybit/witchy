@@ -2274,3 +2274,6 @@ mod expression_exit_disposition;
 
 #[path = "typeck/expression_operand_specialization.rs"]
 mod expression_operand_specialization;
+
+#[path = "typeck/checked_channel_send.rs"]
+mod checked_channel_send;

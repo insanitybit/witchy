@@ -271,3 +271,5 @@ mod async_receive_frames;
 
 #[path = "misc/async_owner_metrics.rs"]
 mod async_owner_metrics;
+#[path = "misc/async_producer_frames.rs"]
+mod async_producer_frames;
