@@ -1282,6 +1282,7 @@ impl WorkerModule {
 }
 
 pub struct VmState {
+    owner_bridge_counts: Option<std::collections::BTreeMap<&'static str, u64>>,
     compiler_syntax: Option<comptime::SessionState>,
     id: VmId,
     caps: Capabilities,
@@ -1465,6 +1466,9 @@ impl Vm {
         if let Err(error) = self.heap_sweep() {
             self.aborted = true;
             return Err(error);
+        }
+        if let Some(counts) = &self.store.data().owner_bridge_counts {
+            for (recipe, calls) in counts { eprintln!("owner_bridge {recipe} calls={calls}"); }
         }
         if std::env::var_os("WITCHY_REGION_STATS").is_some_and(|v| v == "1") {
             if let Some(bytes) = self.region_copy_bytes() {
@@ -2043,6 +2047,14 @@ impl Vm {
     /// count.
     pub fn gc_heap_capacity_bytes(&self) -> usize {
         self.store.gc_heap_capacity()
+    }
+
+    pub fn enable_owner_bridge_metrics(&mut self) {
+        self.store.data_mut().owner_bridge_counts = Some(Default::default());
+    }
+
+    pub fn owner_bridge_counts(&self) -> Option<&std::collections::BTreeMap<&'static str, u64>> {
+        self.store.data().owner_bridge_counts.as_ref()
     }
 
     /// Everything this VM has printed so far, in order. (Used by tests to
@@ -2900,6 +2912,7 @@ fn vmstate_from_caps(
         .collect::<std::result::Result<_, _>>()
         .map_err(|error| Error::msg(error.message))?;
     Ok(VmState {
+        owner_bridge_counts: std::env::var_os("WITCHY_OWNER_METRICS").filter(|value| value == "1").map(|_| Default::default()),
         compiler_syntax: None,
         id,
         caps: caps.clone(),

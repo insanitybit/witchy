@@ -105,7 +105,18 @@ let mut captures = Vec::new();
         let mut results = if bridge.payload_result() { vec![ValType::ANYREF] } else { bridge.results().iter().map(&wasm_type).collect::<Result<Vec<_>>>()? };
         if bridge.cleanup_result() { results.push(ValType::ANYREF); }
         let signature = FuncType::new(linker.engine(), parameters, results);
+        let metric = match &recipe {
+            R::Construct(_) => "construct", R::ReadCapability(_, _) => "read_capability",
+            R::ReadOwner(_, _) => "read_owner", R::Deconstruct(_) => "deconstruct",
+            R::ReadCallable(_) => "read_callable", R::ReadTag(_) => "read_tag", R::Clone(_) => "clone", R::Drop(_) => "drop",
+            R::CloneEnvironment(_) => "clone_environment", R::NewList(_, _) => "new_list",
+            R::ListGet(_) => "list_get", R::ListLength(_) => "list_length", R::CloneList(_) => "clone_list",
+            R::ListPush(_) => "list_push", R::ListSet(_) => "list_set", R::DropList(_) => "drop_list",
+        };
         linker.func_new(bridge.module(), &bridge.name(), signature, move |mut caller, arguments, results| {
+            if let Some(counts) = &mut caller.data_mut().owner_bridge_counts {
+                *counts.entry(metric).or_default() += 1;
+            }
             let owner = |index: usize| -> Result<Rooted<ExternRef>> {
                 match arguments.get(index) {
                     Some(Val::ExternRef(Some(owner))) => Ok(*owner),

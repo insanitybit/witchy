@@ -250,3 +250,6 @@ mod expression_exit_disposition;
 
 #[path = "misc/async_receive_frames.rs"]
 mod async_receive_frames;
+
+#[path = "misc/async_owner_metrics.rs"]
+mod async_owner_metrics;
