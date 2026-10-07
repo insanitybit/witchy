@@ -160,7 +160,7 @@ impl Ctx<'_> {
         });
         let arguments = vec![src.clone(), Expr::Var(frame), Expr::Var(step), Expr::Var(done)];
         setup.push(Stmt::Expr(if typed_payload {
-            call("chan.recv_typed_frame_loop", arguments)
+            call("chan.__recv_lane_frame_loop", arguments)
         } else {
             call("chan.recv_frame_loop", arguments)
         }));

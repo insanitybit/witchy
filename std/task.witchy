@@ -99,7 +99,8 @@ sealed type Step(a):
     Cancel(Int, fn(()) -> Task(a))
     // Tagged sums reserve every variant’s fields, so keep this payload behind one field.
     // Body and probe phases preserve the ordinary receive’s round boundaries.
-    ReceiveFrame((Int, List(Int), fn(Option(__Msg), Int, var List(Int)) -> Bool, fn(List(Int)) -> Task(a)))
+    ReceiveFrame((Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(a)))
+    ReceiveLaneFrame((Int, List(Int), fn(Option(__Msg), Int, var List(Int)) -> Bool, fn(List(Int)) -> Task(a)))
     ProduceFrame((List(Int), fn(Int, var List(Int)) -> Option((Int, __Msg)), fn(Int, var List(Int)) -> Bool, fn(List(Int)) -> Task(a), Int, __Msg))
 
 // A task communicating via channels, producing an `a`.
@@ -187,6 +188,8 @@ fn and_then_step(own s: Step(a), own k: fn(own a) -> Task(b)) -> Step(b):
         Cancel(target, cont) -> Cancel(target, fn(u): and_then(cont(u), k))
         ReceiveFrame((ch, frame, step, finish)) ->
             ReceiveFrame((ch, frame, step, fn(state: List(Int)) -> Task(b): and_then(finish(state), k)))
+        ReceiveLaneFrame((ch, frame, step, finish)) ->
+            ReceiveLaneFrame((ch, frame, step, fn(state: List(Int)) -> Task(b): and_then(finish(state), k)))
         ProduceFrame((frame, prepare, resume, finish, ch, msg)) ->
             ProduceFrame((frame, prepare, resume, fn(state: List(Int)) -> Task(b): and_then(finish(state), k), ch, msg))
 
@@ -307,9 +310,13 @@ fn __channel_recv_frame_loop(ch: ChannelId, frame: List(Int), step: fn(Option(__
     match ch:
         ChannelId(id) -> Task(fn(): PullReadyFrameLoop(id, frame, step, done_fn))
 
-pub fn channel_receive_frame(ch: ChannelId, frame: List(Int), step: fn(Option(__Msg), Int, var List(Int)) -> Bool, finish: fn(List(Int)) -> Task(a)) -> Task(a):
+pub fn channel_receive_frame(ch: ChannelId, frame: List(Int), step: fn(Option(__Msg), var List(Int)) -> Bool, finish: fn(List(Int)) -> Task(a)) -> Task(a):
     match ch:
         ChannelId(id) -> Task(fn(): ReceiveFrame((id, frame, step, finish)))
+
+pub fn __receive_lane_frame(ch: ChannelId, frame: List(Int), step: fn(Option(__Msg), Int, var List(Int)) -> Bool, finish: fn(List(Int)) -> Task(a)) -> Task(a):
+    match ch:
+        ChannelId(id) -> Task(fn(): ReceiveLaneFrame((id, frame, step, finish)))
 
 pub fn __prepare_send(t: Task(())) -> (Int, __Msg):
     match poll(t):
@@ -319,12 +326,13 @@ pub fn __prepare_send(t: Task(())) -> (Int, __Msg):
             (0, __erase(0))
 
 pub fn __producer_frame(frame: List(Int), prepare: fn(Int, var List(Int)) -> Option((Int, __Msg)), resume: fn(Int, var List(Int)) -> Bool, finish: fn(List(Int)) -> Task(a)) -> Task(a):
-    Task(fn():
+    let start: fn() -> Step(a) = fn():
         var state = frame
         match prepare(0, state):
             Some((ch, msg)) -> ProduceFrame((state, prepare, resume, finish, ch, msg))
             None -> poll(finish(state))
-    )
+
+    Task(start)
 
 pub fn channel_recv_frame_loop(ch: ChannelId, frame: List(Int), step: fn(Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(())) -> Task(()):
     __channel_recv_frame_loop(ch, frame, step, done_fn)
@@ -421,7 +429,8 @@ sealed type Slot:
     WaitAny(List(Int), fn(Option((Int, __Msg))) -> Task(()))
     WaitJoin(Int, fn(()) -> Task(()))
     Ended
-    ReceiveFrameSlot(Int)
+    ReceiveFrameSlot(Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()), Int, Option(__Msg))
+    ReceiveLaneSlot(Int)
     ProduceFrameSlot(Int)
     JoinFrameSlot(Int)
 
@@ -441,7 +450,8 @@ fn is_live(s: Slot) -> Bool:
         Wait4FrameLoop(_, _, _, _, _, _, _) -> true
         WaitAny(_, _) -> true
         WaitJoin(_, _) -> true
-        ReceiveFrameSlot(_) -> true
+        ReceiveFrameSlot(_, _, _, _, _, _) -> true
+        ReceiveLaneSlot(_) -> true
         ProduceFrameSlot(_) -> true
         JoinFrameSlot(_) -> true
 
@@ -461,7 +471,8 @@ fn is_parked(s: Slot) -> Bool:
         WaitJoin(_, _) -> true
         Active(_) -> false
         Ended -> false
-        ReceiveFrameSlot(_) -> true
+        ReceiveFrameSlot(_, _, _, _, phase, _) -> phase == 0
+        ReceiveLaneSlot(_) -> true
         ProduceFrameSlot(_) -> true
         JoinFrameSlot(_) -> true
 
@@ -693,6 +704,7 @@ pub fn run(root: Task(())):
                                 match list.at(receive_finishes, recipe):
                                     Some(finish) -> list.set_at(slots, i, Active(finish(state)))
                                     None -> fail("missing receive completion")
+
                                 list.set_at(frame_kinds, i, 0)
                                 list.set_at(frame_pending, i, None)
                                 list.set_at(receive_steps, recipe, None)
@@ -701,6 +713,7 @@ pub fn run(root: Task(())):
                                 list.set_at(frame_phases, i, 2)
                                 list.set_at(frame_pending, i, None)
                         None -> fail("missing receive activation")
+
                     prog = true
                 else:
                     let (buf, head, count, cap) = list.at(channels, ch)
@@ -725,6 +738,7 @@ pub fn run(root: Task(())):
                                 match list.at(send_finishes, recipe):
                                     Some(finish) -> list.set_at(slots, i, Active(finish(state)))
                                     None -> fail("missing send completion")
+
                                 list.set_at(frame_kinds, i, 0)
                                 list.set_at(frame_pending, i, None)
                                 list.set_at(send_prepares, recipe, None)
@@ -743,6 +757,7 @@ pub fn run(root: Task(())):
                                                 match list.at(send_finishes, recipe):
                                                     Some(finish) -> list.set_at(slots, i, Active(finish(state)))
                                                     None -> fail("missing send completion")
+
                                                 list.set_at(frame_kinds, i, 0)
                                                 list.set_at(frame_pending, i, None)
                                                 list.set_at(send_prepares, recipe, None)
@@ -750,6 +765,7 @@ pub fn run(root: Task(())):
                                                 list.set_at(send_finishes, recipe, None)
                                     None -> fail("missing producer preparation")
                         None -> fail("missing producer resume")
+
                     prog = true
                 else:
                     match list.at(frame_pending, i):
@@ -766,6 +782,14 @@ pub fn run(root: Task(())):
                             else:
                                 list.set_at(frame_phases, i, 3)
                         None -> fail("missing prepared channel message")
+                        // Keep an empty ordinary ring aligned by channel id
+                        // so materialization is a one-slot replacement.
+
+                        // An ordinary operation is the semantic boundary
+                        // for a compiler-owned typed ring. Materialize it
+                        // before proceeding through the exact existing
+                        // erased path, so mixed proven/unproven channel
+                        // uses retain FIFO and blocking behavior.
             else if kind == 3:
                 let target = list.at(frame_channels, i)
                 if !list.at(slot_live, target):
@@ -773,6 +797,7 @@ pub fn run(root: Task(())):
                     match list.at(join_continuations, recipe):
                         Some(cont) -> list.set_at(slots, i, Active(cont(unit())))
                         None -> fail("missing join continuation")
+
                     __rfc0152_wake_claim()
                     list.set_at(frame_kinds, i, 0)
                     list.set_at(join_continuations, recipe, None)
@@ -809,14 +834,6 @@ pub fn run(root: Task(())):
                                 list.set_at(slots, i, Active(cont(tag, Some(msg))))
                                 prog = true
                             None -> unit()
-                            // Keep an empty ordinary ring aligned by channel id
-                            // so materialization is a one-slot replacement.
-
-                            // An ordinary operation is the semantic boundary
-                            // for a compiler-owned typed ring. Materialize it
-                            // before proceeding through the exact existing
-                            // erased path, so mixed proven/unproven channel
-                            // uses retain FIFO and blocking behavior.
                     Wait3(ch0, ch1, ch2, cont) ->
                         match first_message(0, 3, ch0, ch1, ch2, 0, channels):
                             Some((tag, msg)) ->
@@ -1433,6 +1450,17 @@ pub fn run(root: Task(())):
                                 list.set_at(slots, i, Active(cont(unit())))
                                 prog = true
                             ReceiveFrame((ch, frame, step, finish)) ->
+                                materialize_typed_i64_channel(ch, channels, typed_i64_channels)
+                                let (buf, head, count, cap) = list.at(channels, ch)
+                                if count > 0:
+                                    let msg = list.at(buf, head)
+                                    let physcap = list.length(buf)
+                                    list.set_at(channels, ch, (buf, (head + 1) % physcap, count - 1, cap))
+                                    list.set_at(slots, i, ReceiveFrameSlot(ch, frame, step, finish, 1, Some(msg)))
+                                    prog = true
+                                else:
+                                    list.set_at(slots, i, ReceiveFrameSlot(ch, frame, step, finish, 0, None))
+                            ReceiveLaneFrame((ch, frame, step, finish)) ->
                                 let recipe = list.length(receive_steps)
                                 let base = append_frame(frame, frame_lanes)
                                 list.push(receive_steps, Some(step))
@@ -1442,7 +1470,7 @@ pub fn run(root: Task(())):
                                 list.set_at(frame_bases, i, base)
                                 list.set_at(frame_lengths, i, list.length(frame))
                                 list.set_at(frame_recipes, i, recipe)
-                                list.set_at(slots, i, ReceiveFrameSlot(i))
+                                list.set_at(slots, i, ReceiveLaneSlot(i))
                                 materialize_typed_i64_channel(ch, channels, typed_i64_channels)
                                 let (buf, head, count, cap) = list.at(channels, ch)
                                 if count > 0:
@@ -1472,9 +1500,28 @@ pub fn run(root: Task(())):
                                 else:
                                     list.set_at(frame_pending, i, Some(msg))
                                     list.set_at(frame_phases, i, 3)
-                    ReceiveFrameSlot(_) -> fail("receive frame reached ordinary dispatch")
+                    ReceiveFrameSlot(ch, frame, step, finish, phase, pending) ->
+                        if phase == 1:
+                            var state = frame
+                            if step(pending, state):
+                                list.set_at(slots, i, Active(finish(state)))
+                            else:
+                                list.set_at(slots, i, ReceiveFrameSlot(ch, state, step, finish, 2, None))
+                            prog = true
+                        else:
+                            let (buf, head, count, cap) = list.at(channels, ch)
+                            if count > 0:
+                                let msg = list.at(buf, head)
+                                let physcap = list.length(buf)
+                                list.set_at(channels, ch, (buf, (head + 1) % physcap, count - 1, cap))
+                                list.set_at(slots, i, ReceiveFrameSlot(ch, frame, step, finish, 1, Some(msg)))
+                                prog = true
+                            else:
+                                list.set_at(slots, i, ReceiveFrameSlot(ch, frame, step, finish, 0, None))
+                    ReceiveLaneSlot(_) -> fail("receive frame reached ordinary dispatch")
                     ProduceFrameSlot(_) -> fail("producer frame reached ordinary dispatch")
                     JoinFrameSlot(_) -> fail("join frame reached ordinary dispatch")
+
             i = i + 1
         if prog:
             go = live_count > 0
@@ -1545,10 +1592,13 @@ pub fn run(root: Task(())):
                         match list.at(join_continuations, recipe):
                             Some(cont) -> list.set_at(slots, activation, Active(cont(unit())))
                             None -> fail("missing parked join continuation")
+
                         __rfc0152_wake_claim()
                         list.set_at(frame_kinds, activation, 0)
                         list.set_at(join_continuations, recipe, None)
-                    ReceiveFrameSlot(activation) ->
+                    ReceiveFrameSlot(ch, frame, step, finish, _phase, _pending) ->
+                        list.set_at(slots, j, ReceiveFrameSlot(ch, frame, step, finish, 1, None))
+                    ReceiveLaneSlot(activation) ->
                         list.set_at(frame_pending, activation, None)
                         list.set_at(frame_phases, activation, 1)
                     ProduceFrameSlot(activation) ->

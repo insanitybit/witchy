@@ -589,6 +589,8 @@ const PRIVATE_SCHEDULER_SOURCE_BRIDGES: &[&str] = &[
     "task.__channel_recv_i64",
     "task.__channel_select2_map",
     "task.channel_receive_frame",
+    "task.__receive_lane_frame",
+    "chan.__recv_lane_frame_loop",
     "task.__prepare_send",
     "task.__producer_frame",
     "chan.select2_frame_payload",

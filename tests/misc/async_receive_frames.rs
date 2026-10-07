@@ -6,6 +6,45 @@ impl Drop for Reset {
     fn drop(&mut self) { witchy::opt::set_for_tests(None); }
 }
 
+#[test]
+fn public_receive_frame_keeps_its_own_growable_state_and_early_exit() {
+    let _reset = Reset;
+    let source = r#"from chan import Sender
+
+async fn produce(tx: Sender(Int)):
+    chan.send(tx, 7).await
+    chan.send(tx, 8).await
+
+async fn main(console: Console):
+    let (tx, rx) = chan.channel(4).await
+    let initial = [0]
+    let receive = chan.recv_typed_frame_loop(rx, initial,
+        fn(own incoming, var state):
+            match incoming:
+                Some(value) ->
+                    list.push(state, value)
+                    true
+                None -> true
+        , fn(_state): task.done(()))
+    chan.scope([produce(tx), receive]).await
+    let leftover = chan.recv(rx).await
+    console.print("initial ${list.length(initial)}")
+    match leftover:
+        Some(value) -> console.print("remaining ${value}")
+        None -> console.print("missing")
+"#;
+    for options in [OptSet::none(), OptSet::all()] {
+        assert_eq!(run(source, options), ["initial 1", "remaining 8"]);
+    }
+}
+
+#[test]
+fn pooled_receive_frame_bridge_is_private() {
+    let _reset = Reset;
+    let source = "fn main():\n    chan.__recv_lane_frame_loop\n";
+    assert!(witchy::resolve_std_only_checked(source).is_err());
+}
+
 const TRACE: &str = r#"from chan import Receiver, Sender
 
 type Packet:
@@ -243,7 +282,7 @@ fn selects_typed_frame(source: &str) -> bool {
     let mut selected = false;
     witchy_syntax::ast::visit::visit_module_exprs(checked.module(), &mut |expression| {
         if let witchy_syntax::ast::Expr::Call { name, .. } = expression {
-            selected |= name == "chan.recv_typed_frame_loop";
+            selected |= name == "chan.__recv_lane_frame_loop";
         }
         Ok::<_, ()>(())
     }).expect("walk checked calls");

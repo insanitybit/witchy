@@ -76,7 +76,7 @@ fn typed_receive_frames_keep_payload_and_reject_suspending_or_root_state() {
         let module = lower_module(witchy_syntax::parser::parse_module(source).expect("parse receive loop"))
             .expect("lower receive loop");
         let text = format!("{:?}", witchy_syntax::records::lower(module).expect("lower records").into_module());
-        assert_eq!(text.contains("chan.recv_typed_frame_loop"), enabled, "{text}");
+        assert_eq!(text.contains("chan.__recv_lane_frame_loop"), enabled, "{text}");
         if enabled {
             assert!(text.contains("Var(\"packet\")"), "typed payload must enter body: {text}");
         }
@@ -90,7 +90,7 @@ fn typed_receive_frames_keep_payload_and_reject_suspending_or_root_state() {
         let module = lower_module(witchy_syntax::parser::parse_module(&unsupported).expect("parse fallback"))
             .expect("lower fallback");
         let text = format!("{:?}", witchy_syntax::records::lower(module).expect("lower records").into_module());
-        assert!(!text.contains("chan.recv_typed_frame_loop"), "{text}");
+        assert!(!text.contains("chan.__recv_lane_frame_loop"), "{text}");
     }
 }
 
@@ -109,7 +109,7 @@ fn typed_receive_frames_keep_nested_escapes_on_the_existing_route() {
             match lower_module(witchy_syntax::parser::parse_module(&source).expect("parse escape")) {
                 Ok(module) => {
                     let text = format!("{:?}", witchy_syntax::records::lower(module).expect("records").into_module());
-                    assert!(!text.contains("chan.recv_typed_frame_loop"));
+                    assert!(!text.contains("chan.__recv_lane_frame_loop"));
                     errors.push(None);
                 }
                 Err(error) => errors.push(Some(error)),
