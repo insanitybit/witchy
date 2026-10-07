@@ -1729,7 +1729,9 @@ fn lowered_source_cache_key(
     module: &Module,
     view_fns: &HashSet<String>,
 ) -> String {
-    format!("{module_name}\n{module:?}\n{view_fns:?}")
+    let mut view_fns = view_fns.iter().collect::<Vec<_>>();
+    view_fns.sort_unstable();
+    format!("{}\n{module_name}\n{module:?}\n{view_fns:?}", crate::opt::active_schema_key())
 }
 
 /// Preserve a direct source callable identity on the still-async projection.

@@ -215,9 +215,11 @@ fn typed_receive_frame_keeps_scalar_captures_and_nested_pattern_scopes() {
     let _reset = Reset;
     let source = REPLAY.replace("    var total: Int = 0", "    let offset: Int = 10\n    let enabled: Bool = true\n    var total: Int = 0")
         .replace("        total = total + value", "        match Some(value):\n            Some(total) ->\n                let local: Int = total\n                if enabled:\n                    let _ = local + offset\n            None -> ()\n        total = total + value + offset");
-    for options in [OptSet::none(), OptSet::all()] {
+    for options in [OptSet::none(), OptSet::all(), OptSet::none(), OptSet::all()] {
         witchy::opt::set_for_tests(Some(options));
-        assert_eq!(selects_typed_frame(&source), options == OptSet::all());
+        assert_eq!(selects_typed_frame(&source), options == OptSet::all(), "options {options:?}");
+    }
+    for options in [OptSet::none(), OptSet::all()] {
         assert_eq!(run(&source, options), ["sum 23", "sum 0"]);
     }
 }
