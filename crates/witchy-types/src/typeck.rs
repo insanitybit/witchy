@@ -13460,6 +13460,44 @@ fn ty_to_ast_with_unresolved(t: &Ty, unresolved: UnresolvedAst) -> Option<witchy
     })
 }
 
+fn collect_ty_vars(t: &Ty, vars: &mut HashSet<u32>) {
+    match t {
+        Ty::Var(v) => {
+            vars.insert(*v);
+        }
+        Ty::List(e) | Ty::View(e) => collect_ty_vars(e, vars),
+        Ty::Tuple(ts) | Ty::Named(_, ts) | Ty::Dyn(_, ts) => ts.iter().for_each(|t| collect_ty_vars(t, vars)),
+        Ty::Fn(ps, r, _, _, _) => {
+            ps.iter().for_each(|t| collect_ty_vars(t, vars));
+            collect_ty_vars(r, vars);
+        }
+        _ => {}
+    }
+}
+
+/// Replace every variable outside `generic` with unit. A variable that no
+/// declared signature owns and that the whole module left unbound is
+/// unconstrained: no value of the expression can hold one, so any type is
+/// sound and unit is the canonical choice (`size(Empty)`, `f(None)`).
+fn default_unconstrained_vars(t: &Ty, generic: &HashSet<u32>) -> Ty {
+    match t {
+        Ty::Var(v) if !generic.contains(v) => Ty::Unit,
+        Ty::List(e) => Ty::List(Rc::new(default_unconstrained_vars(e, generic))),
+        Ty::View(e) => Ty::View(Rc::new(default_unconstrained_vars(e, generic))),
+        Ty::Tuple(ts) => Ty::Tuple(ts.iter().map(|t| default_unconstrained_vars(t, generic)).collect()),
+        Ty::Named(name, ts) => Ty::Named(name.clone(), ts.iter().map(|t| default_unconstrained_vars(t, generic)).collect()),
+        Ty::Dyn(name, ts) => Ty::Dyn(name.clone(), ts.iter().map(|t| default_unconstrained_vars(t, generic)).collect()),
+        Ty::Fn(ps, r, conventions, references, qualifiers) => Ty::Fn(
+            ps.iter().map(|t| default_unconstrained_vars(t, generic)).collect(),
+            Rc::new(default_unconstrained_vars(r, generic)),
+            conventions.clone(),
+            references.clone(),
+            *qualifiers,
+        ),
+        _ => t.clone(),
+    }
+}
+
 fn ty_has_var(t: &Ty) -> bool {
     match t {
         Ty::Var(_) => true,
@@ -14659,11 +14697,31 @@ fn run_check_seeded(
         let mut view_types = HashMap::new();
         let mut local_callees = HashMap::new();
         let mut non_completing = HashSet::new();
+        // Variables a declaration owns stay generic: a generic body's types
+        // keep them and are recorded once monomorphization makes them concrete.
+        let mut generic = HashSet::new();
+        for (params, result) in c.fn_sigs.values().chain(c.ctor_sigs.values()) {
+            params.iter().for_each(|param| collect_ty_vars(&c.resolve(param), &mut generic));
+            collect_ty_vars(&c.resolve(result), &mut generic);
+        }
+        for result in c.async_body_returns.values() {
+            collect_ty_vars(&c.resolve(result), &mut generic);
+        }
+        for typarams in c.fn_typarams.values() {
+            for (_, var) in typarams {
+                collect_ty_vars(&c.resolve(&Ty::Var(*var)), &mut generic);
+            }
+        }
         for (k, (ty, cannot_complete, local_callee)) in rec {
             if cannot_complete {
                 non_completing.insert(k);
             }
             let resolved = c.resolve(&ty);
+            let resolved = if ty_has_var(&resolved) && !matches!(resolved, Ty::View(_)) {
+                default_unconstrained_vars(&resolved, &generic)
+            } else {
+                resolved
+            };
             if !ty_has_var(&resolved) {
                 types.insert(k, resolved);
             } else if matches!(resolved, Ty::View(_)) {
