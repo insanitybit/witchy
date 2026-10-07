@@ -12,8 +12,8 @@ A read-only `Dir` is a confined view of one directory subtree. `read` and
 
 ```witchy
 fn main(console: Console, root: Dir[Read]):
-    if root.exists("notes.txt"):
-        console.print(root.read("notes.txt"))
+    if root.exists("notes.txt") ?? false:
+        console.print(root.read("notes.txt") ?? "")
     else:
         console.print("no notes yet")
 ```
@@ -35,11 +35,13 @@ the least authority that does the job. A `Dir` navigates down to a single file w
 ```witchy
 // `load` provably touches one file - `witchy caps` reports it as `File[Read]`,
 // never `Dir`, so it cannot see anything else in the tree.
-fn load(cfg: File[Read]) -> String:
+fn load(cfg: File[Read]) -> Result(String, CapError):
     cfg.read()
 
 fn main(console: Console, root: Dir[Read]):
-    console.print(load(root.read_file("config.toml")))
+    match root.read_file("config.toml"):
+        Ok(cfg) -> console.print(load(cfg) ?? "")
+        Err(e) -> console.print(show(e))
 ```
 
 `root.read_file(...)` needs `Dir[Read]` and yields `File[Read]`; the write
@@ -55,8 +57,9 @@ program writes but never reads.
 
 ```witchy
 fn main(console: Console, root: Dir[Write]):
-    root.write("out.txt", "hello from witchy\n")
-    console.print("wrote out.txt")
+    match root.write("out.txt", "hello from witchy\n"):
+        Ok(_) -> console.print("wrote out.txt")
+        Err(e) -> console.print(show(e))
 ```
 
 ## List a directory
@@ -66,7 +69,7 @@ capability confined to a child folder if you want to descend.
 
 ```witchy
 fn main(console: Console, root: Dir[Read]):
-    for name in root.list():
+    for name in root.list() ?? []:
         console.print(name)
 ```
 
@@ -79,8 +82,8 @@ case explicitly.
 ```witchy
 fn main(console: Console, env: Env):
     match env.get_env("HOME"):
-        Some(h) -> console.print("HOME is ${h}")
-        None -> console.print("HOME is unset")
+        Ok(Some(h)) -> console.print("HOME is ${h}")
+        _ -> console.print("HOME is unset")
 ```
 
 ## Command-line arguments

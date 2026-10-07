@@ -24,8 +24,8 @@ read, and `read` returns the file's contents as a `String`:
 
 ```witchy
 fn main(console: Console, dir: Dir[Read]):
-    if dir.exists("config.toml"):
-        let text = dir.read("config.toml")
+    if dir.exists("config.toml") ?? false:
+        let text = dir.read("config.toml") ?? ""
         console.print("read ${text.length()} bytes")
     else:
         console.print("no config found")
@@ -43,12 +43,16 @@ a program that creates a folder *and* writes into it takes a full `Dir` rather
 than a `Dir[Write]`:
 
 ```witchy
-fn main(console: Console, dir: Dir):
-    dir.make_dir("logs")
-    let logs = dir.subtree("logs")
-    logs.write("run.txt", "started\n")
+fn log_run(dir: Dir) -> Result((), CapError):
+    dir.make_dir("logs")?
+    let logs = dir.subtree("logs")?
+    logs.write("run.txt", "started\n")?
     logs.append("run.txt", "finished\n")
-    console.print("wrote logs/run.txt")
+
+fn main(console: Console, dir: Dir):
+    match log_run(dir):
+        Ok(_) -> console.print("wrote logs/run.txt")
+        Err(e) -> console.print(show(e))
 ```
 
 `subtree` is the key to *narrowing*: `logs` is a `Dir` scoped to the `logs/`
@@ -95,12 +99,12 @@ once - is just `create_new`:
 fn main(console: Console, dir: Dir):
     let first = dir.create_new("token-42.used", "1")
     let again = dir.create_new("token-42.used", "1")
-    if first:
+    if first.is_ok():
         console.print("token accepted")
-    if !again:
+    if again.is_err():
         console.print("replay refused")
-    dir.replace("status.txt", "ready")
-    console.print(dir.read("status.txt"))
+    let _ = dir.replace("status.txt", "ready")
+    console.print(dir.read("status.txt") ?? "")
 ```
 
 All three need `Write` and stay confined to the `Dir`'s subtree exactly like

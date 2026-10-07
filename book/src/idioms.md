@@ -40,7 +40,7 @@ fn main(console: Console):
     for n in 1..4:
         out.push(n * n)        // idiomatic - not: out = list.push(out, n * n)
     var ages = dict.new()
-    ages.insert("ada", 36)     // idiomatic - not: ages = dict.insert(ages, ...)
+    let _ = ages.insert("ada", 36)  // idiomatic - not: ages = dict.insert(ages, ...)
     ages["bob"] = 41           // index sugar over insert
     console.print("${out} ${ages.length()}")
 ```

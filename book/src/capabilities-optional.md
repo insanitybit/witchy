@@ -15,9 +15,7 @@ matches on it and uses the capability only in the `Some` branch:
 // overwrite the whole file each call.)
 fn record(out: Option(Dir[Write]), name: String, line: String) -> Bool:
     match out:
-        Some(d) ->
-            d.append(name, line)
-            true
+        Some(d) -> d.append(name, line).is_ok()
         None -> false
 
 fn main(console: Console, dir: Dir[Write]):
@@ -50,11 +48,12 @@ the authority they need:
 
 ```witchy
 fn read_only(d: Dir[Read], name: String) -> String:
-    d.read(name)
+    d.read(name) ?? ""
 
 fn touch(d: Dir[Write], name: String) -> String:
-    d.write(name, "touched")
-    "wrote ${name}"
+    match d.write(name, "touched"):
+        Ok(_) -> "wrote ${name}"
+        Err(e) -> show(e)
 
 fn handle(dir: Dir, writable: Bool, name: String) -> String:
     if writable:
@@ -100,14 +99,15 @@ grant it to `main` and decide there whether to pass it onward:
 fn run(console: Console, out: Option(Dir[Write])):
     match out:
         Some(d) ->
-            d.write("out.txt", "result")
-            console.print("wrote out.txt")
+            match d.write("out.txt", "result"):
+                Ok(_) -> console.print("wrote out.txt")
+                Err(e) -> console.print(show(e))
         None -> console.print("dry run; nothing written")
 
 fn main(console: Console, dir: Dir[Write], env: Env):
     let enabled = match env.get_env("WRITE"):
-        Some(_) -> Some(dir)
-        None -> None
+        Ok(Some(_)) -> Some(dir)
+        _ -> None
 
     run(console, enabled)
 ```

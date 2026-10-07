@@ -16,11 +16,11 @@ writing. The right is part of the type, so it's checked:
 
 ```witchy
 // This loader provably cannot write. The `Dir[Read]` it receives has no `write`.
-fn load(dir: Dir[Read], name: String) -> String:
+fn load(dir: Dir[Read], name: String) -> Result(String, CapError):
     dir.read(name)
 
 fn main(console: Console, dir: Dir):
-    console.print(load(dir, "config.txt"))
+    console.print(load(dir, "config.txt") ?? "")
 ```
 
 `load` takes `Dir[Read]`, but `main` holds a full `Dir`. Passing the full `Dir`
@@ -68,7 +68,7 @@ to keep using it locally, or to make the narrowing obvious - ascribe it with
 fn main(console: Console, dir: Dir):
     // A read-only view of the same subtree.
     let ro = dir as Dir[Read]
-    console.print(ro.read("log.txt"))
+    console.print(ro.read("log.txt") ?? "")
 
     // `ro` cannot write; `ro.write(...)` would be a compile error.
 ```
@@ -86,13 +86,16 @@ form, the filesystem counterpart of `net.only(...)`:
 ```witchy
 // `handle_upload` gets ONLY the uploads/ folder. It cannot see the rest of the
 // program's directory, even though its caller can.
-fn handle_upload(uploads: Dir, name: String, body: String):
+fn handle_upload(uploads: Dir, name: String, body: String) -> Result((), CapError):
     uploads.write(name, body)
 
 fn main(console: Console, dir: Dir):
-    let uploads = dir.subtree("uploads")
-    handle_upload(uploads, "avatar.png", "...")
-    console.print("stored")
+    match dir.subtree("uploads"):
+        Ok(uploads) ->
+            match handle_upload(uploads, "avatar.png", "..."):
+                Ok(_) -> console.print("stored")
+                Err(e) -> console.print(show(e))
+        Err(e) -> console.print(show(e))
 ```
 
 Combine the two - `dir.subtree("uploads") as Dir[Write]` - to give a function
@@ -108,13 +111,13 @@ subtree inherits the policy. It's the `Dir` analog of `net.only` below:
 ```witchy
 // `read_logs` is handed a Dir that can only touch `.log` files - even though its
 // caller holds the whole directory, it cannot read a `.key` or a `.env`.
-fn read_logs(logs: Dir[Read], name: String) -> String:
+fn read_logs(logs: Dir[Read], name: String) -> Result(String, CapError):
     logs.read(name)
 
 fn main(console: Console, dir: Dir):
     // Entry policy: only `.log` files.
     let logs = dir.only(Dir.ext(".log"))
-    console.print(read_logs(logs, "app.log"))
+    console.print(read_logs(logs, "app.log") ?? "")
 ```
 
 ## Files: the leaf
@@ -126,18 +129,20 @@ handed a whole directory, so a `Dir` navigates down to a single file:
 ```witchy
 // `read_config` provably touches one file - `witchy caps` reports it as
 // `File[Read]`, never `Dir`. It cannot see any other file in the tree.
-fn read_config(f: File[Read]) -> String:
+fn read_config(f: File[Read]) -> Result(String, CapError):
     f.read()
 
 fn main(console: Console, dir: Dir):
     // File[Read]: needs Dir[Read], must exist.
-    let cfg = dir.read_file("config.toml")
-    console.print(read_config(cfg))
+    match dir.read_file("config.toml"):
+        Ok(cfg) -> console.print(read_config(cfg) ?? "")
+        Err(e) -> console.print(show(e))
 
     // File[Write]: needs Dir[Write].
-    let log = dir.write_file("run.log")
-    // A File op takes no path; it IS the file.
-    log.write("started")
+    match dir.write_file("run.log"):
+        // A File op takes no path; it IS the file.
+        Ok(log) -> console.print(if log.write("started").is_ok(): "logged" else: "not logged")
+        Err(e) -> console.print(show(e))
 ```
 
 The **name states the conferred right**, and it's all checked statically:
@@ -249,7 +254,7 @@ capability ConfigDir from Dir[Read]
 // The ONLY way to get a `ConfigDir` - a checked smart constructor, in the same
 // module. Outside this module nobody can write `ConfigDir(...)`.
 pub fn config_dir(root: Dir[Read]) -> Option(ConfigDir):
-    if root.exists("config.toml"):
+    if root.exists("config.toml") ?? false:
         Some(ConfigDir(root))
     else:
         None
@@ -258,7 +263,7 @@ pub fn config_dir(root: Dir[Read]) -> Option(ConfigDir):
 // `Dir` - and can never reach the raw `Dir` back out.
 fn load(c: ConfigDir, name: String) -> String:
     match c:
-        ConfigDir(dir) -> dir.read(name)
+        ConfigDir(dir) -> dir.read(name) ?? ""
 
 fn main(console: Console, root: Dir[Read]):
     match config_dir(root):

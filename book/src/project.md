@@ -77,10 +77,14 @@ fn matches_ci(query: String, contents: String) -> List(String):
 fn main(console: Console, dir: Dir[Read], env: Env, args: List(String)) -> Int:
     let query = args.at(0)
     let path = args.at(1)
-    let contents = dir.read(path)
+    let contents = match dir.read(path):
+        Ok(text) -> text
+        Err(e) ->
+            console.print(show(e))
+            return 1
     let insensitive = match env.get_env("SCAN_IGNORE_CASE"):
-        Some(_) -> true
-        None -> false
+        Ok(Some(_)) -> true
+        _ -> false
 
     let hits = if insensitive: matches_ci(query, contents) else: matches(query, contents)
     for line in hits:
