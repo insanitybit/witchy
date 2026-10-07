@@ -14758,7 +14758,9 @@ fn run_check_seeded(
                 non_completing.insert(k);
             }
             let resolved = c.resolve(&ty);
-            let resolved = if ty_has_var(&resolved) && !matches!(resolved, Ty::View(_)) {
+            // An expression that cannot complete has no value, so its free
+            // result variable stays unrecorded rather than becoming unit.
+            let resolved = if ty_has_var(&resolved) && !matches!(resolved, Ty::View(_)) && !cannot_complete {
                 default_unconstrained_vars(&resolved, &generic)
             } else {
                 resolved
