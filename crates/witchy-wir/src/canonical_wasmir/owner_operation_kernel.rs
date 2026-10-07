@@ -184,16 +184,16 @@ fn push_typed_load_plan(
     access: MemoryAccess,
     destination: ValueId,
 ) -> Result<(), CanonicalAdmissionError> {
-    push_projected_address_plan(plan, function, local, access)?;
+    let offset = super::plan::push_access_base_plan(plan, function, local, access)?;
     plan.push(match access.scalar {
         ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::RawByte =>
-            PlanToken::I32Load8U { offset: 0, align: 0, memory: 0 },
-        ScalarKind::Tag16 => PlanToken::I32Load16U { offset: 0, align: 1, memory: 0 },
+            PlanToken::I32Load8U { offset, align: 0, memory: 0 },
+        ScalarKind::Tag16 => PlanToken::I32Load16U { offset, align: 1, memory: 0 },
         ScalarKind::Unit | ScalarKind::U32 | ScalarKind::Tag32 | ScalarKind::Callable =>
-            PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
+            PlanToken::I32Load { offset, align: 2, memory: 0 },
         ScalarKind::Int | ScalarKind::Duration =>
-            PlanToken::I64Load { offset: 0, align: 3, memory: 0 },
-        ScalarKind::Float => PlanToken::F64Load { offset: 0, align: 3, memory: 0 },
+            PlanToken::I64Load { offset, align: 3, memory: 0 },
+        ScalarKind::Float => PlanToken::F64Load { offset, align: 3, memory: 0 },
         _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
     });
     if access.scalar == ScalarKind::Unit {

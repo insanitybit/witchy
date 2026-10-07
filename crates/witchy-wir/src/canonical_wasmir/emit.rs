@@ -151,9 +151,11 @@ pub(super) fn memarg_at(width: u32, offset: u64) -> MemArg {
 /// The base of `access` on the stack and the static offset its memory
 /// instruction takes as an immediate. Wasm adds that immediate to the base
 /// without wrapping and traps past the end of memory, so a field or header
-/// access needs no overflow check of its own: the trap the checked sum
-/// raised is the trap the access raises. An indexed access keeps its checked
-/// i64 address and an offset of zero.
+/// access needs no overflow check of its own: every address the checked sum
+/// trapped on lies past any wasm32 memory, so the access still traps (an
+/// access ending exactly at byte 2^32 of a full 4 GiB memory, which that
+/// check refused, is in bounds and now succeeds). An indexed access keeps
+/// its checked i64 address and an offset of zero.
 pub(super) fn emit_access_base(
     body: &mut wasm_encoder::Function,
     function: &Function,
