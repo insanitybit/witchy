@@ -614,6 +614,116 @@ fn first_message(k: Int, arity: Int, ch0: Int, ch1: Int, ch2: Int, ch3: Int, var
 // select's source-order probe is semantically equivalent while avoiding one
 // scheduler turn per buffered message.  Any competing active or parked slot
 // keeps the normal one-message round-robin path.
+fn fast_ring_open(cap: Int, var meta: unique List(Int), var messages: unique List(__Msg)) -> Int:
+    let ch = list.length(meta) / 6
+    let base = list.length(messages)
+    let physical = if cap > 0: cap else: 1
+    let empty = __erase(0)
+    var k = 0
+    while k < physical:
+        list.push(messages, empty)
+        k = k + 1
+    list.push(meta, base)
+    list.push(meta, 0)
+    list.push(meta, 0)
+    list.push(meta, cap)
+    list.push(meta, physical)
+    list.push(meta, 1)
+    ch
+
+fn fast_ring_put(ch: Int, msg: __Msg, var meta: unique List(Int), var messages: unique List(__Msg)) -> Bool:
+    let lane = ch * 6
+    let count = list.at(meta, lane + 2)
+    let capacity = list.at(meta, lane + 3)
+    if capacity > 0 && count >= capacity:
+        false
+    else:
+        var base = list.at(meta, lane)
+        var head = list.at(meta, lane + 1)
+        var physical = list.at(meta, lane + 4)
+        if count >= physical:
+            let next_base = list.length(messages)
+            let next_physical = physical * 2
+            let empty = __erase(0)
+            var k = 0
+            while k < next_physical:
+                list.push(messages, empty)
+                k = k + 1
+            k = 0
+            while k < count:
+                list.set_at(messages, next_base + k, list.at(messages, base + (head + k) % physical))
+                k = k + 1
+            k = 0
+            while k < physical:
+                list.set_at(messages, base + k, empty)
+                k = k + 1
+            base = next_base
+            head = 0
+            physical = next_physical
+            list.set_at(meta, lane, base)
+            list.set_at(meta, lane + 1, head)
+            list.set_at(meta, lane + 4, physical)
+        list.set_at(messages, base + (head + count) % physical, msg)
+        list.set_at(meta, lane + 2, count + 1)
+        true
+
+fn fast_ring_pop(ch: Int, var meta: unique List(Int), var messages: unique List(__Msg)) -> Option(__Msg):
+    let lane = ch * 6
+    let count = list.at(meta, lane + 2)
+    if count == 0:
+        None
+    else:
+        let base = list.at(meta, lane)
+        let head = list.at(meta, lane + 1)
+        let physical = list.at(meta, lane + 4)
+        let msg = list.at(messages, base + head)
+        list.set_at(messages, base + head, __erase(0))
+        list.set_at(meta, lane + 1, (head + 1) % physical)
+        list.set_at(meta, lane + 2, count - 1)
+        Some(msg)
+
+fn fast_ring_materialize(ch: Int, var meta: unique List(Int), var messages: unique List(__Msg), var channels: unique List((List(__Msg), Int, Int, Int))):
+    let lane = ch * 6
+    if list.at(meta, lane + 5) == 1:
+        let base = list.at(meta, lane)
+        let head = list.at(meta, lane + 1)
+        let count = list.at(meta, lane + 2)
+        let capacity = list.at(meta, lane + 3)
+        let physical = list.at(meta, lane + 4)
+        let empty = __erase(0)
+        var buffer: unique List(__Msg) = list.repeat(empty, physical)
+        var k = 0
+        while k < count:
+            list.set_at(buffer, k, list.at(messages, base + (head + k) % physical))
+            k = k + 1
+        k = 0
+        while k < physical:
+            list.set_at(messages, base + k, empty)
+            k = k + 1
+        list.set_at(channels, ch, (buffer, 0, count, capacity))
+        list.set_at(meta, lane + 2, 0)
+        list.set_at(meta, lane + 5, 0)
+    else:
+        unit()
+
+fn lane_receive(ch: Int, var meta: unique List(Int), var messages: unique List(__Msg), var channels: unique List((List(__Msg), Int, Int, Int))) -> Option(__Msg):
+    if list.at(meta, ch * 6 + 5) == 1:
+        fast_ring_pop(ch, meta, messages)
+    else:
+        let (buf, head, count, cap) = list.at(channels, ch)
+        if count > 0:
+            let msg = list.at(buf, head)
+            list.set_at(channels, ch, (buf, (head + 1) % list.length(buf), count - 1, cap))
+            Some(msg)
+        else:
+            None
+
+fn lane_send(ch: Int, msg: __Msg, var meta: unique List(Int), var messages: unique List(__Msg), var channels: unique List((List(__Msg), Int, Int, Int))) -> Bool:
+    if list.at(meta, ch * 6 + 5) == 1:
+        fast_ring_put(ch, msg, meta, messages)
+    else:
+        try_producer_send(ch, msg, channels)
+
 fn append_frame(frame: List(Int), var lanes: List(Int)) -> Int:
     let base = list.length(lanes)
     var index = 0
@@ -665,6 +775,8 @@ pub fn run(root: Task(())):
     var slots = [Active(root)]
     var channels = []
     var typed_i64_channels = []
+    var fast_meta = []
+    var fast_messages = []
     var frame_kinds = [0]
     var frame_phases = [0]
     var frame_channels = [0]
@@ -716,15 +828,20 @@ pub fn run(root: Task(())):
 
                     prog = true
                 else:
-                    let (buf, head, count, cap) = list.at(channels, ch)
-                    if count > 0:
-                        let msg = list.at(buf, head)
-                        list.set_at(channels, ch, (buf, (head + 1) % list.length(buf), count - 1, cap))
-                        list.set_at(frame_pending, i, Some(msg))
-                        list.set_at(frame_phases, i, 1)
-                        prog = true
-                    else:
-                        list.set_at(frame_phases, i, 0)
+                    match lane_receive(ch, fast_meta, fast_messages, channels):
+                        Some(msg) ->
+                            list.set_at(frame_pending, i, Some(msg))
+                            list.set_at(frame_phases, i, 1)
+                            prog = true
+                        None -> list.set_at(frame_phases, i, 0)
+                        // Keep an empty ordinary ring aligned by channel id
+                        // so materialization is a one-slot replacement.
+
+                        // An ordinary operation is the semantic boundary
+                        // for a compiler-owned typed ring. Materialize it
+                        // before proceeding through the exact existing
+                        // erased path, so mixed proven/unproven channel
+                        // uses retain FIFO and blocking behavior.
             else if kind == 2:
                 let ch = list.at(frame_channels, i)
                 let phase = list.at(frame_phases, i)
@@ -771,7 +888,7 @@ pub fn run(root: Task(())):
                     match list.at(frame_pending, i):
                         Some(msg) ->
                             materialize_typed_i64_channel(ch, channels, typed_i64_channels)
-                            if try_producer_send(ch, msg, channels):
+                            if lane_send(ch, msg, fast_meta, fast_messages, channels):
                                 if phase == 3:
                                     __rfc0152_wake_claim()
                                 else:
@@ -782,14 +899,6 @@ pub fn run(root: Task(())):
                             else:
                                 list.set_at(frame_phases, i, 3)
                         None -> fail("missing prepared channel message")
-                        // Keep an empty ordinary ring aligned by channel id
-                        // so materialization is a one-slot replacement.
-
-                        // An ordinary operation is the semantic boundary
-                        // for a compiler-owned typed ring. Materialize it
-                        // before proceeding through the exact existing
-                        // erased path, so mixed proven/unproven channel
-                        // uses retain FIFO and blocking behavior.
             else if kind == 3:
                 let target = list.at(frame_channels, i)
                 if !list.at(slot_live, target):
@@ -808,6 +917,7 @@ pub fn run(root: Task(())):
                 match list.at(slots, i):
                     Ended -> unit()
                     WaitRecv(ch, cont) ->
+                        fast_ring_materialize(ch, fast_meta, fast_messages, channels)
                         let (buf, head, count, cap) = list.at(channels, ch)
                         if count > 0:
                             let msg = list.at(buf, head)
@@ -819,6 +929,7 @@ pub fn run(root: Task(())):
                         else:
                             unit()
                     WaitSend(ch, msg, cont) ->
+                        fast_ring_materialize(ch, fast_meta, fast_messages, channels)
                         let (wait_buf, head, count, cap) = list.at(channels, ch)
                         if cap == 0 || count < cap:
                             list.set_at(channels, ch, ring_put(wait_buf, head, count, msg, cap))
@@ -828,6 +939,8 @@ pub fn run(root: Task(())):
                         else:
                             unit()
                     Wait2(ch0, ch1, cont) ->
+                        fast_ring_materialize(ch0, fast_meta, fast_messages, channels)
+                        fast_ring_materialize(ch1, fast_meta, fast_messages, channels)
                         match first_message(0, 2, ch0, ch1, 0, 0, channels):
                             Some((tag, msg)) ->
                                 __rfc0152_wake_claim()
@@ -835,6 +948,9 @@ pub fn run(root: Task(())):
                                 prog = true
                             None -> unit()
                     Wait3(ch0, ch1, ch2, cont) ->
+                        fast_ring_materialize(ch0, fast_meta, fast_messages, channels)
+                        fast_ring_materialize(ch1, fast_meta, fast_messages, channels)
+                        fast_ring_materialize(ch2, fast_meta, fast_messages, channels)
                         match first_message(0, 3, ch0, ch1, ch2, 0, channels):
                             Some((tag, msg)) ->
                                 __rfc0152_wake_claim()
@@ -842,6 +958,10 @@ pub fn run(root: Task(())):
                                 prog = true
                             None -> unit()
                     Wait4(ch0, ch1, ch2, ch3, cont) ->
+                        fast_ring_materialize(ch0, fast_meta, fast_messages, channels)
+                        fast_ring_materialize(ch1, fast_meta, fast_messages, channels)
+                        fast_ring_materialize(ch2, fast_meta, fast_messages, channels)
+                        fast_ring_materialize(ch3, fast_meta, fast_messages, channels)
                         match first_message(0, 4, ch0, ch1, ch2, ch3, channels):
                             Some((tag, msg)) ->
                                 __rfc0152_wake_claim()
@@ -849,6 +969,8 @@ pub fn run(root: Task(())):
                                 prog = true
                             None -> unit()
                     Wait2Frame(ch0, ch1, frame, step, done_task) ->
+                        fast_ring_materialize(ch0, fast_meta, fast_messages, channels)
+                        fast_ring_materialize(ch1, fast_meta, fast_messages, channels)
                         match first_message(0, 2, ch0, ch1, 0, 0, channels):
                             Some((tag, msg)) ->
                                 if step(tag, Some(msg), frame):
@@ -859,6 +981,7 @@ pub fn run(root: Task(())):
                                 prog = true
                             None -> unit()
                     WaitFrameLoop(ch, frame, step, done_fn) ->
+                        fast_ring_materialize(ch, fast_meta, fast_messages, channels)
                         var frame = frame
                         if is_only_live_slot(0, i, slots):
                             var draining = true
@@ -886,6 +1009,8 @@ pub fn run(root: Task(())):
                                     prog = true
                                 None -> unit()
                     Wait2FrameLoop(ch0, ch1, frame, step, done_fn) ->
+                        fast_ring_materialize(ch0, fast_meta, fast_messages, channels)
+                        fast_ring_materialize(ch1, fast_meta, fast_messages, channels)
                         var frame = frame
                         if is_only_live_slot(0, i, slots):
                             var draining = true
@@ -913,6 +1038,9 @@ pub fn run(root: Task(())):
                                     prog = true
                                 None -> unit()
                     Wait3FrameLoop(ch0, ch1, ch2, frame, step, done_fn) ->
+                        fast_ring_materialize(ch0, fast_meta, fast_messages, channels)
+                        fast_ring_materialize(ch1, fast_meta, fast_messages, channels)
+                        fast_ring_materialize(ch2, fast_meta, fast_messages, channels)
                         var frame = frame
                         if is_only_live_slot(0, i, slots):
                             var draining = true
@@ -940,6 +1068,10 @@ pub fn run(root: Task(())):
                                     prog = true
                                 None -> unit()
                     Wait4FrameLoop(ch0, ch1, ch2, ch3, frame, step, done_fn) ->
+                        fast_ring_materialize(ch0, fast_meta, fast_messages, channels)
+                        fast_ring_materialize(ch1, fast_meta, fast_messages, channels)
+                        fast_ring_materialize(ch2, fast_meta, fast_messages, channels)
+                        fast_ring_materialize(ch3, fast_meta, fast_messages, channels)
                         var frame = frame
                         if is_only_live_slot(0, i, slots):
                             var draining = true
@@ -967,6 +1099,10 @@ pub fn run(root: Task(())):
                                     prog = true
                                 None -> unit()
                     WaitAny(chs, cont) ->
+                        var flat_index = 0
+                        while flat_index < list.length(chs):
+                            fast_ring_materialize(list.at(chs, flat_index), fast_meta, fast_messages, channels)
+                            flat_index = flat_index + 1
                         match first_ready(0, chs, channels):
                             Some(hit) ->
                                 let (k, ch) = hit
@@ -1013,16 +1149,28 @@ pub fn run(root: Task(())):
                             Open(cap, cont) ->
                                 let cid = list.length(channels)
                                 list.set_at(slots, i, Active(cont(cid)))
+                                let flat_id = fast_ring_open(cap, fast_meta, fast_messages)
+                                if flat_id != cid:
+                                    fail("misaligned channel storage")
+                                else:
+                                    unit()
                                 list.push(channels, ring_new(cap))
                                 list.push(typed_i64_channels, None)
                                 prog = true
                             OpenI64(cap, cont) ->
                                 let cid = list.length(channels)
                                 list.set_at(slots, i, Active(cont(cid)))
+                                let flat_id = fast_ring_open(cap, fast_meta, fast_messages)
+                                if flat_id != cid:
+                                    fail("misaligned channel storage")
+                                else:
+                                    unit()
                                 list.push(channels, ring_new(cap))
                                 list.push(typed_i64_channels, Some(typed_i64_ring_new(cap)))
+                                list.set_at(fast_meta, cid * 6 + 5, 0)
                                 prog = true
                             Push(ch, msg, cont) ->
+                                fast_ring_materialize(ch, fast_meta, fast_messages, channels)
                                 match list.at(typed_i64_channels, ch):
                                     Some((typed_buf, typed_head, typed_count, typed_cap)) ->
                                         list.set_at(channels, ch, typed_i64_materialize(typed_buf, typed_head, typed_count, typed_cap))
@@ -1037,6 +1185,7 @@ pub fn run(root: Task(())):
                                 else:
                                     list.set_at(slots, i, WaitSend(ch, msg, cont))
                             Pull(ch, cont) ->
+                                fast_ring_materialize(ch, fast_meta, fast_messages, channels)
                                 match list.at(typed_i64_channels, ch):
                                     Some((typed_buf, typed_head, typed_count, typed_cap)) ->
                                         list.set_at(channels, ch, typed_i64_materialize(typed_buf, typed_head, typed_count, typed_cap))
@@ -1053,6 +1202,7 @@ pub fn run(root: Task(())):
                                 else:
                                     list.set_at(slots, i, WaitRecv(ch, cont))
                             PushI64(ch, msg, cont) ->
+                                fast_ring_materialize(ch, fast_meta, fast_messages, channels)
                                 match list.at(typed_i64_channels, ch):
                                     Some((typed_buf, typed_head, typed_count, typed_cap)) ->
                                         if typed_cap == 0 || typed_count < typed_cap:
@@ -1073,6 +1223,7 @@ pub fn run(root: Task(())):
                                         else:
                                             list.set_at(slots, i, WaitSend(ch, __erase(msg), cont))
                             PullI64(ch, cont) ->
+                                fast_ring_materialize(ch, fast_meta, fast_messages, channels)
                                 match list.at(typed_i64_channels, ch):
                                     Some((typed_buf, typed_head, typed_count, typed_cap)) ->
                                         if typed_count > 0:
@@ -1097,6 +1248,8 @@ pub fn run(root: Task(())):
                                         else:
                                             list.set_at(slots, i, WaitRecv(ch, fn(value): cont(unerase_i64_option(value))))
                             Pull2(ch0, ch1, cont) ->
+                                fast_ring_materialize(ch0, fast_meta, fast_messages, channels)
+                                fast_ring_materialize(ch1, fast_meta, fast_messages, channels)
                                 materialize_typed_i64_channel(ch0, channels, typed_i64_channels)
                                 materialize_typed_i64_channel(ch1, channels, typed_i64_channels)
                                 let (buf0, head0, count0, cap0) = list.at(channels, ch0)
@@ -1117,6 +1270,9 @@ pub fn run(root: Task(())):
                                     else:
                                         list.set_at(slots, i, Wait2(ch0, ch1, cont))
                             Pull3(ch0, ch1, ch2, cont) ->
+                                fast_ring_materialize(ch0, fast_meta, fast_messages, channels)
+                                fast_ring_materialize(ch1, fast_meta, fast_messages, channels)
+                                fast_ring_materialize(ch2, fast_meta, fast_messages, channels)
                                 materialize_typed_i64_channel(ch0, channels, typed_i64_channels)
                                 materialize_typed_i64_channel(ch1, channels, typed_i64_channels)
                                 materialize_typed_i64_channel(ch2, channels, typed_i64_channels)
@@ -1146,6 +1302,10 @@ pub fn run(root: Task(())):
                                         else:
                                             list.set_at(slots, i, Wait3(ch0, ch1, ch2, cont))
                             Pull4(ch0, ch1, ch2, ch3, cont) ->
+                                fast_ring_materialize(ch0, fast_meta, fast_messages, channels)
+                                fast_ring_materialize(ch1, fast_meta, fast_messages, channels)
+                                fast_ring_materialize(ch2, fast_meta, fast_messages, channels)
+                                fast_ring_materialize(ch3, fast_meta, fast_messages, channels)
                                 materialize_typed_i64_channel(ch0, channels, typed_i64_channels)
                                 materialize_typed_i64_channel(ch1, channels, typed_i64_channels)
                                 materialize_typed_i64_channel(ch2, channels, typed_i64_channels)
@@ -1184,6 +1344,8 @@ pub fn run(root: Task(())):
                                             else:
                                                 list.set_at(slots, i, Wait4(ch0, ch1, ch2, ch3, cont))
                             Pull2Ready(ch0, ch1, cont) ->
+                                fast_ring_materialize(ch0, fast_meta, fast_messages, channels)
+                                fast_ring_materialize(ch1, fast_meta, fast_messages, channels)
                                 materialize_typed_i64_channel(ch0, channels, typed_i64_channels)
                                 materialize_typed_i64_channel(ch1, channels, typed_i64_channels)
                                 let (buf0, head0, count0, cap0) = list.at(channels, ch0)
@@ -1204,16 +1366,20 @@ pub fn run(root: Task(())):
                                     else:
                                         list.set_at(slots, i, Wait2(ch0, ch1, cont))
                             Pull2Frame(ch0, ch1, frame, step, done_task) ->
+                                fast_ring_materialize(ch0, fast_meta, fast_messages, channels)
+                                fast_ring_materialize(ch1, fast_meta, fast_messages, channels)
                                 materialize_typed_i64_channel(ch0, channels, typed_i64_channels)
                                 materialize_typed_i64_channel(ch1, channels, typed_i64_channels)
                                 list.set_at(slots, i, Wait2Frame(ch0, ch1, frame, step, done_task))
                                 prog = true
                             PullFrameLoop(ch, frame, step, done_fn) ->
+                                fast_ring_materialize(ch, fast_meta, fast_messages, channels)
                                 materialize_typed_i64_channel(ch, channels, typed_i64_channels)
                                 __rfc0152_reusable_wait_install()
                                 list.set_at(slots, i, WaitFrameLoop(ch, frame, step, done_fn))
                                 prog = true
                             PullReadyFrameLoop(ch, frame, step, done_fn) ->
+                                fast_ring_materialize(ch, fast_meta, fast_messages, channels)
                                 materialize_typed_i64_channel(ch, channels, typed_i64_channels)
                                 if is_only_live_slot(0, i, slots):
                                     var frame = frame
@@ -1240,12 +1406,16 @@ pub fn run(root: Task(())):
                                     list.set_at(slots, i, WaitFrameLoop(ch, frame, step, done_fn))
                                     prog = true
                             Pull2FrameLoop(ch0, ch1, frame, step, done_fn) ->
+                                fast_ring_materialize(ch0, fast_meta, fast_messages, channels)
+                                fast_ring_materialize(ch1, fast_meta, fast_messages, channels)
                                 materialize_typed_i64_channel(ch0, channels, typed_i64_channels)
                                 materialize_typed_i64_channel(ch1, channels, typed_i64_channels)
                                 __rfc0152_reusable_wait_install()
                                 list.set_at(slots, i, Wait2FrameLoop(ch0, ch1, frame, step, done_fn))
                                 prog = true
                             Pull2ReadyFrameLoop(ch0, ch1, frame, step, done_fn) ->
+                                fast_ring_materialize(ch0, fast_meta, fast_messages, channels)
+                                fast_ring_materialize(ch1, fast_meta, fast_messages, channels)
                                 materialize_typed_i64_channel(ch0, channels, typed_i64_channels)
                                 materialize_typed_i64_channel(ch1, channels, typed_i64_channels)
                                 if is_only_live_slot(0, i, slots):
@@ -1283,6 +1453,9 @@ pub fn run(root: Task(())):
                                     list.set_at(slots, i, Wait2FrameLoop(ch0, ch1, frame, step, done_fn))
                                     prog = true
                             Pull3FrameLoop(ch0, ch1, ch2, frame, step, done_fn) | Pull3ReadyFrameLoop(ch0, ch1, ch2, frame, step, done_fn) ->
+                                fast_ring_materialize(ch0, fast_meta, fast_messages, channels)
+                                fast_ring_materialize(ch1, fast_meta, fast_messages, channels)
+                                fast_ring_materialize(ch2, fast_meta, fast_messages, channels)
                                 materialize_typed_i64_channel(ch0, channels, typed_i64_channels)
                                 materialize_typed_i64_channel(ch1, channels, typed_i64_channels)
                                 materialize_typed_i64_channel(ch2, channels, typed_i64_channels)
@@ -1335,6 +1508,10 @@ pub fn run(root: Task(())):
                                     list.set_at(slots, i, Wait3FrameLoop(ch0, ch1, ch2, frame, step, done_fn))
                                     prog = true
                             Pull4FrameLoop(ch0, ch1, ch2, ch3, frame, step, done_fn) | Pull4ReadyFrameLoop(ch0, ch1, ch2, ch3, frame, step, done_fn) ->
+                                fast_ring_materialize(ch0, fast_meta, fast_messages, channels)
+                                fast_ring_materialize(ch1, fast_meta, fast_messages, channels)
+                                fast_ring_materialize(ch2, fast_meta, fast_messages, channels)
+                                fast_ring_materialize(ch3, fast_meta, fast_messages, channels)
                                 materialize_typed_i64_channel(ch0, channels, typed_i64_channels)
                                 materialize_typed_i64_channel(ch1, channels, typed_i64_channels)
                                 materialize_typed_i64_channel(ch2, channels, typed_i64_channels)
@@ -1400,6 +1577,10 @@ pub fn run(root: Task(())):
                                     list.set_at(slots, i, Wait4FrameLoop(ch0, ch1, ch2, ch3, frame, step, done_fn))
                                     prog = true
                             PullAny(chs, cont) ->
+                                var flat_index = 0
+                                while flat_index < list.length(chs):
+                                    fast_ring_materialize(list.at(chs, flat_index), fast_meta, fast_messages, channels)
+                                    flat_index = flat_index + 1
                                 var typed_index = 0
                                 while typed_index < list.length(chs):
                                     materialize_typed_i64_channel(list.at(chs, typed_index), channels, typed_i64_channels)
@@ -1450,6 +1631,7 @@ pub fn run(root: Task(())):
                                 list.set_at(slots, i, Active(cont(unit())))
                                 prog = true
                             ReceiveFrame((ch, frame, step, finish)) ->
+                                fast_ring_materialize(ch, fast_meta, fast_messages, channels)
                                 materialize_typed_i64_channel(ch, channels, typed_i64_channels)
                                 let (buf, head, count, cap) = list.at(channels, ch)
                                 if count > 0:
@@ -1472,15 +1654,12 @@ pub fn run(root: Task(())):
                                 list.set_at(frame_recipes, i, recipe)
                                 list.set_at(slots, i, ReceiveLaneSlot(i))
                                 materialize_typed_i64_channel(ch, channels, typed_i64_channels)
-                                let (buf, head, count, cap) = list.at(channels, ch)
-                                if count > 0:
-                                    let msg = list.at(buf, head)
-                                    list.set_at(channels, ch, (buf, (head + 1) % list.length(buf), count - 1, cap))
-                                    list.set_at(frame_pending, i, Some(msg))
-                                    list.set_at(frame_phases, i, 1)
-                                    prog = true
-                                else:
-                                    list.set_at(frame_phases, i, 0)
+                                match lane_receive(ch, fast_meta, fast_messages, channels):
+                                    Some(msg) ->
+                                        list.set_at(frame_pending, i, Some(msg))
+                                        list.set_at(frame_phases, i, 1)
+                                        prog = true
+                                    None -> list.set_at(frame_phases, i, 0)
                             ProduceFrame((frame, prepare, resume, finish, ch, msg)) ->
                                 let recipe = list.length(send_prepares)
                                 let base = append_frame(frame, frame_lanes)
@@ -1494,13 +1673,14 @@ pub fn run(root: Task(())):
                                 list.set_at(frame_recipes, i, recipe)
                                 list.set_at(slots, i, ProduceFrameSlot(i))
                                 materialize_typed_i64_channel(ch, channels, typed_i64_channels)
-                                if try_producer_send(ch, msg, channels):
+                                if lane_send(ch, msg, fast_meta, fast_messages, channels):
                                     list.set_at(frame_phases, i, 1)
                                     prog = true
                                 else:
                                     list.set_at(frame_pending, i, Some(msg))
                                     list.set_at(frame_phases, i, 3)
                     ReceiveFrameSlot(ch, frame, step, finish, phase, pending) ->
+                        fast_ring_materialize(ch, fast_meta, fast_messages, channels)
                         if phase == 1:
                             var state = frame
                             if step(pending, state):
@@ -1531,29 +1711,43 @@ pub fn run(root: Task(())):
             while j < m:
                 match list.at(slots, j):
                     WaitRecv(_ch, cont) ->
+                        fast_ring_materialize(_ch, fast_meta, fast_messages, channels)
                         __rfc0152_wake_claim()
                         list.set_at(slots, j, Active(cont(None)))
                     WaitSend(ch, msg, cont) ->
+                        fast_ring_materialize(ch, fast_meta, fast_messages, channels)
                         let (close_buf, head, count, cap) = list.at(channels, ch)
                         __rfc0152_wake_claim()
                         list.set_at(slots, j, Active(cont(unit())))
                         list.set_at(channels, ch, ring_put(close_buf, head, count, msg, cap))
                     Wait2(_ch0, _ch1, cont) ->
+                        fast_ring_materialize(_ch0, fast_meta, fast_messages, channels)
+                        fast_ring_materialize(_ch1, fast_meta, fast_messages, channels)
                         __rfc0152_wake_claim()
                         list.set_at(slots, j, Active(cont(0, None)))
                     Wait3(_ch0, _ch1, _ch2, cont) ->
+                        fast_ring_materialize(_ch0, fast_meta, fast_messages, channels)
+                        fast_ring_materialize(_ch1, fast_meta, fast_messages, channels)
+                        fast_ring_materialize(_ch2, fast_meta, fast_messages, channels)
                         __rfc0152_wake_claim()
                         list.set_at(slots, j, Active(cont(0, None)))
                     Wait4(_ch0, _ch1, _ch2, _ch3, cont) ->
+                        fast_ring_materialize(_ch0, fast_meta, fast_messages, channels)
+                        fast_ring_materialize(_ch1, fast_meta, fast_messages, channels)
+                        fast_ring_materialize(_ch2, fast_meta, fast_messages, channels)
+                        fast_ring_materialize(_ch3, fast_meta, fast_messages, channels)
                         __rfc0152_wake_claim()
                         list.set_at(slots, j, Active(cont(0, None)))
                     Wait2Frame(_ch0, _ch1, frame, step, done_task) ->
+                        fast_ring_materialize(_ch0, fast_meta, fast_messages, channels)
+                        fast_ring_materialize(_ch1, fast_meta, fast_messages, channels)
                         if step(0, None, frame):
                             __rfc0152_wake_claim()
                             list.set_at(slots, j, Active(done_task))
                         else:
                             list.set_at(slots, j, Wait2Frame(_ch0, _ch1, frame, step, done_task))
                     WaitFrameLoop(_ch, frame, step, done_fn) ->
+                        fast_ring_materialize(_ch, fast_meta, fast_messages, channels)
                         var frame = frame
                         if step(None, frame):
                             __rfc0152_wake_claim()
@@ -1561,6 +1755,8 @@ pub fn run(root: Task(())):
                         else:
                             list.set_at(slots, j, WaitFrameLoop(_ch, frame, step, done_fn))
                     Wait2FrameLoop(_ch0, _ch1, frame, step, done_fn) ->
+                        fast_ring_materialize(_ch0, fast_meta, fast_messages, channels)
+                        fast_ring_materialize(_ch1, fast_meta, fast_messages, channels)
                         var frame = frame
                         if step(0, None, frame):
                             __rfc0152_wake_claim()
@@ -1568,6 +1764,9 @@ pub fn run(root: Task(())):
                         else:
                             list.set_at(slots, j, Wait2FrameLoop(_ch0, _ch1, frame, step, done_fn))
                     Wait3FrameLoop(_ch0, _ch1, _ch2, frame, step, done_fn) ->
+                        fast_ring_materialize(_ch0, fast_meta, fast_messages, channels)
+                        fast_ring_materialize(_ch1, fast_meta, fast_messages, channels)
+                        fast_ring_materialize(_ch2, fast_meta, fast_messages, channels)
                         var frame = frame
                         if step(0, None, frame):
                             __rfc0152_wake_claim()
@@ -1575,6 +1774,10 @@ pub fn run(root: Task(())):
                         else:
                             list.set_at(slots, j, Wait3FrameLoop(_ch0, _ch1, _ch2, frame, step, done_fn))
                     Wait4FrameLoop(_ch0, _ch1, _ch2, _ch3, frame, step, done_fn) ->
+                        fast_ring_materialize(_ch0, fast_meta, fast_messages, channels)
+                        fast_ring_materialize(_ch1, fast_meta, fast_messages, channels)
+                        fast_ring_materialize(_ch2, fast_meta, fast_messages, channels)
+                        fast_ring_materialize(_ch3, fast_meta, fast_messages, channels)
                         var frame = frame
                         if step(0, None, frame):
                             __rfc0152_wake_claim()
@@ -1582,6 +1785,10 @@ pub fn run(root: Task(())):
                         else:
                             list.set_at(slots, j, Wait4FrameLoop(_ch0, _ch1, _ch2, _ch3, frame, step, done_fn))
                     WaitAny(_chs, cont) ->
+                        var flat_index = 0
+                        while flat_index < list.length(_chs):
+                            fast_ring_materialize(list.at(_chs, flat_index), fast_meta, fast_messages, channels)
+                            flat_index = flat_index + 1
                         __rfc0152_wake_claim()
                         list.set_at(slots, j, Active(cont(None)))
                     WaitJoin(_t, cont) ->
@@ -1597,12 +1804,14 @@ pub fn run(root: Task(())):
                         list.set_at(frame_kinds, activation, 0)
                         list.set_at(join_continuations, recipe, None)
                     ReceiveFrameSlot(ch, frame, step, finish, _phase, _pending) ->
+                        fast_ring_materialize(ch, fast_meta, fast_messages, channels)
                         list.set_at(slots, j, ReceiveFrameSlot(ch, frame, step, finish, 1, None))
                     ReceiveLaneSlot(activation) ->
                         list.set_at(frame_pending, activation, None)
                         list.set_at(frame_phases, activation, 1)
                     ProduceFrameSlot(activation) ->
                         let ch = list.at(frame_channels, activation)
+                        fast_ring_materialize(ch, fast_meta, fast_messages, channels)
                         match list.at(frame_pending, activation):
                             Some(msg) ->
                                 let (buf, head, count, cap) = list.at(channels, ch)
