@@ -9888,13 +9888,21 @@ impl FunctionLowerer<'_> {
             self.ensure_list_extent(outer[name])?;
             self.ensure_string_extent(outer[name])?;
         }
-        let list_names = names
+        let mut list_names = names
             .iter()
             .filter_map(|name| {
                 let object = outer[name];
                 self.tracked_lanes(object).is_some().then(|| name.clone())
             })
             .collect::<Vec<_>>();
+        // An immutable String crosses the loop as header lanes, as in
+        // `lower_while`: a nested loop renames its lanes, so the pre-loop
+        // count cannot stay the extent's count across this backedge.
+        let string_layout = self.string_layout_id().ok();
+        list_names.extend(invariant_names.iter().filter(|name| {
+            matches!(self.values[&outer[*name]], ValueType::Ref(layout) if Some(layout) == string_layout)
+                && self.known_shared_value(outer[*name])
+        }).cloned());
         if list_names.iter().any(|name| self.tracked_lanes(outer[name]).is_none()) {
             return Err(CanonicalLoweringError::UnsupportedExpression("for list capacity state"));
         }

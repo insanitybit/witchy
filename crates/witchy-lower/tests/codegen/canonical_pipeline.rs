@@ -338,6 +338,20 @@ fn an_invariant_string_survives_a_match_arm_with_an_inner_loop() {
 }
 
 #[test]
+fn an_invariant_string_survives_a_counted_for_with_an_inner_loop() {
+    let source = format!("{INVARIANT_TABLE}fn main() -> Int:\n    let t = table()\n    var total = 0\n    for k in 0..5:\n        var j = 0\n        while j < 4:\n            total = total + t.at(j)\n            j = j + 1\n    total\n");
+    compile_checked_module_artifact(&checked(&source))
+        .expect_lowered("a counted for carries a String an inner loop renames");
+}
+
+#[test]
+fn an_invariant_string_survives_a_quadratic_scan() {
+    let source = format!("{INVARIANT_TABLE}fn count(t: Bytes) -> Int:\n    var total = 0\n    for k in 0..t.length():\n        var j = k\n        while j < t.length():\n            if t.at(j) == t.at(k):\n                total = total + 1\n            j = j + 1\n    total\n\nfn main() -> Int:\n    count(table())\n");
+    compile_checked_module_artifact(&checked(&source))
+        .expect_lowered("a parameter String scanned by nested loops keeps a checked extent");
+}
+
+#[test]
 fn exact_narrowing_needs_a_proven_bound() {
     // `get`'s index is bounded only by `bytes.at`'s own check.
     let checked = checked("import bytes\n\nfn get(b: Bytes, i: Int) -> Int:\n    b.at(i)\n\nfn main() -> Int:\n    get(bytes.from_string(\"abc\"), 1)\n");
