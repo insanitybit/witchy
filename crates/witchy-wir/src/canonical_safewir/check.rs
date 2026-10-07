@@ -4819,7 +4819,10 @@ pub mod self_checks {
     /// still holds about its previous value (here: it was the constant 8)
     /// must not meet the entry edge's equal fact as if it described the new
     /// one, or an allocation sized by an unbounded value would be admitted.
+    /// The loop runs while the lane is below an unknown limit, so the back
+    /// edge is reachable.
     pub fn back_edge_does_not_carry_facts_about_the_rebound_parameter() {
+        let limit = ValueId::new(6);
         let eight = ValueId::new(0);
         let lane = ValueId::new(1);
         let object = ValueId::new(2);
@@ -4835,9 +4838,13 @@ pub mod self_checks {
             layouts,
             signatures: vec![FunctionSignature {
                 id: SIGNATURE,
-                parameters: Vec::new(),
+                parameters: vec![ValueType::Size],
                 results: Vec::new(),
-                contract: contract(Vec::new()),
+                contract: CallableContract {
+                    parameters: vec![ParameterContract { value_type: ValueType::Size, ownership: ParameterOwnership::Value }],
+                    results: Vec::new(),
+                    parameter_effects: BTreeMap::new(),
+                },
             }],
             imports: Vec::new(),
             functions: vec![Function {
@@ -4845,6 +4852,7 @@ pub mod self_checks {
                 signature: SIGNATURE,
                 entry: ENTRY,
                 value_types: [
+                    (limit, ValueType::Size),
                     (eight, ValueType::Size),
                     (lane, ValueType::Size),
                     (object, ValueType::Ref(layout)),
@@ -4855,7 +4863,7 @@ pub mod self_checks {
                 blocks: vec![
                     BasicBlock {
                         id: ENTRY,
-                        parameters: Vec::new(),
+                        parameters: vec![BlockParameter { value: limit, value_type: ValueType::Size, ownership: None }],
                         operations: vec![Operation::ConstSize { destination: eight, value: 8 }],
                         terminator: Terminator::Branch { target: header, arguments: vec![eight] },
                     },
@@ -4882,7 +4890,7 @@ pub mod self_checks {
                                 destination: condition,
                                 operator: ComparisonOperator::LessUnsigned,
                                 left: lane,
-                                right: eight,
+                                right: limit,
                             },
                         ],
                         terminator: Terminator::BranchIf {
@@ -4906,6 +4914,142 @@ pub mod self_checks {
         assert!(
             matches!(check_initial(module), Err(InitialCheckError::MissingAllocationSizeGuard { capacity, .. }) if capacity == lane),
             "an allocation sized by the rebound loop parameter must need its own guard",
+        );
+    }
+
+    /// An object's extent named by a value the entry edge passes to a loop
+    /// parameter is renamed to that parameter. When the back edge rebinds the
+    /// parameter to a larger value, the extent must not keep naming it: the
+    /// object did not grow, so an index below the new value can be past its
+    /// end.
+    pub fn back_edge_does_not_carry_an_extent_named_by_the_rebound_parameter() {
+        let count = ValueId::new(0);
+        let index = ValueId::new(1);
+        let maximum = ValueId::new(2);
+        let fits = ValueId::new(3);
+        let object = ValueId::new(4);
+        let lane = ValueId::new(5);
+        let condition = ValueId::new(6);
+        let zero = ValueId::new(7);
+        let one = ValueId::new(8);
+        let next = ValueId::new(9);
+        let header = BlockId::new(1);
+        let body = BlockId::new(2);
+        let exit = BlockId::new(3);
+        let (layouts, layout) = packed_u32_layout();
+        let size = ParameterContract { value_type: ValueType::Size, ownership: ParameterOwnership::Value };
+        let module = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(0),
+            checked_source: CheckedSourceIdentity::from_digest([7; 32]),
+            layouts,
+            signatures: vec![FunctionSignature {
+                id: SIGNATURE,
+                parameters: vec![ValueType::Size, ValueType::Size],
+                results: Vec::new(),
+                contract: CallableContract {
+                    parameters: vec![size.clone(), size],
+                    results: Vec::new(),
+                    parameter_effects: BTreeMap::new(),
+                },
+            }],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FUNCTION,
+                signature: SIGNATURE,
+                entry: ENTRY,
+                value_types: [
+                    (count, ValueType::Size),
+                    (index, ValueType::Size),
+                    (maximum, ValueType::Size),
+                    (fits, ValueType::Bool),
+                    (object, ValueType::Ref(layout)),
+                    (lane, ValueType::Size),
+                    (condition, ValueType::Bool),
+                    (zero, ValueType::Size),
+                    (one, ValueType::Size),
+                    (next, ValueType::Size),
+                ].into_iter().collect(),
+                blocks: vec![
+                    BasicBlock {
+                        id: ENTRY,
+                        parameters: vec![
+                            BlockParameter { value: count, value_type: ValueType::Size, ownership: None },
+                            BlockParameter { value: index, value_type: ValueType::Size, ownership: None },
+                        ],
+                        operations: vec![
+                            Operation::ConstSize { destination: maximum, value: (u64::from(u32::MAX) - 8) / 4 },
+                            Operation::Compare {
+                                destination: fits,
+                                operator: ComparisonOperator::LessEqualUnsigned,
+                                left: count,
+                                right: maximum,
+                            },
+                            Operation::Guard { condition: fits, kind: GuardKind::Bounds },
+                            Operation::Alloc {
+                                destination: object,
+                                layout,
+                                extent: Extent::Counted { header_bytes: 8, count, capacity: count, stride_bytes: 4 },
+                                class: AllocationClass::ReferenceCounted,
+                            },
+                            Operation::ConstSize { destination: zero, value: 0 },
+                            Operation::ConstSize { destination: one, value: 1 },
+                        ],
+                        terminator: Terminator::Branch { target: header, arguments: vec![count] },
+                    },
+                    BasicBlock {
+                        id: header,
+                        parameters: vec![BlockParameter { value: lane, value_type: ValueType::Size, ownership: None }],
+                        operations: vec![Operation::Compare {
+                            destination: condition,
+                            operator: ComparisonOperator::LessUnsigned,
+                            left: index,
+                            right: lane,
+                        }],
+                        terminator: Terminator::BranchIf {
+                            condition,
+                            then_target: body,
+                            then_arguments: Vec::new(),
+                            else_target: exit,
+                            else_arguments: Vec::new(),
+                        },
+                    },
+                    BasicBlock {
+                        id: body,
+                        parameters: Vec::new(),
+                        operations: vec![
+                            Operation::Store {
+                                place: Place::projected(
+                                    object,
+                                    Projection::Element { index },
+                                    ValueType::Size,
+                                    AccessMode::Write,
+                                ),
+                                value: zero,
+                                transfer: StoreTransfer::CopyScalar,
+                            },
+                            Operation::Arithmetic {
+                                destination: next,
+                                operator: ArithmeticOperator::Add,
+                                left: lane,
+                                right: one,
+                                overflow: OverflowBehavior::Trap,
+                            },
+                        ],
+                        terminator: Terminator::Branch { target: header, arguments: vec![next] },
+                    },
+                    BasicBlock {
+                        id: exit,
+                        parameters: Vec::new(),
+                        operations: vec![Operation::Reclaim { object }],
+                        terminator: Terminator::Return { values: Vec::new() },
+                    },
+                ],
+            }],
+            proper_tail_sites: Vec::new(),
+        });
+        assert!(
+            matches!(check_initial(module), Err(InitialCheckError::InvalidExtent { object: refused, .. }) if refused == object),
+            "a store below the rebound lane must not be admitted",
         );
     }
 

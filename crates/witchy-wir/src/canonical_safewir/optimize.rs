@@ -216,8 +216,8 @@ fn rewrite(
 
 /// The implied-guard rewrite on a lowered candidate, before any check.
 /// Nothing here grants authority: the result is an ordinary lowered candidate
-/// that must pass the complete initial check, and the independent rewrite
-/// relation must hold against `lowered`. Checking this module first spares
+/// that must pass the complete initial check, and its shape must match
+/// `lowered` less some guards. Checking this module first spares
 /// checking the guarded one whenever it is admitted; a caller that sees one
 /// function rejected retries with that function left `excluded` (as
 /// lowered), and checks `lowered` itself as the last resort. `None` when no
@@ -262,7 +262,10 @@ pub(super) fn check_rewrite_relation(
 
 /// The relation between any two stages; `advances_revision` says whether a
 /// change must advance the revision (a pass over a checked revision) or keep
-/// it (a lowered candidate that has not been checked yet).
+/// it (a lowered candidate that has not been checked yet). Only a pass over a
+/// checked revision re-proves that each removed guard is implied: nothing
+/// checks its result again, while a lowered candidate goes through the
+/// complete initial check.
 fn check_rewrite_relation_between<A: ModuleStage, B: ModuleStage>(
     before: &CanonicalModule<A>,
     after: &CanonicalModule<B>,
@@ -290,9 +293,9 @@ fn check_rewrite_relation_between<A: ModuleStage, B: ModuleStage>(
         return Err(RewriteRelationError::FunctionShapeChanged);
     }
     let mut changed = false;
-    let raw_bytes = super::analysis::raw_byte_layouts(before);
+    let raw_bytes = advances_revision.then(|| super::analysis::raw_byte_layouts(before));
     for (before, after) in before.functions.iter().zip(&after.functions) {
-        changed |= check_function_relation(before, after, &raw_bytes)?;
+        changed |= check_function_relation(before, after, raw_bytes.as_ref())?;
     }
     let expected_revision = if changed && advances_revision {
         before
@@ -308,10 +311,11 @@ fn check_rewrite_relation_between<A: ModuleStage, B: ModuleStage>(
     Ok(())
 }
 
+/// `raw_bytes` is present when each removed guard must be re-proven implied.
 fn check_function_relation(
     before: &Function,
     after: &Function,
-    raw_bytes: &BTreeSet<crate::layout::LayoutId>,
+    raw_bytes: Option<&BTreeSet<crate::layout::LayoutId>>,
 ) -> Result<bool, RewriteRelationError> {
     if before.id != after.id
         || before.signature != after.signature
@@ -352,7 +356,7 @@ fn check_function_relation(
     }
     // Each removed guard is implied by the guards that remain, not by itself
     // or another removed guard.
-    if !removed.is_empty() {
+    if let Some(raw_bytes) = raw_bytes && !removed.is_empty() {
         let implied = super::analysis::implied_guards(function, raw_bytes, |point| !removed.contains(&point));
         if removed.iter().any(|point| implied.get(point) != Some(&true)) {
             return Err(RewriteRelationError::GuardHasNoEarlierSurvivingMatch);

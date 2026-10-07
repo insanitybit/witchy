@@ -265,11 +265,33 @@ impl<'a> MemoryChecker<'a> {
             };
             owner_identity_rebases.insert(identity, rebase);
         }
+        // A parameter bound to a different value on this edge is a new value
+        // in the target. Facts the predecessor still holds about the old one
+        // (a loop header's parameter, reached again by its back edge) must not
+        // meet with another edge's facts as if they described the new one.
+        // A parameter passed itself keeps its facts: it is the same value. A
+        // rebound parameter that is also an argument (a loop rotating its
+        // parameters) keeps them too: the rename carries them to the
+        // parameter that now holds its old value.
+        let redefined = arguments.iter().zip(&target.parameters)
+            .filter(|(argument, parameter)| **argument != parameter.value)
+            .map(|(_, parameter)| parameter.value)
+            .collect::<SortedSet<_>>();
+        let current = |value: &ValueId| !redefined.contains(value) || renames.contains_key(value);
         let mut objects = SortedMap::new();
         for (value, state) in &self.state.objects {
             let original_value = *value;
             let mut state = state.clone();
+            // An extent named by a rebound parameter no longer measures the
+            // object: the parameter now holds another value. Keep only what
+            // the header proves; a checked header read re-establishes the
+            // count.
+            let stale_extent = matches!(state.extent, Extent::Counted { count, capacity, .. }
+                if !current(&count) || !current(&capacity));
             state.extent = remap_extent(&renames, &state.extent);
+            if stale_extent && let Extent::Counted { header_bytes, .. } = state.extent {
+                state.extent = Extent::HeaderPrefix { minimum_bytes: header_bytes };
+            }
             if let Some((count, capacity)) = counted_unique_lanes.get(&original_value)
                 && let Extent::Counted { header_bytes, stride_bytes, .. } = state.extent
             {
@@ -427,16 +449,77 @@ impl<'a> MemoryChecker<'a> {
                 .extend(origins);
         }
 
-        // A parameter bound to a different value on this edge is a new value
-        // in the target. Facts the predecessor still holds about the old one
-        // (a loop header's parameter, reached again by its back edge) must not
-        // meet with another edge's facts as if they described the new one.
-        // A parameter passed itself keeps its facts: it is the same value.
-        let redefined = arguments.iter().zip(&target.parameters)
-            .filter(|(argument, parameter)| **argument != parameter.value)
-            .map(|(_, parameter)| parameter.value)
-            .collect::<SortedSet<_>>();
-        let current = |value: &ValueId| !redefined.contains(value);
+        // A stored child is an obligation, not a fact: one recorded at a slot
+        // whose index the edge rebinds cannot be dropped or renamed, so the
+        // join is refused.
+        if let Some(((container, _), _)) = self.state.stored_objects.iter()
+            .find(|((_, slot), _)| matches!(slot, SlotIdentity::Dynamic(index) if !current(index)))
+        {
+            return Err(InitialCheckError::IncompatibleMemoryJoin {
+                function: self.function.id,
+                block: target.id,
+                object: *container,
+            });
+        }
+        // The loop invariant the dropped facts stood in for: when this
+        // predecessor proves an object's scalar prefix `[0, argument)`
+        // initialized, `[0, parameter)` is initialized in the target, since
+        // the parameter takes the argument's value.
+        let mut carried_prefixes = Vec::new();
+        // The start label must be zero in the target too: a zero passed as an
+        // argument would name a parameter that is zero on this edge only.
+        let zero = self.state.constants.iter()
+            .find(|(value, constant)| **constant == 0 && current(value) && !renames.contains_key(value))
+            .map(|(value, _)| *value);
+        let lanes = arguments.iter().zip(&target.parameters)
+            .filter(|(argument, parameter)| **argument != parameter.value
+                && parameter.value_type == ValueType::Size
+                && !self.is_zero(**argument))
+            .collect::<Vec<_>>();
+        if let Some(zero) = zero && !lanes.is_empty() {
+            // Only a partly initialized object can gain from the invariant: one
+            // with some initialization evidence and no whole-value summary.
+            let evidenced = self.state.range_states.iter()
+                .filter(|(_, range)| range.initialized)
+                .map(|(identity, _)| identity.object)
+                .chain(self.state.initialized_scalar_slots.iter().map(|(container, _)| *container))
+                .filter_map(|value| self.state.objects.get(&value).map(|object| object.identity))
+                .collect::<SortedSet<_>>();
+            let mut seen = SortedSet::new();
+            let candidates = self.state.objects.iter()
+                .filter(|(value, object)| matches!(object.extent, Extent::Counted { .. })
+                    && matches!(object.ownership, Ownership::Unique | Ownership::Shared)
+                    && !object.initialized_owned_slots
+                    && evidenced.contains(&object.identity)
+                    && current(value)
+                    && seen.insert(object.identity))
+                .filter_map(|(value, object)| self.descriptor(object.layout).ok()
+                    .and_then(|descriptor| descriptor.kind().packed_element_layout())
+                    .filter(|element| self.require_scalar_range_element(*element, "").is_ok())
+                    .map(|element| (*value, object, element)))
+                .collect::<Vec<_>>();
+            if !candidates.is_empty() {
+                let steps = UpperSteps::new(&self.state, |_| true);
+                let budget = self.state.exact_additions.len().saturating_add(1);
+                for (argument, parameter) in &lanes {
+                    for (value, object, element) in &candidates {
+                        if self.scalar_prefix_initialized_scan(&steps, *value, **argument, *element, budget) {
+                            carried_prefixes.push((
+                                RangeIdentity { object: remap_value(&renames, *value), start: zero, length: parameter.value },
+                                RangeState {
+                                    element: *element,
+                                    ownership: object.ownership,
+                                    allocation_class: object.allocation_class,
+                                    initialized: true,
+                                    zero_width: false,
+                                    zero_start: true,
+                                },
+                            ));
+                        }
+                    }
+                }
+            }
+        }
         let mut edge = MemoryState {
             objects: objects.into(),
             shared_phi_origins: shared_phi_origins.into(),
@@ -450,7 +533,9 @@ impl<'a> MemoryChecker<'a> {
             // wrote. No evidence is invented here: carried facts still rebase
             // exactly as before, while uncarried ones remain tied to the
             // unchanged allocation.
-            bound_generations: self.state.bound_generations.iter().map(|(value, facts)| {
+            bound_generations: self.state.bound_generations.iter()
+                .filter(|(value, _)| current(value))
+                .map(|(value, facts)| {
                 let carried = remap_value(&renames, *value) != *value;
                 (
                     remap_value(&renames, *value),
@@ -475,7 +560,9 @@ impl<'a> MemoryChecker<'a> {
                     }).collect(),
                 )
             }).collect(),
-            fresh_header_lengths: self.state.fresh_header_lengths.iter().map(|(value, facts)| {
+            fresh_header_lengths: self.state.fresh_header_lengths.iter()
+                .filter(|(value, _)| current(value))
+                .map(|(value, facts)| {
                 let carried = remap_value(&renames, *value) != *value;
                 (
                     remap_value(&renames, *value),
@@ -490,6 +577,8 @@ impl<'a> MemoryChecker<'a> {
                 .state
                 .initialized_scalar_slots
                 .iter()
+                .filter(|(container, index)| current(container)
+                    && !matches!(index, SlotIdentity::Dynamic(value) if !current(value)))
                 .map(|(container, index)| (remap_value(&renames, *container), match index { SlotIdentity::Constant(n) => SlotIdentity::Constant(*n), SlotIdentity::Dynamic(value) => SlotIdentity::Dynamic(remap_value(&renames, *value)) }))
                 .collect(),
             stored_objects: self
@@ -529,6 +618,7 @@ impl<'a> MemoryChecker<'a> {
                 .state
                 .range_states
                 .iter()
+                .filter(|(identity, _)| current(&identity.object) && current(&identity.start) && current(&identity.length))
                 .map(|(identity, state)| {
                     (
                         RangeIdentity {
@@ -540,20 +630,28 @@ impl<'a> MemoryChecker<'a> {
                     )
                 })
                 .collect(),
-            full_current_prefixes: self.state.full_current_prefixes.iter().map(|identity| {
+            full_current_prefixes: self.state.full_current_prefixes.iter()
+                .filter(|identity| current(&identity.object) && current(&identity.start) && current(&identity.length))
+                .map(|identity| {
                 RangeIdentity {
                     object: remap_value(&renames, identity.object),
                     start: remap_value(&renames, identity.start),
                     length: remap_value(&renames, identity.length),
                 }
             }).collect(),
-            constants: self
-                .state
-                .constants
-                .iter()
-                .filter(|(value, _)| current(value))
-                .map(|(value, constant)| (remap_value(&renames, *value), *constant))
-                .collect(),
+            // A constant passed on an edge is still that constant under its
+            // own name: keep both, so a dominating `ConstSize` stays known.
+            constants: {
+                let mut constants = Vec::with_capacity(self.state.constants.len() * 2);
+                for (value, constant) in self.state.constants.iter().filter(|(value, _)| current(value)) {
+                    let renamed = remap_value(&renames, *value);
+                    constants.push((renamed, *constant));
+                    if renamed != *value && !redefined.contains(value) {
+                        constants.push((*value, *constant));
+                    }
+                }
+                constants.into_iter().collect()
+            },
             exact_additions: self
                 .state
                 .exact_additions
@@ -609,6 +707,7 @@ impl<'a> MemoryChecker<'a> {
                 .state
                 .header_values
                 .iter()
+                .filter(|((object, _), value)| current(object) && current(value))
                 .map(|((object, field), value)| {
                     (
                         (remap_value(&renames, *object), *field),
@@ -623,6 +722,15 @@ impl<'a> MemoryChecker<'a> {
                 .map(|object| remap_value(&renames, *object))
                 .collect(),
         };
+        for (identity, range) in carried_prefixes {
+            let known = edge.range_states.iter().any(|(existing, state)| {
+                existing.object == identity.object && existing.length == identity.length
+                    && state.zero_start && state.initialized && state.element == range.element
+            });
+            if !known {
+                edge.range_states.insert(identity, range);
+            }
+        }
         // A shared phi rebase never retains predecessor observations: a
         // HeaderPrefix phi has no scalar lanes, while a Counted phi receives
         // only its exact lanes below. Retaining an earlier header observation
@@ -939,7 +1047,8 @@ impl<'a> MemoryChecker<'a> {
             shared_phi_origins: meet_shared_phi_origins(existing, incoming).into(),
             bound_generations,
             guard_generations: meet_generation_facts(
-                &existing.guard_generations, &incoming.guard_generations,
+                &rebase_current_guard_generations(&existing.guard_generations, existing, &joined_identities),
+                &rebase_current_guard_generations(&incoming.guard_generations, incoming, &joined_identities),
             ),
             // Only the fresh-header observations rebase into the joined epoch;
             // see `rebase_joined_generations` for why the derived proofs above
@@ -992,12 +1101,17 @@ impl<'a> MemoryChecker<'a> {
             let range = ranges.get(&old).copied().ok_or_else(error)?;
             if !range.initialized || !range.zero_start
                 || !matches!(range.ownership, Ownership::Unique | Ownership::Shared)
-                || !allocations.insert(object.identity)
             {
                 return Err(error());
             }
+            // Old lengths stay beside their retagged range, so one allocation
+            // may hold several full prefixes. Each is an initialized fact, not
+            // an obligation: retag the first and keep the rest as they are.
+            if !allocations.insert(object.identity) {
+                continue;
+            }
             let fresh = RangeIdentity { length: count, ..old };
-            if fresh != old && ranges.contains_key(&fresh) {
+            if fresh != old && ranges.get(&fresh).is_some_and(|existing| *existing != range) {
                 return Err(error());
             }
             replacements.push((old, fresh, range));
@@ -1009,9 +1123,11 @@ impl<'a> MemoryChecker<'a> {
         // equality is inferred, and partial prefixes are never retagged.
         // Validate every replacement first: a collision or multiple complete
         // prefixes for one allocation must not silently erase an obligation.
+        // The old range stays: it is still initialized, and a later edge that
+        // names only the old length (a loop cursor equal to the count on the
+        // first pass alone) must still meet it.
         for (old, fresh, range) in replacements {
             if fresh != old {
-                ranges.remove(&old);
                 ranges.insert(fresh, range);
                 full_prefixes.remove(&old);
                 full_prefixes.insert(fresh);

@@ -837,6 +837,41 @@ fn rebase_joined_generations<K: Ord + Copy>(
         .collect()
 }
 
+/// Carry a guard proof that names its predecessor's *current* epoch of a
+/// joined owner into the joined epoch.
+///
+/// On that path the guard was established against the owner exactly as it is
+/// when control leaves; if every predecessor says so, the guard holds of the
+/// joined owner on whichever path arrived. A proof naming an older epoch (one a
+/// later mutation on that path retired) is left concrete, so it meets nothing
+/// and the refusal `bounds_guards_name_the_current_owner_generation` pins
+/// still stands.
+fn rebase_current_guard_generations(
+    facts: &CowFacts<SortedMap<(ComparisonOperator, ValueId, ValueId), SortedSet<OwnerGeneration>>>,
+    state: &MemoryState,
+    joined: &SortedSet<ValueId>,
+) -> CowFacts<SortedMap<(ComparisonOperator, ValueId, ValueId), SortedSet<OwnerGeneration>>> {
+    if joined.is_empty() {
+        return facts.clone();
+    }
+    let current = state.objects.values()
+        .filter(|object| joined.contains(&object.identity))
+        .map(|object| (object.identity, object.owner_generation))
+        .collect::<SortedMap<_, _>>();
+    let rebased = |fact: &OwnerGeneration| current.get(&fact.identity) == Some(&fact.epoch)
+        && fact.epoch != JOINED_OWNER_GENERATION;
+    if !facts.values().any(|set| set.iter().any(rebased)) {
+        return facts.clone();
+    }
+    facts.iter()
+        .map(|(key, set)| (*key, set.iter()
+            .map(|fact| if rebased(fact) {
+                OwnerGeneration { identity: fact.identity, epoch: JOINED_OWNER_GENERATION }
+            } else { *fact })
+            .collect()))
+        .collect()
+}
+
 fn all_entries_survive<K: Ord, V: PartialEq>(
     left: &SortedMap<K, V>,
     right: &SortedMap<K, V>,
@@ -953,13 +988,30 @@ fn meet_range_states(
         .range_states
         .iter()
         .filter_map(|(identity, current)| {
-            let mut candidates = incoming.range_states.iter().filter(|(candidate, next)| {
-                range_states_match(existing, identity, current, incoming, candidate, next)
-            });
-            let (_next_identity, next) = candidates.next()?;
-            if candidates.next().is_some() {
-                return None;
-            }
+            // The same range on both sides is its own match, however many
+            // others the scalar facts also equate with it.
+            let exact = incoming.range_states.get(identity)
+                .filter(|next| range_states_match(existing, identity, current, incoming, identity, next));
+            let next = match exact {
+                Some(next) => next,
+                None => {
+                    let mut candidates = incoming.range_states.iter().filter(|(candidate, next)| {
+                        range_states_match(existing, identity, current, incoming, candidate, next)
+                    });
+                    let (next_identity, next) = candidates.next()?;
+                    // The joined range keeps `existing`'s start label, which
+                    // range lookups compare by value: it must name the same
+                    // start on the incoming path, or be zero there for a
+                    // zero-start match.
+                    if candidates.next().is_some()
+                        || (next_identity.start != identity.start
+                            && !(current.zero_start && incoming.constants.get(&identity.start) == Some(&0)))
+                    {
+                        return None;
+                    }
+                    next
+                }
+            };
             if current.zero_width && next.zero_width {
                 return Some((
                     *identity,

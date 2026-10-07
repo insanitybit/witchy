@@ -170,9 +170,20 @@ impl<'a, K: Ord, V> Entry<'a, K, V> {
     }
 }
 
+/// Collect into one allocation sized by the iterator's upper bound: a
+/// filtered table is never larger than its source, and `Vec::from_iter`
+/// would start from the zero lower bound and regrow.
+fn collect_to_upper_bound<T>(items: impl IntoIterator<Item = T>) -> Vec<T> {
+    let items = items.into_iter();
+    let (lower, upper) = items.size_hint();
+    let mut collected = Vec::with_capacity(upper.unwrap_or(lower));
+    collected.extend(items);
+    collected
+}
+
 impl<K: Ord, V> FromIterator<(K, V)> for SortedMap<K, V> {
     fn from_iter<I: IntoIterator<Item = (K, V)>>(items: I) -> Self {
-        let mut entries: Vec<(K, V)> = items.into_iter().collect();
+        let mut entries: Vec<(K, V)> = collect_to_upper_bound(items);
         // Later duplicates win. Stable sorting preserves their arrival order;
         // dedup_by passes the later entry first and removes it on true, so swap
         // just duplicates to retain the complete last pair. Unique runs need
@@ -339,7 +350,7 @@ impl<T: Ord> SortedSet<T> {
 
 impl<T: Ord> FromIterator<T> for SortedSet<T> {
     fn from_iter<I: IntoIterator<Item = T>>(items: I) -> Self {
-        let mut items: Vec<T> = items.into_iter().collect();
+        let mut items: Vec<T> = collect_to_upper_bound(items);
         items.sort();
         items.dedup();
         Self { items }

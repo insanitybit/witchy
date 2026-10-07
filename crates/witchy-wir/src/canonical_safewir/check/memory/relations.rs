@@ -224,10 +224,15 @@ impl<'a> MemoryChecker<'a> {
     }
 
     pub(super) fn less_equal_in_with(facts: &MemoryState, steps: &UpperSteps, left: ValueId, right: ValueId) -> bool {
+        let right_constant = facts.constants.get(&right).copied();
         steps.reaches(facts, left, |value| {
             Self::same_scalar_with(facts, &steps.header_lengths, value, right)
                 || Self::constant_relation_in(facts, value, right, |left, right| left <= right)
                 || facts.constants.get(&value) == Some(&0)
+                // A scalar range bound is the same evidence a guard against
+                // the constant would have recorded.
+                || right_constant.zip(facts.scalar_upper_bounds.get(&value))
+                    .is_some_and(|(constant, upper)| *upper <= constant)
         })
     }
 

@@ -166,13 +166,15 @@ impl Facts {
         self.upper.insert(value, upper);
     }
 
-    /// Facts that survive an edge passing `arguments`. The checker carries
+    /// Facts that survive an edge passing `arguments` to `parameters`. The checker carries
     /// a fact onto a block parameter only in some cases (never onto a joined
     /// counted lane, which the lowerer re-guards), so the parameters start
     /// unproven, and a fact about a passed argument, which the checker
     /// renames to its parameter, is dropped.
-    fn across(&self, arguments: &[ValueId]) -> Self {
-        let kept = |value: &ValueId| !arguments.contains(value);
+    fn across(&self, arguments: &[ValueId], parameters: &[ValueId]) -> Self {
+        // A parameter is a new value on this edge (a loop header reached
+        // again): facts about its previous value do not describe it.
+        let kept = |value: &ValueId| !arguments.contains(value) && !parameters.contains(value);
         let operand = |operand: &Operand| match operand {
             Operand::Value(value) => kept(value),
             Operand::Constant(_) => true,
@@ -227,8 +229,22 @@ pub(super) fn implied_guards(
             *condition, &[ComparisonOperator::LessUnsigned, ComparisonOperator::LessEqualUnsigned]),
         _ => None,
     };
+    // An operation after which the checker no longer trusts an earlier bounds
+    // guard: it advances an owner generation without rebasing that guard.
+    // Relations against a constant bound no owner and survive.
+    let invalidates = |operation: &Operation| match operation {
+        Operation::UpdateCount { .. } | Operation::Reclaim { .. } => true,
+        Operation::Load { transfer, .. } => matches!(transfer,
+            super::LoadTransfer::TakeLast | super::LoadTransfer::TakeNullableUnique | super::LoadTransfer::TakeOwnedField),
+        Operation::Call { arguments, .. } | Operation::VarCall { arguments, .. } => arguments.iter().any(|argument| matches!(argument,
+            super::CallArgument::Move(value) if matches!(value_type(*value), Some(ValueType::Ref(_))))),
+        _ => false,
+    };
     // The facts each operation adds, guards aside.
     let step = |facts: &mut Facts, operation: &Operation| match operation {
+        operation if invalidates(operation) => {
+            facts.relations.retain(|(_, _, right)| matches!(right, Operand::Constant(_)));
+        }
         Operation::Load { destination, place, .. }
             if matches!(place.projection(), super::Projection::Element { .. })
                 && place.value_type() == ValueType::Size
@@ -297,7 +313,8 @@ pub(super) fn implied_guards(
             let Some(&target) = index.get(&target) else { continue };
             let mut outgoing = facts.clone();
             if let Some(condition) = condition { assume(&mut outgoing, condition); }
-            let outgoing = if arguments.is_empty() { outgoing } else { outgoing.across(arguments) };
+            let parameters = function.blocks[target].parameters.iter().map(|parameter| parameter.value).collect::<Vec<_>>();
+            let outgoing = if arguments.is_empty() && parameters.is_empty() { outgoing } else { outgoing.across(arguments, &parameters) };
             let met = match &entry[target] {
                 None => outgoing,
                 Some(previous) => previous.meet(&outgoing),

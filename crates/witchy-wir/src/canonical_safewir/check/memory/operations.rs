@@ -12,13 +12,23 @@ impl<'a> MemoryChecker<'a> {
             return Ok(());
         };
         self.assume_true_scalar_bound(comparison)?;
-        if comparison.operator != ComparisonOperator::LessUnsigned
-            || value_type(self.function, comparison.left)? != ValueType::Size
+        if value_type(self.function, comparison.left)? != ValueType::Size
             || value_type(self.function, comparison.right)? != ValueType::Size
         {
             return Ok(());
         }
-        self.assume_size_guard(comparison.operator, comparison.left, comparison.right);
+        match comparison.operator {
+            ComparisonOperator::LessUnsigned => {
+                self.assume_size_guard(comparison.operator, comparison.left, comparison.right);
+            }
+            // Equal Sizes each bound the other: a loop that stops when its
+            // cursor reaches a count has filled exactly that count.
+            ComparisonOperator::Equal => {
+                self.assume_size_guard(ComparisonOperator::LessEqualUnsigned, comparison.left, comparison.right);
+                self.assume_size_guard(ComparisonOperator::LessEqualUnsigned, comparison.right, comparison.left);
+            }
+            _ => {}
+        }
         Ok(())
     }
 
