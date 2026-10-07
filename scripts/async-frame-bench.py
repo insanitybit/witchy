@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import importlib.util
+import itertools
 import json
 import os
 from pathlib import Path
@@ -102,10 +103,10 @@ def main():
     rows = []
     for label, fixture, expected in fixtures:
         names = list(variants) + (["go"] if go_binaries else [])
+        orders = list(itertools.permutations(names))
         samples = {variant: [] for variant in names}
         for iteration in range(-2, args.runs):
-            offset = iteration % len(names)
-            order = names[offset:] + names[:offset]
+            order = orders[iteration % len(orders)]
             for variant in order:
                 prefix = output / f"{label}-{iteration}-{variant}"
                 native_cache = None
@@ -166,7 +167,8 @@ def main():
         for row in rows:
             kernel = row["kernel_ns"]
             ratio = kernel["candidate_over_go"]
-            report.append(f"| {row['workload']} | {kernel['go']['median'] / 1e6:.3f} | {ratio:.2f}× | {'pass' if kernel['candidate_over_go_95_percent_ci'][1] <= 3 else 'fail'} |")
+            verdict = "pass" if args.runs % 6 == 0 and kernel["candidate_over_go_95_percent_ci"][1] <= 3 else "unmet"
+            report.append(f"| {row['workload']} | {kernel['go']['median'] / 1e6:.3f} | {ratio:.2f}× | {verdict} |")
     metadata["load_average_end"] = os.getloadavg()
     (output / "results.json").write_text(json.dumps({"metadata": metadata, "workloads": rows}, indent=2) + "\n")
     (output / "report.md").write_text("\n".join(report))
