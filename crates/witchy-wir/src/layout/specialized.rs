@@ -1029,6 +1029,13 @@ impl LayoutInterner {
     /// Whether an allocation of layout `target` can be the object of `from`
     /// or be reachable from it through fields, elements, slots, or pointers.
     /// A layout this walk cannot read reaches everything.
+    ///
+    /// The memory checker lends a `let` reference to a callee only when no
+    /// reference lane of its contract may reach the lent layout. That rests on
+    /// every SafeWIR operation that derives a reference of layout X from an
+    /// object of layout Y keeping X reachable from Y here: clones and moves
+    /// keep the layout, and loads follow the edges walked below. An operation
+    /// that reinterprets an allocation under another layout must add its edge.
     pub fn may_reach(&self, from: LayoutId, target: LayoutId) -> bool {
         let Ok(target) = self.resolve_nominal(target) else { return true };
         self.may_reach_within(from, target, &mut Vec::new())
