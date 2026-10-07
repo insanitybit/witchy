@@ -678,9 +678,16 @@ impl<'a> MemoryChecker<'a> {
             || state.allocation_class != Some(AllocationClass::ReferenceCounted)
             || !self.is_sole_live_token(object, state.identity)
         { return Err(InitialCheckError::InvalidOwnership { function: self.function.id, object }); }
+        // Without a proof that the list's elements are exclusive, the taken
+        // edge may share its referent with other tokens: it leaves as a
+        // shared token, which no later update may write in place.
         let exclusive_element = matches!(expected, ValueType::Ref(_)) && self.exclusive_list_elements(object)?;
-        if matches!(expected, ValueType::Ref(_)) && !exclusive_element {
-            return self.unsupported("TakeLast(reference without exclusive element proof)");
+        // An affine (move-only) element may never become a shared token,
+        // exactly as a shared load of one is refused.
+        if matches!(expected, ValueType::Ref(_)) && !exclusive_element
+            && matches!(self.state.affine_plans.get(&object), Some(super::super::AffinePhysicalPlan::Sequence { .. }))
+        {
+            return self.unsupported("TakeLast(affine element without exclusive element proof)");
         }
         let Extent::Counted { header_bytes, count, capacity, stride_bytes } = state.extent else {
             return self.unsupported("TakeLast(uncounted)");
@@ -702,6 +709,14 @@ impl<'a> MemoryChecker<'a> {
         }
         let containers = self.state.objects.iter().filter_map(|(value, candidate)|
             (candidate.identity == state.identity).then_some(*value)).collect::<SortedSet<_>>();
+        // The remaining slots keep the edge ownership their prefix had: a
+        // prefix any range records as shared stays shared.
+        let prefix_ownership = if self.state.range_states.iter().any(|(range, range_state)|
+            containers.contains(&range.object) && range_state.initialized
+                && !matches!(range_state.ownership, Ownership::Unique | Ownership::Consumed))
+            || self.state.stored_objects.iter().any(|((container, _), stored)|
+                containers.contains(container) && stored.ownership == Ownership::Shared)
+        { Ownership::Shared } else { Ownership::Unique };
         self.state.stored_objects.retain(|(container, _), _| !containers.contains(container));
         self.state.range_states.retain(|range, _| !containers.contains(&range.object));
         self.state.initialized_scalar_slots.retain(|(container, _)| !containers.contains(container));
@@ -714,7 +729,7 @@ impl<'a> MemoryChecker<'a> {
             // Preserve shared children through stores, moves and publication.
             self.state.range_states.insert(
                 RangeIdentity { object, start: *index, length: *index },
-                RangeState { element, ownership: Ownership::Unique,
+                RangeState { element, ownership: prefix_ownership,
                     allocation_class: Some(AllocationClass::ReferenceCounted),
                     initialized: true, zero_width: self.is_zero(*index), zero_start: true },
             );
@@ -741,10 +756,11 @@ impl<'a> MemoryChecker<'a> {
             // Transfer one owned reference. Recursive child facts come only
             // from the source-bound list plan and checked element stores.
             self.state.objects.insert(destination, ObjectState {
-                identity: destination, owner_generation: 0, layout, extent, ownership: Ownership::Unique,
+                identity: destination, owner_generation: 0, layout, extent,
+                ownership: if exclusive_element { Ownership::Unique } else { Ownership::Shared },
                 allocation_class: Some(AllocationClass::ReferenceCounted), shared_immutable: false, initialized_owned_slots: true,
             });
-            let child_plan = self.state.affine_plans.get(&object).and_then(|plan| match plan {
+            let child_plan = exclusive_element.then(|| self.state.affine_plans.get(&object)).flatten().and_then(|plan| match plan {
                 super::super::AffinePhysicalPlan::Sequence { element, child } if *element == layout => Some(child.as_ref().clone()),
                 _ => None,
             });

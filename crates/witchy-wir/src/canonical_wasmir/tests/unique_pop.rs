@@ -193,11 +193,7 @@ pub fn unique_pop_checker_refuses_shared_container_missing_bounds_and_non_tail()
     for mutation in 0..3 {
         assert!(check_initial_with_test_witness(candidate(false, Some(mutation))).is_err(), "scalar mutation {mutation}");
     }
-    // A raw pointer-bearing parameter has no checked source element plan.
-    // Fresh local stores do not grant that missing call-boundary authority.
-    let error = match check_initial_with_test_witness(candidate(true, None)) {
-        Err(error) => error,
-        Ok(_) => panic!("raw pointer pop lacks source proof"),
-    };
-    assert!(format!("{error:?}").contains("TakeLast(reference without exclusive element proof)"));
+    // A raw pointer-bearing parameter has no checked source element plan, so
+    // its popped element is a shared token, never a unique one.
+    check_initial_with_test_witness(candidate(true, None)).expect("pointer pop yields a shared token");
 }

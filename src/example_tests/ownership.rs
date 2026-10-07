@@ -361,3 +361,11 @@ fn main(console: Console):
         let src = "type Box:\n    items: List(Int)\n\nfn rewrap(own b: Box) -> Box:\n    Box(b.items)\n\nfn fresh(n: Int) -> List(Int):\n    var xs: List(Int) = []\n    xs.push(n)\n    xs\n\nfn main(console: Console):\n    let c = 3 > 2\n    let joined = Box(if c: [1] else: [2])\n    let moved = rewrap(Box([5, 6]))\n    let made = Box(fresh(7))\n    console.print(\"${joined.items} ${moved.items} ${made.items}\")\n";
         assert_eq!(wasm_run(src), ["[1] [5, 6] [7]"]);
     }
+
+    /// Popping a reference element another binding still holds hands out a
+    /// shared token: writing the popped value copies, the holder keeps its own.
+    #[test]
+    fn popped_reference_elements_keep_value_semantics() {
+        let src = "fn main(console: Console):\n    let inner = [1, 2]\n    var xs = [inner, [3]]\n    xs.push(inner)\n    var words = [\"x\", \"y\"]\n    let w = words.pop()\n    match xs.pop():\n        Some(ys) ->\n            var zs = ys\n            zs.push(9)\n            console.print(\"${zs} ${inner} ${xs}\")\n        None -> console.print(\"none\")\n    console.print(\"${w} ${words} ${words.pop()} ${words.pop()}\")\n";
+        assert_eq!(wasm_run(src), ["[1, 2, 9] [1, 2] [[1, 2], [3]]", "Some(y) [x] Some(x) None"]);
+    }

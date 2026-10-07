@@ -68,12 +68,9 @@ witchy::rfc0129_scalar_executor_performance packed_aggregate_channel_uses_direct
 # Exposed when the legacy WIR pipeline was deleted (2026-10-06): these ran only
 # through it, and `witchy <file>` on master already refused the same programs.
 # Each is an admitted-family canonical gap, listed so it stays visible:
-# - pop of a reference element: SafeWIR TakeLast requires an exclusive-element
-#   proof that only fresh/affine lists carry (`List(String).pop()` refuses).
 # - an indexed structured-join/cancel fan-out: InvalidOwnership in the executor.
 # - comptime `typeinfo` expansion binds `prefix` twice (DuplicateBinding).
 # - `derive` on an enum (Show/Deserialize) has no checked source session yet.
-witchy::bin/witchy example_tests::ownership::rfc0088_record_and_adt_leaves_survive_shared_extraction
 witchy::bin/witchy example_tests::async_channels::channel_structured_join_cancel_indexed_fanouts_backends_agree
 witchy::bin/witchy example_tests::comptime::comptime_typeinfo_exposes_structured_type_expr_on_both_backends
 witchy::bin/witchy example_tests::interpolation::rfc0053_interpolation_honors_custom_show
