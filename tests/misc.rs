@@ -51,6 +51,8 @@ mod semantic_conformance;
 mod let_borrow_value_semantics;
 #[path = "misc/unconstrained_generic_argument.rs"]
 mod unconstrained_generic_argument;
+#[path = "misc/function_value_tail_cycle.rs"]
+mod function_value_tail_cycle;
 #[path = "misc/sealed_task_handles.rs"]
 mod sealed_task_handles;
 #[path = "misc/url_components.rs"]

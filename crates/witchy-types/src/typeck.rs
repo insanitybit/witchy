@@ -12182,6 +12182,38 @@ fn derive_proper_tail_manifest(module: &Module, table: &TypeTable) -> Result<Pro
             Item::Type(_) | Item::TypeAlias { .. } | Item::Const { .. } | Item::Comptime(_) => {}
         }
     }
+    // A named function used as a value is called through an adapter that
+    // forwards to it. Lowering builds one for every function an in-scope body
+    // names as a value, and that forwarding call is a proper tail call: a
+    // cycle through function values runs in bounded stack like a direct one.
+    let scope = witchy_canonical_source::scope::canonical_scope(module);
+    let mut adapter_targets = std::collections::BTreeSet::new();
+    for item in &module.items {
+        let Item::Function(function) = item else { continue };
+        if !scope.contains(&function.name) {
+            continue;
+        }
+        let _: Result<(), ()> = witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
+            if let Some(name) = table.declared_function_value(expression)
+                && scope.contains(name)
+                && functions.contains_key(name)
+            {
+                adapter_targets.insert(name.to_owned());
+            }
+            Ok(())
+        });
+    }
+    for (item, item_def) in module.items.iter().enumerate() {
+        let Item::Function(function) = item_def else { continue };
+        if adapter_targets.contains(&function.name) {
+            let item = u32::try_from(item).map_err(|_| ProperTailManifestError::PathOverflow)?;
+            keys.push(ProperTailSiteKey {
+                callable: ProperTailCallableId { item, method: None, lambda_path: Vec::new() },
+                path: vec![ProperTailPathStep::Adapter],
+                dispatch: ProperTailDispatchKind::Direct,
+            });
+        }
+    }
     keys.sort();
     u32::try_from(keys.len()).map_err(|_| ProperTailManifestError::PathOverflow)?;
     let mut ids = HashSet::default();
@@ -12726,6 +12758,7 @@ fn encode_path(path: &[ProperTailPathStep], bytes: &mut Vec<u8>) {
             ProperTailPathStep::Child(index) => { bytes.push(5); put_u32(bytes, *index); }
             ProperTailPathStep::Arm(index) => { bytes.push(6); put_u32(bytes, *index); }
             ProperTailPathStep::Guard => bytes.push(7),
+            ProperTailPathStep::Adapter => bytes.push(8),
         }
     }
 }
@@ -12769,7 +12802,8 @@ impl TypeTable {
         self.compiler_owned_materializations.contains(&(e as *const Expr as usize))
     }
 
-    pub(crate) fn declared_function_value(&self, e: &Expr) -> Option<&str> {
+    /// The declaration this exact expression names as a function value.
+    pub fn declared_function_value(&self, e: &Expr) -> Option<&str> {
         matches!(self.type_of(e), Some(Ty::Fn(..)))
             .then(|| self.declared_function_values.get(&(e as *const Expr as usize)))
             .flatten()

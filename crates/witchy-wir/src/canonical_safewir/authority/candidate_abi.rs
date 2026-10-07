@@ -573,11 +573,11 @@ pub(super) fn signature_lanes_match(
         && actual.contract.parameter_effects == expected.contract.parameter_effects
 }
 
-/// The adapter's body is exactly one forwarding call: one block, one `Call` to
-/// the target passing the adapter's parameters 1.. in order, optionally one
-/// release of the environment token it was handed, and a `Return` of the
-/// call's destinations. Anything else -- a second call, arithmetic, a
-/// reordered argument, a different terminator -- refuses.
+/// The adapter's body is exactly one forwarding tail call: one block that
+/// releases the environment token it was handed and ends in a `TailCall` to
+/// the target passing the adapter's parameters 1.. in order. Anything else --
+/// a call before the release, arithmetic, a reordered argument, a different
+/// terminator -- refuses.
 pub(super) fn adapter_body_forwards(
     adapter: &super::super::Function,
     target: super::super::FunctionId,
@@ -590,17 +590,23 @@ pub(super) fn adapter_body_forwards(
     }
     let parameters = block.parameters.iter().map(|parameter| parameter.value).collect::<Vec<_>>();
     let Some((environment, forwarded)) = parameters.split_first() else { return false };
-    let (call, tail) = match block.operations.split_first() {
-        Some((call, tail)) => (call, tail),
-        None => return false,
-    };
-    let super::super::Operation::Call { destinations, callee, arguments } = call else { return false };
+    // Exactly one release of the environment token the adapter was handed:
+    // every call site clones the record for the callee, so an adapter that
+    // kept its token would leak one reference per call.
+    match block.operations.as_slice() {
+        [super::super::Operation::Release { object } | super::super::Operation::DropRef { object }]
+            if owner_family.is_none() && object == environment => {}
+        [super::super::Operation::ClosureOwner(super::super::closure_owner_contract::OwnerOperation::Drop { owner, family })]
+            if owner_family == Some(*family) && owner == environment => {}
+        _ => return false,
+    }
+    let super::super::Terminator::TailCall { callee, arguments, .. } = &block.terminator else { return false };
     if *callee != target || arguments.len() != forwarded.len() {
         return false;
     }
     // A reference lane is forwarded by moving the token; a scalar lane is
     // passed by value. The convention is the target's, not the adapter's.
-    if !arguments.iter().zip(forwarded).enumerate().all(|(index, (argument, parameter))| {
+    arguments.iter().zip(forwarded).enumerate().all(|(index, (argument, parameter))| {
         match (argument, target_signature.parameters.get(index)) {
             (super::super::CallArgument::Move(value), Some(super::super::ValueType::Ref(_) | super::super::ValueType::Gc(_))) => value == parameter,
             (super::super::CallArgument::Value(value), Some(value_type)) => {
@@ -608,20 +614,7 @@ pub(super) fn adapter_body_forwards(
             }
             _ => false,
         }
-    }) {
-        return false;
-    }
-    // Exactly one release of the environment token the adapter was handed:
-    // every call site clones the record for the callee, so an adapter that
-    // kept its token would leak one reference per call.
-    match tail {
-        [super::super::Operation::Release { object } | super::super::Operation::DropRef { object }]
-            if owner_family.is_none() && object == environment => {}
-        [super::super::Operation::ClosureOwner(super::super::closure_owner_contract::OwnerOperation::Drop { owner, family })]
-            if owner_family == Some(*family) && owner == environment => {}
-        _ => return false,
-    }
-    matches!(&block.terminator, super::super::Terminator::Return { values } if values == destinations)
+    })
 }
 
 /// The candidate itself is not trusted to pair a lambda's code with its

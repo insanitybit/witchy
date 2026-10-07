@@ -35,6 +35,10 @@ pub enum ProperTailPathStep {
     Child(u32),
     Arm(u32),
     Guard,
+    /// The forwarding call of the adapter that makes a named function a
+    /// value. It has no source expression: the callable is the target
+    /// function, and the adapter discharges the site.
+    Adapter,
 }
 
 /// Stable tags for every current expression variant.  The explicit repr is a

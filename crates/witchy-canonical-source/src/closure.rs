@@ -335,6 +335,7 @@ fn put_path(path: &[ProperTailPathStep], bytes: &mut Vec<u8>) {
             ProperTailPathStep::Child(v) => { bytes.push(5); put_u32(bytes, *v as usize); }
             ProperTailPathStep::Arm(v) => { bytes.push(6); put_u32(bytes, *v as usize); }
             ProperTailPathStep::Guard => bytes.push(7),
+            ProperTailPathStep::Adapter => bytes.push(8),
         }
     }
 }

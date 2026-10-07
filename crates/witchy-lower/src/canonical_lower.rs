@@ -793,12 +793,29 @@ pub(crate) fn lower_typed_module_with_borrowed_views(
             continue;
         }
         let _: Result<(), ()> = witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
-            if let Expr::Var(name) = expression && source_function_names.contains(name) {
-                adapter_targets.insert(name.clone());
+            if let Some(name) = typed.table().declared_function_value(expression)
+                && scope.contains(name)
+                && source_function_names.contains(name)
+            {
+                adapter_targets.insert(name.to_owned());
             }
             Ok(())
         });
     }
+    // Each adapter's forwarding call discharges the checked manifest's
+    // adapter site for its target.
+    let adapter_sites = tail_manifest
+        .sites()
+        .iter()
+        .filter(|site| site.key.path == [ProperTailPathStep::Adapter])
+        .filter_map(|site| match typed.module().items.get(site.key.callable.item as usize) {
+            Some(Item::Function(function)) => Some((
+                function.name.clone(),
+                witchy_wir::canonical_safewir::TailSiteId::from_digest(site.id.as_bytes()),
+            )),
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
     for target in adapter_targets {
         let Some((target_id, target_signature)) = functions_by_name.get(&target).copied() else { continue };
         let Some(fn_type) = source.callable_signature(&target) else { continue };
@@ -811,12 +828,16 @@ pub(crate) fn lower_typed_module_with_borrowed_views(
         functions_by_name.insert(adapter_name.clone(), (adapter_id, signature_id));
         adapter_function_names.insert(adapter_name);
         closure_context.adapters.insert(target.clone(), (adapter_id, signature_id, fn_type));
+        let tail_site = adapter_sites.get(&target).copied().ok_or(CanonicalLoweringError::MissingProperTailSite(
+            "a named function value has no checked adapter tail site".to_string(),
+        ))?;
         adapters.push(AdapterFunction {
             source_name: target,
             id: adapter_id,
             signature_id,
             target: target_id,
             target_signature,
+            tail_site,
         });
     }
     for family in closure_context.families.values() {
@@ -1656,6 +1677,12 @@ if capability_imports.contains("build_out_write_at") {
     let call_tables = owned::CallTables::new(&signatures, &functions_by_name);
     let mut functions = Vec::new();
     let mut proper_tail_locations = BTreeMap::new();
+    for adapter in &adapters {
+        proper_tail_locations.insert(
+            adapter.tail_site,
+            witchy_wir::canonical_safewir::ProperTailLocation::new(adapter.tail_site, adapter.id, BlockId::new(0)),
+        );
+    }
     for (item_index, item) in typed.module().items.iter().enumerate() {
         let Item::Function(function) = item else { continue };
         if !scope.contains(&function.name) {
@@ -1869,6 +1896,7 @@ if capability_imports.contains("build_out_write_at") {
             typed.module(),
             &functions_by_name,
             &lambda_callables,
+            &adapters,
             &proper_tail_locations,
         )?,
     }, static_data_segments)
@@ -1924,6 +1952,7 @@ struct AdapterFunction {
     signature_id: FunctionSignatureId,
     target: FunctionId,
     target_signature: FunctionSignatureId,
+    tail_site: witchy_wir::canonical_safewir::TailSiteId,
 }
 
 /// The closure facts a function's lowering reads: the closure layout of
@@ -2197,11 +2226,6 @@ fn synthesize_adapter(adapter: &AdapterFunction, signatures: &[FunctionSignature
             CallArgument::Value(parameter.value)
         })
         .collect::<Vec<_>>();
-    let destinations = signature
-        .results
-        .iter()
-        .map(|value_type| fresh(*value_type, &mut value_types))
-        .collect::<Vec<_>>();
     let environment = parameters[0].value;
     let release = if let Some(owner) = closures.owners.iter().find(|owner| signature.parameters[0] == ValueType::Gc(owner.owner_type)) {
         Operation::ClosureOwner(OwnerOperation::Drop { owner: environment, family: owner.signature })
@@ -2215,11 +2239,10 @@ fn synthesize_adapter(adapter: &AdapterFunction, signatures: &[FunctionSignature
         blocks: vec![BasicBlock {
             id: BlockId::new(0),
             parameters,
-            operations: vec![
-                Operation::Call { destinations: destinations.clone(), callee: adapter.target, arguments },
-                release,
-            ],
-            terminator: Terminator::Return { values: destinations },
+            // The target never reads the environment, so the adapter releases
+            // it first and forwards in proper tail position.
+            operations: vec![release],
+            terminator: Terminator::TailCall { site: adapter.tail_site, callee: adapter.target, arguments },
         }],
     }
 }
@@ -22514,6 +22537,7 @@ fn canonical_tail_sites(
     module: &witchy_syntax::ast::Module,
     functions_by_name: &HashMap<String, (FunctionId, FunctionSignatureId)>,
     lambda_functions: &HashMap<ProperTailCallableId, FunctionId>,
+    adapters: &[AdapterFunction],
     locations: &BTreeMap<witchy_wir::canonical_safewir::TailSiteId, witchy_wir::canonical_safewir::ProperTailLocation>,
 ) -> Result<Vec<witchy_wir::canonical_safewir::ProperTailSite>, CanonicalLoweringError> {
     let scope = witchy_canonical_source::scope::canonical_scope(module);
@@ -22559,6 +22583,18 @@ fn canonical_tail_sites(
                 return Err(CanonicalLoweringError::TailManifest(
                     "proper-tail callable identity does not match canonical function mapping".to_string(),
                 ));
+            }
+            // An adapter site belongs to its target; the adapter discharges it.
+            if site.key.path == [ProperTailPathStep::Adapter] {
+                let canonical_site = witchy_wir::canonical_safewir::TailSiteId::from_digest(site.id.as_bytes());
+                let adapter = adapters.iter().find(|adapter| adapter.tail_site == canonical_site).ok_or(
+                    CanonicalLoweringError::MissingProperTailSite("an adapter tail site has no adapter".to_string()),
+                )?;
+                return Ok(witchy_wir::canonical_safewir::ProperTailSite {
+                    id: canonical_site,
+                    function: expected_function,
+                    discharged_by: Some(adapter.id),
+                });
             }
             // A site inside a lambda belongs to the function synthesized for
             // that lambda; a lambda without one is outside the subset.
