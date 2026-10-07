@@ -19836,9 +19836,11 @@ impl FunctionLowerer<'_> {
         let write_header = self.new_block(&write_state)?;
         let write_body = self.new_block(&write_state)?;
         let write_exit = self.new_block(&[])?;
-        // A dedicated copy: `total` itself is needed after the loop.
+        // Dedicated copies: `total` and `value` themselves are needed after
+        // the loop, and the checker renames a loop argument's facts.
         let start_position = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, total, zero, OverflowBehavior::Wrap)?;
-        self.finish_current(Terminator::Branch { target: write_header, arguments: vec![value, start_position] })?;
+        let start_rest = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Add, value, zero_int, OverflowBehavior::Wrap)?;
+        self.finish_current(Terminator::Branch { target: write_header, arguments: vec![start_rest, start_position] })?;
         let header_values = self.block_parameter_values(write_header);
         self.current = write_header;
         let more_positions = self.push_compare(ComparisonOperator::LessUnsigned, sign_len, header_values[1])?;
