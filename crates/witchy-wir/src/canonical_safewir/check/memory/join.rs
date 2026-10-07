@@ -427,6 +427,16 @@ impl<'a> MemoryChecker<'a> {
                 .extend(origins);
         }
 
+        // A parameter bound to a different value on this edge is a new value
+        // in the target. Facts the predecessor still holds about the old one
+        // (a loop header's parameter, reached again by its back edge) must not
+        // meet with another edge's facts as if they described the new one.
+        // A parameter passed itself keeps its facts: it is the same value.
+        let redefined = arguments.iter().zip(&target.parameters)
+            .filter(|(argument, parameter)| **argument != parameter.value)
+            .map(|(_, parameter)| parameter.value)
+            .collect::<SortedSet<_>>();
+        let current = |value: &ValueId| !redefined.contains(value);
         let mut edge = MemoryState {
             objects: objects.into(),
             shared_phi_origins: shared_phi_origins.into(),
@@ -451,7 +461,9 @@ impl<'a> MemoryChecker<'a> {
                     }).collect(),
                 )
             }).collect(),
-            guard_generations: self.state.guard_generations.iter().map(|((operator, left, right), facts)| {
+            guard_generations: self.state.guard_generations.iter()
+                .filter(|((_, left, right), _)| current(left) && current(right))
+                .map(|((operator, left, right), facts)| {
                 let carried = remap_value(&renames, *left) != *left
                     || remap_value(&renames, *right) != *right;
                 (
@@ -539,12 +551,14 @@ impl<'a> MemoryChecker<'a> {
                 .state
                 .constants
                 .iter()
+                .filter(|(value, _)| current(value))
                 .map(|(value, constant)| (remap_value(&renames, *value), *constant))
                 .collect(),
             exact_additions: self
                 .state
                 .exact_additions
                 .iter()
+                .filter(|(result, (left, right))| current(result) && current(left) && current(right))
                 .map(|(result, (left, right))| {
                     (
                         remap_value(&renames, *result),
@@ -556,6 +570,7 @@ impl<'a> MemoryChecker<'a> {
                 .state
                 .comparisons
                 .iter()
+                .filter(|(value, comparison)| current(value) && current(&comparison.left) && current(&comparison.right))
                 .map(|(value, comparison)| {
                     (
                         remap_value(&renames, *value),
@@ -571,17 +586,21 @@ impl<'a> MemoryChecker<'a> {
                 .state
                 .guards
                 .iter()
+                .filter(|(_, left, right)| current(left) && current(right))
                 .map(|(operator, left, right)| {
                     (*operator, remap_value(&renames, *left), remap_value(&renames, *right))
                 })
                 .collect(),
             scalar_upper_bounds: self.state.scalar_upper_bounds.iter()
+                .filter(|(value, _)| current(value))
                 .map(|(value, bound)| (remap_value(&renames, *value), *bound))
                 .collect(),
             widened_sizes: self.state.widened_sizes.iter()
+                .filter(|(wide, size)| current(wide) && current(size))
                 .map(|(wide, size)| (remap_value(&renames, *wide), remap_value(&renames, *size)))
                 .collect(),
             int_size_bounds: self.state.int_size_bounds.iter()
+                .filter(|(_, left, right)| current(left) && current(right))
                 .map(|(operator, left, right)| {
                     (*operator, remap_value(&renames, *left), remap_value(&renames, *right))
                 })

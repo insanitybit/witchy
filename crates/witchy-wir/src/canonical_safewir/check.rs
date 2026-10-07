@@ -4815,6 +4815,100 @@ pub mod self_checks {
         })
     }
 
+    /// A loop parameter is a new value on each back edge. A fact the body
+    /// still holds about its previous value (here: it was the constant 8)
+    /// must not meet the entry edge's equal fact as if it described the new
+    /// one, or an allocation sized by an unbounded value would be admitted.
+    pub fn back_edge_does_not_carry_facts_about_the_rebound_parameter() {
+        let eight = ValueId::new(0);
+        let lane = ValueId::new(1);
+        let object = ValueId::new(2);
+        let huge = ValueId::new(3);
+        let next = ValueId::new(4);
+        let condition = ValueId::new(5);
+        let header = BlockId::new(1);
+        let exit = BlockId::new(2);
+        let (layouts, layout) = packed_u32_layout();
+        let module = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(0),
+            checked_source: CheckedSourceIdentity::from_digest([7; 32]),
+            layouts,
+            signatures: vec![FunctionSignature {
+                id: SIGNATURE,
+                parameters: Vec::new(),
+                results: Vec::new(),
+                contract: contract(Vec::new()),
+            }],
+            imports: Vec::new(),
+            functions: vec![Function {
+                id: FUNCTION,
+                signature: SIGNATURE,
+                entry: ENTRY,
+                value_types: [
+                    (eight, ValueType::Size),
+                    (lane, ValueType::Size),
+                    (object, ValueType::Ref(layout)),
+                    (huge, ValueType::Size),
+                    (next, ValueType::Size),
+                    (condition, ValueType::Bool),
+                ].into_iter().collect(),
+                blocks: vec![
+                    BasicBlock {
+                        id: ENTRY,
+                        parameters: Vec::new(),
+                        operations: vec![Operation::ConstSize { destination: eight, value: 8 }],
+                        terminator: Terminator::Branch { target: header, arguments: vec![eight] },
+                    },
+                    BasicBlock {
+                        id: header,
+                        parameters: vec![BlockParameter { value: lane, value_type: ValueType::Size, ownership: None }],
+                        operations: vec![
+                            Operation::Alloc {
+                                destination: object,
+                                layout,
+                                extent: Extent::Counted { header_bytes: 8, count: lane, capacity: lane, stride_bytes: 4 },
+                                class: AllocationClass::ReferenceCounted,
+                            },
+                            Operation::Reclaim { object },
+                            Operation::ConstSize { destination: huge, value: u64::from(u32::MAX) },
+                            Operation::Arithmetic {
+                                destination: next,
+                                operator: ArithmeticOperator::Add,
+                                left: lane,
+                                right: huge,
+                                overflow: OverflowBehavior::Wrap,
+                            },
+                            Operation::Compare {
+                                destination: condition,
+                                operator: ComparisonOperator::LessUnsigned,
+                                left: lane,
+                                right: eight,
+                            },
+                        ],
+                        terminator: Terminator::BranchIf {
+                            condition,
+                            then_target: header,
+                            then_arguments: vec![next],
+                            else_target: exit,
+                            else_arguments: Vec::new(),
+                        },
+                    },
+                    BasicBlock {
+                        id: exit,
+                        parameters: Vec::new(),
+                        operations: Vec::new(),
+                        terminator: Terminator::Return { values: Vec::new() },
+                    },
+                ],
+            }],
+            proper_tail_sites: Vec::new(),
+        });
+        assert!(
+            matches!(check_initial(module), Err(InitialCheckError::MissingAllocationSizeGuard { capacity, .. }) if capacity == lane),
+            "an allocation sized by the rebound loop parameter must need its own guard",
+        );
+    }
+
     pub fn logical_length_guard_is_not_satisfied_by_capacity_guard() {
         let capacity = ValueId::new(1);
         assert_eq!(

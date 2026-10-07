@@ -91,8 +91,8 @@ impl Analysis for BoundsGuardRedundancy {
     type Fact = bool;
     const VERSION: u32 = 1;
 
-    fn compute(_module: &CanonicalModule<InitialValid>, function: &Function) -> Self::Result {
-        redundant_bounds_guards(function)
+    fn compute(module: &CanonicalModule<InitialValid>, function: &Function) -> Self::Result {
+        redundant_bounds_guards(function, &raw_byte_layouts(module))
     }
 
     fn fact_at(result: &Self::Result, point: ProgramPoint) -> Option<&Self::Fact> {
@@ -103,8 +103,30 @@ impl Analysis for BoundsGuardRedundancy {
 /// [`BoundsGuardRedundancy`]'s facts for one function: each bounds or
 /// arithmetic guard, keyed by its block and operation index, and whether an
 /// earlier guard already implies it on every path. A syntactic fact of the body.
-pub(super) fn redundant_bounds_guards(function: &Function) -> BTreeMap<(BlockId, usize), bool> {
-    implied_guards(function, |_| true)
+pub(super) fn redundant_bounds_guards(
+    function: &Function,
+    raw_bytes: &BTreeSet<crate::layout::LayoutId>,
+) -> BTreeMap<(BlockId, usize), bool> {
+    implied_guards(function, raw_bytes, |_| true)
+}
+
+/// The counted layouts whose elements are raw bytes, resolved as the memory
+/// checker resolves them: a `Size` element read of one is at most 255.
+pub(super) fn raw_byte_layouts<S: super::ModuleStage>(module: &CanonicalModule<S>) -> BTreeSet<crate::layout::LayoutId> {
+    let Ok((_, layouts)) = crate::layout::LayoutBundle::decode_canonical(&module.layouts().canonical_bytes()) else {
+        return BTreeSet::new();
+    };
+    module.functions().iter()
+        .flat_map(|function| function.value_types.values())
+        .filter_map(|value_type| match value_type { ValueType::Ref(layout) => Some(*layout), _ => None })
+        .filter(|layout| {
+            layouts.resolve_nominal(*layout).ok()
+                .and_then(|physical| layouts.get(physical))
+                .and_then(|descriptor| descriptor.kind().packed_element_layout())
+                .and_then(|element| layouts.resolve_nominal(element).ok().and_then(|element| layouts.get(element)))
+                .is_some_and(|element| element.kind() == &crate::layout::LayoutKind::Scalar(crate::layout::ScalarKind::RawByte))
+        })
+        .collect()
 }
 
 /// A guard operand: an SSA value, or a `Size` constant compared by value.
@@ -172,6 +194,7 @@ impl Facts {
 /// checker can ask the same question of the surviving guards alone.
 pub(super) fn implied_guards(
     function: &Function,
+    raw_bytes: &BTreeSet<crate::layout::LayoutId>,
     contributes: impl Fn((BlockId, usize)) -> bool,
 ) -> BTreeMap<(BlockId, usize), bool> {
     let mut constants = BTreeMap::new();
@@ -207,7 +230,9 @@ pub(super) fn implied_guards(
     // The facts each operation adds, guards aside.
     let step = |facts: &mut Facts, operation: &Operation| match operation {
         Operation::Load { destination, place, .. }
-            if matches!(place.projection(), super::Projection::Element { .. }) && place.value_type() == ValueType::Size =>
+            if matches!(place.projection(), super::Projection::Element { .. })
+                && place.value_type() == ValueType::Size
+                && matches!(value_type(place.object()), Some(ValueType::Ref(layout)) if raw_bytes.contains(&layout)) =>
         {
             facts.bound(*destination, 255);
         }

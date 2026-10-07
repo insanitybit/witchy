@@ -227,9 +227,10 @@ pub fn remove_redundant_bounds_guards_before_check(
     excluded: &BTreeSet<super::FunctionId>,
 ) -> Option<CanonicalModule<LoweredCandidate>> {
     // Copy the module only once some guard is known to go.
+    let raw_bytes = super::analysis::raw_byte_layouts(lowered);
     let redundant = lowered.functions.iter()
         .map(|function| if excluded.contains(&function.id) { BTreeMap::new() }
-            else { super::analysis::redundant_bounds_guards(function) })
+            else { super::analysis::redundant_bounds_guards(function, &raw_bytes) })
         .collect::<Vec<_>>();
     if !redundant.iter().any(|facts| facts.values().any(|&redundant| redundant)) {
         return None;
@@ -289,8 +290,9 @@ fn check_rewrite_relation_between<A: ModuleStage, B: ModuleStage>(
         return Err(RewriteRelationError::FunctionShapeChanged);
     }
     let mut changed = false;
+    let raw_bytes = super::analysis::raw_byte_layouts(before);
     for (before, after) in before.functions.iter().zip(&after.functions) {
-        changed |= check_function_relation(before, after)?;
+        changed |= check_function_relation(before, after, &raw_bytes)?;
     }
     let expected_revision = if changed && advances_revision {
         before
@@ -309,6 +311,7 @@ fn check_rewrite_relation_between<A: ModuleStage, B: ModuleStage>(
 fn check_function_relation(
     before: &Function,
     after: &Function,
+    raw_bytes: &BTreeSet<crate::layout::LayoutId>,
 ) -> Result<bool, RewriteRelationError> {
     if before.id != after.id
         || before.signature != after.signature
@@ -350,7 +353,7 @@ fn check_function_relation(
     // Each removed guard is implied by the guards that remain, not by itself
     // or another removed guard.
     if !removed.is_empty() {
-        let implied = super::analysis::implied_guards(function, |point| !removed.contains(&point));
+        let implied = super::analysis::implied_guards(function, raw_bytes, |point| !removed.contains(&point));
         if removed.iter().any(|point| implied.get(point) != Some(&true)) {
             return Err(RewriteRelationError::GuardHasNoEarlierSurvivingMatch);
         }
