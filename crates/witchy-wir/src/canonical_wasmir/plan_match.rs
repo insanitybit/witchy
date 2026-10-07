@@ -746,15 +746,15 @@ impl<'a> PlanEmitter<'a> {
             // Mirror of the encoder's canonical `while` form.
             Terminator::BranchIf { condition, then_target, then_arguments, else_target, else_arguments } if Some(*else_target) == exit => {
                 push_get(&mut self.plan, self.layout, *condition)?;
+                self.plan.push(PlanToken::I32Eqz);
                 self.plan.push(PlanToken::If("Empty".to_owned()));
                 self.labels.push(StructuredLabel::If);
-                self.push_branch_arguments(*then_target, then_arguments)?;
-                self.emit_path(*then_target, Some(header))?;
-                self.plan.push(PlanToken::Else);
                 self.push_branch_arguments(*else_target, else_arguments)?;
                 self.plan.push(PlanToken::Br(self.label_depth(block_label)));
                 self.plan.push(PlanToken::End);
                 self.labels.pop();
+                self.push_branch_arguments(*then_target, then_arguments)?;
+                self.emit_path(*then_target, Some(header))?;
             }
             terminator => self.emit_block_terminator(header, terminator, Some(header))?,
         }

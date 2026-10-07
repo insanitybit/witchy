@@ -1084,8 +1084,11 @@ impl StructuredEmitter<'_> {
         }
         match block.terminator.operation {
             // The canonical `while` shape (the header tests the condition and
-            // its `else` is the loop's exit) keeps its established form: the
-            // body under `if`, the exit as `else { br block }`.
+            // its `else` is the loop's exit) leaves under a negated test and
+            // runs the body as the header's fall-through. Cranelift lays out a
+            // conditional's first successor last, so a body under `if` would
+            // sit after the rest of the function and every iteration would
+            // take two branches instead of one.
             ScalarTerminator::BranchIf {
                 condition,
                 then_target,
@@ -1094,16 +1097,16 @@ impl StructuredEmitter<'_> {
                 else_arguments,
             } if Some(else_target) == exit => {
                 emit_get(self.body, self.layout, self.source_function.id, condition)?;
+                self.body.instruction(&wasm_encoder::Instruction::I32Eqz);
                 self.body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
                 self.labels.push(StructuredLabel::If);
-                self.emit_branch_arguments(then_target, &then_arguments)?;
-                self.emit_path(then_target, Some(header))?;
-                self.body.instruction(&wasm_encoder::Instruction::Else);
                 self.emit_branch_arguments(else_target, &else_arguments)?;
                 self.body
                     .instruction(&wasm_encoder::Instruction::Br(self.label_depth(block_label)));
                 self.body.instruction(&wasm_encoder::Instruction::End);
                 self.labels.pop();
+                self.emit_branch_arguments(then_target, &then_arguments)?;
+                self.emit_path(then_target, Some(header))?;
             }
             // Any other header (a short-circuit condition that decides the
             // exit in a later block, a header that only leaves by returning)
