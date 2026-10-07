@@ -161,6 +161,23 @@ impl Facts {
         }
     }
 
+    /// The tightest known upper bound of `value`: its recorded bound, a
+    /// relation against a constant, or one `extra` derives.
+    fn upper_of(&self, value: ValueId, extra: &BTreeMap<ValueId, u64>) -> Option<u64> {
+        let relational = self.relations.iter().filter_map(|(operator, left, right)| match (left, right) {
+            (Operand::Value(left), Operand::Constant(limit)) if *left == value => match operator {
+                ComparisonOperator::LessUnsigned => limit.checked_sub(1),
+                ComparisonOperator::LessEqualUnsigned => Some(*limit),
+                _ => None,
+            },
+            _ => None,
+        });
+        self.upper.get(&value).copied().into_iter()
+            .chain(relational)
+            .chain(extra.get(&value).copied())
+            .min()
+    }
+
     fn bound(&mut self, value: ValueId, upper: u64) {
         let upper = self.upper.get(&value).map_or(upper, |bound| (*bound).min(upper));
         self.upper.insert(value, upper);
@@ -349,6 +366,34 @@ pub(super) fn implied_guards(
             }
             step(&mut facts, operation);
         }
+        // A conditional branch whose condition every path has already
+        // proven, keyed at the terminator's position.
+        if let Terminator::BranchIf { condition, .. } = &block.terminator
+            && let Some(&(operator, left, right)) = comparisons.get(condition)
+            && matches!(value_type(left), Some(ValueType::Int | ValueType::Size))
+            && value_type(right) == value_type(left)
+            && let Some(limit) = constants.get(&right).copied()
+        {
+            let holds = facts.upper_of(left, &widened_size_bounds(&facts)).is_some_and(|upper| match operator {
+                ComparisonOperator::LessUnsigned => upper < limit,
+                ComparisonOperator::LessEqualUnsigned => upper <= limit,
+                _ => false,
+            });
+            implied.insert((block.id, block.operations.len()), holds);
+        }
     }
     implied
+}
+
+/// Upper bounds an `Int` inherits from a proven `int < widen(size)`
+/// (or `<=`) and the size's own upper bound.
+fn widened_size_bounds(facts: &Facts) -> BTreeMap<ValueId, u64> {
+    let mut bounds = BTreeMap::new();
+    for (operator, int, size) in &facts.int_bounds {
+        let Some(upper) = facts.upper_of(*size, &BTreeMap::new()) else { continue };
+        let upper = if *operator == ComparisonOperator::LessUnsigned { upper.saturating_sub(1) } else { upper };
+        let bound = bounds.entry(*int).or_insert(upper);
+        *bound = (*bound).min(upper);
+    }
+    bounds
 }

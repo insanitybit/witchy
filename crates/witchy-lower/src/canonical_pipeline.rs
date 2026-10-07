@@ -74,7 +74,8 @@ fn admit_checked_source_with_observer<R>(
         });
         match first {
             Ok(admitted) => Ok(admitted),
-            Err(_) if use_bounds_guard_pass(source) || !source_uses_opt(source) => {
+            Err(error) if use_bounds_guard_pass(source) || !source_uses_opt(source) => {
+                if std::env::var_os("WIRDIAG").is_some() { eprintln!("WIRBAIL admission: {error:?}"); }
                 // A transformation has no authority to make the baseline
                 // unexecutable. Retry from checked source through every
                 // checker and Wasm admission stage, never from its output.

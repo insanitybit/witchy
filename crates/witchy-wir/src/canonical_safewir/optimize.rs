@@ -13,9 +13,9 @@ use std::fmt;
 use super::analysis::{AnalysisDb, BoundsGuardRedundancy, ProgramPoint};
 
 use super::{
-    CanonicalModule, CheckedInitialSafeWir, CheckedOptimizedSafeWir, CheckedSafeWirRevision,
+    BlockId, CanonicalModule, CheckedInitialSafeWir, CheckedOptimizedSafeWir, CheckedSafeWirRevision,
     Function, GuardKind, InitialCheckError, InitialValid, LoweredCandidate, ModuleStage,
-    Operation, OptimizationAuthorityError, OptimizationCandidate, Revision,
+    Operation, OptimizationAuthorityError, OptimizationCandidate, Revision, Terminator,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -239,6 +239,14 @@ pub fn remove_redundant_bounds_guards_before_check(
     for (function, redundant) in candidate.functions.iter_mut().zip(&redundant) {
         for block in &mut function.blocks {
             let block_id = block.id;
+            // A conditional branch whose condition every path has proven
+            // always takes its true edge.
+            if redundant.get(&(block_id, block.operations.len())) == Some(&true)
+                && let Terminator::BranchIf { then_target, then_arguments, .. } = &mut block.terminator
+            {
+                let (target, arguments) = (*then_target, std::mem::take(then_arguments));
+                block.terminator = Terminator::Branch { target, arguments };
+            }
             let mut operation_index = 0;
             // Only a bounds guard: the initial check re-proves memory safety,
             // but nothing re-proves an arithmetic trap the analysis judged
@@ -250,9 +258,26 @@ pub fn remove_redundant_bounds_guards_before_check(
                 keep
             });
         }
+        // A folded branch's false edge may have been the only way into its
+        // diagnostic; the encoder admits no unreachable block.
+        let reachable = reachable_blocks(function);
+        function.blocks.retain(|block| reachable.contains(&block.id));
     }
     check_rewrite_relation_between(lowered, &candidate, false).ok()?;
     Some(candidate)
+}
+
+fn reachable_blocks(function: &Function) -> BTreeSet<BlockId> {
+    let terminators: BTreeMap<_, _> = function.blocks.iter().map(|block| (block.id, &block.terminator)).collect();
+    let mut reachable = BTreeSet::new();
+    let mut pending = vec![function.entry];
+    while let Some(block) = pending.pop() {
+        if !reachable.insert(block) { continue; }
+        if let Some(terminator) = terminators.get(&block) {
+            pending.extend(super::check::successors(terminator));
+        }
+    }
+    reachable
 }
 
 /// Independently recognize the one allowed rewrite. This intentionally does
@@ -297,9 +322,11 @@ fn check_rewrite_relation_between<A: ModuleStage, B: ModuleStage>(
         return Err(RewriteRelationError::FunctionShapeChanged);
     }
     let mut changed = false;
-    let raw_bytes = advances_revision.then(|| super::analysis::raw_byte_layouts(before));
+    // Decoded only when some guard or branch must be re-proven.
+    let raw_bytes = std::cell::OnceCell::new();
+    let raw_bytes = || raw_bytes.get_or_init(|| super::analysis::raw_byte_layouts(before));
     for (before, after) in before.functions.iter().zip(&after.functions) {
-        changed |= check_function_relation(before, after, raw_bytes.as_ref())?;
+        changed |= check_function_relation(before, after, &raw_bytes, advances_revision)?;
     }
     let expected_revision = if changed && advances_revision {
         before
@@ -315,29 +342,51 @@ fn check_rewrite_relation_between<A: ModuleStage, B: ModuleStage>(
     Ok(())
 }
 
-/// `raw_bytes` is present when each removed guard must be re-proven implied.
-fn check_function_relation(
+/// `reprove_guards` says whether each removed guard must be re-proven
+/// implied. A folded branch always must be: the checker proves memory
+/// safety, not that a diagnostic it no longer sees could never fire.
+fn check_function_relation<'r>(
     before: &Function,
     after: &Function,
-    raw_bytes: Option<&BTreeSet<crate::layout::LayoutId>>,
+    raw_bytes: &dyn Fn() -> &'r BTreeSet<crate::layout::LayoutId>,
+    reprove_guards: bool,
 ) -> Result<bool, RewriteRelationError> {
     if before.id != after.id
         || before.signature != after.signature
         || before.entry != after.entry
         || before.value_types != after.value_types
-        || before.blocks.len() != after.blocks.len()
     {
         return Err(RewriteRelationError::FunctionShapeChanged);
     }
-    let mut changed = false;
-    let mut removed = BTreeSet::new();
-    let function = before;
-    for (before, after) in before.blocks.iter().zip(&after.blocks) {
-        if before.id != after.id
-            || before.parameters != after.parameters
-            || before.terminator != after.terminator
-        {
+    // `after` keeps `before`'s blocks in order, less some that a folded
+    // branch left unreachable: `after` names no block it lacks.
+    let kept: BTreeSet<_> = after.blocks.iter().map(|block| block.id).collect();
+    let mut before_blocks = before.blocks.iter();
+    let mut pairs = Vec::with_capacity(after.blocks.len());
+    for after in &after.blocks {
+        let before = before_blocks.find(|before| before.id == after.id)
+            .ok_or(RewriteRelationError::BlockShapeChanged)?;
+        if super::check::successors(&after.terminator).iter().any(|target| !kept.contains(target)) {
             return Err(RewriteRelationError::BlockShapeChanged);
+        }
+        pairs.push((before, after));
+    }
+    let mut changed = kept.len() != before.blocks.len();
+    let mut removed = BTreeSet::new();
+    let mut folded = Vec::new();
+    let function = before;
+    for (before, after) in pairs {
+        if before.id != after.id || before.parameters != after.parameters {
+            return Err(RewriteRelationError::BlockShapeChanged);
+        }
+        if before.terminator != after.terminator {
+            let (Terminator::BranchIf { then_target, then_arguments, .. }, Terminator::Branch { target, arguments }) =
+                (&before.terminator, &after.terminator) else { return Err(RewriteRelationError::BlockShapeChanged) };
+            if then_target != target || then_arguments != arguments {
+                return Err(RewriteRelationError::BlockShapeChanged);
+            }
+            folded.push((before.id, before.operations.len()));
+            changed = true;
         }
 
         // `after` keeps every operation of `before` in order, less some
@@ -358,13 +407,54 @@ fn check_function_relation(
         }
         changed |= before.operations.len() != after.operations.len();
     }
-    // Each removed guard is implied by the guards that remain, not by itself
-    // or another removed guard.
-    if let Some(raw_bytes) = raw_bytes && !removed.is_empty() {
-        let implied = super::analysis::implied_guards(function, raw_bytes, |point| !removed.contains(&point));
-        if removed.iter().any(|point| implied.get(point) != Some(&true)) {
+    // Each removed guard and folded branch is implied by the guards that
+    // remain, not by itself or another removed guard.
+    let reproved = if reprove_guards { removed.iter().chain(&folded).copied().collect() } else { folded };
+    if !reproved.is_empty() {
+        let implied = super::analysis::implied_guards(function, raw_bytes(), |point| !removed.contains(&point));
+        if reproved.iter().any(|point| implied.get(point) != Some(&true)) {
             return Err(RewriteRelationError::GuardHasNoEarlierSurvivingMatch);
         }
     }
     Ok(changed)
+}
+
+#[cfg(feature = "raw-encoder-test-api")]
+#[doc(hidden)]
+pub mod self_checks {
+    use super::*;
+
+    /// Over a lowered module with both proven and unproven conditional
+    /// branches: only a proven one folds, and only an unnamed block goes.
+    pub fn folded_branches_must_be_implied(lowered: &CanonicalModule<LoweredCandidate>) {
+        let candidate = remove_redundant_bounds_guards_before_check(lowered, &BTreeSet::new())
+            .expect("some guard or branch is implied");
+        assert!(candidate.functions.iter().zip(&lowered.functions)
+            .any(|(after, before)| after.blocks.len() < before.blocks.len()),
+            "a proven branch folds and its diagnostic block goes");
+
+        let raw_bytes = super::super::analysis::raw_byte_layouts(lowered);
+        let (function, block) = lowered.functions.iter().enumerate().find_map(|(index, function)| {
+            let implied = super::super::analysis::redundant_bounds_guards(function, &raw_bytes);
+            function.blocks.iter().position(|block| matches!(block.terminator, Terminator::BranchIf { .. })
+                && implied.get(&(block.id, block.operations.len())) != Some(&true))
+                .map(|block| (index, block))
+        }).expect("an unproven conditional branch");
+        let mut forged = lowered.clone();
+        let block = &mut forged.functions[function].blocks[block];
+        let Terminator::BranchIf { then_target, then_arguments, .. } = &mut block.terminator else { unreachable!() };
+        let (target, arguments) = (*then_target, std::mem::take(then_arguments));
+        block.terminator = Terminator::Branch { target, arguments };
+        assert_eq!(check_rewrite_relation_between(lowered, &forged, false),
+            Err(RewriteRelationError::GuardHasNoEarlierSurvivingMatch), "an unproven fold is refused");
+
+        let mut dangling = lowered.clone();
+        let function = dangling.functions.iter_mut().find(|function| function.blocks.len() > 1)
+            .expect("a branching function");
+        let named = function.blocks.iter().flat_map(|block| super::super::check::successors(&block.terminator))
+            .next().expect("a branch target");
+        function.blocks.retain(|block| block.id != named);
+        assert_eq!(check_rewrite_relation_between(lowered, &dangling, false),
+            Err(RewriteRelationError::BlockShapeChanged), "a block a kept branch names cannot go");
+    }
 }

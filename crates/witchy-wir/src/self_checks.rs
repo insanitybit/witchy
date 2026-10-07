@@ -6,6 +6,7 @@ pub use crate::canonical_safewir::authority::self_checks as canonical_safewir_au
 pub use crate::canonical_safewir::build_read::self_checks as canonical_safewir_build_read;
 pub use crate::canonical_safewir::manifest::self_checks as canonical_safewir_manifest;
 pub use crate::canonical_safewir::check::self_checks as canonical_safewir_check;
+pub use crate::canonical_safewir::optimize::self_checks as canonical_safewir_optimize;
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::canonical_safewir::check::cache::store::self_checks as canonical_safewir_check_cache;
 pub use crate::canonical_safewir::check::contracts::self_checks as canonical_safewir_check_contracts;

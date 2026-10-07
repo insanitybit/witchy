@@ -2,6 +2,16 @@
 
 use witchy_wir::canonical_safewir::{Operation, Terminator, ValueId, check_initial_with_witness, validate_final};
 
+/// The lowered candidate of checked source, before any guard pass or check,
+/// for witchy-wir's rewrite-relation self-checks.
+pub fn lowered_candidate(
+    checked: &witchy_types::pipeline::CheckedModule,
+) -> witchy_wir::canonical_safewir::CanonicalModule<witchy_wir::canonical_safewir::LoweredCandidate> {
+    let source = checked.canonical_source().expect("canonical source");
+    let layouts = crate::canonical_layouts::derive_layout_bundle(source).expect("checked layouts");
+    crate::canonical_lower::lower_typed_module(source, layouts).expect("typed candidate")
+}
+
 pub fn task_producer_substitution_requires_actual_execution_provenance() {
     use witchy_types::runtime_type::{
         AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource,

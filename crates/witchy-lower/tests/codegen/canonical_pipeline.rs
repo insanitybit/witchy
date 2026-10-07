@@ -154,6 +154,13 @@ fn production_entry_emits_only_admitted_canonical_bytes() {
 }
 
 #[test]
+fn only_proven_branches_fold_before_the_check() {
+    let lowered = witchy_lower::canonical_pipeline_checks::lowered_candidate(&checked(
+        "import bytes\n\nfn main() -> Int:\n    let b = bytes.from_string(\"abc\")\n    var i = 0\n    var total = 0\n    while i < b.length():\n        total = total + b.at(i)\n        i = i + 1\n    total\n"));
+    witchy_wir::self_checks::canonical_safewir_optimize::folded_branches_must_be_implied(&lowered);
+}
+
+#[test]
 fn trapping_check_arms_are_hinted_cold_at_their_branches() {
     let checked = checked("fn main() -> Int:\n    [10][1]\n");
     let artifact = compile_checked_module_artifact(&checked)

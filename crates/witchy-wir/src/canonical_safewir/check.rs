@@ -1847,7 +1847,7 @@ fn predecessor_map(
     Ok(predecessors)
 }
 
-fn successors(terminator: &Terminator) -> Vec<BlockId> {
+pub(super) fn successors(terminator: &Terminator) -> Vec<BlockId> {
     match terminator {
         Terminator::Branch { target, .. } => vec![*target],
         Terminator::BranchIf { then_target, else_target, .. } => {
