@@ -143,6 +143,31 @@ pub(super) fn memarg(width: u32) -> MemArg {
     MemArg { offset: 0, align: width.next_power_of_two().trailing_zeros() as u32, memory_index: 0 }
 }
 
+/// `memarg` with a static byte offset in its immediate.
+pub(super) fn memarg_at(width: u32, offset: u64) -> MemArg {
+    MemArg { offset, ..memarg(width) }
+}
+
+/// The base of `access` on the stack and the static offset its memory
+/// instruction takes as an immediate. Wasm adds that immediate to the base
+/// without wrapping and traps past the end of memory, so a field or header
+/// access needs no overflow check of its own: the trap the checked sum
+/// raised is the trap the access raises. An indexed access keeps its checked
+/// i64 address and an offset of zero.
+pub(super) fn emit_access_base(
+    body: &mut wasm_encoder::Function,
+    function: &Function,
+    layout: &LocalLayout,
+    access: MemoryAccess,
+) -> Result<u64, EncodeError> {
+    if access.index.is_some() {
+        emit_projected_address(body, function, layout, access)?;
+        return Ok(0);
+    }
+    emit_get(body, layout, function.id, access.object)?;
+    Ok(u64::from(access.offset))
+}
+
 pub(super) fn emit_u32_trap_if_gt(
     body: &mut wasm_encoder::Function,
     layout: &LocalLayout,
@@ -489,8 +514,8 @@ pub(super) fn emit_typed_load(
     access: MemoryAccess,
     destination: ValueId,
 ) -> Result<(), EncodeError> {
-    emit_projected_address(body, function, layout, access)?;
-    let arg = memarg(access.width);
+    let offset = emit_access_base(body, function, layout, access)?;
+    let arg = memarg_at(access.width, offset);
     match access.scalar {
         ScalarKind::Unit => {
             body.instruction(&wasm_encoder::Instruction::I32Load(arg));
@@ -514,13 +539,13 @@ pub(super) fn emit_typed_store(
     access: MemoryAccess,
     value: ValueId,
 ) -> Result<(), EncodeError> {
-    emit_projected_address(body, function, layout, access)?;
+    let offset = emit_access_base(body, function, layout, access)?;
     if access.scalar == ScalarKind::Unit {
         body.instruction(&wasm_encoder::Instruction::I32Const(0));
     } else {
         emit_get(body, layout, function.id, value)?;
     }
-    let arg = memarg(access.width);
+    let arg = memarg_at(access.width, offset);
     match access.scalar {
         ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::RawByte => body.instruction(&wasm_encoder::Instruction::I32Store8(arg)),
         ScalarKind::Tag16 => body.instruction(&wasm_encoder::Instruction::I32Store16(arg)),
@@ -543,9 +568,9 @@ pub(super) fn emit_init_nullable_owned(
     if access.pointer_slot != Some(PointerSlot::OwnedNullable) || place.access() != AccessMode::Write {
         return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "InitNullableOwned" });
     }
-    emit_projected_address(body, function, layout, access)?;
+    let offset = emit_access_base(body, function, layout, access)?;
     body.instruction(&wasm_encoder::Instruction::I32Const(0));
-    body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
+    body.instruction(&wasm_encoder::Instruction::I32Store(memarg_at(4, offset)));
     Ok(())
 }
 
@@ -563,9 +588,9 @@ pub(super) fn emit_clear_owned_field(
     {
         return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "TakeOwnedField" });
     }
-    emit_projected_address(body, function, layout, access)?;
+    let offset = emit_access_base(body, function, layout, access)?;
     body.instruction(&wasm_encoder::Instruction::I32Const(0));
-    body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
+    body.instruction(&wasm_encoder::Instruction::I32Store(memarg_at(4, offset)));
     Ok(())
 }
 

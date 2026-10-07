@@ -350,6 +350,22 @@ pub(super) fn push_projected_address_plan(
     Ok(())
 }
 
+/// The plan of `emit_access_base`: an indexed access's checked address, or a
+/// field or header access's bare base with its offset left for the immediate.
+pub(super) fn push_access_base_plan(
+    plan: &mut Vec<PlanToken>,
+    function: &Function,
+    layout: &LocalLayout,
+    access: MemoryAccess,
+) -> Result<u64, CanonicalAdmissionError> {
+    if access.index.is_some() {
+        push_projected_address_plan(plan, function, layout, access)?;
+        return Ok(0);
+    }
+    push_get(plan, layout, access.object)?;
+    Ok(u64::from(access.offset))
+}
+
 pub(super) fn push_memory_load_plan(
     plan: &mut Vec<PlanToken>,
     function: &Function,
@@ -360,14 +376,13 @@ pub(super) fn push_memory_load_plan(
 ) -> Result<(), CanonicalAdmissionError> {
     let access = resolve_memory_place_for_values(function.id, &function.value_types, layouts, place)
         .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
-    push_projected_address_plan(plan, function, layout, access)?;
-    let memarg = |offset, align, memory| PlanToken::I32Load { offset, align, memory };
+    let offset = push_access_base_plan(plan, function, layout, access)?;
     plan.push(match access.scalar {
-        ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::RawByte => PlanToken::I32Load8U { offset: 0, align: 0, memory: 0 },
-        ScalarKind::Tag16 => PlanToken::I32Load16U { offset: 0, align: 1, memory: 0 },
-        ScalarKind::Unit | ScalarKind::U32 | ScalarKind::Tag32 | ScalarKind::Callable => memarg(0, 2, 0),
-        ScalarKind::Int | ScalarKind::Duration => PlanToken::I64Load { offset: 0, align: 3, memory: 0 },
-        ScalarKind::Float => PlanToken::F64Load { offset: 0, align: 3, memory: 0 },
+        ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::RawByte => PlanToken::I32Load8U { offset, align: 0, memory: 0 },
+        ScalarKind::Tag16 => PlanToken::I32Load16U { offset, align: 1, memory: 0 },
+        ScalarKind::Unit | ScalarKind::U32 | ScalarKind::Tag32 | ScalarKind::Callable => PlanToken::I32Load { offset, align: 2, memory: 0 },
+        ScalarKind::Int | ScalarKind::Duration => PlanToken::I64Load { offset, align: 3, memory: 0 },
+        ScalarKind::Float => PlanToken::F64Load { offset, align: 3, memory: 0 },
         _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
     });
     if access.scalar == ScalarKind::Unit {
@@ -388,8 +403,8 @@ pub(super) fn push_init_nullable_owned_plan(
     if access.pointer_slot != Some(PointerSlot::OwnedNullable) || place.access() != AccessMode::Write {
         return Err(CanonicalAdmissionError::UnsupportedPlan);
     }
-    push_projected_address_plan(plan, function, layout, access)?;
-    plan.extend([PlanToken::I32Const(0), PlanToken::I32Store { offset: 0, align: 2, memory: 0 }]);
+    let offset = push_access_base_plan(plan, function, layout, access)?;
+    plan.extend([PlanToken::I32Const(0), PlanToken::I32Store { offset, align: 2, memory: 0 }]);
     Ok(())
 }
 
@@ -408,8 +423,8 @@ pub(super) fn push_clear_owned_field_plan(
     {
         return Err(CanonicalAdmissionError::UnsupportedPlan);
     }
-    push_projected_address_plan(plan, function, layout, access)?;
-    plan.extend([PlanToken::I32Const(0), PlanToken::I32Store { offset: 0, align: 2, memory: 0 }]);
+    let offset = push_access_base_plan(plan, function, layout, access)?;
+    plan.extend([PlanToken::I32Const(0), PlanToken::I32Store { offset, align: 2, memory: 0 }]);
     Ok(())
 }
 
@@ -438,18 +453,18 @@ pub(super) fn push_memory_store_plan(
 ) -> Result<(), CanonicalAdmissionError> {
     let access = resolve_memory_place_for_values(function.id, &function.value_types, layouts, place)
         .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
-    push_projected_address_plan(plan, function, layout, access)?;
+    let offset = push_access_base_plan(plan, function, layout, access)?;
     if access.scalar == ScalarKind::Unit {
         plan.push(PlanToken::I32Const(0));
     } else {
         push_get(plan, layout, value)?;
     }
     plan.push(match access.scalar {
-        ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::RawByte => PlanToken::I32Store8 { offset: 0, align: 0, memory: 0 },
-        ScalarKind::Tag16 => PlanToken::I32Store16 { offset: 0, align: 1, memory: 0 },
-        ScalarKind::Unit | ScalarKind::U32 | ScalarKind::Tag32 | ScalarKind::Callable => PlanToken::I32Store { offset: 0, align: 2, memory: 0 },
-        ScalarKind::Int | ScalarKind::Duration => PlanToken::I64Store { offset: 0, align: 3, memory: 0 },
-        ScalarKind::Float => PlanToken::F64Store { offset: 0, align: 3, memory: 0 },
+        ScalarKind::Bool | ScalarKind::Tag8 | ScalarKind::RawByte => PlanToken::I32Store8 { offset, align: 0, memory: 0 },
+        ScalarKind::Tag16 => PlanToken::I32Store16 { offset, align: 1, memory: 0 },
+        ScalarKind::Unit | ScalarKind::U32 | ScalarKind::Tag32 | ScalarKind::Callable => PlanToken::I32Store { offset, align: 2, memory: 0 },
+        ScalarKind::Int | ScalarKind::Duration => PlanToken::I64Store { offset, align: 3, memory: 0 },
+        ScalarKind::Float => PlanToken::F64Store { offset, align: 3, memory: 0 },
         _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
     });
     Ok(())
