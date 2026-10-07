@@ -529,8 +529,13 @@ impl<'a> PlanEmitter<'a> {
         // block reached only through an enclosing loop's back edge or exit is
         // the next iteration's, not this branch's merge.
         let stops = self.escape_targets();
-        let then_distances = self.distances_until(then_target, &stops)?;
-        let else_distances = self.distances_until(else_target, &stops)?;
+        // A merge lies before the enclosing continuation: a block reached only
+        // through `stop` belongs to the code after this branch's region, and
+        // choosing it would emit `stop` inside one side and again after it.
+        let mut bounded = stops.clone();
+        bounded.extend(stop);
+        let then_distances = self.distances_until(then_target, &bounded)?;
+        let else_distances = self.distances_until(else_target, &bounded)?;
         // Mirror of the encoder's rule: a terminal side bypasses the merge and
         // contributes distance zero.
         // The other side's reach is taken without passing back through the
@@ -580,6 +585,19 @@ impl<'a> PlanEmitter<'a> {
             {
                 best = Some(score);
                 break;
+            }
+        }
+        // Mirror of the encoder: the enclosing continuation is the merge when
+        // no earlier block is and every path reaches it or terminates.
+        if best.is_none() && let Some(stop) = stop && self.escape_label(stop).is_none() {
+            let mut merges = self.escape_targets();
+            merges.push(stop);
+            if self.all_paths_reach_or_terminate(then_target, &merges, &mut BTreeSet::new())?
+                && self.all_paths_reach_or_terminate(else_target, &merges, &mut BTreeSet::new())?
+                && !forward_cfg::bypasses_join_continuation(then_target, else_target, stop,
+                    &self.successors_by_block, &stops).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?
+            {
+                best = Some((usize::MAX, stop));
             }
         }
         best.map(|(_, block)| Some(block)).ok_or(CanonicalAdmissionError::UnsupportedPlan)
@@ -656,9 +674,9 @@ impl<'a> PlanEmitter<'a> {
         }
         if !self.emitted.insert(start) {
             // Match the encoder's bounded shared-continuation clone exactly.
-            let cloneable = stop.and_then(|stop| forward_cfg::repeatable_region(start, stop,
+            let cloneable = forward_cfg::repeatable_region(start, stop,
                 &self.successors_by_block, &self.escape_targets(), &self.emitted,
-                64usize.saturating_sub(self.cloned_blocks)).ok().flatten()).is_some();
+                64usize.saturating_sub(self.cloned_blocks)).ok().flatten().is_some();
             if !cloneable { return Err(CanonicalAdmissionError::UnsupportedPlan); }
             self.cloned_blocks += 1;
         }

@@ -111,6 +111,10 @@ pub(super) fn bypasses_join_continuation(
     };
     let mut continuation = walk(join, None)?;
     continuation.remove(&join);
+    // An exit block (a return or trap, no successors) reached around the join
+    // is a one-block tail: the emitter copies it on its second entry. Any
+    // other shared continuation block is a real bypass.
+    continuation.retain(|block| edges.get(block).is_some_and(|successors| !successors.is_empty()));
     if continuation.is_empty() { return Ok(false); }
     Ok(walk(then_target, Some(join))?.iter().any(|block| continuation.contains(block))
         || walk(else_target, Some(join))?.iter().any(|block| continuation.contains(block)))
@@ -122,14 +126,16 @@ pub(super) fn bypasses_join_continuation(
 /// active loop labels, and every copied block must already have been emitted.
 pub(super) fn repeatable_region(
     entry: BlockId,
-    stop: BlockId,
+    stop: Option<BlockId>,
     edges: &BTreeMap<BlockId, Vec<BlockId>>,
     boundaries: &[BlockId],
     emitted: &BTreeSet<BlockId>,
     remaining: usize,
 ) -> Result<Option<usize>, ()> {
+    // Without an enclosing join the copy runs to the function's exits: a
+    // shared tail entered from a branch whose other path skips it.
     let mut boundaries = boundaries.to_vec();
-    boundaries.push(stop);
+    boundaries.extend(stop);
     let Some(order) = region(entry, edges, &boundaries)? else { return Ok(None) };
     (order.len() <= remaining && order.iter().all(|block| emitted.contains(block)))
         .then_some(order.len()).ok_or(()).map(Some)
