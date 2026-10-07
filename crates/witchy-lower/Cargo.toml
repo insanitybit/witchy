@@ -32,7 +32,7 @@ sha2 = "0.11.0"
 wasmparser = "0.251"
 # Test-only in practice, but optional normal dependencies are the only Cargo
 # dependencies that a package feature can enable for integration tests.
-wasmtime = { version = "45.0.0", optional = true, default-features = false, features = ["anyhow","backtrace","cache","gc","gc-drc","wat","profiling","parallel-compilation","cranelift","pooling-allocator","demangle","addr2line","coredump","debug-builtins","runtime","std"] }
+wasmtime = { version = "49.0.0", optional = true, default-features = false, features = ["anyhow","backtrace","cache","gc","gc-drc","wat","profiling","parallel-compilation","cranelift","pooling-allocator","demangle","addr2line","coredump","debug-builtins","runtime","std"] }
 
 [dev-dependencies]
 # Every test build requests witchy-wir's full test feature set, so all

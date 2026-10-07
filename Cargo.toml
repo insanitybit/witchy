@@ -101,7 +101,7 @@ wasmparser = "0.251"
 # async fibers, guest-debug support and component-only builtins stay out of the
 # already-expensive native dependency graph. `debug_info` and trap backtraces
 # are separate and remain enabled by the features below.
-wasmtime = { version = "45.0.0", optional = true, default-features = false, features = ["anyhow","backtrace","cache","gc","gc-drc","wat","profiling","parallel-compilation","cranelift","pooling-allocator","demangle","addr2line","coredump","debug-builtins","runtime","std"] }
+wasmtime = { version = "49.0.0", optional = true, default-features = false, features = ["anyhow","backtrace","cache","gc","gc-drc","wat","profiling","parallel-compilation","cranelift","pooling-allocator","demangle","addr2line","coredump","debug-builtins","runtime","std"] }
 # Diagnostic disassembly of already-admitted bytes, matching the encoder/parser.
 wasmprinter = { version = "0.251", optional = true }
 # Global allocator for the native binary + every test binary that links this
