@@ -29,6 +29,7 @@ def main():
     for name in ["baseline", "candidate", "baseline-std", "candidate-std", "output"]:
         parser.add_argument("--" + name, type=Path, required=True)
     parser.add_argument("--runs", type=int, default=12)
+    parser.add_argument("--go", type=Path, help="Go compiler for matched native async measurements")
     parser.add_argument("--workload", action="append", choices=["packet-1000", "packet-10000", "scalar-1000", "scalar-10000", "select_fanin"])
     args = parser.parse_args()
     if args.runs < 3:
@@ -62,8 +63,26 @@ def main():
     fixtures.append((select.stem, select, f"count=4096 checksum={checksum} order=ok"))
     if args.workload:
         fixtures = [fixture for fixture in fixtures if fixture[0] in args.workload]
+    go_binaries = {}
+    if args.go:
+        go = args.go.resolve()
+        for label, _, _ in fixtures:
+            if label.startswith("packet-"):
+                source = (ROOT / "benchmarks/chan_scheduler.go").read_text().replace("10000", label.split("-")[1])
+            elif label.startswith("scalar-"):
+                source = (ROOT / "benchmarks/chan_throughput.go").read_text().replace("64000", label.split("-")[1])
+                source = source.replace('"fmt"', '"fmt"\n\t"time"')
+                source = source.replace("ch := make", "t0 := time.Now()\n\tch := make")
+                source = source.replace("fmt.Println(sum)", 'elapsed := time.Since(t0).Nanoseconds()\n\tfmt.Println(sum)\n\tfmt.Printf("bench_ns=%d\\n", elapsed)')
+            else:
+                source = (ROOT / "benchmarks/select_fanin.go").read_text()
+            source_path = output / f"{label}.go"
+            source_path.write_text(source)
+            binary = output / f"{label}-go"
+            subprocess.run([str(go), "build", "-o", str(binary), str(source_path)], check=True, cwd=ROOT)
+            go_binaries[label] = binary
     environment = os.environ.copy()
-    for variable in ["WIRDIAG", "WITCHY_CANONICAL_LOWER_DEBUG", "WITCHY_PROFILE", "WITCHY_PERF_MAP", "WITCHY_DEBUG_INFO", "WITCHY_POOL"]:
+    for variable in ["WIRDIAG", "WITCHY_CANONICAL_LOWER_DEBUG", "WITCHY_PROFILE", "WITCHY_PERF_MAP", "WITCHY_DEBUG_INFO", "WITCHY_POOL", "WITCHY_OWNER_METRICS"]:
         environment.pop(variable, None)
     environment["WITCHY_OPT"] = "all"
     environments = {}
@@ -76,21 +95,29 @@ def main():
         metadata["variants"][variant] = {"binary": str(binary), "binary_sha256": digest(binary), "std": str(std),
             "std_files": {str(path.relative_to(std)): digest(path) for path in sorted(std.rglob("*.witchy"))}}
     metadata["fixtures"] = {label: digest(path) for label, path, _ in fixtures}
+    if go_binaries:
+        metadata["go"] = {"compiler": str(go), "version": subprocess.check_output([str(go), "version"], text=True).strip(),
+            "fixtures": {label: {"source_sha256": digest(output / f"{label}.go"), "binary_sha256": digest(binary)} for label, binary in go_binaries.items()}}
     (output / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
     rows = []
     for label, fixture, expected in fixtures:
-        samples = {variant: [] for variant in variants}
+        names = list(variants) + (["go"] if go_binaries else [])
+        samples = {variant: [] for variant in names}
         for iteration in range(-2, args.runs):
-            order = ["baseline", "candidate"] if iteration % 2 == 0 else ["candidate", "baseline"]
+            offset = iteration % len(names)
+            order = names[offset:] + names[:offset]
             for variant in order:
                 prefix = output / f"{label}-{iteration}-{variant}"
-                native_cache = Path(environments[variant]["XDG_CACHE_HOME"]) / "witchy/wasm"
-                if native_cache.exists():
-                    shutil.rmtree(native_cache)
-                native_cache.mkdir(parents=True)
+                native_cache = None
+                if variant != "go":
+                    native_cache = Path(environments[variant]["XDG_CACHE_HOME"]) / "witchy/wasm"
+                    if native_cache.exists():
+                        shutil.rmtree(native_cache)
+                    native_cache.mkdir(parents=True)
+                command = [str(go_binaries[label])] if variant == "go" else [str(variants[variant][0]), "sandbox", str(fixture)]
                 start = time.monotonic_ns()
-                run = subprocess.run(["/usr/bin/time", "-lp", str(variants[variant][0]), "sandbox", str(fixture)],
-                    cwd=ROOT, env=environments[variant], text=True, capture_output=True, timeout=180)
+                run = subprocess.run(["/usr/bin/time", "-lp", *command],
+                    cwd=ROOT, env=environment if variant == "go" else environments[variant], text=True, capture_output=True, timeout=180)
                 wall = time.monotonic_ns() - start
                 prefix.with_suffix(".stdout").write_text(run.stdout)
                 prefix.with_suffix(".stderr").write_text(run.stderr)
@@ -101,7 +128,7 @@ def main():
                 rss = re.search(r"^\s*(\d+)\s+maximum resident set size$", run.stderr, re.M)
                 sample = {"workload": label, "variant": variant, "iteration": iteration, "kernel_ns": int(kernel[0]),
                     "wall_ns": wall, "rss_bytes": int(rss[1]) if rss else None,
-                    "native_cache_entries_after": sum(path.is_file() for path in native_cache.rglob("*"))}
+                    "native_cache_entries_after": sum(path.is_file() for path in native_cache.rglob("*")) if native_cache else None}
                 for key, name in [("instructions_retired", "instructions retired"), ("cycles_elapsed", "cycles elapsed"),
                     ("peak_memory_bytes", "peak memory footprint")]:
                     match = re.search(r"^\s*(\d+)\s+" + name + r"$", run.stderr, re.M)
@@ -119,6 +146,10 @@ def main():
                     ratio, interval = summary.paired_ratio_summary(values["baseline"], values["candidate"])
                     row[metric]["baseline_over_candidate"] = ratio
                     row[metric]["paired_bootstrap_95_percent_ci"] = interval
+                    if go_binaries:
+                        ratio, interval = summary.paired_ratio_summary(values["candidate"], values["go"])
+                        row[metric]["candidate_over_go"] = ratio
+                        row[metric]["candidate_over_go_95_percent_ci"] = interval
         rows.append(row)
         (output / "results.json").write_text(json.dumps({"metadata": metadata, "workloads": rows}, indent=2) + "\n")
         print(label, json.dumps(row["kernel_ns"]), flush=True)
@@ -130,6 +161,12 @@ def main():
         report.append(f"| {row['workload']} | {kernel['baseline']['median'] / 1e6:.3f} | {kernel['candidate']['median'] / 1e6:.3f} | {kernel['baseline_over_candidate']:.2f}× ({interval[0]:.2f}–{interval[1]:.2f}) |")
     report.extend(["", "Process wall includes startup, checking, admission, JIT, execution, and the time wrapper; RSS is whole-process peak, not guest allocation bytes.",
         "Raw samples, validated outputs, source hashes, binary hashes, and std hashes are retained beside this report. Timing is not allocation-count evidence.", ""])
+    if go_binaries:
+        report.extend(["| Workload | Go ms | Candidate / Go | Target ≤3× |", "| --- | ---: | ---: | --- |"])
+        for row in rows:
+            kernel = row["kernel_ns"]
+            ratio = kernel["candidate_over_go"]
+            report.append(f"| {row['workload']} | {kernel['go']['median'] / 1e6:.3f} | {ratio:.2f}× | {'pass' if kernel['candidate_over_go_95_percent_ci'][1] <= 3 else 'fail'} |")
     metadata["load_average_end"] = os.getloadavg()
     (output / "results.json").write_text(json.dumps({"metadata": metadata, "workloads": rows}, indent=2) + "\n")
     (output / "report.md").write_text("\n".join(report))
