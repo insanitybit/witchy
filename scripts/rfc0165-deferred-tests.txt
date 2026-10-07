@@ -69,6 +69,4 @@ witchy::rfc0129_scalar_executor_performance packed_aggregate_channel_uses_direct
 # through it, and `witchy <file>` on master already refused the same programs.
 # Each is an admitted-family canonical gap, listed so it stays visible:
 # - an indexed structured-join/cancel fan-out: InvalidOwnership in the executor.
-# - comptime `typeinfo` expansion binds `prefix` twice (DuplicateBinding).
 witchy::bin/witchy example_tests::async_channels::channel_structured_join_cancel_indexed_fanouts_backends_agree
-witchy::bin/witchy example_tests::comptime::comptime_typeinfo_exposes_structured_type_expr_on_both_backends

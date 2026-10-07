@@ -6297,10 +6297,9 @@ impl FunctionLowerer<'_> {
                 if stable && scalar_params && scalar_result && scalar_inline_expression(expression)
                     && params.iter().all(|param| param.convention == Convention::Let) {
                     let scope = self.binding_scopes.last_mut().expect("every function has a lexical scope");
-                    if scope.contains_key(name) {
-                        return Err(CanonicalLoweringError::DuplicateBinding(name.to_owned()));
+                    if !scope.contains_key(name) {
+                        scope.insert(name.to_owned(), (self.bindings.get(name).copied(), self.mutable_bindings.contains(name)));
                     }
-                    scope.insert(name.to_owned(), (self.bindings.get(name).copied(), self.mutable_bindings.contains(name)));
                     let captures = environment.captures.iter().map(|capture| {
                         (capture.name.clone(), self.bindings[&capture.name])
                     }).filter(|(capture, _)| !params.iter().any(|param| param.name == *capture)).collect();
@@ -6492,14 +6491,16 @@ impl FunctionLowerer<'_> {
         value: ValueId,
         mutable: bool,
     ) -> Result<(), CanonicalLoweringError> {
+        // A second `let` of a name in the same block shadows the first for
+        // the rest of the block, as a nested scope would: the scope keeps the
+        // binding from before its first `let`, which is what leaving it restores.
         let scope = self.binding_scopes.last_mut().expect("every function has a lexical scope");
-        if scope.contains_key(name) {
-            return Err(CanonicalLoweringError::DuplicateBinding(name.to_owned()));
+        if !scope.contains_key(name) {
+            scope.insert(
+                name.to_owned(),
+                (self.bindings.get(name).copied(), self.mutable_bindings.contains(name)),
+            );
         }
-        scope.insert(
-            name.to_owned(),
-            (self.bindings.get(name).copied(), self.mutable_bindings.contains(name)),
-        );
         self.bindings.insert(name.to_owned(), value);
         if mutable {
             self.mutable_bindings.insert(name.to_owned());

@@ -169,3 +169,51 @@ fn main(console: Console):
 "#;
         assert_eq!(run_on_wasm(src), vec!["11", "3"]);
     }
+
+    /// A second `let` of a name in the same block shadows the first for the
+    /// rest of the block, as a nested block would, without disturbing values
+    /// already taken from the first binding (an alias, a closure capture).
+    #[test]
+    fn same_block_let_shadows_earlier_binding() {
+        let src = r#"fn lists() -> String:
+    let xs = [1, 2, 3]
+    let keep = xs
+    let xs = xs.map(fn(x: Int) -> Int: x * 10)
+    let xs = xs.concat([4])
+    "${keep} ${xs}"
+
+fn closure() -> Int:
+    let k = 5
+    let add = fn(x: Int) -> Int: x + k
+    let k = 100
+    add(k)
+
+fn after_var() -> Int:
+    var n = 1
+    n = n + 1
+    let n = n * 10
+    n
+
+fn looped() -> Int:
+    var total = 0
+    for i in [1, 2, 3]:
+        let v = i
+        let v = v * 2
+        total = total + v
+    total
+
+fn nested() -> String:
+    let s = "outer"
+    if true:
+        let s = s + "-a"
+        let s = s + "-b"
+        let _ = s.length()
+    s
+
+fn main(console: Console):
+    let n = 1
+    let n = n + 1
+    console.print("${n} ${lists()} ${closure()} ${after_var()} ${looped()} ${nested()}")
+"#;
+        assert_eq!(run_on_wasm(src), vec!["2 [1, 2, 3] [10, 20, 30, 4] 105 20 12 outer"]);
+    }
