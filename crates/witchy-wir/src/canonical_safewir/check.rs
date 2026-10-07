@@ -1931,7 +1931,7 @@ fn check_operation(
             }
             require_type(function, *right, left_type)
         }
-        Operation::NarrowSize { destination, value } => {
+        Operation::NarrowSize { destination, value, .. } => {
             require_type(function, *destination, ValueType::Size)?;
             require_type(function, *value, ValueType::Int)
         }

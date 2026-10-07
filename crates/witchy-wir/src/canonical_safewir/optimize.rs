@@ -250,6 +250,15 @@ pub fn remove_redundant_bounds_guards_before_check(
                 let (target, arguments) = (*then_target, std::mem::take(then_arguments));
                 block.terminator = Terminator::Branch { target, arguments };
             }
+            // A narrowing of a value known to fit needs no runtime test; the
+            // checker admits `exact` only where it proves the same.
+            for (index, operation) in block.operations.iter_mut().enumerate() {
+                if let Operation::NarrowSize { exact, .. } = operation
+                    && redundant.get(&(block_id, index)) == Some(&true)
+                {
+                    *exact = true;
+                }
+            }
             let mut operation_index = 0;
             // Only a bounds guard: the initial check re-proves memory safety,
             // but nothing re-proves an arithmetic trap the analysis judged
@@ -266,8 +275,20 @@ pub fn remove_redundant_bounds_guards_before_check(
         let reachable = reachable_blocks(function);
         function.blocks.retain(|block| reachable.contains(&block.id));
     }
+    // A dropped diagnostic may have been the only use of its message.
+    let referenced = referenced_static_data(&candidate);
+    candidate.static_data_segments.retain(|segment| referenced.contains(&segment.id()));
     check_rewrite_relation_between(lowered, &candidate, false).ok()?;
     Some(candidate)
+}
+
+fn referenced_static_data<S: ModuleStage>(module: &CanonicalModule<S>) -> BTreeSet<super::StaticDataId> {
+    module.functions.iter().flat_map(|function| &function.blocks).flat_map(|block| &block.operations)
+        .filter_map(|operation| match operation {
+            Operation::StaticData { data, .. } => Some(*data),
+            _ => None,
+        })
+        .collect()
 }
 
 fn foldable_branches(
@@ -309,6 +330,16 @@ fn reachable_blocks(function: &Function) -> BTreeSet<BlockId> {
     reachable
 }
 
+/// `after` keeps exactly the segments of `before` that its code references.
+fn retains_referenced_static_data<A: ModuleStage, B: ModuleStage>(
+    before: &CanonicalModule<A>,
+    after: &CanonicalModule<B>,
+) -> bool {
+    let referenced = referenced_static_data(after);
+    before.static_data_segments.iter().filter(|segment| referenced.contains(&segment.id()))
+        .eq(after.static_data_segments.iter())
+}
+
 /// Independently recognize the one allowed rewrite. This intentionally does
 /// not call `rewrite` or compare against a regenerated candidate.
 pub(super) fn check_rewrite_relation(
@@ -336,7 +367,7 @@ fn check_rewrite_relation_between<A: ModuleStage, B: ModuleStage>(
         || before.imports != after.imports
         || before.proper_tail_sites != after.proper_tail_sites
         || before.proper_tail_locations != after.proper_tail_locations
-        || before.static_data_segments != after.static_data_segments
+        || !retains_referenced_static_data(before, after)
         || before.abi_catalog != after.abi_catalog
         || before.abi_bindings != after.abi_bindings
         || before.closure_bindings != after.closure_bindings
@@ -429,6 +460,16 @@ fn check_function_relation<'r>(
                 after_index += 1;
                 continue;
             }
+            // A narrowing may become exact; the checker proves it fits.
+            if let (Operation::NarrowSize { destination, value, exact: false },
+                Some(Operation::NarrowSize { destination: after_destination, value: after_value, exact: true }))
+                = (operation, after.operations.get(after_index))
+                && destination == after_destination && value == after_value
+            {
+                after_index += 1;
+                changed = true;
+                continue;
+            }
             if !matches!(operation, Operation::Guard { kind: GuardKind::Bounds | GuardKind::Arithmetic, .. }) {
                 return Err(RewriteRelationError::OperationChanged);
             }
@@ -488,5 +529,49 @@ pub mod self_checks {
         function.blocks.retain(|block| block.id != named);
         assert_eq!(check_rewrite_relation_between(lowered, &dangling, false),
             Err(RewriteRelationError::BlockShapeChanged), "a block a kept branch names cannot go");
+    }
+
+    /// The rewrite marks some narrowing exact. The returned module instead
+    /// folds, unproven, every branch that bounds a narrowed value, and marks
+    /// every narrowing exact: the checker must refuse it.
+    pub fn unproven_exact_narrowing(lowered: &CanonicalModule<LoweredCandidate>) -> CanonicalModule<LoweredCandidate> {
+        let candidate = remove_redundant_bounds_guards_before_check(lowered, &BTreeSet::new())
+            .expect("some guard or narrowing is implied");
+        assert!(candidate.functions.iter().flat_map(|function| &function.blocks)
+            .flat_map(|block| &block.operations)
+            .any(|operation| matches!(operation, Operation::NarrowSize { exact: true, .. })),
+            "a narrowing below a widened Size becomes exact");
+        let mut forged = lowered.clone();
+        for function in &mut forged.functions {
+            let narrowed: BTreeSet<_> = function.blocks.iter().flat_map(|block| &block.operations)
+                .filter_map(|operation| match operation {
+                    Operation::NarrowSize { value, .. } => Some(*value),
+                    _ => None,
+                }).collect();
+            let bounding: BTreeSet<_> = function.blocks.iter().flat_map(|block| &block.operations)
+                .filter_map(|operation| match operation {
+                    Operation::Compare { destination, left, .. } if narrowed.contains(left) => Some(*destination),
+                    _ => None,
+                }).collect();
+            let traps: BTreeSet<_> = function.blocks.iter()
+                .filter(|block| block.operations.is_empty() && matches!(block.terminator, Terminator::Trap))
+                .map(|block| block.id).collect();
+            for block in &mut function.blocks {
+                for operation in &mut block.operations {
+                    if let Operation::NarrowSize { exact, .. } = operation { *exact = true; }
+                }
+                if let Terminator::BranchIf { condition, then_target, then_arguments, else_target, .. } = &mut block.terminator
+                    && bounding.contains(condition) && traps.contains(else_target)
+                {
+                    let (target, arguments) = (*then_target, std::mem::take(then_arguments));
+                    block.terminator = Terminator::Branch { target, arguments };
+                }
+            }
+            let reachable = reachable_blocks(function);
+            function.blocks.retain(|block| reachable.contains(&block.id));
+        }
+        let referenced = referenced_static_data(&forged);
+        forged.static_data_segments.retain(|segment| referenced.contains(&segment.id()));
+        forged
     }
 }

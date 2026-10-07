@@ -1455,15 +1455,17 @@ pub(super) fn expected_block_operations_plan(
             Operation::InitNullableOwned { place } => {
                 push_init_nullable_owned_plan(&mut plan, function, layouts, &layout, place)?;
             }
-            Operation::NarrowSize { destination, value } => {
-                push_get(&mut plan, &layout, *value)?;
-                plan.extend([
-                    PlanToken::I64Const(i64::from(u32::MAX)),
-                    PlanToken::I64GtU,
-                    PlanToken::If("Empty".to_owned()),
-                    PlanToken::Unreachable,
-                    PlanToken::End,
-                ]);
+            Operation::NarrowSize { destination, value, exact } => {
+                if !*exact {
+                    push_get(&mut plan, &layout, *value)?;
+                    plan.extend([
+                        PlanToken::I64Const(i64::from(u32::MAX)),
+                        PlanToken::I64GtU,
+                        PlanToken::If("Empty".to_owned()),
+                        PlanToken::Unreachable,
+                        PlanToken::End,
+                    ]);
+                }
                 push_get(&mut plan, &layout, *value)?;
                 plan.extend([PlanToken::I32WrapI64, PlanToken::LocalSet(plan_local(&layout, *destination)?)])
             }

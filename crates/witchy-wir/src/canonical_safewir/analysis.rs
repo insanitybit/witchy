@@ -272,7 +272,7 @@ pub(super) fn implied_guards(
         Operation::WidenSize { destination, value } => {
             if let Some(upper) = facts.upper.get(value).copied() { facts.bound(*destination, upper); }
         }
-        Operation::NarrowSize { destination, value } => {
+        Operation::NarrowSize { destination, value, .. } => {
             if let Some(upper) = facts.upper.get(value).copied() { facts.bound(*destination, upper.min(u64::from(u32::MAX))); }
             let narrowed = facts.int_bounds.iter().filter(|(_, left, _)| left == value)
                 .map(|(operator, _, size)| (*operator, Operand::Value(*destination), operand(*size)))
@@ -363,6 +363,12 @@ pub(super) fn implied_guards(
                 if contributes((block.id, position)) {
                     facts.relations.insert(fact);
                 }
+            }
+            // A narrowing whose value is known to fit `u32`.
+            if let Operation::NarrowSize { value, exact: false, .. } = operation {
+                let fits = facts.int_bounds.iter().any(|(_, int, _)| int == value)
+                    || facts.upper_of(*value, &widened_size_bounds(&facts)).is_some_and(|upper| upper <= u64::from(u32::MAX));
+                implied.insert((block.id, position), fits);
             }
             step(&mut facts, operation);
         }

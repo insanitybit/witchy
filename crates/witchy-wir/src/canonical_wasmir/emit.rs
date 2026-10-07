@@ -499,14 +499,18 @@ pub(super) fn emit_narrow_size(
     layout: &LocalLayout,
     destination: ValueId,
     value: ValueId,
+    exact: bool,
 ) -> Result<(), EncodeError> {
     // One unsigned comparison: a negative Int is above u32::MAX as a u64.
-    emit_get(body, layout, function.id, value)?;
-    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(u32::MAX)));
-    body.instruction(&wasm_encoder::Instruction::I64GtU);
-    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
-    body.instruction(&wasm_encoder::Instruction::Unreachable);
-    body.instruction(&wasm_encoder::Instruction::End);
+    // An exact narrowing was proven to fit by the checker.
+    if !exact {
+        emit_get(body, layout, function.id, value)?;
+        body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(u32::MAX)));
+        body.instruction(&wasm_encoder::Instruction::I64GtU);
+        body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+        body.instruction(&wasm_encoder::Instruction::Unreachable);
+        body.instruction(&wasm_encoder::Instruction::End);
+    }
     emit_get(body, layout, function.id, value)?;
     body.instruction(&wasm_encoder::Instruction::I32WrapI64);
     emit_set(body, layout, function.id, destination)
@@ -1607,7 +1611,7 @@ pub(super) fn emit_instruction(
             )?;
         }
         ScalarInstruction::Compare { destination, operator, left, right } => { emit_compare(body, function, layout, *destination, *operator, *left, *right)?; }
-        ScalarInstruction::NarrowSize { destination, value } => emit_narrow_size(body, function, layout, *destination, *value)?,
+        ScalarInstruction::NarrowSize { destination, value, exact } => emit_narrow_size(body, function, layout, *destination, *value, *exact)?,
         ScalarInstruction::WidenSize { destination, value } => {
             emit_get(body, layout, function.id, *value)?;
             body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);

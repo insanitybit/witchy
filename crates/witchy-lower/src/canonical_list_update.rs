@@ -62,7 +62,7 @@ impl FunctionLowerer<'_> {
             CanonicalLoweringError::UnsupportedExpression("list place extent"),
         )?;
         let index_size = self.fresh(ValueType::Size)?;
-        self.push_operation(Operation::NarrowSize { destination: index_size, value: index });
+        self.push_operation(Operation::NarrowSize { destination: index_size, value: index, exact: false });
         let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, index_size, length)?;
         self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
         self.guard_dynamic_extent(length, capacity, header_bytes, stride_bytes)?;
@@ -106,7 +106,7 @@ impl FunctionLowerer<'_> {
                 return Err(CanonicalLoweringError::UnsupportedListElement(list_type));
             }
             let index_size = self.fresh(ValueType::Size)?;
-            self.push_operation(Operation::NarrowSize { destination: index_size, value: index });
+            self.push_operation(Operation::NarrowSize { destination: index_size, value: index, exact: false });
             let length = self.owner_list_length(source, family.signature)?;
             let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, index_size, length)?;
             self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
@@ -142,7 +142,7 @@ impl FunctionLowerer<'_> {
             CanonicalLoweringError::UnsupportedExpression("list.set_at source extent"),
         )?;
         let index_size = self.fresh(ValueType::Size)?;
-        self.push_operation(Operation::NarrowSize { destination: index_size, value: index });
+        self.push_operation(Operation::NarrowSize { destination: index_size, value: index, exact: false });
         let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, index_size, length)?;
         self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
         self.guard_dynamic_extent(length, capacity, header_bytes, stride_bytes)?;

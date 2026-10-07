@@ -10,6 +10,7 @@ pub fn lowered_candidate(
     let source = checked.canonical_source().expect("canonical source");
     let layouts = crate::canonical_layouts::derive_layout_bundle(source).expect("checked layouts");
     crate::canonical_lower::lower_typed_module(source, layouts).expect("typed candidate")
+        .with_launch_contract_payload(source.launch_contract_payload().to_vec())
 }
 
 pub fn task_producer_substitution_requires_actual_execution_provenance() {

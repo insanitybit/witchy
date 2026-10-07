@@ -338,7 +338,18 @@ impl<'a> MemoryChecker<'a> {
                 self.state.constants.insert(*destination, *value);
                 Ok(false)
             }
-            Operation::NarrowSize { destination, value } => {
+            Operation::NarrowSize { destination, value, exact } => {
+                // An exact narrowing emits no runtime test: the value must
+                // be proven to fit, below a bound or below a widened Size.
+                if *exact
+                    && !self.proven_at_most(*value, u64::from(u32::MAX))
+                    && !self.state.int_size_bounds.iter().any(|(_, int, _)| int == value)
+                {
+                    return Err(InitialCheckError::UnsupportedMemoryOperation {
+                        function: self.function.id,
+                        operation: "NarrowSize exact without a proven bound",
+                    });
+                }
                 if let Some(value) = self.state.constants.get(value).copied()
                     && value <= u64::from(u32::MAX)
                 {

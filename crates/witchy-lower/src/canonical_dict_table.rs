@@ -363,6 +363,7 @@ impl FunctionLowerer<'_> {
                 self.push_operation(Operation::NarrowSize {
                     destination: capacity,
                     value: hint,
+                    exact: false,
                 });
                 self.finish_current(Terminator::Branch {
                     target: join,
@@ -599,6 +600,7 @@ impl FunctionLowerer<'_> {
         self.push_operation(Operation::NarrowSize {
             destination: low_size,
             value: low,
+            exact: false,
         });
         // Keep the fingerprint out of the low bits used by the initial
         // bucket selector. The stored hash is the same 32-bit low prefix.
@@ -614,6 +616,7 @@ impl FunctionLowerer<'_> {
         self.push_operation(Operation::NarrowSize {
             destination: fingerprint,
             value: fingerprint_int,
+            exact: false,
         });
         let zero = self.push_const_size(0)?;
         let one = self.push_const_size(1)?;
@@ -856,7 +859,7 @@ impl FunctionLowerer<'_> {
             OverflowBehavior::Wrap,
         )?;
         let low_size = self.fresh(ValueType::Size)?;
-        self.push_operation(Operation::NarrowSize { destination: low_size, value: low });
+        self.push_operation(Operation::NarrowSize { destination: low_size, value: low, exact: false });
         let first = self.dict_bucket(low_size, capacity)?;
         let zero = self.push_const_size(0)?;
         let one = self.push_const_size(1)?;

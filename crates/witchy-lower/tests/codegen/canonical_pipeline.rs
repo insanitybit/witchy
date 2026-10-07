@@ -161,6 +161,17 @@ fn only_proven_branches_fold_before_the_check() {
 }
 
 #[test]
+fn exact_narrowing_needs_a_proven_bound() {
+    let checked = checked("import bytes\n\nfn make(n: Int) -> Int:\n    bytes.repeat(0, n).length()\n\nfn main() -> Int:\n    let b = bytes.from_string(\"abc\")\n    var i = 0\n    var total = 0\n    while i < b.length():\n        total = total + b.at(i)\n        i = i + 1\n    total + make(3)\n");
+    let lowered = witchy_lower::canonical_pipeline_checks::lowered_candidate(&checked);
+    let forged = witchy_wir::self_checks::canonical_safewir_optimize::unproven_exact_narrowing(&lowered);
+    let source = checked.canonical_source().expect("canonical source");
+    let error = witchy_wir::canonical_safewir::check_initial_with_witness(forged, &source.view())
+        .err().expect("an exact narrowing without a proven bound is refused");
+    assert!(format!("{error:?}").contains("NarrowSize exact without a proven bound"), "{error:?}");
+}
+
+#[test]
 fn trapping_check_arms_are_hinted_cold_at_their_branches() {
     let checked = checked("fn main() -> Int:\n    [10][1]\n");
     let artifact = compile_checked_module_artifact(&checked)

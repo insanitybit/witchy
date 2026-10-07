@@ -1218,7 +1218,10 @@ pub enum Operation {
         left: ValueId,
         right: ValueId,
     },
-    NarrowSize { destination: ValueId, value: ValueId },
+    /// An `Int` as a `Size`: traps when it exceeds `u32::MAX`, unless
+    /// `exact`, which the checker admits only where it proves the value
+    /// fits, so the conversion needs no runtime test.
+    NarrowSize { destination: ValueId, value: ValueId, exact: bool },
     WidenSize { destination: ValueId, value: ValueId },
     /// A unary float operation: `Sqrt` maps a `Float` to a `Float`;
     /// `TruncateToInt` maps a `Float` to an `Int` toward zero, saturating at

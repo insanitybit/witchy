@@ -106,7 +106,7 @@ enum ScalarInstruction {
         left: ValueId,
         right: ValueId,
     },
-    NarrowSize { destination: ValueId, value: ValueId },
+    NarrowSize { destination: ValueId, value: ValueId, exact: bool },
     WidenSize { destination: ValueId, value: ValueId },
     FloatUnary { destination: ValueId, operator: crate::canonical_safewir::FloatUnaryOperator, value: ValueId },
     Guard { condition: ValueId, kind: crate::canonical_safewir::GuardKind },
@@ -2472,7 +2472,7 @@ pub mod self_checks {
         let input = ValueId::new(1);
         let result = ValueId::new(2);
         let validated = checked_size_operation_with_input(
-            Operation::NarrowSize { destination: result, value: input },
+            Operation::NarrowSize { destination: result, value: input, exact: false },
             input,
             result,
             i64::from(u32::MAX) + 1,
@@ -2491,7 +2491,7 @@ pub mod self_checks {
         let input = ValueId::new(1);
         let result = ValueId::new(2);
         let validated = checked_size_operation_with_input(
-            Operation::NarrowSize { destination: result, value: input },
+            Operation::NarrowSize { destination: result, value: input, exact: false },
             input,
             result,
             19,

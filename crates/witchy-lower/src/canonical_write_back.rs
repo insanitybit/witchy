@@ -1774,7 +1774,7 @@ impl FunctionLowerer<'_> {
                 let ty = self.field_value_type(&arguments[0])?;
                 self.diagnose_list_index(value, *index, site)?;
                 let index_size = self.fresh(ValueType::Size)?;
-                self.push_operation(Operation::NarrowSize { destination: index_size, value: *index });
+                self.push_operation(Operation::NarrowSize { destination: index_size, value: *index, exact: false });
                 self.ensure_list_extent(value)?;
                 self.load_list_element(value, index_size, ty)
             }

@@ -816,7 +816,7 @@ pub(super) fn lower_operation(
             left: *left,
             right: *right,
         },
-        Operation::NarrowSize { destination, value } => ScalarInstruction::NarrowSize { destination: *destination, value: *value },
+        Operation::NarrowSize { destination, value, exact } => ScalarInstruction::NarrowSize { destination: *destination, value: *value, exact: *exact },
         Operation::WidenSize { destination, value } => ScalarInstruction::WidenSize { destination: *destination, value: *value },
         Operation::FloatUnary { destination, operator, value } => ScalarInstruction::FloatUnary { destination: *destination, operator: *operator, value: *value },
         Operation::Guard { condition, kind } => ScalarInstruction::Guard { condition: *condition, kind: *kind },

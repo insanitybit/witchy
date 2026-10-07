@@ -5310,7 +5310,7 @@ impl<'a> FunctionLowerer<'a> {
         let (layout, element_type, _, _) =
             list_layout(&list_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
         let index_size = self.fresh(ValueType::Size)?;
-        self.push_operation(Operation::NarrowSize { destination: index_size, value: index });
+        self.push_operation(Operation::NarrowSize { destination: index_size, value: index, exact: false });
         let length = self.read_rooted_slice(slice, SharedSliceField::Length)?;
         let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, index_size, length)?;
         self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
@@ -5454,7 +5454,7 @@ impl<'a> FunctionLowerer<'a> {
             ));
         }
         let index_size = self.fresh(ValueType::Size)?;
-        self.push_operation(Operation::NarrowSize { destination: index_size, value: index });
+        self.push_operation(Operation::NarrowSize { destination: index_size, value: index, exact: false });
         if self.is_rooted_int_slice_view(root) {
             let length = self.read_rooted_slice(
                 root, witchy_wir::canonical_safewir::closure_owner_contract::SharedSliceField::Length,
@@ -14874,7 +14874,7 @@ impl FunctionLowerer<'_> {
             list_layout(&logical_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions)?;
         let hint = self.push_clamp_non_negative(hint)?;
         let capacity = self.fresh(ValueType::Size)?;
-        self.push_operation(Operation::NarrowSize { destination: capacity, value: hint });
+        self.push_operation(Operation::NarrowSize { destination: capacity, value: hint, exact: false });
         self.guard_allocation_capacity(capacity, header_bytes, stride_bytes)?;
         let count = self.push_const_size(0)?;
         let object = self.fresh(ValueType::Ref(layout))?;
@@ -16354,7 +16354,7 @@ impl FunctionLowerer<'_> {
             }
             self.diagnose_list_index(list, index, &site)?;
             let index_size = self.fresh(ValueType::Size)?;
-            self.push_operation(Operation::NarrowSize { destination: index_size, value: index });
+            self.push_operation(Operation::NarrowSize { destination: index_size, value: index, exact: false });
             let destination = self.fresh(ValueType::Gc(family.owner_type))?;
             self.push_operation(Operation::ClosureOwner(OwnerOperation::ListGet {
                 destination, list, index: index_size, family: family.signature,
@@ -16411,7 +16411,7 @@ impl FunctionLowerer<'_> {
             size
         } else {
             let size = self.fresh(ValueType::Size)?;
-            self.push_operation(Operation::NarrowSize { destination: size, value: index_value });
+            self.push_operation(Operation::NarrowSize { destination: size, value: index_value, exact: false });
             size
         };
         if !proven_index && cached_size.is_none() && assumed_bound {
@@ -16739,9 +16739,9 @@ impl FunctionLowerer<'_> {
                         ));
                     }
                     let start = self.fresh(ValueType::Size)?;
-                    self.push_operation(Operation::NarrowSize { destination: start, value: start_int });
+                    self.push_operation(Operation::NarrowSize { destination: start, value: start_int, exact: false });
                     let end = self.fresh(ValueType::Size)?;
-                    self.push_operation(Operation::NarrowSize { destination: end, value: end_int });
+                    self.push_operation(Operation::NarrowSize { destination: end, value: end_int, exact: false });
                     return self.materialize_checked_list_slice(root, start, end, &element);
                 }
                 let (_, index) = check_element_view_source(&fact, operand)?;
@@ -18579,7 +18579,7 @@ impl FunctionLowerer<'_> {
 
     fn int_to_byte(&mut self, value: ValueId) -> Result<ValueId, CanonicalLoweringError> {
         let destination = self.fresh(ValueType::Size)?;
-        self.push_operation(Operation::NarrowSize { destination, value });
+        self.push_operation(Operation::NarrowSize { destination, value, exact: false });
         self.proven_byte(destination)
     }
 
@@ -18795,7 +18795,7 @@ impl FunctionLowerer<'_> {
         let bounded = self.push_compare(ComparisonOperator::LessEqualUnsigned, value, limit)?;
         self.push_trap_unless(bounded)?;
         let narrowed = self.fresh(ValueType::Size)?;
-        self.push_operation(Operation::NarrowSize { destination: narrowed, value });
+        self.push_operation(Operation::NarrowSize { destination: narrowed, value, exact: false });
         Ok(narrowed)
     }
 
@@ -19571,7 +19571,7 @@ impl FunctionLowerer<'_> {
         // sign_len = -mask: one byte for the `-`, or none.
         let sign_len_int = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Subtract, zero_int, mask, OverflowBehavior::Wrap)?;
         let sign_len = self.fresh(ValueType::Size)?;
-        self.push_operation(Operation::NarrowSize { destination: sign_len, value: sign_len_int });
+        self.push_operation(Operation::NarrowSize { destination: sign_len, value: sign_len_int, exact: false });
 
         // The checker renames a branch argument to its block parameter in
         // every fact table, so a value whose facts are needed after the loop
@@ -19764,7 +19764,7 @@ impl FunctionLowerer<'_> {
                 OverflowBehavior::Wrap,
             )?;
             let digit = self.fresh(ValueType::Size)?;
-            self.push_operation(Operation::NarrowSize { destination: digit, value: digit_int });
+            self.push_operation(Operation::NarrowSize { destination: digit, value: digit_int, exact: false });
             let digit_end = self.push_arithmetic(
                 ValueType::Size,
                 ArithmeticOperator::Add,
@@ -20081,7 +20081,7 @@ impl FunctionLowerer<'_> {
         let sum = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Add, sum, third, OverflowBehavior::Wrap)?;
         let sum = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Add, sum, fourth, OverflowBehavior::Wrap)?;
         let length = self.fresh(ValueType::Size)?;
-        self.push_operation(Operation::NarrowSize { destination: length, value: sum });
+        self.push_operation(Operation::NarrowSize { destination: length, value: sum, exact: false });
         Ok(length)
     }
 
@@ -20309,7 +20309,7 @@ impl FunctionLowerer<'_> {
         let operator = if upper { ArithmeticOperator::Subtract } else { ArithmeticOperator::Add };
         let mapped = self.push_arithmetic(ValueType::Int, operator, value, delta, OverflowBehavior::Wrap)?;
         let narrowed = self.fresh(ValueType::Size)?;
-        self.push_operation(Operation::NarrowSize { destination: narrowed, value: mapped });
+        self.push_operation(Operation::NarrowSize { destination: narrowed, value: mapped, exact: false });
         let byte_limit = self.push_const_size(255)?;
         let fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, narrowed, byte_limit)?;
         self.push_guard(fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
@@ -20475,7 +20475,7 @@ impl FunctionLowerer<'_> {
         let length = self.string_length_of(object)?;
         // A negative offset traps in the narrowing.
         let start = self.fresh(ValueType::Size)?;
-        self.push_operation(Operation::NarrowSize { destination: start, value: from });
+        self.push_operation(Operation::NarrowSize { destination: start, value: from, exact: false });
         let start_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, start, length)?;
         self.push_guard(start_fits, witchy_wir::canonical_safewir::GuardKind::Bounds);
         let needle_length = self.string_length_of(needle)?;
@@ -20763,7 +20763,7 @@ impl FunctionLowerer<'_> {
         let masked = self.push_arithmetic(ValueType::Int, ArithmeticOperator::BitAnd, length_difference, mask, OverflowBehavior::Wrap)?;
         let shared_int = self.push_arithmetic(ValueType::Int, ArithmeticOperator::Add, right_int, masked, OverflowBehavior::Wrap)?;
         let shared = self.fresh(ValueType::Size)?;
-        self.push_operation(Operation::NarrowSize { destination: shared, value: shared_int });
+        self.push_operation(Operation::NarrowSize { destination: shared, value: shared_int, exact: false });
         let header = self.new_block(&[ValueType::Size])?;
         let body = self.new_block(&[ValueType::Size])?;
         let exit = self.new_block(&[ValueType::Int])?;
@@ -21099,9 +21099,9 @@ impl FunctionLowerer<'_> {
         )?;
         // A negative offset traps in the narrowing.
         let start_offset = self.fresh(ValueType::Size)?;
-        self.push_operation(Operation::NarrowSize { destination: start_offset, value: start });
+        self.push_operation(Operation::NarrowSize { destination: start_offset, value: start, exact: false });
         let end_offset = self.fresh(ValueType::Size)?;
-        self.push_operation(Operation::NarrowSize { destination: end_offset, value: end });
+        self.push_operation(Operation::NarrowSize { destination: end_offset, value: end, exact: false });
         let ordered = self.push_compare(ComparisonOperator::LessEqualUnsigned, start_offset, end_offset)?;
         self.push_guard(ordered, witchy_wir::canonical_safewir::GuardKind::Bounds);
         let end_fits = self.push_compare(ComparisonOperator::LessEqualUnsigned, end_offset, length)?;

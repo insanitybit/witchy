@@ -701,10 +701,11 @@ impl CanonicalWriter {
                 self.value_id(*left);
                 self.value_id(*right);
             }
-            Operation::NarrowSize { destination, value } => {
+            Operation::NarrowSize { destination, value, exact } => {
                 self.u8(6);
                 self.value_id(*destination);
                 self.value_id(*value);
+                self.u8(u8::from(*exact));
             }
             Operation::WidenSize { destination, value } => {
                 self.u8(25);
