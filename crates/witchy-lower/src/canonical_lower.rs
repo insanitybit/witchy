@@ -4945,9 +4945,11 @@ struct FunctionLowerer<'a> {
     lambda_path: Vec<ProperTailPathStep>,
     tail_prefix: Vec<ProperTailPathStep>,
     string_lengths: HashMap<ValueId, ValueId>,
-    /// Every String whose extent was reauthenticated from its header, in
-    /// order. A region's join must not reinstate pre-region lanes for these:
-    /// the checker met the region's fresh association away at the join.
+    /// Every String whose lanes were replaced, in order: reauthenticated
+    /// from its header, or renamed through a loop's header and exit lanes.
+    /// A region's join must not reinstate pre-region lanes for these: the
+    /// checker's extent counts the region's lanes on that path, and the join
+    /// met that association away.
     reauthenticated_strings: Vec<ValueId>,
     string_capacities: HashMap<ValueId, ValueId>,
     list_counts: HashMap<ValueId, ValueId>,
@@ -7286,14 +7288,18 @@ impl FunctionLowerer<'_> {
                 return Ok(None);
             }
             // Only the continuing arm's facts remain valid: a terminated
-            // arm's cached loads never dominate what follows.
+            // arm's cached loads never dominate what follows. They are
+            // exactly the facts at the arm's end, which alone precedes the
+            // code after the `if`: a lane the arm dropped or replaced (an
+            // inner loop renames it, a fresh header reauthenticates it) must
+            // not come back from before the `if`.
             let (end, bindings, arm_facts, value) = if then_terminated {
                 (else_end, else_bindings, else_facts, else_value)
             } else {
                 (then_end, then_bindings, then_facts, then_value)
             };
-            self.restore_snapshot(facts);
-            self.absorb_facts(arm_facts);
+            drop(facts);
+            self.restore_snapshot(arm_facts);
             self.current = end;
             self.bindings = bindings;
             return Ok(value);
@@ -10798,8 +10804,12 @@ impl FunctionLowerer<'_> {
         let is_string = string_layout(&Type::Named("String".into(), Vec::new()), self.layout_bundle, self.layouts)
             .is_ok_and(|layout| self.values.get(&object) == Some(&ValueType::Ref(layout)));
         if is_string {
-            self.string_lengths.insert(object, count);
-            self.string_capacities.insert(object, capacity);
+            let replaced = self.string_lengths.insert(object, count).is_some_and(|previous| previous != count);
+            let replaced = self.string_capacities.insert(object, capacity).is_some_and(|previous| previous != capacity)
+                || replaced;
+            if replaced {
+                self.reauthenticated_strings.push(object);
+            }
         } else {
             self.list_counts.insert(object, count);
             self.list_capacities.insert(object, capacity);

@@ -321,6 +321,22 @@ fn an_invariant_string_is_not_reauthenticated_every_iteration() {
     }
 }
 
+const INVARIANT_TABLE: &str = "import bytes\n\nfn table() -> Bytes:\n    bytes.from_string(\"abcd\")\n\n";
+
+#[test]
+fn an_invariant_string_survives_an_if_whose_other_arm_returns() {
+    let source = format!("{INVARIANT_TABLE}fn main() -> Int:\n    let t = table()\n    var i = 0\n    var total = 0\n    while i < 10:\n        total = total + t.at(i % 4)\n        if i == 7:\n            return total\n        else:\n            var j = 0\n            while j < 2:\n                total = total + t.at(j)\n                j = j + 1\n        i = i + 1\n    total\n");
+    compile_checked_module_artifact(&checked(&source))
+        .expect_lowered("lanes an inner loop renamed in the continuing arm are not reinstated");
+}
+
+#[test]
+fn an_invariant_string_survives_a_match_arm_with_an_inner_loop() {
+    let source = format!("{INVARIANT_TABLE}fn main() -> Int:\n    let t = table()\n    var i = 0\n    var total = 0\n    while i < 20:\n        total = total + t.at(i % 4)\n        match i % 5:\n            0 ->\n                var j = 0\n                while j < 3:\n                    total = total + t.at(j)\n                    j = j + 1\n            _ -> total = total + 1\n        i = i + 1\n    total\n");
+    compile_checked_module_artifact(&checked(&source))
+        .expect_lowered("a match join drops lanes one arm renamed");
+}
+
 #[test]
 fn exact_narrowing_needs_a_proven_bound() {
     // `get`'s index is bounded only by `bytes.at`'s own check.
