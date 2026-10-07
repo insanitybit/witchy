@@ -5467,7 +5467,29 @@ pub mod self_checks {
                 *operation = Operation::Reclaim { object };
             }
         }
-        assert_eq!(check_initial(unique_borrow).unwrap_err(), InitialCheckError::InvalidOwnership {
+        // A callee with no result, write-back, or carrier lane cannot keep
+        // what it was lent, so the caller's unique token survives the call.
+        let mut retaining_borrow = unique_borrow.clone();
+        assert!(check_initial(unique_borrow).is_ok());
+        // One that can hand back a share of the argument leaves it shared.
+        let kept = ValueId::new(4);
+        let returned = ValueId::new(11);
+        retaining_borrow.signatures[1].results = vec![ValueType::Ref(layout)];
+        retaining_borrow.signatures[1].contract.results = vec![super::super::ResultContract::Shared { layout }];
+        retaining_borrow.signatures[1].contract.parameter_effects.insert(0, vec![MemoryEffect::Retain]);
+        retaining_borrow.functions[1].value_types.insert(returned, ValueType::Ref(layout));
+        retaining_borrow.functions[1].blocks[0].operations.push(Operation::CloneRef { destination: returned, source: ValueId::new(10) });
+        retaining_borrow.functions[1].blocks[0].terminator = Terminator::Return { values: vec![returned] };
+        retaining_borrow.functions[0].value_types.insert(kept, ValueType::Ref(layout));
+        let operations = &mut retaining_borrow.functions[0].blocks[0].operations;
+        for operation in operations.iter_mut() {
+            if let Operation::Call { destinations, .. } = operation {
+                *destinations = vec![kept];
+            }
+        }
+        let reclaim = operations.len() - 1;
+        operations.insert(reclaim, Operation::DropRef { object: kept });
+        assert_eq!(check_initial(retaining_borrow).unwrap_err(), InitialCheckError::InvalidOwnership {
             function: FUNCTION,
             object,
         });
