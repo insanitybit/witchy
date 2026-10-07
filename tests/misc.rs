@@ -245,3 +245,6 @@ mod resource_exit_disposition;
 
 #[path = "misc/expression_exit_disposition.rs"]
 mod expression_exit_disposition;
+
+#[path = "misc/async_receive_frames.rs"]
+mod async_receive_frames;

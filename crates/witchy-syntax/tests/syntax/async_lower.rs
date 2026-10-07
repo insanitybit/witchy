@@ -61,3 +61,60 @@
     }
 
 
+
+#[test]
+fn typed_receive_frames_keep_payload_and_reject_suspending_or_root_state() {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) { witchy_syntax::opt::set_for_tests(None); }
+    }
+    let _reset = Reset;
+    let source = "from chan import Receiver\n\ntype Packet:\n    Packet(Int, Int)\n\nasync fn consume(rx: Receiver(Packet)):\n    var sum: Int = 0\n    for await packet in rx:\n        match packet:\n            Packet(a, b) -> sum = sum + a + b\n    let _ = sum\n";
+    for enabled in [false, true] {
+        let options = if enabled { witchy_syntax::opt::OptSet::all() } else { witchy_syntax::opt::OptSet::none() };
+        witchy_syntax::opt::set_for_tests(Some(options));
+        let module = lower_module(witchy_syntax::parser::parse_module(source).expect("parse receive loop"))
+            .expect("lower receive loop");
+        let text = format!("{:?}", witchy_syntax::records::lower(module).expect("lower records").into_module());
+        assert_eq!(text.contains("chan.recv_typed_frame_loop"), enabled, "{text}");
+        if enabled {
+            assert!(text.contains("Var(\"packet\")"), "typed payload must enter body: {text}");
+        }
+    }
+    witchy_syntax::opt::set_for_tests(Some(witchy_syntax::opt::OptSet::all()));
+    for unsupported in [
+        source.replace("    for await", "    var values: List(Int) = []\n    for await").replace("sum = sum + a + b", "list.push(values, a + b)"),
+        source.replace("        match packet:", "        chan.yield_now().await\n        match packet:"),
+        source.replace("Packet(a, b) -> sum = sum + a + b", "Packet(a, b) -> return"),
+    ] {
+        let module = lower_module(witchy_syntax::parser::parse_module(&unsupported).expect("parse fallback"))
+            .expect("lower fallback");
+        let text = format!("{:?}", witchy_syntax::records::lower(module).expect("lower records").into_module());
+        assert!(!text.contains("chan.recv_typed_frame_loop"), "{text}");
+    }
+}
+
+#[test]
+fn typed_receive_frames_keep_nested_escapes_on_the_existing_route() {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) { witchy_syntax::opt::set_for_tests(None); }
+    }
+    let _reset = Reset;
+    for escape in ["break", "continue"] {
+        let source = format!("from chan import Receiver\n\nasync fn consume(rx: Receiver(Int)):\n    var total: Int = 0\n    for await value in rx:\n        if value == 0:\n            {escape}\n        total = total + value\n    let _ = total\n");
+        let mut errors = Vec::new();
+        for options in [witchy_syntax::opt::OptSet::none(), witchy_syntax::opt::OptSet::all()] {
+            witchy_syntax::opt::set_for_tests(Some(options));
+            match lower_module(witchy_syntax::parser::parse_module(&source).expect("parse escape")) {
+                Ok(module) => {
+                    let text = format!("{:?}", witchy_syntax::records::lower(module).expect("records").into_module());
+                    assert!(!text.contains("chan.recv_typed_frame_loop"));
+                    errors.push(None);
+                }
+                Err(error) => errors.push(Some(error)),
+            }
+        }
+        assert_eq!(errors[0], errors[1], "optimization keeps existing escape behavior");
+    }
+}

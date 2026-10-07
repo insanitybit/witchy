@@ -164,3 +164,13 @@ fn generic_lambda_context_rejects_qualifier_and_convention_erasure() {
     );
 }
 
+
+#[test]
+fn generic_entry_match_preserves_stored_callback_access() {
+    let valid = "type Cell(a):\n    Cell(a, fn(var Int) -> Int)\n\nfn forward(own cell: Cell(a)) -> Cell(a):\n    match cell:\n        Cell(value, callback) -> Cell(value, callback)\n\nfn increment(var n: Int) -> Int:\n    n = n + 1\n    n\n\nfn main() -> Int:\n    let _ = forward(Cell(0, increment))\n    0\n";
+    witchy_types::typeck::check_reference_migration_str(valid).expect("generic field callback keeps its declared contract");
+    let invalid = valid.replace("Cell(value, callback) -> Cell(value, callback)", "Cell(value, callback) -> Cell(value, fn(n: Int): n)");
+    let error = witchy_types::typeck::check_reference_migration_str(&invalid)
+        .expect_err("generic entry match cannot erase var access");
+    assert!(error.contains("ownership/access contract") || error.contains("fn(var Int)"), "{error}");
+}

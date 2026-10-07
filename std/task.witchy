@@ -67,6 +67,8 @@ sealed type Step(a):
     Pull2Frame(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, Task(()))
     // One-way counterpart of Pull2FrameLoop. It retains one receiver, frame,
     // step, and completion closure across a receive-until-closed fold.
+    // Body and probe phases preserve the ordinary receive’s round boundaries.
+    ReceiveFrame(Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(a))
     PullFrameLoop(Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))
     // Compiler-private ready-probing entry form. As with the fixed-arity
     // select entry, task.run owns the sole ring and retains PullFrameLoop's
@@ -162,6 +164,8 @@ fn and_then_step(own s: Step(a), own k: fn(own a) -> Task(b)) -> Step(b):
         Pull2Ready(ch0, ch1, cont) -> Pull2Ready(ch0, ch1, fn(tag, o): and_then(cont(tag, o), k))
         Pull2Frame(_, _, _, _, _) ->
             Pull2Ready(0, 0, fn(_tag, _o): direct_frame_unreachable())
+        ReceiveFrame(ch, frame, step, finish) ->
+            ReceiveFrame(ch, frame, step, fn(state: List(Int)) -> Task(b): and_then(finish(state), k))
         PullFrameLoop(_, _, _, _) ->
             Pull2Ready(0, 0, fn(_tag, _o): direct_frame_unreachable())
         PullReadyFrameLoop(_, _, _, _) ->
@@ -299,6 +303,10 @@ fn __channel_recv_frame_loop(ch: ChannelId, frame: List(Int), step: fn(Option(__
     match ch:
         ChannelId(id) -> Task(fn(): PullReadyFrameLoop(id, frame, step, done_fn))
 
+pub fn channel_receive_frame(ch: ChannelId, frame: List(Int), step: fn(Option(__Msg), var List(Int)) -> Bool, finish: fn(List(Int)) -> Task(a)) -> Task(a):
+    match ch:
+        ChannelId(id) -> Task(fn(): ReceiveFrame(id, frame, step, finish))
+
 pub fn channel_recv_frame_loop(ch: ChannelId, frame: List(Int), step: fn(Option(__Msg), var List(Int)) -> Bool, done_fn: fn(List(Int)) -> Task(())) -> Task(()):
     __channel_recv_frame_loop(ch, frame, step, done_fn)
 
@@ -387,6 +395,7 @@ sealed type Slot:
     Wait3(Int, Int, Int, fn(Int, Option(__Msg)) -> Task(()))
     Wait4(Int, Int, Int, Int, fn(Int, Option(__Msg)) -> Task(()))
     Wait2Frame(Int, Int, List(Int), fn(Int, Option(__Msg), List(Int)) -> Bool, Task(()))
+    ReceiveFrameSlot(Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()), Int, Option(__Msg))
     WaitFrameLoop(Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))
     Wait2FrameLoop(Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))
     Wait3FrameLoop(Int, Int, Int, List(Int), fn(Int, Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(()))
@@ -405,6 +414,7 @@ fn is_live(s: Slot) -> Bool:
         Wait3(_, _, _, _) -> true
         Wait4(_, _, _, _, _) -> true
         Wait2Frame(_, _, _, _, _) -> true
+        ReceiveFrameSlot(_, _, _, _, _, _) -> true
         WaitFrameLoop(_, _, _, _) -> true
         Wait2FrameLoop(_, _, _, _, _) -> true
         Wait3FrameLoop(_, _, _, _, _, _) -> true
@@ -420,6 +430,7 @@ fn is_parked(s: Slot) -> Bool:
         Wait3(_, _, _, _) -> true
         Wait4(_, _, _, _, _) -> true
         Wait2Frame(_, _, _, _, _) -> true
+        ReceiveFrameSlot(_, _, _, _, phase, _) -> phase == 0
         WaitFrameLoop(_, _, _, _) -> true
         Wait2FrameLoop(_, _, _, _, _) -> true
         Wait3FrameLoop(_, _, _, _, _, _) -> true
@@ -661,6 +672,34 @@ pub fn run(root: Task(())):
                                 list.set_at(slots, i, Wait2Frame(ch0, ch1, frame, step, done_task))
                             prog = true
                         None -> unit()
+                ReceiveFrameSlot(ch, frame, step, finish, phase, pending) ->
+                    if phase == 0:
+                        let (buf, head, count, cap) = list.at(channels, ch)
+                        if count > 0:
+                            let msg = list.at(buf, head)
+                            let physcap = list.length(buf)
+                            list.set_at(channels, ch, (buf, (head + 1) % physcap, count - 1, cap))
+                            list.set_at(slots, i, ReceiveFrameSlot(ch, frame, step, finish, 1, Some(msg)))
+                            prog = true
+                        else:
+                            list.set_at(slots, i, ReceiveFrameSlot(ch, frame, step, finish, 0, None))
+                    else if phase == 1:
+                        var state = frame
+                        if step(pending, state):
+                            list.set_at(slots, i, Active(finish(state)))
+                        else:
+                            list.set_at(slots, i, ReceiveFrameSlot(ch, state, step, finish, 2, None))
+                        prog = true
+                    else:
+                        let (buf, head, count, cap) = list.at(channels, ch)
+                        if count > 0:
+                            let msg = list.at(buf, head)
+                            let physcap = list.length(buf)
+                            list.set_at(channels, ch, (buf, (head + 1) % physcap, count - 1, cap))
+                            list.set_at(slots, i, ReceiveFrameSlot(ch, frame, step, finish, 1, Some(msg)))
+                            prog = true
+                        else:
+                            list.set_at(slots, i, ReceiveFrameSlot(ch, frame, step, finish, 0, None))
                 WaitFrameLoop(ch, frame, step, done_fn) ->
                     var frame = frame
                     if is_only_live_slot(0, i, slots):
@@ -999,6 +1038,17 @@ pub fn run(root: Task(())):
                             materialize_typed_i64_channel(ch1, channels, typed_i64_channels)
                             list.set_at(slots, i, Wait2Frame(ch0, ch1, frame, step, done_task))
                             prog = true
+                        ReceiveFrame(ch, frame, step, finish) ->
+                            materialize_typed_i64_channel(ch, channels, typed_i64_channels)
+                            let (buf, head, count, cap) = list.at(channels, ch)
+                            if count > 0:
+                                let msg = list.at(buf, head)
+                                let physcap = list.length(buf)
+                                list.set_at(channels, ch, (buf, (head + 1) % physcap, count - 1, cap))
+                                list.set_at(slots, i, ReceiveFrameSlot(ch, frame, step, finish, 1, Some(msg)))
+                                prog = true
+                            else:
+                                list.set_at(slots, i, ReceiveFrameSlot(ch, frame, step, finish, 0, None))
                         PullFrameLoop(ch, frame, step, done_fn) ->
                             materialize_typed_i64_channel(ch, channels, typed_i64_channels)
                             __rfc0152_reusable_wait_install()
@@ -1246,6 +1296,8 @@ pub fn run(root: Task(())):
                             list.set_at(slots, j, Active(done_task))
                         else:
                             list.set_at(slots, j, Wait2Frame(_ch0, _ch1, frame, step, done_task))
+                    ReceiveFrameSlot(ch, frame, step, finish, _phase, _pending) ->
+                        list.set_at(slots, j, ReceiveFrameSlot(ch, frame, step, finish, 1, None))
                     WaitFrameLoop(_ch, frame, step, done_fn) ->
                         var frame = frame
                         if step(None, frame):

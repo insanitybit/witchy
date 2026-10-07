@@ -540,7 +540,22 @@ impl<'a> AccessVerifier<'a> {
         }
         let expected = self.flow_from_type(signature.result().ty())
             .map_err(Self::signature_error)?;
-        let tail = self.eval_block(&function.body, &mut environment, &expected)?;
+        // Generic entry matches retain the checked parameter declaration when the expression type is unresolved.
+        let parameter_match = match function.body.stmts.as_slice() {
+            [Stmt::Expr(Expr::Match { scrutinee, .. })] => match scrutinee.as_ref() {
+                Expr::Var(name) => function.params.iter().find(|parameter| parameter.name == *name)
+                    .and_then(|parameter| parameter.ty.as_ref())
+                    .map(|ty| (scrutinee.as_ref() as *const Expr as usize, ty.clone())),
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some((site, ty)) = &parameter_match {
+            self.expression_type_hints.insert(*site, ty.clone());
+        }
+        let tail = self.eval_block(&function.body, &mut environment, &expected);
+        if let Some((site, _)) = parameter_match { self.expression_type_hints.remove(&site); }
+        let tail = tail?;
         if matches!(function.body.stmts.last(), Some(Stmt::Expr(_))) {
             let context = if matches!(&expected, AccessFlow::Callable(_)) {
                 "returned function value".to_string()
@@ -2003,7 +2018,8 @@ impl<'a> AccessVerifier<'a> {
                 then_flow.join(&else_flow, "if-expression branches")?
             }
             Expr::Match { scrutinee, arms } => {
-                let scrutinee_type = self.resolved_expression_type(scrutinee);
+                let scrutinee_type = self.resolved_expression_type(scrutinee)
+                    .or_else(|| self.contextual_expression_type(scrutinee));
                 let scrutinee = self.eval_expr(scrutinee, environment, return_expected)?;
                 let branches = arms
                     .iter()
