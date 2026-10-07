@@ -18895,8 +18895,23 @@ impl FunctionLowerer<'_> {
     ) -> Result<bool, CanonicalLoweringError> {
         let Some(target) = self.forwarded_dict_intrinsics.byte_write_backs.get(callee) else { return Ok(false) };
         let Some(Expr::Var(receiver)) = arguments.first() else { return Ok(false) };
+        if !self.functions.contains_key(callee) || self.bindings.contains_key(callee) {
+            return Ok(false);
+        }
         if !self.mutable_bindings.contains(receiver) || self.functions.contains_key(target.as_str()) {
             return Ok(false);
+        }
+        if let ("__bytes_push", [_, value]) = (target.as_str(), arguments) {
+            // A shared buffer takes one owned copy, which then grows like any
+            // unshared one: the std body's unique parameter did the same.
+            if !self.lower_bytes_push_into(receiver, value)? {
+                let copy = self.owned_string_copy(self.bindings[receiver])?;
+                self.bindings.insert(receiver.clone(), copy);
+                if !self.lower_bytes_push_into(receiver, value)? {
+                    return Err(CanonicalLoweringError::UnsupportedExpression("byte push into an owned copy"));
+                }
+            }
+            return Ok(true);
         }
         let result = if let ("__bytes_append", [_, suffix]) = (target.as_str(), arguments) {
             let left = self.lower_expr(&arguments[0])?;
@@ -19008,6 +19023,12 @@ impl FunctionLowerer<'_> {
         if name != "__bytes_push" || receiver != target || place_depth != 0 {
             return Ok(false);
         }
+        self.lower_bytes_push_into(target, value)
+    }
+
+    /// `target = __bytes_push(target, value)` growing `target` in place when
+    /// it has spare capacity and is not known to be shared.
+    fn lower_bytes_push_into(&mut self, target: &str, value: &Expr) -> Result<bool, CanonicalLoweringError> {
         let old = *self.bindings.get(target)
             .ok_or_else(|| CanonicalLoweringError::MissingBinding(target.to_owned()))?;
         if self.known_shared_value(old) {
