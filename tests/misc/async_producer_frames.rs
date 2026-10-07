@@ -41,7 +41,7 @@ fn attempt(source: &str, options: OptSet) -> Result<Vec<String>, String> {
     let mut vm = runtime.spawn_admitted(&artifact,
         Capabilities { print: true, print_int: true, quiet: true, ..Capabilities::none() }, 256)
         .expect("spawn admitted producer frame fixture");
-    vm.run().map_err(|error| error.to_string())?;
+    vm.run().map_err(|error| error.root_cause().to_string())?;
     assert_eq!(vm.canonical_heap_leaks().expect("heap audit"), Some(0));
     Ok(vm.output())
 }
@@ -186,6 +186,30 @@ fn producer_frame_range_prefix_locals_have_correct_liveness() {
         let values = reference.iter().filter(|line| line.starts_with("value ")).cloned().collect::<Vec<_>>();
         assert_eq!(values, ["value 0", "value 1", "value 2"]);
         assert_eq!(run(&source, OptSet::all()), reference);
+    }
+}
+
+#[test]
+fn producer_frame_spilled_range_binding_does_not_escape_loop_scope() {
+    let _reset = Reset;
+    let source = r#"from chan import Sender
+
+async fn produce(tx: Sender(Int), i: Int) -> Int:
+    for i in 0..3:
+        chan.send(tx, i).await
+        let next: Int = i + 1
+        let _ = next
+    i
+
+async fn main(console: Console):
+    let (tx, rx) = chan.channel(4).await
+    let result = produce(tx, 99).await
+    console.print("result ${result}")
+    for await value in rx:
+        console.print("${value}")
+"#;
+    for options in [OptSet::none(), OptSet::all()] {
+        assert_eq!(run(source, options), ["result 99", "0", "1", "2"]);
     }
 }
 
