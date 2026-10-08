@@ -111,7 +111,40 @@ pub fn unique_pop_source_abi_requires_checked_unique_input_and_output(checker: &
         let Type::Fn(parameters, result, _, qualifiers) = source else { panic!("checked callable") };
         let Type::Qualified(TypeQual::Unique, plain) = &parameters[0] else { panic!("checked unique qualifier") };
         let ordinary = Type::Fn(vec![(**plain).clone()], result.clone(), vec![Convention::Var], qualifiers.clone());
-        assert!(!candidate_signature_matches_source(&signature, &ordinary, &module), "candidate cannot invent unique authority for plain source var");
+        assert!(candidate_signature_matches_source(&signature, &ordinary, &module), "scalar list writeback may require a checked caller repair");
+        weaker = signature.clone();
+        weaker.contract.parameters[0].ownership = ParameterOwnership::Unique;
+        assert!(!candidate_signature_matches_source(&weaker, &ordinary, &module));
+        weaker = signature.clone();
+        weaker.contract.results[1] = ResultContract::Shared { layout: list };
+        assert!(!candidate_signature_matches_source(&weaker, &ordinary, &module));
+    });
+    checker.with_checked("main", b"fn take(var xs: unique List(List(Int))) -> Int:\n    0\n\nfn main() -> Int:\n    var xs = [[1]]\n    take(xs)\n", &mut |checked| {
+        let source = checked.view.closed_callable_signature(0).unwrap();
+        let mut interner = crate::layout::LayoutInterner::new();
+        let integer = interner.intern_scalar(crate::layout::ScalarKind::Int).unwrap();
+        let child = interner.intern_packed_list(integer, crate::layout::RcHeader::Required).unwrap();
+        let slot = interner.intern_runtime_pointer_value_slot(child, crate::layout::PointerSlot::Owned).unwrap();
+        let list = interner.intern_packed_list(slot, crate::layout::RcHeader::Required).unwrap();
+        let signature = FunctionSignature {
+            id: FunctionSignatureId::new(0), parameters: vec![ValueType::Ref(list)],
+            results: vec![ValueType::Int, ValueType::Ref(list)],
+            contract: CallableContract {
+                parameters: vec![super::super::ParameterContract { value_type: ValueType::Ref(list), ownership: ParameterOwnership::UniqueWriteBack }],
+                results: vec![ResultContract::Value(ValueType::Int), ResultContract::Unique { layout: list }],
+                parameter_effects: BTreeMap::new(),
+            },
+        };
+        let module = CanonicalModule::from_lowering(LoweredModuleParts {
+            revision: Revision::new(1), checked_source: CheckedSourceIdentity::from_digest([0; 32]),
+            layouts: LayoutBundle::from_interner(&interner, [list]).unwrap(), signatures: vec![signature.clone()],
+            imports: vec![], functions: vec![], proper_tail_sites: vec![],
+        });
+        assert!(candidate_signature_matches_source(&signature, source, &module));
+        let Type::Fn(parameters, result, _, qualifiers) = source else { panic!("checked callable") };
+        let Type::Qualified(TypeQual::Unique, plain) = &parameters[0] else { panic!("checked unique qualifier") };
+        let ordinary = Type::Fn(vec![(**plain).clone()], result.clone(), vec![Convention::Var], qualifiers.clone());
+        assert!(!candidate_signature_matches_source(&signature, &ordinary, &module), "reference-element lists still require checked source uniqueness");
     });
 }
 
