@@ -488,6 +488,8 @@ The stateful server loop: receive a message, run `handler` with the current `sta
 
 Drive `root` through the canonical `std/task` executor. `chan` keeps this facade for channel-centric programs, but scheduling has a single implementation.
 
+#### `fn __recv_state_frame(own state: s, prepare: fn(var s) -> Option(Int), resume: fn(own Option(m), var s) -> (), finish: fn(s) -> Task(a)) -> Task(a)`
+
 ## `cmp`
 
 The witchy standard comparison hierarchy, mirroring Rust's `std::cmp`: `PartialEq` → `Eq` → `PartialOrd` → `Ord`. The comparison operators desugar through these traits, so `a == b` and `x < y` work on your own types once you implement (or derive) them - there is no separate `compare`/`greater` to call by name. Built-in impls cover the primitives; `Self` in a method signature stands for the implementing type. Built-in comparisons are data-only. A custom trait impl is an ordinary callable contract and may invoke delegated behavior.
@@ -4623,6 +4625,9 @@ What a task yields to the executor when stepped. `a` is the task's own result. T
 - `ReceiveFrame((Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(a)))`
 - `ReceiveLaneFrame((Int, List(Int), fn(Option(__Msg), Int, var List(Int)) -> Bool, fn(List(Int)) -> Task(a)))`
 - `ProduceFrame((List(Int), fn(Int, var List(Int)) -> Option((Int, __Msg)), fn(Int, var List(Int)) -> Bool, fn(List(Int)) -> Task(a), Int, __Msg))`
+- `TerminalProduceStateFrame((__Msg, fn(own __Msg) -> Task(a), Int, __Msg))`
+- `ProduceStateFrame((__Msg, fn(own __Msg) -> (Option((Int, __Msg)), __Msg), fn(own __Msg) -> __Msg, fn(own __Msg) -> Task(a), Int, __Msg))`
+- `ReceiveStateFrame((__Msg, fn(own __Msg) -> (Option(Int), __Msg), fn(own Option(__Msg), own __Msg) -> __Msg, fn(own __Msg) -> Task(a), Int))`
 - `SelectLaneFrame((List(Int), fn(Int, var List(Int)) -> Option(List(Int)), fn(own Option((Int, __Msg)), Int, var List(Int)) -> Bool, fn(List(Int)) -> Task(a), List(Int)))`
 
 #### `sealed type Task(a)`
@@ -4663,6 +4668,9 @@ A scheduling slot: running, parked on a channel recv/send or on a join, or done.
 - `ReceiveLaneSlot(Int)`
 - `ProduceFrameSlot(Int)`
 - `JoinFrameSlot(Int)`
+- `TerminalProduceStateSlot(Int)`
+- `ProduceStateSlot(Int)`
+- `ReceiveStateSlot(Int)`
 - `SelectLaneSlot(Int)`
 
 #### `type __TypedI64Ring = (List(Int), Int, Int, Int)`
@@ -4718,6 +4726,18 @@ Fixed-arity scheduler forms intentionally retain their endpoints as separate fie
 #### `fn channel_receive_frame(ch: ChannelId, frame: List(Int), step: fn(Option(__Msg), var List(Int)) -> Bool, finish: fn(List(Int)) -> Task(a)) -> Task(a)`
 
 #### `fn __receive_lane_frame(ch: ChannelId, frame: List(Int), step: fn(Option(__Msg), Int, var List(Int)) -> Bool, finish: fn(List(Int)) -> Task(a)) -> Task(a)`
+
+#### `fn __prepare_recv(t: Task(Option(a))) -> Int`
+
+#### `fn __receive_state_frame(own state: __Msg, prepare: fn(own __Msg) -> (Option(Int), __Msg), resume: fn(own Option(__Msg), own __Msg) -> __Msg, finish: fn(own __Msg) -> Task(a)) -> Task(a)`
+
+#### `fn __terminal_send_state_frame(own state: __Msg, prepare: fn(own __Msg) -> ((Int, __Msg), __Msg), finish: fn(own __Msg) -> Task(a)) -> Task(a)`
+
+#### `fn __terminal_producer_state_frame(own state: s, prepare: fn(var s) -> (Int, __Msg), finish: fn(s) -> Task(a)) -> Task(a)`
+
+#### `fn __send_state_frame(own state: __Msg, prepare: fn(own __Msg) -> (Option((Int, __Msg)), __Msg), resume: fn(own __Msg) -> __Msg, finish: fn(own __Msg) -> Task(a)) -> Task(a)`
+
+#### `fn __producer_state_frame(own state: s, prepare: fn(var s) -> Option((Int, __Msg)), resume: fn(var s) -> (), finish: fn(s) -> Task(a)) -> Task(a)`
 
 #### `fn __prepare_send(t: Task(())) -> (Int, __Msg)`
 
