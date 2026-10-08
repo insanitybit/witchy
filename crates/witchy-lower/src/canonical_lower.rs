@@ -4243,7 +4243,7 @@ fn lower_function(
     loop {
         // A discarded attempt's tail-site locations name its own blocks.
         let known_sites = proper_tail_locations.keys().copied().collect::<BTreeSet<_>>();
-        match lower_function_attempt(&forced, function, body, id, item, opt_mode, lambda_path.clone(), lambda_names, signature, functions, forwarded_dict_intrinsics, direct_shared_alias_callees, checked_parameter_conventions, signatures, call_tables, tail_manifest, proper_tail_locations, type_table, checked_module, access_facts, loan_facts, view_facts, dictionary_comparators, dictionary_equivalents, layout_bundle, layouts, string_data_ids, host_imports, packed_records, definitions, closures, environment)? {
+        match lower_function_attempt(&forced, function, body, id, item, opt_mode, lambda_path.clone(), lambda_names, signature, functions, forwarded_dict_intrinsics, direct_shared_alias_callees, checked_parameter_conventions, signatures, call_tables, tail_manifest, proper_tail_locations, type_table, checked_module, access_facts, loan_facts, view_facts, dictionary_comparators, dictionary_equivalents, layout_bundle, layouts, string_data_ids, host_imports, packed_records, definitions, closures, environment, canonical_source)? {
             LoweringAttempt::Lowered(function) => return Ok(function),
             LoweringAttempt::Retry(names) => {
                 proper_tail_locations.retain(|site, _| known_sites.contains(site));
@@ -4286,6 +4286,7 @@ fn lower_function_attempt(
     definitions: &BTreeMap<String, TypeDef>,
     closures: &ClosureContext,
     environment: Option<&ClosureEnvironment>,
+    canonical_source: &CanonicalCheckedSource,
 ) -> Result<LoweringAttempt, CanonicalLoweringError> {
     let entry_exclusive_reference_params = access_facts
         .declaration(&function.name)
