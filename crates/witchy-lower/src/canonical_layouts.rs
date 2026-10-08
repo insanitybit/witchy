@@ -1212,8 +1212,10 @@ fn intern_v1_layout_fields(
             let slot = if let Some(scalar) = scalar_kind_of(child)
                 && !matches!(storage, StoragePlan::Owned(CarrierElement::RetainedRootView(_)))
             {
-                let scalar = if scalar == ScalarKind::Bool { ScalarKind::BoolValueSlot } else { scalar };
-                if matches!(scalar, ScalarKind::Int | ScalarKind::Float | ScalarKind::Duration | ScalarKind::BoolValueSlot) {
+                let scalar = dictionary_slot_scalar(scalar);
+                if matches!(scalar, ScalarKind::Int | ScalarKind::Float | ScalarKind::Duration
+                    | ScalarKind::BoolValueSlot | ScalarKind::UnitValueSlot)
+                {
                     Some(interner.intern_scalar(scalar)
                         .map_err(|error| CanonicalLayoutError::InvalidLayout(error.to_string()))?)
                 } else { None }
@@ -1415,6 +1417,16 @@ fn layout_field_is_inline(ty: &Type, definitions: &BTreeMap<String, TypeDef>) ->
         StoragePlan::InlineScalar(_)
             | StoragePlan::RootedView(
                 witchy_canonical_source::rooted_view::RootedViewStorage::InlineScalar(_)))
+}
+
+/// The eight-byte table-slot carrier of a source scalar: a Bool or the unit
+/// value widens to its slot kind; every other scalar is its own slot.
+pub(crate) fn dictionary_slot_scalar(scalar: ScalarKind) -> ScalarKind {
+    match scalar {
+        ScalarKind::Bool => ScalarKind::BoolValueSlot,
+        ScalarKind::Unit => ScalarKind::UnitValueSlot,
+        other => other,
+    }
 }
 
 fn scalar_kind_of(ty: &Type) -> Option<ScalarKind> {

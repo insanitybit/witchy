@@ -431,6 +431,7 @@ fn scalar_storage_layout(layouts: &LayoutInterner, id: LayoutId) -> bool {
                 LayoutKind::Scalar(
                     ScalarKind::RawByte
                     | ScalarKind::BoolValueSlot
+                    | ScalarKind::UnitValueSlot
                     | ScalarKind::V128
                     // A callable lane names a function, not data: no transport
                     // adapter may read or write one as scalar storage.

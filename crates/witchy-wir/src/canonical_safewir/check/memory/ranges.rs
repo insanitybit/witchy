@@ -1143,7 +1143,7 @@ impl<'a> MemoryChecker<'a> {
     ) -> Result<(), InitialCheckError> {
         match self.descriptor(element)?.kind() {
             LayoutKind::Scalar(ScalarKind::RawByte) => return Ok(()),
-            LayoutKind::Scalar(ScalarKind::V128 | ScalarKind::BoolValueSlot) => {
+            LayoutKind::Scalar(ScalarKind::V128 | ScalarKind::BoolValueSlot | ScalarKind::UnitValueSlot) => {
                 return self.unsupported(match operation {
                     "MoveRange" => "MoveRange(unmapped scalar element)",
                     "CloneRange" => "CloneRange(unmapped scalar element)",

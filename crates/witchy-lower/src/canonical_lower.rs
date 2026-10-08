@@ -21878,8 +21878,7 @@ fn dictionary_table_slot_matches(
 ) -> bool {
     let Some(descriptor) = layouts.get(slot) else { return false };
     if let Some(scalar) = source_scalar_layout_kind(source, definitions) {
-        let scalar = if scalar == ScalarKind::Bool { ScalarKind::BoolValueSlot } else { scalar };
-        return descriptor.kind() == &LayoutKind::Scalar(scalar);
+        return descriptor.kind() == &LayoutKind::Scalar(crate::canonical_layouts::dictionary_slot_scalar(scalar));
     }
     let LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned } = descriptor.kind() else {
         return false;

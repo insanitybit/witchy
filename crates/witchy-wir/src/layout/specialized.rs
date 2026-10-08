@@ -105,6 +105,9 @@ pub enum ScalarKind {
     /// scalar layout is one byte), and its identity grants no Bool value-range
     /// authority by itself.
     BoolValueSlot,
+    /// The eight-byte carrier of the unit value in a runtime dictionary slot.
+    /// Its bytes are always zero; like `BoolValueSlot` it is representation-only.
+    UnitValueSlot,
     /// One opaque 128-bit SIMD lane. Its bytes carry no reference authority.
     V128,
     /// The four-byte lane that carries a function-table index: slot 0 of a
@@ -133,7 +136,7 @@ impl ScalarKind {
             | Self::Tag16
             | Self::Tag32
             | Self::Callable => true,
-            Self::Unit | Self::RawByte | Self::BoolValueSlot | Self::V128 => false,
+            Self::Unit | Self::RawByte | Self::BoolValueSlot | Self::UnitValueSlot | Self::V128 => false,
         }
     }
 
@@ -142,7 +145,7 @@ impl ScalarKind {
             Self::Bool | Self::Tag8 | Self::RawByte => 1,
             Self::Tag16 => 2,
             Self::Unit | Self::U32 | Self::Tag32 | Self::Callable => 4,
-            Self::Int | Self::Float | Self::Duration | Self::BoolValueSlot => 8,
+            Self::Int | Self::Float | Self::Duration | Self::BoolValueSlot | Self::UnitValueSlot => 8,
             Self::V128 => 16,
         }
     }
@@ -2574,6 +2577,7 @@ fn validate_runtime_dictionary_slot(
         descriptor.kind,
         LayoutKind::Scalar(
             ScalarKind::BoolValueSlot
+                | ScalarKind::UnitValueSlot
                 | ScalarKind::Int
                 | ScalarKind::Float
                 | ScalarKind::Duration,
@@ -2777,7 +2781,7 @@ fn validate_source_inline_child(
     if matches!(
         descriptor.kind,
         LayoutKind::Scalar(
-            ScalarKind::RawByte | ScalarKind::BoolValueSlot | ScalarKind::V128,
+            ScalarKind::RawByte | ScalarKind::BoolValueSlot | ScalarKind::UnitValueSlot | ScalarKind::V128,
         )
     ) {
         return Err(LayoutError::DescriptorInvariant(
@@ -2868,6 +2872,7 @@ impl Encoder {
             ScalarKind::BoolValueSlot => 10,
             ScalarKind::Callable => 11,
             ScalarKind::Unit => 12,
+            ScalarKind::UnitValueSlot => 13,
         });
     }
 
@@ -3207,6 +3212,7 @@ impl<'a> Decoder<'a> {
             10 => Ok(ScalarKind::BoolValueSlot),
             11 => Ok(ScalarKind::Callable),
             12 => Ok(ScalarKind::Unit),
+            13 => Ok(ScalarKind::UnitValueSlot),
             _ => Err(LayoutError::Decode {
                 offset,
                 reason: "unknown scalar kind",

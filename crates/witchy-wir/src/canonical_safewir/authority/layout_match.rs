@@ -544,7 +544,7 @@ fn enqueue_dictionary_slot(
                 witchy_canonical_source::abi::CanonicalScalarKind::Float => ScalarKind::Float,
                 witchy_canonical_source::abi::CanonicalScalarKind::Duration => ScalarKind::Duration,
                 witchy_canonical_source::abi::CanonicalScalarKind::Bool => ScalarKind::BoolValueSlot,
-                witchy_canonical_source::abi::CanonicalScalarKind::Unit => return false,
+                witchy_canonical_source::abi::CanonicalScalarKind::Unit => ScalarKind::UnitValueSlot,
             };
             matches!(descriptor.kind(), LayoutKind::Scalar(actual) if *actual == expected)
         }

@@ -490,7 +490,7 @@ impl<'a> MemoryChecker<'a> {
                 Ok(ValueType::Size)
             }
             ScalarKind::V128 => Ok(ValueType::V128),
-            ScalarKind::RawByte | ScalarKind::BoolValueSlot | ScalarKind::Callable => {
+            ScalarKind::RawByte | ScalarKind::BoolValueSlot | ScalarKind::UnitValueSlot | ScalarKind::Callable => {
                 self.unsupported("layout scalar")
             }
         }

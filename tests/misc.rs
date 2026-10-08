@@ -63,6 +63,8 @@ mod guarded_or_pattern_arms;
 mod reference_list_append_aliases;
 #[path = "misc/string_storage_move.rs"]
 mod string_storage_move;
+#[path = "misc/unit_dict_slots.rs"]
+mod unit_dict_slots;
 #[path = "misc/unit_equality.rs"]
 mod unit_equality;
 #[path = "misc/opt_fresh_constructor_unique.rs"]

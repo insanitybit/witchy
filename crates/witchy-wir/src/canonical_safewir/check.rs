@@ -854,6 +854,7 @@ fn canonical_scalar_bytes(kind: crate::layout::ScalarKind, bytes: &[u8]) -> bool
         crate::layout::ScalarKind::BoolValueSlot => {
             matches!(u64::from_le_bytes(bytes.try_into().expect("checked scalar width")), 0 | 1)
         }
+        crate::layout::ScalarKind::UnitValueSlot => bytes == [0; 8],
         crate::layout::ScalarKind::Callable => false,
         crate::layout::ScalarKind::Int
         | crate::layout::ScalarKind::Float

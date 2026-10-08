@@ -35,8 +35,10 @@ impl MemoryChecker<'_> {
     }
 
     fn dictionary_slot_type(&self, slot: LayoutId) -> Result<ValueType, InitialCheckError> {
-        if matches!(self.descriptor(slot)?.kind(), LayoutKind::Scalar(ScalarKind::BoolValueSlot)) {
-            return Ok(ValueType::Bool);
+        match self.descriptor(slot)?.kind() {
+            LayoutKind::Scalar(ScalarKind::BoolValueSlot) => return Ok(ValueType::Bool),
+            LayoutKind::Scalar(ScalarKind::UnitValueSlot) => return Ok(ValueType::Unit),
+            _ => {}
         }
         self.value_type_for_layout(slot)
     }
