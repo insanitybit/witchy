@@ -26,6 +26,7 @@ pub mod rooted_view;
 pub mod scope;
 pub mod service;
 pub mod source;
+pub mod scalar_region;
 pub mod storage;
 pub mod structural_identity;
 pub mod specialization;

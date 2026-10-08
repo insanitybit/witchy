@@ -275,6 +275,8 @@ mod async_receive_frames;
 mod async_owner_metrics;
 #[path = "misc/async_producer_frames.rs"]
 mod async_producer_frames;
+#[path = "misc/async_scalar_regions.rs"]
+mod async_scalar_regions;
 
 #[path = "misc/async_select_lane_frames.rs"]
 mod async_select_lane_frames;

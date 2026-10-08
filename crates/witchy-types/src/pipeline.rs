@@ -159,11 +159,13 @@ pub struct CanonicalCheckedSource {
     task_behaviors: BTreeMap<u32, TaskBehaviorContract>,
     final_task_behaviors: BTreeMap<u32, TaskBehaviorContract>,
     deferred_task_role: Option<DeferredTaskRole>,
+    scalar_region: Option<witchy_canonical_source::scalar_region::ScalarRegionReceipt>,
     send_preparations: BTreeMap<usize, crate::checked_channel_send::CheckedSendPreparation>,
     select_preparations: BTreeMap<usize, crate::checked_channel_select::CheckedSelectPreparation>,
 }
 
 impl CanonicalCheckedSource {
+
     pub fn checked_select_preparation(&self, expression: &witchy_syntax::ast::Expr)
         -> Option<&crate::checked_channel_select::CheckedSelectPreparation>
     {
@@ -201,6 +203,7 @@ impl CanonicalCheckedSource {
             task_behaviors: &self.task_behaviors,
             final_task_behaviors: &self.final_task_behaviors,
             deferred_task_role: self.deferred_task_role.as_ref(),
+            scalar_region: self.scalar_region.as_ref(),
         })
     }
 
@@ -1336,6 +1339,7 @@ fn attach_canonical_source(
     dynamic_runtime_plan: Option<RuntimeTypePlan>,
     precompiled_declarations: PrecompiledDeclarationEnvironment,
     runtime_catalog: Option<&RuntimeDeclarationCatalog>,
+    scalar_preparation: Option<crate::scalar_region_preparation::Preparation>,
 ) -> Result<CheckedModule, PipelineError> {
     let deferred_task_role = checked_deferred_task_role(typed.module(), runtime_catalog);
     let final_behavior = crate::task_provenance::checked_final_execution_contracts(
@@ -1364,6 +1368,17 @@ fn attach_canonical_source(
     }
     let (task_awaits, task_await_items, task_operand_items, task_behaviors) =
         bind_task_await_proofs(&checked, &typed, runtime_catalog, &closure_witness, deferred_task_role.as_ref())?;
+    let scalar_region = scalar_preparation.as_ref().map(|preparation|
+        preparation.bind(&checked, &typed, &task_awaits,
+            runtime_catalog.ok_or("scalar region lost authenticated declarations")?))
+        .transpose().map_err(|message| PipelineError::Type(TypeError { message }))?;
+    let scalar_region = scalar_region.map(|bound|
+        witchy_canonical_source::scalar_region::ScalarRegionReceipt::from_checked_frontend(bound.root,
+            bound.companion, bound.graph_digest, bound.companion_digest, bound.root_digest, bound.awaits, bound.coordinates, bound.receive));
+    if scalar_region.as_ref().is_some_and(|receipt| !receipt.validate(typed.module(), &task_awaits)) {
+        return Err(PipelineError::Type(TypeError { message: "scalar receipt does not bind final checked source".into() }));
+    }
+
     let launch_contract_payload = capabilities::launch_contract_payload(checked.module());
     let launch_contract_digest = launch_contract_digest(&launch_contract_payload);
     let optimization_readiness = OptimizationReadiness::from_typed(&typed, source_bundle_digest)
@@ -1477,6 +1492,7 @@ fn attach_canonical_source(
             callable_abi_manifest_digest: callable_witness.abi_manifest.digest(),
             closure_witness_digest: closure_witness.digest(),
             task_behavior_manifest_digest: witchy_canonical_source::source::task_behavior_manifest_digest(&final_task_behaviors),
+            scalar_region_manifest_digest: witchy_canonical_source::scalar_region::manifest_digest(scalar_region.as_ref()),
             launch_contract_digest,
             obligations_digest: obligations_digest(&obligations),
             precompiled_declarations_digest: precompiled_declarations.digest(),
@@ -1499,6 +1515,7 @@ fn attach_canonical_source(
         task_behaviors,
         final_task_behaviors,
         deferred_task_role,
+        scalar_region,
         send_preparations: BTreeMap::new(),
         select_preparations: BTreeMap::new(),
     });
@@ -1644,6 +1661,16 @@ pub fn is_canonical_entry_function(linked_entry: Option<&str>, name: &str) -> bo
             || name.starts_with(&format!("{entry}."))
             || is_user_module_qualified(name)
     })
+}
+
+#[doc(hidden)]
+pub fn inspect_closed_scalar_region(checked: &CheckedModule) -> Result<(bool, witchy_syntax::ast::Function), String> {
+    let catalog = checked.runtime_declaration_catalog().map_err(|error| error.to_string())?;
+    let source = crate::checked_scalar_region::ScalarRegionSource::derive(checked, &catalog)
+        .ok_or("closed scalar source region is ineligible")?;
+    let contract = crate::checked_scalar_contract::scheduler_contract(checked.module(),
+        checked.typed_async_source().ok_or("missing original source")?.module(), &catalog);
+    Ok((contract.is_ok(), crate::scalar_region_emitter::companion(&source).ok_or("recipe generation failed")?))
 }
 
 
@@ -1974,6 +2001,12 @@ fn finish_canonical_source(
     // The same checked link retains the resolved pre-erasure declarations;
     // capture their witnesses here, never from the later canonical AST.
     let witness_catalog = crate::witness::WitnessCatalog::from_module(checked.module());
+    let runtime_catalog = checked.module_owners.as_ref()
+        .map(|_| checked.runtime_declaration_catalog()).transpose()?;
+    let (typed_source, scalar_preparation) = if let Some(catalog) = runtime_catalog.as_ref() {
+        crate::scalar_region_preparation::prepare(&checked, typed_source, catalog)
+            .map_err(|message| PipelineError::Type(TypeError { message }))?
+    } else { (typed_source, None) };
     let (mut typed_source, mut preparation) =
         canonicalize_callable_instances(typed_source, Some(&witness_catalog))?;
     // Only declarations actually removed by the following checked preparation
@@ -1985,8 +2018,6 @@ fn finish_canonical_source(
     }).collect::<HashSet<_>>();
     // Ownership is taken only from this checked link, never from a catalog
     // supplied at the plan's use site or a cache keyed by source shape.
-    let runtime_catalog = checked.module_owners.as_ref()
-        .map(|_| checked.runtime_declaration_catalog()).transpose()?;
     let messages_rewritten;
     let dynamic_runtime_plan = if let Some(runtime_catalog) = runtime_catalog.as_ref() {
         (typed_source, messages_rewritten) =
@@ -2079,6 +2110,7 @@ fn finish_canonical_source(
         dynamic_runtime_plan,
         precompiled_declarations,
         runtime_catalog.as_ref(),
+        scalar_preparation,
     )
 }
 
@@ -2198,4 +2230,50 @@ pub fn link_checked_authenticated_with_user_modules(
         Some(module_owners),
     )
     .map(|(checked, _)| checked)
+}
+
+#[doc(hidden)]
+pub fn assert_closed_scalar_receipt_rejects_forgery(checked: &CheckedModule) {
+    let view = checked.canonical_source().expect("canonical source").view();
+    let receipt = view.scalar_region().expect("selected scalar region");
+    assert!(receipt.validate_checked_source(view.module(), view.task_await_proofs(), view.source_witness()));
+    let function_digest = |item: u32| {
+        let witchy_syntax::ast::Item::Function(function) = &view.module().items[item as usize] else {
+            panic!("scalar function");
+        };
+        *blake3::hash(format!("{function:?}").as_bytes()).as_bytes()
+    };
+    let coordinates = receipt.covered_awaits().iter().map(|index| {
+        let (module, item, method, suspension) = view.task_await_proofs()[*index as usize].source_identity();
+        (module.to_string(), item, method, suspension)
+    }).collect::<Vec<_>>();
+    let mut digests = std::collections::BTreeSet::new();
+    for graph in [[1; 32], [2; 32]] {
+        for selector in [0, u32::MAX] {
+            let forged = witchy_canonical_source::scalar_region::ScalarRegionReceipt::from_checked_frontend(
+                receipt.root_item(), receipt.companion_item(), graph,
+                function_digest(receipt.companion_item()), function_digest(receipt.root_item()),
+                receipt.covered_awaits().to_vec(), coordinates.clone(),
+                ("invented".into(), 0, None, 0, selector, 0),
+            );
+            assert!(digests.insert(forged.digest()));
+            assert!(!forged.validate_checked_source(view.module(), view.task_await_proofs(), view.source_witness()));
+        }
+    }
+}
+
+
+#[doc(hidden)]
+pub fn assert_closed_scalar_scheduler_rejects_missing_projection(checked: &CheckedModule) {
+    let catalog = checked.runtime_declaration_catalog().expect("checked catalog");
+    let original = checked.typed_async_source().expect("original source").module();
+    for (projection, name) in [(0, "task.run"), (1, "task.run"), (1, "chan.__recv_stream")] {
+        let mut runtime = checked.module().clone();
+        let mut source = original.clone();
+        let module = if projection == 0 { &mut runtime } else { &mut source };
+        let before = module.items.len();
+        module.items.retain(|item| !matches!(item, witchy_syntax::ast::Item::Function(function) if function.name == name));
+        assert!(module.items.len() < before, "fixture contains {name}");
+        assert!(crate::checked_scalar_contract::scheduler_contract(&runtime, &source, &catalog).is_err());
+    }
 }

@@ -2282,3 +2282,9 @@ mod checked_channel_select;
 
 #[path = "typeck/channel_only_producer.rs"]
 mod channel_only_producer;
+
+#[path = "typeck/scalar_region.rs"]
+mod scalar_region;
+
+#[path = "typeck/scalar_region_authority.rs"]
+mod scalar_region_authority;

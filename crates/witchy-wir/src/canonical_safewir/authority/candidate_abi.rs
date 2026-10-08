@@ -49,6 +49,11 @@ fn validate_candidate_abi_bindings_with<S: ModuleStage>(
     super::super::compiler_session::validate(candidate, source).map_err(CandidateAbiBindingError::CompilerSession)?;
     super::super::vm_service::validate(candidate, source).map_err(CandidateAbiBindingError::VmService)?;
     super::super::par_map::validate(candidate, source).map_err(CandidateAbiBindingError::VmService)?;
+    if witchy_canonical_source::scalar_region::manifest_digest(source.scalar_region())
+        != source.source_witness().scalar_region_manifest_digest()
+        || source.scalar_region().is_some_and(|receipt| !receipt.validate_checked_source(source.module(), source.task_await_proofs(), source.source_witness())) {
+        return Err(CandidateAbiBindingError::ScalarRegionMismatch);
+    }
 
     let source_entries = source.callable_abi_manifest().entries().iter().filter_map(|entry| {
         let CanonicalTargetPolicy::ClosedLocal(target) = entry.target_policy else { return None };
@@ -87,6 +92,30 @@ fn validate_candidate_abi_bindings_with<S: ModuleStage>(
     for source_declaration in bindings.keys() {
         if !source_entries.contains_key(source_declaration) {
             return Err(CandidateAbiBindingError::UnexpectedBinding { source_declaration: *source_declaration });
+        }
+    }
+    if let Some(receipt) = source.scalar_region() {
+        let mut region_functions = Vec::new();
+        for item in [receipt.root_item(), receipt.companion_item()] {
+            let declaration = source_entries.keys().find(|ordinal|
+                source.closed_callable_item_ordinal(**ordinal) == Some(item));
+            if declaration.is_none_or(|ordinal| !bindings.contains_key(ordinal)) {
+                return Err(CandidateAbiBindingError::ScalarRegionMismatch);
+            }
+            region_functions.push(bindings[declaration.expect("checked region declaration")].function());
+        }
+        let Some(root) = candidate.functions().iter().find(|function| function.id == region_functions[0]) else {
+            return Err(CandidateAbiBindingError::ScalarRegionMismatch);
+        };
+        let mut calls = 0;
+        for block in &root.blocks {
+            calls += block.operations.iter().filter(|operation| matches!(operation,
+                super::super::Operation::Call { callee, .. } if *callee == region_functions[1])).count();
+            calls += usize::from(matches!(block.terminator,
+                super::super::Terminator::TailCall { callee, .. } if callee == region_functions[1]));
+        }
+        if calls != 1 {
+            return Err(CandidateAbiBindingError::ScalarRegionMismatch);
         }
     }
     let mut functions = BTreeMap::new();

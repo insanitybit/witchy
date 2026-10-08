@@ -44,6 +44,7 @@ struct CheckedSourceWitness {
     callable_abi_manifest_digest: [u8; 32],
     closure_witness_digest: [u8; 32],
     task_behavior_manifest_digest: [u8; 32],
+    scalar_region_manifest_digest: [u8; 32],
     launch_contract_digest: [u8; 32],
     obligations_digest: [u8; 32],
 }
@@ -311,6 +312,8 @@ impl ValidatedSafeWir {
                 != self.checked_source_witness.closure_witness_digest
             || witness.task_behavior_manifest_digest()
                 != self.checked_source_witness.task_behavior_manifest_digest
+            || witness.scalar_region_manifest_digest()
+                != self.checked_source_witness.scalar_region_manifest_digest
             || witness.launch_contract_digest()
                 != self.checked_source_witness.launch_contract_digest
             || witness.obligations_digest()
@@ -339,6 +342,7 @@ impl ExactModuleWitness {
                     &checked_lowering.checked_source_witness.callable_abi_manifest_digest,
                     &checked_lowering.checked_source_witness.closure_witness_digest,
                     &checked_lowering.checked_source_witness.task_behavior_manifest_digest,
+                    &checked_lowering.checked_source_witness.scalar_region_manifest_digest,
                     &checked_lowering.checked_source_witness.obligations_digest,
                 ],
             )
@@ -528,6 +532,7 @@ pub enum CandidateAbiBindingError {
     MissingClosureEnvironmentParameter { function: super::FunctionId },
     AdapterShapeMismatch { adapter: super::FunctionId },
     TaskBehaviorMismatch { function: super::FunctionId },
+    ScalarRegionMismatch,
     VmService(String),
     CompilerSession(String),
 }
@@ -609,6 +614,7 @@ pub fn check_initial_with_witness(
         callable_abi_manifest_digest: source.callable_abi_manifest().digest(),
         closure_witness_digest: source.source_witness().closure_witness_digest(),
         task_behavior_manifest_digest: source.source_witness().task_behavior_manifest_digest(),
+        scalar_region_manifest_digest: source.source_witness().scalar_region_manifest_digest(),
         launch_contract_digest: source.source_witness().launch_contract_digest(),
         obligations_digest: source
             .source_witness()
@@ -703,6 +709,8 @@ fn validate_final_inner(
                 != source.source_witness().closure_witness_digest()
             || checked_lowering.checked_source_witness.task_behavior_manifest_digest
                 != source.source_witness().task_behavior_manifest_digest()
+            || checked_lowering.checked_source_witness.scalar_region_manifest_digest
+                != source.source_witness().scalar_region_manifest_digest()
             || checked_lowering.checked_source_witness.launch_contract_digest
                 != source.source_witness().launch_contract_digest()
             || module.launch_contract_payload() != source.launch_contract_payload()
@@ -762,6 +770,8 @@ fn validate_optimized_final_inner(
                 != source.source_witness().closure_witness_digest()
             || checked_lowering.checked_source_witness.task_behavior_manifest_digest
                 != source.source_witness().task_behavior_manifest_digest()
+            || checked_lowering.checked_source_witness.scalar_region_manifest_digest
+                != source.source_witness().scalar_region_manifest_digest()
             || checked_lowering.checked_source_witness.launch_contract_digest
                 != source.source_witness().launch_contract_digest()
             || module.launch_contract_payload() != source.launch_contract_payload()
@@ -848,6 +858,7 @@ fn check_initial_with_expected_digest(
         callable_abi_manifest_digest: [0; 32],
         closure_witness_digest: [0; 32],
         task_behavior_manifest_digest: [0; 32],
+        scalar_region_manifest_digest: [0; 32],
         obligations_digest: [0; 32],
         launch_contract_digest: [0; 32],
     };

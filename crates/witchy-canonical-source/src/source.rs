@@ -961,6 +961,7 @@ pub struct CheckedSourceWitness {
     callable_abi_manifest_digest: [u8; 32],
     closure_witness_digest: [u8; 32],
     task_behavior_manifest_digest: [u8; 32],
+    scalar_region_manifest_digest: [u8; 32],
     launch_contract_digest: [u8; 32],
     obligations_digest: [u8; 32],
     precompiled_declarations_digest: [u8; 32],
@@ -973,6 +974,7 @@ pub struct CheckedSourceDigests {
     pub callable_abi_manifest_digest: [u8; 32],
     pub closure_witness_digest: [u8; 32],
     pub task_behavior_manifest_digest: [u8; 32],
+    pub scalar_region_manifest_digest: [u8; 32],
     pub launch_contract_digest: [u8; 32],
     pub obligations_digest: [u8; 32],
     pub precompiled_declarations_digest: [u8; 32],
@@ -988,6 +990,7 @@ impl CheckedSourceWitness {
             callable_abi_manifest_digest,
             closure_witness_digest,
             task_behavior_manifest_digest,
+            scalar_region_manifest_digest,
             launch_contract_digest,
             obligations_digest,
             precompiled_declarations_digest,
@@ -998,6 +1001,7 @@ impl CheckedSourceWitness {
             callable_abi_manifest_digest,
             closure_witness_digest,
             task_behavior_manifest_digest,
+            scalar_region_manifest_digest,
             launch_contract_digest,
             obligations_digest,
             precompiled_declarations_digest,
@@ -1041,6 +1045,8 @@ impl CheckedSourceWitness {
     pub fn task_behavior_manifest_digest(&self) -> [u8; 32] {
         self.task_behavior_manifest_digest
     }
+
+    pub fn scalar_region_manifest_digest(&self) -> [u8; 32] { self.scalar_region_manifest_digest }
 
     pub fn launch_contract_digest(&self) -> [u8; 32] {
         self.launch_contract_digest
@@ -1133,6 +1139,7 @@ pub struct CanonicalSourceParts<'s> {
     pub task_behaviors: &'s BTreeMap<u32, TaskBehaviorContract>,
     pub final_task_behaviors: &'s BTreeMap<u32, TaskBehaviorContract>,
     pub deferred_task_role: Option<&'s DeferredTaskRole>,
+    pub scalar_region: Option<&'s crate::scalar_region::ScalarRegionReceipt>,
 }
 
 /// A borrowed, read-only view of one checked canonical source.
@@ -1161,6 +1168,7 @@ pub struct CanonicalSourceView<'s> {
     task_behaviors: &'s BTreeMap<u32, TaskBehaviorContract>,
     final_task_behaviors: &'s BTreeMap<u32, TaskBehaviorContract>,
     deferred_task_role: Option<&'s DeferredTaskRole>,
+    scalar_region: Option<&'s crate::scalar_region::ScalarRegionReceipt>,
 }
 
 impl<'s> CanonicalSourceView<'s> {
@@ -1192,6 +1200,7 @@ impl<'s> CanonicalSourceView<'s> {
             task_behaviors,
             final_task_behaviors,
             deferred_task_role,
+            scalar_region,
         } = parts;
         Self {
             module,
@@ -1217,11 +1226,14 @@ impl<'s> CanonicalSourceView<'s> {
             task_behaviors,
             final_task_behaviors,
             deferred_task_role,
+            scalar_region,
         }
     }
 
     /// The exact checked AST every other fact in this view is keyed on.
     pub fn module(&self) -> &'s Module { self.module }
+
+    pub fn scalar_region(&self) -> Option<&'s crate::scalar_region::ScalarRegionReceipt> { self.scalar_region }
 
     pub fn task_await_proofs(&self) -> &'s [TaskAwaitProof] { self.task_awaits }
 
