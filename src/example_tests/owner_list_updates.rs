@@ -100,11 +100,12 @@ async fn produce(tx: Sender(fn() -> Int), console: Console) -> ():
 
 async fn main(console: Console):
     let (tx, rx) = chan.channel(2).await
-    chan.spawn(produce(tx, console)).await
+    let handle = chan.spawn(produce(tx, console)).await
     let received = chan.recv(rx).await
     match received:
         Some(callback) -> console.print("${callback()}")
         None -> console.print("closed")
+    chan.join(handle).await
 "#;
 
 #[test]
