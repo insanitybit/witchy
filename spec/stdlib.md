@@ -360,11 +360,11 @@ An unbounded channel - `send` never blocks (the buffer grows without limit).
 
 Compiler marker for `for await x in rx:`. The async lowering pass unwraps this declaration before execution; it exists only so source type checking can resolve the parser's lossless receive-stream marker. It must never be called as a runtime channel operation.
 
-#### `fn send(tx: Sender(m), msg: m) -> Task(())`
+#### `fn send(let tx: Sender(m), msg: m) -> Task(())`
 
 Send `msg`; on a bounded channel this blocks until there is room while some task can make progress. If the whole executor reaches quiescence with this send parked, the close pass releases it and stores the message, even if that temporarily exceeds the logical capacity. Always awaited. The message is erased to the executor's opaque slot at this boundary.
 
-#### `fn recv(rx: Receiver(m)) -> Task(Option(m))`
+#### `fn recv(let rx: Receiver(m)) -> Task(Option(m))`
 
 Receive the next message, or `None` when the executor reaches quiescence with this receive parked. `for await x in rx:` loops until this `None`. Because witchy does not refcount sender values, a `Sender` retained by later code may still send after such a quiescent close. The erased value is recovered at `m` at this boundary.
 

@@ -303,3 +303,6 @@ mod async_profile_map;
 mod bytes_to_string_decode;
 #[path = "misc/std_let_params.rs"]
 mod std_let_params;
+
+#[path = "misc/channel_handle_clones.rs"]
+mod channel_handle_clones;

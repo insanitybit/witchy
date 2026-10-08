@@ -49,6 +49,24 @@ impl Verifier<'_> {
         )
     }
 
+    fn scalar_capture(&self, name: &str, body: &Block) -> bool {
+        let mut seen = false;
+        let mut scalar = true;
+        witchy_syntax::ast::visit::visit_block(body, &mut |expression| {
+            match expression {
+                Expr::Var(actual) if actual == name => {
+                    seen = true;
+                    scalar &= self.inline_scalar(expression);
+                }
+                Expr::Call { name: actual, .. } | Expr::LabeledCall { name: actual, .. }
+                    if actual == name => scalar = false,
+                _ => {}
+            }
+            Ok::<_, ()>(())
+        }).expect("infallible checked capture walk");
+        seen && scalar
+    }
+
     fn result(&self, expression: &Expr, origins: Origins) -> Origins {
         if self.inline_scalar(expression) {
             Origins::new()
@@ -383,7 +401,10 @@ impl Verifier<'_> {
                 let captures = scan_lambda(params, body).captures();
                 let mut origins = Origins::new();
                 for capture in captures {
-                    if let Some(source) = environment.get(&capture) {
+                    if let Some(source) = environment.get(&capture)
+                        && !source.is_empty()
+                        && !self.scalar_capture(&capture, body)
+                    {
                         origins.extend(source.iter().cloned());
                     }
                 }

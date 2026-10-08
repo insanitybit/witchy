@@ -237,11 +237,11 @@ sealed type ChannelId:
 fn __channel_open(capacity: Int) -> Task(ChannelId):
     Task(fn(): Open(capacity, fn(id): Task(fn(): Done(ChannelId(id)))))
 
-fn __channel_send(channel: ChannelId, msg: __Msg) -> Task(()):
+fn __channel_send(let channel: ChannelId, msg: __Msg) -> Task(()):
     match channel:
         ChannelId(id) -> Task(fn(): Push(id, msg, fn(_done): ready_unit()))
 
-fn __channel_recv(channel: ChannelId, decode: fn(Option(__Msg)) -> a) -> Task(a):
+fn __channel_recv(let channel: ChannelId, decode: fn(Option(__Msg)) -> a) -> Task(a):
     match channel:
         ChannelId(id) -> Task(fn(): Pull(id, fn(msg): done(decode(msg))))
 

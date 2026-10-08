@@ -128,7 +128,7 @@ pub fn __recv_stream(rx: Receiver(m)) -> unique List(m):
 // send parked, the close pass releases it and stores the message, even if that
 // temporarily exceeds the logical capacity. Always awaited. The message is
 // erased to the executor's opaque slot at this boundary.
-pub fn send(tx: Sender(m), msg: m) -> Task(()):
+pub fn send(let tx: Sender(m), msg: m) -> Task(()):
     match tx:
         Sender(id) -> task.__channel_send(id, __erase(msg))
 
@@ -137,7 +137,7 @@ pub fn send(tx: Sender(m), msg: m) -> Task(()):
 // witchy does not refcount sender values, a `Sender` retained by later code may
 // still send after such a quiescent close. The erased value is recovered at `m`
 // at this boundary.
-pub fn recv(rx: Receiver(m)) -> Task(Option(m)):
+pub fn recv(let rx: Receiver(m)) -> Task(Option(m)):
     match rx:
         Receiver(id) -> task.__channel_recv(id, fn(o): unerase_option(o))
 

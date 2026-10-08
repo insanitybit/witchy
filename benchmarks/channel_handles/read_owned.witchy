@@ -1,0 +1,40 @@
+from chan import Sender, Receiver
+from task import ChannelId
+
+fn sender_number(tx: Sender(Int)) -> Int:
+    match tx:
+        Sender(id) ->
+            match id:
+                ChannelId(n) -> n
+
+fn receiver_number(rx: Receiver(Int)) -> Int:
+    match rx:
+        Receiver(id) ->
+            match id:
+                ChannelId(n) -> n
+
+async fn main(console: Console, clock: Clock):
+    let (first_tx, first_rx) = chan.channel(0).await
+    let (tx, rx) = chan.channel(0).await
+    let drain_rx = rx
+    var filled = 0
+    while filled < __BUFFERED__:
+        chan.send(tx, filled).await
+        filled = filled + 1
+    let start = clock.now_monotonic()
+    var checksum = 0
+    var i = 0
+    while i < __ITERATIONS__:
+        checksum = checksum + sender_number(tx) + receiver_number(rx)
+        i = i + 1
+    let elapsed = clock.now_monotonic() - start
+    var fifo = 0
+    var drained = 0
+    while drained < __BUFFERED__:
+        match chan.recv(drain_rx).await:
+            Some(value) -> fifo = fifo + value * (drained + 1)
+            None -> fifo = fifo - 1000000000
+        drained = drained + 1
+    console.print("${checksum} ${fifo}")
+    console.print("bench_ns=${elapsed}")
+    console.print("${sender_number(first_tx)} ${receiver_number(first_rx)} ${sender_number(tx)} ${receiver_number(rx)}")

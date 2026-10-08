@@ -875,3 +875,24 @@ fn load(dir: Dir[Read], policy: DirPolicy) -> String:
         };
         assert_eq!(only_name, "__capop.only");
     }
+
+    #[test]
+    fn call_scoped_scalar_captures_are_independent_but_heap_and_callable_captures_are_not() {
+        for source in [
+            "fn copy(let value: Int) -> fn() -> Int:\n    fn(): value\n",
+            "type Token:\n    Token(Int)\n\nfn copy(let token: Token) -> fn() -> Int:\n    match token:\n        Token(value) -> fn(): value\n",
+            "fn copy(let pair: (Int, Int)) -> fn() -> Int:\n    let (a, b) = pair\n    fn(): a + b\n",
+        ] {
+            check_source(source).expect("checked scalar captures do not retain a borrowed object");
+        }
+        for source in [
+            "fn escape(let text: String) -> fn() -> Int:\n    fn(): text.length()\n",
+            "type Token:\n    Token(List(Int))\n\nfn escape(let token: Token) -> fn() -> Int:\n    match token:\n        Token(values) -> fn(): values.length()\n",
+            "fn escape(let callback: fn() -> Int) -> fn() -> Int:\n    fn(): callback()\n",
+            "fn escape(let text: String) -> fn() -> Int:\n    fn():\n        let size = text.length()\n        let text = 1\n        size + text\n",
+            "fn escape(let pair: (Int, String)) -> fn() -> Int:\n    let (number, text) = pair\n    fn(): if number > 0: text.length() else: number\n",
+        ] {
+            let error = check_source(source).expect_err("a scalar closure result does not erase its heap capture");
+            assert!(error.message.contains("call-scoped `let` parameter access"), "{error:?}");
+        }
+    }
