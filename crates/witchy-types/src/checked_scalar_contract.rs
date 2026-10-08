@@ -35,14 +35,14 @@ fn normalized(mut body: Block) -> Block {
     body
 }
 
-fn function_hash(function: &witchy_syntax::ast::Function) -> String {
+pub(crate) fn function_hash(function: &witchy_syntax::ast::Function) -> String {
     let mut function = function.clone();
     function.line = 0;
     function.body = normalized(function.body);
     blake3::hash(format!("{function:?}").as_bytes()).to_hex().to_string()
 }
 
-fn type_hash(definition: &witchy_syntax::ast::TypeDef) -> String {
+pub(crate) fn type_hash(definition: &witchy_syntax::ast::TypeDef) -> String {
     let mut definition = definition.clone();
     for variant in &mut definition.variants {
         variant.line = 0;

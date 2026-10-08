@@ -2291,3 +2291,5 @@ mod scalar_region_authority;
 
 #[path = "typeck/packet_region.rs"]
 mod packet_region;
+#[path = "typeck/select_region.rs"]
+mod select_region;

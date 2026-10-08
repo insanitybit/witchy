@@ -2287,3 +2287,53 @@ pub fn assert_closed_scalar_scheduler_rejects_missing_projection(checked: &Check
         assert!(crate::checked_scalar_contract::scheduler_contract(&runtime, &source, &catalog).is_err());
     }
 }
+
+#[doc(hidden)]
+pub fn inspect_closed_select_region(checked: &CheckedModule) -> Result<witchy_syntax::ast::Function, String> {
+    let catalog = checked.runtime_declaration_catalog().map_err(|error| error.to_string())?;
+    let source = crate::checked_select_region::SelectRegionSource::derive(checked, &catalog).ok_or("select region is ineligible")?;
+    crate::checked_select_contract::contract(checked.module(), checked.typed_async_source().ok_or("original source")?.module(), &catalog)?;
+    crate::select_region_emitter::companion(&source, checked.typed_async_source().ok_or("original source")?)
+        .ok_or("select emitter ineligible".into())
+}
+
+#[doc(hidden)]
+pub fn assert_closed_select_rejects_changed_contract(checked: &CheckedModule) {
+    let catalog = checked.runtime_declaration_catalog().expect("authenticated catalog");
+    let original = checked.typed_async_source().expect("original select source").module();
+    for name in ["chan.select", "chan.__select2_lane_frame", "chan.select2_frame_decode", "task.__prepare_select", "task.__select_lane_frame"] {
+        for projection in 0..2 {
+            let mut runtime = checked.module().clone();
+            let mut source = original.clone();
+            let module = if projection == 0 { &mut runtime } else { &mut source };
+            let function = module.items.iter_mut().find_map(|item| match item {
+                witchy_syntax::ast::Item::Function(function) if function.name == name => Some(function), _ => None,
+            }).expect("required select recipe");
+            function.body.stmts.insert(0, witchy_syntax::ast::Stmt::Expr(witchy_syntax::ast::Expr::Tuple(vec![])));
+            function.body.lines.insert(0, 0);
+            assert!(crate::checked_select_contract::contract(&runtime, &source, &catalog).is_err(), "{name} projection={projection}");
+        }
+    }
+}
+
+#[doc(hidden)]
+pub fn assert_closed_select_receipt_rejects_forgery(checked: &CheckedModule) {
+    let view = checked.canonical_source().expect("canonical source").view();
+    let receipt = view.scalar_region().expect("selected region");
+    assert_eq!(receipt.kind(), witchy_canonical_source::scalar_region::RegionKind::SelectDrain);
+    let digest = |item: u32| {
+        let witchy_syntax::ast::Item::Function(function) = &view.module().items[item as usize] else { panic!("selected function") };
+        *blake3::hash(format!("{function:?}").as_bytes()).as_bytes()
+    };
+    let coordinates = receipt.covered_awaits().iter().map(|index| {
+        let (module, item, method, suspension) = view.task_await_proofs()[*index as usize].source_identity();
+        (module.to_string(), item, method, suspension)
+    }).collect::<Vec<_>>();
+    for graph in [[1; 32], [2; 32]] {
+        let forged = witchy_canonical_source::scalar_region::ScalarRegionReceipt::from_checked_frontend(
+            receipt.kind(), receipt.root_item(), receipt.companion_item(), graph,
+            digest(receipt.companion_item()), digest(receipt.root_item()), receipt.covered_awaits().to_vec(), coordinates.clone(), None);
+        assert!(forged.validate(view.module(), view.task_await_proofs()));
+        assert!(!forged.validate_checked_source(view.module(), view.task_await_proofs(), view.source_witness()));
+    }
+}
