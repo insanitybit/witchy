@@ -67,6 +67,8 @@ mod string_storage_move;
 mod unit_dict_slots;
 #[path = "misc/capture_free_closures.rs"]
 mod capture_free_closures;
+#[path = "misc/unique_record_fields.rs"]
+mod unique_record_fields;
 #[path = "misc/unit_equality.rs"]
 mod unit_equality;
 #[path = "misc/opt_fresh_constructor_unique.rs"]

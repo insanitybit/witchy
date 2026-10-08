@@ -1883,6 +1883,14 @@ fn mentions_in_expr(e: &Expr, accs: &HashSet<String>, out: &mut HashSet<String>)
     expr(e, accs, out)
 }
 
+/// Whether `e` reads or writes the binding `name` anywhere, closures included.
+pub(crate) fn expr_mentions(e: &Expr, name: &str) -> bool {
+    let names = HashSet::from_iter([name.to_owned()]);
+    let mut mentioned = HashSet::default();
+    expr(e, &names, &mut mentioned);
+    !mentioned.is_empty()
+}
+
 /// Outer binding names referenced by a loop condition or body. Canonical
 /// SafeWIR uses this to make only participating dynamic objects explicit CFG
 /// state; merely-live outer collections must not acquire unrelated phi lanes.

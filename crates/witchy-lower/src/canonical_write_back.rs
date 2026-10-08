@@ -18,6 +18,9 @@ pub(super) struct PreparedWriteBack {
     /// This is deliberately unavailable to ordinary write-backs.
     reference_alias: Option<String>,
     pub(super) detached_owned_field: bool,
+    /// The detached field is a proved-unique affine child taken from its
+    /// nullable slot; its replacement moves back in, keeping it unique.
+    pub(super) detached_affine_field: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -411,6 +414,7 @@ impl FunctionLowerer<'_> {
             disjunctive: None,
             reference_alias: Some(view.to_owned()),
             detached_owned_field: false,
+            detached_affine_field: false,
         }))
     }
 
@@ -581,6 +585,7 @@ impl FunctionLowerer<'_> {
             disjunctive: None,
             reference_alias: Some(view.to_owned()),
             detached_owned_field: false,
+            detached_affine_field: false,
         }))
     }
 
@@ -736,6 +741,7 @@ impl FunctionLowerer<'_> {
                             disjunctive: None,
                             reference_alias: Some(view.clone()),
                             detached_owned_field: false,
+                            detached_affine_field: false,
                         });
                     }
                     if let Some(place) = self.prepare_authenticated_returned_disjunctive_exclusive_handle(
@@ -877,6 +883,7 @@ impl FunctionLowerer<'_> {
             }),
             reference_alias: Some(view.to_owned()),
             detached_owned_field: false,
+            detached_affine_field: false,
         }))
     }
 
@@ -949,6 +956,7 @@ impl FunctionLowerer<'_> {
             disjunctive: None,
             reference_alias: Some(view.to_owned()),
             detached_owned_field: false,
+            detached_affine_field: false,
         }))
     }
 
@@ -1034,6 +1042,7 @@ impl FunctionLowerer<'_> {
             disjunctive: None,
             reference_alias: Some(view.to_owned()),
             detached_owned_field: false,
+            detached_affine_field: false,
         }))
     }
 
@@ -1138,6 +1147,7 @@ impl FunctionLowerer<'_> {
             disjunctive: None,
             reference_alias: Some(view.to_owned()),
             detached_owned_field: false,
+            detached_affine_field: false,
         }))
     }
 
@@ -1507,6 +1517,7 @@ impl FunctionLowerer<'_> {
             disjunctive: None,
             reference_alias: None,
             detached_owned_field: false,
+            detached_affine_field: false,
         };
         for projection in path {
             place.projections.push(match projection {
@@ -1521,9 +1532,22 @@ impl FunctionLowerer<'_> {
             && matches!(base.as_ref(), Expr::Var(source) if source == root)
             && self.scalarized_records.get(root).is_some_and(|record| record.field_names.get(*index) == Some(field))
         { Some((root.to_owned(), *index)) } else { None };
+        // A heap record's unique affine field is taken from its slot for a
+        // replacement that consumes it (`self.items.push(x)`), so the update
+        // may happen in place; the commit moves the result back.
+        let taken = if consuming.is_none()
+            && let [PreparedProjection::Field { .. }] = place.projections.as_slice()
+            && let Expr::Call { args, .. } = replacement
+            && let Some(Expr::Field { base, field }) = args.first()
+            && matches!(base.as_ref(), Expr::Var(source) if source == root)
+            && args[1..].iter().all(|later| !crate::analysis::expr_mentions(later, root))
+            && let Some(token) = self.take_prepared_owned_field(&mut place, false)?
+        { Some((root.to_owned(), field.clone(), token)) } else { None };
         let previous = std::mem::replace(&mut self.consuming_projected_field, consuming);
+        let previous_taken = std::mem::replace(&mut self.taken_affine_field, taken);
         let lowered = self.lower_expr(replacement);
         self.consuming_projected_field = previous;
+        self.taken_affine_field = previous_taken;
         let replacement = lowered?;
         self.commit_prepared_write_back(&place, replacement)?;
         Ok(true)
@@ -1541,6 +1565,7 @@ impl FunctionLowerer<'_> {
                     disjunctive: None,
                     reference_alias: None,
                     detached_owned_field: false,
+                    detached_affine_field: false,
                 })
             }
             Expr::Field { base, field } => {
@@ -1644,6 +1669,7 @@ impl FunctionLowerer<'_> {
     pub(super) fn take_prepared_owned_field(
         &mut self,
         place: &mut PreparedWriteBack,
+        final_argument: bool,
     ) -> Result<Option<ValueId>, CanonicalLoweringError> {
         if place.disjunctive.is_some()
             || place.reference_alias.is_some()
@@ -1668,6 +1694,29 @@ impl FunctionLowerer<'_> {
             .ok_or_else(|| CanonicalLoweringError::UnsupportedType(source.clone()))?;
         let ty = self.field_value_type(&shape.fields[*index])?;
         if !matches!(ty, ValueType::Ref(_)) {
+            return Ok(None);
+        }
+        let slot = u32::try_from(*index).map_err(|_| CanonicalLoweringError::IdOverflow)?;
+        // A unique field of an affine record is proved uniquely owned: take
+        // it from its nullable slot so the callee may update it in place.
+        if witchy_canonical_source::storage::affine_storage_shape(&shape.fields[*index], self.definitions).is_some()
+            && self.is_nullable_record_field(current, slot)
+        {
+            let destination = self.fresh(ty)?;
+            self.push_operation(Operation::Load {
+                destination,
+                place: witchy_wir::canonical_safewir::Place::projected(
+                    current, Projection::Field { index: slot }, ty, AccessMode::Read,
+                ),
+                transfer: witchy_wir::canonical_safewir::LoadTransfer::TakeNullableUnique,
+            });
+            place.detached_owned_field = true;
+            place.detached_affine_field = true;
+            return Ok(Some(destination));
+        }
+        // An ordinary owned field's child may be shared; only the final
+        // argument may leave its parent incomplete.
+        if !final_argument {
             return Ok(None);
         }
         let physical = self.layouts.resolve_nominal(layout)
@@ -1804,6 +1853,19 @@ impl FunctionLowerer<'_> {
             if self.values[&replacement] != expected {
                 return Err(CanonicalLoweringError::UnsupportedExpression("detached field write-back type"));
             }
+            if place.detached_affine_field {
+                self.push_operation(Operation::Store {
+                    place: witchy_wir::canonical_safewir::Place::projected(
+                        current,
+                        Projection::Field { index: u32::try_from(*index).map_err(|_| CanonicalLoweringError::IdOverflow)? },
+                        expected,
+                        AccessMode::Write,
+                    ),
+                    value: replacement,
+                    transfer: witchy_wir::canonical_safewir::StoreTransfer::MoveUnique,
+                });
+                return Ok(());
+            }
             // The hidden call result may be shared even when the lowering's
             // local graph cannot prove it. Retain a separate field edge and
             // leave the result token for ordinary release placement.
@@ -1872,6 +1934,7 @@ impl FunctionLowerer<'_> {
                 disjunctive: None,
                 reference_alias: alias.clone(),
                 detached_owned_field: false,
+                detached_affine_field: false,
             };
             this.commit_prepared_write_back(&place, replacement)?;
             Ok(None)
@@ -1882,6 +1945,7 @@ impl FunctionLowerer<'_> {
                 disjunctive: None,
                 reference_alias: alias.clone(),
                 detached_owned_field: false,
+                detached_affine_field: false,
             };
             this.commit_prepared_write_back(&place, replacement)?;
             Ok(None)

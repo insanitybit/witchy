@@ -264,3 +264,5 @@ mod canonical_pipeline;
 mod storage_move;
 #[path = "codegen/capture_free_closure.rs"]
 mod capture_free_closure;
+#[path = "codegen/unique_fields.rs"]
+mod unique_fields;

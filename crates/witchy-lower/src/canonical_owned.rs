@@ -151,18 +151,57 @@ fn is_reference(function: &Function, value: ValueId) -> bool {
 /// `is_reference` answered once per function: the liveness fixpoint and the
 /// per-operation scans below ask it for every value of every operation, and
 /// each answer was an ordered-map search of the function's value types.
-pub(super) struct References(foldhash::HashSet<ValueId>);
+///
+/// It also records each `BorrowAffine` read: the borrowed child carries no
+/// token, so its parent must stay live until the child's last use.
+pub(super) struct References(foldhash::HashSet<ValueId>, foldhash::HashMap<ValueId, ValueId>);
 
 impl References {
     pub(super) fn of(function: &Function) -> Self {
-        Self(function.value_types.iter()
+        let references = function.value_types.iter()
             .filter(|(_, ty)| matches!(ty, ValueType::Ref(_) | ValueType::Gc(_)))
             .map(|(value, _)| *value)
-            .collect())
+            .collect();
+        let borrows = function.blocks.iter().flat_map(|block| &block.operations)
+            .filter_map(|operation| match operation {
+                Operation::Load { destination, place, transfer: LoadTransfer::BorrowAffine } =>
+                    Some((*destination, place.object())),
+                Operation::Dictionary(DictionaryOperation::ReadSlot {
+                    destination, dict, transfer: LoadTransfer::BorrowAffine, ..
+                }) => Some((*destination, *dict)),
+                _ => None,
+            })
+            .collect();
+        Self(references, borrows)
     }
 
     pub(super) fn contains(&self, value: ValueId) -> bool {
         self.0.contains(&value)
+    }
+
+    /// `values` together with the parents every borrowed one keeps alive.
+    pub(super) fn with_borrowed_parents(&self, mut values: Vec<ValueId>) -> Vec<ValueId> {
+        let mut index = 0;
+        while index < values.len() {
+            if let Some(parent) = self.1.get(&values[index])
+                && !values.contains(parent)
+            {
+                values.push(*parent);
+            }
+            index += 1;
+        }
+        values
+    }
+
+    /// The borrowed children: each carries no token to release.
+    pub(super) fn borrowed(&self) -> impl Iterator<Item = ValueId> + '_ {
+        self.1.keys().copied()
+    }
+
+    /// The values `operation` reads, including borrowed parents.
+    pub(super) fn uses_of(&self, operation: &Operation) -> Vec<ValueId> {
+        let direct = uses(operation);
+        if self.1.is_empty() { direct } else { self.with_borrowed_parents(direct) }
     }
 }
 
@@ -178,7 +217,7 @@ fn edge_needs(
 }
 
 pub(super) fn live_tail(references: &References, block: &BasicBlock, live_in: &BTreeMap<BlockId, Values>) -> Values {
-    let mut live: Values = terminal_uses(&block.terminator)
+    let mut live: Values = references.with_borrowed_parents(terminal_uses(&block.terminator))
         .into_iter()
         .filter(|value| references.contains(*value))
         .collect();
@@ -212,7 +251,7 @@ pub(super) fn liveness(function: &Function, references: &References) -> BTreeMap
             for value in definitions(operation) {
                 if references.contains(value) { live.remove(&value); }
             }
-            live.extend(uses(operation).into_iter().filter(|value| references.contains(*value)));
+            live.extend(references.uses_of(operation).into_iter().filter(|value| references.contains(*value)));
         }
         for parameter in &block.parameters { live.remove(&parameter.value); }
         if live_in.get(&id) != Some(&live) {
@@ -565,6 +604,7 @@ pub(super) fn insert_releases(
     let references = References::of(function);
     let live_in = liveness(function, &references);
     let mut immortal = static_data_values(function);
+    immortal.extend(references.borrowed());
     immortal.extend(entry.parameters.iter().zip(&signature.contract.parameters).filter_map(|(parameter, contract)| {
         (is_reference(function, parameter.value) && contract.ownership == ParameterOwnership::Value)
             .then_some(parameter.value)
@@ -582,7 +622,7 @@ pub(super) fn insert_releases(
         let mut dead_after = Vec::with_capacity(block.operations.len());
         for operation in block.operations.iter().rev() {
             let definitions = definitions(operation);
-            let uses = uses(operation);
+            let uses = references.uses_of(operation);
             let dead = definitions
                 .iter()
                 .chain(&uses)

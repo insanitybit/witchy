@@ -259,8 +259,11 @@ pub(super) fn source_abi_qualifiers_supported(
         (!(
             is_direct_shared_reference(parameter)
             || is_storage_backed_direct_view_carrier(parameter, records)
-            || (matches!(conventions.get(index), Some(Convention::Own | Convention::Var))
-                && witchy_canonical_source::storage::affine_aggregate_erased_type(parameter, records).is_some())
+            || (matches!(conventions.get(index), Some(Convention::Own | Convention::Var | Convention::Borrow))
+                && witchy_canonical_source::storage::affine_aggregate_erased_type(
+                    match parameter { Type::Qualified(TypeQual::Unique, inner) => inner, other => other },
+                    records,
+                ).is_some())
             || (matches!(conventions.get(index), Some(Convention::Let | Convention::Own))
                 && is_direct_exclusive_reference(parameter))
             || projected_exclusive_signature_parameter(parameters, result, conventions) == Some(index)

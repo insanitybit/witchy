@@ -32,7 +32,7 @@ pub(super) fn forward_dying_copies(function: &mut Function, copies: &[(ValueId, 
             else { continue };
             // SSA: the source is live after the copy only through a later
             // use in this block or the block's live-out set.
-            if block.operations[at + 1..].iter().any(|operation| uses(operation).contains(&source))
+            if block.operations[at + 1..].iter().any(|operation| references.uses_of(operation).contains(&source))
                 || live_tail(&references, block, &live_in).contains(&source)
             {
                 continue;

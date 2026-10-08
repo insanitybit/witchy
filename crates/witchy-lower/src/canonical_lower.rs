@@ -4323,6 +4323,7 @@ fn lower_function_attempt(
         bindings: HashMap::new(),
         scalarized_records: HashMap::new(),
         consuming_projected_field: None,
+        taken_affine_field: None,
         rebinding: None,
         unique_result: matches!(signature.contract.results.first(), Some(ResultContract::Unique { .. }))
             .then(|| function.ret.clone())
@@ -5096,6 +5097,10 @@ struct FunctionLowerer<'a> {
     scalarized_records: HashMap<String, ScalarizedRecord>,
     /// Exact field whose generated update result immediately replaces it.
     consuming_projected_field: Option<(String, usize)>,
+    /// A unique affine field taken from a heap record for the place
+    /// assignment that replaces it: `(root, field, taken token)`. Reading
+    /// that field inside the replacement yields the taken token.
+    taken_affine_field: Option<(String, String, ValueId)>,
     /// The binding the statement being lowered replaces, with its right-hand
     /// side by address (see `canonical_writable`).
     rebinding: Option<(String, *const Expr)>,
@@ -12480,13 +12485,16 @@ impl FunctionLowerer<'_> {
                     value
                 } else if conventions[parameter] == Convention::Var {
                     let mut place = self.prepare_write_back(argument)?;
-                    // Only the final argument may leave its parent record
-                    // temporarily incomplete. Earlier arguments may evaluate
-                    // later source expressions before the hidden write-back.
-                    let taken = if parameter + 1 == arguments.len()
+                    // An argument may leave its parent record temporarily
+                    // incomplete only when nothing evaluated before the
+                    // hidden write-back can observe that parent: every later
+                    // argument is evaluated after this one, so none may
+                    // mention the root binding.
+                    let taken = if arguments[parameter + 1..].iter()
+                            .all(|later| !crate::analysis::expr_mentions(later, &place.root))
                         && !write_backs.iter().any(|earlier: &PreparedWriteBack| earlier.root == place.root)
                     {
-                        self.take_prepared_owned_field(&mut place)?
+                        self.take_prepared_owned_field(&mut place, parameter + 1 == arguments.len())?
                     } else {
                         None
                     };
@@ -13314,6 +13322,14 @@ impl FunctionLowerer<'_> {
             }
             Expr::Unary { op, expr } => self.lower_unary(expression, *op, expr),
             Expr::Binary { op, lhs, rhs } => self.lower_binary(expression, *op, lhs, rhs),
+            Expr::Field { base, field }
+                if matches!(base.as_ref(), Expr::Var(root)
+                    if self.taken_affine_field.as_ref().is_some_and(|(taken_root, taken_field, _)|
+                        taken_root == root && taken_field == field)) =>
+            {
+                Ok(self.taken_affine_field.as_ref().map(|(_, _, taken)| *taken)
+                    .expect("matched a taken field"))
+            }
             Expr::Field { base, field } => self.lower_record_field(base, field),
             Expr::Lambda { .. } => {
                 // A lambda is a closure record: the code slot holds its
@@ -13438,6 +13454,16 @@ impl FunctionLowerer<'_> {
         declared: Option<&Type>,
     ) -> Result<ValueId, CanonicalLoweringError> {
         let Some(declared) = declared else { return self.lower_expr(expression) };
+        // A unique field initialized from a named place that stays readable
+        // gets its own copy (normal mode establishes `unique` by copying);
+        // `move x` and a fresh value transfer their token.
+        if let Type::Qualified(TypeQual::Unique, inner) = declared
+            && witchy_canonical_source::storage::affine_storage_shape(declared, self.definitions).is_some()
+            && source_place_root(expression).is_some()
+        {
+            let value = self.lower_expr(expression)?;
+            return self.owned_for_storage(value, inner);
+        }
         if let Type::Qualified(TypeQual::Unique, inner) = declared
             && matches!(StoragePlan::classify(declared, self.definitions, |_| Some(0)), StoragePlan::MoveOnlyOwned(_))
             && witchy_canonical_source::storage::affine_storage_shape(inner, self.definitions).is_some()
@@ -15897,6 +15923,12 @@ impl FunctionLowerer<'_> {
             && self.scalarized_records.get(root).and_then(|record| record.field_names.iter().position(|name| name == field))
                 .is_some_and(|index| self.consuming_projected_field.as_ref() == Some(&(root.clone(), index)))
         { Some(lane) } else { None };
+        // A unique affine field taken for this place assignment is owned the
+        // same way a consumed scalarized lane is.
+        let taken_field = matches!(receiver, Expr::Field { base, field }
+            if matches!(base.as_ref(), Expr::Var(root)
+                if self.taken_affine_field.as_ref().is_some_and(|(taken_root, taken_field, _)|
+                    taken_root == root && taken_field == field)));
         let old_object = if let Some(lane) = &owned_lane {
             self.bindings[lane]
         } else {
@@ -15942,7 +15974,7 @@ impl FunctionLowerer<'_> {
                 value = self.owned_for_storage(value, &parameters[0])?;
             }
         }
-        if owned_lane.is_some() && !matches!(element_type, ValueType::Gc(_)) {
+        if (owned_lane.is_some() || taken_field) && !matches!(element_type, ValueType::Gc(_)) {
             self.push_owned_or_reuse_element(old_object, value, &list_type)
         } else {
             let list = self.clone_reference_token(old_object)?;

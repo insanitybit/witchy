@@ -199,12 +199,30 @@ impl<'a> MemoryChecker<'a> {
     /// Returns true when this operation belongs to the memory judgment.
     pub(crate) fn check(&mut self, operation: &Operation) -> Result<bool, InitialCheckError> {
         if !self.state.pending_affine_field_borrow.is_empty() {
-            let borrowed_field_read = matches!(operation, Operation::Load { place, transfer, .. }
-                if self.state.pending_affine_field_borrow.iter().any(|(borrowed, _)| place.object() == *borrowed)
+            // A field borrow stays valid until something can change or
+            // release its parent: the parent is affine, so only an operation
+            // naming it (or the borrowed child itself, other than to read it)
+            // can. Scalar reads of the child or of the parent's other slots,
+            // nested borrows, and unrelated operations keep it.
+            let involved = |value: &ValueId| self.state.pending_affine_field_borrow.iter()
+                .any(|(borrowed, parent)| value == borrowed || value == parent);
+            let reads = matches!(operation, Operation::Load { place, transfer, .. }
+                if involved(&place.object())
                     && ((*transfer == LoadTransfer::CopyScalar && !place.value_type().is_memory_bearing())
-                        || *transfer == LoadTransfer::BorrowAffine));
-            if !borrowed_field_read
+                        || *transfer == LoadTransfer::BorrowAffine))
+                // A borrowed table may be probed, read, or copied; none of
+                // these changes or releases it.
+                || matches!(operation, Operation::Dictionary(
+                    crate::canonical_safewir::dictionary::DictionaryOperation::ReadHeader { .. }
+                    | crate::canonical_safewir::dictionary::DictionaryOperation::ProbeGroup { .. }
+                    | crate::canonical_safewir::dictionary::DictionaryOperation::CloneExact { .. }
+                    | crate::canonical_safewir::dictionary::DictionaryOperation::ReadSlot {
+                        transfer: LoadTransfer::CopyScalar | LoadTransfer::CloneShared, ..
+                    }
+                ));
+            if !reads
                 && !matches!(operation, Operation::Call { .. } | Operation::VarCall { .. })
+                && crate::canonical_safewir::check::operation_uses(operation).iter().any(involved)
             {
                 self.finish_affine_field_borrow();
             }

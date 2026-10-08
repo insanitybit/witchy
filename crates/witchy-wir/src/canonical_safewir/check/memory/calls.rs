@@ -10,8 +10,18 @@ impl<'a> MemoryChecker<'a> {
         }
     }
 
-    pub(crate) fn ensure_no_pending_affine_borrow(&mut self) -> Result<(), InitialCheckError> {
-        self.finish_affine_field_borrow();
+    /// At a block's end a field borrow continues along a plain branch that
+    /// names neither the child nor its parent (the successor sees the same
+    /// SSA values; `meet` keeps it only when every edge agrees). Any other
+    /// terminator ends it. A dictionary borrow never crosses an edge.
+    pub(crate) fn end_affine_borrows_at(&mut self, terminator: &crate::canonical_safewir::Terminator) -> Result<(), InitialCheckError> {
+        let carried = matches!(terminator, crate::canonical_safewir::Terminator::Branch { .. } | crate::canonical_safewir::Terminator::BranchIf { .. })
+            && !crate::canonical_safewir::check::terminator_uses(terminator).iter().any(|value|
+                self.state.pending_affine_field_borrow.iter()
+                    .any(|(borrowed, parent)| value == borrowed || value == parent));
+        if !carried {
+            self.finish_affine_field_borrow();
+        }
         if self.state.pending_affine_borrow.is_some() {
             return self.unsupported("Dictionary(borrowed affine child crosses a block edge)");
         }
@@ -344,7 +354,20 @@ impl<'a> MemoryChecker<'a> {
             authenticated_projected_bump_write_back_parameter(results, parameters);
         let affine_proof = self.affine_abi.and_then(|proofs| proofs.get(&callee_signature.id));
         let pending_borrow = self.state.pending_affine_borrow;
-        let pending_field = self.state.pending_affine_field_borrow.last().copied();
+        let argument_values = arguments.iter().map(|argument| match argument {
+            CallArgument::Value(value) | CallArgument::Move(value) => *value,
+        }).collect::<Vec<_>>();
+        // A call that passes a borrowed child is that borrow's boundary. One
+        // naming only a borrow's parent ends the borrow first; an unrelated
+        // call cannot reach the affine parent and leaves it pending.
+        let pending_field = self.state.pending_affine_field_borrow.iter().rev()
+            .find(|(borrowed, _)| argument_values.contains(borrowed)).copied();
+        if pending_field.is_none()
+            && self.state.pending_affine_field_borrow.iter()
+                .any(|(_, parent)| argument_values.contains(parent))
+        {
+            self.finish_affine_field_borrow();
+        }
         if let Some((borrowed, parent)) = pending_field {
             let borrowed_index = arguments.iter().position(|argument| matches!(argument,
                 CallArgument::Value(value) if *value == borrowed));

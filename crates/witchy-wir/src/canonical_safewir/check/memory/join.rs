@@ -619,7 +619,9 @@ impl<'a> MemoryChecker<'a> {
                 (remap_value(&renames, *container), *slot)
             }).collect(),
             pending_affine_borrow: None,
-            pending_affine_field_borrow: Vec::new(),
+            // The terminator ended every borrow whose child or parent this
+            // edge renames, so the remaining ones keep their SSA names.
+            pending_affine_field_borrow: self.state.pending_affine_field_borrow.clone(),
             range_states: self
                 .state
                 .range_states
@@ -841,6 +843,18 @@ impl<'a> MemoryChecker<'a> {
                 }
             }
             for (slot, object) in &state.stored_objects {
+                // A unique affine field written back on one edge only: both
+                // edges still prove the slot holds a present, uniquely owned
+                // child, which is all a later take relies on. The record of
+                // which child it is is dropped by the intersection below.
+                let affine_slot = |facts: &MemoryState| facts.nullable_unique_slots.contains(slot)
+                    && facts.nullable_present_slots.contains(slot);
+                if other.stored_objects.get(slot).is_none()
+                    && object.ownership == Ownership::Unique
+                    && affine_slot(state) && affine_slot(other)
+                {
+                    continue;
+                }
                 if other.stored_objects.get(slot) != Some(object) {
                     if std::env::var_os("WITCHY_CANONICAL_PLAN_DEBUG").is_some() {
                         eprintln!("canonical memory join at {:?}: stored slot {slot:?} differs: {object:#?} vs {:#?}", block.id, other.stored_objects.get(slot));
@@ -853,10 +867,24 @@ impl<'a> MemoryChecker<'a> {
                 }
             }
         }
+        let pending_on = |state: &MemoryState, value: &ValueId| state.pending_affine_field_borrow.iter()
+            .any(|(borrowed, _)| borrowed == value);
         for (value, current) in &existing.objects {
             let Some(next) = incoming.objects.get(value) else {
                 continue;
             };
+            // A field borrow ended on one edge only: its child joins as
+            // ended (consumed), exactly as that edge already sees it.
+            if pending_on(existing, value) != pending_on(incoming, value)
+                && [current, next].iter().any(|state| state.ownership == Ownership::Consumed)
+                && [current, next].iter().all(|state| state.shared_immutable && state.allocation_class.is_none()
+                    || state.ownership == Ownership::Consumed)
+            {
+                let mut ended = current.clone();
+                ended.ownership = Ownership::Consumed;
+                objects.insert(*value, ended);
+                continue;
+            }
             // Extent promotion is lazy (it happens at the first element or
             // slice access), so a back edge may carry the counted extent the
             // entry edge has not derived yet from the same header loads.
@@ -1048,6 +1076,20 @@ impl<'a> MemoryChecker<'a> {
             bound_generations.entry(count).or_default().insert(generation);
             bound_generations.entry(capacity).or_default().insert(generation);
         }
+        // A field borrow survives the join only when every edge carries it;
+        // otherwise its child is retired exactly as an ended borrow is.
+        let field_borrows = if existing.pending_affine_field_borrow == incoming.pending_affine_field_borrow {
+            existing.pending_affine_field_borrow.clone()
+        } else { Vec::new() };
+        let mut affine_plans = meet_map(&existing.affine_plans, &incoming.affine_plans);
+        for (borrowed, _) in existing.pending_affine_field_borrow.iter().chain(&incoming.pending_affine_field_borrow) {
+            if !field_borrows.iter().any(|(kept, _)| kept == borrowed) {
+                affine_plans.remove(borrowed);
+                if let Some(object) = objects.get_mut(borrowed) {
+                    object.ownership = Ownership::Consumed;
+                }
+            }
+        }
         Ok(MemoryState {
             objects: objects.into(),
             shared_phi_origins: meet_shared_phi_origins(existing, incoming).into(),
@@ -1066,9 +1108,9 @@ impl<'a> MemoryChecker<'a> {
             stored_objects: meet_map(&existing.stored_objects, &incoming.stored_objects),
             nullable_unique_slots: meet_set(&existing.nullable_unique_slots, &incoming.nullable_unique_slots),
             nullable_present_slots: meet_set(&existing.nullable_present_slots, &incoming.nullable_present_slots),
-            affine_plans: meet_map(&existing.affine_plans, &incoming.affine_plans),
+            affine_plans,
             pending_affine_borrow: None,
-            pending_affine_field_borrow: Vec::new(),
+            pending_affine_field_borrow: field_borrows,
             affine_list_roots: meet_set(&existing.affine_list_roots, &incoming.affine_list_roots),
             nullable_absent_slots: meet_set(&existing.nullable_absent_slots, &incoming.nullable_absent_slots),
             initialized_scalar_slots: meet_set(&existing.initialized_scalar_slots, &incoming.initialized_scalar_slots),
