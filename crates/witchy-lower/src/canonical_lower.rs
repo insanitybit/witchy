@@ -4331,6 +4331,7 @@ fn lower_function_attempt(
         elidable_lambda_names: crate::escape::only_directly_called(body).into_iter().collect(),
         reassigned_names: crate::escape::reassigned_names(body).into_iter().collect(),
         known_lambda_values: HashMap::new(),
+        capture_free_closures: HashMap::new(),
         binding_scopes: vec![HashMap::new()],
         string_lengths: HashMap::new(),
         opaque_tags: HashMap::new(),
@@ -5104,6 +5105,10 @@ struct FunctionLowerer<'a> {
     /// Exact closure objects created by a known lambda in this function.
     /// A value ID never changes target, even when its source binding is rebound.
     known_lambda_values: HashMap<ValueId, FunctionId>,
+    /// Each capture-free closure record, built once in the entry block:
+    /// it is immutable and determined by its function and environment tag,
+    /// so every evaluation of the lambda shares it.
+    capture_free_closures: HashMap<(FunctionId, i64), ValueId>,
     /// Declarations in each active lexical block. A declaration may shadow
     /// an outer binding, while assignments to other outer names survive the
     /// block.
@@ -12202,6 +12207,34 @@ impl FunctionLowerer<'_> {
         Ok(object)
     }
 
+    /// A shared token of the capture-free closure for `function`: the record
+    /// is allocated once, in the entry block that dominates every use, rather
+    /// than on every evaluation of the lambda (a loop body, a hot callee).
+    fn capture_free_closure(
+        &mut self,
+        layout: witchy_wir::layout::LayoutId,
+        signature: FunctionSignatureId,
+        function: FunctionId,
+        family: &crate::canonical_layouts::ClosureFamilyLayout,
+        tag: i64,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let shared = match self.capture_free_closures.get(&(function, tag)) {
+            Some(shared) => *shared,
+            None => {
+                let current = std::mem::replace(&mut self.current, self.blocks[0].id);
+                let built = self.alloc_closure(layout, signature, function, family, tag, Vec::new());
+                self.current = current;
+                let built = built?;
+                self.known_lambda_values.insert(built, function);
+                self.capture_free_closures.insert((function, tag), built);
+                built
+            }
+        };
+        let closure = self.clone_reference_token(shared)?;
+        self.known_lambda_values.insert(closure, function);
+        Ok(closure)
+    }
+
     /// Call through a closure record: its code slot is the callee, a shared
     /// clone of the record its leading argument, then the source arguments
     /// under the declaration's conventions.
@@ -13273,6 +13306,9 @@ impl FunctionLowerer<'_> {
                 let key = crate::canonical_layouts::canonical_closure_key(&fn_type, self.definitions);
                 let family = self.closures.families.get(&key)
                     .ok_or_else(|| CanonicalLoweringError::MissingLayout(fn_type.clone()))?;
+                if values.is_empty() && family.owner_type.is_none() {
+                    return self.capture_free_closure(layout, signature, function, family, environment.tag);
+                }
                 let closure = self.alloc_closure(layout, signature, function, family, environment.tag, values)?;
                 if matches!(self.values.get(&closure), Some(ValueType::Ref(_))) {
                     self.known_lambda_values.insert(closure, function);

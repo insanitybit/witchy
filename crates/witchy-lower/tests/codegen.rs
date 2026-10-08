@@ -262,3 +262,5 @@ mod canonical_layouts;
 mod canonical_pipeline;
 #[path = "codegen/storage_move.rs"]
 mod storage_move;
+#[path = "codegen/capture_free_closure.rs"]
+mod capture_free_closure;
