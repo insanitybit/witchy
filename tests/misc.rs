@@ -299,3 +299,5 @@ mod async_receive_state_frames;
 
 #[path = "misc/async_profile_map.rs"]
 mod async_profile_map;
+#[path = "misc/bytes_to_string_decode.rs"]
+mod bytes_to_string_decode;

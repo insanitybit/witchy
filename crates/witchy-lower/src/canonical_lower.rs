@@ -19653,43 +19653,96 @@ impl FunctionLowerer<'_> {
     }
 
     /// `bytes.to_string`: the interpreter's lossy UTF-8 decode (Rust's
-    /// `from_utf8_lossy`). Each position classifies its lead byte; a
-    /// well-formed sequence is copied, otherwise the lead byte and the
-    /// continuation bytes found valid before the first bad or missing one are
-    /// replaced by a single U+FFFD.
+    /// `from_utf8_lossy`). Well-formed input decodes to itself, so a scan
+    /// that allocates nothing validates it first and one copy follows; only
+    /// malformed input takes the replacing decode.
     fn lower_bytes_to_string(&mut self, object: ValueId) -> Result<ValueId, CanonicalLoweringError> {
         let layout = self.string_layout_id()?;
         let total = self.string_length_of(object)?;
         let zero = self.push_const_size(0)?;
-        let accumulator = self.push_empty_value(&Type::Named("String".into(), Vec::new()))?;
-        let (lanes, mut shapes) = self.accumulator_lanes(accumulator)?;
-        let exit = self.new_block_owned(&shapes)?;
-        shapes.push((ValueType::Size, None));
-        let header = self.new_block_owned(&shapes)?;
-        let body = self.new_block_owned(&shapes)?;
-        let mut entry = lanes.clone();
-        entry.push(zero);
-        self.finish_current(Terminator::Branch { target: header, arguments: entry })?;
-        let header_values = self.block_parameter_values(header);
-        self.track_accumulator_lanes(&header_values);
-        self.current = header;
-        let cursor = header_values[3];
+        let facts = self.snapshot_facts();
+        let scan = self.new_block(&[ValueType::Size])?;
+        let scan_body = self.new_block(&[])?;
+        let ascii = self.new_block(&[])?;
+        let multibyte = self.new_block(&[])?;
+        let advance = self.new_block(&[])?;
+        let well_formed = self.new_block(&[])?;
+        let malformed = self.new_block(&[])?;
+        let decoded = self.new_block_owned(&[
+            (ValueType::Ref(layout), Some(Ownership::Unique)),
+            (ValueType::Size, None),
+            (ValueType::Size, None),
+        ])?;
+        self.finish_current(Terminator::Branch { target: scan, arguments: vec![zero] })?;
+        self.current = scan;
+        let cursor = self.block_parameter_values(scan)[0];
         let more = self.push_compare(ComparisonOperator::LessUnsigned, cursor, total)?;
         self.finish_current(Terminator::BranchIf {
             condition: more,
-            then_target: body,
-            then_arguments: header_values.clone(),
-            else_target: exit,
-            else_arguments: header_values[..3].to_vec(),
+            then_target: scan_body,
+            then_arguments: Vec::new(),
+            else_target: well_formed,
+            else_arguments: Vec::new(),
         })?;
-        let body_values = self.block_parameter_values(body);
-        self.track_accumulator_lanes(&body_values);
-        self.current = body;
-        let cursor = body_values[3];
+        self.current = scan_body;
         let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, cursor, total)?;
         self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
         let lead = self.push_string_byte_load(object, cursor, layout)?;
-        // `decided(valid, consumed)` is reached once per lead-byte class.
+        let ascii_limit = self.push_const_size(0x80)?;
+        let is_ascii = self.push_compare(ComparisonOperator::LessUnsigned, lead, ascii_limit)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: is_ascii,
+            then_target: ascii,
+            then_arguments: Vec::new(),
+            else_target: multibyte,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = ascii;
+        let one = self.push_const_size(1)?;
+        let next = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor, one, OverflowBehavior::Wrap)?;
+        self.finish_current(Terminator::Branch { target: scan, arguments: vec![next] })?;
+        self.current = multibyte;
+        let (valid, consumed) = self.classify_utf8_sequence(object, cursor, total, lead, layout)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: valid,
+            then_target: advance,
+            then_arguments: Vec::new(),
+            else_target: malformed,
+            else_arguments: Vec::new(),
+        })?;
+        self.current = advance;
+        let next = self.push_arithmetic(ValueType::Size, ArithmeticOperator::Add, cursor, consumed, OverflowBehavior::Wrap)?;
+        self.finish_current(Terminator::Branch { target: scan, arguments: vec![next] })?;
+        self.current = well_formed;
+        self.restore_snapshot(facts.clone());
+        let copy = self.copy_checked_slice(object, zero, total, total, layout)?;
+        let (lanes, _) = self.accumulator_lanes(copy)?;
+        self.finish_current(Terminator::Branch { target: decoded, arguments: lanes })?;
+        self.current = malformed;
+        self.restore_snapshot(facts.clone());
+        let replaced = self.lower_lossy_utf8_decode(object, total, layout)?;
+        let (lanes, _) = self.accumulator_lanes(replaced)?;
+        self.finish_current(Terminator::Branch { target: decoded, arguments: lanes })?;
+        self.restore_facts(facts, decoded);
+        self.current = decoded;
+        let values = self.block_parameter_values(decoded);
+        self.track_accumulator_lanes(&values);
+        Ok(values[0])
+    }
+
+    /// Classify the UTF-8 sequence led by `lead` at `cursor`: whether it is
+    /// well formed and how many bytes it consumes (on a malformed sequence,
+    /// the lead byte and the valid continuation bytes before the first bad
+    /// or missing one). `decided(valid, consumed)` is reached once per
+    /// lead-byte class.
+    fn classify_utf8_sequence(
+        &mut self,
+        object: ValueId,
+        cursor: ValueId,
+        total: ValueId,
+        lead: ValueId,
+        layout: witchy_wir::layout::LayoutId,
+    ) -> Result<(ValueId, ValueId), CanonicalLoweringError> {
         let facts = self.snapshot_facts();
         let decided = self.new_block(&[ValueType::Bool, ValueType::Size])?;
         let yes = self.fresh(ValueType::Bool)?;
@@ -19763,7 +19816,49 @@ impl FunctionLowerer<'_> {
         self.restore_facts(facts, decided);
         self.current = decided;
         let decided_values = self.block_parameter_values(decided);
-        let (valid, consumed) = (decided_values[0], decided_values[1]);
+        Ok((decided_values[0], decided_values[1]))
+    }
+
+    /// The replacing decode: each position classifies its lead byte; a
+    /// well-formed sequence is copied, otherwise the lead byte and the
+    /// continuation bytes found valid before the first bad or missing one are
+    /// replaced by a single U+FFFD.
+    fn lower_lossy_utf8_decode(
+        &mut self,
+        object: ValueId,
+        total: ValueId,
+        layout: witchy_wir::layout::LayoutId,
+    ) -> Result<ValueId, CanonicalLoweringError> {
+        let zero = self.push_const_size(0)?;
+        let accumulator = self.push_empty_value(&Type::Named("String".into(), Vec::new()))?;
+        let (lanes, mut shapes) = self.accumulator_lanes(accumulator)?;
+        let exit = self.new_block_owned(&shapes)?;
+        shapes.push((ValueType::Size, None));
+        let header = self.new_block_owned(&shapes)?;
+        let body = self.new_block_owned(&shapes)?;
+        let mut entry = lanes.clone();
+        entry.push(zero);
+        self.finish_current(Terminator::Branch { target: header, arguments: entry })?;
+        let header_values = self.block_parameter_values(header);
+        self.track_accumulator_lanes(&header_values);
+        self.current = header;
+        let cursor = header_values[3];
+        let more = self.push_compare(ComparisonOperator::LessUnsigned, cursor, total)?;
+        self.finish_current(Terminator::BranchIf {
+            condition: more,
+            then_target: body,
+            then_arguments: header_values.clone(),
+            else_target: exit,
+            else_arguments: header_values[..3].to_vec(),
+        })?;
+        let body_values = self.block_parameter_values(body);
+        self.track_accumulator_lanes(&body_values);
+        self.current = body;
+        let cursor = body_values[3];
+        let in_bounds = self.push_compare(ComparisonOperator::LessUnsigned, cursor, total)?;
+        self.push_guard(in_bounds, witchy_wir::canonical_safewir::GuardKind::Bounds);
+        let lead = self.push_string_byte_load(object, cursor, layout)?;
+        let (valid, consumed) = self.classify_utf8_sequence(object, cursor, total, lead, layout)?;
         // The piece: the sequence itself, or the replacement character.
         let facts = self.snapshot_facts();
         let copy_block = self.new_block(&[])?;
