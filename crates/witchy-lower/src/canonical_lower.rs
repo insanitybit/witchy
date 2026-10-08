@@ -10,6 +10,8 @@ use std::fmt;
 
 #[path = "canonical_owned.rs"]
 mod owned;
+#[path = "canonical_storage_move.rs"]
+mod storage_move;
 
 #[path = "canonical_regex.rs"]
 mod regex;
@@ -4311,6 +4313,7 @@ fn lower_function_attempt(
         function: function.name.clone(),
         forced_shared_lanes,
         unique_lane_names: Vec::new(),
+        storage_copies: Vec::new(),
         function_id: id,
         source_body: body,
         canonical_source,
@@ -4580,6 +4583,7 @@ fn lower_function_attempt(
     })?;
     lowerer.demote_owner_list_lanes_fed_aliases();
     let unique_lanes = std::mem::take(&mut lowerer.unique_lane_names);
+    let storage_copies = std::mem::take(&mut lowerer.storage_copies);
     let blocks = lowerer
         .blocks
         .into_iter()
@@ -4617,6 +4621,7 @@ fn lower_function_attempt(
     if debug {
         eprintln!("canonical lowered `{}` before release placement:\n{lowered:#?}", function.name);
     }
+    storage_move::forward_dying_copies(&mut lowered, &storage_copies);
     owned::insert_releases_with_owner_families(&mut lowered, signature, call_tables, &closures.owners)
         .map_err(|error| CanonicalLoweringError::OwnedReleasePlacement(format!("{error:?}")))?;
     // Release placement may prepend the drop of an unused managed parameter.
@@ -5071,6 +5076,9 @@ struct FunctionLowerer<'a> {
     forced_shared_lanes: &'a BTreeSet<String>,
     /// Each unique loop phi a push mutates in place, by lane name.
     unique_lane_names: Vec<(ValueId, String)>,
+    /// Each `(copy, source)` byte copy made for storage from a sole token:
+    /// where the source dies at the copy, the copy becomes a move.
+    storage_copies: Vec<(ValueId, ValueId)>,
     function_id: FunctionId,
     /// Original checked nodes, never cloned: explicit returns in ordinary
     /// blocks still discharge their structural proper-tail obligations.
@@ -15567,6 +15575,9 @@ impl FunctionLowerer<'_> {
         });
         self.push_string_copy(object, source, zero, length, length, layout)?;
         self.push_operation(Operation::UpdateCount { object, count: length });
+        if self.sole_token(source) {
+            self.storage_copies.push((object, source));
+        }
         self.string_lengths.insert(object, length);
         self.string_capacities.insert(object, length);
         Ok(object)

@@ -13,7 +13,7 @@ use witchy_wir::canonical_safewir::{
     ValueId, ValueType,
 };
 
-type Values = BTreeSet<ValueId>;
+pub(super) type Values = BTreeSet<ValueId>;
 use witchy_wir::canonical_safewir::closure_owner_contract::{CaptureTransfer, OwnerFamily, OwnerOperation};
 use witchy_wir::canonical_safewir::dictionary::{DictionaryOperation, DictionaryRehashTransfer};
 
@@ -62,7 +62,7 @@ fn argument_value(argument: &CallArgument) -> ValueId {
     }
 }
 
-fn definitions(operation: &Operation) -> Vec<ValueId> {
+pub(super) fn definitions(operation: &Operation) -> Vec<ValueId> {
     match operation {
         Operation::ClosureOwner(owner) => owner.destinations(),
         Operation::Dictionary(dictionary) => dictionary.destinations(),
@@ -88,7 +88,7 @@ fn definitions(operation: &Operation) -> Vec<ValueId> {
     }
 }
 
-fn uses(operation: &Operation) -> Vec<ValueId> {
+pub(super) fn uses(operation: &Operation) -> Vec<ValueId> {
     match operation {
         Operation::ClosureOwner(owner) => owner.operands(),
         Operation::Dictionary(dictionary) => dictionary.operands(),
@@ -151,17 +151,17 @@ fn is_reference(function: &Function, value: ValueId) -> bool {
 /// `is_reference` answered once per function: the liveness fixpoint and the
 /// per-operation scans below ask it for every value of every operation, and
 /// each answer was an ordered-map search of the function's value types.
-struct References(foldhash::HashSet<ValueId>);
+pub(super) struct References(foldhash::HashSet<ValueId>);
 
 impl References {
-    fn of(function: &Function) -> Self {
+    pub(super) fn of(function: &Function) -> Self {
         Self(function.value_types.iter()
             .filter(|(_, ty)| matches!(ty, ValueType::Ref(_) | ValueType::Gc(_)))
             .map(|(value, _)| *value)
             .collect())
     }
 
-    fn contains(&self, value: ValueId) -> bool {
+    pub(super) fn contains(&self, value: ValueId) -> bool {
         self.0.contains(&value)
     }
 }
@@ -177,7 +177,7 @@ fn edge_needs(
     needed
 }
 
-fn live_tail(references: &References, block: &BasicBlock, live_in: &BTreeMap<BlockId, Values>) -> Values {
+pub(super) fn live_tail(references: &References, block: &BasicBlock, live_in: &BTreeMap<BlockId, Values>) -> Values {
     let mut live: Values = terminal_uses(&block.terminator)
         .into_iter()
         .filter(|value| references.contains(*value))
@@ -188,7 +188,7 @@ fn live_tail(references: &References, block: &BasicBlock, live_in: &BTreeMap<Blo
     live
 }
 
-fn liveness(function: &Function, references: &References) -> BTreeMap<BlockId, Values> {
+pub(super) fn liveness(function: &Function, references: &References) -> BTreeMap<BlockId, Values> {
     let mut live_in: BTreeMap<_, Values> = function.blocks.iter().map(|block| (block.id, Values::new())).collect();
     // The same monotone finite-set equations as a full reverse sweep, but
     // reschedule only predecessors of a block whose live-in set changed.
