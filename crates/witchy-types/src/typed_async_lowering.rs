@@ -172,6 +172,8 @@ pub struct TypedAsyncLoweringInput {
     pub suspensions: Vec<TypedAsyncSuspensionBinding>,
     pub controls: Vec<TypedAsyncSourceControlBinding>,
     pub operations: Vec<TypedAsyncSourceOperationBinding>,
+    pub static_calls: Vec<crate::typed_static_async_call::StaticAsyncCallBinding>,
+    pub(crate) static_call_graph: crate::typed_static_async_call::StaticAsyncCallGraph,
     pub queue_bindings: Vec<TypedAsyncQueueBinding>,
     stored_obligations: StoredObligationCatalog,
     type_definitions: BTreeMap<String, witchy_syntax::ast::TypeDef>,
@@ -229,20 +231,28 @@ impl TypedAsyncLoweringInput {
             let fingerprint = closure_layout_fingerprints.get(&source.callable).ok_or_else(|| {
                 format!("RFC-0161 linear program has no closure fingerprint for {:?}", source.callable)
             })?;
-            let input = Self {
-                source: vec![source.clone()],
-                states: self.states.iter().filter(|state| state.callable == source.callable).cloned().collect(),
-                suspensions: self.suspensions.iter().filter(|binding| binding.callable == source.callable).cloned().collect(),
-                controls: self.controls.iter().filter(|control| control.callable == source.callable).cloned().collect(),
-                operations: self.operations.iter().filter(|operation| operation.callable == source.callable).cloned().collect(),
-                queue_bindings: self.queue_bindings.clone(),
-                stored_obligations: self.stored_obligations.clone(),
-                type_definitions: self.type_definitions.clone(),
-            };
+            let input = self.callable_input(&source.callable).expect("source callable belongs to this input");
             let shape = ExecutionShapeId(u32::try_from(index).map_err(|_| "RFC-0161 linear program shape count exceeds u32")?);
             executions.push(input.into_linear_execution(shape, *fingerprint)?);
         }
         AsyncProgram::from_final_typed_executions(executions)
+    }
+
+    #[doc(hidden)]
+    pub fn callable_input(&self, callable: &AsyncCallableId) -> Option<Self> {
+        let source = self.source.iter().find(|source| &source.callable == callable)?;
+        Some(Self {
+            source: vec![source.clone()],
+            states: self.states.iter().filter(|state| &state.callable == callable).cloned().collect(),
+            suspensions: self.suspensions.iter().filter(|binding| &binding.callable == callable).cloned().collect(),
+            controls: self.controls.iter().filter(|control| &control.callable == callable).cloned().collect(),
+            operations: self.operations.iter().filter(|operation| &operation.callable == callable).cloned().collect(),
+            static_calls: self.static_calls.iter().filter(|call| &call.caller == callable).cloned().collect(),
+            static_call_graph: self.static_call_graph.clone(),
+            queue_bindings: self.queue_bindings.clone(),
+            stored_obligations: self.stored_obligations.clone(),
+            type_definitions: self.type_definitions.clone(),
+        })
     }
 
     /// Lower the fully checked source inventory when it is a single linear
@@ -913,6 +923,7 @@ impl TypedAsyncLoweringInput {
                 control.control,
             ))?);
         }
+        (input.static_calls, input.static_call_graph) = input.checked_static_calls(checked)?;
         Ok(input)
     }
 
@@ -1186,7 +1197,8 @@ impl TypedAsyncLoweringInput {
                 return Err(format!("source async control {} has multiple typed bindings", pair[0].control));
             }
         }
-        Ok(Self { source, states, suspensions, controls, operations, queue_bindings: Vec::new(),
+        Ok(Self { source, states, suspensions, controls, operations, static_calls: Vec::new(),
+            static_call_graph: Default::default(), queue_bindings: Vec::new(),
             stored_obligations, type_definitions })
     }
 

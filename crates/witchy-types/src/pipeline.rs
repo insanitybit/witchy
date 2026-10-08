@@ -1318,6 +1318,14 @@ fn bind_task_await_proofs(
             _ => {}
         }
     }
+    for (task, proof) in crate::static_async_factory::named_producer_edges(final_module, source,
+        &continuation_names, &marked_operands)
+        .map_err(refuse)?
+    {
+        scheduler_operands.push((task, proof));
+        let count = scheduler_edges.entry(proof).or_default();
+        *count = count.checked_add(1).ok_or_else(|| refuse("async scheduler edge count exceeds u32".into()))?;
+    }
     if continuation_names.values().any(|proof| scheduler_edges.get(proof) != Some(&1)) {
         return Err(refuse("checked async continuation lacks one unique scheduler edge".into()));
     }

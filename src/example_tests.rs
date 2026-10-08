@@ -454,6 +454,7 @@
     mod equality;
     mod math_float;
     mod async_channels;
+    mod static_async_call;
     mod sandbox_vm;
     mod compiler_footprint;
     mod example_sweeps;

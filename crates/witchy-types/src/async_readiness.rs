@@ -382,6 +382,7 @@ fn checked_input_matches(
         && expected.suspensions == supplied.suspensions
         && expected.controls == supplied.controls
         && expected.operations == supplied.operations
+        && expected.static_call_contract_matches(supplied)
         && expected.ownership_contract_matches(supplied)
         && queue_bindings_are_structural(supplied).is_ok()
 }

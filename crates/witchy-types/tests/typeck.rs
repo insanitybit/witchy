@@ -2197,6 +2197,8 @@ mod async_view;
 mod async_view_results;
 #[path = "typeck/async_contract.rs"]
 mod async_contract;
+#[path = "typeck/static_async_call.rs"]
+mod static_async_call;
 #[path = "typeck/capabilities.rs"]
 mod capabilities;
 #[path = "typeck/checker.rs"]

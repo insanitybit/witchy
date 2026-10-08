@@ -53,6 +53,7 @@ mod recv_frame;
 mod receive_state;
 pub mod type_hints;
 mod send_frame;
+mod static_call;
 
 /// Nominal identities whose values carry a declared lifetime relation. Async
 /// lowering runs before typeck, so this deliberately records only declarations
@@ -327,6 +328,13 @@ fn lower_with_view_fns_and_item_mapping_for(
                     source_index,
                     None,
                 ));
+                if !is_entry && let Some((entry, segments)) = static_call::lower(f.clone(),
+                    &mut counter, &mut state_counter, &borrowed_shells)?
+                {
+                    items.push(Item::Function(entry));
+                    lifted.extend(segments.into_iter().map(|segment| (source_index, segment)));
+                    continue;
+                }
                 let (entry, mut segs) = lower_async_fn(
                     f,
                     is_entry,
