@@ -88,7 +88,7 @@ fn async_receive_state_frames_preserve_rounds_and_list_value_semantics_unbounded
 }
 
 #[test]
-fn async_receive_state_frames_preserve_rounds_and_list_value_semantics_rendezvous() {
+fn async_receive_state_frames_preserve_rounds_and_list_value_semantics_zero_capacity() {
     preserve_rounds_and_list_value_semantics(0);
 }
 
