@@ -17,3 +17,25 @@ pub(super) fn specialize(signature: &mut FunctionSignature, source: &Type, envir
         result += 1;
     }
 }
+
+pub(super) fn specialize_closure(
+    signatures: &mut Vec<FunctionSignature>,
+    declaration: FunctionSignatureId,
+    body: FunctionSignatureId,
+    source: &Type,
+) -> Result<FunctionSignatureId, CanonicalLoweringError> {
+    // Type-only signatures authorize targetless Shared calls, so actual closure families need separate physical declarations.
+    let mut specialized = signatures[declaration.get() as usize].clone();
+    specialize(&mut specialized, source, 0);
+    let declaration = if specialized == signatures[declaration.get() as usize] {
+        declaration
+    } else {
+        specialized.id = FunctionSignatureId::new(u32::try_from(signatures.len())
+            .map_err(|_| CanonicalLoweringError::IdOverflow)?);
+        let declaration = specialized.id;
+        signatures.push(specialized.clone());
+        declaration
+    };
+    align_closure_signature(&mut signatures[body.get() as usize], &specialized)?;
+    Ok(declaration)
+}

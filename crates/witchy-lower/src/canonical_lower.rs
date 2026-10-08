@@ -690,8 +690,19 @@ pub(crate) fn lower_typed_module_with_borrowed_views(
             let Some(&signature_id) = closure_signatures.get(&key) else { return Ok(()) };
             let declared = lambda_declared_callable_type(expression, typed.table().type_of(expression))
                 .unwrap_or_else(|| fn_type.clone());
-            // A registered body lets contract derivation verify the unique replacement lane.
-            unique_writeback::specialize(&mut signatures[signature_id.get() as usize], &declared, 1);
+            let Some(&layout) = closure_context.layouts.get(&key) else {
+                visit_error = Some(CanonicalLoweringError::MissingLayout(fn_type.clone()));
+                return Err(());
+            };
+            let declaration = closure_context.declaration_by_layout[&layout];
+            let specialized = match unique_writeback::specialize_closure(&mut signatures, declaration, signature_id, &declared) {
+                Ok(specialized) => specialized,
+                Err(error) => { visit_error = Some(error); return Err(()); }
+            };
+            if specialized != declaration {
+                declaration_physical_signatures.insert(specialized, declaration);
+            }
+            closure_context.declaration_by_layout.insert(layout, specialized);
             if let Some(carrier) = access_facts
                 .callable_at(typed.module(), expression)
                 .and_then(callable_reference_carrier)

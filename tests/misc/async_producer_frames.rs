@@ -416,3 +416,12 @@ fn producer_channel_only_cli_rejects_unproved_scheduler_effect() {
     assert!(text.contains("compiler-proven channel-only Task produced another scheduler effect"), "{text}");
     assert!(text.contains("1 failed"), "{text}");
 }
+
+#[test]
+fn producer_frame_callback_snapshot_preserves_caller_and_callee_aliases() {
+    let _reset = Reset;
+    let source = "fn invoke(f: fn(var List(Int)) -> (), var values: List(Int)):\n    f(values)\n\nfn main(console: Console):\n    var values = [1]\n    let before = values\n    let update = fn(var values: List(Int)):\n        let snapshot = values\n        values[0] = values[0] + 1\n        console.print(\"${snapshot[0]}\")\n    invoke(update, values)\n    console.print(\"${before[0]} ${values[0]}\")\n";
+    for options in [OptSet::none(), OptSet::all(), OptSet::all().without(Opt::ClosureElide)] {
+        assert_eq!(run(source, options), ["1", "1 2"]);
+    }
+}

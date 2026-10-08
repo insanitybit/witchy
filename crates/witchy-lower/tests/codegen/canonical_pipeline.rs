@@ -853,3 +853,36 @@ fn a_callee_that_can_keep_its_let_argument_is_not_lent_it() {
     }
     assert!(keeping_calls > 0, "the program calls a retaining callee");
 }
+
+#[test]
+fn opaque_scalar_list_writeback_has_a_matching_physical_declaration() {
+    use witchy_wir::canonical_safewir::{ParameterOwnership, ResultContract, check_initial_with_witness};
+    let _reset = ResetCallbackOptimization;
+    for options in [witchy_syntax::opt::OptSet::none(), witchy_syntax::opt::OptSet::all()] {
+        witchy_syntax::opt::set_for_tests(Some(options));
+        let input = checked("fn invoke(f: fn(var List(Int)) -> (), var values: List(Int)):\n    f(values)\n\nfn main(console: Console):\n    var values = [1]\n    let before = values\n    let update = fn(var values: List(Int)):\n        let snapshot = values\n        values[0] = values[0] + 1\n        console.print(\"${snapshot[0]}\")\n    invoke(update, values)\n    console.print(\"${before[0]} ${values[0]}\")\n");
+        let candidate = witchy_lower::canonical_pipeline_checks::lowered_candidate(&input);
+        let family = candidate.owner_families().iter().find(|family| {
+            candidate.signatures()[family.signature.get() as usize].contract.parameters.iter()
+                .any(|parameter| parameter.ownership == ParameterOwnership::UniqueWriteBack)
+        }).expect("actual opaque unique writeback callback");
+        let body = &candidate.signatures()[family.signature.get() as usize];
+        let declaration = &candidate.signatures()[family.declaration_signature.get() as usize];
+        assert_eq!(&body.contract.parameters[1..], declaration.contract.parameters);
+        assert_eq!(body.contract.results, declaration.contract.results);
+        assert!(candidate.functions().iter().any(|function| function.signature == body.id));
+        let shared_declaration = candidate.signatures().iter().find(|signature| signature.id != declaration.id
+            && signature.parameters == declaration.parameters && signature.results == declaration.results
+            && signature.contract.parameters.iter().any(|parameter| parameter.ownership == ParameterOwnership::WriteBack)
+            && signature.contract.results.iter().any(|result| matches!(result, ResultContract::Shared { .. })))
+            .expect("original type-only Shared ABI").id;
+        let source = input.canonical_source().expect("source");
+        check_initial_with_witness(candidate.clone(), &source.view()).expect("matching opaque callback ABI");
+        let mut families = candidate.owner_families().to_vec();
+        families.iter_mut().find(|owner| owner.signature == family.signature).expect("owner family")
+            .declaration_signature = shared_declaration;
+        let altered = candidate.clone().with_owner_families(families);
+        assert!(check_initial_with_witness(altered, &source.view()).is_err(), "mixed body/declaration ownership must refuse");
+        compile_checked_module_artifact(&input).expect_lowered("opaque writeback source authority");
+    }
+}
