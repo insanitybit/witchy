@@ -80,7 +80,9 @@ impl TypedAsyncLoweringInput {
         -> Result<(Vec<StaticAsyncCallBinding>, StaticAsyncCallGraph), String>
     {
         let Some(typed) = checked.typed_async_source() else { return Ok((Vec::new(), StaticAsyncCallGraph::default())) };
-        let canonical = checked.canonical_source().ok_or("static async calls have no canonical source")?;
+        let Some(canonical) = checked.canonical_source() else {
+            return Ok((Vec::new(), StaticAsyncCallGraph::default()));
+        };
         let view = canonical.view();
         let callees = self.source.iter().filter_map(|source| {
             typed_source_function(typed, &source.callable).map(|function| (function.name.as_str(), source))
