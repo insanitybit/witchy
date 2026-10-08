@@ -323,6 +323,13 @@ fn bounds_check_field_access(
     // no Spectre guard) is needed: the same argument that elides checks for a
     // 32-bit index, applied to a 64-bit memory whose addresses the producer
     // built from zero-extended 32-bit values.
+    //
+    // This relies on two runtime invariants outside this file: a memory with
+    // `minimum <= reservation` always reserves `reservation + guard`
+    // (`wasmtime/src/runtime/vm/memory/mmap.rs`, `MmapMemory::new`; the pooling
+    // allocator asserts the same per slot), and a memory that may not move
+    // refuses to grow past its capacity (`vm/memory.rs`). Re-check both when
+    // re-vendoring.
     if can_use_virtual_memory
         && heap.memory.minimum_byte_size().unwrap_or(u64::MAX) <= memory_reservation
         && !heap.memory.memory_may_move(&memory_tunables)
@@ -761,7 +768,8 @@ fn index_upper_bound(func: &ir::Function, value: ir::Value, depth: u32) -> Optio
         }
         InstructionData::Binary { opcode: Opcode::Band, args } => {
             let mask = constant(args[0]).or_else(|| constant(args[1]))?;
-            Some(mask)
+            let other = index_upper_bound(func, args[0], depth + 1).into_iter().chain(index_upper_bound(func, args[1], depth + 1));
+            Some(other.fold(mask, u64::min))
         }
         _ => None,
     }

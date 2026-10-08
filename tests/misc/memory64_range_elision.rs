@@ -7,9 +7,14 @@ use wasmtime::{Config, Engine, Instance, Module, Store};
 const RESERVATION: u64 = 8 << 30;
 
 fn engine() -> Engine {
+    engine_with(RESERVATION, 32 << 20)
+}
+
+fn engine_with(reservation: u64, guard: u64) -> Engine {
     let mut config = Config::new();
     config.wasm_memory64(true);
-    config.memory_reservation(RESERVATION);
+    config.memory_reservation(reservation);
+    config.memory_guard_size(guard);
     config.memory_reservation_for_growth(0);
     config.memory_may_move(false);
     Engine::new(&config).unwrap()
@@ -52,6 +57,21 @@ fn bounded_index_needs_no_explicit_check() {
         bounded + 256 < unbounded,
         "bounded {bounded} code bytes, unbounded {unbounded}"
     );
+}
+
+fn code_bytes(engine: &Engine, wat: &str) -> usize {
+    Module::new(engine, wat).unwrap().functions().map(|function| function.len).sum()
+}
+
+#[test]
+fn elision_stops_at_reservation_plus_guard() {
+    // A zero-extended index reaches 2^32 - 1, so even the offset-0 load ends
+    // past 2^32. Reservation + guard of 4 GiB + 64 KiB covers every load;
+    // exactly 4 GiB covers none, and the checks come back.
+    let wat = module(ZERO_EXTENDED, 64);
+    let covered = code_bytes(&engine_with(4 << 30, 64 << 10), &wat);
+    let short = code_bytes(&engine_with((4 << 30) - (64 << 10), 64 << 10), &wat);
+    assert!(covered + 256 < short, "covered {covered} code bytes, one page short {short}");
 }
 
 #[test]
