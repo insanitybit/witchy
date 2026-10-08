@@ -22,6 +22,12 @@ fn unit_values_compare_equal_alone_and_in_aggregates() {
 }
 
 #[test]
+fn unit_ordering_operators_compare_one_value_with_itself() {
+    let out = output("fn main(console: Console):\n    console.print(\"${() < ()} ${() <= ()} ${() > ()} ${() >= ()}\")\n");
+    assert_eq!(out, ["false true false true"]);
+}
+
+#[test]
 fn unit_satisfies_the_standard_hash_and_order_protocols() {
     let out = output("fn digest(x: a) -> Int where a: Hash:\n    x.hash()\n\n\
 fn least(x: a, y: a) -> a where a: Ord:\n    if x.compare(y) == Greater: y else: x\n\n\

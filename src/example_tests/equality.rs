@@ -49,10 +49,9 @@ use crate::typeck;
         let resolved = "import result\n\nfn wrap(x: a) -> Result(a, String):\n    Ok(x)\n\nfn main(console: Console):\n    console.print(\"${wrap([1]) == wrap([2])}\")\n";
         assert_eq!(wasm_run(resolved), vec!["false"], "backends agree");
         let empty = "import result\n\nfn wrap(x: a) -> Result(a, String):\n    Ok(x)\n\nfn main(console: Console):\n    console.print(\"${wrap([]) == wrap([])}\")\n";
-        assert!(
-            witchy::resolve_std_only_checked(empty).is_err(),
-            "an empty generic payload must stay a loud checked-pipeline error"
-        );
+        // The empty payload's element type defaults to unit, whose equality
+        // is total: two empty lists are equal.
+        assert_eq!(wasm_run(empty), vec!["true"], "empty payloads compare equal");
     }
 
     /// Ordering a NaN must FAIL, not silently return IEEE false
