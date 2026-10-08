@@ -498,14 +498,12 @@ fn is_parked(s: Slot) -> Bool:
 // pre-filled slots are erased Int sentinels, never delivered (only written slots in
 // `[head, head+count)` are ever read).
 fn ring_new(cap: Int) -> (List(__Msg), Int, Int, Int):
-    let physcap = if cap > 0: cap else: 1
-    (list.repeat(__erase(0), physcap), 0, 0, cap)
+    (list.repeat(__erase(0), 1), 0, 0, cap)
 
 // Grow a physically-full ring: relayout its `count` live messages to the front of a
 // doubled buffer (FIFO preserved), append `msg`, and return the new
 // `(buf, head, count, cap)`. Reached only when a physically full buffer must still
-// accept a message - an unbounded channel at its physical limit, or the shutdown
-// drain releasing a blocked sender past a bounded `cap`.
+// accept a message, including a shutdown drain releasing a blocked sender.
 fn ring_grow(buf: List(__Msg), head: Int, count: Int, msg: __Msg, cap: Int) -> (List(__Msg), Int, Int, Int):
     let physcap = list.length(buf)
     let newcap = if physcap == 0: 1 else: physcap * 2
