@@ -1,0 +1,25 @@
+from chan import Sender
+from task import Task
+
+fn prepare(let tx: Sender(Int), value: Int) -> Task(()):
+    chan.send(tx, value)
+
+async fn main(console: Console, clock: Clock):
+    let (tx, rx) = chan.channel(0).await
+    let started = clock.now_monotonic()
+    var jobs: List(Task(())) = []
+    var index = 0
+    while index < __JOBS__:
+        list.push(jobs, prepare(tx, index))
+        index = index + 1
+    let elapsed = clock.now_monotonic() - started
+    chan.scope(jobs).await
+    var checksum = 0
+    var count = 0
+    while count < __JOBS__:
+        match chan.recv(rx).await:
+            Some(value) -> checksum = checksum + value * (count + 1)
+            None -> checksum = checksum - 1000000000
+        count = count + 1
+    console.print("${checksum}")
+    console.print("bench_ns=${elapsed}")
