@@ -267,3 +267,8 @@ impl TypedAsyncLoweringInput {
         true
     }
 }
+
+#[doc(hidden)]
+pub fn assert_static_async_call_frame_rejects_argument_forgery(checked: &CheckedModule) {
+    crate::static_async_call_frame::assert_argument_forgery_refused(checked);
+}

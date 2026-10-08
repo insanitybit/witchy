@@ -1213,6 +1213,7 @@ fn bind_task_await_proofs(
             if let witchy_syntax::ast::Expr::Block(block) = expression
                 && let Some(witchy_syntax::ast::Stmt::Let { name, .. }) = block.stmts.first()
                 && let Some(identity) = name.strip_prefix(witchy_syntax::suspension::SOURCE_TASK_OPERAND_PREFIX)
+                    .or_else(|| name.strip_prefix(crate::static_async_call_frame::OPERAND_PREFIX))
             {
                 let [witchy_syntax::ast::Stmt::Let { value: witchy_syntax::ast::Expr::Int(encoded), .. },
                     witchy_syntax::ast::Stmt::Expr(_task)] = block.stmts.as_slice() else {
@@ -1325,6 +1326,13 @@ fn bind_task_await_proofs(
         scheduler_operands.push((task, proof));
         let count = scheduler_edges.entry(proof).or_default();
         *count = count.checked_add(1).ok_or_else(|| refuse("async scheduler edge count exceeds u32".into()))?;
+    }
+    for (task, proof) in crate::static_async_call_frame::caller_edges(final_module, source,
+        &continuation_names, &marked_operands).map_err(refuse)?
+    {
+        scheduler_operands.push((task, proof));
+        let count = scheduler_edges.entry(proof).or_default();
+        *count = count.checked_add(1).ok_or_else(|| refuse("static caller scheduler edge count exceeds u32".into()))?;
     }
     if continuation_names.values().any(|proof| scheduler_edges.get(proof) != Some(&1)) {
         return Err(refuse("checked async continuation lacks one unique scheduler edge".into()));
@@ -1545,6 +1553,8 @@ fn attach_canonical_source(
     let select_preparations = crate::checked_channel_select::bind_select_preparations(&checked)
         .map_err(|message| PipelineError::Type(TypeError { message }))?;
     checked.canonical_source.as_mut().expect("canonical source was installed").select_preparations = select_preparations;
+    crate::static_async_call_frame::validate_checked(&checked)
+        .map_err(|message| PipelineError::Type(TypeError { message }))?;
     Ok(checked)
 }
 

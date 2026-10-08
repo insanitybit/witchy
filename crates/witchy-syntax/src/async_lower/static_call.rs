@@ -1,5 +1,84 @@
 use super::*;
 
+#[derive(Clone)]
+pub(super) struct TerminalCallee {
+    pub initializer: String,
+    pub prepare: String,
+    pub parameters: Vec<Param>,
+    pub state: Type,
+}
+
+#[derive(Default)]
+pub(super) struct Catalog {
+    pub terminal: HashMap<String, TerminalCallee>,
+}
+
+impl Catalog {
+    pub fn eligible(&self, function: &Function) -> bool {
+        let mut names = function.params.iter().map(|parameter| parameter.name.clone()).collect::<HashSet<_>>();
+        let mut bind = |block: &Block| {
+            for statement in &block.stmts {
+                match statement {
+                    Stmt::Let { name, .. } => { names.insert(name.clone()); }
+                    Stmt::LetPattern { pattern, .. } => {
+                        let mut bound = Vec::new();
+                        pattern_binds(pattern, &mut bound);
+                        names.extend(bound);
+                    }
+                    _ => {}
+                }
+            }
+        };
+        bind(&function.body);
+        crate::ast::visit::visit_block(&function.body, &mut |expression| {
+            match expression {
+                Expr::Block(block) | Expr::Lambda { body: block, .. }
+                    | Expr::While { body: block, .. } | Expr::For { body: block, .. }
+                    | Expr::WhileLet { body: block, .. } => bind(block),
+                Expr::If { then_block, else_block, .. } => {
+                    bind(then_block);
+                    if let Some(block) = else_block { bind(block); }
+                }
+                _ => {}
+            }
+            Ok::<_, ()>(())
+        }).expect("infallible static-call binder inventory");
+        drop(bind);
+        crate::ast::visit::visit_block(&function.body, &mut |expression| {
+            let mut bound = Vec::new();
+            match expression {
+                Expr::For { var, .. } => bound.push(var.clone()),
+                Expr::WhileLet { pattern, .. } => pattern_binds(pattern, &mut bound),
+                Expr::Match { arms, .. } => {
+                    for arm in arms { pattern_binds(&arm.pattern, &mut bound); }
+                }
+                Expr::Lambda { params, .. } => bound.extend(params.iter().map(|parameter| parameter.name.clone())),
+                _ => {}
+            }
+            names.extend(bound);
+            Ok::<_, ()>(())
+        }).expect("infallible static-call pattern inventory");
+        let mut eligible = true;
+        crate::ast::visit::visit_block(&function.body, &mut |expression| {
+            if let Expr::Unary { op: UnOp::Await, expr } = expression {
+                eligible &= matches!(source_await_operand(expr), Expr::Call { name, .. }
+                    if self.terminal.contains_key(name) && !names.contains(name));
+            }
+            Ok::<_, ()>(())
+        }).expect("infallible static-call eligibility inventory");
+        eligible
+    }
+
+    pub fn insert(&mut self, entry: &Function, segments: &[Function]) {
+        let [initializer, prepare] = segments else { return };
+        let Some(state) = initializer.ret.clone() else { return };
+        self.terminal.insert(entry.name.clone(), TerminalCallee {
+            initializer: initializer.name.clone(), prepare: prepare.name.clone(),
+            parameters: entry.params.clone(), state,
+        });
+    }
+}
+
 pub(super) fn lower(mut function: Function, counter: &mut usize, state_counter: &mut usize,
     shells: &BorrowedShellCatalog) -> Result<Option<(Function, Vec<Function>)>, String>
 {

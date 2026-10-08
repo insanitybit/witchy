@@ -42,6 +42,7 @@ pub mod typed_execution;
 pub mod typed_async_lowering;
 pub mod typed_static_async_call;
 mod static_async_factory;
+mod static_async_call_frame;
 pub mod checked_channel_send;
 pub mod checked_channel_select;
 pub mod checked_channel_receive;

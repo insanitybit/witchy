@@ -54,6 +54,7 @@ mod receive_state;
 pub mod type_hints;
 mod send_frame;
 mod static_call;
+mod static_call_loop;
 
 /// Nominal identities whose values carry a declared lifetime relation. Async
 /// lowering runs before typeck, so this deliberately records only declarations
@@ -319,6 +320,20 @@ fn lower_with_view_fns_and_item_mapping_for(
     let mut state_counter: usize = 0;
     let mut items = Vec::with_capacity(module.items.len());
     let mut lifted: Vec<(usize, Function)> = Vec::new();
+    let mut static_calls = static_call::Catalog::default();
+    let mut static_entries = HashMap::default();
+    for (source_index, item) in module.items.iter().enumerate() {
+        let Item::Function(function) = item else { continue };
+        if !function.is_async || function.name == "main" { continue; }
+        let mut function = function.clone();
+        function.attributes.push(crate::suspension::async_surface_attribute(source_index, None));
+        if let Some((entry, segments)) = static_call::lower(function, &mut counter,
+            &mut state_counter, &borrowed_shells)?
+        {
+            static_calls.insert(&entry, &segments);
+            static_entries.insert(source_index, (entry, segments));
+        }
+    }
     for (source_index, item) in std::mem::take(&mut module.items).into_iter().enumerate() {
         mapping[source_index].push(items.len());
         match item {
@@ -328,9 +343,7 @@ fn lower_with_view_fns_and_item_mapping_for(
                     source_index,
                     None,
                 ));
-                if !is_entry && let Some((entry, segments)) = static_call::lower(f.clone(),
-                    &mut counter, &mut state_counter, &borrowed_shells)?
-                {
+                if let Some((entry, segments)) = static_entries.remove(&source_index) {
                     items.push(Item::Function(entry));
                     lifted.extend(segments.into_iter().map(|segment| (source_index, segment)));
                     continue;
@@ -342,6 +355,7 @@ fn lower_with_view_fns_and_item_mapping_for(
                     &mut state_counter,
                     &known_view_fns,
                     &borrowed_shells,
+                    &static_calls,
                 )?;
                 items.push(Item::Function(entry));
                 lifted.extend(segs.drain(..).map(|segment| (source_index, segment)));
@@ -373,6 +387,7 @@ fn lower_with_view_fns_and_item_mapping_for(
                             Some(self_ty.clone()),
                             &known_view_fns,
                             &borrowed_shells,
+                            &static_calls,
                         )?;
                         methods.push(entry);
                         lifted.extend(segs.drain(..).map(|segment| (source_index, segment)));
@@ -705,6 +720,8 @@ struct Ctx<'a> {
     segments: Vec<Function>,
     view_fns: &'a HashSet<String>,
     borrowed_shells: &'a BorrowedShellCatalog,
+    static_calls: &'a static_call::Catalog,
+    static_call_eligible: bool,
     attributes: Vec<String>,
 }
 
@@ -1558,6 +1575,9 @@ impl<'a> Ctx<'a> {
         if let Some(frame_loop) = self.try_lower_receive_state_loop(cond, body, cont)? {
             return Ok(frame_loop);
         }
+        if let Some(frame_loop) = self.try_lower_static_call_loop(cond, body, cont)? {
+            return Ok(frame_loop);
+        }
         if let Some(frame_loop) = self.try_lower_channel_frame_loop(cond, body, cont)? {
             return Ok(frame_loop);
         }
@@ -1779,6 +1799,7 @@ fn lower_async_fn(
     state_counter: &mut usize,
     view_fns: &HashSet<String>,
     borrowed_shells: &BorrowedShellCatalog,
+    static_calls: &static_call::Catalog,
 ) -> Result<(Function, Vec<Function>), String> {
     lower_async_fn_with(
         f,
@@ -1788,6 +1809,7 @@ fn lower_async_fn(
         None,
         view_fns,
         borrowed_shells,
+        static_calls,
     )
 }
 
@@ -1814,6 +1836,7 @@ fn lower_async_fn_with(
     self_ty: Option<Type>,
     view_fns: &HashSet<String>,
     borrowed_shells: &BorrowedShellCatalog,
+    static_calls: &static_call::Catalog,
 ) -> Result<(Function, Vec<Function>), String> {
     tag_source_awaits(&mut f.body)?;
     let declared_ret = f.ret.clone();
@@ -1863,6 +1886,8 @@ fn lower_async_fn_with(
         segments: Vec::new(),
         view_fns,
         borrowed_shells,
+        static_calls,
+        static_call_eligible: static_calls.eligible(&f),
         attributes: segment_attributes,
     };
     let scope: Vec<Local> = f

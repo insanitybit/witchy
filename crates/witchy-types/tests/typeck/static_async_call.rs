@@ -140,3 +140,95 @@ fn static_async_call_state_factories_reject_changed_construction_and_decoding() 
         assert!(error.contains(&format!("changed scalar scheduler recipe {name}")), "{error}");
     }
 }
+
+#[test]
+fn static_async_call_loop_binds_distinct_caller_and_callee_awaits() {
+    struct Reset;
+    impl Drop for Reset { fn drop(&mut self) { witchy_syntax::opt::set_for_tests(None); } }
+    let _reset = Reset;
+    witchy_syntax::opt::set_for_tests(Some(witchy_syntax::opt::OptSet::all()));
+    let checked = super::source::checked_module("from chan import Sender\n\nasync fn send_one(tx: Sender(Int), value: Int):\n    chan.send(tx, value).await\n\nasync fn producer(tx: Sender(Int), n: Int):\n    var i = 0\n    while i < n:\n        send_one(tx, i + 1).await\n        i = i + 1\n\nasync fn main():\n    let (tx, rx) = chan.channel(4).await\n    producer(tx, 2).await\n").expect("checked reusable static caller frame");
+    let input = checked.typed_async_lowering_input().expect("typed caller/callee source bindings");
+    let producer = input.static_calls.iter().find(|call| call.arguments.len() == 2
+        && call.arguments[1].ty == witchy_syntax::ast::Type::Named("Int".into(), Vec::new())
+        && input.static_call_is_acyclic(call)).expect("checked producer helper call");
+    assert_ne!(producer.caller, producer.callee);
+    let mut decomposed = 0;
+    let mut ordinary_helper_calls = 0;
+    for item in &checked.module().items {
+        let witchy_syntax::ast::Item::Function(function) = item else { continue };
+        witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
+            if let witchy_syntax::ast::Expr::Block(block) = expression
+                && matches!(block.stmts.first(), Some(witchy_syntax::ast::Stmt::Let { name, .. })
+                    if name.starts_with("__source_static_call_operand_"))
+            { decomposed += 1; }
+            if matches!(expression, witchy_syntax::ast::Expr::Call { name, .. } if name == "send_one") {
+                ordinary_helper_calls += 1;
+            }
+            Ok::<_, ()>(())
+        }).expect("infallible caller inventory");
+    }
+    assert_eq!(decomposed, 1);
+    assert_eq!(ordinary_helper_calls, 0);
+    witchy_types::typed_static_async_call::assert_static_async_call_frame_rejects_argument_forgery(&checked);
+}
+
+#[test]
+fn static_async_call_loop_falls_back_for_a_shadowing_callback() {
+    struct Reset;
+    impl Drop for Reset { fn drop(&mut self) { witchy_syntax::opt::set_for_tests(None); } }
+    let _reset = Reset;
+    let source = "from chan import Sender\n\nasync fn send_one(tx: Sender(Int), value: Int):\n    chan.send(tx, value).await\n\nasync fn producer(tx: Sender(Int), n: Int):\n    let send_one = fn(tx: Sender(Int), value: Int): task.done(())\n    var i = 0\n    while i < n:\n        send_one(tx, i).await\n        i = i + 1\n\nasync fn main():\n    let (tx, rx) = chan.channel(4).await\n    producer(tx, 2).await\n";
+    for options in [witchy_syntax::opt::OptSet::none(), witchy_syntax::opt::OptSet::all()] {
+        witchy_syntax::opt::set_for_tests(Some(options));
+        let checked = super::source::checked_module(source).expect("shadowed callback retains ordinary caller lowering");
+        let mut decomposed = 0;
+        for item in &checked.module().items {
+            let witchy_syntax::ast::Item::Function(function) = item else { continue };
+            witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
+                if let witchy_syntax::ast::Expr::Block(block) = expression
+                    && matches!(block.stmts.first(), Some(witchy_syntax::ast::Stmt::Let { name, .. })
+                        if name.starts_with("__source_static_call_operand_"))
+                { decomposed += 1; }
+                Ok::<_, ()>(())
+            }).expect("infallible fallback inventory");
+        }
+        assert_eq!(decomposed, 0);
+    }
+}
+
+#[test]
+fn static_async_call_loop_falls_back_for_an_unresolved_later_await() {
+    struct Reset;
+    impl Drop for Reset { fn drop(&mut self) { witchy_syntax::opt::set_for_tests(None); } }
+    let _reset = Reset;
+    let source = "from chan import Sender\nfrom task import Task\n\nasync fn send_one(tx: Sender(Int), value: Int):\n    chan.send(tx, value).await\n\nasync fn producer(tx: Sender(Int), n: Int, child: Task(())):\n    var i = 0\n    while i < n:\n        send_one(tx, i).await\n        i = i + 1\n    child.await\n\nasync fn main():\n    let (tx, rx) = chan.channel(4).await\n    producer(tx, 2, task.done(())).await\n";
+    for options in [witchy_syntax::opt::OptSet::none(), witchy_syntax::opt::OptSet::all()] {
+        witchy_syntax::opt::set_for_tests(Some(options));
+        let checked = super::source::checked_module(source).expect("unresolved later await retains ordinary caller lowering");
+        let mut decomposed = 0;
+        for item in &checked.module().items {
+            let witchy_syntax::ast::Item::Function(function) = item else { continue };
+            witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
+                if let witchy_syntax::ast::Expr::Block(block) = expression
+                    && matches!(block.stmts.first(), Some(witchy_syntax::ast::Stmt::Let { name, .. })
+                        if name.starts_with("__source_static_call_operand_"))
+                { decomposed += 1; }
+                Ok::<_, ()>(())
+            }).expect("infallible fallback inventory");
+        }
+        assert_eq!(decomposed, 0);
+    }
+}
+
+#[test]
+fn static_async_call_loop_falls_back_for_a_nested_later_shadow() {
+    struct Reset;
+    impl Drop for Reset { fn drop(&mut self) { witchy_syntax::opt::set_for_tests(None); } }
+    let _reset = Reset;
+    let source = "from chan import Sender\n\nasync fn send_one(tx: Sender(Int), value: Int):\n    chan.send(tx, value).await\n\nasync fn producer(tx: Sender(Int), n: Int, flag: Bool):\n    var i = 0\n    while i < n:\n        send_one(tx, i).await\n        i = i + 1\n    if flag:\n        let send_one = fn(value: Int): task.done(())\n        send_one(0).await\n\nasync fn main():\n    let (tx, rx) = chan.channel(4).await\n    producer(tx, 2, true).await\n";
+    for options in [witchy_syntax::opt::OptSet::none(), witchy_syntax::opt::OptSet::all()] {
+        witchy_syntax::opt::set_for_tests(Some(options));
+        super::source::checked_module(source).expect("nested shadow retains ordinary source acceptance");
+    }
+}
