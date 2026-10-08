@@ -4196,6 +4196,15 @@ fn checked_byte_write_back_forwarders(module: &witchy_syntax::ast::Module) -> Ha
     }).collect()
 }
 
+enum LoweringAttempt {
+    Lowered(Function),
+    Retry(BTreeSet<String>),
+}
+
+/// Lower a function, re-lowering with shared loop phis for every lane whose
+/// back edge a previous attempt found shared. Each retry strictly grows the
+/// forced set, so this terminates.
+#[allow(clippy::too_many_arguments)]
 fn lower_function(
     function: &witchy_syntax::ast::Function,
     body: &witchy_syntax::ast::Block,
@@ -4230,6 +4239,49 @@ fn lower_function(
     environment: Option<&ClosureEnvironment>,
     canonical_source: &CanonicalCheckedSource,
 ) -> Result<Function, CanonicalLoweringError> {
+    let mut forced = BTreeSet::new();
+    loop {
+        match lower_function_attempt(&forced, function, body, id, item, opt_mode, lambda_path.clone(), lambda_names, signature, functions, forwarded_dict_intrinsics, direct_shared_alias_callees, checked_parameter_conventions, signatures, call_tables, tail_manifest, proper_tail_locations, type_table, checked_module, access_facts, loan_facts, view_facts, dictionary_comparators, dictionary_equivalents, layout_bundle, layouts, string_data_ids, host_imports, packed_records, definitions, closures, environment)? {
+            LoweringAttempt::Lowered(function) => return Ok(function),
+            LoweringAttempt::Retry(names) => forced.extend(names),
+        }
+    }
+}
+
+fn lower_function_attempt(
+    forced_shared_lanes: &BTreeSet<String>,
+    function: &witchy_syntax::ast::Function,
+    body: &witchy_syntax::ast::Block,
+    id: FunctionId,
+    item: u32,
+    opt_mode: bool,
+    lambda_path: Vec<ProperTailPathStep>,
+    lambda_names: &HashMap<usize, String>,
+    signature: &FunctionSignature,
+    functions: &HashMap<String, (FunctionId, FunctionSignatureId)>,
+    forwarded_dict_intrinsics: &IntrinsicForwarders,
+    direct_shared_alias_callees: &HashMap<String, FunctionSignatureId>,
+    checked_parameter_conventions: &HashMap<FunctionSignatureId, Vec<Convention>>,
+    signatures: &[FunctionSignature],
+    call_tables: &owned::CallTables<'_>,
+    tail_manifest: &ProperTailSiteManifest,
+    proper_tail_locations: &mut BTreeMap<witchy_wir::canonical_safewir::TailSiteId, witchy_wir::canonical_safewir::ProperTailLocation>,
+    type_table: &TypeTable,
+    checked_module: &witchy_syntax::ast::Module,
+    access_facts: &CheckedAccessFacts,
+    loan_facts: Option<&LoanFacts>,
+    view_facts: Option<&CheckedViewFacts>,
+    dictionary_comparators: &[(Type, String, String)],
+    dictionary_equivalents: &[(Type, Type, String, String)],
+    layout_bundle: &LayoutBundle,
+    layouts: &LayoutInterner,
+    string_data_ids: &BTreeMap<Vec<u8>, witchy_wir::canonical_safewir::StaticDataId>,
+    host_imports: &HostImports,
+    packed_records: &HashMap<String, &TypeDef>,
+    definitions: &BTreeMap<String, TypeDef>,
+    closures: &ClosureContext,
+    environment: Option<&ClosureEnvironment>,
+) -> Result<LoweringAttempt, CanonicalLoweringError> {
     let entry_exclusive_reference_params = access_facts
         .declaration(&function.name)
         .map(|declaration| {
@@ -4251,6 +4303,8 @@ fn lower_function(
         .unwrap_or_default();
     let mut lowerer = FunctionLowerer {
         function: function.name.clone(),
+        forced_shared_lanes,
+        unique_lane_names: Vec::new(),
         function_id: id,
         source_body: body,
         canonical_source,
@@ -4519,6 +4573,7 @@ fn lower_function(
         }
     })?;
     lowerer.demote_owner_list_lanes_fed_aliases();
+    let unique_lanes = std::mem::take(&mut lowerer.unique_lane_names);
     let blocks = lowerer
         .blocks
         .into_iter()
@@ -4541,6 +4596,17 @@ fn lower_function(
         blocks,
     };
     demote_shared_reference_phis(&mut lowered, signatures, call_tables);
+    // A lane assumed unique whose back edge turned out shared cannot keep
+    // its in-place pushes: lower again with that lane's phi shared.
+    let demoted = lowered.blocks.iter().flat_map(|block| &block.parameters)
+        .filter(|parameter| parameter.ownership == Some(Ownership::Shared))
+        .map(|parameter| parameter.value).collect::<BTreeSet<_>>();
+    let newly_shared = unique_lanes.into_iter()
+        .filter(|(value, name)| demoted.contains(value) && !forced_shared_lanes.contains(name))
+        .map(|(_, name)| name).collect::<BTreeSet<_>>();
+    if !newly_shared.is_empty() {
+        return Ok(LoweringAttempt::Retry(newly_shared));
+    }
     let debug = std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some();
     if debug {
         eprintln!("canonical lowered `{}` before release placement:\n{lowered:#?}", function.name);
@@ -4574,7 +4640,7 @@ fn lower_function(
     if debug {
         eprintln!("canonical lowered `{}`:\n{lowered:#?}", function.name);
     }
-    Ok(lowered)
+    Ok(LoweringAttempt::Lowered(lowered))
 }
 
 /// Normalize join ownership after all incoming edges have been lowered.
@@ -4994,6 +5060,11 @@ struct ScalarizedRecord {
 struct FunctionLowerer<'a> {
     canonical_source: &'a CanonicalCheckedSource,
     function: String,
+    /// Loop lanes a previous lowering of this function found shared on a
+    /// back edge: their header phis start shared, so a push copies.
+    forced_shared_lanes: &'a BTreeSet<String>,
+    /// Each unique loop phi a push mutates in place, by lane name.
+    unique_lane_names: Vec<(ValueId, String)>,
     function_id: FunctionId,
     /// Original checked nodes, never cloned: explicit returns in ordinary
     /// blocks still discharge their structural proper-tail obligations.
@@ -11156,6 +11227,9 @@ impl FunctionLowerer<'_> {
                     return None;
                 }
                 let is_string = Some(self.values[&object]) == string.map(ValueType::Ref);
+                if self.forced_shared_lanes.contains(name) && self.carries_token(object) {
+                    return Some(Ownership::Shared);
+                }
                 if !is_string && !fixed_layout && mark_lists && !self.known_shared_value(object) {
                     // The `for` loop's rule: a unique phi over the canonical
                     // push templates. A lane holding a shared value (a call
@@ -11185,9 +11259,12 @@ impl FunctionLowerer<'_> {
                 }
             })
             .collect::<Vec<_>>();
-        for (parameter, ownership) in self.blocks[header.get() as usize].parameters.iter_mut().zip(ownerships) {
+        for ((parameter, ownership), name) in self.blocks[header.get() as usize].parameters.iter_mut().zip(ownerships).zip(names) {
             if ownership.is_some() {
                 parameter.ownership = ownership;
+            }
+            if ownership == Some(Ownership::Unique) {
+                self.unique_lane_names.push((parameter.value, name.clone()));
             }
         }
     }

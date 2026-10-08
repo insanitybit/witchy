@@ -34,6 +34,14 @@ fn a_list_stored_in_another_list_keeps_its_value_after_the_source_appends() {
     assert_eq!(out, ["[[a, b, d]] [a, b, c]"]);
 }
 
+/// A loop that pushes and then captures its list hands a shared value to the
+/// next iteration; its pushes copy instead of failing the ownership check.
+#[test]
+fn a_list_captured_inside_the_loop_that_pushes_it_compiles_and_keeps_snapshots() {
+    let out = output("fn main(console: Console):\n    var fs = [1]\n    var i = 0\n    var total = 0\n    while i < 3:\n        fs.push(2)\n        let g = fn(x: Int) -> Int: fs.length() + x\n        total = total + g(0)\n        i = i + 1\n    console.print(\"${total} ${fs.length()}\")\n");
+    assert_eq!(out, ["9 4"]);
+}
+
 #[test]
 fn a_caller_alias_keeps_its_list_after_a_var_parameter_appends() {
     let out = output("fn grow(var xs: List(String)):\n    xs.push(\"g\")\n\nfn main(console: Console):\n    var xs = [\"a\"]\n    xs.push(\"b\")\n    let kept = xs\n    grow(xs)\n    console.print(\"${kept} ${xs}\")\n");
