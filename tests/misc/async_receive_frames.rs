@@ -299,3 +299,32 @@ fn typed_receive_frame_top_level_carry_shadow_uses_fallback() {
         assert_eq!(run(&source, options), ["sum 0", "sum 0"]);
     }
 }
+
+#[test]
+fn erased_ring_growth_wrap_and_quiescent_full_send_preserve_fifo() {
+    let _reset = Reset;
+    let source = r#"type Packet:
+    Packet(String)
+
+async fn main(console: Console):
+    let (tx, rx) = chan.channel(3).await
+    chan.send(tx, Packet("a")).await
+    chan.send(tx, Packet("b")).await
+    chan.send(tx, Packet("c")).await
+    let first = chan.recv(rx).await
+    match first:
+        Some(Packet(text)) -> console.print(text)
+        None -> console.print("missing")
+    chan.send(tx, Packet("d")).await
+    chan.send(tx, Packet("e")).await
+    for await packet in rx:
+        match packet:
+            Packet(text) -> console.print(text)
+"#;
+    for capacity in [0, 1, 3] {
+        let source = source.replace("chan.channel(3)", &format!("chan.channel({capacity})"));
+        for options in [OptSet::none(), OptSet::all()] {
+            assert_eq!(run(&source, options), ["a", "b", "c", "d", "e"]);
+        }
+    }
+}
