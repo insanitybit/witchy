@@ -404,8 +404,13 @@ impl Preparation<'_> {
 }
 
 fn primitive(ty: &Type) -> bool {
-    matches!(ty.unqualified(), Type::Named(name, arguments) if arguments.is_empty()
-        && matches!(name.as_str(), "Int" | "Float" | "Bool" | "Duration" | "String" | "Nil" | "Unit"))
+    match ty.unqualified() {
+        // Unit is the empty tuple: every value is equal, with no fields to read.
+        Type::Tuple(fields) => fields.is_empty(),
+        Type::Named(name, arguments) => arguments.is_empty()
+            && matches!(name.as_str(), "Int" | "Float" | "Bool" | "Duration" | "String" | "Nil" | "Unit"),
+        _ => false,
+    }
 }
 
 pub(crate) fn var(name: &str) -> Expr { Expr::Var(name.into()) }

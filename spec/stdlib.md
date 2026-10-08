@@ -697,6 +697,26 @@ Lists compare element-by-element through the element type's `PartialEq` impl.
 
 #### `impl Eq for Dict(k, v) where k: Hash, v: Eq`
 
+#### `impl PartialEq for ()`
+
+Unit has one value, so every two units are equal and share one hash.
+
+- `fn eq(let self, let other: Self) -> Bool`
+
+#### `impl Eq for ()`
+
+#### `impl Hash for ()`
+
+- `fn hash(let self) -> Int`
+
+#### `impl PartialOrd for ()`
+
+- `fn partial_compare(self, other: Self) -> Option(Ordering)`
+
+#### `impl Ord for ()`
+
+- `fn compare(self, other: Self) -> Ordering`
+
 #### `impl PartialEq for (a, b) where a: PartialEq, b: PartialEq`
 
 Tuples compare slot-by-slot through each slot's equality protocol. The tuple protocol surface is explicit through arity 8, matching `Show` and `Reflect`.

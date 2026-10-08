@@ -17368,6 +17368,15 @@ impl FunctionLowerer<'_> {
                     }
                 };
             }
+            // Unit has one value: both operands were evaluated for their
+            // effects, and the answer is fixed by the operator.
+            if left_type == ValueType::Unit
+                && matches!(operator, ComparisonOperator::Equal | ComparisonOperator::NotEqual)
+            {
+                let destination = self.fresh(ValueType::Bool)?;
+                self.push_operation(Operation::ConstBool { destination, value: operator == ComparisonOperator::Equal });
+                return Ok(destination);
+            }
             if !matches!(left_type, ValueType::Int | ValueType::Bool | ValueType::Float) {
                 if std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some() {
                     eprintln!("canonical comparison refused: {left_type:?} {operator:?} {right_type:?}");

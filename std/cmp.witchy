@@ -329,6 +329,25 @@ impl PartialEq for Dict(k, v) where k: Hash, v: PartialEq:
 
 impl Eq for Dict(k, v) where k: Hash, v: Eq
 
+// Unit has one value, so every two units are equal and share one hash.
+impl PartialEq for ():
+    fn eq(let self, let other: Self) -> Bool:
+        true
+
+impl Eq for ()
+
+impl Hash for ():
+    fn hash(let self) -> Int:
+        0
+
+impl PartialOrd for ():
+    fn partial_compare(self, other: Self) -> Option(Ordering):
+        Some(Equal)
+
+impl Ord for ():
+    fn compare(self, other: Self) -> Ordering:
+        Equal
+
 // Tuples compare slot-by-slot through each slot's equality protocol. The tuple
 // protocol surface is explicit through arity 8, matching `Show` and `Reflect`.
 impl PartialEq for (a, b) where a: PartialEq, b: PartialEq:
