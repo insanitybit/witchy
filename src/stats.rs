@@ -435,6 +435,42 @@ fn main(console: Console):
         );
     }
 
+    /// A list of strings appends in place too: copying the whole list per
+    /// push made 4000 appends cost a hundredfold the heap of 400.
+    fn string_accumulation(elements: usize) -> String {
+        format!("fn main(console: Console):\n    var xs = []\n    var i = 0\n    while i < {elements}:\n        xs.push(\"s${{i % 10}}\")\n        i = i + 1\n    console.print(\"${{xs.length()}}\")\n")
+    }
+
+    #[test]
+    fn string_accumulation_heap_grows_linearly() {
+        let small = compute(&string_accumulation(400)).expect("compute 400 string pushes");
+        let large = compute(&string_accumulation(4000)).expect("compute 4000 string pushes");
+        assert_eq!(large.output, vec!["4000".to_string()]);
+        assert!(
+            large.heap_bytes < small.heap_bytes * 20,
+            "string accumulation heap must grow linearly: 400={} 4000={}",
+            small.heap_bytes,
+            large.heap_bytes
+        );
+    }
+
+    fn field_string_accumulation(elements: usize) -> String {
+        format!("type Bag:\n    items: List(String)\n\nfn main(console: Console):\n    var bag = Bag([])\n    var i = 0\n    while i < {elements}:\n        bag.items.push(\"s${{i % 10}}\")\n        i = i + 1\n    console.print(\"${{bag.items.length()}}\")\n")
+    }
+
+    #[test]
+    fn field_string_accumulation_heap_grows_linearly() {
+        let small = compute(&field_string_accumulation(400)).expect("compute 400 field pushes");
+        let large = compute(&field_string_accumulation(4000)).expect("compute 4000 field pushes");
+        assert_eq!(large.output, vec!["4000".to_string()]);
+        assert!(
+            large.heap_bytes < small.heap_bytes * 20,
+            "field string accumulation heap must grow linearly: 400={} 4000={}",
+            small.heap_bytes,
+            large.heap_bytes
+        );
+    }
+
     fn accepted_opt_stats(source: &str, label: &str) -> Stats {
         let linked = crate::resolve_std_only(source).unwrap_or_else(|error| {
             panic!("resolve {label}: {error}")

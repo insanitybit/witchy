@@ -15704,7 +15704,7 @@ impl FunctionLowerer<'_> {
         let (_, element_type, _, _) = list_layout(
             list_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions,
         )?;
-        if !matches!(element_type, ValueType::Ref(_) | ValueType::Gc(_))
+        if !matches!(element_type, ValueType::Gc(_))
             && !self.known_shared_value(object)
         {
             self.push_unique_list_element(object, value, list_type)
@@ -15777,7 +15777,7 @@ impl FunctionLowerer<'_> {
                 value = self.owned_for_storage(value, &parameters[0])?;
             }
         }
-        if owned_lane.is_some() && !matches!(element_type, ValueType::Ref(_) | ValueType::Gc(_)) {
+        if owned_lane.is_some() && !matches!(element_type, ValueType::Gc(_)) {
             self.push_owned_or_reuse_scalar_element(old_object, value, &list_type)
         } else {
             let list = self.clone_reference_token(old_object)?;
