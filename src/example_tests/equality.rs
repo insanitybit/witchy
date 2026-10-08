@@ -45,7 +45,7 @@ use crate::typeck;
     /// element evidence, so the checked pipeline rejects it before codegen —
     /// never silently pointer-comparing.
     #[test]
-    fn unsupported_compound_equality_is_a_loud_error_not_silent() {
+    fn generic_result_payload_equality_resolves_including_empty_lists() {
         let resolved = "import result\n\nfn wrap(x: a) -> Result(a, String):\n    Ok(x)\n\nfn main(console: Console):\n    console.print(\"${wrap([1]) == wrap([2])}\")\n";
         assert_eq!(wasm_run(resolved), vec!["false"], "backends agree");
         let empty = "import result\n\nfn wrap(x: a) -> Result(a, String):\n    Ok(x)\n\nfn main(console: Console):\n    console.print(\"${wrap([]) == wrap([])}\")\n";
