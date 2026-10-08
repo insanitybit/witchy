@@ -91,6 +91,8 @@ mod dir_storage;
 pub use dir_storage::DIR_STORAGE_IMPORT_NAMES;
 mod env_response;
 pub use env_response::ENV_IMPORT_NAMES;
+mod console_read;
+pub use console_read::CONSOLE_READ_IMPORT_NAMES;
 mod net_response;
 pub use net_response::{NET_RESPONSE_IMPORT_NAMES, NET_LISTEN_TLS_IMPORT};
 mod secret_response;
@@ -563,6 +565,10 @@ pub struct CanonicalAbiCatalog {
 /// so 32 leaves the host no way to overrun it.
 pub const FLOAT_RENDER_BUFFER_BYTES: u64 = 32;
 
+/// The fixed ABI kind of a `Console` token. `Console[Read]` and
+/// `Console[Write]` are checked statically and share this kind.
+pub const CONSOLE_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(0);
+
 /// The fixed ABI kind of a `Dir` token. Rights (`Dir[Read]`, `Dir[Write]`)
 /// and subtree scope live in the host's authority object behind the
 /// externref, never in the kind, so every `Dir` spelling is this one kind.
@@ -585,7 +591,7 @@ pub const BUILD_OUT_CAPABILITY_KIND: CapabilityKindId = CapabilityKindId::new(9)
 pub const fn capability_kind_id(kind: witchy_canonical_source::capabilities::CapabilityKind) -> Option<CapabilityKindId> {
     use witchy_canonical_source::capabilities::CapabilityKind as K;
     Some(match kind {
-        K::Console => CapabilityKindId::new(0),
+        K::Console => CONSOLE_CAPABILITY_KIND,
         K::Dir => DIR_CAPABILITY_KIND,
         K::Env => ENV_CAPABILITY_KIND,
         K::File => FILE_CAPABILITY_KIND,

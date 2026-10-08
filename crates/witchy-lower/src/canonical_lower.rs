@@ -1266,6 +1266,12 @@ pub(crate) fn lower_typed_module_with_borrowed_views(
             catalog = catalog
                 .with_capability_imports(capability_signatures, string_layout)
                 .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+            if witchy_wir::canonical_safewir::CONSOLE_READ_IMPORT_NAMES.iter().any(|name| capability_imports.contains(name)) {
+                let console = ValueType::Capability(witchy_wir::canonical_safewir::CONSOLE_CAPABILITY_KIND);
+                let ids = [push_import_signature(vec![console], vec![response], None)?];
+                catalog = catalog.with_console_read_imports(ids)
+                    .map_err(CanonicalLoweringError::InvalidAuthenticatedAbiCatalog)?;
+            }
             if witchy_wir::canonical_safewir::ENV_IMPORT_NAMES.iter().any(|name| capability_imports.contains(name)) {
                 let ids = [push_import_signature(vec![env, text], vec![response], None)?];
                 catalog = catalog.with_env_imports(ids, string_layout)
@@ -14696,7 +14702,7 @@ impl FunctionLowerer<'_> {
         let [receiver, message] = arguments else {
             return Err(CanonicalLoweringError::UnsupportedExpression("console.print arguments"));
         };
-        if !matches!(self.expression_type(receiver)?.unqualified(), Type::Named(name, args) if name == "Console" && args.is_empty()) {
+        if !matches!(self.expression_type(receiver)?.unqualified(), Type::Named(name, _) if name == "Console") {
             return Err(CanonicalLoweringError::UnsupportedExpression("console.print receiver"));
         }
         // The receiver can have effects. Evaluate it before the message, and
@@ -14764,6 +14770,7 @@ impl FunctionLowerer<'_> {
             return Err(CanonicalLoweringError::UnsupportedExpression("capability operation receiver"));
         };
         let receiver_kind = match self.expression_type(receiver)?.unqualified() {
+            Type::Named(kind, _) if kind == "Console" => witchy_wir::canonical_safewir::CONSOLE_CAPABILITY_KIND,
             Type::Named(kind, arguments) if kind == "Clock" && arguments.is_empty() => witchy_wir::canonical_safewir::CLOCK_CAPABILITY_KIND,
             Type::Named(kind, arguments) if kind == "BuildOut" && arguments.is_empty() => witchy_wir::canonical_safewir::BUILD_OUT_CAPABILITY_KIND,
             Type::Named(kind, arguments) if kind == "BuildRead" && arguments.is_empty() => witchy_wir::canonical_safewir::BUILD_READ_CAPABILITY_KIND,
@@ -14786,6 +14793,17 @@ impl FunctionLowerer<'_> {
                 return Err(CanonicalLoweringError::UnsupportedExpression("Dir storage receiver"));
             }
             return self.lower_dir_storage(name, token, &arguments[1..]);
+        }
+        if name == "__capop.read_line" && arguments.len() == 1
+            && receiver_kind == witchy_wir::canonical_safewir::CONSOLE_CAPABILITY_KIND
+        {
+            // One host read answers an immutable response; its payload is the
+            // line without its terminator, empty at end of input.
+            let response = self.fresh(ValueType::Capability(witchy_wir::canonical_safewir::CAP_RESPONSE_KIND))?;
+            let import = self.capability_import("console_read_line_at")?;
+            self.push_operation(Operation::HostCall { destinations: vec![response], import,
+                arguments: vec![HostCallArgument::Capability(token)] });
+            return self.lower_response_payload(response).map(Some);
         }
         if matches!(name, "__capop.now" | "__capop.now_monotonic") && arguments.len() == 1
             && receiver_kind == witchy_wir::canonical_safewir::CLOCK_CAPABILITY_KIND
@@ -21979,8 +21997,8 @@ struct HostImports {
 }
 
 /// The canonical capability imports, in catalog order.
-const CAPABILITY_IMPORTS: [&str; 52] =
-    ["dir_exists_at", "dir_write_at", "build_out_write_at", "dir_is_dir_at", "build_read_at", "build_read_response_size", "build_read_response_into", "build_env_at", "build_response_is_some", "build_exec_run", "build_net_fetch", "net_fetch_at", "fetch_send_at", "fetch_response_size", "fetch_response_into", "fetch_only_at", "clock_now", "clock_now_monotonic", "dir_make_dir_at", "secretstore_lookup_at", "crypto_sign_into", "crypto_public_key_into", "dir_create_new_at", "dir_replace_at", "dir_read_bytes_at", "dir_write_bytes_at", "dir_append_bytes_at", "dir_set_executable_at", "dir_rename_at", "dir_read_at", "file_read_at", "dir_list_at", "env_get_at", "net_only_at", "net_deny_at", "dir_subtree_open_at", "dir_read_file_at", "dir_write_file_at", "dir_append_at", "file_write_at", "dir_only_at", "secret_reveal_at", "net_listen_tls_at", "cap_response_status", "cap_response_size", "cap_response_into", "cap_response_flag", "cap_response_take_dir", "cap_response_take_file", "cap_response_take_net", "cap_response_take_socket", "cap_response_take_listener"];
+const CAPABILITY_IMPORTS: [&str; 53] =
+    ["console_read_line_at", "dir_exists_at", "dir_write_at", "build_out_write_at", "dir_is_dir_at", "build_read_at", "build_read_response_size", "build_read_response_into", "build_env_at", "build_response_is_some", "build_exec_run", "build_net_fetch", "net_fetch_at", "fetch_send_at", "fetch_response_size", "fetch_response_into", "fetch_only_at", "clock_now", "clock_now_monotonic", "dir_make_dir_at", "secretstore_lookup_at", "crypto_sign_into", "crypto_public_key_into", "dir_create_new_at", "dir_replace_at", "dir_read_bytes_at", "dir_write_bytes_at", "dir_append_bytes_at", "dir_set_executable_at", "dir_rename_at", "dir_read_at", "file_read_at", "dir_list_at", "env_get_at", "net_only_at", "net_deny_at", "dir_subtree_open_at", "dir_read_file_at", "dir_write_file_at", "dir_append_at", "file_write_at", "dir_only_at", "secret_reveal_at", "net_listen_tls_at", "cap_response_status", "cap_response_size", "cap_response_into", "cap_response_flag", "cap_response_take_dir", "cap_response_take_file", "cap_response_take_net", "cap_response_take_socket", "cap_response_take_listener"];
 
 /// The separator between the names a `dir_list_at` response carries; a file name never
 /// contains it.
@@ -22074,7 +22092,7 @@ fn collect_compiler_imports(module: &witchy_syntax::ast::Module) -> BTreeSet<&'s
 /// `env.get_env`).
 fn is_capability_op(name: &str) -> bool {
     if dir_storage::is_operation(name) { return true; }
-    matches!(name, "__capop.now" | "__capop.now_monotonic" | "__capop.make_dir" | "__capop.only" | "__capop.deny" | "__capop.fetch" | "__capop.send_raw" | "__capop.fetch_build" | "__capop.run_tool" | "__capop.get_build_env" | "__capop.read_build" | "__capop.write_out" | "__capop.read" | "__capop.list" | "__capop.exists" | "__capop.is_dir" | "__capop.write" | "__capop.append" | "__capop.subtree" | "__capop.read_file" | "__capop.write_file" | "__capop.get_env")
+    matches!(name, "__capop.read_line" | "__capop.now" | "__capop.now_monotonic" | "__capop.make_dir" | "__capop.only" | "__capop.deny" | "__capop.fetch" | "__capop.send_raw" | "__capop.fetch_build" | "__capop.run_tool" | "__capop.get_build_env" | "__capop.read_build" | "__capop.write_out" | "__capop.read" | "__capop.list" | "__capop.exists" | "__capop.is_dir" | "__capop.write" | "__capop.append" | "__capop.subtree" | "__capop.read_file" | "__capop.write_file" | "__capop.get_env")
 }
 
 /// The imports the canonical functions' capability operations reach.
@@ -22095,6 +22113,9 @@ fn collect_capability_imports(module: &witchy_syntax::ast::Module, table: &TypeT
                     _ => "",
                 };
                 match (name.as_str(), receiver) {
+                    ("__capop.read_line", "Console") => {
+                        needed.extend(["console_read_line_at", "cap_response_size", "cap_response_into"]);
+                    }
                     ("__capop.now", "Clock") => { needed.insert("clock_now"); }
                     ("__capop.now_monotonic", "Clock") => { needed.insert("clock_now_monotonic"); }
                     ("__capop.make_dir", "Dir") => { needed.extend(["dir_make_dir_at", "cap_response_status", "cap_response_size", "cap_response_into"]); }

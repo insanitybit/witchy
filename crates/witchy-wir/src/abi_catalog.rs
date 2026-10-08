@@ -165,6 +165,7 @@ const PRELUDE_IMPORTS_WAT: &str = r#"  (import "witchy" "print" (func $print (pa
   (import "witchy" "dir_exists_at" (func $dir_exists_at_host (param externref i32 i32) (result externref)))
   (import "witchy" "dir_write_at" (func $dir_write_at_host (param externref i32 i32 i32 i32) (result externref)))
   (import "witchy" "env_get_at" (func $env_get_at_host (param externref i32 i32) (result externref)))
+  (import "witchy" "console_read_line_at" (func $console_read_line_at_host (param externref) (result externref)))
   (import "witchy" "cap_response_status" (func $cap_response_status_host (param externref) (result i32)))
   (import "witchy" "cap_response_size" (func $cap_response_size_host (param externref) (result i32)))
   (import "witchy" "cap_response_into" (func $cap_response_into_host (param externref i32 i32) (result i32)))
@@ -244,7 +245,7 @@ pub const IMPORT_COUNT: usize = 183;
 
 /// Version of the public `"witchy"` host-import contract.
 /// v15: compiler-session-only bounded fresh-name service.
-pub const WITCHY_ABI_VERSION: u32 = 19;
+pub const WITCHY_ABI_VERSION: u32 = 20;
 
 /// The role an import plays at the host boundary. This classification is part
 /// of the public Wasm ABI: it tells embedders which imports grant authority,
@@ -505,7 +506,8 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
         | "dir_exists_at"
         | "dir_is_dir_at"
         | "dir_write_at"
-        | "env_get_at" => C::CapabilityAuthority,
+        | "env_get_at"
+        | "console_read_line_at" => C::CapabilityAuthority,
 
         "args_size" | "user_cap_field_len" => C::LaunchInput,
 
@@ -558,7 +560,7 @@ pub fn abi_import_info(name: &str) -> Option<AbiImportInfo> {
     };
 
     let authorities = match name {
-        "console_read_len" => AUTH_CONSOLE_READ,
+        "console_read_len" | "console_read_line_at" => AUTH_CONSOLE_READ,
         "crypto.sign" | "crypto.public_key" | "crypto_sign_into" | "crypto_public_key_into" | "secretstore_lookup" | "crypto_reveal_len" | "mint_secret"
         | "secret_reveal_at" => AUTH_SECRET,
         "secretstore_lookup_at" => AUTH_SECRET_STORE,

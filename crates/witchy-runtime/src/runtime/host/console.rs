@@ -165,6 +165,7 @@ pub mod canonical_console_tests {
 /// Register `Console[Read]` line input.
 pub(in crate::runtime) fn link_console_read(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "console_read_len", host_console_read_len)?;
+    linker.func_wrap("witchy", witchy_wir::canonical_safewir::CONSOLE_READ_IMPORT_NAMES[0], host_console_read_line_at)?;
     Ok(())
 }
 
@@ -326,6 +327,29 @@ fn host_print(mut caller: Caller<'_, VmState>, ptr: i32, len: i32) -> Result<()>
 }
 
 fn host_console_read_len(mut caller: Caller<'_, VmState>) -> Result<i32> {
+    let line = next_console_line(&mut caller)?;
+    let len = i32::try_from(line.len())
+        .map_err(|_| wasmtime::Error::msg("Console input exceeds the guest ABI size limit"))?;
+    caller.data_mut().pending = Some(line.into_bytes());
+    Ok(len)
+}
+
+/// `console_read_line_at(console) -> response`: `console.read_line()` as one
+/// read under the actual Console token. Linked only with a Console read grant.
+fn host_console_read_line_at(
+    mut caller: Caller<'_, VmState>,
+    token: Option<wasmtime::Rooted<wasmtime::ExternRef>>,
+) -> Result<Option<wasmtime::Rooted<wasmtime::ExternRef>>> {
+    let token = token.ok_or_else(|| wasmtime::Error::msg("missing Console token"))?;
+    require_console_token(&caller, token)?;
+    if !caller.data().caps.console_read { bail!("Console input was not granted"); }
+    let line = next_console_line(&mut caller)?;
+    super::cap_response::respond(&mut caller, 0, line.into_bytes(), None)
+}
+
+/// The next input line without its terminator: from the launch's scripted
+/// input when one was given, else stdin. End of input is an empty line.
+fn next_console_line(caller: &mut Caller<'_, VmState>) -> Result<String> {
     let mut line = match caller.data_mut().console_input.as_mut() {
         Some(lines) => lines.pop_front().unwrap_or_default(),
         None => {
@@ -339,10 +363,7 @@ fn host_console_read_len(mut caller: Caller<'_, VmState>) -> Result<i32> {
     while matches!(line.as_bytes().last(), Some(b'\r' | b'\n')) {
         line.pop();
     }
-    let len = i32::try_from(line.len())
-        .map_err(|_| wasmtime::Error::msg("Console input exceeds the guest ABI size limit"))?;
-    caller.data_mut().pending = Some(line.into_bytes());
-    Ok(len)
+    Ok(line)
 }
 
 fn host_print_int(caller: Caller<'_, VmState>, n: i64) -> Result<()> {

@@ -74,11 +74,12 @@ fn direct_kind(
 ) -> Option<CapabilityKind> {
     let Type::Named(name, arguments) = source.unqualified() else { return None };
     // `Rand` has no compiled representation. Rights markers are accepted only
-    // where the capability model gives the kind a rights vocabulary; `Console`
-    // is represented without them.
+    // where the capability model gives the kind a rights vocabulary. They are
+    // checked statically and never widen, so `Console[Read]` shares the one
+    // Console representation.
     if let Some(kind) = CapabilityKind::from_name(name)
         && kind != CapabilityKind::Rand
-        && (arguments.is_empty() || (!kind.rights().is_empty() && kind != CapabilityKind::Console))
+        && (arguments.is_empty() || !kind.rights().is_empty())
     {
         return Some(kind);
     }
@@ -113,6 +114,8 @@ mod tests {
         assert_eq!(representation(&optional, &definitions), Some(CapabilityRepresentation::Nullable(CapabilityKind::Secret)));
         assert_eq!(representation(&Type::Named("Option".into(), vec![optional]), &definitions), None);
         assert_eq!(representation(&Type::Named("SecretStore".into(), vec![named("Int")]), &definitions), None);
+        let console_read = Type::Named("Console".into(), vec![named("Read")]);
+        assert_eq!(representation(&console_read, &definitions), Some(CapabilityRepresentation::Direct(CapabilityKind::Console)));
     }
 
     #[test]

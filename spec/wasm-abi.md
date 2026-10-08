@@ -74,6 +74,12 @@ write results only to the matching source site and checked destination. The
 browser host links these imports but refuses execution until it can authenticate
 the same admitted worker descriptor.
 
+Version 20 adds canonical `console_read_line_at`: it takes the actual opaque
+Console receiver and answers a capability response whose payload is the next
+input line without its terminator, empty at end of input. It is linked only
+under a Console read grant. `Console[Read]` and `Console[Write]` share the one
+Console token; their rights are checked statically.
+
 Version 14 adds native canonical Net slice adapters. Each fallible Net
 operation is one host call that answers an authenticated Net response:
 `net_connect_at`, `net_listen_at` and `net_resolve_at` take an authenticated Net

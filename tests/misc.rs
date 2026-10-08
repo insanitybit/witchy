@@ -55,6 +55,8 @@ mod let_borrow_value_semantics;
 mod unconstrained_generic_argument;
 #[path = "misc/function_value_tail_cycle.rs"]
 mod function_value_tail_cycle;
+#[path = "misc/console_read_line.rs"]
+mod console_read_line;
 #[path = "misc/guarded_or_pattern_arms.rs"]
 mod guarded_or_pattern_arms;
 #[path = "misc/opt_fresh_constructor_unique.rs"]
