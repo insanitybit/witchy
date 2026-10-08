@@ -117,6 +117,16 @@ use witchy_wir::canonical_safewir::{GcTypeId, closure_owner_contract::{
     SharedReferenceConstructor, SourceConstructor,
 }};
 
+/// Whether result `index` is a trailing `var` replacement lane, one per
+/// write-back parameter after the ordinary results.
+fn is_write_back_lane(signature: &FunctionSignature, index: usize) -> bool {
+    let lanes = signature.contract.parameters.iter().filter(|parameter| matches!(
+        parameter.ownership,
+        ParameterOwnership::WriteBack | ParameterOwnership::UniqueWriteBack
+    )).count();
+    index >= signature.contract.results.len().saturating_sub(lanes)
+}
+
 #[derive(Debug, Clone)]
 struct ClosureValueLayouts {
     linear: HashMap<Type, witchy_wir::layout::LayoutId>,
@@ -11273,7 +11283,11 @@ impl FunctionLowerer<'_> {
                         for (index, destination) in destinations.iter().enumerate() {
                             if !signature.is_some_and(|signature| matches!(signature.contract.results.get(index), Some(ResultContract::Unique { .. }))) {
                                 direct.insert(*destination);
-                                defined.insert(*destination);
+                                // A `var` replacement lane may be promoted to a
+                                // fresh unique token after this body is lowered.
+                                if !signature.is_some_and(|signature| is_write_back_lane(signature, index)) {
+                                    defined.insert(*destination);
+                                }
                             }
                         }
                     }
@@ -11282,7 +11296,11 @@ impl FunctionLowerer<'_> {
                         for (index, destination) in destinations.iter().enumerate() {
                             if !signature.is_some_and(|signature| matches!(signature.contract.results.get(index), Some(ResultContract::Unique { .. }))) {
                                 direct.insert(*destination);
-                                defined.insert(*destination);
+                                // A `var` replacement lane may be promoted to a
+                                // fresh unique token after this body is lowered.
+                                if !signature.is_some_and(|signature| is_write_back_lane(signature, index)) {
+                                    defined.insert(*destination);
+                                }
                             }
                         }
                     }

@@ -59,6 +59,10 @@ mod function_value_tail_cycle;
 mod guarded_or_pattern_arms;
 #[path = "misc/opt_fresh_constructor_unique.rs"]
 mod opt_fresh_constructor_unique;
+#[path = "misc/dyn_var_self_dispatch.rs"]
+mod dyn_var_self_dispatch;
+#[path = "misc/var_call_result_in_aggregate.rs"]
+mod var_call_result_in_aggregate;
 #[path = "misc/sealed_task_handles.rs"]
 mod sealed_task_handles;
 #[path = "misc/url_components.rs"]

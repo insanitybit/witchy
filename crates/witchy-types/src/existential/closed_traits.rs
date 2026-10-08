@@ -18,6 +18,30 @@ fn arm(id: u32, body: Expr) -> MatchArm {
     }
 }
 
+/// `var $self = payload; let $result = adapter($self, ..); place = pack($self); $result`
+fn write_back_body(id: u32, place: Expr, call: Expr) -> Result<Expr, String> {
+    let stmts = vec![
+        Stmt::Let {
+            name: "$closed_trait_self".into(), ty: None, mutable: true,
+            value: Expr::Var("$closed_trait_payload".into()),
+        },
+        Stmt::Let { name: "$closed_trait_result".into(), ty: None, mutable: false, value: call },
+        witchy_syntax::parser::desugar_place_assign(place, ctor(id, Expr::Var("$closed_trait_self".into())))?,
+        Stmt::Expr(Expr::Var("$closed_trait_result".into())),
+    ];
+    Ok(Expr::Block(Block { lines: vec![u32::MAX; stmts.len()], stmts, region: None }))
+}
+
+/// A variable or a field chain over one: reading it twice observes the same
+/// place, and writing it back is a record update with no new specialization.
+fn repeatable_place(expr: &Expr) -> bool {
+    match expr {
+        Expr::Var(_) => true,
+        Expr::Field { base, .. } => repeatable_place(base),
+        _ => false,
+    }
+}
+
 pub(crate) fn prepare(typed: TypedModule, catalog: &WitnessCatalog) -> Result<(TypedModule, bool), String> {
     let mut scope = (*witchy_canonical_source::scope::canonical_scope(typed.module())).clone();
     let functions = typed.module().items.iter().filter_map(|item| match item {
@@ -144,9 +168,18 @@ fn close_expr(expr: &mut Expr, table: &TypeTable, plan: &WitnessPlan) -> Result<
             *expr = ctor(witness.id, *payload.clone());
         }
         Expr::ExistentialCall { receiver, args, ty, owner_trait, method, slot, params, result, conventions } => {
-            if conventions.contains(&Convention::Var) {
-                return Err("closed trait dispatch does not support write-back slots".into());
-            }
+            // A `var self` slot writes the payload back into the receiver's
+            // binding. Other `var` arguments are already caller places and pass
+            // straight through to the adapter's own `var` parameter.
+            // The receiver is read as the scrutinee and written back as a
+            // place, so it must be a place whose evaluation has no effects.
+            let write_back = match conventions.first() {
+                Some(Convention::Var) if repeatable_place(receiver) => Some(receiver.as_ref().clone()),
+                Some(Convention::Var) => {
+                    return Err("closed trait `var self` dispatch needs a variable or field receiver; copy an element into a `var`, call it, and store it back".into());
+                }
+                _ => None,
+            };
             visit_expr_mut(receiver, &mut |expr| close_expr(expr, table, plan))?;
             for argument in args.iter_mut() {
                 visit_expr_mut(argument, &mut |expr| close_expr(expr, table, plan))?;
@@ -162,9 +195,14 @@ fn close_expr(expr: &mut Expr, table: &TypeTable, plan: &WitnessPlan) -> Result<
                 {
                     return Err("closed trait dispatch changed its checked slot contract".into());
                 }
-                let mut arguments = vec![Expr::Var("$closed_trait_payload".into())];
+                let payload = if write_back.is_some() { "$closed_trait_self" } else { "$closed_trait_payload" };
+                let mut arguments = vec![Expr::Var(payload.into())];
                 arguments.extend(args.iter().cloned());
-                arms.push(arm(witness.id, Expr::Call { name: checked.adapter.clone(), args: arguments }));
+                let call = Expr::Call { name: checked.adapter.clone(), args: arguments };
+                arms.push(arm(witness.id, match &write_back {
+                    Some(place) => write_back_body(witness.id, place.clone(), call)?,
+                    None => call,
+                }));
             }
             if arms.is_empty() { return Err("closed trait dispatch has no concrete witnesses".into()); }
             *expr = Expr::Match { scrutinee: receiver.clone(), arms };
