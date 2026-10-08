@@ -321,3 +321,7 @@ debug-assertions = false
 # reproducible.
 [profile.dev.package.aws-lc-sys]
 debug = false
+
+[patch.crates-io]
+# RFC-0179: Wasmtime 49 bounds checks with range-based elision; see vendor/README.md.
+wasmtime-internal-cranelift = { path = "vendor/wasmtime-internal-cranelift" }
