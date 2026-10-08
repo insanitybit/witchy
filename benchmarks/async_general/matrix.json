@@ -75,8 +75,8 @@
   {
     "name": "cancel_blocked",
     "kind": "cancellation",
-    "shape": "cancel a String producer parked behind full queue; retain seeded FIFO",
-    "validation": "winner and seeded payload; checksum counts successful cancellation rounds",
+    "shape": "race cancellation after String preparation behind full queue; retain seeded FIFO",
+    "validation": "winner and seeded payload; untimed preparation trace; actual parked-state equivalence unproved",
     "timing": "inclusive channel setup, blocked worker activation, cancellation, completion, and seeded receive"
   }
 ]

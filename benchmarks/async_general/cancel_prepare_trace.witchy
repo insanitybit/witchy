@@ -1,0 +1,24 @@
+from chan import Sender
+import task
+
+fn payload(console: Console, index: Int) -> String:
+    let text = "payload ${index}"
+    console.print("prepared ${text}")
+    text
+
+async fn blocked(console: Console, tx: Sender(String), start: Int) -> Int:
+    var i = start
+    while i < start + 64:
+        chan.send(tx, payload(console, i)).await
+        console.print("resumed ${i}")
+        i = i + 1
+    9
+
+async fn main(console: Console):
+    let (tx, rx) = chan.channel(1).await
+    chan.send(tx, "seed").await
+    let winner = chan.race(blocked(console, tx, 7), task.done(-1)).await
+    console.print("winner ${winner}")
+    match chan.recv(rx).await:
+        Some(text) -> console.print("retained ${text}")
+        None -> console.print("missing seed")

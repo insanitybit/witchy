@@ -1,9 +1,9 @@
 from chan import Sender
 import task
 
-async fn blocked(tx: Sender(String)) -> Int:
-    var i = 0
-    while i < 64:
+async fn blocked(tx: Sender(String), start: Int) -> Int:
+    var i = start
+    while i < start + 64:
         chan.send(tx, "payload ${i}").await
         i = i + 1
     9
@@ -15,7 +15,7 @@ async fn main(console: Console, clock: Clock):
     while i < __MESSAGES__:
         let (tx, rx) = chan.channel(1).await
         chan.send(tx, "seed").await
-        match chan.race(blocked(tx), task.done(-1)).await:
+        match chan.race(blocked(tx, i), task.done(-1)).await:
             Some(value) ->
                 if value != -1:
                     valid = false
