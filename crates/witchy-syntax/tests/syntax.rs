@@ -27,3 +27,7 @@ mod source_check;
 mod type_resolve;
 #[path = "syntax/compiler_session.rs"]
 mod compiler_session;
+
+use witchy_syntax::ast;
+#[path = "syntax/async_local_type_hints.rs"]
+mod async_local_type_hints;
