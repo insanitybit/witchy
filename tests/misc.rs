@@ -57,6 +57,8 @@ mod unconstrained_generic_argument;
 mod function_value_tail_cycle;
 #[path = "misc/guarded_or_pattern_arms.rs"]
 mod guarded_or_pattern_arms;
+#[path = "misc/opt_fresh_constructor_unique.rs"]
+mod opt_fresh_constructor_unique;
 #[path = "misc/sealed_task_handles.rs"]
 mod sealed_task_handles;
 #[path = "misc/url_components.rs"]

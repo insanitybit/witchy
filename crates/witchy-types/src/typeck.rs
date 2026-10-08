@@ -7262,7 +7262,7 @@ impl Checker {
                                 .copied()
                                 .unwrap_or(false);
                         if unique_requested {
-                            if !self.expression_carries_unique_storage(arg, pty) {
+                            if !self.expression_carries_unique_storage(arg, pty) && !self.expression_establishes_unique_storage(arg, pty) {
                                 return terr(format!(
                                     "argument {} to function value `{display}` cannot repair ordinary storage into a `unique` parameter in `mode opt`; pass an existing unique owner",
                                     index + 1
@@ -7700,8 +7700,12 @@ impl Checker {
                         .copied()
                         .unwrap_or(false);
                 if unique_requested {
+                    // An existing owner carries unique storage; a value formed
+                    // at the call (a constructor, literal, or fresh allocator
+                    // result) establishes it, as for a `unique` local.
                     if !params.get(i).is_some_and(|parameter| {
                         self.expression_carries_unique_storage(arg, parameter)
+                            || self.expression_establishes_unique_storage(arg, parameter)
                     }) {
                         return terr(format!(
                             "argument {} to `{name}` cannot repair ordinary storage into a `unique` parameter in `mode opt`; pass an existing unique owner",
@@ -9216,7 +9220,7 @@ impl Checker {
                                 .copied()
                                 .unwrap_or(false);
                         if unique_requested {
-                            if !self.expression_carries_unique_storage(arg, pty) {
+                            if !self.expression_carries_unique_storage(arg, pty) && !self.expression_establishes_unique_storage(arg, pty) {
                                 return terr(format!(
                                     "argument {} to function value cannot repair ordinary storage into a `unique` parameter in `mode opt`; pass an existing unique owner",
                                     index + 1

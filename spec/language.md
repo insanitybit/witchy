@@ -753,8 +753,11 @@ contract, not a semantic restriction in normal mode and not a promise for every
 function returning `unique`. No `fip` keyword or attribute exists; the ownership
 signature, direct recursion, and `mode opt` state the contract.
 
-The canonical SafeWIR route currently defers this stronger `own unique`
-resource contract and rejects it rather than erasing the qualifier. Ordinary
+The canonical SafeWIR route checks the FIP shape above and admits entry only
+from a fresh owner: a constructor or literal, passed inline or first bound to
+a `unique` local. An ordinary alias is rejected rather than having its
+qualifier erased. The allocation-free bound itself is not yet established on
+this route. Ordinary
 `own T -> T` remains supported: it transfers ownership through the call, and a
 proper tail edge forwards that owned value with no residual caller cleanup. An
 outer `var unique T` parameter remains supported only through its separately

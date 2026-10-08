@@ -583,12 +583,10 @@ fn main(console: Console):
         )
         .expect_err("mode opt must reject non-tail FIP recursion");
 
-        // The canonical route defers the `own unique` entry contract
-        // (spec/language.md, "Functional-in-place state kernels"): the call
-        // that would enter it is refused fail-closed before the tail-position
-        // judgment runs, so the program still cannot compile.
+        // A fresh constructor enters the `own unique` parameter, so the
+        // refusal is the tail-position judgment itself.
         assert!(
-            error.contains("`unique` parameter in `mode opt`"),
+            error.contains("the recursive call is not in tail position"),
             "{error}"
         );
     }

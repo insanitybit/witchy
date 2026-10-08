@@ -4166,11 +4166,14 @@ impl<'facts, 'module> NoCopyWalker<'facts, 'module> {
             | Expr::ExistentialPack { expr, .. }
             | Expr::ExistentialUpcast { expr, .. }
             | Expr::Field { base: expr, .. } => self.expr(expr, stmt, env),
+            // A freshly formed aggregate is its only reference: bound to a
+            // local it is the same fresh owner `record_call_misses` accepts
+            // when it is passed inline.
             Expr::Tuple(items) | Expr::Ctor { args: items, .. } | Expr::AnonCtor { args: items, .. } => {
                 for item in items {
                     let _ = self.expr(item, stmt, env);
                 }
-                NoCopyProof::Unavailable("the aggregate does not carry an ownership-capacity token".to_string())
+                NoCopyProof::Available
             }
             Expr::Apply { func, args } => {
                 let callable = self.expr(func, stmt, env);
