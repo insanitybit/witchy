@@ -670,7 +670,11 @@ impl<'a> PlanEmitter<'a> {
         if !self.loops.is_empty() && stop.is_none_or(|target| self.escape_label(target).is_some()) {
             let order = forward_cfg::region(start, &self.successors_by_block, &self.escape_targets())
                 .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
-            if let Some(order) = order { return self.emit_forward(&order); }
+            // A region already entered once (a copied tail) is emitted block
+            // by block, where a second entry takes the bounded copy.
+            if let Some(order) = order && !order.iter().any(|block| self.emitted.contains(block)) {
+                return self.emit_forward(&order);
+            }
         }
         if !self.emitted.insert(start) {
             // Match the encoder's bounded shared-continuation clone exactly.

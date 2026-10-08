@@ -116,9 +116,24 @@ pub(super) fn bypasses_join_continuation(
     // other shared continuation block is a real bypass.
     continuation.retain(|block| edges.get(block).is_some_and(|successors| !successors.is_empty()));
     if continuation.is_empty() { return Ok(false); }
-    Ok(walk(then_target, Some(join))?.iter().any(|block| continuation.contains(block))
-        || walk(else_target, Some(join))?.iter().any(|block| continuation.contains(block)))
+    let mut bypassed = walk(then_target, Some(join))?;
+    bypassed.extend(walk(else_target, Some(join))?);
+    bypassed.retain(|block| continuation.contains(block));
+    // A small acyclic tail reached around the join (a guarded arm jumping to
+    // the loop latch past a shared or-pattern body) is copied the same way,
+    // provided it never leads back to the join.
+    let mut copied = BTreeSet::new();
+    for block in &bypassed {
+        match region(*block, edges, boundaries)? {
+            Some(order) if !order.contains(&join) => copied.extend(order),
+            _ => return Ok(true),
+        }
+    }
+    Ok(copied.len() > COPIED_TAIL_BLOCKS)
 }
+
+/// The largest continuation a bypassing branch may copy instead of sharing.
+const COPIED_TAIL_BLOCKS: usize = 8;
 
 /// Permit a bounded clone of an already emitted acyclic path when two nested
 /// branch regions share only part of a continuation. Both planner and encoder

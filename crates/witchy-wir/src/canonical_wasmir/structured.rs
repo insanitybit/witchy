@@ -945,7 +945,11 @@ impl StructuredEmitter<'_> {
                 .map_err(|_| EncodeError::Lowering(LoweringError::UnsupportedControlFlow {
                     function: self.source_function.id, operation: "invalid forward loop region",
                 }))?;
-            if let Some(order) = order { return self.emit_forward(&order); }
+            // A region already entered once (a copied tail) is emitted block
+            // by block, where a second entry takes the bounded copy.
+            if let Some(order) = order && !order.iter().any(|block| self.emitted.contains(block)) {
+                return self.emit_forward(&order);
+            }
         }
         if !self.emitted.insert(start) {
             // A shared continuation may be entered from two nested branch
