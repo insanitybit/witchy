@@ -42,6 +42,14 @@ fn a_list_captured_inside_the_loop_that_pushes_it_compiles_and_keeps_snapshots()
     assert_eq!(out, ["9 4"]);
 }
 
+/// The same loop inside a function that also makes a proper tail call:
+/// lowering it a second time must not see the first attempt's tail sites.
+#[test]
+fn a_relowered_loop_keeps_its_function_proper_tail_call() {
+    let out = output("fn rounds(n: Int, acc: Int) -> Int:\n    if n == 0:\n        return acc\n    var fs = [1]\n    var i = 0\n    var total = 0\n    while i < 2:\n        fs.push(2)\n        let g = fn(x: Int) -> Int: fs.length() + x\n        total = total + g(0)\n        i = i + 1\n    rounds(n - 1, acc + total)\n\nfn main(console: Console):\n    console.print(\"${rounds(100000, 0)}\")\n");
+    assert_eq!(out, ["500000"]);
+}
+
 #[test]
 fn a_caller_alias_keeps_its_list_after_a_var_parameter_appends() {
     let out = output("fn grow(var xs: List(String)):\n    xs.push(\"g\")\n\nfn main(console: Console):\n    var xs = [\"a\"]\n    xs.push(\"b\")\n    let kept = xs\n    grow(xs)\n    console.print(\"${kept} ${xs}\")\n");

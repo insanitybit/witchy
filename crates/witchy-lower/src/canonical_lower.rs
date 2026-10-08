@@ -4241,9 +4241,14 @@ fn lower_function(
 ) -> Result<Function, CanonicalLoweringError> {
     let mut forced = BTreeSet::new();
     loop {
+        // A discarded attempt's tail-site locations name its own blocks.
+        let known_sites = proper_tail_locations.keys().copied().collect::<BTreeSet<_>>();
         match lower_function_attempt(&forced, function, body, id, item, opt_mode, lambda_path.clone(), lambda_names, signature, functions, forwarded_dict_intrinsics, direct_shared_alias_callees, checked_parameter_conventions, signatures, call_tables, tail_manifest, proper_tail_locations, type_table, checked_module, access_facts, loan_facts, view_facts, dictionary_comparators, dictionary_equivalents, layout_bundle, layouts, string_data_ids, host_imports, packed_records, definitions, closures, environment)? {
             LoweringAttempt::Lowered(function) => return Ok(function),
-            LoweringAttempt::Retry(names) => forced.extend(names),
+            LoweringAttempt::Retry(names) => {
+                proper_tail_locations.retain(|site, _| known_sites.contains(site));
+                forced.extend(names);
+            }
         }
     }
 }
@@ -11227,7 +11232,9 @@ impl FunctionLowerer<'_> {
                     return None;
                 }
                 let is_string = Some(self.values[&object]) == string.map(ValueType::Ref);
-                if self.forced_shared_lanes.contains(name) && self.carries_token(object) {
+                if self.forced_shared_lanes.contains(name) && rebound.pushed.contains(name)
+                    && self.carries_token(object)
+                {
                     return Some(Ownership::Shared);
                 }
                 if !is_string && !fixed_layout && mark_lists && !self.known_shared_value(object) {
