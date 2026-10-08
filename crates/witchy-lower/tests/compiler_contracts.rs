@@ -21,3 +21,6 @@ fn try_checked(
 
 #[path = "compiler_contracts/reference_carrier_repros.rs"]
 mod reference_carrier_repros;
+
+#[path = "compiler_contracts/copy_cliff_callbacks.rs"]
+mod copy_cliff_callbacks;

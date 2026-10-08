@@ -1157,13 +1157,22 @@ fn analyze_with_calls(
     summaries: &Summaries,
     calls: Option<CheckedCallContext<'_, '_>>,
 ) -> Facts {
+    analyze_with_accumulator_calls(body, summaries, calls, calls)
+}
+
+fn analyze_with_accumulator_calls(
+    body: &Block,
+    summaries: &Summaries,
+    calls: Option<CheckedCallContext<'_, '_>>,
+    accumulator_calls: Option<CheckedCallContext<'_, '_>>,
+) -> Facts {
     // Pass A: accumulators + per-loop self-assign site sets (for cliffs).
     let mut accs = HashSet::new();
     let mut loop_sites: HashMap<usize, HashSet<String>> = HashMap::new();
     collect_accumulators(
         body,
         summaries,
-        calls,
+        accumulator_calls,
         &mut accs,
         &mut Vec::new(),
         &mut loop_sites,
@@ -4732,12 +4741,23 @@ fn module_no_copy_misses_with_access(
 }
 
 pub fn module_cliffs(module: &Module) -> Vec<(String, Cliff)> {
+    module_cliffs_with_access(module, None)
+}
+
+pub fn checked_module_cliffs(typed: &witchy_types::typeck::TypedModule) -> Result<Vec<(String, Cliff)>, witchy_types::typeck::CheckedAccessFactsError> {
+    Ok(module_cliffs_with_access(typed.module(), Some(typed.access_facts()?)))
+}
+
+fn module_cliffs_with_access(module: &Module, access: Option<&witchy_types::access::CheckedAccessFacts>) -> Vec<(String, Cliff)> {
     let summaries = Summaries::of_module(module);
+    // A write-back callback is not evidence that a fresh local persists across loop iterations.
+    let facts = |body: &Block| access.map_or_else(|| analyze(body, &summaries),
+        |access| analyze_with_accumulator_calls(body, &summaries, Some(CheckedCallContext { module, access }), None));
     let mut out = Vec::new();
     for item in &module.items {
         match item {
             Item::Function(f) => {
-                for c in analyze(&f.body, &summaries).cliffs {
+                for c in facts(&f.body).cliffs {
                     out.push((f.name.clone(), c));
                 }
             }
@@ -4747,7 +4767,7 @@ pub fn module_cliffs(module: &Module) -> Vec<(String, Cliff)> {
             // generated implementation symbol the aliases target.
             Item::Impl(im) if im.trait_name.is_none() => {
                 for f in &im.methods {
-                    for c in analyze(&f.body, &summaries).cliffs {
+                    for c in facts(&f.body).cliffs {
                         out.push((format!("{}__{}", im.type_name, f.name), c));
                     }
                 }

@@ -190,7 +190,9 @@ use crate::{codegen, interpreter, parser};
         let checked = witchy::resolve_std_only_checked(&source)
             .expect("the complete bundled std graph must type-check");
 
-        let offenders = witchy_lower::analysis::module_cliffs(checked.module())
+        let offenders = witchy_lower::analysis::checked_module_cliffs(
+            checked.canonical_source().expect("canonical std source").typed_module(),
+        ).expect("checked std call access facts")
             .into_iter()
             .map(|(function, cliff)| {
                 format!(
