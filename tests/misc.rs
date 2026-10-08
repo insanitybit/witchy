@@ -61,6 +61,8 @@ mod console_read_line;
 mod guarded_or_pattern_arms;
 #[path = "misc/reference_list_append_aliases.rs"]
 mod reference_list_append_aliases;
+#[path = "misc/string_storage_move.rs"]
+mod string_storage_move;
 #[path = "misc/unit_equality.rs"]
 mod unit_equality;
 #[path = "misc/opt_fresh_constructor_unique.rs"]

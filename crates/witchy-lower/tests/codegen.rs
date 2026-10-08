@@ -260,3 +260,5 @@ mod tests {
 mod canonical_layouts;
 #[path = "codegen/canonical_pipeline.rs"]
 mod canonical_pipeline;
+#[path = "codegen/storage_move.rs"]
+mod storage_move;
