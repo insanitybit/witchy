@@ -1854,6 +1854,13 @@ impl FunctionLowerer<'_> {
                 return Err(CanonicalLoweringError::UnsupportedExpression("detached field write-back type"));
             }
             if place.detached_affine_field {
+                // The slot holds a uniquely owned child: a replacement that
+                // may be shared (an ordinary call result) is copied first.
+                let replacement = if self.known_shared_value(replacement) {
+                    let field = shape.fields[*index].clone();
+                    let inner = match &field { Type::Qualified(TypeQual::Unique, inner) => inner.as_ref().clone(), other => other.clone() };
+                    self.owned_for_storage(replacement, &inner)?
+                } else { replacement };
                 self.push_operation(Operation::Store {
                     place: witchy_wir::canonical_safewir::Place::projected(
                         current,

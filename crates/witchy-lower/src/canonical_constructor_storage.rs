@@ -17,6 +17,16 @@ impl FunctionLowerer<'_> {
             .filter(|fields| fields.len() == arguments.len())
             .ok_or(CanonicalLoweringError::UnsupportedExpression("checked aggregate payload arity"))?;
         arguments.iter().zip(fields).map(|(expression, field)| {
+            // A unique field initialized from a named place that stays
+            // readable gets its own copy (normal mode establishes `unique` by
+            // copying); `move x` and a fresh value transfer their token.
+            if let Type::Qualified(TypeQual::Unique, inner) = field
+                && witchy_canonical_source::storage::affine_storage_shape(field, self.definitions).is_some()
+                && write_back::source_place_root(expression).is_some()
+            {
+                let value = self.lower_expr(expression)?;
+                return self.owned_for_storage(value, inner);
+            }
             self.lower_expr_for_storage(expression, Some(field))
         }).collect()
     }

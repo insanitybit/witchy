@@ -46,3 +46,9 @@ impl Bag:\n    pub fn add(var self: unique Bag, x: Int):\n        self.items.pus
 fn main(console: Console):\n    var b = Bag([])\n    b.add(5)\n    b.add(6)\n    console.print(\"${b.items.length()} ${b.items.at(1)}\")\n");
     assert_eq!(out, ["2 6"]);
 }
+
+#[test]
+fn a_borrowed_rebuild_of_a_unique_field_is_stored_as_its_own_copy() {
+    let out = output("type Bag:\n    items: unique List(Int)\n\nfn doubled(let xs: List(Int)) -> List(Int):\n    xs.map(fn(x: Int) -> Int: x * 2)\n\nimpl Bag:\n    pub fn double(var self):\n        self.items = doubled(self.items)\n\nfn main(console: Console):\n    var b = Bag([1, 2])\n    b.double()\n    b.double()\n    console.print(\"${b.items.length()} ${b.items.at(1)}\")\n");
+    assert_eq!(out, ["2 8"]);
+}

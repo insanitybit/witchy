@@ -13454,16 +13454,6 @@ impl FunctionLowerer<'_> {
         declared: Option<&Type>,
     ) -> Result<ValueId, CanonicalLoweringError> {
         let Some(declared) = declared else { return self.lower_expr(expression) };
-        // A unique field initialized from a named place that stays readable
-        // gets its own copy (normal mode establishes `unique` by copying);
-        // `move x` and a fresh value transfer their token.
-        if let Type::Qualified(TypeQual::Unique, inner) = declared
-            && witchy_canonical_source::storage::affine_storage_shape(declared, self.definitions).is_some()
-            && source_place_root(expression).is_some()
-        {
-            let value = self.lower_expr(expression)?;
-            return self.owned_for_storage(value, inner);
-        }
         if let Type::Qualified(TypeQual::Unique, inner) = declared
             && matches!(StoragePlan::classify(declared, self.definitions, |_| Some(0)), StoragePlan::MoveOnlyOwned(_))
             && witchy_canonical_source::storage::affine_storage_shape(inner, self.definitions).is_some()

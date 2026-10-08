@@ -375,9 +375,12 @@ impl<'a> MemoryChecker<'a> {
                 || arguments.iter().filter(|argument| matches!(argument,
                     CallArgument::Value(value) if *value == borrowed)).count() != 1
                 || arguments.iter().any(|argument| matches!(argument,
+                    // Every enclosing parent counts: a callee given the child
+                    // and any ancestor could release the child under it.
                     CallArgument::Value(value) | CallArgument::Move(value)
                         if self.same_allocation(*value, parent) || self.state.pending_affine_field_borrow.iter()
-                            .any(|(ancestor, _)| value == ancestor && *value != borrowed)))
+                            .any(|(ancestor, enclosing)| (value == ancestor && *value != borrowed)
+                                || self.same_allocation(*value, *enclosing))))
                 || !results.iter().all(|result| matches!(result,
                     ResultContract::Value(ValueType::Int | ValueType::Float | ValueType::Bool
                         | ValueType::Unit | ValueType::Size | ValueType::V128)))

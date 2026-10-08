@@ -827,6 +827,13 @@ impl<'a> MemoryChecker<'a> {
         // obligations. An incoming edge must not erase a live affine token.
         for (state, other) in [(existing, incoming), (incoming, existing)] {
             for (value, object) in &state.objects {
+                // A field borrow taken on one edge only holds no token; the
+                // join retires it like any borrow the edges disagree on.
+                if state.pending_affine_field_borrow.iter().any(|(borrowed, _)| borrowed == value)
+                    && !other.objects.contains_key(value)
+                {
+                    continue;
+                }
                 if object.ownership != Ownership::Consumed
                     && (object.allocation_class == Some(AllocationClass::ReferenceCounted)
                         || object.shared_immutable)
