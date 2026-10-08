@@ -65,6 +65,8 @@ mod reference_list_append_aliases;
 mod string_storage_move;
 #[path = "misc/unit_dict_slots.rs"]
 mod unit_dict_slots;
+#[path = "misc/capture_free_closures.rs"]
+mod capture_free_closures;
 #[path = "misc/unit_equality.rs"]
 mod unit_equality;
 #[path = "misc/opt_fresh_constructor_unique.rs"]

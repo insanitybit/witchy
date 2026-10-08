@@ -530,7 +530,7 @@ impl FunctionLowerer<'_> {
                 let (dict, key_type, value_type) = self.lower_dict_table_operand(operand)?;
                 let key = self.lower_expr(key)?;
                 let default = self.lower_expr(default)?;
-                let callback = self.lower_expr(callback)?;
+                let callback = self.lower_read_only_value(callback)?;
                 self.lower_dict_update_table(
                     dict, &key_type, &value_type, key, default, callback,
                 )

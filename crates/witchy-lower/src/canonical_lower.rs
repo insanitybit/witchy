@@ -4333,6 +4333,7 @@ fn lower_function_attempt(
         known_lambda_values: HashMap::new(),
         capture_free_closures: HashMap::new(),
         loop_depth: 0,
+        read_only_lambda: None,
         binding_scopes: vec![HashMap::new()],
         string_lengths: HashMap::new(),
         opaque_tags: HashMap::new(),
@@ -5112,6 +5113,9 @@ struct FunctionLowerer<'a> {
     capture_free_closures: HashMap<(FunctionId, i64), ValueId>,
     /// How many loops enclose the expression being lowered.
     loop_depth: usize,
+    /// The lambda expression a consumer will only read (a shared call
+    /// argument, an inline callback): it may share one closure record.
+    read_only_lambda: Option<*const Expr>,
     /// Declarations in each active lexical block. A declaration may shadow
     /// an outer binding, while assignments to other outer names survive the
     /// block.
@@ -12218,10 +12222,20 @@ impl FunctionLowerer<'_> {
         Ok(object)
     }
 
+    /// Lower `expression` for a consumer that only reads the value, so a
+    /// capture-free lambda there may be a shared token.
+    pub(super) fn lower_read_only_value(&mut self, expression: &Expr) -> Result<ValueId, CanonicalLoweringError> {
+        let previous = self.read_only_lambda.replace(std::ptr::from_ref(expression));
+        let lowered = self.lower_expr(expression);
+        self.read_only_lambda = previous;
+        lowered
+    }
+
     /// A shared token of the capture-free closure for `function` evaluated
-    /// inside a loop: the record is allocated once, in the entry block that
-    /// dominates every use, rather than on every iteration. A lambda outside
-    /// any loop keeps its own allocation, so a cold path costs nothing.
+    /// inside a loop by a read-only consumer: the record is allocated once,
+    /// in the entry block that dominates every use, rather than on every
+    /// iteration. A lambda outside any loop keeps its own allocation, so a
+    /// cold path costs nothing; a lambda stored or moved stays fresh.
     fn capture_free_closure(
         &mut self,
         layout: witchy_wir::layout::LayoutId,
@@ -12482,6 +12496,11 @@ impl FunctionLowerer<'_> {
                     };
                     write_backs.push(place);
                     value
+                } else if matches!(argument, Expr::Lambda { .. })
+                    && matches!(contract.ownership, ParameterOwnership::Shared | ParameterOwnership::Value)
+                    && matches!(conventions[parameter], Convention::Let | Convention::Borrow)
+                {
+                    self.lower_read_only_value(argument)?
                 } else {
                     self.lower_expr_for_storage(argument, declared_storage)?
                 };
@@ -13318,7 +13337,9 @@ impl FunctionLowerer<'_> {
                 let key = crate::canonical_layouts::canonical_closure_key(&fn_type, self.definitions);
                 let family = self.closures.families.get(&key)
                     .ok_or_else(|| CanonicalLoweringError::MissingLayout(fn_type.clone()))?;
-                if values.is_empty() && family.owner_type.is_none() && self.loop_depth > 0 {
+                if values.is_empty() && family.owner_type.is_none() && self.loop_depth > 0
+                    && self.read_only_lambda == Some(std::ptr::from_ref(expression))
+                {
                     return self.capture_free_closure(layout, signature, function, family, environment.tag);
                 }
                 let closure = self.alloc_closure(layout, signature, function, family, environment.tag, values)?;
