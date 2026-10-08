@@ -48,6 +48,7 @@ mod checked_scalar_region;
 mod scalar_region_recipe;
 mod scalar_region_emitter;
 mod scalar_region_preparation;
+mod closed_region_preparation;
 pub mod std_pruning;
 /// Generated census of std names the compiler spells; public only so the
 /// integration test `std_pruning::tests::pruning_roots_cover_every_compiler_std_literal`

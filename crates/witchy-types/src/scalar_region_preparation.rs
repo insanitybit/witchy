@@ -12,6 +12,7 @@ pub(crate) struct Preparation {
 }
 
 pub(crate) struct BoundReceipt {
+    pub kind: witchy_canonical_source::scalar_region::RegionKind,
     pub root: u32,
     pub companion: u32,
     pub graph_digest: [u8; 32],
@@ -19,7 +20,7 @@ pub(crate) struct BoundReceipt {
     pub root_digest: [u8; 32],
     pub awaits: Vec<u32>,
     pub coordinates: Vec<(String, u32, Option<u32>, u32)>,
-    pub receive: (String, u32, Option<u32>, u32, u32, u32),
+    pub receive: Option<(String, u32, Option<u32>, u32, u32, u32)>,
 }
 
 fn root_recipe(module: &witchy_syntax::ast::Module) -> Option<&Expr> {
@@ -86,12 +87,12 @@ impl Preparation {
         let [control] = receiver.controls.as_slice() else { return Err("scalar receipt lost implicit receive control".into()) };
         let bindings = receiver.bindings_read_by(control.selector)?;
         let [endpoint] = bindings.as_slice() else { return Err("implicit scalar receive has ambiguous endpoint binding".into()) };
-        Ok(BoundReceipt { root, companion: companion_item,
+        Ok(BoundReceipt { kind: witchy_canonical_source::scalar_region::RegionKind::ScalarScope, root, companion: companion_item,
             graph_digest: *blake3::hash(format!("{rederived:?}").as_bytes()).as_bytes(),
             companion_digest: *blake3::hash(format!("{companion:?}").as_bytes()).as_bytes(), awaits: covered,
             root_digest: *blake3::hash(format!("{root_function:?}").as_bytes()).as_bytes(),
-            coordinates, receive: (receiver.callable.module.clone(), receiver.callable.surface.item,
-                receiver.callable.surface.method, control.id.0, control.selector.0, endpoint.0) })
+            coordinates, receive: Some((receiver.callable.module.clone(), receiver.callable.surface.item,
+                receiver.callable.surface.method, control.id.0, control.selector.0, endpoint.0)) })
     }
     pub(crate) fn verify(&self, checked: &CheckedModule, candidate: &witchy_syntax::ast::Module,
         catalog: &RuntimeDeclarationCatalog) -> Result<(), String> {

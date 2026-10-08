@@ -1339,7 +1339,7 @@ fn attach_canonical_source(
     dynamic_runtime_plan: Option<RuntimeTypePlan>,
     precompiled_declarations: PrecompiledDeclarationEnvironment,
     runtime_catalog: Option<&RuntimeDeclarationCatalog>,
-    scalar_preparation: Option<crate::scalar_region_preparation::Preparation>,
+    scalar_preparation: Option<crate::closed_region_preparation::Preparation>,
 ) -> Result<CheckedModule, PipelineError> {
     let deferred_task_role = checked_deferred_task_role(typed.module(), runtime_catalog);
     let final_behavior = crate::task_provenance::checked_final_execution_contracts(
@@ -1373,7 +1373,7 @@ fn attach_canonical_source(
             runtime_catalog.ok_or("scalar region lost authenticated declarations")?))
         .transpose().map_err(|message| PipelineError::Type(TypeError { message }))?;
     let scalar_region = scalar_region.map(|bound|
-        witchy_canonical_source::scalar_region::ScalarRegionReceipt::from_checked_frontend(bound.root,
+        witchy_canonical_source::scalar_region::ScalarRegionReceipt::from_checked_frontend(bound.kind, bound.root,
             bound.companion, bound.graph_digest, bound.companion_digest, bound.root_digest, bound.awaits, bound.coordinates, bound.receive));
     if scalar_region.as_ref().is_some_and(|receipt| !receipt.validate(typed.module(), &task_awaits)) {
         return Err(PipelineError::Type(TypeError { message: "scalar receipt does not bind final checked source".into() }));
@@ -2004,7 +2004,7 @@ fn finish_canonical_source(
     let runtime_catalog = checked.module_owners.as_ref()
         .map(|_| checked.runtime_declaration_catalog()).transpose()?;
     let (typed_source, scalar_preparation) = if let Some(catalog) = runtime_catalog.as_ref() {
-        crate::scalar_region_preparation::prepare(&checked, typed_source, catalog)
+        crate::closed_region_preparation::prepare(&checked, typed_source, catalog)
             .map_err(|message| PipelineError::Type(TypeError { message }))?
     } else { (typed_source, None) };
     let (mut typed_source, mut preparation) =
@@ -2251,10 +2251,10 @@ pub fn assert_closed_scalar_receipt_rejects_forgery(checked: &CheckedModule) {
     for graph in [[1; 32], [2; 32]] {
         for selector in [0, u32::MAX] {
             let forged = witchy_canonical_source::scalar_region::ScalarRegionReceipt::from_checked_frontend(
-                receipt.root_item(), receipt.companion_item(), graph,
+                receipt.kind(), receipt.root_item(), receipt.companion_item(), graph,
                 function_digest(receipt.companion_item()), function_digest(receipt.root_item()),
                 receipt.covered_awaits().to_vec(), coordinates.clone(),
-                ("invented".into(), 0, None, 0, selector, 0),
+                Some(("invented".into(), 0, None, 0, selector, 0)),
             );
             assert!(digests.insert(forged.digest()));
             assert!(!forged.validate_checked_source(view.module(), view.task_await_proofs(), view.source_witness()));

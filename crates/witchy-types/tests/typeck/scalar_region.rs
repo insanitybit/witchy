@@ -29,6 +29,7 @@ fn closed_scalar_receipt_preserves_explicit_and_implicit_source_coverage() {
         assert_eq!(view.task_await_proofs().len(), 3);
         assert_eq!(view.scalar_region().is_some(), witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::ClosureElide));
         if let Some(receipt) = view.scalar_region() {
+            assert_eq!(receipt.kind(), witchy_canonical_source::scalar_region::RegionKind::ScalarScope);
             assert_eq!(receipt.covered_awaits().len(), 3);
             assert!(receipt.validate(view.module(), view.task_await_proofs()));
             assert_eq!(view.source_witness().scalar_region_manifest_digest(), receipt.digest());
