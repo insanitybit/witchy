@@ -1,0 +1,75 @@
+[
+  {
+    "name": "packet2",
+    "kind": "packet",
+    "fields": 2,
+    "shape": "closed control",
+    "validation": "independent checksum; original plain-fold loop shape",
+    "timing": "inclusive channel creation, task construction, scheduling, and fold completion"
+  },
+  {
+    "name": "packet3",
+    "kind": "packet",
+    "fields": 3,
+    "shape": "wider nominal payload",
+    "validation": "independent checksum; original plain-fold loop shape",
+    "timing": "inclusive channel creation, task construction, scheduling, and fold completion"
+  },
+  {
+    "name": "packet8",
+    "kind": "packet",
+    "fields": 8,
+    "shape": "wider nominal payload",
+    "validation": "independent checksum; original plain-fold loop shape",
+    "timing": "inclusive channel creation, task construction, scheduling, and fold completion"
+  },
+  {
+    "name": "helper_packet3",
+    "kind": "packet",
+    "fields": 3,
+    "shape": "helper-mediated send",
+    "validation": "independent checksum; original plain-fold loop shape",
+    "timing": "inclusive channel creation, task construction, scheduling, and fold completion"
+  },
+  {
+    "name": "packet_bool",
+    "kind": "scalar",
+    "shape": "mixed Int/Bool nominal payload",
+    "validation": "checksum plus FIFO and payload",
+    "timing": "inclusive channel creation, task construction, scheduling, and fold completion"
+  },
+  {
+    "name": "packet_string",
+    "kind": "string",
+    "shape": "allocated String payload",
+    "validation": "checksum plus FIFO and payload",
+    "timing": "inclusive channel creation, task construction, scheduling, and fold completion"
+  },
+  {
+    "name": "dynamic_4x1",
+    "kind": "scalar",
+    "shape": "dynamic Task list; fan-in",
+    "producers": 4,
+    "consumers": 1,
+    "validation": "checksum plus per-producer FIFO",
+    "timing": "separate recipe/channel preparation; kernel starts at Scope activation and ends after result collection"
+  },
+  {
+    "name": "dynamic_16x1",
+    "kind": "scalar",
+    "shape": "dynamic Task list; fan-in",
+    "producers": 16,
+    "consumers": 1,
+    "validation": "checksum plus per-producer FIFO",
+    "timing": "separate recipe/channel preparation; kernel starts at Scope activation and ends after result collection"
+  },
+  {
+    "name": "dynamic_4x4",
+    "kind": "scalar",
+    "shape": "dynamic Task list; many-to-many",
+    "producers": 4,
+    "consumers": 4,
+    "validation": "checksum plus per-producer FIFO",
+    "timing": "separate recipe/channel preparation; kernel starts at Scope activation and ends after result collection"
+  }
+]

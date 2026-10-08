@@ -1,0 +1,55 @@
+from chan import Receiver, Sender
+from task import Task
+
+async fn produce(tx: Sender(Int), id: Int, count: Int):
+    var i = 0
+    while i < count:
+        chan.send(tx, id * count + i).await
+        i = i + 1
+
+async fn consume(rx: Receiver(Int), result: Sender(Int), count: Int, per_producer: Int):
+    var sum = 0
+    var seen = 0
+    var valid = true
+    var last = list.repeat(-1, 4)
+    while seen < count:
+        match chan.recv(rx).await:
+            Some(value) ->
+                let id = value / per_producer
+                let sequence = value % per_producer
+                if sequence <= last[id]:
+                    valid = false
+                list.set_at(last, id, sequence)
+                sum = sum + value
+                seen = seen + 1
+            None ->
+                valid = false
+                seen = seen + 1
+    chan.send(result, if valid: sum else: -1).await
+
+async fn main(console: Console, clock: Clock):
+    let setup_t0 = clock.now_monotonic()
+    let (tx, rx) = chan.channel(64).await
+    let (result_tx, result_rx) = chan.channel(4).await
+    var jobs: List(Task(())) = []
+    var id = 0
+    while id < 4:
+        jobs.push(produce(tx, id, __MESSAGES__ / 4))
+        id = id + 1
+    id = 0
+    while id < 4:
+        jobs.push(consume(rx, result_tx, __MESSAGES__ / 4, __MESSAGES__ / 4))
+        id = id + 1
+    let bench_t0 = clock.now_monotonic()
+    chan.scope(jobs).await
+    var sum = 0
+    id = 0
+    while id < 4:
+        match chan.recv(result_rx).await:
+            Some(value) -> sum = sum + value
+            None -> sum = -1000000000
+        id = id + 1
+    let bench_t1 = clock.now_monotonic()
+    console.print("${sum}")
+    console.print("setup_ns=${bench_t0 - setup_t0}")
+    console.print("bench_ns=${bench_t1 - bench_t0}")

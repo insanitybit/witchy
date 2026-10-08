@@ -1,0 +1,24 @@
+from chan import Receiver, Sender
+
+type Packet:
+    Packet(Int, Int, Int)
+
+async fn producer(tx: Sender(Packet), n: Int):
+    var i = 0
+    while i < n:
+        chan.send(tx, Packet(i, i + 1, i + 2)).await
+        i = i + 1
+
+async fn consume(console: Console, rx: Receiver(Packet)):
+    var sum = 0
+    for await packet in rx:
+        match packet:
+            Packet(left, right, f2) -> sum = sum + left + right + f2
+    console.print("${sum}")
+
+async fn main(console: Console, clock: Clock):
+    let bench_t0 = clock.now_monotonic()
+    let (tx, rx) = chan.channel(64).await
+    chan.scope([producer(tx, __MESSAGES__), consume(console, rx)]).await
+    let bench_t1 = clock.now_monotonic()
+    console.print("bench_ns=${bench_t1 - bench_t0}")

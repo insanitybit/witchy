@@ -1,0 +1,33 @@
+from chan import Receiver, Sender
+
+type Packet:
+    Packet(Int, Bool)
+
+async fn producer(tx: Sender(Packet), n: Int):
+    var i = 0
+    while i < n:
+        chan.send(tx, Packet(i, i % 2 == 0)).await
+        i = i + 1
+
+async fn consume(console: Console, rx: Receiver(Packet)):
+    var sum = 0
+    var expected = 0
+    var valid = true
+    for await packet in rx:
+        match packet:
+            Packet(left, right) ->
+                if left != expected:
+                    valid = false
+                expected = expected + 1
+                if right != (left % 2 == 0):
+                    valid = false
+                sum = sum + left
+    let checksum = if valid: sum else: -1
+    console.print("${checksum}")
+
+async fn main(console: Console, clock: Clock):
+    let bench_t0 = clock.now_monotonic()
+    let (tx, rx) = chan.channel(64).await
+    chan.scope([producer(tx, __MESSAGES__), consume(console, rx)]).await
+    let bench_t1 = clock.now_monotonic()
+    console.print("bench_ns=${bench_t1 - bench_t0}")
