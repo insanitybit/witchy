@@ -289,3 +289,6 @@ mod async_select_lane_frames;
 mod async_packet_regions;
 #[path = "misc/async_select_regions.rs"]
 mod async_select_regions;
+
+#[path = "misc/async_profile_map.rs"]
+mod async_profile_map;

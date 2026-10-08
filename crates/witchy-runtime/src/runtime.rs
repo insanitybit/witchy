@@ -2184,7 +2184,10 @@ impl Runtime {
         // Cranelift lays that arm out of line. Hints never change semantics.
         config.wasm_branch_hinting(true);
         config.profiler(profiler);
-        if profiler != wasmtime::ProfilingStrategy::None {
+        if (profiler != wasmtime::ProfilingStrategy::None
+            && profiler != wasmtime::ProfilingStrategy::PerfMap)
+            || std::env::var_os("WITCHY_DEBUG_INFO").is_some()
+        {
             config.debug_info(true);
         }
         rt.engine = match Engine::new(&config) {
@@ -2264,7 +2267,9 @@ impl Runtime {
         if let Ok(strat) = std::env::var("WITCHY_PROFILE") {
             if let Some(profile_strat) = Self::profiling_strategy_from_name(&strat) {
                 config.profiler(profile_strat);
-                if profile_strat != wasmtime::ProfilingStrategy::None {
+                if profile_strat != wasmtime::ProfilingStrategy::None
+                    && profile_strat != wasmtime::ProfilingStrategy::PerfMap
+                {
                     config.debug_info(true);
                 }
             } else {
@@ -2272,7 +2277,6 @@ impl Runtime {
             }
         } else if std::env::var_os("WITCHY_PERF_MAP").is_some() {
             config.profiler(wasmtime::ProfilingStrategy::PerfMap);
-            config.debug_info(true);
         }
         if std::env::var_os("WITCHY_DEBUG_INFO").is_some() {
             config.debug_info(true);
