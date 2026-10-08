@@ -347,6 +347,7 @@ pub const COMPILER_STD_NAMES: &[&str] = &[
     "task.__channel_select4",
     "task.__channel_send",
     "task.__channel_send_i64",
+    "task.__compiler_run_channel_only",
     "task.__handle_from_raw",
     "task.__handle_into_raw",
     "task.__join_raw",
