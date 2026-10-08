@@ -18,16 +18,19 @@ fn arm(id: u32, body: Expr) -> MatchArm {
     }
 }
 
+fn write_back_self(ordinal: u32) -> String { format!("$closed_trait_self_{ordinal}") }
+
 /// `var $self = payload; let $result = adapter($self, ..); place = pack($self); $result`
-fn write_back_body(id: u32, place: Expr, call: Expr) -> Result<Expr, String> {
+fn write_back_body(id: u32, ordinal: u32, place: Expr, call: Expr) -> Result<Expr, String> {
+    let result = format!("$closed_trait_result_{ordinal}");
     let stmts = vec![
         Stmt::Let {
-            name: "$closed_trait_self".into(), ty: None, mutable: true,
+            name: write_back_self(ordinal), ty: None, mutable: true,
             value: Expr::Var("$closed_trait_payload".into()),
         },
-        Stmt::Let { name: "$closed_trait_result".into(), ty: None, mutable: false, value: call },
-        witchy_syntax::parser::desugar_place_assign(place, ctor(id, Expr::Var("$closed_trait_self".into())))?,
-        Stmt::Expr(Expr::Var("$closed_trait_result".into())),
+        Stmt::Let { name: result.clone(), ty: None, mutable: false, value: call },
+        witchy_syntax::parser::desugar_place_assign(place, ctor(id, Expr::Var(write_back_self(ordinal))))?,
+        Stmt::Expr(Expr::Var(result)),
     ];
     Ok(Expr::Block(Block { lines: vec![u32::MAX; stmts.len()], stmts, region: None }))
 }
@@ -122,7 +125,8 @@ pub(crate) fn prepare(typed: TypedModule, catalog: &WitnessCatalog) -> Result<(T
     let (mut module, _, result) = typed.rewrite_into_module(|table, module| {
         for item in &mut module.items {
             if let Item::Function(function) = item {
-                visit_block_mut(&mut function.body, &mut |expr| close_expr(expr, table, &witnesses))?;
+                let mut write_backs = 0;
+                visit_block_mut(&mut function.body, &mut |expr| close_expr(expr, table, &witnesses, &mut write_backs))?;
             }
         }
         Ok::<_, String>(())
@@ -159,12 +163,14 @@ pub(crate) fn prepare(typed: TypedModule, catalog: &WitnessCatalog) -> Result<(T
     Ok((typed, true))
 }
 
-fn close_expr(expr: &mut Expr, table: &TypeTable, plan: &WitnessPlan) -> Result<(), String> {
+/// `write_backs` numbers each `var self` dispatch in a function, so a call
+/// nested in another's arguments binds names of its own.
+fn close_expr(expr: &mut Expr, table: &TypeTable, plan: &WitnessPlan, write_backs: &mut u32) -> Result<(), String> {
     match expr {
         Expr::ExistentialPack { expr: payload, ty, witness } => {
             let witness = plan.by_id(*witness).filter(|w| &w.existential == ty)
                 .ok_or("closed trait pack lost its checked witness")?;
-            visit_expr_mut(payload, &mut |expr| close_expr(expr, table, plan))?;
+            visit_expr_mut(payload, &mut |expr| close_expr(expr, table, plan, write_backs))?;
             *expr = ctor(witness.id, *payload.clone());
         }
         Expr::ExistentialCall { receiver, args, ty, owner_trait, method, slot, params, result, conventions } => {
@@ -180,10 +186,12 @@ fn close_expr(expr: &mut Expr, table: &TypeTable, plan: &WitnessPlan) -> Result<
                 }
                 _ => None,
             };
-            visit_expr_mut(receiver, &mut |expr| close_expr(expr, table, plan))?;
+            visit_expr_mut(receiver, &mut |expr| close_expr(expr, table, plan, write_backs))?;
             for argument in args.iter_mut() {
-                visit_expr_mut(argument, &mut |expr| close_expr(expr, table, plan))?;
+                visit_expr_mut(argument, &mut |expr| close_expr(expr, table, plan, write_backs))?;
             }
+            let ordinal = *write_backs;
+            if write_back.is_some() { *write_backs += 1; }
             let mut arms = Vec::new();
             for witness in plan.witnesses.iter().filter(|w| &w.existential == ty.unqualified()) {
                 let (index, checked) = witness.slot(owner_trait, method)
@@ -195,12 +203,15 @@ fn close_expr(expr: &mut Expr, table: &TypeTable, plan: &WitnessPlan) -> Result<
                 {
                     return Err("closed trait dispatch changed its checked slot contract".into());
                 }
-                let payload = if write_back.is_some() { "$closed_trait_self" } else { "$closed_trait_payload" };
-                let mut arguments = vec![Expr::Var(payload.into())];
+                let payload = match write_back {
+                    Some(_) => write_back_self(ordinal),
+                    None => "$closed_trait_payload".into(),
+                };
+                let mut arguments = vec![Expr::Var(payload)];
                 arguments.extend(args.iter().cloned());
                 let call = Expr::Call { name: checked.adapter.clone(), args: arguments };
                 arms.push(arm(witness.id, match &write_back {
-                    Some(place) => write_back_body(witness.id, place.clone(), call)?,
+                    Some(place) => write_back_body(witness.id, ordinal, place.clone(), call)?,
                     None => call,
                 }));
             }
@@ -210,7 +221,7 @@ fn close_expr(expr: &mut Expr, table: &TypeTable, plan: &WitnessPlan) -> Result<
         Expr::ExistentialUpcast { expr: value, ty } => {
             let source = table.type_of(value).and_then(ty_to_ast)
                 .ok_or("closed trait upcast lost its checked source type")?;
-            visit_expr_mut(value, &mut |expr| close_expr(expr, table, plan))?;
+            visit_expr_mut(value, &mut |expr| close_expr(expr, table, plan, write_backs))?;
             let mut arms = Vec::new();
             for witness in plan.witnesses.iter().filter(|w| &w.existential == source.unqualified()) {
                 let target = plan.upcast(witness.id, ty).and_then(|id| plan.by_id(id))

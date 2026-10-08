@@ -39,6 +39,12 @@ fn main(console: Console):\n    var h = Holder(Tally(0))\n    let x = h.c.bump(1
 }
 
 #[test]
+fn var_self_dispatch_nested_in_another_ones_argument_writes_back_both() {
+    let out = output("fn main(console: Console):\n    var a: dyn Counter = Tally(0)\n    var b: dyn Counter = Tally(100)\n    let x = a.bump(b.bump(1))\n    console.print(\"${x} ${a.total()} ${b.total()}\")\n");
+    assert_eq!(out, ["101 101 101"]);
+}
+
+#[test]
 fn var_self_dispatch_on_an_indexed_receiver_names_the_rewrite() {
     let source = format!("{COUNTERS}fn main(console: Console):\n    var xs: List(dyn Counter) = [Tally(0)]\n    let i = 0\n    console.print(\"${{xs[i].bump(1)}}\")\n");
     let error = match witchy::resolve_std_only_checked(&source) {
