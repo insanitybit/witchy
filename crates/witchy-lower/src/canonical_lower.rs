@@ -4352,9 +4352,9 @@ fn lower_function_attempt(
         lent_parameters: BTreeSet::new(),
         token_join_parameters: BTreeSet::new(),
         graph_version: 0,
-        token_facts: std::cell::RefCell::new(None),
+        incoming_edges: BTreeMap::new(),
+        parameter_slots: BTreeMap::new(),
         token_operation_facts: std::cell::RefCell::new(TokenOperationFacts::default()),
-        shared_facts: std::cell::RefCell::new(None),
         shared_operation_facts: std::cell::RefCell::new(SharedOperationFacts::default()),
         mutable_bindings: HashSet::new(),
         loop_contexts: Vec::new(),
@@ -5018,17 +5018,11 @@ struct BlockBuilder {
     terminator: Option<Terminator>,
 }
 
-/// `carries_token`'s view of the graph at one `graph_version`.
-struct TokenFacts {
-    version: u64,
-    direct: BTreeSet<ValueId>,
-    incoming: BTreeMap<ValueId, Vec<ValueId>>,
-}
-
-/// Operation destinations only append during lowering. Preserve their token
-/// facts across graph versions; block parameters and edges are rescanned.
+/// Operation destinations only append during lowering. Their token facts are
+/// extended from each block's `scanned` offset when `graph_version` moves.
 #[derive(Default)]
 struct TokenOperationFacts {
+    version: Option<u64>,
     scanned: Vec<usize>,
     direct: BTreeSet<ValueId>,
 }
@@ -5039,24 +5033,14 @@ struct DisjunctiveExclusiveCarrier {
     candidates: [u32; 2],
 }
 
-/// `known_shared_value`'s view of the graph at one `graph_version`.
-struct SharedFacts {
-    version: u64,
-    direct: BTreeSet<ValueId>,
-    /// Refcounted so the recursion below can take a handle without copying
-    /// the list. `known_shared_value_via` must release its borrow of the memo
-    /// before it recurses, and cloning a `Vec` to do that allocated once per
-    /// recursion step -- measured as the largest single map/allocation cost
-    /// inside lowering (3.4% of a warm async compile).
-    unspecified_incoming: BTreeMap<ValueId, std::rc::Rc<[ValueId]>>,
-}
-
 /// Operations only append through `push_operation`; their value types and
 /// callable/closure contracts never change during function lowering. Cache
-/// just that monotone part of the scan. Parameter ownership and incoming edges
-/// still use the ordinary graph-version invalidation and are rescanned in full.
+/// just that monotone part of the scan, extended when `graph_version` moves.
+/// Parameter ownership is read live and incoming edges are recorded as each
+/// terminator is placed (`incoming_edges`).
 #[derive(Default)]
 struct SharedOperationFacts {
+    version: Option<u64>,
     scanned: Vec<usize>,
     direct: BTreeSet<ValueId>,
     /// Values whose own definition yields a shared token: a call result
@@ -5174,9 +5158,15 @@ struct FunctionLowerer<'a> {
     /// Bumped by every mutation of `blocks` or `token_join_parameters`, so
     /// `carries_token` can reuse its scan of the graph until it changes.
     graph_version: u64,
-    token_facts: std::cell::RefCell<Option<TokenFacts>>,
+    /// Every block parameter's incoming arguments, one per edge that targets
+    /// its block, recorded as each terminator is placed (`place_terminator`).
+    /// The token and sharing queries read this directly instead of rescanning
+    /// the graph's edges, which on a large function was quadratic.
+    incoming_edges: BTreeMap<ValueId, Vec<ValueId>>,
+    /// Each block parameter value's block and index, so a query can read the
+    /// parameter's current ownership without a scan.
+    parameter_slots: BTreeMap<ValueId, (usize, usize)>,
     token_operation_facts: std::cell::RefCell<TokenOperationFacts>,
-    shared_facts: std::cell::RefCell<Option<SharedFacts>>,
     shared_operation_facts: std::cell::RefCell<SharedOperationFacts>,
     /// Source name of each entry parameter, so an exit drop targets the
     /// token under its current binding (a loop threads parameters through
@@ -7839,15 +7829,9 @@ impl FunctionLowerer<'_> {
             parameter_index += 1;
         }
         self.graph_version += 1;
-        self.blocks[then_end.get() as usize].terminator = Some(Terminator::Branch {
-            target: join_id,
-            arguments: then_arguments,
-        });
+        self.place_terminator(then_end, Terminator::Branch { target: join_id, arguments: then_arguments })?;
         self.graph_version += 1;
-        self.blocks[else_end.get() as usize].terminator = Some(Terminator::Branch {
-            target: join_id,
-            arguments: else_arguments,
-        });
+        self.place_terminator(else_end, Terminator::Branch { target: join_id, arguments: else_arguments })?;
         self.restore_facts(facts, join_id);
         self.current = join_id;
         // The fact restore deliberately discards predecessor caches.  Binding
@@ -8294,10 +8278,7 @@ impl FunctionLowerer<'_> {
                 }
             }
             self.graph_version += 1;
-            self.blocks[body_end.get() as usize].terminator = Some(Terminator::Branch {
-                target: join,
-                arguments,
-            });
+            self.place_terminator(body_end, Terminator::Branch { target: join, arguments })?;
         }
         if let Some((family, _)) = &shared_result_extents {
             let result = result.expect("a shared match join has a result parameter");
@@ -10777,6 +10758,9 @@ impl FunctionLowerer<'_> {
             })
             .collect::<Result<Vec<_>, CanonicalLoweringError>>()?;
         self.graph_version += 1;
+        for (index, parameter) in parameters.iter().enumerate() {
+            self.parameter_slots.insert(parameter.value, (self.blocks.len(), index));
+        }
         self.blocks.push(BlockBuilder {
             id,
             parameters,
@@ -10877,11 +10861,66 @@ impl FunctionLowerer<'_> {
             }
         }
         self.graph_version += 1;
-        let block = &mut self.blocks[self.current.get() as usize];
-        if block.terminator.replace(terminator).is_some() {
+        self.place_terminator(self.current, terminator)
+    }
+
+    /// Store a block's terminator (once) and record the edges it adds to
+    /// `incoming_edges`. Every terminator is placed through here so the edge
+    /// facts never lag the graph.
+    fn place_terminator(&mut self, block: BlockId, terminator: Terminator) -> Result<(), CanonicalLoweringError> {
+        let mut record_edge = |target: BlockId, arguments: &[ValueId], blocks: &[BlockBuilder], incoming: &mut BTreeMap<ValueId, Vec<ValueId>>| {
+            if let Some(target) = blocks.get(target.get() as usize) {
+                for (parameter, argument) in target.parameters.iter().zip(arguments) {
+                    incoming.entry(parameter.value).or_default().push(*argument);
+                }
+            }
+        };
+        match &terminator {
+            Terminator::Branch { target, arguments } => record_edge(*target, arguments, &self.blocks, &mut self.incoming_edges),
+            Terminator::BranchIf { then_target, then_arguments, else_target, else_arguments, .. } => {
+                record_edge(*then_target, then_arguments, &self.blocks, &mut self.incoming_edges);
+                record_edge(*else_target, else_arguments, &self.blocks, &mut self.incoming_edges);
+            }
+            _ => {}
+        }
+        if self.blocks[block.get() as usize].terminator.replace(terminator).is_some() {
             return Err(CanonicalLoweringError::UnsupportedStatement("duplicate block terminator"));
         }
         Ok(())
+    }
+
+    /// `WITCHY_VERIFY_FACT_SCANS`: rebuild the incoming-edge facts from every
+    /// placed terminator and assert they match the eagerly recorded ones.
+    fn verify_incoming_edges(&self) {
+        let mut incoming = BTreeMap::<ValueId, Vec<ValueId>>::new();
+        let mut record_edge = |target: BlockId, arguments: &[ValueId]| {
+            if let Some(block) = self.blocks.get(target.get() as usize) {
+                for (parameter, argument) in block.parameters.iter().zip(arguments) {
+                    incoming.entry(parameter.value).or_default().push(*argument);
+                }
+            }
+        };
+        for block in &self.blocks {
+            match &block.terminator {
+                Some(Terminator::Branch { target, arguments }) => record_edge(*target, arguments),
+                Some(Terminator::BranchIf { then_target, then_arguments, else_target, else_arguments, .. }) => {
+                    record_edge(*then_target, then_arguments);
+                    record_edge(*else_target, else_arguments);
+                }
+                _ => {}
+            }
+        }
+        // Recorded in placement order, rebuilt in block order; the queries
+        // only ask `any`/`all` over a parameter's arguments.
+        let sorted = |edges: &BTreeMap<ValueId, Vec<ValueId>>| edges.iter()
+            .map(|(value, arguments)| { let mut arguments = arguments.clone(); arguments.sort(); (*value, arguments) })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(sorted(&incoming), sorted(&self.incoming_edges), "recorded incoming edges lag the placed terminators");
+        for (index, block) in self.blocks.iter().enumerate() {
+            for (position, parameter) in block.parameters.iter().enumerate() {
+                assert_eq!(self.parameter_slots.get(&parameter.value), Some(&(index, position)), "parameter slot index is stale");
+            }
+        }
     }
 
     fn push_operation(&mut self, operation: Operation) {
@@ -10974,20 +11013,27 @@ impl FunctionLowerer<'_> {
     /// element, or a join parameter all of whose lanes carried one. Static
     /// data and join parameters over static data carry none.
     fn carries_token(&self, value: ValueId) -> bool {
-        let mut facts = self.token_facts.borrow_mut();
-        if facts.as_ref().is_none_or(|facts| facts.version != self.graph_version) {
-            *facts = Some(self.scan_token_facts());
-        }
-        let facts = facts.as_ref().expect("token facts were just scanned");
-        self.carries_token_seen(value, &facts.direct, &facts.incoming, &mut BTreeSet::new())
+        self.refresh_token_operations();
+        let operations = self.token_operation_facts.borrow();
+        self.carries_token_seen(value, &operations.direct, &mut BTreeSet::new())
     }
 
-    /// One scan of the graph for `carries_token`: the values that mint or
-    /// transfer a token, and each block parameter's incoming arguments.
-    fn scan_token_facts(&self) -> TokenFacts {
+    /// Extend the token facts over operations appended since `graph_version`
+    /// last moved; parameters and edges are read live.
+    fn refresh_token_operations(&self) {
         let mut operation_facts = self.token_operation_facts.borrow_mut();
+        if operation_facts.version != Some(self.graph_version) {
+            self.scan_token_operations(&mut operation_facts);
+            operation_facts.version = Some(self.graph_version);
+            if verify_fact_scans() { self.verify_incoming_edges(); }
+        }
+    }
+
+    /// One scan of the appended operations for `carries_token`: the values
+    /// that mint or transfer a token.
+    fn scan_token_operations(&self, operation_facts: &mut TokenOperationFacts) {
         operation_facts.scanned.resize(self.blocks.len(), 0);
-        let TokenOperationFacts { scanned, direct } = &mut *operation_facts;
+        let TokenOperationFacts { scanned, direct, .. } = operation_facts;
         for (block, scanned) in self.blocks.iter().zip(scanned) {
             for operation in &block.operations[*scanned..] {
                 match operation {
@@ -11016,37 +11062,14 @@ impl FunctionLowerer<'_> {
             }
             *scanned = block.operations.len();
         }
-        let mut direct = direct.clone();
-        drop(operation_facts);
-        direct.extend(self.token_join_parameters.iter().copied());
-        if let Some(entry) = self.blocks.first() {
-            direct.extend(entry.parameters.iter().filter_map(|parameter| {
-                parameter.ownership.is_some().then_some(parameter.value)
-            }));
-        }
-        let mut incoming = BTreeMap::<ValueId, Vec<ValueId>>::new();
-        let mut record_edge = |target: BlockId, arguments: &[ValueId]| {
-            if let Some(block) = self.blocks.get(target.get() as usize) {
-                for (parameter, argument) in block.parameters.iter().zip(arguments) {
-                    incoming.entry(parameter.value).or_default().push(*argument);
-                }
-            }
-        };
-        for block in &self.blocks {
-            match &block.terminator {
-                Some(Terminator::Branch { target, arguments }) => {
-                    record_edge(*target, arguments);
-                }
-                Some(Terminator::BranchIf {
-                    then_target, then_arguments, else_target, else_arguments, ..
-                }) => {
-                    record_edge(*then_target, then_arguments);
-                    record_edge(*else_target, else_arguments);
-                }
-                _ => {}
-            }
-        }
-        TokenFacts { version: self.graph_version, direct, incoming }
+    }
+
+    /// A block parameter that carries a token by declaration: a join lane
+    /// given one, or an owned entry parameter.
+    fn parameter_carries_token(&self, value: ValueId) -> bool {
+        self.token_join_parameters.contains(&value)
+            || self.parameter_slots.get(&value).is_some_and(|(block, index)|
+                *block == 0 && self.blocks[0].parameters[*index].ownership.is_some())
     }
 
     /// Token-ness follows the explicit CFG: an owned entry parameter, an
@@ -11058,21 +11081,20 @@ impl FunctionLowerer<'_> {
         &self,
         value: ValueId,
         direct: &BTreeSet<ValueId>,
-        incoming: &BTreeMap<ValueId, Vec<ValueId>>,
         seen: &mut BTreeSet<ValueId>,
     ) -> bool {
         if let ValueType::Gc(id) = self.values[&value] {
             return self.closures.owners.iter().any(|family| family.owner_type == id || family.list_type == id);
         }
-        if direct.contains(&value) {
+        if direct.contains(&value) || self.parameter_carries_token(value) {
             return true;
         }
         if !seen.insert(value) {
             return false;
         }
-        incoming.get(&value).is_some_and(|arguments| {
+        self.incoming_edges.get(&value).is_some_and(|arguments| {
             arguments.iter().any(|argument| {
-                self.carries_token_seen(*argument, direct, incoming, seen)
+                self.carries_token_seen(*argument, direct, seen)
             })
         })
     }
@@ -11350,24 +11372,21 @@ impl FunctionLowerer<'_> {
         if !visited.insert(value) {
             return true;
         }
-        {
-            let mut facts = self.shared_facts.borrow_mut();
-            if facts.as_ref().is_none_or(|facts| facts.version != self.graph_version) {
-                *facts = Some(self.scan_shared_facts());
-            }
-        }
+        self.refresh_shared_operations();
         // Release the memo before recursing: the recursion borrows it again.
-        let incoming = {
-            let facts = self.shared_facts.borrow();
-            let facts = facts.as_ref().expect("shared facts were just scanned");
-            if facts.direct.contains(&value) {
-                return true;
-            }
-            facts.unspecified_incoming.get(&value).map(std::rc::Rc::clone)
-        };
-        incoming.is_some_and(|incoming| {
-            !incoming.is_empty() && incoming.iter().all(|argument| self.known_shared_value_via(*argument, visited))
-        })
+        if self.shared_operation_facts.borrow().direct.contains(&value) {
+            return true;
+        }
+        // A block parameter: shared by declaration, or (unspecified) shared
+        // exactly when every incoming argument is.
+        let Some((block, index)) = self.parameter_slots.get(&value) else { return false };
+        match self.blocks[*block].parameters[*index].ownership {
+            Some(Ownership::Shared) => true,
+            Some(_) => false,
+            None => self.incoming_edges.get(&value).is_some_and(|incoming| {
+                !incoming.is_empty() && incoming.iter().all(|argument| self.known_shared_value_via(*argument, visited))
+            }),
+        }
     }
 
     /// A reference-counted token shared by its own definition (a call result,
@@ -11378,23 +11397,27 @@ impl FunctionLowerer<'_> {
         if self.static_data_values.contains(&value) {
             return false;
         }
-        {
-            let mut facts = self.shared_facts.borrow_mut();
-            if facts.as_ref().is_none_or(|facts| facts.version != self.graph_version) {
-                *facts = Some(self.scan_shared_facts());
-            }
-        }
+        self.refresh_shared_operations();
         matches!(self.values.get(&value), Some(ValueType::Ref(_)))
             && self.shared_operation_facts.borrow().defined.contains(&value)
     }
 
-    /// One scan of the graph for `known_shared_value`: the values shared by
-    /// their definition, and each unspecified block parameter's incoming
-    /// arguments in block order.
-    fn scan_shared_facts(&self) -> SharedFacts {
+    /// Extend the sharing facts over operations appended since
+    /// `graph_version` last moved; parameters and edges are read live.
+    fn refresh_shared_operations(&self) {
         let mut operation_facts = self.shared_operation_facts.borrow_mut();
+        if operation_facts.version != Some(self.graph_version) {
+            self.scan_shared_operations(&mut operation_facts);
+            operation_facts.version = Some(self.graph_version);
+            if verify_fact_scans() { self.verify_incoming_edges(); }
+        }
+    }
+
+    /// One scan of the appended operations for `known_shared_value`: the
+    /// values shared by their definition.
+    fn scan_shared_operations(&self, operation_facts: &mut SharedOperationFacts) {
         operation_facts.scanned.resize(self.blocks.len(), 0);
-        let SharedOperationFacts { scanned, direct, defined } = &mut *operation_facts;
+        let SharedOperationFacts { scanned, direct, defined, .. } = operation_facts;
         for (block, scanned) in self.blocks.iter().zip(scanned) {
             for operation in &block.operations[*scanned..] {
                 match operation {
@@ -11479,52 +11502,7 @@ impl FunctionLowerer<'_> {
             }
             *scanned = block.operations.len();
         }
-        let mut direct = direct.clone();
-        drop(operation_facts);
-        for block in &self.blocks {
-            for parameter in &block.parameters {
-                if parameter.ownership == Some(Ownership::Shared) {
-                    direct.insert(parameter.value);
-                }
-            }
-        }
-        let mut unspecified_incoming: BTreeMap<ValueId, Vec<ValueId>> = BTreeMap::new();
-        // Built as `Vec`s, frozen into `Rc<[_]>` once the scan is complete.
-        for block in &self.blocks {
-            for parameter in &block.parameters {
-                if parameter.ownership.is_none() {
-                    unspecified_incoming.entry(parameter.value).or_default();
-                }
-            }
-        }
-        let mut record_edge = |target: BlockId, arguments: &[ValueId]| {
-            if let Some(block) = self.blocks.get(target.get() as usize) {
-                for (parameter, argument) in block.parameters.iter().zip(arguments) {
-                    if parameter.ownership.is_none()
-                        && let Some(incoming) = unspecified_incoming.get_mut(&parameter.value)
-                    {
-                        incoming.push(*argument);
-                    }
-                }
-            }
-        };
-        for block in &self.blocks {
-            match &block.terminator {
-                Some(Terminator::Branch { target, arguments }) => record_edge(*target, arguments),
-                Some(Terminator::BranchIf { then_target, then_arguments, else_target, else_arguments, .. }) => {
-                    record_edge(*then_target, then_arguments);
-                    record_edge(*else_target, else_arguments);
-                }
-                _ => {}
-            }
-        }
-        let unspecified_incoming = unspecified_incoming
-            .into_iter()
-            .map(|(value, incoming)| (value, std::rc::Rc::from(incoming)))
-            .collect();
-        SharedFacts { version: self.graph_version, direct, unspecified_incoming }
     }
-
 
     fn dynamic_extent_lanes(&self, value: ValueId) -> Option<(ValueId, ValueId)> {
         if let (Some(length), Some(capacity)) = (
@@ -22130,6 +22108,14 @@ fn capability_constructor_payload(
     Err(CanonicalLoweringError::UnsupportedExpression("unchecked capability constructor"))
 }
 
+/// `WITCHY_VERIFY_FACT_SCANS` rebuilds the incoming-edge facts from the
+/// placed terminators on every operation rescan and asserts they match the
+/// eagerly recorded ones (slow; for test runs).
+fn verify_fact_scans() -> bool {
+    static VERIFY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *VERIFY.get_or_init(|| std::env::var_os("WITCHY_VERIFY_FACT_SCANS").is_some())
+}
+
 fn physical_layout_descriptor(
     layouts: &LayoutInterner,
     layout: witchy_wir::layout::LayoutId,
@@ -22278,19 +22264,14 @@ fn string_layout(
     layout_bundle: &LayoutBundle,
     layouts: &LayoutInterner,
 ) -> Result<witchy_wir::layout::LayoutId, CanonicalLoweringError> {
-    let mut candidates = Vec::new();
-    for root in layout_bundle.roots() {
-        let Some(descriptor) = physical_layout_descriptor(layouts, *root) else { continue };
-        let LayoutKind::RuntimeBuffer { element } = descriptor.kind() else { continue };
-        let Some(element_descriptor) = physical_layout_descriptor(layouts, *element) else { continue };
-        if !matches!(element_descriptor.kind(), LayoutKind::Scalar(ScalarKind::RawByte)) {
-            continue;
-        }
-        if descriptor.size() != (LayoutSize::Dynamic { base: 4, stride: 1 }) {
-            continue;
-        }
-        candidates.push(*root);
+    // The bundle derived its unique byte-buffer root once; every string
+    // operation asks for it, so the scan below only runs to name the error.
+    if let Some(root) = layout_bundle.string_root() {
+        return Ok(root);
     }
+    let candidates = layout_bundle.roots().iter().copied()
+        .filter(|root| witchy_wir::layout::is_byte_buffer_layout(layouts, *root))
+        .collect::<Vec<_>>();
     match candidates.as_slice() {
         [] => Err(CanonicalLoweringError::MissingLayout(source.clone())),
         [candidate] => Ok(*candidate),

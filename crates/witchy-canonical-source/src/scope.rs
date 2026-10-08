@@ -29,7 +29,7 @@ pub fn canonical_scope(module: &Module) -> std::sync::Arc<BTreeSet<String>> {
             witchy_syntax::ast::Item::Function(function) => Some((function.name.as_str(), function)),
             _ => None,
         })
-        .collect::<std::collections::HashMap<_, _>>();
+        .collect::<foldhash::HashMap<_, _>>();
     let mut scope = BTreeSet::new();
     let entry_prefix = entry.map(|entry| format!("{entry}."));
     let mut pending = functions

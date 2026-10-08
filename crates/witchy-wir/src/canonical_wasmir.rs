@@ -335,13 +335,24 @@ impl TargetWasmWitness {
         functions: &[(Vec<(u32, String)>, Vec<PlanToken>)],
         data: &[(u32, Vec<u8>)],
     ) -> Self {
-        let decoded = format!("{section_order:?}{functions:?}{data:?}");
+        // Digest the decoded structure's own bytes through `Hash`. Rendering
+        // every plan token as text first cost more than the whole encoder's
+        // share of a compile and nothing ever read the text.
+        struct DigestHasher(Sha256);
+        impl std::hash::Hasher for DigestHasher {
+            fn write(&mut self, bytes: &[u8]) {
+                self.0.update(bytes);
+            }
+            fn finish(&self) -> u64 {
+                0
+            }
+        }
+        let mut decoded = DigestHasher(Sha256::new());
+        decoded.0.update(b"witchy/canonical-wasmir/decoded-target/v2");
+        std::hash::Hash::hash(&(section_order, functions, data), &mut decoded);
         Self {
             wasm_digest: digest_bytes(b"witchy/canonical-wasmir/wasm/v1", &[bytes]),
-            decoded_digest: digest_bytes(
-                b"witchy/canonical-wasmir/decoded-target/v1",
-                &[decoded.as_bytes()],
-            ),
+            decoded_digest: decoded.0.finalize().into(),
         }
     }
 

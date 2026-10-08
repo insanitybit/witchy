@@ -9,11 +9,31 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use super::{
-    LAYOUT_SCHEMA_VERSION, LayoutError, LayoutId, LayoutInterner, LayoutKind,
+    LAYOUT_SCHEMA_VERSION, LayoutError, LayoutId, LayoutInterner, LayoutKind, LayoutSize,
     RuntimePrefixSlot, ScalarKind,
 };
 
 const BUNDLE_MAGIC: &[u8; 4] = b"WLAB";
+
+/// The physical byte-buffer shape every `String` lowers to: a runtime buffer
+/// of raw bytes behind a 4-byte header, resolved through nominal bindings.
+pub fn is_byte_buffer_layout(interner: &LayoutInterner, layout: LayoutId) -> bool {
+    let Some(descriptor) = interner.resolve_nominal(layout).ok().and_then(|physical| interner.get(physical)) else {
+        return false;
+    };
+    let LayoutKind::RuntimeBuffer { element } = descriptor.kind() else { return false };
+    let Some(element) = interner.resolve_nominal(*element).ok().and_then(|physical| interner.get(physical)) else {
+        return false;
+    };
+    matches!(element.kind(), LayoutKind::Scalar(ScalarKind::RawByte))
+        && descriptor.size() == LayoutSize::Dynamic { base: 4, stride: 1 }
+}
+
+fn string_root(interner: &LayoutInterner, roots: &[LayoutId]) -> Option<LayoutId> {
+    let mut candidates = roots.iter().copied().filter(|root| is_byte_buffer_layout(interner, *root));
+    let first = candidates.next()?;
+    candidates.next().is_none().then_some(first)
+}
 const BUNDLE_VERSION: u32 = 1;
 const NOMINAL_BUNDLE_VERSION: u32 = 2;
 const MAX_BUNDLE_DESCRIPTORS: usize = 1 << 20;
@@ -27,6 +47,12 @@ pub struct LayoutBundle {
     descriptors: Vec<(LayoutId, Vec<u8>)>,
     roots: Vec<LayoutId>,
     nominal_bindings: BTreeMap<LayoutId, LayoutId>,
+    /// The one root laid out as a byte buffer with a 4-byte header (the
+    /// `String`/`Bytes` carrier), when exactly one root has that physical
+    /// shape. Derived from `roots` and the descriptors, so it is part of
+    /// neither the canonical bytes nor a separate authority; lowering asks
+    /// for it on every string operation and must not rescan the roots.
+    string_root: Option<LayoutId>,
 }
 
 impl LayoutBundle {
@@ -70,11 +96,19 @@ impl LayoutBundle {
                 "layout descriptor size limit exceeded",
             ));
         }
-        Ok(Self { descriptors: ordered, roots: roots.into_iter().collect(), nominal_bindings })
+        let roots = roots.into_iter().collect::<Vec<_>>();
+        let string_root = string_root(interner, &roots);
+        Ok(Self { descriptors: ordered, roots, nominal_bindings, string_root })
     }
 
     pub fn roots(&self) -> &[LayoutId] {
         &self.roots
+    }
+
+    /// The unique byte-buffer root (see the field), or `None` when the bundle
+    /// has none or several; callers that need a diagnostic rescan the roots.
+    pub fn string_root(&self) -> Option<LayoutId> {
+        self.string_root
     }
 
     pub fn descriptors(&self) -> impl Iterator<Item = (LayoutId, &[u8])> {

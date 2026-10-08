@@ -46,7 +46,7 @@ impl FunctionLowerer<'_> {
                 }
             }
             self.graph_version += 1;
-            self.blocks[block.get() as usize].terminator = Some(Terminator::Branch { target: join, arguments });
+            self.place_terminator(*block, Terminator::Branch { target: join, arguments })?;
         }
         self.restore_facts(facts, join);
         self.current = join;
