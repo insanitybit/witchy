@@ -98,3 +98,47 @@ fn closed_packet_lanes_replay_large_signed_field_streams_without_owned_leaks() {
         assert!(output.iter().any(|line| line == &format!("sent={count}:{count}")));
     }
 }
+
+#[test]
+fn closed_packet_integer_layouts_preserve_all_lanes_and_fifo() {
+    let _reset = Reset;
+    for (width, capacity) in [(1, 1), (3, 4), (8, 0), (16, -1)] {
+        let fields = vec!["Int"; width].join(", ");
+        let values = (0..width).map(|lane| if lane % 2 == 0 {
+            format!("index + 4294967296 + {lane}")
+        } else { format!("-index - 4294967296 - {lane}") }).collect::<Vec<_>>().join(", ");
+        let bindings = (0..width).map(|lane| format!("field_{lane}")).collect::<Vec<_>>();
+        let source = format!(r#"from chan import Receiver, Sender
+
+type Message:
+    Message({fields})
+
+async fn produce(tx: Sender(Message), count: Int):
+    var index: Int = 0
+    while index < count:
+        chan.send(tx, Message({values})).await
+        index = index + 1
+
+async fn consume(console: Console, rx: Receiver(Message)):
+    var total: Int = 0
+    var order: Int = 0
+    for await message in rx:
+        match message:
+            Message({patterns}) ->
+                total = total + {sum}
+                order = order * 10 + field_0 - 4294967296
+    console.print("received=${{total}}:${{order}}")
+
+async fn main(console: Console):
+    let (tx, rx) = chan.channel({capacity}).await
+    chan.scope([produce(tx, 7), consume(console, rx)]).await
+"#, patterns = bindings.join(", "), sum = bindings.iter().enumerate().map(|(lane, name)| format!("{name} * {}", lane + 1)).collect::<Vec<_>>().join(" + "));
+        let expected = (0..width).map(|lane| {
+            let total = 7 * 4294967296 + 21 + 7 * lane as i64;
+            (if lane % 2 == 0 { total } else { -total }) * (lane as i64 + 1)
+        }).sum::<i64>();
+        let ordinary = run(&source, OptSet::none(), false);
+        assert_eq!(ordinary, [format!("received={expected}:123456")]);
+        assert_eq!(run(&source, OptSet::all(), true), ordinary);
+    }
+}

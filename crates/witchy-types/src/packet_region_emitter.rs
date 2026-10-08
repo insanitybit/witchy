@@ -10,8 +10,13 @@ fn variable(name: &str) -> Expr { Expr::Var(name.into()) }
 fn binary(op: BinOp, lhs: Expr, rhs: Expr) -> Expr {
     Expr::Binary { op, lhs: Box::new(lhs), rhs: Box::new(rhs) }
 }
-fn doubled(expression: Expr) -> Expr { binary(BinOp::Mul, expression, Expr::Int(2)) }
-fn physical() -> Expr { binary(BinOp::Div, call("list.length", vec![variable("scalar_region_queue")]), Expr::Int(2)) }
+fn lane_index(expression: Expr, width: i64, lane: i64) -> Expr {
+    let base = binary(BinOp::Mul, expression, Expr::Int(width));
+    if lane == 0 { base } else { binary(BinOp::Add, base, Expr::Int(lane)) }
+}
+fn physical(width: i64) -> Expr {
+    binary(BinOp::Div, call("list.length", vec![variable("scalar_region_queue")]), Expr::Int(width))
+}
 fn assign(name: &str, value: Expr) -> Stmt { Stmt::Assign { name: name.into(), value, place_depth: 0 } }
 fn renamed(mut expression: Expr, names: &BTreeMap<String, String>) -> Expr {
     witchy_syntax::ast::visit::visit_expr_mut(&mut expression, &mut |expression| {
@@ -39,60 +44,71 @@ pub(crate) fn companion(source: &PacketRegionSource) -> Option<Function> {
     for (name, _) in &recipe.fields {
         names.insert(name.clone(), format!("scalar_region_actor_{}_{}", source.producer, name));
     }
-    let second_payload = renamed(producer.second_payload?, &names);
+    let payloads = producer.remaining_payloads.into_iter().map(|payload| renamed(payload, &names)).collect::<Vec<_>>();
     let first_received = crate::scalar_region_recipe::ActorRecipe::derive(&receiver.function, false)?.received?;
     let first_received = format!("scalar_region_actor_{}_{}", 1 - source.producer, first_received);
-    let second_received = format!("scalar_region_actor_{}_{}", 1 - source.producer, receiver.second_received?);
-    transform(&mut companion.body, &first_received, &second_received, &second_payload)?;
+    let received = receiver.remaining_received.iter().map(|name|
+        format!("scalar_region_actor_{}_{}", 1 - source.producer, name)).collect::<Vec<_>>();
+    if payloads.len() != received.len() { return None; }
+    let width = i64::try_from(payloads.len()).ok()?.checked_add(1)?;
+    transform(&mut companion.body, &first_received, &received, &payloads, width)?;
     Some(companion)
 }
 
-fn transform(body: &mut Block, first_received: &str, second_received: &str, second_payload: &Expr) -> Option<()> {
+fn transform(body: &mut Block, first_received: &str, remaining_received: &[String], payloads: &[Expr], width: i64) -> Option<()> {
     let statements = std::mem::take(&mut body.stmts);
     let lines = std::mem::take(&mut body.lines);
     if statements.len() != lines.len() { return None; }
+    let pending = |lane: usize| format!("scalar_region_pending_{lane}");
     for (mut statement, line) in statements.into_iter().zip(lines) {
         if let Stmt::Expr(expression) = &mut statement {
             match expression {
                 Expr::Block(block) | Expr::While { body: block, .. } => {
-                    transform(block, first_received, second_received, second_payload)?;
+                    transform(block, first_received, remaining_received, payloads, width)?;
                 }
                 Expr::If { then_block, else_block, .. } => {
-                    transform(then_block, first_received, second_received, second_payload)?;
+                    transform(then_block, first_received, remaining_received, payloads, width)?;
                     if let Some(block) = else_block {
-                        transform(block, first_received, second_received, second_payload)?;
+                        transform(block, first_received, remaining_received, payloads, width)?;
                     }
                 }
                 _ => {}
             }
         }
-        let mut extra = None;
+        let mut extra = Vec::new();
         match &mut statement {
             Stmt::Let { name, value, .. } if name == "scalar_region_queue" => {
                 if *value != Expr::List(vec![Expr::Int(0)]) { return None; }
-                *value = Expr::List(vec![Expr::Int(0), Expr::Int(0)]);
+                *value = Expr::List(vec![Expr::Int(0); usize::try_from(width).ok()?]);
             }
-            Stmt::Let { name, value, .. } if name == "scalar_region_physical" => *value = physical(),
+            Stmt::Let { name, value, .. } if name == "scalar_region_physical" => *value = physical(width),
             Stmt::Let { name, value, .. } if name == "scalar_region_grown" => {
-                *value = call("list.repeat", vec![Expr::Int(0), binary(BinOp::Mul, variable("scalar_region_physical"), Expr::Int(4))]);
+                *value = call("list.repeat", vec![Expr::Int(0), binary(BinOp::Mul,
+                    variable("scalar_region_physical"), Expr::Int(width.checked_mul(2)?))]);
             }
             Stmt::Let { name, .. } if name == "scalar_region_pending" => {
-                let mut second = statement.clone();
-                let Stmt::Let { name, .. } = &mut second else { return None };
-                *name = "scalar_region_pending_second".into();
-                extra = Some(second);
+                for lane in 1..=payloads.len() {
+                    let mut field = statement.clone();
+                    let Stmt::Let { name, .. } = &mut field else { return None };
+                    *name = pending(lane);
+                    extra.push(field);
+                }
             }
             Stmt::Assign { name, .. } if name == "scalar_region_pending" => {
-                extra = Some(assign("scalar_region_pending_second", second_payload.clone()));
+                for (lane, payload) in payloads.iter().enumerate() {
+                    extra.push(assign(&pending(lane + 1), payload.clone()));
+                }
             }
             Stmt::Assign { name, value, .. } if name == first_received => {
-                *value = call("list.at", vec![variable("scalar_region_queue"), doubled(variable("scalar_region_head"))]);
-                extra = Some(assign(second_received, call("list.at", vec![variable("scalar_region_queue"),
-                    binary(BinOp::Add, doubled(variable("scalar_region_head")), Expr::Int(1))])));
+                *value = call("list.at", vec![variable("scalar_region_queue"), lane_index(variable("scalar_region_head"), width, 0)]);
+                for (lane, received) in remaining_received.iter().enumerate() {
+                    extra.push(assign(received, call("list.at", vec![variable("scalar_region_queue"),
+                        lane_index(variable("scalar_region_head"), width, i64::try_from(lane + 1).ok()?)])));
+                }
             }
             Stmt::Assign { name, value, .. } if name == "scalar_region_head" => {
                 if matches!(value, Expr::Binary { op: BinOp::Mod, .. }) {
-                    *value = binary(BinOp::Mod, binary(BinOp::Add, variable("scalar_region_head"), Expr::Int(1)), physical());
+                    *value = binary(BinOp::Mod, binary(BinOp::Add, variable("scalar_region_head"), Expr::Int(1)), physical(width));
                 }
             }
             Stmt::Expr(Expr::Call { name, args }) if name == "list.set_at" => {
@@ -101,25 +117,28 @@ fn transform(body: &mut Block, first_received: &str, second_received: &str, seco
                     let Expr::Call { name, args: read } = value else { return None };
                     let [queue, read_index] = read.as_slice() else { return None };
                     if name != "list.at" || queue != &variable("scalar_region_queue") { return None; }
-                    extra = Some(Stmt::Expr(call("list.set_at", vec![variable(buffer),
-                        binary(BinOp::Add, doubled(index.clone()), Expr::Int(1)),
-                        call("list.at", vec![queue.clone(), binary(BinOp::Add, doubled(read_index.clone()), Expr::Int(1))])])));
-                    *args = vec![variable(buffer), doubled(index.clone()), call("list.at", vec![queue.clone(), doubled(read_index.clone())])];
+                    for lane in 1..width {
+                        extra.push(Stmt::Expr(call("list.set_at", vec![variable(buffer),
+                            lane_index(index.clone(), width, lane),
+                            call("list.at", vec![queue.clone(), lane_index(read_index.clone(), width, lane)])])));
+                    }
+                    *args = vec![variable(buffer), lane_index(index.clone(), width, 0),
+                        call("list.at", vec![queue.clone(), lane_index(read_index.clone(), width, 0)])];
                 } else if buffer == "scalar_region_queue" && value == &variable("scalar_region_pending") {
-                    let index = binary(BinOp::Mod, binary(BinOp::Add, variable("scalar_region_head"), variable("scalar_region_count")), physical());
-                    extra = Some(Stmt::Expr(call("list.set_at", vec![variable(buffer),
-                        binary(BinOp::Add, doubled(index.clone()), Expr::Int(1)), variable("scalar_region_pending_second")])));
-                    *args = vec![variable(buffer), doubled(index), variable("scalar_region_pending")];
+                    let index = binary(BinOp::Mod, binary(BinOp::Add, variable("scalar_region_head"), variable("scalar_region_count")), physical(width));
+                    for lane in 1..=payloads.len() {
+                        extra.push(Stmt::Expr(call("list.set_at", vec![variable(buffer),
+                            lane_index(index.clone(), width, i64::try_from(lane).ok()?), variable(&pending(lane))])));
+                    }
+                    *args = vec![variable(buffer), lane_index(index, width, 0), variable("scalar_region_pending")];
                 } else { return None; }
             }
             _ => {}
         }
         body.stmts.push(statement);
         body.lines.push(line);
-        if let Some(statement) = extra {
-            body.stmts.push(statement);
-            body.lines.push(line);
-        }
+        body.lines.extend(std::iter::repeat_n(line, extra.len()));
+        body.stmts.extend(extra);
     }
     Some(())
 }

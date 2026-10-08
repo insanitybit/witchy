@@ -14,7 +14,7 @@ impl PacketShape {
             || definition.grantable || definition.packed || !definition.params.is_empty()
             || !definition.derives.is_empty() || definition.partial_eq_derived || definition.public_state_derived
             || !variant.field_names.is_empty()
-            || variant.fields != [named("Int"), named("Int")] { return None; }
+            || variant.fields.is_empty() || variant.fields.iter().any(|ty| ty != &named("Int")) { return None; }
         Some(Self { definition: definition.clone() })
     }
     pub(crate) fn payload_type(&self) -> Type { named(&self.definition.name) }
@@ -23,8 +23,8 @@ impl PacketShape {
 
 pub(crate) struct PacketActor {
     pub function: Function,
-    pub second_payload: Option<Expr>,
-    pub second_received: Option<String>,
+    pub remaining_payloads: Vec<Expr>,
+    pub remaining_received: Vec<String>,
 }
 
 fn named(name: &str) -> Type { Type::Named(name.into(), vec![]) }
@@ -42,8 +42,8 @@ impl PacketActor {
             }
         }
         let endpoint = endpoint?;
-        let mut second_payload = None;
-        let mut second_received = None;
+        let mut remaining_payloads = Vec::new();
+        let mut remaining_received = Vec::new();
         if producer {
             let loops = function.body.stmts.iter_mut().filter_map(|statement| match statement {
                 Stmt::Expr(Expr::While { body, .. }) => Some(body), _ => None,
@@ -59,9 +59,9 @@ impl PacketActor {
             }).collect::<Vec<_>>();
             let [payload]: [&mut Expr; 1] = sends.try_into().ok()?;
             let Expr::Ctor { name, args } = payload else { return None };
-            let [first, second] = args.as_slice() else { return None };
-            if name != shape.constructor() { return None; }
-            second_payload = Some(second.clone());
+            if name != shape.constructor() || args.len() != shape.definition.variants[0].fields.len() { return None; }
+            let (first, remaining) = args.split_first()?;
+            remaining_payloads = remaining.to_vec();
             *payload = first.clone();
         } else {
             let loops = function.body.stmts.iter().enumerate().filter_map(|(index, statement)| match statement {
@@ -77,8 +77,13 @@ impl PacketActor {
                 || !matches!(scrutinee.as_ref(), Expr::Var(name) if name == var) { return None; }
             let [arm] = arms.as_slice() else { return None };
             let Pattern::Ctor { name, args } = &arm.pattern else { return None };
-            let [Pattern::Var(first), Pattern::Var(second)] = args.as_slice() else { return None };
-            if name != shape.constructor() || arm.guard.is_some() || first == second { return None; }
+            if name != shape.constructor() || arm.guard.is_some()
+                || args.len() != shape.definition.variants[0].fields.len() { return None; }
+            let received = args.iter().map(|pattern| match pattern {
+                Pattern::Var(name) => Some(name.clone()), _ => None,
+            }).collect::<Option<Vec<_>>>()?;
+            if received.iter().collect::<BTreeSet<_>>().len() != received.len() { return None; }
+            let (first, remaining) = received.split_first()?;
             let Expr::Block(flattened) = &arm.body else { return None };
             if flattened.region.is_some() || flattened.lines.len() != flattened.stmts.len() { return None; }
             let mut leaks_packet = false;
@@ -87,21 +92,23 @@ impl PacketActor {
                 Ok::<_, ()>(())
             }).ok()?;
             if leaks_packet { return None; }
-            let second = second.clone();
             *var = first.clone();
             *body = flattened.clone();
-            second_received = Some(second.clone());
-            function.body.stmts.insert(index, Stmt::Let {
-                name: second, ty: Some(named("Int")), mutable: true, value: Expr::Int(0),
-            });
-            function.body.lines.insert(index, function.body.lines[index]);
+            remaining_received = remaining.to_vec();
+            let line = function.body.lines[index];
+            for (offset, name) in remaining_received.iter().enumerate() {
+                function.body.stmts.insert(index + offset, Stmt::Let {
+                    name: name.clone(), ty: Some(named("Int")), mutable: true, value: Expr::Int(0),
+                });
+                function.body.lines.insert(index + offset, line);
+            }
         }
         let recipe = ActorRecipe::derive(&function, producer)?;
         let mut bindings = function.params.iter().filter(|parameter|
             matches!(parameter.ty.as_ref(), Some(Type::Named(name, args)) if args.is_empty() && matches!(name.as_str(), "Int" | "Bool")))
             .map(|parameter| parameter.name.clone()).collect::<BTreeSet<_>>();
         bindings.extend(recipe.fields.iter().map(|(name, _)| name.clone()));
-        if second_payload.as_ref().is_some_and(|expression| !scalar_expression(expression, &bindings)) { return None; }
-        Some(Self { function, second_payload, second_received })
+        if remaining_payloads.iter().any(|expression| !scalar_expression(expression, &bindings)) { return None; }
+        Some(Self { function, remaining_payloads, remaining_received })
     }
 }

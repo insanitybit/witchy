@@ -72,3 +72,31 @@ fn packet_receipt_rejects_detached_companion_and_await_inventory() {
     proofs.remove(receipt.covered_awaits()[0] as usize);
     assert!(!receipt.validate_checked_source(view.module(), &proofs, view.source_witness()));
 }
+
+#[test]
+fn packet_region_derives_flat_integer_layouts_from_checked_fields() {
+    struct Reset;
+    impl Drop for Reset { fn drop(&mut self) { witchy_syntax::opt::set_for_tests(None); } }
+    let _reset = Reset;
+    witchy_syntax::opt::set_for_tests(Some(witchy_syntax::opt::OptSet::all()));
+    let source = include_str!("../../../../benchmarks/chan_scheduler.witchy");
+    for width in [1, 3, 8, 32] {
+        let fields = vec!["Int"; width].join(", ");
+        let values = (0..width).map(|lane| format!("i + {lane}")).collect::<Vec<_>>().join(", ");
+        let bindings = (0..width).map(|lane| format!("field_{lane}")).collect::<Vec<_>>();
+        let source = source.replace("Packet(Int, Int)", &format!("Packet({fields})"))
+            .replace("Packet(i, i + 1)", &format!("Packet({values})"))
+            .replace("Packet(left, right)", &format!("Packet({})", bindings.join(", ")))
+            .replace("sum = sum + left + right", &format!("sum = sum + {}", bindings.join(" + ")));
+        let checked = super::source::checked_module(&source).expect("checked flat packet source");
+        let view = checked.canonical_source().expect("canonical flat packet source").view();
+        let receipt = view.scalar_region().expect("selected source-derived integer layout");
+        assert_eq!(receipt.kind(), witchy_canonical_source::scalar_region::RegionKind::PacketScope);
+        assert_eq!(receipt.covered_awaits().len(), 3);
+        assert!(receipt.validate_checked_source(view.module(), view.task_await_proofs(), view.source_witness()));
+        let companion = witchy_types::pipeline::inspect_closed_packet_region(&checked).expect("flat packet companion");
+        let mut candidate = checked.module().clone();
+        candidate.items.push(witchy_syntax::ast::Item::Function(companion));
+        witchy_types::typeck::annotate_checked_source(candidate).expect("ordinary checked flat buffer layout");
+    }
+}
