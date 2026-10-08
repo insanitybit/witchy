@@ -214,7 +214,7 @@ async fn main(console: Console):
 }
 
 #[test]
-fn producer_frame_bare_test_recipe_uses_general_scheduler() {
+fn producer_frame_bare_test_recipe_uses_channel_only_scheduler() {
     let temp = super::temp_dir::TempDir::new("producer-frame-test-driver");
     let file = temp.write("suite.witchy", r#"import testing
 
@@ -237,11 +237,14 @@ async fn test_producer_frame():
         Some(value) -> testing.assert(value == 2, "third message")
         None -> testing.assert(false, "missing third message")
 "#);
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_witchy"))
-        .arg("test").arg(&file).output().expect("execute real test driver");
-    let text = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
-    assert!(output.status.success(), "{text}");
-    assert!(text.contains("1 passed"), "{text}");
+    for options in ["none", "all"] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_witchy"))
+            .env("WITCHY_OPT", options)
+            .arg("test").arg(&file).output().expect("execute real test driver");
+        let text = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        assert!(output.status.success(), "{text}");
+        assert!(text.contains("1 passed"), "{text}");
+    }
 }
 
 #[test]
@@ -280,4 +283,136 @@ async fn main(console: Console):
     for options in [OptSet::none(), OptSet::all()] {
         assert_eq!(run(source, options), ["result 3", "1", "2"]);
     }
+}
+
+#[test]
+fn producer_channel_only_cli_preserves_full_queue_effect_order_and_empty_finish() {
+    let temp = super::temp_dir::TempDir::new("producer-channel-only-effects");
+    let file = temp.write("suite.witchy", r#"import testing
+
+fn payload(var trace: Int, value: Int) -> Int:
+    trace = trace * 10 + 2
+    value
+
+async fn test_full_queue():
+    let (tx, rx) = chan.channel(1).await
+    var i: Int = 0
+    var trace: Int = 0
+    while i < 3:
+        trace = trace * 10 + 1
+        chan.send(tx, payload(trace, i)).await
+        trace = trace * 10 + 3
+        i = i + 1
+    testing.assert(trace == 123123123, "prefix payload resume order")
+    var expected: Int = 0
+    while expected < 3:
+        let result = chan.recv(rx).await
+        match result:
+            Some(value) -> testing.assert(value == expected, "bounded full queue FIFO")
+            None -> testing.assert(false, "missing queued message")
+        expected = expected + 1
+
+async fn test_empty_finish():
+    let (tx, rx) = chan.channel(1).await
+    var i: Int = 0
+    var visited: Int = 0
+    while i < 0:
+        visited = visited + 1
+        chan.send(tx, i).await
+        visited = visited + 10
+    testing.assert(visited == 0, "empty body effects")
+    testing.assert(i == 0, "empty completion carry")
+    let empty = chan.recv(rx).await
+    match empty:
+        None -> ()
+        Some(_) -> testing.assert(false, "unexpected empty message")
+
+async fn test_string_cleanup():
+    let (tx, rx) = chan.channel(1).await
+    var i: Int = 0
+    while i < 3:
+        chan.send(tx, "owned ${i}").await
+        i = i + 1
+    var received: Int = 0
+    while received < 3:
+        let value = chan.recv(rx).await
+        match value:
+            Some(text) -> testing.assert(text == "owned ${received}", "string FIFO")
+            None -> testing.assert(false, "missing owned message")
+        received = received + 1
+"#);
+    for options in ["none", "all"] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_witchy"))
+            .env("WITCHY_OPT", options).arg("test").arg(&file).output().unwrap();
+        let text = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        assert!(output.status.success(), "{options}: {text}");
+        assert!(text.contains("3 passed"), "{text}");
+    }
+}
+
+#[test]
+fn producer_channel_only_cli_preserves_prefix_payload_and_resume_traps() {
+    let temp = super::temp_dir::TempDir::new("producer-channel-only-traps");
+    for (stage, prefix, payload, suffix) in [
+        ("prefix", "let trapped = 1 / (i - i)\n        let _ = trapped", "0", "()"),
+        ("payload", "()", "1 / (i - i)", "()"),
+        ("resume", "()", "0", "let trapped = 1 / (i - i)\n        let _ = trapped"),
+    ] {
+        let source = format!("async fn test_trap():\n    let (tx, rx) = chan.channel(1).await\n    var i: Int = 0\n    while i < 3:\n        {prefix}\n        chan.send(tx, {payload}).await\n        {suffix}\n        i = i + 1\n");
+        let file = temp.write("suite.witchy", &source);
+        for options in ["none", "all"] {
+            let output = std::process::Command::new(env!("CARGO_BIN_EXE_witchy"))
+                .env("WITCHY_OPT", options).arg("test").arg(&file).output().unwrap();
+            let text = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+            assert!(!output.status.success(), "trap must fail test");
+            assert!(text.contains("division by zero"), "{options}/{stage}: {text}");
+            assert!(text.contains("1 failed"), "{text}");
+        }
+    }
+}
+
+#[test]
+fn producer_channel_only_cli_replays_existing_public_executor_task() {
+    let temp = super::temp_dir::TempDir::new("producer-channel-only-replay");
+    let file = temp.write("suite.witchy", r#"import task
+import testing
+
+async fn recipe():
+    let (tx, rx) = chan.channel(1).await
+    var i: Int = 0
+    while i < 3:
+        chan.send(tx, i).await
+        i = i + 1
+    var expected: Int = 0
+    while expected < 3:
+        let result = chan.recv(rx).await
+        match result:
+            Some(value) -> testing.assert(value == expected, "fresh replay carry and channel")
+            None -> testing.assert(false, "missing replay message")
+        expected = expected + 1
+
+fn test_replay():
+    let reusable = recipe()
+    task.__compiler_run_channel_only(reusable)
+    task.__compiler_run_channel_only(reusable)
+"#);
+    for options in ["none", "all"] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_witchy"))
+            .env("WITCHY_OPT", options).arg("test").arg(&file).output().unwrap();
+        let text = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+        assert!(output.status.success(), "{options}: {text}");
+        assert!(text.contains("1 passed"), "{text}");
+    }
+}
+
+#[test]
+fn producer_channel_only_cli_rejects_unproved_scheduler_effect() {
+    let temp = super::temp_dir::TempDir::new("producer-channel-only-effect-refusal");
+    let file = temp.write("suite.witchy", "import task\n\nasync fn child():\n    ()\n\nfn test_effect():\n    task.__compiler_run_channel_only(chan.scope([child()]))\n");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_witchy"))
+        .env("WITCHY_OPT", "all").arg("test").arg(&file).output().unwrap();
+    let text = format!("{}{}", String::from_utf8_lossy(&output.stdout), String::from_utf8_lossy(&output.stderr));
+    assert!(!output.status.success());
+    assert!(text.contains("compiler-proven channel-only Task produced another scheduler effect"), "{text}");
+    assert!(text.contains("1 failed"), "{text}");
 }

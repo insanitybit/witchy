@@ -1,4 +1,4 @@
-//! Bare test recipe v8. Raw bytes and loader ownership survive discovery; a
+//! Bare test recipe v10. Raw bytes and loader ownership survive discovery; a
 //! fresh parse/check of the compiler-created entry derives ALL driver witnesses.
 //! Async tests are driven to completion; parameterized, fixture and integration
 //! recipes are separate obligations.
@@ -10,7 +10,7 @@ pub use console_fixture::check_console_fixture_test_driver;
 mod integration;
 pub use integration::check_integration_test_driver;
 
-const BARE_RECIPE_VERSION: u32 = 8;
+const BARE_RECIPE_VERSION: u32 = 10;
 
 #[derive(Debug)]
 pub struct CheckedTestSuite {
@@ -48,13 +48,6 @@ enum AsyncTestDriver {
 }
 
 fn async_test_driver(suite: &CheckedTestSuite, ordinal: u64) -> AsyncTestDriver {
-    if witchy_syntax::ast::visit::visit_module_exprs(suite.checked.module(), &mut |expression| {
-        if matches!(expression, Expr::Call { name, .. }
-            if crate::suspension_carrier::call_family(name, "task.__producer_frame"))
-        { Err(()) } else { Ok(()) }
-    }).is_err() {
-        return AsyncTestDriver::General;
-    }
     let Ok(input) = suite.checked.typed_async_lowering_input() else {
         return AsyncTestDriver::General;
     };
@@ -79,12 +72,6 @@ fn async_test_driver(suite: &CheckedTestSuite, ordinal: u64) -> AsyncTestDriver 
         operation.callable == source.callable
             && operation.kind == crate::async_control_flow::SourceAsyncOperationKind::Await
     }).collect::<Vec<_>>();
-    if witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::ClosureElide)
-        && source.controls.iter().any(|control| control.kind == crate::async_control_flow::SourceControlKind::While)
-        && awaits.iter().any(|operation| operation.runtime_kind == crate::typed_async_lowering::TypedAsyncOperationKind::ChannelSend)
-    {
-        return AsyncTestDriver::General;
-    }
     if awaits.is_empty() {
         AsyncTestDriver::Ready
     } else if awaits.iter().all(|operation| {

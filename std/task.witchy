@@ -1786,6 +1786,26 @@ pub fn __compiler_run_channel_only(root: Task(())):
                 list.push(channels, ring_new(cap))
                 list.push(typed_i64_channels, Some(typed_i64_ring_new(cap)))
                 current = cont(cid)
+            ProduceFrame((frame, prepare, resume, finish, ch, msg)) ->
+                var state = frame
+                var channel = ch
+                var pending = msg
+                var producing = true
+                while producing:
+                    materialize_typed_i64_channel(channel, channels, typed_i64_channels)
+                    let (buf, head, count, cap) = list.at(channels, channel)
+                    list.set_at(channels, channel, ring_put(buf, head, count, pending, cap))
+                    if resume(0, state):
+                        current = finish(state)
+                        producing = false
+                    else:
+                        match prepare(0, state):
+                            Some((next_channel, next_message)) ->
+                                channel = next_channel
+                                pending = next_message
+                            None ->
+                                current = finish(state)
+                                producing = false
             Push(ch, msg, cont) ->
                 materialize_typed_i64_channel(ch, channels, typed_i64_channels)
                 let (buf, head, count, cap) = list.at(channels, ch)

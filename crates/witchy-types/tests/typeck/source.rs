@@ -30,6 +30,28 @@ pub(super) fn checked_bundle_with_std_override(
     entry: &str,
     std_override: Option<(&str, &str)>,
 ) -> Result<witchy_types::pipeline::CheckedModule, String> {
+    load_bundle(user_sources, entry, std_override, |sources, user_modules, owners| {
+        witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
+            sources, entry,
+            witchy_syntax::linker::ComptimeExpander::new(|_, _, _| Ok(witchy_syntax::origin::OriginTable::default())),
+            &user_modules, owners,
+        ).map_err(|error| error.to_string())
+    })
+}
+
+pub(super) fn checked_test_suite(source: &str) -> Result<witchy_types::pipeline::CheckedTestSuite, String> {
+    load_bundle(vec![("main", source)], "main", None, |sources, user_modules, owners| {
+        witchy_types::pipeline::link_checked_test_suite_from_source_bundle(
+            sources, "main",
+            witchy_syntax::linker::ComptimeExpander::new(|_, _, _| Ok(witchy_syntax::origin::OriginTable::default())),
+            &user_modules, owners,
+        ).map_err(|error| error.to_string())
+    })
+}
+
+fn load_bundle<T>(user_sources: Vec<(&str, &str)>, entry: &str, std_override: Option<(&str, &str)>,
+    check: impl FnOnce(Vec<(String, Vec<u8>)>, HashSet<String>, AuthenticatedModuleOwners) -> Result<T, String>,
+) -> Result<T, String> {
     let user_source_by_name = user_sources
         .iter()
         .map(|(name, source)| ((*name).to_string(), *source))
@@ -115,14 +137,7 @@ pub(super) fn checked_bundle_with_std_override(
     let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments)
         .map_err(|error| error.to_string())?;
     let user_modules = user_source_by_name.keys().cloned().collect::<HashSet<_>>();
-    witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
-        sources,
-        entry,
-        witchy_syntax::linker::ComptimeExpander::new(|_, _, _| Ok(witchy_syntax::origin::OriginTable::default())),
-        &user_modules,
-        owners,
-    )
-    .map_err(|error| error.to_string())
+    check(sources, user_modules, owners)
 }
 
 pub(super) fn checked(source: &str) -> Result<(), String> {
