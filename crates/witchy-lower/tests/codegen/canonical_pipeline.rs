@@ -548,6 +548,26 @@ fn list_int_out_of_bounds_source_admits_then_traps() {
 
 #[cfg(feature = "native-test-runtime")]
 #[test]
+fn reference_facts_preserve_snapshots_across_scalar_stores_and_loop_joins() {
+    struct ResetOptimization;
+    impl Drop for ResetOptimization {
+        fn drop(&mut self) { witchy_syntax::opt::set_for_tests(None); }
+    }
+    let _reset = ResetOptimization;
+    let fixtures = [
+        ("fn main() -> Int:\n    var xs = [11, 22]\n    xs[0] = 17\n    let before = xs\n    var i = 0\n    while i < 3:\n        xs[i % 2] = i + 50\n        i = i + 1\n    let after = xs\n    xs[0] = 90\n    before[0] + before[1] + after[0] + after[1] + xs[0] + xs[1]\n", 283),
+        ("fn main() -> Int:\n    var xs = [10, 20]\n    var turn = 0\n    var sum = 0\n    while turn < 3:\n        let snapshot = xs\n        if turn % 2 == 0:\n            xs[0] = xs[0] + turn + 1\n        else:\n            xs[1] = xs[1] + turn + 1\n        sum = sum + snapshot[0] + snapshot[1]\n        turn = turn + 1\n    sum + xs[0] + xs[1]\n", 130),
+    ];
+    for optimization in [witchy_syntax::opt::OptSet::none(), witchy_syntax::opt::OptSet::all()] {
+        witchy_syntax::opt::set_for_tests(Some(optimization));
+        for (source, expected) in fixtures {
+            assert_eq!(run_index_result(source, "f0"), expected);
+        }
+    }
+}
+
+#[cfg(feature = "native-test-runtime")]
+#[test]
 fn list_push_keeps_length_bounds_check_for_out_of_bounds_index() {
     assert_eq!(run_oob("fn main() -> Int:\n    var xs = [1]\n    xs.push(2)\n    xs[2]\n"),
         "runtime error: `main`, line 4: list index 2 out of bounds (length 2)");

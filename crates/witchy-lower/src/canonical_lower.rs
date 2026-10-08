@@ -10823,7 +10823,19 @@ impl FunctionLowerer<'_> {
         if !transferred.is_empty() {
             self.owned_parameters.retain(|parameter| !transferred.contains(parameter));
         }
-        self.graph_version += 1;
+        // Token and sharing scans ignore scalar operations and token consumption.
+        if !matches!(&operation,
+            Operation::ConstUnit { .. } | Operation::ConstInt { .. }
+            | Operation::ConstFloat { .. } | Operation::ConstBool { .. }
+            | Operation::ConstSize { .. } | Operation::Arithmetic { .. }
+            | Operation::Compare { .. } | Operation::NarrowSize { .. }
+            | Operation::WidenSize { .. } | Operation::FloatUnary { .. }
+            | Operation::Guard { .. } | Operation::Store { .. }
+            | Operation::DropRef { .. } | Operation::Release { .. }
+            | Operation::Reclaim { .. }
+        ) {
+            self.graph_version += 1;
+        }
         self.blocks[self.current.get() as usize].operations.push(operation);
     }
 
