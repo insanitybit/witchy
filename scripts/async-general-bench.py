@@ -171,7 +171,8 @@ def main():
         for row in rows:
             kernel = row["kernel_ns"]
             ratio = kernel["candidate_over_go"]
-            verdict = "pass" if args.runs % 6 == 0 and kernel["candidate_over_go_95_percent_ci"][1] <= 3 else "unmet"
+            contract = next(contract for contract in selected if contract["name"] == row["workload"])
+            verdict = "not comparable" if not contract.get("target_eligible", True) else ("pass" if args.runs % 6 == 0 and kernel["candidate_over_go_95_percent_ci"][1] <= 3 else "unmet")
             report.append(f"| {row['workload']} | {kernel['go']['median'] / 1e6:.3f} | {ratio:.2f}× | {verdict} |")
     metadata["load_average_end"] = os.getloadavg()
     (output / "results.json").write_text(json.dumps({"metadata": metadata, "workloads": rows}, indent=2) + "\n")

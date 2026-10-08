@@ -77,6 +77,7 @@
     "kind": "cancellation",
     "shape": "race cancellation after String preparation behind full queue; retain seeded FIFO",
     "validation": "winner and seeded payload; untimed preparation trace; actual parked-state equivalence unproved",
-    "timing": "inclusive channel setup, blocked worker activation, cancellation, completion, and seeded receive"
+    "timing": "inclusive channel setup, blocked worker activation, cancellation, completion, and seeded receive",
+    "target_eligible": false
   }
 ]
