@@ -270,3 +270,5 @@ mod unique_fields;
 mod byte_overwrite;
 #[path = "codegen/list_projection.rs"]
 mod list_projection;
+#[path = "codegen/owner_list_update.rs"]
+mod owner_list_update;

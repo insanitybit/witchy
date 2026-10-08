@@ -69,6 +69,8 @@ mod net;
 
 #[path = "canonical_list_update.rs"]
 mod list_update;
+#[path = "canonical_owner_list_update.rs"]
+mod owner_list_update;
 #[path = "canonical_writable.rs"]
 mod writable;
 #[path = "canonical_unique_writeback.rs"]

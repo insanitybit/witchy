@@ -33,8 +33,7 @@ impl FunctionLowerer<'_> {
     /// A place assignment's replacement: the root binding takes the result,
     /// so a list no other binding can observe is updated in place. The
     /// checker independently requires the store target to be the sole live
-    /// token; a shared list, a reference element, or an owner-family list
-    /// keeps the copying rebuild.
+    /// token; an owner-family list instead uses its consuming COW operation.
     pub(super) fn replace_owned_list_value(
         &mut self,
         source: ValueId,
@@ -43,7 +42,13 @@ impl FunctionLowerer<'_> {
         list_type: Type,
         site: &abort::Site,
     ) -> Result<ValueId, CanonicalLoweringError> {
-        if self.owner_list_family(source).is_some() || !self.sole_token(source) {
+        if self.owner_list_family(source).is_some() {
+            if self.owned_gc_token(source) && self.binding_holders(source) <= 1 {
+                return self.replace_consumed_owner_list(source, index, replacement, list_type, site);
+            }
+            return self.replace_list_value(source, index, replacement, list_type, site);
+        }
+        if !self.sole_token(source) {
             return self.replace_list_value(source, index, replacement, list_type, site);
         }
         let (layout, element_type, header_bytes, stride_bytes) = list_layout(

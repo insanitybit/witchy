@@ -409,6 +409,7 @@
     }
 
     mod stdlib_evidence;
+    mod owner_list_updates;
     mod concurrency;
     mod traits;
     mod records;
