@@ -34,6 +34,12 @@ fn renamed_block(mut block: Block, names: &BTreeMap<String, String>, initialize:
                     value: renamed_expression(value.clone(), names), place_depth: 0 };
             }
             Stmt::Let { value, mutable: false, .. } => *value = renamed_expression(value.clone(), names),
+            Stmt::Expr(Expr::If { cond, then_block, else_block }) => {
+                *cond = Box::new(renamed_expression(*cond.clone(), names));
+                *then_block = renamed_block(then_block.clone(), names, false)?;
+                if let Some(block) = else_block { *block = renamed_block(block.clone(), names, false)?; }
+            }
+            Stmt::Expr(Expr::Block(block)) => *block = renamed_block(block.clone(), names, false)?,
             Stmt::Expr(expression) => *expression = renamed_expression(expression.clone(), names),
             _ => return None,
         }

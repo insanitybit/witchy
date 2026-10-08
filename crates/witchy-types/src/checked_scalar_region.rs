@@ -165,11 +165,14 @@ impl ScalarRegionSource {
             if index == 0 {
                 if !flow.controls.is_empty() { return None; }
             } else {
-                let [control] = flow.controls.as_slice() else { return None };
+                let [control, rest @ ..] = flow.controls.as_slice() else { return None };
                 let function = crate::typed_async_lowering::typed_source_function(typed, &flow.callable)?;
                 let selector = source_expression(function, control.selector)?;
                 let selector_type = typed.table().type_of(selector).and_then(typeck::ty_to_ast)?;
                 if !control.path.is_empty() { return None; }
+                if rest.iter().any(|control| control.kind != SourceControlKind::If
+                    || source_expression(function, control.selector).and_then(|selector| typed.table().type_of(selector))
+                        .and_then(typeck::ty_to_ast) != Some(Type::Named("Bool".into(), vec![]))) { return None; }
                 if index - 1 == producer {
                     if control.kind != SourceControlKind::While || selector_type != Type::Named("Bool".into(), vec![]) {
                         return None;

@@ -14,7 +14,7 @@ impl PacketShape {
             || definition.grantable || definition.packed || !definition.params.is_empty()
             || !definition.derives.is_empty() || definition.partial_eq_derived || definition.public_state_derived
             || !variant.field_names.is_empty()
-            || variant.fields.is_empty() || variant.fields.iter().any(|ty| ty != &named("Int")) { return None; }
+            || variant.fields.is_empty() || variant.fields.iter().any(|ty| !matches!(ty, Type::Named(name, args) if args.is_empty() && matches!(name.as_str(), "Int" | "Bool"))) { return None; }
         Some(Self { definition: definition.clone() })
     }
     pub(crate) fn payload_type(&self) -> Type { named(&self.definition.name) }
@@ -61,8 +61,9 @@ impl PacketActor {
             let Expr::Ctor { name, args } = payload else { return None };
             if name != shape.constructor() || args.len() != shape.definition.variants[0].fields.len() { return None; }
             let (first, remaining) = args.split_first()?;
-            remaining_payloads = remaining.to_vec();
-            *payload = first.clone();
+            remaining_payloads = remaining.iter().zip(&shape.definition.variants[0].fields[1..])
+                .map(|(value, ty)| encode(value.clone(), ty)).collect();
+            *payload = encode(first.clone(), &shape.definition.variants[0].fields[0]);
         } else {
             let loops = function.body.stmts.iter().enumerate().filter_map(|(index, statement)| match statement {
                 Stmt::Expr(Expr::For { .. }) => Some(index), _ => None,
@@ -92,13 +93,23 @@ impl PacketActor {
                 Ok::<_, ()>(())
             }).ok()?;
             if leaks_packet { return None; }
+            let destructure_line = arm.line;
             *var = first.clone();
             *body = flattened.clone();
             remaining_received = remaining.to_vec();
+            let mut initialized = remaining_received.iter().cloned().zip(shape.definition.variants[0].fields[1..].iter().cloned()).collect::<Vec<_>>();
+            if shape.definition.variants[0].fields[0] == named("Bool") {
+                *var = "scalar_region_packet_first".into();
+                body.stmts.insert(0, Stmt::Assign { name: first.clone(),
+                    value: decode(Expr::Var(var.clone()), &named("Bool")), place_depth: 0 });
+                body.lines.insert(0, destructure_line);
+                initialized.push((first.clone(), named("Bool")));
+            }
             let line = function.body.lines[index];
-            for (offset, name) in remaining_received.iter().enumerate() {
+            for (offset, (name, ty)) in initialized.into_iter().enumerate() {
+                let value = if ty == named("Bool") { Expr::Bool(false) } else { Expr::Int(0) };
                 function.body.stmts.insert(index + offset, Stmt::Let {
-                    name: name.clone(), ty: Some(named("Int")), mutable: true, value: Expr::Int(0),
+                    name, ty: Some(ty), mutable: true, value,
                 });
                 function.body.lines.insert(index + offset, line);
             }
@@ -111,4 +122,18 @@ impl PacketActor {
         if remaining_payloads.iter().any(|expression| !scalar_expression(expression, &bindings)) { return None; }
         Some(Self { function, remaining_payloads, remaining_received })
     }
+}
+
+pub(crate) fn encode(expression: Expr, ty: &Type) -> Expr {
+    if ty == &named("Bool") {
+        Expr::If { cond: Box::new(expression),
+            then_block: Block { stmts: vec![Stmt::Expr(Expr::Int(1))], lines: vec![0], region: None },
+            else_block: Some(Block { stmts: vec![Stmt::Expr(Expr::Int(0))], lines: vec![0], region: None }) }
+    } else { expression }
+}
+
+pub(crate) fn decode(expression: Expr, ty: &Type) -> Expr {
+    if ty == &named("Bool") {
+        Expr::Binary { op: witchy_syntax::ast::BinOp::NotEq, lhs: Box::new(expression), rhs: Box::new(Expr::Int(0)) }
+    } else { expression }
 }

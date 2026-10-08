@@ -51,11 +51,11 @@ pub(crate) fn companion(source: &PacketRegionSource) -> Option<Function> {
         format!("scalar_region_actor_{}_{}", 1 - source.producer, name)).collect::<Vec<_>>();
     if payloads.len() != received.len() { return None; }
     let width = i64::try_from(payloads.len()).ok()?.checked_add(1)?;
-    transform(&mut companion.body, &first_received, &received, &payloads, width)?;
+    transform(&mut companion.body, &first_received, &received, &payloads, &source.shape.definition.variants[0].fields, width)?;
     Some(companion)
 }
 
-fn transform(body: &mut Block, first_received: &str, remaining_received: &[String], payloads: &[Expr], width: i64) -> Option<()> {
+fn transform(body: &mut Block, first_received: &str, remaining_received: &[String], payloads: &[Expr], types: &[witchy_syntax::ast::Type], width: i64) -> Option<()> {
     let statements = std::mem::take(&mut body.stmts);
     let lines = std::mem::take(&mut body.lines);
     if statements.len() != lines.len() { return None; }
@@ -64,12 +64,12 @@ fn transform(body: &mut Block, first_received: &str, remaining_received: &[Strin
         if let Stmt::Expr(expression) = &mut statement {
             match expression {
                 Expr::Block(block) | Expr::While { body: block, .. } => {
-                    transform(block, first_received, remaining_received, payloads, width)?;
+                    transform(block, first_received, remaining_received, payloads, types, width)?;
                 }
                 Expr::If { then_block, else_block, .. } => {
-                    transform(then_block, first_received, remaining_received, payloads, width)?;
+                    transform(then_block, first_received, remaining_received, payloads, types, width)?;
                     if let Some(block) = else_block {
-                        transform(block, first_received, remaining_received, payloads, width)?;
+                        transform(block, first_received, remaining_received, payloads, types, width)?;
                     }
                 }
                 _ => {}
@@ -102,8 +102,8 @@ fn transform(body: &mut Block, first_received: &str, remaining_received: &[Strin
             Stmt::Assign { name, value, .. } if name == first_received => {
                 *value = call("list.at", vec![variable("scalar_region_queue"), lane_index(variable("scalar_region_head"), width, 0)]);
                 for (lane, received) in remaining_received.iter().enumerate() {
-                    extra.push(assign(received, call("list.at", vec![variable("scalar_region_queue"),
-                        lane_index(variable("scalar_region_head"), width, i64::try_from(lane + 1).ok()?)])));
+                    extra.push(assign(received, crate::packet_region_recipe::decode(call("list.at", vec![variable("scalar_region_queue"),
+                        lane_index(variable("scalar_region_head"), width, i64::try_from(lane + 1).ok()?)]), &types[lane + 1])));
                 }
             }
             Stmt::Assign { name, value, .. } if name == "scalar_region_head" => {

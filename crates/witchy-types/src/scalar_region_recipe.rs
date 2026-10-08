@@ -28,9 +28,28 @@ pub(crate) fn scalar_expression(expression: &Expr, bindings: &BTreeSet<String>) 
             | BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor, lhs, rhs } => {
             scalar_expression(lhs, bindings) && scalar_expression(rhs, bindings)
         }
+        Expr::Binary { op: BinOp::Mod, lhs, rhs } if matches!(rhs.as_ref(), Expr::Int(divisor) if *divisor > 0) => scalar_expression(lhs, bindings),
         Expr::Unary { op: UnOp::Neg | UnOp::Not, expr } => scalar_expression(expr, bindings),
+        Expr::If { cond, then_block, else_block: Some(else_block) } => {
+            scalar_expression(cond, bindings) && scalar_value(then_block, bindings) && scalar_value(else_block, bindings)
+        },
         _ => false,
     }
+}
+
+fn scalar_value(block: &Block, bindings: &BTreeSet<String>) -> bool {
+    block.region.is_none() && matches!(block.stmts.as_slice(), [Stmt::Expr(expression)] if scalar_expression(expression, bindings))
+}
+
+fn scalar_statements(block: &Block, bindings: &BTreeSet<String>) -> bool {
+    block.region.is_none() && block.stmts.iter().all(|statement| match statement {
+        Stmt::Assign { name, value, place_depth: 0 } => bindings.contains(name) && scalar_expression(value, bindings),
+        Stmt::Expr(Expr::Tuple(values)) => values.is_empty(),
+        Stmt::Expr(Expr::If { cond, then_block, else_block }) => scalar_expression(cond, bindings)
+            && scalar_statements(then_block, bindings) && else_block.as_ref().is_none_or(|block| scalar_statements(block, bindings)),
+        Stmt::Expr(Expr::Block(block)) => scalar_statements(block, bindings),
+        _ => false,
+    })
 }
 
 pub(crate) fn printed_expression(expression: &Expr, bindings: &BTreeSet<String>) -> bool {
@@ -130,13 +149,8 @@ impl ActorRecipe {
             fields.push(((*variable).clone(), named("Int")));
             (&[][..], &[][..], None, 0, body.stmts.as_slice(), body.lines.as_slice(), Some((*variable).clone()))
         };
-        for statement in prefix.iter().chain(suffix) {
-            match statement {
-                Stmt::Assign { name, value, place_depth: 0 } if names.contains(name) && scalar_expression(value, &names) => {},
-                Stmt::Expr(Expr::Tuple(values)) if values.is_empty() => {},
-                _ => return None,
-            }
-        }
+        if !scalar_statements(&block(prefix, prefix_lines), &names)
+            || !scalar_statements(&block(suffix, suffix_lines), &names) { return None; }
         if condition.is_some_and(|condition| !scalar_expression(condition, &names)) { return None; }
         let completion_body = block(&function.body.stmts[*loop_index + 1..], &function.body.lines[*loop_index + 1..]);
         if !completion(&completion_body, &names, &consoles, &clocks) { return None; }

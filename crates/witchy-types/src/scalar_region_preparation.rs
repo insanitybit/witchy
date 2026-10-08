@@ -84,7 +84,7 @@ impl Preparation {
             }
         }
         let receiver = &rederived.flows[2 - rederived.producer];
-        let [control] = receiver.controls.as_slice() else { return Err("scalar receipt lost implicit receive control".into()) };
+        let [control, ..] = receiver.controls.as_slice() else { return Err("scalar receipt lost implicit receive control".into()) };
         let bindings = receiver.bindings_read_by(control.selector)?;
         let [endpoint] = bindings.as_slice() else { return Err("implicit scalar receive has ambiguous endpoint binding".into()) };
         Ok(BoundReceipt { kind: witchy_canonical_source::scalar_region::RegionKind::ScalarScope, root, companion: companion_item,

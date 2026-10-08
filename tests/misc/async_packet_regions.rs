@@ -153,3 +153,19 @@ fn closed_packet_completion_clock_follows_the_final_receive() {
     assert_eq!(ordinary, ["1584", "completed=true"]);
     assert_eq!(run(&source, OptSet::all(), true), ordinary);
 }
+
+#[test]
+fn closed_packet_boolean_codecs_preserve_fifo_and_conditional_updates() {
+    let _reset = Reset;
+    let source = include_str!("../../benchmarks/async_general/packet_bool.witchy")
+        .replace("__MESSAGES__", "32")
+        .replace("bench_ns=${bench_t1 - bench_t0}", "completed=${bench_t1 >= bench_t0}");
+    let reversed = source.replace("Packet(Int, Bool)", "Packet(Bool, Int)")
+        .replace("Packet(i, i % 2 == 0)", "Packet(i % 2 == 0, i)")
+        .replace("Packet(left, right)", "Packet(right, left)");
+    for source in [source, reversed] {
+        let ordinary = run(&source, OptSet::none(), false);
+        assert_eq!(ordinary, ["496", "completed=true"]);
+        assert_eq!(run(&source, OptSet::all(), true), ordinary);
+    }
+}

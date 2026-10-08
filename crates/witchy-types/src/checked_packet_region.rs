@@ -188,15 +188,21 @@ impl PacketRegionSource {
             } else {
                 let function = crate::typed_async_lowering::typed_source_function(typed, &flow.callable)?;
                 if index - 1 == producer {
-                    let [control] = flow.controls.as_slice() else { return None };
+                    let [control, rest @ ..] = flow.controls.as_slice() else { return None };
                     let selector = source_expression(function, control.selector)?;
+                    if rest.iter().any(|control| control.kind != SourceControlKind::If
+                        || source_expression(function, control.selector).and_then(|selector| typed.table().type_of(selector))
+                            .and_then(typeck::ty_to_ast) != Some(Type::Named("Bool".into(), vec![]))) { return None; }
                     if !control.path.is_empty() || control.kind != SourceControlKind::While
                         || typed.table().type_of(selector).and_then(typeck::ty_to_ast) != Some(Type::Named("Bool".into(), vec![])) {
                         return None;
                     }
                 } else {
-                    let [receive, destructure] = flow.controls.as_slice() else { return None };
+                    let [receive, destructure, rest @ ..] = flow.controls.as_slice() else { return None };
                     let selector = source_expression(function, receive.selector)?;
+                    if rest.iter().any(|control| control.kind != SourceControlKind::If
+                        || source_expression(function, control.selector).and_then(|selector| typed.table().type_of(selector))
+                            .and_then(typeck::ty_to_ast) != Some(Type::Named("Bool".into(), vec![]))) { return None; }
                     let selector_type = typed.table().type_of(selector).and_then(typeck::ty_to_ast)?;
                     if !receive.path.is_empty() || receive.kind != SourceControlKind::For
                         || !matches!(selector, Expr::Call { name, .. } if standard(catalog, name, "__recv_stream"))

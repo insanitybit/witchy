@@ -115,10 +115,12 @@ fn closed_scalar_refuses_unsupported_operators_and_endpoint_uses() {
         SOURCE.replace("chan.send(tx, i).await", "chan.send(tx, i).await\n        chan.send(tx, i).await"),
         SOURCE.replace("    let before", "    let scalar_region_payload = 0\n    let before"),
     ];
-    for operator in ["/", "%", "<<", ">>"] {
+    for operator in ["/", "<<", ">>"] {
         cases.push(SOURCE.replace("chan.send(tx, i)", &format!("chan.send(tx, i {operator} 1)")));
     }
     for (old, new) in [
+        ("chan.send(tx, i)", "chan.send(tx, i % 0)"),
+        ("chan.send(tx, i)", "chan.send(tx, i % n)"),
         ("var i = 0", "var i = 1 / n"),
         ("while i < n:", "while i / n < n:"),
         ("        chan.send", "        i = i / n\n        chan.send"),

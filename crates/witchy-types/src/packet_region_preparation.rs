@@ -74,7 +74,7 @@ impl Preparation {
             }
         }
         let receiver = &rederived.flows[2 - rederived.producer];
-        let [control, destructure] = receiver.controls.as_slice() else { return Err("packet receipt lost implicit receive or destructure control".into()) };
+        let [control, destructure, ..] = receiver.controls.as_slice() else { return Err("packet receipt lost implicit receive or destructure control".into()) };
         if control.kind != crate::async_control_flow::SourceControlKind::For
             || destructure.kind != (crate::async_control_flow::SourceControlKind::Match { arms: 1 }) {
             return Err("packet receive/destructure source control changed".into());

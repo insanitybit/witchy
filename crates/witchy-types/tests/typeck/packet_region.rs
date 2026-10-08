@@ -40,8 +40,8 @@ fn packet_region_refuses_observable_or_unsupported_payload_shapes() {
     let source = include_str!("../../../../benchmarks/chan_scheduler.witchy");
     for source in [
         source.replace("type Packet:", "sealed type Packet:"),
-        source.replace("Packet(Int, Int)", "Packet(Int, Bool)")
-            .replace("Packet(i, i + 1)", "Packet(i, i < n)")
+        source.replace("Packet(Int, Int)", "Packet(Int, String)")
+            .replace("Packet(i, i + 1)", "Packet(i, \"payload\")")
             .replace("sum = sum + left + right", "sum = sum + left"),
         source.replace("Packet(i, i + 1)", "Packet(i, i / (n + 1))"),
         source.replace("Packet(i, i + 1)", "Packet(i, i % (n + 1))"),
@@ -116,4 +116,23 @@ fn packet_region_retains_actor_completion_clock_and_original_awaits() {
     let fallback = source.replace("clock.now_monotonic()", "clock.now()");
     let checked = super::source::checked_module(&fallback).expect("ordinary nonmonotonic clock source");
     assert!(checked.canonical_source().unwrap().view().scalar_region().is_none());
+}
+
+#[test]
+fn packet_region_checks_mixed_scalar_codecs_and_source_branches() {
+    struct Reset;
+    impl Drop for Reset { fn drop(&mut self) { witchy_syntax::opt::set_for_tests(None); } }
+    let _reset = Reset;
+    witchy_syntax::opt::set_for_tests(Some(witchy_syntax::opt::OptSet::all()));
+    let source = include_str!("../../../../benchmarks/async_general/packet_bool.witchy").replace("__MESSAGES__", "32");
+    let reversed = source.replace("Packet(Int, Bool)", "Packet(Bool, Int)")
+        .replace("Packet(i, i % 2 == 0)", "Packet(i % 2 == 0, i)")
+        .replace("Packet(left, right)", "Packet(right, left)");
+    for source in [source, reversed] {
+        let checked = super::source::checked_module(&source).expect("checked mixed scalar source");
+        let view = checked.canonical_source().unwrap().view();
+        let receipt = view.scalar_region().expect("derived scalar codecs and if paths");
+        assert_eq!(receipt.covered_awaits().len(), 3);
+        assert!(receipt.validate_checked_source(view.module(), view.task_await_proofs(), view.source_witness()));
+    }
 }
