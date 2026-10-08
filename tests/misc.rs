@@ -280,3 +280,6 @@ mod async_scalar_regions;
 
 #[path = "misc/async_select_lane_frames.rs"]
 mod async_select_lane_frames;
+
+#[path = "misc/async_packet_regions.rs"]
+mod async_packet_regions;

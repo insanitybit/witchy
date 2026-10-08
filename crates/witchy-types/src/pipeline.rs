@@ -2262,6 +2262,16 @@ pub fn assert_closed_scalar_receipt_rejects_forgery(checked: &CheckedModule) {
     }
 }
 
+#[doc(hidden)]
+pub fn inspect_closed_packet_region(checked: &CheckedModule) -> Result<witchy_syntax::ast::Function, String> {
+    let catalog = checked.runtime_declaration_catalog().map_err(|error| error.to_string())?;
+    let source = crate::checked_packet_region::PacketRegionSource::derive(checked, &catalog)
+        .ok_or("packet source is ineligible")?;
+    crate::checked_scalar_contract::scheduler_contract(checked.module(),
+        checked.typed_async_source().ok_or("missing packet source")?.module(), &catalog)?;
+    crate::packet_region_emitter::companion(&source).ok_or("packet lane recipe is ineligible".into())
+}
+
 
 #[doc(hidden)]
 pub fn assert_closed_scalar_scheduler_rejects_missing_projection(checked: &CheckedModule) {
