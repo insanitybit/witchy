@@ -63,28 +63,44 @@ fn run(source: &str, options: OptSet) -> Vec<String> {
     output.unwrap()
 }
 
-#[test]
-fn async_receive_state_frames_preserve_rounds_and_list_value_semantics() {
+fn preserve_rounds_and_list_value_semantics(capacity: i64) {
     let _reset = Reset;
-    for capacity in [-1, 0, 1, 4] {
-        let source = TRACE.replace("channel(1)", &format!("channel({capacity})"));
-        let expected = if capacity == 1 {
-            vec!["send 0", "send 1", "prepare 0", "receive 0 0 0", "prepare 1", "send 2",
-                "receive 1 0 1", "prepare 2", "send 3", "receive 2 2 1", "prepare 3",
-                "producer done", "receive 3 2 3", "receiver done 2 3", "joined"]
-        } else {
-            vec!["send 0", "send 1", "prepare 0", "send 2", "receive 0 0 0", "prepare 1",
-                "send 3", "receive 1 0 1", "prepare 2", "receive 2 2 1", "prepare 3",
-                "producer done", "receive 3 2 3", "receiver done 2 3", "joined"]
-        }.into_iter().map(str::to_string).collect::<Vec<_>>();
-        assert_eq!(run(&source, OptSet::none()), expected);
-        witchy::opt::set_for_tests(Some(OptSet::all()));
-        assert!(selected(&source));
-        assert_eq!(run(&source, OptSet::all()), expected);
-        assert_eq!(run(&source, OptSet::all().without(Opt::ClosureElide)), expected);
-    }
+    let source = TRACE.replace("channel(1)", &format!("channel({capacity})"));
+    let expected = if capacity == 1 {
+        vec!["send 0", "send 1", "prepare 0", "receive 0 0 0", "prepare 1", "send 2",
+            "receive 1 0 1", "prepare 2", "send 3", "receive 2 2 1", "prepare 3",
+            "producer done", "receive 3 2 3", "receiver done 2 3", "joined"]
+    } else {
+        vec!["send 0", "send 1", "prepare 0", "send 2", "receive 0 0 0", "prepare 1",
+            "send 3", "receive 1 0 1", "prepare 2", "receive 2 2 1", "prepare 3",
+            "producer done", "receive 3 2 3", "receiver done 2 3", "joined"]
+    }.into_iter().map(str::to_string).collect::<Vec<_>>();
+    assert_eq!(run(&source, OptSet::none()), expected);
+    witchy::opt::set_for_tests(Some(OptSet::all()));
+    assert!(selected(&source));
+    assert_eq!(run(&source, OptSet::all()), expected);
+    assert_eq!(run(&source, OptSet::all().without(Opt::ClosureElide)), expected);
 }
 
+#[test]
+fn async_receive_state_frames_preserve_rounds_and_list_value_semantics_unbounded() {
+    preserve_rounds_and_list_value_semantics(-1);
+}
+
+#[test]
+fn async_receive_state_frames_preserve_rounds_and_list_value_semantics_rendezvous() {
+    preserve_rounds_and_list_value_semantics(0);
+}
+
+#[test]
+fn async_receive_state_frames_preserve_rounds_and_list_value_semantics_single_slot() {
+    preserve_rounds_and_list_value_semantics(1);
+}
+
+#[test]
+fn async_receive_state_frames_preserve_rounds_and_list_value_semantics_buffered() {
+    preserve_rounds_and_list_value_semantics(4);
+}
 #[test]
 fn async_receive_state_frames_replay_and_snapshot() {
     let _reset = Reset;
