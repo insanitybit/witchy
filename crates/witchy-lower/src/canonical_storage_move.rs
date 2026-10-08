@@ -57,9 +57,11 @@ pub(super) fn forward_dying_copies(function: &mut Function, copies: &[(ValueId, 
     }
 }
 
-/// Reference values this function itself creates as a unique token and
-/// never aliases: allocations, call results, and unique block parameters
-/// other than the entry's. A cloned, loaded or static value is excluded.
+/// Reference values this function creates and never aliases: allocations,
+/// call results, and unique block parameters other than the entry's. A
+/// cloned, loaded or static value is excluded. A call result may still be a
+/// shared token; a copy is recorded only from a sole token (`sole_token`),
+/// which excludes a call result whose contract is not unique.
 fn fresh_unique_values(function: &Function) -> BTreeSet<ValueId> {
     let mut fresh = BTreeSet::new();
     let mut aliased = BTreeSet::new();

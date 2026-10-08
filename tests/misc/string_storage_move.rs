@@ -38,3 +38,9 @@ fn a_string_stored_twice_owns_two_values() {
     let out = output("fn main(console: Console):\n    let s = \"abcdef\".substring(1, 4)\n    var xs = []\n    xs.push(s)\n    xs.push(s)\n    console.print(\"${xs} ${xs[0] == xs[1]}\")\n");
     assert_eq!(out, ["[bcd, bcd] true"]);
 }
+
+#[test]
+fn a_rebuilt_loop_string_moves_each_version_once() {
+    let out = output("fn main(console: Console):\n    var counts = dict.new()\n    var s = \"ab\"\n    var i = 0\n    while i < 4:\n        s = (s + \"c\").substring(1, 3)\n        counts.update(s, 0, fn(c: Int): c + 1)\n        if i == 2:\n            console.print(s)\n        i = i + 1\n    console.print(\"${counts.length()} ${counts.get_or(\"bc\", 0)} ${counts.get_or(\"cc\", 0)} ${s}\")\n");
+    assert_eq!(out, ["cc", "2 1 3 cc"]);
+}

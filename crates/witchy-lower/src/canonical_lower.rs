@@ -4617,11 +4617,11 @@ fn lower_function_attempt(
     if !newly_shared.is_empty() {
         return Ok(LoweringAttempt::Retry(newly_shared));
     }
+    storage_move::forward_dying_copies(&mut lowered, &storage_copies);
     let debug = std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some();
     if debug {
         eprintln!("canonical lowered `{}` before release placement:\n{lowered:#?}", function.name);
     }
-    storage_move::forward_dying_copies(&mut lowered, &storage_copies);
     owned::insert_releases_with_owner_families(&mut lowered, signature, call_tables, &closures.owners)
         .map_err(|error| CanonicalLoweringError::OwnedReleasePlacement(format!("{error:?}")))?;
     // Release placement may prepend the drop of an unused managed parameter.
