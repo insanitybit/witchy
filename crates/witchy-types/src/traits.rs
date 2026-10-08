@@ -1021,6 +1021,17 @@ fn lower_with(
             // typed owner before extending the AST, then annotate the new exact
             // module before either the next round or the final dispatch pass.
             let (mut module, previous_table, ()) = typed.rewrite_into_module(|_, _| ());
+            // A specialization's name is its template and concrete type
+            // arguments. One an earlier stage already placed in the module
+            // (a generic function used as a value) is the same function, and
+            // a second copy would give two items one canonical identity.
+            let existing = module.items.iter().filter_map(|item| match item {
+                Item::Function(function) => Some(function.name.as_str()),
+                _ => None,
+            }).collect::<HashSet<_>>();
+            let mut generated = generated;
+            generated.retain(|function| !existing.contains(function.name.as_str()));
+            drop(existing);
             // The walk retargets names inside existing bodies; those bodies are
             // re-checked with the generated ones when the next annotation can be
             // incremental.

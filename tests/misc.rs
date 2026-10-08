@@ -47,6 +47,8 @@ mod binaryen_production_differential;
 mod rendering_protocol;
 #[path = "misc/semantic_conformance.rs"]
 mod semantic_conformance;
+#[path = "misc/generic_function_value_specialization.rs"]
+mod generic_function_value_specialization;
 #[path = "misc/let_borrow_value_semantics.rs"]
 mod let_borrow_value_semantics;
 #[path = "misc/unconstrained_generic_argument.rs"]
