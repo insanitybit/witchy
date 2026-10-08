@@ -153,13 +153,14 @@ impl FunctionLowerer<'_> {
     }
 
     /// The byte buffer an update of `source` writes: `source` itself, or a
-    /// fresh copy.
+    /// fresh copy. An overwrite stores below the count, so the tracked
+    /// extent suffices; only growth needs the allocator's capacity, and
+    /// reloading it here would give a loop a fresh capacity lane per write.
     pub(super) fn writable_byte_buffer(&mut self, expression: &Expr, source: ValueId) -> Result<ValueId, CanonicalLoweringError> {
         if !self.updates_in_place(expression, source) {
             return self.owned_string_copy(source);
         }
         self.ensure_string_extent(source)?;
-        self.recover_raw_byte_capacity(source)?;
         Ok(source)
     }
 

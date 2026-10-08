@@ -266,3 +266,5 @@ mod storage_move;
 mod capture_free_closure;
 #[path = "codegen/unique_fields.rs"]
 mod unique_fields;
+#[path = "codegen/byte_overwrite.rs"]
+mod byte_overwrite;
