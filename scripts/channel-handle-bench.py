@@ -3,6 +3,7 @@
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,9 @@ import subprocess
 import time
 
 ROOT = Path(__file__).resolve().parent.parent
+SUMMARY_SPEC = importlib.util.spec_from_file_location("summary", ROOT / "benchmarks/summarize.py")
+SUMMARY = importlib.util.module_from_spec(SUMMARY_SPEC)
+SUMMARY_SPEC.loader.exec_module(SUMMARY)
 
 
 def digest(path):
@@ -87,6 +91,13 @@ def main():
                       if (sample["binary"], sample["kind"], sample["buffered"]) == (binary, kind, buffered)]
             row[f"{binary}_{kind}"] = {"median_ns": statistics.median(values),
                                        "min_ns": min(values), "max_ns": max(values)}
+        for kind in fixtures:
+            before = [sample["kernel_ns"] for sample in samples
+                      if sample["binary"] == "baseline" and sample["kind"] == kind and sample["buffered"] == buffered]
+            after = [sample["kernel_ns"] for sample in samples
+                     if sample["binary"] == "candidate" and sample["kind"] == kind and sample["buffered"] == buffered]
+            ratio, interval = SUMMARY.paired_ratio_summary(before, after)
+            row[f"{kind}_baseline_over_candidate"] = {"ratio": ratio, "paired_bootstrap_95_percent_ci": interval}
         rows.append(row)
     (args.output / "results.json").write_text(json.dumps(rows, indent=2) + "\n")
     print(json.dumps(rows, indent=2))

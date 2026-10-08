@@ -889,6 +889,7 @@ fn load(dir: Dir[Read], policy: DirPolicy) -> String:
             "fn escape(let text: String) -> fn() -> Int:\n    fn(): text.length()\n",
             "type Token:\n    Token(List(Int))\n\nfn escape(let token: Token) -> fn() -> Int:\n    match token:\n        Token(values) -> fn(): values.length()\n",
             "fn escape(let callback: fn() -> Int) -> fn() -> Int:\n    fn(): callback()\n",
+            "fn escape(let values: List(Int)) -> fn() -> &Int:\n    let view = &values[0]\n    fn(): view\n",
             "fn escape(let text: String) -> fn() -> Int:\n    fn():\n        let size = text.length()\n        let text = 1\n        size + text\n",
             "fn escape(let pair: (Int, String)) -> fn() -> Int:\n    let (number, text) = pair\n    fn(): if number > 0: text.length() else: number\n",
         ] {
