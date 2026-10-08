@@ -70,18 +70,18 @@ pub fn fixed_rand(value: Int) -> FixedRand:
     FixedRand(value)
 
 // Abort the test with `msg` unless `cond` holds.
-pub fn assert(cond: Bool, msg: String):
+pub fn assert(cond: Bool, let msg: String):
     if !cond:
         fail("assertion failed: " + msg)
 
 // Abort unless the two strings are equal, showing both. Convert values at the
 // call site with interpolation, or with `show.render` when you want `Show`.
-pub fn assert_eq(got: String, want: String):
+pub fn assert_eq(let got: String, let want: String):
     if got != want:
         fail("assertion failed: got `" + got + "`, want `" + want + "`")
 
 // Abort if the two strings ARE equal.
-pub fn assert_ne(got: String, other: String):
+pub fn assert_ne(let got: String, let other: String):
     if got == other:
         fail("assertion failed: `" + got + "` should differ from `" + other + "`")
 

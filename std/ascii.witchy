@@ -29,7 +29,7 @@ pub fn is_alpha(c: String) -> Bool:
 pub fn is_alnum(c: String) -> Bool:
     is_alpha(c) || is_digit(c)
 
-pub fn is_space(c: String) -> Bool:
+pub fn is_space(let c: String) -> Bool:
     c == " " || c == "\t" || c == "\n" || c == "\r"
 
 // The numeric value of a single decimal digit as `Some`, or `None` when `c` is
@@ -42,7 +42,7 @@ pub fn to_digit(c: String) -> Option(Int):
 
 // True when `s` is non-empty and every character is an ASCII digit - a safe
 // guard before `string_to_int`, which traps on non-numeric input.
-pub fn all_digits(s: String) -> Bool:
+pub fn all_digits(let s: String) -> Bool:
     if s.length() == 0:
         false
     else:

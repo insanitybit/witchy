@@ -45,7 +45,7 @@ pub fn with_dir(dir: Dir, f: fn(Dir, Bytes) -> Bytes, input: Bytes) -> Bytes:
 // not. `handler` must be named directly as a bare top-level function; closures and local
 // function values are rejected rather than silently replacing isolation with a parent-VM
 // loop.
-pub fn serve(init: Bytes, requests: List(Bytes), handler: fn(Bytes, Bytes) -> Bytes) -> unique List(Bytes):
+pub fn serve(init: Bytes, let requests: List(Bytes), handler: fn(Bytes, Bytes) -> Bytes) -> unique List(Bytes):
     var state = init
     var out = []
     for req in requests:

@@ -543,7 +543,7 @@ pub fn clamp(x: a, lo: a, hi: a) -> a where a: Ord:
 // only the empty fallback - it never participates in the comparison, so it is
 // returned unchanged only for an empty list (a small `default` no longer wins
 // over the elements, nor a large one lose to them).
-pub fn maximum(xs: List(a), default: a) -> a where a: Ord:
+pub fn maximum(let xs: List(a), default: a) -> a where a: Ord:
     var best = default
     var seen = false
     for x in xs:
@@ -554,7 +554,7 @@ pub fn maximum(xs: List(a), default: a) -> a where a: Ord:
 
 // The smallest element of `xs`, or `default` when `xs` is empty. As with
 // `maximum`, `default` is the empty fallback only, never a competing bound.
-pub fn minimum(xs: List(a), default: a) -> a where a: Ord:
+pub fn minimum(let xs: List(a), default: a) -> a where a: Ord:
     var best = default
     var seen = false
     for x in xs:

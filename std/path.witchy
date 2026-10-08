@@ -9,7 +9,7 @@ import iter
 import option
 
 // Whether `p` is absolute (rooted at `/`).
-pub fn is_abs(p: String) -> Bool:
+pub fn is_abs(let p: String) -> Bool:
     p.starts_with("/")
 
 // Join two path pieces with a single `/`. An empty piece is ignored; an absolute
@@ -77,7 +77,7 @@ pub fn stem(p: String) -> unique String:
 // Collapse `.` and `..` segments and redundant slashes. A relative path that
 // backs out past its start keeps the leading `..`s; an absolute one cannot escape
 // its root. An empty result is "." (relative) or "/" (absolute).
-pub fn normalize(p: String) -> unique String:
+pub fn normalize(let p: String) -> unique String:
     let absolute = is_abs(p)
     var stack = []
     for seg in p.split("/"):

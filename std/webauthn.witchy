@@ -73,7 +73,7 @@ fn json_str(doc: Json, key: String) -> unique String:
 // must be re-hashed verbatim, never re-serialized). `require_uv` demands user
 // verification - pass `true` for a genuine second-factor gate. Returns `Ok(true)`
 // when every check passes, or a typed `Err`.
-pub fn verify_assertion(stored_pubkey_hex: String, auth_data_hex: String, client_data_json: String, signature_hex: String, expected_challenge: String, expected_origin: String, expected_rp_id: String, require_uv: Bool) -> Result(Bool, AssertionError):
+pub fn verify_assertion(stored_pubkey_hex: String, auth_data_hex: String, client_data_json: String, signature_hex: String, let expected_challenge: String, let expected_origin: String, expected_rp_id: String, require_uv: Bool) -> Result(Bool, AssertionError):
     match json.decode(client_data_json):
         Err(e) -> Err(ClientDataJson(json.decode_error_message(e)))
         Ok(doc) ->
@@ -177,7 +177,7 @@ impl From(RegistrationError) for String:
 // the attested credential's COSE ES256 key into an uncompressed SEC1 point. The
 // self-attestation statement (`fmt` "none"/"packed") is accepted; device provenance
 // beyond that is out of scope for the self-attestation contract (RFC-0099).
-pub fn verify_registration(client_data_json: String, attestation_object_hex: String, expected_challenge: String, expected_origin: String, expected_rp_id: String, require_uv: Bool) -> Result(RegisteredCredential, RegistrationError):
+pub fn verify_registration(let client_data_json: String, attestation_object_hex: String, let expected_challenge: String, let expected_origin: String, expected_rp_id: String, require_uv: Bool) -> Result(RegisteredCredential, RegistrationError):
     match json.decode(client_data_json):
         Err(e) -> Err(RegClientDataJson(json.decode_error_message(e)))
         Ok(doc) ->

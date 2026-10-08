@@ -114,7 +114,7 @@ pub fn decode(text: String) -> Result(Toml, TomlDecodeError):
 
 // The value stored at `key` in a `TomlTable`, or `None` when the key is absent or
 // the node is not a table. Preserves the decoded declaration order (first match).
-pub fn table_field(node: Toml, key: String) -> Option(Toml):
+pub fn table_field(node: Toml, let key: String) -> Option(Toml):
     match node:
         TomlTable(pairs) ->
             var found = None
@@ -130,19 +130,19 @@ pub fn table_field(node: Toml, key: String) -> Option(Toml):
 // The `String` a `Toml` leaf holds, or `Err(context)` when it is a different kind
 // (`TomlInt`/`TomlBool`/`TomlArray`/`TomlTable`). `context` names the field so the
 // caller's message points at the offending entry.
-pub fn as_string(node: Toml, context: String) -> Result(String, TomlDecodeError):
+pub fn as_string(node: Toml, let context: String) -> Result(String, TomlDecodeError):
     match node:
         TomlString(s) -> Ok(s)
         _ -> Err(decode_error(context + " is not a string (found " + kind_name(node) + ")"))
 
 // The elements of a `TomlArray`, or `Err(context)` when the value is not an array.
-pub fn as_array(node: Toml, context: String) -> Result(List(Toml), TomlDecodeError):
+pub fn as_array(node: Toml, let context: String) -> Result(List(Toml), TomlDecodeError):
     match node:
         TomlArray(xs) -> Ok(xs)
         _ -> Err(decode_error(context + " is not an array (found " + kind_name(node) + ")"))
 
 // The pairs of a `TomlTable`, or `Err(context)` when the value is not a table.
-pub fn as_table(node: Toml, context: String) -> Result(List((String, Toml)), TomlDecodeError):
+pub fn as_table(node: Toml, let context: String) -> Result(List((String, Toml)), TomlDecodeError):
     match node:
         TomlTable(pairs) -> Ok(pairs)
         _ -> Err(decode_error(context + " is not a table (found " + kind_name(node) + ")"))
@@ -153,7 +153,7 @@ pub fn as_table(node: Toml, context: String) -> Result(List((String, Toml)), Tom
 // not an array, or an element is not a table (a corrupted array-of-tables). This
 // is how a `witchy.lock`'s `[[rune]]` entries are enumerated through the one
 // structured parser.
-pub fn array_of_tables(node: Toml, key: String) -> Result(List(Toml), TomlDecodeError):
+pub fn array_of_tables(node: Toml, let key: String) -> Result(List(Toml), TomlDecodeError):
     match table_field(node, key):
         None -> Ok([])
         Some(value) ->
@@ -168,7 +168,7 @@ pub fn array_of_tables(node: Toml, key: String) -> Result(List(Toml), TomlDecode
 // absent, empty, or the wrong TOML kind - the three failure classes kept distinct
 // (BUG-373). `label` names the entry kind for the message (e.g. "a registry
 // [[rune]] entry").
-pub fn required_string(entry: Toml, field: String, label: String) -> Result(String, TomlDecodeError):
+pub fn required_string(entry: Toml, let field: String, let label: String) -> Result(String, TomlDecodeError):
     match table_field(entry, field):
         None -> Err(decode_error(label + " has no `" + field + "` field"))
         Some(value) ->
@@ -180,7 +180,7 @@ pub fn required_string(entry: Toml, field: String, label: String) -> Result(Stri
 
 // An optional string field of a decoded table `entry`: `Ok(None)` when absent,
 // `Ok(Some(s))` when a string, `Err` when present but the wrong kind.
-pub fn optional_string(entry: Toml, field: String) -> Result(Option(String), TomlDecodeError):
+pub fn optional_string(entry: Toml, let field: String) -> Result(Option(String), TomlDecodeError):
     match table_field(entry, field):
         None -> Ok(None)
         Some(value) ->
@@ -190,7 +190,7 @@ pub fn optional_string(entry: Toml, field: String) -> Result(Option(String), Tom
 // The string elements of an array-valued field of a decoded table `entry`:
 // `Ok([])` when absent; `Err` when the field is not an array, or an element is not
 // a string. Used to read a `[[rune]]` capability array (`runtime_footprint`).
-pub fn string_array_field(entry: Toml, field: String) -> Result(List(String), TomlDecodeError):
+pub fn string_array_field(entry: Toml, let field: String) -> Result(List(String), TomlDecodeError):
     match table_field(entry, field):
         None -> Ok([])
         Some(value) ->
@@ -384,7 +384,7 @@ pub fn get_array(text: String, path: String) -> unique List(String):
 // Keys are unquoted (`"acme/money"` -> `acme/money`); values are raw (trimmed,
 // still quoted/inline) - feed an inline-table value to `inline_get`. Use this to
 // enumerate a table whose keys you don't know ahead of time, like `[dependencies]`.
-pub fn table(text: String, section: String) -> unique List((String, String)):
+pub fn table(text: String, let section: String) -> unique List((String, String)):
     var in_section = section == ""
     var out = []
     for line in text.lines():
@@ -397,7 +397,7 @@ pub fn table(text: String, section: String) -> unique List((String, String)):
     out
 
 // Just the keys of `[section]` (unquoted), in file order.
-pub fn keys(text: String, section: String) -> unique List(String):
+pub fn keys(text: String, let section: String) -> unique List(String):
     var out = []
     for pair in table(text, section):
         let (k, _v) = pair
@@ -406,7 +406,7 @@ pub fn keys(text: String, section: String) -> unique List(String):
 
 // Read `key` from an inline table value like `{ path = "../money", version = "1" }`.
 // Returns the unquoted value, or None if the key is absent.
-pub fn inline_get(inline: String, key: String) -> Option(String):
+pub fn inline_get(let inline: String, let key: String) -> Option(String):
     let body = inline.trim().strip_prefix("{").strip_suffix("}")
     var found = None
     // Split on commas OUTSIDE quotes, so a quoted value that itself contains a
@@ -423,7 +423,7 @@ pub fn inline_get(inline: String, key: String) -> Option(String):
 // a path-only inline table (no `version` key) or an empty value. Dep walks that
 // read a version requirement (transitive resolution, `outdated`, `update`) must
 // use this so a bare-string dep is not silently skipped.
-pub fn dep_requirement(raw: String) -> Option(String):
+pub fn dep_requirement(let raw: String) -> Option(String):
     let v = raw.trim()
     if v.starts_with("{"):
         inline_get(v, "version")
@@ -437,7 +437,7 @@ pub fn dep_requirement(raw: String) -> Option(String):
 // Read a string-array field from an inline table. This is the array counterpart
 // to `inline_get`, used by nested policy values such as
 // `{ programs = ["git"], child-paths = ["~/.gitconfig"] }`.
-pub fn inline_get_array(inline: String, key: String) -> unique List(String):
+pub fn inline_get_array(let inline: String, let key: String) -> unique List(String):
     let body = inline.trim().strip_prefix("{").strip_suffix("}")
     var found = []
     for part in split_outside_quotes(body, ","):

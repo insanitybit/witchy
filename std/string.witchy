@@ -10,37 +10,37 @@ import list
 // placeholder bodies give the type checker the signatures). These must exist
 // as module-level functions because the intrinsic interception resolves by
 // the qualified name `string.X`. The impl methods below delegate to these. ---
-pub fn length(s: String) -> Int:
+pub fn length(let s: String) -> Int:
     string.length(s)
 
-pub fn char_count(s: String) -> Int:
+pub fn char_count(let s: String) -> Int:
     string.char_count(s)
 
-pub fn char_offset(s: String, n: Int) -> Int:
+pub fn char_offset(let s: String, n: Int) -> Int:
     string.char_offset(s, n)
 
-pub fn chars(s: String) -> unique List(String):
+pub fn chars(let s: String) -> unique List(String):
     string.chars(s)
 
 pub fn from_code(code: Int) -> unique String:
     string.from_code(code)
 
-pub fn split(s: String, sep: String) -> unique List(String):
+pub fn split(let s: String, let sep: String) -> unique List(String):
     string.split(s, sep)
 
-pub fn contains(s: String, needle: String) -> Bool:
+pub fn contains(let s: String, let needle: String) -> Bool:
     string.contains(s, needle)
 
-pub fn starts_with(s: String, prefix: String) -> Bool:
+pub fn starts_with(let s: String, let prefix: String) -> Bool:
     string.starts_with(s, prefix)
 
-pub fn ends_with(s: String, suffix: String) -> Bool:
+pub fn ends_with(let s: String, let suffix: String) -> Bool:
     string.ends_with(s, suffix)
 
-pub fn replace(s: String, from: String, to: String) -> unique String:
+pub fn replace(let s: String, let from: String, let to: String) -> unique String:
     string.replace(s, from, to)
 
-pub fn substring(s: String, start: Int, end: Int) -> unique String:
+pub fn substring(let s: String, start: Int, end: Int) -> unique String:
     string.substring(s, start, end)
 
 pub fn as_str(s: &String) -> &str:
@@ -69,10 +69,10 @@ pub fn to_upper(s: String) -> unique String:
 pub fn to_lower(s: String) -> unique String:
     string.to_lower(s)
 
-pub fn trim(s: String) -> unique String:
+pub fn trim(let s: String) -> unique String:
     string.trim(s)
 
-pub fn to_int(s: String) -> Int:
+pub fn to_int(let s: String) -> Int:
     string.to_int(s)
 
 // --- Private helpers ---
@@ -132,17 +132,17 @@ impl String:
         out
 
     // Split on every occurrence of `sep`.
-    pub fn split(self, sep: String) -> unique List(String):
+    pub fn split(self, let sep: String) -> unique List(String):
         string.split(self, sep)
 
     // Whether `needle` occurs in `self`.
-    pub fn contains(self, needle: String) -> Bool:
+    pub fn contains(self, let needle: String) -> Bool:
         string.contains(self, needle)
 
-    pub fn starts_with(self, prefix: String) -> Bool:
+    pub fn starts_with(self, let prefix: String) -> Bool:
         string.starts_with(self, prefix)
 
-    pub fn ends_with(self, suffix: String) -> Bool:
+    pub fn ends_with(self, let suffix: String) -> Bool:
         string.ends_with(self, suffix)
 
     // The byte offset of the first occurrence of `needle` as `Some`, or `None`
@@ -150,7 +150,7 @@ impl String:
     // absence is `Option`, never a -1 sentinel). An empty `needle` matches nothing
     // (the module-wide empty-pattern rule, matching `last_index_of`/`count`). For
     // a bare yes/no, use `contains`.
-    pub fn index_of(self, needle: String) -> Option(Int):
+    pub fn index_of(self, let needle: String) -> Option(Int):
         let i = if needle.is_empty(): 0 - 1 else: find(self, needle, 0)
         if i < 0:
             None
@@ -158,7 +158,7 @@ impl String:
             Some(i)
 
     // Replace every occurrence of `from` with `to`.
-    pub fn replace(self, from: String, to: String) -> unique String:
+    pub fn replace(self, let from: String, let to: String) -> unique String:
         string.replace(self, from, to)
 
     // The bytes from offset `start` (inclusive) to `end` (exclusive). ABORTS
@@ -221,7 +221,7 @@ impl String:
     // of exactly `width` chars; `self` is returned unchanged when already that long.
     // An empty `fill` can never reach the promised width, so when padding is
     // needed it fails loudly (RFC-0044 rule 3) instead of returning a short string.
-    pub fn pad_left(self, width: Int, fill: String) -> String:
+    pub fn pad_left(self, width: Int, let fill: String) -> String:
         let len = string.char_count(self)
         if len >= width:
             self
@@ -233,7 +233,7 @@ impl String:
 
     // Right-pad `self` with copies of `fill` until it is `width` characters wide; an
     // empty `fill` fails loudly when padding is needed (see `pad_left`).
-    pub fn pad_right(self, width: Int, fill: String) -> String:
+    pub fn pad_right(self, width: Int, let fill: String) -> String:
         let len = string.char_count(self)
         if len >= width:
             self
@@ -247,7 +247,7 @@ impl String:
     // an odd remainder goes on the right. `self` is returned unchanged when already at
     // least that wide; an empty `fill` fails loudly when padding is needed (see
     // `pad_left`).
-    pub fn center(self, width: Int, fill: String) -> String:
+    pub fn center(self, width: Int, let fill: String) -> String:
         let len = string.char_count(self)
         if len >= width:
             self
@@ -261,7 +261,7 @@ impl String:
 
     // Remove `prefix` from the front of `self` when present; otherwise return `self`
     // unchanged. The complement of the `starts_with` builtin.
-    pub fn strip_prefix(self, prefix: String) -> String:
+    pub fn strip_prefix(self, let prefix: String) -> String:
         if string.starts_with(self, prefix):
             string.substring(self, string.length(prefix), string.length(self))
         else:
@@ -269,7 +269,7 @@ impl String:
 
     // Remove `suffix` from the end of `self` when present; otherwise return `self`
     // unchanged. The complement of the `ends_with` builtin.
-    pub fn strip_suffix(self, suffix: String) -> String:
+    pub fn strip_suffix(self, let suffix: String) -> String:
         if string.ends_with(self, suffix):
             string.substring(self, 0, string.length(self) - string.length(suffix))
         else:
@@ -313,7 +313,7 @@ impl String:
 
     // The number of non-overlapping occurrences of `sub` in `self` (0 for an empty
     // `sub`), scanning left to right.
-    pub fn count(self, sub: String) -> Int:
+    pub fn count(self, let sub: String) -> Int:
         if string.length(sub) == 0:
             0
         else:
@@ -341,7 +341,7 @@ impl String:
     // when `from` is absent. An empty `from` matches nothing (the module-wide
     // empty-pattern rule: `count`/`index_of`/`last_index_of` treat it as absent).
     // (The `replace` builtin replaces every occurrence.)
-    pub fn replace_first(self, from: String, to: String) -> String:
+    pub fn replace_first(self, let from: String, let to: String) -> String:
         let i = if from.is_empty(): 0 - 1 else: find(self, from, 0)
         if i < 0:
             self
@@ -352,7 +352,7 @@ impl String:
     // `sep` itself dropped. Returns `None` when `sep` is absent or empty, so parsing
     // code can distinguish a missing separator from a present separator with an empty
     // side (`"host"` vs `"host:"`).
-    pub fn split_once_opt(self, sep: String) -> Option((String, String)):
+    pub fn split_once_opt(self, let sep: String) -> Option((String, String)):
         let i = if sep.is_empty(): 0 - 1 else: find(self, sep, 0)
         if i < 0:
             None
@@ -364,7 +364,7 @@ impl String:
     // empty separator, which matches nothing (mirroring `rsplit_once`) - returns
     // `(s, "")`. Prefer `split_once_opt` for parsers and validators that need to
     // distinguish absence from a present empty side.
-    pub fn split_once(self, sep: String) -> (String, String):
+    pub fn split_once(self, let sep: String) -> (String, String):
         match self.split_once_opt(sep):
             Some(parts) -> parts
             None -> (self, "")
@@ -372,7 +372,7 @@ impl String:
     // The byte offset of the LAST occurrence of `sep` in `self` as `Some`, or
     // `None` when absent or `sep` is empty (RFC-0044 rule 1: absence is `Option`,
     // never -1). The right-to-left companion of `index_of`.
-    pub fn last_index_of(self, sep: String) -> Option(Int):
+    pub fn last_index_of(self, let sep: String) -> Option(Int):
         let i = rfind(self, sep)
         if i < 0:
             None
@@ -381,7 +381,7 @@ impl String:
 
     // Split on the LAST occurrence of `sep` into `Some((before, after))`, with `sep`
     // itself dropped. Returns `None` when `sep` is absent or empty.
-    pub fn rsplit_once_opt(self, sep: String) -> Option((String, String)):
+    pub fn rsplit_once_opt(self, let sep: String) -> Option((String, String)):
         let i = rfind(self, sep)
         if i < 0:
             None
@@ -392,7 +392,7 @@ impl String:
     // of `"a.b.c"` on `"."` is `("a.b", "c")`. Compatibility wrapper: when `sep`
     // is absent the whole string is the right part: `("", s)` - mirroring
     // `split_once`'s `(s, "")`. Prefer `rsplit_once_opt` when absence matters.
-    pub fn rsplit_once(self, sep: String) -> (String, String):
+    pub fn rsplit_once(self, let sep: String) -> (String, String):
         match self.rsplit_once_opt(sep):
             Some(parts) -> parts
             None -> ("", self)

@@ -53,7 +53,7 @@ pub fn footprint(source: String) -> String:
 // or {"error":".."} if either source does not parse. `widened` is the
 // rights-precise block-on-widening gate: true when `new` demands any runtime
 // capability, build capability, or user cap that `old` did not.
-pub fn diff(old: String, new: String) -> String:
+pub fn diff(old: String, let new: String) -> String:
     old
 
 fn __doc_result_json(name: String, source: String) -> String:

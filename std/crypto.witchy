@@ -51,7 +51,7 @@ pub fn sha256(data: String) -> String:
 // hashes a string's UTF-8), this hashes the exact `Bytes` - the digest a binary
 // artifact (e.g. a trusted-publisher) is verified against (RFC-0095). Native intrinsic;
 // this body is a placeholder the runtime never executes.
-pub fn sha256_bytes(data: Bytes) -> unique String:
+pub fn sha256_bytes(let data: Bytes) -> unique String:
     ""
 
 // The canonical content hash of a rune's source tree, as `sha256:<hex>`. Pass
@@ -59,7 +59,7 @@ pub fn sha256_bytes(data: Bytes) -> unique String:
 // `paths[i]` is the relative path, `contents[i]` its text. Entries are sorted and
 // length-prefixed before hashing, so the result is the rune's stable content
 // address - the package manager's tamper-evident identity.
-pub fn rune_hash(paths: List(String), contents: List(String)) -> unique String:
+pub fn rune_hash(let paths: List(String), let contents: List(String)) -> unique String:
     ""
 
 // Verify an Ed25519 signature. `public_key` and `signature` are hex-encoded;
@@ -110,16 +110,16 @@ pub fn rsa_pkcs1_sha256_verify(public_key: String, message: String, signature: S
     verify_result(__rsa_pkcs1_sha256_verify_status(public_key, message, signature), "RSA PKCS#1 SHA-256")
 
 // SHA-512 of a string's UTF-8 bytes, as 128 lowercase hex characters. (Native-only.)
-pub fn sha512(data: String) -> unique String:
+pub fn sha512(let data: String) -> unique String:
     ""
 
 // SHA3-256 (FIPS 202) of a string's UTF-8 bytes, as 64 hex characters. (Native-only.)
-pub fn sha3_256(data: String) -> unique String:
+pub fn sha3_256(let data: String) -> unique String:
     ""
 
 // HMAC-SHA256 (FIPS 198-1). `key` is hex (so binary keys are representable);
 // `message` is raw text. Returns the 64-hex-char tag. (Native-only.)
-pub fn hmac_sha256(key: String, message: String) -> unique String:
+pub fn hmac_sha256(let key: String, let message: String) -> unique String:
     ""
 
 // A SHAKE request that cannot be served. The only invalid input is an output

@@ -60,7 +60,7 @@ pub fn push_owned(var xs: List(a), own x: a):
     return
 
 // A new list that is `xs` followed by `ys`.
-pub fn concat(xs: List(a), ys: List(a)) -> unique List(a):
+pub fn concat(let xs: List(a), let ys: List(a)) -> unique List(a):
     list.concat(xs, ys)
 
 // Compiler primitive used by place-assignment lowering.
@@ -243,7 +243,7 @@ impl List(a):
     pub fn push(var self: unique List(a), x: a):
         list.push(self, x)
 
-    pub fn concat(self, ys: List(a)) -> unique List(a):
+    pub fn concat(self, let ys: List(a)) -> unique List(a):
         list.concat(self, ys)
 
     // Apply `f` to every element, collecting the results.
@@ -586,7 +586,7 @@ impl List(a):
             out
 
     // Pair up two lists element-wise, stopping at the shorter one.
-    pub fn zip(self, ys: List(b)) -> unique List((a, b)):
+    pub fn zip(self, let ys: List(b)) -> unique List((a, b)):
         var out = []
         var i = 0
         while i < list.length(self) && i < list.length(ys):
@@ -595,7 +595,7 @@ impl List(a):
         out
 
     // Combine two lists element-wise with `f`, stopping at the shorter one.
-    pub fn zip_with(self, ys: List(b), f: fn(a, b) -> c) -> unique List(c):
+    pub fn zip_with(self, let ys: List(b), f: fn(a, b) -> c) -> unique List(c):
         var out = []
         var i = 0
         while i < list.length(self) && i < list.length(ys):
@@ -770,7 +770,7 @@ impl List(a) where a: Ord:
 impl List(String):
     // Concatenate the strings, inserting `sep` between adjacent elements:
     // `["a", "b", "c"].join("-")` is `"a-b-c"`, and `[].join(sep)` is `""`.
-    pub fn join(self, sep: String) -> unique String:
+    pub fn join(self, let sep: String) -> unique String:
         var s = ""
         var first = true
         for p in self:

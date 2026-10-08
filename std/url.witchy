@@ -226,7 +226,7 @@ pub fn fragment(u: Url) -> Option(String):
 // Add one percent-encoded query pair while preserving the fragment boundary.
 // Existing query pairs remain in order; an explicitly empty query does not gain
 // a leading `&`.
-pub fn with_query(u: Url, key: String, value: String) -> Url:
+pub fn with_query(u: Url, let key: String, let value: String) -> Url:
     match u:
         Url(s, h, p, pa, q, f) ->
             let pair = encode(key) + "=" + encode(value)
@@ -278,7 +278,7 @@ impl Show for Url:
 // Percent-encode `s` for use as a query-string value (RFC 3986): the unreserved set
 // (`A-Z a-z 0-9 - _ . ~`) passes through, every other byte becomes `%XX`. Used to build
 // query strings safely - e.g. an OAuth `redirect_uri`, `scope`, or `state`.
-pub fn encode(s: String) -> unique String:
+pub fn encode(let s: String) -> unique String:
     var out = ""
     for ch in s.chars():
         if is_unreserved(ch):

@@ -20,7 +20,7 @@ pub fn matches(pattern: String, text: String) -> Bool:
 
 // Number of non-overlapping matches. This is native so callers that only need a
 // count do not materialize and decode every span.
-pub fn count(pattern: String, text: String) -> Int:
+pub fn count(let pattern: String, let text: String) -> Int:
     pattern
     text
     0
@@ -76,7 +76,7 @@ pub fn extract(pattern: String, text: String) -> unique List(String):
 // `text` with every match replaced (the replacement is literal - no `$1` group
 // expansion): replace_all("\\s+", "a  b", "-") is "a-b". Native to avoid
 // routing every span and output fragment through guest memory.
-pub fn replace_all(pattern: String, text: String, replacement: String) -> String:
+pub fn replace_all(let pattern: String, let text: String, let replacement: String) -> String:
     pattern
     text
     replacement

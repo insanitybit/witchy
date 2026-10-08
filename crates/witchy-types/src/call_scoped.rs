@@ -106,6 +106,26 @@ impl Verifier<'_> {
         })
     }
 
+    /// Whether every path through `block`'s value ends in a pure intrinsic
+    /// call producing a String or Bytes, through `if`, `match` and block tails.
+    fn block_computes_bytes(&self, block: &Block) -> bool {
+        matches!(block.stmts.last(), Some(Stmt::Expr(tail) | Stmt::Return(Some(tail))) if self.computes_bytes(tail))
+    }
+
+    fn computes_bytes(&self, expression: &Expr) -> bool {
+        match expression {
+            Expr::If { then_block, else_block: Some(else_block), .. } =>
+                self.block_computes_bytes(then_block) && self.block_computes_bytes(else_block),
+            Expr::Match { arms, .. } => !arms.is_empty() && arms.iter().all(|arm| self.computes_bytes(&arm.body)),
+            Expr::Block(block) => self.block_computes_bytes(block),
+            Expr::Call { name, .. } => matches!(self.table.type_of(expression), Some(Ty::String | Ty::Bytes))
+                && witchy_syntax::intrinsics::lookup(name).is_some_and(|spec|
+                    spec.effect == witchy_syntax::intrinsics::IntrinsicEffect::Pure
+                        && spec.capability_effect == witchy_syntax::intrinsics::CapabilityEffect::None),
+            _ => false,
+        }
+    }
+
     fn normal_copy_repair(&self, expression: &Expr) -> bool {
         !self.opt_mode
             && self.table.type_of(expression).and_then(ty_to_ast).is_some_and(|ty| {
@@ -548,8 +568,15 @@ fn verify_function(
         environment.insert(param.name.clone(), origins);
     }
     let tail = verifier.block(&function.body, &mut environment)?;
-    if !tail.is_empty() {
+    // A `unique` String or Bytes computed by a pure intrinsic on every path
+    // is its own sole token. A byte buffer holds no reference, so the only
+    // alias it could carry is the borrowed root itself, which the canonical
+    // checker refuses as a unique result. Any other value (a constructor, a
+    // container, a call that may keep its argument) keeps this diagnostic.
+    let unique_result = matches!(&function.ret, Some(witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::Unique, _)));
+    if !tail.is_empty() && !(unique_result && verifier.block_computes_bytes(&function.body)) {
         return Err(verifier.error(&tail, "escape through a returned value"));
     }
     Ok(())
 }
+

@@ -41,7 +41,7 @@ impl From(EncodingError) for String:
         encoding_error_message(value)
 
 // Lowercase hex of `data`'s UTF-8 bytes.
-pub fn hex_encode(data: String) -> unique String:
+pub fn hex_encode(let data: String) -> unique String:
     hex_encode_bytes(bytes.from_string(data))
 
 // Lowercase hex of raw bytes.
@@ -74,7 +74,7 @@ pub fn hex_decode_bytes_string(data: String) -> Result(Bytes, String):
         Err(e) -> Err(encoding_error_message(e))
 
 // Standard base64 (with `=` padding) of `data`'s UTF-8 bytes.
-pub fn base64_encode(data: String) -> unique String:
+pub fn base64_encode(let data: String) -> unique String:
     base64_encode_bytes(bytes.from_string(data))
 
 // Standard base64 (with `=` padding) of raw bytes.

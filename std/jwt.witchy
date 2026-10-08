@@ -112,7 +112,7 @@ impl From(JwtError) for String:
 // Verify an RS256 (RSASSA-PKCS1-v1_5 / SHA-256) compact JWT against a DER PKCS#1 RSA
 // public key (hex), checking the signature, `exp > now` (unix seconds), and
 // `aud == audience`. Returns the decoded claims, or a typed error.
-pub fn verify_rs256(token: String, rsa_pubkey_der_hex: String, audience: String, now: Int) -> Result(Json, JwtError):
+pub fn verify_rs256(let token: String, rsa_pubkey_der_hex: String, audience: String, now: Int) -> Result(Json, JwtError):
     let parts = token.split(".")
     if list.length(parts) != 3:
         Err(MalformedCompact)
@@ -199,7 +199,7 @@ fn aud_array_matches(items: List(Json), audience: String) -> Result(Bool, JwtErr
 // `iat` and maximum-lifetime policy. The issuer check is what binds a token to a
 // TRUSTED provider: without it, anyone who can mint a JWT for the right audience
 // would be admitted.
-pub fn verify_oidc(token: String, rsa_pubkey_der_hex: String, issuer: String, audience: String, now: Int) -> Result(Json, JwtError):
+pub fn verify_oidc(let token: String, rsa_pubkey_der_hex: String, let issuer: String, audience: String, now: Int) -> Result(Json, JwtError):
     match verify_rs256(token, rsa_pubkey_der_hex, audience, now):
         Err(e) -> Err(e)
         Ok(claims) ->
@@ -226,7 +226,7 @@ pub fn verify_oidc(token: String, rsa_pubkey_der_hex: String, issuer: String, au
 //
 // `clock_skew` applies only to a future `iat`. Expiry and nbf remain strict, so this
 // API never extends the token's signed validity interval.
-pub fn verify_oidc_fresh(token: String, rsa_pubkey_der_hex: String, issuer: String, audience: String, now: Int, max_lifetime: Int, clock_skew: Int) -> Result(Json, JwtError):
+pub fn verify_oidc_fresh(let token: String, rsa_pubkey_der_hex: String, let issuer: String, audience: String, now: Int, max_lifetime: Int, clock_skew: Int) -> Result(Json, JwtError):
     if now < 0 || max_lifetime < 0 || clock_skew < 0:
         Err(FreshnessPolicyInvalid)
     else:
@@ -268,7 +268,7 @@ fn base64url_of_text(text: String) -> unique String:
 // checking the signature, `exp > now` (unix seconds), and `aud == audience`.
 // The JOSE header's `alg` MUST be exactly `EdDSA`: an attacker-chosen `alg` is
 // refused here rather than trusted (algorithm confusion; BUG-250, RFC 8725 §3.1).
-pub fn verify_eddsa(token: String, ed25519_pubkey_hex: String, audience: String, now: Int) -> Result(Json, JwtError):
+pub fn verify_eddsa(let token: String, ed25519_pubkey_hex: String, audience: String, now: Int) -> Result(Json, JwtError):
     let parts = token.split(".")
     if list.length(parts) != 3:
         Err(MalformedCompact)
@@ -289,7 +289,7 @@ pub fn verify_eddsa(token: String, ed25519_pubkey_hex: String, audience: String,
 // The EdDSA analogue of `verify_oidc`: verify the Ed25519 signature AND that the
 // token was minted by the expected `issuer` for the expected `audience`, valid now
 // (`exp`/`nbf`/`azp`). Returns the identity claims for the caller to authorize.
-pub fn verify_oidc_eddsa(token: String, ed25519_pubkey_hex: String, issuer: String, audience: String, now: Int) -> Result(Json, JwtError):
+pub fn verify_oidc_eddsa(let token: String, ed25519_pubkey_hex: String, let issuer: String, audience: String, now: Int) -> Result(Json, JwtError):
     match verify_eddsa(token, ed25519_pubkey_hex, audience, now):
         Err(e) -> Err(e)
         Ok(claims) ->
@@ -312,7 +312,7 @@ pub fn verify_oidc_eddsa(token: String, ed25519_pubkey_hex: String, issuer: Stri
 // may not exceed `max_lifetime`, and the issuer clock may lead by at most
 // `clock_skew` seconds. Signature, issuer, audience, expiry, nbf, and azp checks
 // are those of `verify_oidc_eddsa`.
-pub fn verify_oidc_fresh_eddsa(token: String, ed25519_pubkey_hex: String, issuer: String, audience: String, now: Int, max_lifetime: Int, clock_skew: Int) -> Result(Json, JwtError):
+pub fn verify_oidc_fresh_eddsa(let token: String, ed25519_pubkey_hex: String, let issuer: String, audience: String, now: Int, max_lifetime: Int, clock_skew: Int) -> Result(Json, JwtError):
     if now < 0 || max_lifetime < 0 || clock_skew < 0:
         Err(FreshnessPolicyInvalid)
     else:
@@ -388,7 +388,7 @@ fn require_string_claim(claims: Json, name: String) -> Result(String, JwtError):
 
 // The decoded JOSE header of a compact JWT (its first segment), or an error - so a
 // verifier can read `alg`/`kid` to select the JWKS key before checking the signature.
-pub fn header(token: String) -> Result(Json, JwtError):
+pub fn header(let token: String) -> Result(Json, JwtError):
     let parts = token.split(".")
     if list.length(parts) < 1 || list.at(parts, 0).is_empty():
         Err(NoHeaderSegment)
@@ -402,7 +402,7 @@ pub fn header(token: String) -> Result(Json, JwtError):
 // routing fields (`iss`, and `kid` via `header`) needed to SELECT the verification key
 // before `verify_oidc`. DANGER: never authorize on these claims; verify the signature
 // first and read the claims `verify_oidc` returns.
-pub fn claims_unverified(token: String) -> Result(Json, JwtError):
+pub fn claims_unverified(let token: String) -> Result(Json, JwtError):
     let parts = token.split(".")
     if list.length(parts) < 2 || list.at(parts, 1).is_empty():
         Err(NoPayloadSegment)
@@ -459,7 +459,7 @@ fn high_bit_set(value_hex: String) -> Bool:
 
 // Require the `kid` (key id) from a compact JWT header, preserving malformed
 // compact/header input and a missing `kid` as matchable `JwtError` cases.
-pub fn require_kid(token: String) -> Result(String, JwtError):
+pub fn require_kid(let token: String) -> Result(String, JwtError):
     let h = header(token)?
     match json.get_string(h, "kid"):
         Some(k) -> Ok(k)
@@ -467,7 +467,7 @@ pub fn require_kid(token: String) -> Result(String, JwtError):
 
 // Optional convenience for callers that genuinely treat a malformed/missing key
 // id as absence. Verification boundaries should use `require_kid`.
-pub fn kid(token: String) -> Option(String):
+pub fn kid(let token: String) -> Option(String):
     match require_kid(token):
         Err(_) -> None
         Ok(k) -> Some(k)

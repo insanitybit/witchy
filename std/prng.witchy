@@ -59,7 +59,7 @@ fn draw_below(var r: Rng, bound: Int) -> Int:
 // deleting this function would flip the qualified call's argument order to the
 // alias's `prng.choice(r, xs)`, silently breaking existing `prng.choice(xs, r)`
 // call sites.
-pub fn choice(xs: List(a), var r: Rng) -> Option(a):
+pub fn choice(let xs: List(a), var r: Rng) -> Option(a):
     let len = list.length(xs)
     if len == 0:
         None
@@ -93,5 +93,5 @@ impl Rng:
 
     // A pseudo-randomly chosen element of `xs` (`None` if empty) - see the
     // module-level `choice`.
-    pub fn choice(var self, xs: List(a)) -> Option(a):
+    pub fn choice(var self, let xs: List(a)) -> Option(a):
         choice(xs, self)

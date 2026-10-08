@@ -219,7 +219,7 @@ impl RequestBuilder:
         match self:
             RequestBuilder(method, request_url, headers, _old) -> RequestBuilder(method, request_url, headers, body)
 
-    pub fn with_query(self, key: String, value: String) -> RequestBuilder:
+    pub fn with_query(self, let key: String, let value: String) -> RequestBuilder:
         match self:
             RequestBuilder(method, request_url, headers, body) ->
                 match url.parse(request_url):
@@ -247,12 +247,12 @@ pub fn body(r: Response) -> unique String:
         Response(_code, _hdrs, b) -> b
 
 // The value of a response header, looked up case-insensitively, or None.
-pub fn header(r: Response, name: String) -> Option(String):
+pub fn header(r: Response, let name: String) -> Option(String):
     match r:
         Response(_code, hdrs, _body) -> find_header(hdrs, name.to_lower())
 
 // Look up a header by its (already-lowercased) name. Shared with `server`.
-pub fn find_header(hdrs: List((String, String)), name: String) -> Option(String):
+pub fn find_header(let hdrs: List((String, String)), let name: String) -> Option(String):
     for p in hdrs:
         let (k, v) = p
         if k == name:
@@ -271,7 +271,7 @@ pub fn find_header(hdrs: List((String, String)), name: String) -> Option(String)
 // non-empty RFC 7230 token.
 
 // Whether `s` contains a CR or LF - the response/request-splitting bytes.
-pub fn has_crlf(s: String) -> Bool:
+pub fn has_crlf(let s: String) -> Bool:
     s.contains("\r") || s.contains("\n")
 
 // A valid HTTP header-name char (RFC 7230 tchar): alphanumeric or one of a small
@@ -305,7 +305,7 @@ fn has_forbidden_control(s: String, allow_tab: Bool) -> Bool:
 // Trap unless `value` (a header value) is free of forbidden controls. HTAB is
 // allowed in header values; all other C0 controls and DEL are rejected. Request
 // method/path/host use `check_request_field`, which is stricter.
-pub fn check_field(what: String, value: String):
+pub fn check_field(let what: String, value: String):
     if has_forbidden_control(value, true):
         fail("HTTP " + what + " contains a forbidden control character: " + value)
 
@@ -325,7 +325,7 @@ pub fn check_header(name: String, value: String):
 // TARGET SP HTTP/1.1`), so a space/tab in method/path/host would split it into
 // extra tokens (request smuggling). Stricter than `check_field`, because header
 // values legitimately contain spaces and may contain HTAB.
-pub fn check_request_field(what: String, value: String):
+pub fn check_request_field(let what: String, value: String):
     if has_forbidden_control(value, false) || value.contains(" "):
         fail("HTTP " + what + " contains a whitespace/control character that would break the request line: " + value)
 
@@ -334,7 +334,7 @@ pub fn check_request_field(what: String, value: String):
 // Content-Length / Connection), so a caller/handler-supplied framing header must be
 // dropped rather than emitted alongside ours: two conflicting framing headers are a
 // request/response-smuggling primitive.
-pub fn is_framing_header(name: String) -> Bool:
+pub fn is_framing_header(let name: String) -> Bool:
     let n = name.to_lower()
     n == "content-length" || n == "transfer-encoding" || n == "connection"
 

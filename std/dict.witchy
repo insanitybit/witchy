@@ -239,7 +239,7 @@ impl Dict(k, v) where k: Hash:
 
     // `self` with `other`'s entries laid over it (on a key collision, `other`
     // wins).
-    pub fn merge(self, other: Dict(k, v)) -> unique Dict(k, v):
+    pub fn merge(self, let other: Dict(k, v)) -> unique Dict(k, v):
         var out = dict.with_capacity(dict.length(self) + dict.length(other))
         for entry in dict.pairs(self):
             let (key, value) = entry
@@ -259,7 +259,7 @@ impl Dict(k, v) where v: Hash:
         out
 
 // Build a Dict from (key, value) pairs; a later pair overrides an earlier one.
-pub fn from_pairs(entries: List((k, v))) -> unique Dict(k, v) where k: Hash:
+pub fn from_pairs(let entries: List((k, v))) -> unique Dict(k, v) where k: Hash:
     var d = dict.new()
     for entry in entries:
         let (key, value) = entry

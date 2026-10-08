@@ -141,7 +141,7 @@ pub fn days_in_month(y: Int, mo: Int) -> Int:
 // instead of the `T`, or a bare `YYYY-MM-DD` (midnight UTC). The typed error
 // preserves malformed dates, time fields, fractions, and offsets as structured
 // cases.
-pub fn parse_iso8601(text: String) -> Result(DateTime, TimeError):
+pub fn parse_iso8601(let text: String) -> Result(DateTime, TimeError):
     let t = text.trim()
     // ISO 8601 is ASCII, so past this check byte offsets are character offsets.
     if t.length() != t.char_count():
@@ -182,7 +182,7 @@ pub fn parse_iso8601(text: String) -> Result(DateTime, TimeError):
     Ok(from_unix(to_unix(base) + delta))
 
 // Parse with String errors for application-style boundaries.
-pub fn parse_iso8601_string(text: String) -> Result(DateTime, String):
+pub fn parse_iso8601_string(let text: String) -> Result(DateTime, String):
     match parse_iso8601(text):
         Ok(d) -> Ok(d)
         Err(e) -> Err(time_error_message(e))
@@ -239,7 +239,7 @@ impl Show for DateTime:
 // Directives: %Y year, %m month, %d day, %H hour, %M minute, %S second,
 // %a/%A weekday (short/full), %b/%B month name (short/full), %% a literal
 // percent. Anything else after `%` passes through unchanged.
-pub fn format(d: DateTime, layout: String) -> unique String:
+pub fn format(d: DateTime, let layout: String) -> unique String:
     var out = ""
     var pending = false
     for c in layout.chars():

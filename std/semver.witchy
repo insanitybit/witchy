@@ -158,7 +158,7 @@ pub fn less(a: Version, b: Version) -> Bool:
     a < b
 
 // --- constraints -------------------------------------------------------------
-pub fn parse_req(s: String) -> Result(Req, SemverError):
+pub fn parse_req(let s: String) -> Result(Req, SemverError):
     let t = s.trim()
     if t == "*":
         Ok(Any)
@@ -173,7 +173,7 @@ pub fn parse_req(s: String) -> Result(Req, SemverError):
     else:
         wrap_exact(parse(t))
 
-pub fn parse_req_string(s: String) -> Result(Req, String):
+pub fn parse_req_string(let s: String) -> Result(Req, String):
     match parse_req(s):
         Ok(r) -> Ok(r)
         Err(e) -> Err(semver_error_message(e))

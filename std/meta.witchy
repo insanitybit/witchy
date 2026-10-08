@@ -154,7 +154,7 @@ fn __meta_expr_tag_hole(marker: String) -> ExprSyntax:
 // and compiler-owned expression handles. The bridge stores an owned AST; it
 // never concatenates or reparses source. `parts` must have exactly one more
 // member than `holes`.
-pub fn expr_tagged(tag: Ident, parts: List(String), holes: List(ExprSyntax)) -> ExprSyntax:
+pub fn expr_tagged(tag: Ident, let parts: List(String), holes: List(ExprSyntax)) -> ExprSyntax:
     var wire = "V\n" + ident_source(tag) + "\n" + "${parts.length()}\n"
     for part in parts:
         wire = wire + "${part.length()}\n" + part
@@ -436,7 +436,7 @@ pub fn expr_string(value: String) -> ExprSyntax:
 
 // A compiler-owned binary expression. `op` is admitted by the compiler's
 // fixed source-operator whitelist; it is never parsed as a source fragment.
-pub fn expr_binary(op: String, lhs: ExprSyntax, rhs: ExprSyntax) -> ExprSyntax:
+pub fn expr_binary(let op: String, lhs: ExprSyntax, rhs: ExprSyntax) -> ExprSyntax:
     __meta_expr_compose_wire("Y\n" + op + "\n" + expr_wire_handle(lhs) + expr_wire_handle(rhs))
 
 // Interpreter-owned compile-time hook for `expr_binary`. Both children retain
@@ -448,7 +448,7 @@ fn __meta_expr_binary(op: String, lhs: ExprSyntax, rhs: ExprSyntax) -> ExprSynta
 // or `*`. Ordinary checking validates that `&` forms an admitted rooted view
 // of a place and `*` reads an admitted view. Move, mutable borrow, and
 // suspension operators remain refused here. The operand must be sealed.
-pub fn expr_unary(op: String, value: ExprSyntax) -> ExprSyntax:
+pub fn expr_unary(let op: String, value: ExprSyntax) -> ExprSyntax:
     __meta_expr_compose_wire("U\n" + op + "\n" + expr_wire_handle(value))
 
 fn __meta_expr_unary(op: String, value: ExprSyntax) -> ExprSyntax:
@@ -488,7 +488,7 @@ pub fn record_field(name: Ident, value: ExprSyntax) -> (Ident, ExprSyntax):
 // Compiler-owned construction of an explicitly named record. The record head
 // and labels are definition-site identifiers; invocation-site identifiers are
 // references and are rejected rather than having their origin erased.
-pub fn expr_record(name: Ident, fields: List((Ident, ExprSyntax))) -> ExprSyntax:
+pub fn expr_record(name: Ident, let fields: List((Ident, ExprSyntax))) -> ExprSyntax:
     match name:
         CallSiteIdent(_) -> fail("meta.expr_record requires a definition-site name")
         _ -> ()
@@ -505,7 +505,7 @@ pub fn expr_record(name: Ident, fields: List((Ident, ExprSyntax))) -> ExprSyntax
 
 // Construct a record using compiler-owned type syntax. Destination checking
 // resolves a qualified imported head without parsing a reflected display name.
-pub fn expr_record_type(target: TypeSyntax, fields: List((Ident, ExprSyntax))) -> ExprSyntax:
+pub fn expr_record_type(target: TypeSyntax, let fields: List((Ident, ExprSyntax))) -> ExprSyntax:
     var wire = "Q\n" + type_handle_wire(target) + "${fields.length()}\n"
     for field in fields:
         let (field_name, value) = field
@@ -619,7 +619,7 @@ fn __meta_pattern_wire(wire: String) -> PatternSyntax:
     __meta_pattern_wire(wire)
 
 // A string literal pattern.
-pub fn pattern_str(value: String) -> PatternSyntax:
+pub fn pattern_str(let value: String) -> PatternSyntax:
     __meta_pattern_wire("S\n${value.length()}\n" + value)
 
 // A duration literal pattern from its whole-millisecond value.
@@ -871,7 +871,7 @@ fn __meta_param_wire(wire: String) -> ParamSyntax:
 fn __meta_param(convention: String, name: Ident, ty: TypeSyntax) -> ParamSyntax:
     __meta_param(convention, name, ty)
 
-pub fn function(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: ExprSyntax) -> ItemSyntax:
+pub fn function(public: Bool, name: Ident, let params: List(ParamSyntax), ret: Option(TypeSyntax), body: ExprSyntax) -> ItemSyntax:
     match name:
         CallSiteIdent(_) -> fail("meta.function requires a definition-site name")
         _ -> ()
@@ -924,7 +924,7 @@ pub fn function_generator(public: Bool, name: Ident, params: List(ParamSyntax), 
 
 // Construct a record declaration from checked type syntax. The private wire
 // carries data and current-session type handles, never generated source.
-pub fn record_type(name: Ident, fields: List((Ident, TypeSyntax))) -> ItemSyntax:
+pub fn record_type(name: Ident, let fields: List((Ident, TypeSyntax))) -> ItemSyntax:
     match name:
         CallSiteIdent(_) -> fail("meta.record_type requires a definition-site name")
         _ -> ()
@@ -956,7 +956,7 @@ pub fn impl_block(trait_ty: TypeSyntax, target_ty: TypeSyntax, items: List(ItemS
     __meta_impl_block(trait_ty, target_ty, items)
 
 // Construct methods owned by a concrete type without inventing a trait.
-pub fn inherent_impl(target_ty: TypeSyntax, items: List(ItemSyntax)) -> ItemSyntax:
+pub fn inherent_impl(target_ty: TypeSyntax, let items: List(ItemSyntax)) -> ItemSyntax:
     var wire = type_handle_wire(target_ty) + "${items.length()}\n"
     for item in items:
         match item:

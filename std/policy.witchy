@@ -45,19 +45,19 @@ sealed type DirPolicy:
     pattern: String
 
 impl Net:
-    pub fn tcp(host: String, port: Int) -> NetPolicy:
+    pub fn tcp(let host: String, port: Int) -> NetPolicy:
         // A plaintext TCP endpoint: `<host>:<port>`. `port` must be in 0..65535.
         NetPolicy(checked_component(host) + ":" + checked_port(port))
 
-    pub fn any_port(host: String) -> NetPolicy:
+    pub fn any_port(let host: String) -> NetPolicy:
         // Any port on a host: `<host>:*`.
         NetPolicy(checked_component(host) + ":*")
 
-    pub fn cidr(block: String, port: Int) -> NetPolicy:
+    pub fn cidr(let block: String, port: Int) -> NetPolicy:
         // An IPv4 CIDR block (rebinding-proof - matched against the resolved IP): `<a.b.c.d/bits>:<port>`. `port` must be in 0..65535.
         NetPolicy(checked_component(block) + ":" + checked_port(port))
 
-    pub fn cidr_any(block: String) -> NetPolicy:
+    pub fn cidr_any(let block: String) -> NetPolicy:
         // An IPv4 CIDR block, any port: `<a.b.c.d/bits>:*`.
         NetPolicy(checked_component(block) + ":*")
 
@@ -78,7 +78,7 @@ impl Net:
         Net.union(Net.cidr_any("127.0.0.0/8"), Net.union(Net.cidr_any("10.0.0.0/8"), Net.union(Net.cidr_any("172.16.0.0/12"), Net.union(Net.cidr_any("192.168.0.0/16"), Net.union(Net.cidr_any("169.254.0.0/16"), Net.union(Net.cidr_any("100.64.0.0/10"), Net.union(Net.cidr_any("0.0.0.0/8"), Net.union(Net.cidr_any("::1/128"), Net.union(Net.cidr_any("fe80::/10"), Net.cidr_any("fc00::/7"))))))))))
 
 impl Dir:
-    pub fn ext(suffix: String) -> DirPolicy:
+    pub fn ext(let suffix: String) -> DirPolicy:
         // A Dir entry policy admitting only files whose name ends with `suffix` (include
         // the dot, e.g. `".txt"`). Compose with `dir.only` to confine a `Dir`'s reach.
         DirPolicy("ext:" + checked_component(suffix))

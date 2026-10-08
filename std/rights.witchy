@@ -24,7 +24,7 @@ pub fn covers(declared: String, demanded: String) -> Bool:
         subset(rights_of(demanded), rights_of(declared))
 
 // Whether any capability in `declared` covers `demanded`.
-pub fn any_covers(declared: List(String), demanded: String) -> Bool:
+pub fn any_covers(let declared: List(String), demanded: String) -> Bool:
     var ok = false
     for d in declared:
         if covers(d, demanded):
@@ -33,7 +33,7 @@ pub fn any_covers(declared: List(String), demanded: String) -> Bool:
 
 // The demanded capabilities no declared capability covers - the gap a gate blocks
 // on (an under-declaration, or a widening of authority). Empty means admitted.
-pub fn uncovered(declared: List(String), demanded: List(String)) -> unique List(String):
+pub fn uncovered(let declared: List(String), let demanded: List(String)) -> unique List(String):
     var missing = []
     for cap in demanded:
         if !any_covers(declared, cap):
@@ -41,7 +41,7 @@ pub fn uncovered(declared: List(String), demanded: List(String)) -> unique List(
     missing
 
 // A bracket-free capability ("Net") is the full authority of its kind.
-pub fn is_full(cap: String) -> Bool:
+pub fn is_full(let cap: String) -> Bool:
     !cap.contains("[")
 
 // The base kind: "Dir[Read]" -> "Dir"; "Console" -> "Console".

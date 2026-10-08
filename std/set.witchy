@@ -32,7 +32,7 @@ pub fn new() -> unique Set(a):
 
 // A set of the distinct values in `xs` (duplicates collapse, keeping the first
 // occurrence of each member).
-pub fn from_list(xs: List(a)) -> unique Set(a) where a: Hash:
+pub fn from_list(let xs: List(a)) -> unique Set(a) where a: Hash:
     var items = []
     for x in xs:
         if !list.contains(items, x):
@@ -103,7 +103,7 @@ impl Set(a) where a: Hash:
         list.contains(items, x)
 
     // Every member of either set.
-    pub fn union(self, other: Set(a)) -> unique Set(a):
+    pub fn union(self, let other: Set(a)) -> unique Set(a):
         let titems = other.items
         var out = self.items
         for x in titems:
@@ -112,7 +112,7 @@ impl Set(a) where a: Hash:
         Set(out)
 
     // The members in both sets.
-    pub fn intersection(self, other: Set(a)) -> unique Set(a):
+    pub fn intersection(self, let other: Set(a)) -> unique Set(a):
         let sitems = self.items
         let titems = other.items
         var out = []
@@ -122,7 +122,7 @@ impl Set(a) where a: Hash:
         Set(out)
 
     // The members of this set that are not in `other`.
-    pub fn difference(self, other: Set(a)) -> unique Set(a):
+    pub fn difference(self, let other: Set(a)) -> unique Set(a):
         let sitems = self.items
         let titems = other.items
         var out = []
@@ -132,7 +132,7 @@ impl Set(a) where a: Hash:
         Set(out)
 
     // The members in exactly one of the two sets.
-    pub fn symmetric_difference(self, other: Set(a)) -> unique Set(a):
+    pub fn symmetric_difference(self, let other: Set(a)) -> unique Set(a):
         let sitems = self.items
         let titems = other.items
         var out = []
@@ -145,16 +145,16 @@ impl Set(a) where a: Hash:
         Set(out)
 
     // Whether every member of this set is also in `other`.
-    pub fn is_subset(self, other: Set(a)) -> Bool:
+    pub fn is_subset(self, let other: Set(a)) -> Bool:
         subset_of(self, other)
 
     // Whether this set contains every member of `other` - the reverse of
     // `is_subset`.
-    pub fn is_superset(self, other: Set(a)) -> Bool:
+    pub fn is_superset(self, let other: Set(a)) -> Bool:
         subset_of(other, self)
 
     // Whether the two sets share no members.
-    pub fn is_disjoint(self, other: Set(a)) -> Bool:
+    pub fn is_disjoint(self, let other: Set(a)) -> Bool:
         let sitems = self.items
         let titems = other.items
         var ok = true

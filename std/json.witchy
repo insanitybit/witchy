@@ -235,7 +235,7 @@ fn hex_digit(v: Int) -> unique String:
 // Parse a complete JSON document, or return an error message. The whole input
 // must be a single value: trailing content after it (other than whitespace) is
 // rejected, so `decode("1 2")` is an Err rather than silently yielding `1`.
-pub fn decode(s: String) -> Result(Json, DecodeError):
+pub fn decode(let s: String) -> Result(Json, DecodeError):
     // Scan over the CHAR ARRAY (one O(n) `string.chars` pass) and index it with O(1)
     // `list.at`, so the whole parse is O(n). Reading characters with `string.substring(s, j,
     // j + 1)` instead would be O(j) per char (UTF-8 character indexing walks from the start),
@@ -930,7 +930,7 @@ impl Json:
     // Follow a dotted path of object keys, e.g. `resp.get_path("user.name")`.
     // This splits on every `.`, so use `get_in` when a key itself may contain a
     // dot. Any missing key (or a non-object along the way) yields `None`.
-    pub fn get_path(self, path: String) -> Option(Json):
+    pub fn get_path(self, let path: String) -> Option(Json):
         follow_segments(self, path.split("."))
 
 // --- reflective encoding (no derive) -----------------------------------------

@@ -92,7 +92,7 @@ pub fn query_or(req: Request, name: String, default: String) -> unique String:
     option.unwrap_or(query(req, name), default)
 
 // A request header, looked up case-insensitively, or None.
-pub fn request_header(req: Request, name: String) -> Option(String):
+pub fn request_header(req: Request, let name: String) -> Option(String):
     match req:
         Request(_m, _p, _pa, _q, h, _b) -> http.find_header(h, name.to_lower())
 
@@ -195,7 +195,7 @@ pub fn redirect(location: String) -> Response:
 // lowercased: `Response` documents its header list as lowercase so
 // `http.header(resp, name)` can look up case-insensitively - headers are
 // case-insensitive on the wire, and rendering emits the lowercase form.
-pub fn with_header(resp: Response, name: String, value: String) -> Response:
+pub fn with_header(resp: Response, let name: String, value: String) -> Response:
     match resp:
         Response(code, hdrs, body) ->
             var headers = hdrs
@@ -259,7 +259,7 @@ impl Router:
         // Route any HTTP method at `p` to `h`.
         route(self, "*", p, h)
 
-    pub fn nest(self, prefix: String, sub: Router) -> Router:
+    pub fn nest(self, let prefix: String, sub: Router) -> Router:
         // Mount `sub` under `prefix`, preserving the sub-router's own layers.
         match sub:
             Router(sub_routes, sub_layers) ->
@@ -663,7 +663,7 @@ pub fn render(resp: Response) -> unique String:
 // body bytes themselves are never sent (RFC 9110 §9.3.2). This is enforced at
 // the rendering boundary so a `.head(...)` handler may simply return the GET
 // response and the framework suppresses the body.
-pub fn render_for(resp: Response, method: String) -> unique String:
+pub fn render_for(resp: Response, let method: String) -> unique String:
     match resp:
         // (BUG-255) A status code outside 100..599 is not a valid HTTP status
         // and would render a malformed status line; trap loudly (both backends).

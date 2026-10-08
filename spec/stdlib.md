@@ -14,13 +14,13 @@ ASCII character predicates over single-character strings (such as those `string.
 
 #### `fn is_alnum(c: String) -> Bool`
 
-#### `fn is_space(c: String) -> Bool`
+#### `fn is_space(let c: String) -> Bool`
 
 #### `fn to_digit(c: String) -> Option(Int)`
 
 The numeric value of a single decimal digit as `Some`, or `None` when `c` is not a digit (RFC-0044 rule 1: absence is `Option`, never a -1 sentinel).
 
-#### `fn all_digits(s: String) -> Bool`
+#### `fn all_digits(let s: String) -> Bool`
 
 True when `s` is non-empty and every character is an ASCII digit - a safe guard before `string_to_int`, which traps on non-numeric input.
 
@@ -61,11 +61,11 @@ The number of bytes.
 
 The byte at `index`, as an Int in `0..=255`.
 
-#### `fn concat(first: Bytes, second: Bytes) -> unique Bytes`
+#### `fn concat(first: Bytes, let second: Bytes) -> unique Bytes`
 
 The two byte buffers joined.
 
-#### `fn slice(b: Bytes, start: Int, end: Int) -> unique Bytes`
+#### `fn slice(let b: Bytes, start: Int, end: Int) -> unique Bytes`
 
 The bytes in `start..end` (clamped to the buffer; `start >= end` yields empty).
 
@@ -127,7 +127,7 @@ The byte at `index`, as an Int in `0..=255`.
 
 The byte at `index`, or None when out of range.
 
-#### `Bytes.concat(second: Bytes) -> unique Bytes`
+#### `Bytes.concat(let second: Bytes) -> unique Bytes`
 
 The two byte buffers joined.
 
@@ -139,19 +139,19 @@ The bytes in `start..end` (clamped to the buffer; `start >= end` yields empty).
 
 The bytes as a list of Ints in `0..=255`.
 
-#### `Bytes.contains(needle: Bytes) -> Bool`
+#### `Bytes.contains(let needle: Bytes) -> Bool`
 
 Whether `needle` appears in the buffer. An empty needle matches nothing (the same empty-pattern rule `string.contains` follows).
 
-#### `Bytes.index_of(needle: Bytes) -> Option(Int)`
+#### `Bytes.index_of(let needle: Bytes) -> Option(Int)`
 
 The first byte index where `needle` appears, or None when absent. An empty needle is treated as absent (`None`), matching `string.index_of`'s module-wide empty-pattern rule so a String/Bytes port behaves identically.
 
-#### `Bytes.starts_with(prefix: Bytes) -> Bool`
+#### `Bytes.starts_with(let prefix: Bytes) -> Bool`
 
 Whether the buffer starts with `prefix`.
 
-#### `Bytes.ends_with(suffix: Bytes) -> Bool`
+#### `Bytes.ends_with(let suffix: Bytes) -> Bool`
 
 Whether the buffer ends with `suffix`.
 
@@ -555,11 +555,11 @@ Flip an ordering - `Less` <-> `Greater`, `Equal` unchanged - for reverse sorts.
 
 `x` confined to the range [lo, hi]. `lo` must not exceed `hi` (RFC-0044 rule 3): inverted bounds describe an empty range, so they fail loudly instead of silently returning `lo` (matching `math.clamp`).
 
-#### `fn maximum(xs: List(a), default: a) -> a where a: Ord`
+#### `fn maximum(let xs: List(a), default: a) -> a where a: Ord`
 
 The largest element of `xs`, or `default` when `xs` is empty. `default` is only the empty fallback - it never participates in the comparison, so it is returned unchanged only for an empty list (a small `default` no longer wins over the elements, nor a large one lose to them).
 
-#### `fn minimum(xs: List(a), default: a) -> a where a: Ord`
+#### `fn minimum(let xs: List(a), default: a) -> a where a: Ord`
 
 The smallest element of `xs`, or `default` when `xs` is empty. As with `maximum`, `default` is the empty fallback only, never a competing bound.
 
@@ -827,7 +827,7 @@ Matchable compiler-service failures. `SourceRejected` is the ordinary parse, typ
 
 The capability footprint of witchy `source`, as JSON:   {"total":[..],"build":[..],"user_caps":[..],"entries":[{"name":..,"capabilities":[..],"brands":[..]}]} or {"error":".."} if the source does not parse or contains `comptime:` blocks. Use the source-file CLI path for expanded comptime introspection. `build` is the build-time footprint - the build capabilities the rune's `build` entrypoint demands (gated separately from the runtime `total`). `user_caps` lists grantable user-capability names the source requires. Parse it with `import json`.
 
-#### `fn diff(old: String, new: String) -> String`
+#### `fn diff(old: String, let new: String) -> String`
 
 Compare two sources by capability footprint, as JSON:   {"widened":bool,"added":[..],"removed":[..],"build_added":[..],    "build_removed":[..],"user_caps_added":[..],"user_caps_removed":[..]} or {"error":".."} if either source does not parse. `widened` is the rights-precise block-on-widening gate: true when `new` demands any runtime capability, build capability, or user cap that `old` did not.
 
@@ -906,11 +906,11 @@ Human-readable verifier failure text. Kept as an explicit helper so existing Str
 
 SHA-256 of a string's UTF-8 bytes, as 64 lowercase hex characters.
 
-#### `fn sha256_bytes(data: Bytes) -> unique String`
+#### `fn sha256_bytes(let data: Bytes) -> unique String`
 
 SHA-256 of RAW bytes, as 64 lowercase hex characters. Unlike `sha256` (which hashes a string's UTF-8), this hashes the exact `Bytes` - the digest a binary artifact (e.g. a trusted-publisher) is verified against (RFC-0095). Native intrinsic; this body is a placeholder the runtime never executes.
 
-#### `fn rune_hash(paths: List(String), contents: List(String)) -> unique String`
+#### `fn rune_hash(let paths: List(String), let contents: List(String)) -> unique String`
 
 The canonical content hash of a rune's source tree, as `sha256:<hex>`. Pass parallel lists - one entry per file (`witchy.toml` plus each `src/**/*.witchy`): `paths[i]` is the relative path, `contents[i]` its text. Entries are sorted and length-prefixed before hashing, so the result is the rune's stable content address - the package manager's tamper-evident identity.
 
@@ -942,15 +942,15 @@ Like `ecdsa_p256_verify` but the message is also hex - for binary messages such 
 
 Verify an RSASSA-PKCS1-v1_5 / SHA-256 signature - JWT/OIDC "RS256" (the algorithm GitHub Actions and Google sign their identity tokens with). `public_key` is the hex of a DER-encoded RSA public key (PKCS#1 `RSAPublicKey`); `signature` is hex; `message` is the raw signed bytes (`header.payload` for a JWT). Malformed inputs are `Err`; a well-formed but non-matching signature is `Ok(false)`. (Native-only.)
 
-#### `fn sha512(data: String) -> unique String`
+#### `fn sha512(let data: String) -> unique String`
 
 SHA-512 of a string's UTF-8 bytes, as 128 lowercase hex characters. (Native-only.)
 
-#### `fn sha3_256(data: String) -> unique String`
+#### `fn sha3_256(let data: String) -> unique String`
 
 SHA3-256 (FIPS 202) of a string's UTF-8 bytes, as 64 hex characters. (Native-only.)
 
-#### `fn hmac_sha256(key: String, message: String) -> unique String`
+#### `fn hmac_sha256(let key: String, let message: String) -> unique String`
 
 HMAC-SHA256 (FIPS 198-1). `key` is hex (so binary keys are representable); `message` is raw text. Returns the 64-hex-char tag. (Native-only.)
 
@@ -1048,7 +1048,7 @@ The (key, value) pairs, in insertion order.
 
 The number of entries.
 
-#### `fn from_pairs(entries: List((k, v))) -> unique Dict(k, v) where k: Hash`
+#### `fn from_pairs(let entries: List((k, v))) -> unique Dict(k, v) where k: Hash`
 
 Build a Dict from (key, value) pairs; a later pair overrides an earlier one.
 
@@ -1122,7 +1122,7 @@ A new Dict with every value passed through `f` (keys unchanged).
 
 Keep only the entries for which `keep(key, value)` holds.
 
-#### `Dict.merge(other: Dict(k, v)) -> unique Dict(k, v)`
+#### `Dict.merge(let other: Dict(k, v)) -> unique Dict(k, v)`
 
 `self` with `other`'s entries laid over it (on a key collision, `other` wins).
 
@@ -1446,7 +1446,7 @@ Matchable decode failures for the text encodings this module supports.
 
 #### `fn encoding_error_message(e: EncodingError) -> unique String`
 
-#### `fn hex_encode(data: String) -> unique String`
+#### `fn hex_encode(let data: String) -> unique String`
 
 Lowercase hex of `data`'s UTF-8 bytes.
 
@@ -1470,7 +1470,7 @@ Decode hex with String errors for application-style boundaries.
 
 Decode hex bytes with String errors for application-style boundaries.
 
-#### `fn base64_encode(data: String) -> unique String`
+#### `fn base64_encode(let data: String) -> unique String`
 
 Standard base64 (with `=` padding) of `data`'s UTF-8 bytes.
 
@@ -1573,7 +1573,7 @@ Run `path` with `args` and no stdin - the common case.
 
 fs - small directory helpers over the `Dir` capability. Each function's authority is exactly the `Dir` the caller passes: `collect_files`/`parent_dir` need only read, `ensure_dir` needs write. Nothing here widens a capability - the confinement of the `Dir` you hand in is preserved.
 
-#### `fn ensure_dir(root: Dir, path: String) -> Result((), CapError)`
+#### `fn ensure_dir(root: Dir, let path: String) -> Result((), CapError)`
 
 Create each level of `path` under `root` (the confined `Dir`'s `make_dir` is not recursive). Idempotent. Needs a writable `Dir`. The first level that cannot be probed or created is the `Err`.
 
@@ -1581,7 +1581,7 @@ Create each level of `path` under `root` (the confined `Dir`'s `make_dir` is not
 
 The parent component of a relative path as `Some`: "a/b/c" -> Some("a/b"). A single component has no parent, so "a" is `None` (RFC-0044 rule 1: absence is `Option`, never an empty-string sentinel). Callers ensuring a parent exists can default explicitly: `fs.parent_dir(p) ?? ""` (ensure_dir of "" creates nothing).
 
-#### `fn collect_files(root: Dir, path: String, rel: String, ext: String) -> Result(List((String, String)), CapError)`
+#### `fn collect_files(root: Dir, path: String, rel: String, let ext: String) -> Result(List((String, String)), CapError)`
 
 Recursively collect every file under `path` whose name ends with `ext`, as (relpath, contents) pairs. `rel` is prefixed to each result path (so a nested `a/b.witchy` keeps its full relative path). An empty `path` walks from the Dir root itself. The first file that cannot be read is the `Err`. Needs a readable `Dir`.
 
@@ -1791,19 +1791,19 @@ The numeric status code, e.g. 200.
 
 The response body.
 
-#### `fn header(r: Response, name: String) -> Option(String)`
+#### `fn header(r: Response, let name: String) -> Option(String)`
 
 The value of a response header, looked up case-insensitively, or None.
 
-#### `fn find_header(hdrs: List((String, String)), name: String) -> Option(String)`
+#### `fn find_header(let hdrs: List((String, String)), let name: String) -> Option(String)`
 
 Look up a header by its (already-lowercased) name. Shared with `server`.
 
-#### `fn has_crlf(s: String) -> Bool`
+#### `fn has_crlf(let s: String) -> Bool`
 
 Whether `s` contains a CR or LF - the response/request-splitting bytes.
 
-#### `fn check_field(what: String, value: String)`
+#### `fn check_field(let what: String, value: String)`
 
 Trap unless `value` (a header value) is free of forbidden controls. HTAB is allowed in header values; all other C0 controls and DEL are rejected. Request method/path/host use `check_request_field`, which is stricter.
 
@@ -1815,11 +1815,11 @@ Trap unless `name` is a valid header-name token (rejects `:`, space, and CR/LF).
 
 Validate one `(name, value)` header pair - the name is a token, the value has no forbidden controls. Shared by the client request builder and server renderer.
 
-#### `fn check_request_field(what: String, value: String)`
+#### `fn check_request_field(let what: String, value: String)`
 
 (BUG-364/506) Trap unless `value` is safe to splice into the request LINE: no C0 controls, DEL, space, or tab. The request line is space-delimited (`METHOD SP TARGET SP HTTP/1.1`), so a space/tab in method/path/host would split it into extra tokens (request smuggling). Stricter than `check_field`, because header values legitimately contain spaces and may contain HTAB.
 
-#### `fn is_framing_header(name: String) -> Bool`
+#### `fn is_framing_header(let name: String) -> Bool`
 
 (BUG-358 / BUG-393) Whether `name` is a message-FRAMING header - Content-Length, Transfer-Encoding, or Connection. The renderer owns framing (it appends its own Content-Length / Connection), so a caller/handler-supplied framing header must be dropped rather than emitted alongside ours: two conflicting framing headers are a request/response-smuggling primitive.
 
@@ -1837,7 +1837,7 @@ Strict response parsing for public client paths. In particular, malformed `Trans
 
 #### `RequestBuilder.with_body(body: String) -> RequestBuilder`
 
-#### `RequestBuilder.with_query(key: String, value: String) -> RequestBuilder`
+#### `RequestBuilder.with_query(let key: String, let value: String) -> RequestBuilder`
 
 #### `RequestBuilder.send(fetch: Fetch) -> Result(Response, HttpError)`
 
@@ -2085,7 +2085,7 @@ Reconstruct a value from a `Json`. Reflection can read a value's structure but n
 
 #### `fn deserialize_error_message(e: DeserializeError) -> unique String`
 
-#### `fn decode(s: String) -> Result(Json, DecodeError)`
+#### `fn decode(let s: String) -> Result(Json, DecodeError)`
 
 Parse a complete JSON document, or return an error message. The whole input must be a single value: trailing content after it (other than whitespace) is rejected, so `decode("1 2")` is an Err rather than silently yielding `1`.
 
@@ -2195,7 +2195,7 @@ The string at index `i` of a JSON array, when it is a string.
 
 Follow exact object-key segments. Unlike `get_path`, segment strings are not parsed, so dots and empty strings are literal key names. Any missing key (or a non-object along the way) yields `None`.
 
-#### `Json.get_path(path: String) -> Option(Json)`
+#### `Json.get_path(let path: String) -> Option(Json)`
 
 Follow a dotted path of object keys, e.g. `resp.get_path("user.name")`. This splits on every `.`, so use `get_in` when a key itself may contain a dot. Any missing key (or a non-object along the way) yields `None`.
 
@@ -2309,15 +2309,15 @@ Matchable compact-JWT/OIDC verification failures. These distinguish malformed wi
 
 Human-readable JWT/OIDC failure text for logs, CLI output, and HTTP responses.
 
-#### `fn verify_rs256(token: String, rsa_pubkey_der_hex: String, audience: String, now: Int) -> Result(Json, JwtError)`
+#### `fn verify_rs256(let token: String, rsa_pubkey_der_hex: String, audience: String, now: Int) -> Result(Json, JwtError)`
 
 Verify an RS256 (RSASSA-PKCS1-v1_5 / SHA-256) compact JWT against a DER PKCS#1 RSA public key (hex), checking the signature, `exp > now` (unix seconds), and `aud == audience`. Returns the decoded claims, or a typed error.
 
-#### `fn verify_oidc(token: String, rsa_pubkey_der_hex: String, issuer: String, audience: String, now: Int) -> Result(Json, JwtError)`
+#### `fn verify_oidc(let token: String, rsa_pubkey_der_hex: String, let issuer: String, audience: String, now: Int) -> Result(Json, JwtError)`
 
 The generic OIDC relying-party check: verify the RS256 signature AND that the token was minted by the expected `issuer` for the expected `audience`, and is valid now (`exp`/`nbf`). Returns the identity claims - `sub` plus provider-specific fields like GitHub's `repository` or Google's `email` - for the caller to authorize. This is the base check once it holds the issuer's JWKS key (`rsa_key_from_jwk`). Login and trusted-publishing flows should use `verify_oidc_fresh`, which adds their explicit `iat` and maximum-lifetime policy. The issuer check is what binds a token to a TRUSTED provider: without it, anyone who can mint a JWT for the right audience would be admitted.
 
-#### `fn verify_oidc_fresh(token: String, rsa_pubkey_der_hex: String, issuer: String, audience: String, now: Int, max_lifetime: Int, clock_skew: Int) -> Result(Json, JwtError)`
+#### `fn verify_oidc_fresh(let token: String, rsa_pubkey_der_hex: String, let issuer: String, audience: String, now: Int, max_lifetime: Int, clock_skew: Int) -> Result(Json, JwtError)`
 
 The stricter relying-party entrypoint for short-lived identity tokens. RFC 7519 defines `iat` as optional in generic JWTs; OIDC relying parties choose their own acceptable freshness range. This variant makes that application policy explicit: `iat` is required, `exp - iat` may not exceed `max_lifetime`, and an issuer clock may lead the relying-party clock by at most `clock_skew` seconds. Signature, issuer, audience, expiry, nbf, and azp checks are still those of `verify_oidc`.
 
@@ -2327,23 +2327,23 @@ The stricter relying-party entrypoint for short-lived identity tokens. RFC 7519 
 
 Mint a compact EdDSA (Ed25519) JWT. The JOSE header is `{"alg":"EdDSA","typ": "JWT"}`; the signing input is `base64url(header) + "." + base64url(claims JSON)`; that ASCII is signed with the Ed25519 `Secret` (`crypto.sign`, hex output), and the hex signature is base64url-encoded as the third segment. The caller sets the registered claims (`iss`/`aud`/`sub`/`iat`/`exp`/…) in `claims`. Signing is by-handle, so a sealed `Secret[Seal]` mints tokens without being readable.
 
-#### `fn verify_eddsa(token: String, ed25519_pubkey_hex: String, audience: String, now: Int) -> Result(Json, JwtError)`
+#### `fn verify_eddsa(let token: String, ed25519_pubkey_hex: String, audience: String, now: Int) -> Result(Json, JwtError)`
 
 Verify an EdDSA (Ed25519) compact JWT against an Ed25519 public key (hex), checking the signature, `exp > now` (unix seconds), and `aud == audience`. The JOSE header's `alg` MUST be exactly `EdDSA`: an attacker-chosen `alg` is refused here rather than trusted (algorithm confusion; BUG-250, RFC 8725 §3.1).
 
-#### `fn verify_oidc_eddsa(token: String, ed25519_pubkey_hex: String, issuer: String, audience: String, now: Int) -> Result(Json, JwtError)`
+#### `fn verify_oidc_eddsa(let token: String, ed25519_pubkey_hex: String, let issuer: String, audience: String, now: Int) -> Result(Json, JwtError)`
 
 The EdDSA analogue of `verify_oidc`: verify the Ed25519 signature AND that the token was minted by the expected `issuer` for the expected `audience`, valid now (`exp`/`nbf`/`azp`). Returns the identity claims for the caller to authorize.
 
-#### `fn verify_oidc_fresh_eddsa(token: String, ed25519_pubkey_hex: String, issuer: String, audience: String, now: Int, max_lifetime: Int, clock_skew: Int) -> Result(Json, JwtError)`
+#### `fn verify_oidc_fresh_eddsa(let token: String, ed25519_pubkey_hex: String, let issuer: String, audience: String, now: Int, max_lifetime: Int, clock_skew: Int) -> Result(Json, JwtError)`
 
 The EdDSA analogue of `verify_oidc_fresh`: the stricter entrypoint for short-lived internally-minted identity tokens. `iat` is required, `exp - iat` may not exceed `max_lifetime`, and the issuer clock may lead by at most `clock_skew` seconds. Signature, issuer, audience, expiry, nbf, and azp checks are those of `verify_oidc_eddsa`.
 
-#### `fn header(token: String) -> Result(Json, JwtError)`
+#### `fn header(let token: String) -> Result(Json, JwtError)`
 
 The decoded JOSE header of a compact JWT (its first segment), or an error - so a verifier can read `alg`/`kid` to select the JWKS key before checking the signature.
 
-#### `fn claims_unverified(token: String) -> Result(Json, JwtError)`
+#### `fn claims_unverified(let token: String) -> Result(Json, JwtError)`
 
 The payload claims of a compact JWT WITHOUT verifying its signature - for reading the routing fields (`iss`, and `kid` via `header`) needed to SELECT the verification key before `verify_oidc`. DANGER: never authorize on these claims; verify the signature first and read the claims `verify_oidc` returns.
 
@@ -2351,11 +2351,11 @@ The payload claims of a compact JWT WITHOUT verifying its signature - for readin
 
 Build the DER PKCS#1 `RSAPublicKey` (as hex - the shape `verify_rs256` wants) from a JWK's base64url modulus `n` and exponent `e`, so an OIDC verifier can turn a JWKS entry (`{"kty":"RSA","n":…,"e":…}`) into a key. The result is the ASN.1 DER `SEQUENCE { INTEGER n, INTEGER e }`; an INTEGER gains a leading `00` when its top bit is set (DER integers are signed two's-complement, RSA values are unsigned magnitudes).
 
-#### `fn require_kid(token: String) -> Result(String, JwtError)`
+#### `fn require_kid(let token: String) -> Result(String, JwtError)`
 
 Require the `kid` (key id) from a compact JWT header, preserving malformed compact/header input and a missing `kid` as matchable `JwtError` cases.
 
-#### `fn kid(token: String) -> Option(String)`
+#### `fn kid(let token: String) -> Option(String)`
 
 Optional convenience for callers that genuinely treat a malformed/missing key id as absence. Verification boundaries should use `require_kid`.
 
@@ -2403,7 +2403,7 @@ Append `x` in place. For an admitted retained-root view element, append retains 
 
 Transfer an affine element into the list through the same checked append operation. Copyable callers can use `push` without moving their binding. The receiver is not declared `unique`: a list of affine elements cannot be repaired by copying, and its elements' affinity already keeps it exclusive.
 
-#### `fn concat(xs: List(a), ys: List(a)) -> unique List(a)`
+#### `fn concat(let xs: List(a), let ys: List(a)) -> unique List(a)`
 
 A new list that is `xs` followed by `ys`.
 
@@ -2443,7 +2443,7 @@ A list of `n` copies of `x` (empty when `n <= 0`).
 
 Append `x` in place. For an admitted retained-root view element, append retains its snapshot root; later changes to the source binding do not retarget the stored view.
 
-#### `List.concat(ys: List(a)) -> unique List(a)`
+#### `List.concat(let ys: List(a)) -> unique List(a)`
 
 A new list that is `xs` followed by `ys`.
 
@@ -2619,11 +2619,11 @@ Split the list into consecutive sublists of length `n` (the final one may be sho
 
 All contiguous sublists of length `n` (a sliding window of step 1). Empty when `n < 1` or longer than the list. `[1,2,3,4].windows(2)` is `[[1,2],[2,3],[3,4]]`.
 
-#### `List.zip(ys: List(b)) -> unique List((a, b))`
+#### `List.zip(let ys: List(b)) -> unique List((a, b))`
 
 Pair up two lists element-wise, stopping at the shorter one.
 
-#### `List.zip_with(ys: List(b), f: fn(a, b) -> c) -> unique List(c)`
+#### `List.zip_with(let ys: List(b), f: fn(a, b) -> c) -> unique List(c)`
 
 Combine two lists element-wise with `f`, stopping at the shorter one.
 
@@ -2683,7 +2683,7 @@ The smallest element as `Some`, or `None` for the empty list. Generic over any `
 
 The largest element as `Some`, or `None` for the empty list. Generic over any `Ord` element type - see `min`.
 
-#### `List.join(sep: String) -> unique String`
+#### `List.join(let sep: String) -> unique String`
 
 Concatenate the strings, inserting `sep` between adjacent elements: `["a", "b", "c"].join("-")` is `"a-b-c"`, and `[].join(sep)` is `""`.
 
@@ -2924,7 +2924,7 @@ A deterministic compiler-owned binding name. The returned identifier cannot coll
 
 Reify exactly one compiler-issued hole without parsing its source. The compiler substitutes its call-site expression after tag expansion.
 
-#### `fn expr_tagged(tag: Ident, parts: List(String), holes: List(ExprSyntax)) -> ExprSyntax`
+#### `fn expr_tagged(tag: Ident, let parts: List(String), holes: List(ExprSyntax)) -> ExprSyntax`
 
 Construct a nested tagged literal from validated tag identity, static parts, and compiler-owned expression handles. The bridge stores an owned AST; it never concatenates or reparses source. `parts` must have exactly one more member than `holes`.
 
@@ -3006,11 +3006,11 @@ Construct a Duration literal from its exact integer millisecond count.
 
 A compiler-owned string literal. The value is stored as an `Expr::Str`, so quotes, backslashes, interpolation markers, and source-looking text remain data rather than generated syntax.
 
-#### `fn expr_binary(op: String, lhs: ExprSyntax, rhs: ExprSyntax) -> ExprSyntax`
+#### `fn expr_binary(let op: String, lhs: ExprSyntax, rhs: ExprSyntax) -> ExprSyntax`
 
 A compiler-owned binary expression. `op` is admitted by the compiler's fixed source-operator whitelist; it is never parsed as a source fragment.
 
-#### `fn expr_unary(op: String, value: ExprSyntax) -> ExprSyntax`
+#### `fn expr_unary(let op: String, value: ExprSyntax) -> ExprSyntax`
 
 Builds a compiler-owned unary expression for exactly `-`, `!`, `~`, `&`, or `*`. Ordinary checking validates that `&` forms an admitted rooted view of a place and `*` reads an admitted view. Move, mutable borrow, and suspension operators remain refused here. The operand must be sealed.
 
@@ -3030,11 +3030,11 @@ A compiler-owned tuple expression. Each member remains an expression node; tuple
 
 One named record field. A tuple is sufficient here: both parts are already sealed syntax values, so introducing another compiler-syntax type would add a runtime-leakage surface without adding authority.
 
-#### `fn expr_record(name: Ident, fields: List((Ident, ExprSyntax))) -> ExprSyntax`
+#### `fn expr_record(name: Ident, let fields: List((Ident, ExprSyntax))) -> ExprSyntax`
 
 Compiler-owned construction of an explicitly named record. The record head and labels are definition-site identifiers; invocation-site identifiers are references and are rejected rather than having their origin erased.
 
-#### `fn expr_record_type(target: TypeSyntax, fields: List((Ident, ExprSyntax))) -> ExprSyntax`
+#### `fn expr_record_type(target: TypeSyntax, let fields: List((Ident, ExprSyntax))) -> ExprSyntax`
 
 Construct a record using compiler-owned type syntax. Destination checking resolves a qualified imported head without parsing a reflected display name.
 
@@ -3068,7 +3068,7 @@ Compiler-owned pattern syntax. Validated identifiers and structural pattern chil
 
 #### `fn pattern_bool(b: Bool) -> PatternSyntax`
 
-#### `fn pattern_str(value: String) -> PatternSyntax`
+#### `fn pattern_str(let value: String) -> PatternSyntax`
 
 A string literal pattern.
 
@@ -3164,7 +3164,7 @@ Construct a `var` parameter with an ordinary write-back lane. Suspended generate
 
 Construct an `own` parameter, consuming the caller's binding.
 
-#### `fn function(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: ExprSyntax) -> ItemSyntax`
+#### `fn function(public: Bool, name: Ident, let params: List(ParamSyntax), ret: Option(TypeSyntax), body: ExprSyntax) -> ItemSyntax`
 
 #### `fn function_block(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: BlockSyntax) -> ItemSyntax`
 
@@ -3172,7 +3172,7 @@ Construct an `own` parameter, consuming the caller's binding.
 
 #### `fn function_generator(public: Bool, name: Ident, params: List(ParamSyntax), ret: Option(TypeSyntax), body: BlockSyntax) -> ItemSyntax`
 
-#### `fn record_type(name: Ident, fields: List((Ident, TypeSyntax))) -> ItemSyntax`
+#### `fn record_type(name: Ident, let fields: List((Ident, TypeSyntax))) -> ItemSyntax`
 
 Construct a record declaration from checked type syntax. The private wire carries data and current-session type handles, never generated source.
 
@@ -3180,7 +3180,7 @@ Construct a record declaration from checked type syntax. The private wire carrie
 
 Build a trait implementation directly from typed trait/target heads and compiler-owned function items. No impl source is rendered or reparsed.
 
-#### `fn inherent_impl(target_ty: TypeSyntax, items: List(ItemSyntax)) -> ItemSyntax`
+#### `fn inherent_impl(target_ty: TypeSyntax, let items: List(ItemSyntax)) -> ItemSyntax`
 
 Construct methods owned by a concrete type without inventing a trait.
 
@@ -3249,33 +3249,33 @@ Matchable OAuth/OIDC client failures. Transport, provider HTTP status, JSON resp
 
 #### `fn oauth_error_message(e: OAuthError) -> unique String`
 
-#### `fn authorize_url(authorize_endpoint: String, client_id: String, redirect_uri: String, scope: String, state: String) -> unique String`
+#### `fn authorize_url(let authorize_endpoint: String, let client_id: String, let redirect_uri: String, let scope: String, let state: String) -> unique String`
 
 The provider authorization-endpoint URL to redirect the user to. After the user approves, the provider redirects to `redirect_uri?code=...&state=...`. `scope` is the provider's space-separated permission list (e.g. GitHub `read:user`, OIDC `openid email`). An endpoint that already carries fixed parameters (a tenant, `prompt`, ...) is extended with `&`, never a second `?`.
 
-#### `fn exchange_code(fetch: Fetch, token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, OAuthError)`
+#### `fn exchange_code(fetch: Fetch, token_url: String, let client_id: String, let client_secret: String, let code: String, let redirect_uri: String) -> Result(String, OAuthError)`
 
 Exchange an authorization `code` for an access token at the provider's token endpoint - an HTTPS POST with a form-encoded body and `Accept: application/json`. Returns the `access_token`, or a reason. Needs a `Net` that reaches the token host over TLS; the `client_secret` should come from a `Secret`, never a literal.
 
-#### `fn exchange_code_string(fetch: Fetch, token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, String)`
+#### `fn exchange_code_string(fetch: Fetch, token_url: String, let client_id: String, let client_secret: String, let code: String, let redirect_uri: String) -> Result(String, String)`
 
-#### `fn exchange_code_id_token(fetch: Fetch, token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, OAuthError)`
+#### `fn exchange_code_id_token(fetch: Fetch, token_url: String, let client_id: String, let client_secret: String, let code: String, let redirect_uri: String) -> Result(String, OAuthError)`
 
 Like `exchange_code`, but returns the OIDC `id_token` (a JWT carrying the user's identity) instead of the access token - for "Log in with Google" and other OIDC providers. Verify the returned token with `std/jwt` (`kid` → `rsa_key_for_kid` over the provider's JWKS → `verify_oidc_fresh` with that provider's lifetime policy).
 
-#### `fn exchange_code_id_token_string(fetch: Fetch, token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(String, String)`
+#### `fn exchange_code_id_token_string(fetch: Fetch, token_url: String, let client_id: String, let client_secret: String, let code: String, let redirect_uri: String) -> Result(String, String)`
 
-#### `fn token_response(fetch: Fetch, token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(Json, OAuthError)`
+#### `fn token_response(fetch: Fetch, token_url: String, let client_id: String, let client_secret: String, let code: String, let redirect_uri: String) -> Result(Json, OAuthError)`
 
 The raw token-endpoint response as JSON (the HTTPS POST exchanging the code) - the level beneath `exchange_code`; read `access_token` / `id_token` / `refresh_token` from it.
 
-#### `fn token_response_string(fetch: Fetch, token_url: String, client_id: String, client_secret: String, code: String, redirect_uri: String) -> Result(Json, String)`
+#### `fn token_response_string(fetch: Fetch, token_url: String, let client_id: String, let client_secret: String, let code: String, let redirect_uri: String) -> Result(Json, String)`
 
-#### `fn bearer_get_json(fetch: Fetch, url: String, token: String) -> Result(Json, OAuthError)`
+#### `fn bearer_get_json(fetch: Fetch, url: String, let token: String) -> Result(Json, OAuthError)`
 
 GET `url` with a `Bearer` access token and parse the JSON body - the "read the signed-in user" step after `exchange_code` (GitHub `/user`, an OIDC userinfo endpoint). Sends a `User-Agent` (GitHub rejects requests without one). Returns the parsed JSON, or a reason. The caller reads identity fields it trusts (`login`, `id`, `email`).
 
-#### `fn bearer_get_json_string(fetch: Fetch, url: String, token: String) -> Result(Json, String)`
+#### `fn bearer_get_json_string(fetch: Fetch, url: String, let token: String) -> Result(Json, String)`
 
 ### Trait implementations
 
@@ -3384,7 +3384,7 @@ path - data-only manipulation of '/'-separated path strings.
 
 This is string surgery only - it never touches the filesystem (that is the `Dir` capability, wrapped by `std/fs`). Splitting, joining, the base/dir/ext components, and a `normalize` that collapses `.` and `..`.
 
-#### `fn is_abs(p: String) -> Bool`
+#### `fn is_abs(let p: String) -> Bool`
 
 Whether `p` is absolute (rooted at `/`).
 
@@ -3408,7 +3408,7 @@ The extension after the final `.` in the base name, WITHOUT the leading dot, as 
 
 The base name without its extension (".bashrc" -> ".bashrc"; "a.b.c" -> "a.b").
 
-#### `fn normalize(p: String) -> unique String`
+#### `fn normalize(let p: String) -> unique String`
 
 Collapse `.` and `..` segments and redundant slashes. A relative path that backs out past its start keeps the leading `..`s; an absolute one cannot escape its root. An empty result is "." (relative) or "/" (absolute).
 
@@ -3432,19 +3432,19 @@ A sealed `Dir` ENTRY policy (RFC-0011): which entries the Dir may read/write/ope
 
 - `DirPolicy { pattern: String }`
 
-#### `Net.tcp(host: String, port: Int) -> NetPolicy`
+#### `Net.tcp(let host: String, port: Int) -> NetPolicy`
 
-#### `Net.any_port(host: String) -> NetPolicy`
+#### `Net.any_port(let host: String) -> NetPolicy`
 
-#### `Net.cidr(block: String, port: Int) -> NetPolicy`
+#### `Net.cidr(let block: String, port: Int) -> NetPolicy`
 
-#### `Net.cidr_any(block: String) -> NetPolicy`
+#### `Net.cidr_any(let block: String) -> NetPolicy`
 
 #### `Net.union(a: NetPolicy, b: NetPolicy) -> NetPolicy`
 
 #### `Net.private() -> NetPolicy`
 
-#### `Dir.ext(suffix: String) -> DirPolicy`
+#### `Dir.ext(let suffix: String) -> DirPolicy`
 
 #### `Dir.files() -> DirPolicy`
 
@@ -3462,7 +3462,7 @@ A small deterministic PRNG: the Park-Miller "minimal standard" LCG, `state' = st
 
 A generator from seed `s` (any Int is mapped into the valid range 1..modulus).
 
-#### `fn choice(xs: List(a), var r: Rng) -> Option(a)`
+#### `fn choice(let xs: List(a), var r: Rng) -> Option(a)`
 
 A pseudo-randomly chosen element of `xs` (`None` if empty). The index comes from `next_below`, whose `% len` reducer carries a negligible modulo bias for ordinary list lengths - plenty for tests, sampling, and games, but not a strict uniform distribution (see `next_below`). Module-level with the list FIRST for historical callers: the method form is `r.choice(xs)`, and deleting this function would flip the qualified call's argument order to the alias's `prng.choice(r, xs)`, silently breaking existing `prng.choice(xs, r)` call sites.
 
@@ -3478,7 +3478,7 @@ A pseudo-random Int in [0, bound). `bound` must be positive (RFC-0044 rule 3): a
 
 A pseudo-random Bool (true ~half the time).
 
-#### `Rng.choice(xs: List(a)) -> Option(a)`
+#### `Rng.choice(let xs: List(a)) -> Option(a)`
 
 A pseudo-randomly chosen element of `xs` (`None` if empty) - see the module-level `choice`.
 
@@ -3597,7 +3597,7 @@ Reflect a single value through a generic helper. Generated record/tuple impls us
 
 Reflect an `Option` to a `Some`/`None` `MVariant`. Match bindings retain the constructor field's generic type, so the payload dispatches directly.
 
-#### `fn reflect_list(xs: List(a)) -> Mirror where a: Reflect`
+#### `fn reflect_list(let xs: List(a)) -> Mirror where a: Reflect`
 
 Reflect a list of `Reflect` elements. This is a free function rather than an `impl Reflect for List(a)` because method dispatch on a `List` receiver binds to the `list` module, so the generated `reflect` for a record's List field calls this.
 
@@ -3605,11 +3605,11 @@ Reflect a list of `Reflect` elements. This is a free function rather than an `im
 
 Reflect a `Result` to an `Ok`/`Err` `MVariant`, dispatching directly on the typed constructor binding.
 
-#### `fn reflect_set(s: Set(a)) -> Mirror where a: Reflect`
+#### `fn reflect_set(let s: Set(a)) -> Mirror where a: Reflect`
 
 A `Set` reflects to the same `MList` shape as its insertion-order `to_list` view. Reflection is an encoding protocol, not a reconstruction protocol, so JSON sees a set as an array and `derive(Deserialize)` remains per-type.
 
-#### `fn reflect_dict(d: Dict(k, v)) -> Mirror where k: Reflect, v: Reflect`
+#### `fn reflect_dict(let d: Dict(k, v)) -> Mirror where k: Reflect, v: Reflect`
 
 A `Dict` reflects to an `MRecord` - the same string-keyed shape a record uses, so `json` encodes it as an object and `debug` renders it record-style. Each key is rendered to a string (an object/record key is always a string), each value reflects through the `v: Reflect` bound. This is intentionally one-way for encoding/debug: reflection does not preserve enough key structure for a general `Dict(k, v)` deserialize round trip. A free function for the same reason `reflect_list` is: a `Dict` receiver's `.reflect()` would bind to the `dict` module, so the generated `reflect` for a `Dict` field routes here.
 
@@ -3711,7 +3711,7 @@ Regular expressions, powered by the Rust `regex` crate (RE2 semantics): linear t
 
 True if `pattern` matches anywhere in `text`.
 
-#### `fn count(pattern: String, text: String) -> Int`
+#### `fn count(let pattern: String, let text: String) -> Int`
 
 Number of non-overlapping matches. This is native so callers that only need a count do not materialize and decode every span.
 
@@ -3727,7 +3727,7 @@ Every non-overlapping match, leftmost first.
 
 The matched substrings, leftmost first: extract("\\d+", "a1b22") is ["1", "22"].
 
-#### `fn replace_all(pattern: String, text: String, replacement: String) -> String`
+#### `fn replace_all(let pattern: String, let text: String, let replacement: String) -> String`
 
 `text` with every match replaced (the replacement is literal - no `$1` group expansion): replace_all("\\s+", "a  b", "-") is "a-b". Native to avoid routing every span and output fragment through guest memory.
 
@@ -3838,15 +3838,15 @@ A capability is rendered the way the compiler's footprint prints it: "Console", 
 
 Whether `declared` covers `demanded` (same kind, broad enough rights).
 
-#### `fn any_covers(declared: List(String), demanded: String) -> Bool`
+#### `fn any_covers(let declared: List(String), demanded: String) -> Bool`
 
 Whether any capability in `declared` covers `demanded`.
 
-#### `fn uncovered(declared: List(String), demanded: List(String)) -> unique List(String)`
+#### `fn uncovered(let declared: List(String), let demanded: List(String)) -> unique List(String)`
 
 The demanded capabilities no declared capability covers - the gap a gate blocks on (an under-declaration, or a widening of authority). Empty means admitted.
 
-#### `fn is_full(cap: String) -> Bool`
+#### `fn is_full(let cap: String) -> Bool`
 
 A bracket-free capability ("Net") is the full authority of its kind.
 
@@ -3862,11 +3862,11 @@ The rights inside "Kind[A, B]" as ["A", "B"] (trimmed, blanks dropped).
 
 secretstore - read named secrets from the host-granted `SecretStore`. The secrets come from `--secret name=value` / `--secret-file name=path` (append `,sealed` to forbid `crypto.reveal`). `--signing-key <path>` grants the `signing` secret as a protected, non-revealable signing key - it is NOT the same as `--secret-file signing=<path>`, which grants an ordinary revealable named secret. Their bytes stay host-side. `get` is intercepted by the runtime, since a `SecretStore` is a capability, not plain data. A `Secret` is opaque host-held material consumed by specific operations: `crypto.sign` / `crypto.public_key` (Ed25519 signing keys), `server.serve_tls` / `serve_tls_n` (a TLS private key, by opaque reference), and `crypto.reveal` - which succeeds only for revealable value secrets, and errors on signing keys and sealed secrets.
 
-#### `fn get(store: SecretStore, name: String) -> Option(Secret)`
+#### `fn get(store: SecretStore, let name: String) -> Option(Secret)`
 
 Fetch the secret named `name`, or `None` if it was not granted.
 
-#### `fn require(store: SecretStore, name: String) -> Secret`
+#### `fn require(store: SecretStore, let name: String) -> Secret`
 
 Fetch a *required* secret named `name`, returning the `Secret` directly. Use this when absence is a configuration error (e.g. a server's root signing key): it fails loudly rather than handing back an `Option` to unwrap. The body is a placeholder - the runtime intercepts the call (interpreter) / lowers it to a host Secret lookup (WASM); it is never executed.
 
@@ -3923,9 +3923,9 @@ Parse with String errors for application-style boundaries.
 
 #### `fn less(a: Version, b: Version) -> Bool`
 
-#### `fn parse_req(s: String) -> Result(Req, SemverError)`
+#### `fn parse_req(let s: String) -> Result(Req, SemverError)`
 
-#### `fn parse_req_string(s: String) -> Result(Req, String)`
+#### `fn parse_req_string(let s: String) -> Result(Req, String)`
 
 #### `fn matches(req: Req, v: Version) -> Bool`
 
@@ -4021,7 +4021,7 @@ Complete decoded query entries for schema-driven adapters such as progressive fo
 
 A query-string parameter, or `default` if absent.
 
-#### `fn request_header(req: Request, name: String) -> Option(String)`
+#### `fn request_header(req: Request, let name: String) -> Option(String)`
 
 A request header, looked up case-insensitively, or None.
 
@@ -4087,7 +4087,7 @@ A JSON response from any reflectable value. Reflection serializes it, so a handl
 
 #### `fn redirect(location: String) -> Response`
 
-#### `fn with_header(resp: Response, name: String, value: String) -> Response`
+#### `fn with_header(resp: Response, let name: String, value: String) -> Response`
 
 Return `resp` with an extra header - for handlers and middleware that decorate a response (e.g. add a `set-cookie` or a tracing header). The stored name is lowercased: `Response` documents its header list as lowercase so `http.header(resp, name)` can look up case-insensitively - headers are case-insensitive on the wire, and rendering emits the lowercase form.
 
@@ -4115,7 +4115,7 @@ Dispatch `req` through `app` (all routes and middleware layers) and return the R
 
 Serialize a `Response` to its HTTP/1.1 wire form (inverse of `http.parse_response`). The framing headers (Content-Length, Connection) are owned here; a status outside 100..599 traps. Public so a test or a custom transport can render a Response itself.
 
-#### `fn render_for(resp: Response, method: String) -> unique String`
+#### `fn render_for(resp: Response, let method: String) -> unique String`
 
 `render`, honoring the request method: a HEAD response carries the same status/headers - including the Content-Length the body WOULD have - but the body bytes themselves are never sent (RFC 9110 §9.3.2). This is enforced at the rendering boundary so a `.head(...)` handler may simply return the GET response and the framework suppresses the body.
 
@@ -4153,7 +4153,7 @@ Serve exactly `n` HTTPS requests then return - `serve_tls`'s one-shot/test twin 
 
 #### `Router.any(p: String, h: fn(Request) -> Response) -> Router`
 
-#### `Router.nest(prefix: String, sub: Router) -> Router`
+#### `Router.nest(let prefix: String, sub: Router) -> Router`
 
 #### `Router.layer(mw: fn(fn(Request) -> Response) -> fn(Request) -> Response) -> Router`
 
@@ -4181,7 +4181,7 @@ Set(a) - an unordered collection of distinct values. Members are compared by val
 
 The empty set.
 
-#### `fn from_list(xs: List(a)) -> unique Set(a) where a: Hash`
+#### `fn from_list(let xs: List(a)) -> unique Set(a) where a: Hash`
 
 A set of the distinct values in `xs` (duplicates collapse, keeping the first occurrence of each member).
 
@@ -4213,31 +4213,31 @@ Remove `x`, returning whether it was present.
 
 Whether `x` is a member of the set.
 
-#### `Set.union(other: Set(a)) -> unique Set(a)`
+#### `Set.union(let other: Set(a)) -> unique Set(a)`
 
 Every member of either set.
 
-#### `Set.intersection(other: Set(a)) -> unique Set(a)`
+#### `Set.intersection(let other: Set(a)) -> unique Set(a)`
 
 The members in both sets.
 
-#### `Set.difference(other: Set(a)) -> unique Set(a)`
+#### `Set.difference(let other: Set(a)) -> unique Set(a)`
 
 The members of this set that are not in `other`.
 
-#### `Set.symmetric_difference(other: Set(a)) -> unique Set(a)`
+#### `Set.symmetric_difference(let other: Set(a)) -> unique Set(a)`
 
 The members in exactly one of the two sets.
 
-#### `Set.is_subset(other: Set(a)) -> Bool`
+#### `Set.is_subset(let other: Set(a)) -> Bool`
 
 Whether every member of this set is also in `other`.
 
-#### `Set.is_superset(other: Set(a)) -> Bool`
+#### `Set.is_superset(let other: Set(a)) -> Bool`
 
 Whether this set contains every member of `other` - the reverse of `is_subset`.
 
-#### `Set.is_disjoint(other: Set(a)) -> Bool`
+#### `Set.is_disjoint(let other: Set(a)) -> Bool`
 
 Whether the two sets share no members.
 
@@ -4363,27 +4363,27 @@ Tuples render as `(a, b)`; each supported arity has its own impl and dispatches 
 
 The witchy standard string library. Importing it grants no root authority; this module's implementation operates on ordinary string data. The primitive string operations (`split`, `replace`, `contains`, `to_upper`, ...) are builtins; these are the conveniences built on top of them.
 
-#### `fn length(s: String) -> Int`
+#### `fn length(let s: String) -> Int`
 
-#### `fn char_count(s: String) -> Int`
+#### `fn char_count(let s: String) -> Int`
 
-#### `fn char_offset(s: String, n: Int) -> Int`
+#### `fn char_offset(let s: String, n: Int) -> Int`
 
-#### `fn chars(s: String) -> unique List(String)`
+#### `fn chars(let s: String) -> unique List(String)`
 
 #### `fn from_code(code: Int) -> unique String`
 
-#### `fn split(s: String, sep: String) -> unique List(String)`
+#### `fn split(let s: String, let sep: String) -> unique List(String)`
 
-#### `fn contains(s: String, needle: String) -> Bool`
+#### `fn contains(let s: String, let needle: String) -> Bool`
 
-#### `fn starts_with(s: String, prefix: String) -> Bool`
+#### `fn starts_with(let s: String, let prefix: String) -> Bool`
 
-#### `fn ends_with(s: String, suffix: String) -> Bool`
+#### `fn ends_with(let s: String, let suffix: String) -> Bool`
 
-#### `fn replace(s: String, from: String, to: String) -> unique String`
+#### `fn replace(let s: String, let from: String, let to: String) -> unique String`
 
-#### `fn substring(s: String, start: Int, end: Int) -> unique String`
+#### `fn substring(let s: String, start: Int, end: Int) -> unique String`
 
 #### `fn as_str(s: &String) -> &str`
 
@@ -4403,9 +4403,9 @@ Content operations on retained string views. These inspect UTF-8 bytes without m
 
 #### `fn to_lower(s: String) -> unique String`
 
-#### `fn trim(s: String) -> unique String`
+#### `fn trim(let s: String) -> unique String`
 
-#### `fn to_int(s: String) -> Int`
+#### `fn to_int(let s: String) -> Int`
 
 #### `String.length() -> Int`
 
@@ -4427,23 +4427,23 @@ The characters, each as a single-character String - one O(n) pass, so callers ca
 
 Each character with the byte offset where it starts, in order - one O(n) pass. `"héllo".char_indices()` begins `[(0, "h"), (1, "é"), (3, "l")`.
 
-#### `String.split(sep: String) -> unique List(String)`
+#### `String.split(let sep: String) -> unique List(String)`
 
 Split on every occurrence of `sep`.
 
-#### `String.contains(needle: String) -> Bool`
+#### `String.contains(let needle: String) -> Bool`
 
 Whether `needle` occurs in `self`.
 
-#### `String.starts_with(prefix: String) -> Bool`
+#### `String.starts_with(let prefix: String) -> Bool`
 
-#### `String.ends_with(suffix: String) -> Bool`
+#### `String.ends_with(let suffix: String) -> Bool`
 
-#### `String.index_of(needle: String) -> Option(Int)`
+#### `String.index_of(let needle: String) -> Option(Int)`
 
 The byte offset of the first occurrence of `needle` as `Some`, or `None` when `needle` does not occur (RFC-0044 rule 1: absence is `Option`, never a -1 sentinel). An empty `needle` matches nothing (the module-wide empty-pattern rule, matching `last_index_of`/`count`). For a bare yes/no, use `contains`.
 
-#### `String.replace(from: String, to: String) -> unique String`
+#### `String.replace(let from: String, let to: String) -> unique String`
 
 Replace every occurrence of `from` with `to`.
 
@@ -4481,23 +4481,23 @@ Parse a decimal integer; junk, overflow, or an empty string ABORTS the program (
 
 Repeat a string `n` times.
 
-#### `String.pad_left(width: Int, fill: String) -> String`
+#### `String.pad_left(width: Int, let fill: String) -> String`
 
 Left-pad `self` with copies of `fill` until it is `width` characters wide. The padding is trimmed to fit exactly, so any non-empty fill yields a result of exactly `width` chars; `self` is returned unchanged when already that long. An empty `fill` can never reach the promised width, so when padding is needed it fails loudly (RFC-0044 rule 3) instead of returning a short string.
 
-#### `String.pad_right(width: Int, fill: String) -> String`
+#### `String.pad_right(width: Int, let fill: String) -> String`
 
 Right-pad `self` with copies of `fill` until it is `width` characters wide; an empty `fill` fails loudly when padding is needed (see `pad_left`).
 
-#### `String.center(width: Int, fill: String) -> String`
+#### `String.center(width: Int, let fill: String) -> String`
 
 Center `self` in a field `width` characters wide, padding both sides with `fill`; an odd remainder goes on the right. `self` is returned unchanged when already at least that wide; an empty `fill` fails loudly when padding is needed (see `pad_left`).
 
-#### `String.strip_prefix(prefix: String) -> String`
+#### `String.strip_prefix(let prefix: String) -> String`
 
 Remove `prefix` from the front of `self` when present; otherwise return `self` unchanged. The complement of the `starts_with` builtin.
 
-#### `String.strip_suffix(suffix: String) -> String`
+#### `String.strip_suffix(let suffix: String) -> String`
 
 Remove `suffix` from the end of `self` when present; otherwise return `self` unchanged. The complement of the `ends_with` builtin.
 
@@ -4521,7 +4521,7 @@ The first `n` characters, counted by Unicode scalar (the whole string if it is s
 
 All characters after the first `n`, counted by Unicode scalar ("" if n covers the whole string). Linear in `n`.
 
-#### `String.count(sub: String) -> Int`
+#### `String.count(let sub: String) -> Int`
 
 The number of non-overlapping occurrences of `sub` in `self` (0 for an empty `sub`), scanning left to right.
 
@@ -4529,27 +4529,27 @@ The number of non-overlapping occurrences of `sub` in `self` (0 for an empty `su
 
 The whitespace-separated words of `self`: tabs, newlines, and carriage returns are treated as spaces, and empty pieces (from runs of whitespace) are dropped. `"the  quick\tfox".words()` is `["the", "quick", "fox"]`.
 
-#### `String.replace_first(from: String, to: String) -> String`
+#### `String.replace_first(let from: String, let to: String) -> String`
 
 Replace only the first occurrence of `from` with `to`; return `self` unchanged when `from` is absent. An empty `from` matches nothing (the module-wide empty-pattern rule: `count`/`index_of`/`last_index_of` treat it as absent). (The `replace` builtin replaces every occurrence.)
 
-#### `String.split_once_opt(sep: String) -> Option((String, String))`
+#### `String.split_once_opt(let sep: String) -> Option((String, String))`
 
 Split at the first occurrence of `sep` into `Some((before, after))`, with `sep` itself dropped. Returns `None` when `sep` is absent or empty, so parsing code can distinguish a missing separator from a present separator with an empty side (`"host"` vs `"host:"`).
 
-#### `String.split_once(sep: String) -> (String, String)`
+#### `String.split_once(let sep: String) -> (String, String)`
 
 Split at the first occurrence of `sep` into `(before, after)`, with `sep` itself dropped. Compatibility wrapper: when `sep` is absent - including the empty separator, which matches nothing (mirroring `rsplit_once`) - returns `(s, "")`. Prefer `split_once_opt` for parsers and validators that need to distinguish absence from a present empty side.
 
-#### `String.last_index_of(sep: String) -> Option(Int)`
+#### `String.last_index_of(let sep: String) -> Option(Int)`
 
 The byte offset of the LAST occurrence of `sep` in `self` as `Some`, or `None` when absent or `sep` is empty (RFC-0044 rule 1: absence is `Option`, never -1). The right-to-left companion of `index_of`.
 
-#### `String.rsplit_once_opt(sep: String) -> Option((String, String))`
+#### `String.rsplit_once_opt(let sep: String) -> Option((String, String))`
 
 Split on the LAST occurrence of `sep` into `Some((before, after))`, with `sep` itself dropped. Returns `None` when `sep` is absent or empty.
 
-#### `String.rsplit_once(sep: String) -> (String, String)`
+#### `String.rsplit_once(let sep: String) -> (String, String)`
 
 Split on the LAST occurrence of `sep` (e.g. a file extension): `rsplit_once` of `"a.b.c"` on `"."` is `("a.b", "c")`. Compatibility wrapper: when `sep` is absent the whole string is the right part: `("", s)` - mirroring `split_once`'s `(s, "")`. Prefer `rsplit_once_opt` when absence matters.
 
@@ -4832,15 +4832,15 @@ A fixed, authority-free clock collaborator. This is ordinary data, not a forged 
 
 A fixed, authority-free Rand collaborator. Every draw returns `value`, which makes boundary/error paths reproducible without pretending to be a real cryptographic randomness capability.
 
-#### `fn assert(cond: Bool, msg: String)`
+#### `fn assert(cond: Bool, let msg: String)`
 
 Abort the test with `msg` unless `cond` holds.
 
-#### `fn assert_eq(got: String, want: String)`
+#### `fn assert_eq(let got: String, let want: String)`
 
 Abort unless the two strings are equal, showing both. Convert values at the call site with interpolation, or with `show.render` when you want `Show`.
 
-#### `fn assert_ne(got: String, other: String)`
+#### `fn assert_ne(let got: String, let other: String)`
 
 Abort if the two strings ARE equal.
 
@@ -4944,11 +4944,11 @@ Build a DateTime with String errors for application-style boundaries.
 
 Days in a month, honoring leap February. A month outside 1..12 is a contract violation (RFC-0044 rule 3): abort naming the bad argument rather than silently returning 31 (the old `_ -> 31` catch-all).
 
-#### `fn parse_iso8601(text: String) -> Result(DateTime, TimeError)`
+#### `fn parse_iso8601(let text: String) -> Result(DateTime, TimeError)`
 
 Parse RFC 3339 / ISO 8601: `2026-06-08T22:30:00Z`, an offset like `+02:00` (normalized to UTC), fractional seconds (truncated), a space instead of the `T`, or a bare `YYYY-MM-DD` (midnight UTC). The typed error preserves malformed dates, time fields, fractions, and offsets as structured cases.
 
-#### `fn parse_iso8601_string(text: String) -> Result(DateTime, String)`
+#### `fn parse_iso8601_string(let text: String) -> Result(DateTime, String)`
 
 Parse with String errors for application-style boundaries.
 
@@ -4974,7 +4974,7 @@ Day of week: 0 = Sunday … 6 = Saturday.
 
 RFC 3339 / ISO 8601 in UTC, e.g. `2026-06-08T22:30:00Z`.
 
-#### `fn format(d: DateTime, layout: String) -> unique String`
+#### `fn format(d: DateTime, let layout: String) -> unique String`
 
 A strftime-style layout: `%Y-%m-%d %H:%M:%S`, `%A %B %d` and friends. Directives: %Y year, %m month, %d day, %H hour, %M minute, %S second, %a/%A weekday (short/full), %b/%B month name (short/full), %% a literal percent. Anything else after `%` passes through unchanged.
 
@@ -5018,35 +5018,35 @@ A decoded TOML value (`toml.decode`), the structured counterpart of the string-q
 
 Parse a whole TOML document into a `Toml` tree (always a `TomlTable`). Supports top-level keys, `[section]` and dotted `[a.b]` tables, `#` comments, and `string`/`int`/`bool`/array values. Genuinely fallible (RFC-0044 rule 2): a non-blank, non-comment line that is neither a `[section]` header nor a `key = value` pair is structurally malformed, so decoding returns `Err` naming the offending line.
 
-#### `fn table_field(node: Toml, key: String) -> Option(Toml)`
+#### `fn table_field(node: Toml, let key: String) -> Option(Toml)`
 
 The value stored at `key` in a `TomlTable`, or `None` when the key is absent or the node is not a table. Preserves the decoded declaration order (first match).
 
-#### `fn as_string(node: Toml, context: String) -> Result(String, TomlDecodeError)`
+#### `fn as_string(node: Toml, let context: String) -> Result(String, TomlDecodeError)`
 
 The `String` a `Toml` leaf holds, or `Err(context)` when it is a different kind (`TomlInt`/`TomlBool`/`TomlArray`/`TomlTable`). `context` names the field so the caller's message points at the offending entry.
 
-#### `fn as_array(node: Toml, context: String) -> Result(List(Toml), TomlDecodeError)`
+#### `fn as_array(node: Toml, let context: String) -> Result(List(Toml), TomlDecodeError)`
 
 The elements of a `TomlArray`, or `Err(context)` when the value is not an array.
 
-#### `fn as_table(node: Toml, context: String) -> Result(List((String, Toml)), TomlDecodeError)`
+#### `fn as_table(node: Toml, let context: String) -> Result(List((String, Toml)), TomlDecodeError)`
 
 The pairs of a `TomlTable`, or `Err(context)` when the value is not a table.
 
-#### `fn array_of_tables(node: Toml, key: String) -> Result(List(Toml), TomlDecodeError)`
+#### `fn array_of_tables(node: Toml, let key: String) -> Result(List(Toml), TomlDecodeError)`
 
 The `[[key]]` array-of-tables entries of a document node, in declaration order, with every repeated entry kept distinct. `Ok([])` when `key` is absent (a lockfile with no dependencies is well-formed); `Err` when `key` is present but not an array, or an element is not a table (a corrupted array-of-tables). This is how a `witchy.lock`'s `[[rune]]` entries are enumerated through the one structured parser.
 
-#### `fn required_string(entry: Toml, field: String, label: String) -> Result(String, TomlDecodeError)`
+#### `fn required_string(entry: Toml, let field: String, let label: String) -> Result(String, TomlDecodeError)`
 
 A required string field of a decoded table `entry`: `Err` when the field is absent, empty, or the wrong TOML kind - the three failure classes kept distinct (BUG-373). `label` names the entry kind for the message (e.g. "a registry [[rune]] entry").
 
-#### `fn optional_string(entry: Toml, field: String) -> Result(Option(String), TomlDecodeError)`
+#### `fn optional_string(entry: Toml, let field: String) -> Result(Option(String), TomlDecodeError)`
 
 An optional string field of a decoded table `entry`: `Ok(None)` when absent, `Ok(Some(s))` when a string, `Err` when present but the wrong kind.
 
-#### `fn string_array_field(entry: Toml, field: String) -> Result(List(String), TomlDecodeError)`
+#### `fn string_array_field(entry: Toml, let field: String) -> Result(List(String), TomlDecodeError)`
 
 The string elements of an array-valued field of a decoded table `entry`: `Ok([])` when absent; `Err` when the field is not an array, or an element is not a string. Used to read a `[[rune]]` capability array (`runtime_footprint`).
 
@@ -5060,23 +5060,23 @@ The string-array value of `path` (e.g. "capabilities.runtime"), or [] if absent.
 
 LENIENT BY DESIGN (RFC-0044): an absent path and a malformed/empty array both return `[]`, so this cannot tell "not declared" from "declared wrong" - convenient for reading config, but wrong for a trust boundary. Where a malformed array must be an ERROR, use the strict path: `decode(text)` (a `Result`) then match the `TomlArray` at the path.
 
-#### `fn table(text: String, section: String) -> unique List((String, String))`
+#### `fn table(text: String, let section: String) -> unique List((String, String))`
 
 Every `key = value` pair defined directly under `[section]`, in file order. Keys are unquoted (`"acme/money"` -> `acme/money`); values are raw (trimmed, still quoted/inline) - feed an inline-table value to `inline_get`. Use this to enumerate a table whose keys you don't know ahead of time, like `[dependencies]`.
 
-#### `fn keys(text: String, section: String) -> unique List(String)`
+#### `fn keys(text: String, let section: String) -> unique List(String)`
 
 Just the keys of `[section]` (unquoted), in file order.
 
-#### `fn inline_get(inline: String, key: String) -> Option(String)`
+#### `fn inline_get(let inline: String, let key: String) -> Option(String)`
 
 Read `key` from an inline table value like `{ path = "../money", version = "1" }`. Returns the unquoted value, or None if the key is absent.
 
-#### `fn dep_requirement(raw: String) -> Option(String)`
+#### `fn dep_requirement(let raw: String) -> Option(String)`
 
 The version requirement a `[dependencies]` value declares, in EITHER TOML form: a bare string (`"acme/x" = "^1.0"`), whose value IS the requirement, or an inline table (`{ version = "^1.0" }`), whose `version` key holds it. `None` for a path-only inline table (no `version` key) or an empty value. Dep walks that read a version requirement (transitive resolution, `outdated`, `update`) must use this so a bare-string dep is not silently skipped.
 
-#### `fn inline_get_array(inline: String, key: String) -> unique List(String)`
+#### `fn inline_get_array(let inline: String, let key: String) -> unique List(String)`
 
 Read a string-array field from an inline table. This is the array counterpart to `inline_get`, used by nested policy values such as `{ programs = ["git"], child-paths = ["~/.gitconfig"] }`.
 
@@ -5169,7 +5169,7 @@ The query text without its leading `?`, retaining `Some("")` for a URL that expl
 
 The fragment text without its leading `#`, retaining `Some("")` for a URL that explicitly ends at `#`.
 
-#### `fn with_query(u: Url, key: String, value: String) -> Url`
+#### `fn with_query(u: Url, let key: String, let value: String) -> Url`
 
 Add one percent-encoded query pair while preserving the fragment boundary. Existing query pairs remain in order; an explicitly empty query does not gain a leading `&`.
 
@@ -5181,7 +5181,7 @@ The HTTP request target: path plus query, deliberately excluding the client-side
 
 Render a Url back to its string form - the inverse of `parse`. The port is shown only when it differs from the scheme default, so a parse/format round trip of `https://host/p` stays `https://host/p` rather than gaining `:443`.
 
-#### `fn encode(s: String) -> unique String`
+#### `fn encode(let s: String) -> unique String`
 
 Percent-encode `s` for use as a query-string value (RFC 3986): the unreserved set (`A-Z a-z 0-9 - _ . ~`) passes through, every other byte becomes `%XX`. Used to build query strings safely - e.g. an OAuth `redirect_uri`, `scope`, or `state`.
 
@@ -5225,7 +5225,7 @@ Map `f` over every element of `xs`, in parallel where the backend supports it, r
 
 Run `f` on `input` in an ISOLATED worker VM (on the compiled backend) that is granted EXACTLY the directory capability `dir` - and nothing else. The worker can read/write within `dir` (with `dir`'s own rights) and reach NO other host resource: it is its own WebAssembly instance with its own memory, and every ungranted capability traps. This is the capability-passing sandbox - run untrusted/partially-trusted code with precisely scoped authority. `f` must be named directly as a bare top-level function; closures and local function values are rejected rather than silently running in the parent VM. Because the result is a deterministic function of `dir`'s contents and `input`, the isolation is invisible to the output, so the interpreter (which runs `f` directly) and the compiled backend agree.
 
-#### `fn serve(init: Bytes, requests: List(Bytes), handler: fn(Bytes, Bytes) -> Bytes) -> unique List(Bytes)`
+#### `fn serve(init: Bytes, let requests: List(Bytes), handler: fn(Bytes, Bytes) -> Bytes) -> unique List(Bytes)`
 
 Run a stateful SERVICE on a single long-lived ISOLATED worker VM. The worker is created once and processes `requests` in order, threading an accumulator `state` through `handler(state, request) -> new_state`, emitting each new state as that request's response. This is witchy's cross-VM channel: a worker that processes a message stream with persistent state. It is deliberately LOCK-STEP (ordered, not racing) - that determinism is what lets the interpreter (a sequential scan) and the compiled backend (a persistent worker VM) agree, which a truly-racing channel could not. `handler` must be named directly as a bare top-level function; closures and local function values are rejected rather than silently replacing isolation with a parent-VM loop.
 
@@ -5280,13 +5280,13 @@ Matchable registration-verification failures. Malformed wire (hex/CBOR/COSE) is 
 
 Human-readable assertion failure text for logs and HTTP responses.
 
-#### `fn verify_assertion(stored_pubkey_hex: String, auth_data_hex: String, client_data_json: String, signature_hex: String, expected_challenge: String, expected_origin: String, expected_rp_id: String, require_uv: Bool) -> Result(Bool, AssertionError)`
+#### `fn verify_assertion(stored_pubkey_hex: String, auth_data_hex: String, client_data_json: String, signature_hex: String, let expected_challenge: String, let expected_origin: String, expected_rp_id: String, require_uv: Bool) -> Result(Bool, AssertionError)`
 
 Verify an assertion. All `*_hex` arguments are hex-encoded bytes; `client_data_json` is the exact clientDataJSON text the browser signed over (it must be re-hashed verbatim, never re-serialized). `require_uv` demands user verification - pass `true` for a genuine second-factor gate. Returns `Ok(true)` when every check passes, or a typed `Err`.
 
 #### `fn registration_error_message(e: RegistrationError) -> unique String`
 
-#### `fn verify_registration(client_data_json: String, attestation_object_hex: String, expected_challenge: String, expected_origin: String, expected_rp_id: String, require_uv: Bool) -> Result(RegisteredCredential, RegistrationError)`
+#### `fn verify_registration(let client_data_json: String, attestation_object_hex: String, let expected_challenge: String, let expected_origin: String, expected_rp_id: String, require_uv: Bool) -> Result(RegisteredCredential, RegistrationError)`
 
 Verify a WebAuthn *registration* (credential create) ceremony server-side and return the credential to persist. Mirrors `verify_assertion`'s independent re-derivation - it trusts nothing the browser claims about the key. It parses clientDataJSON (type/challenge/origin), CBOR-decodes the attestationObject to its authenticatorData, checks rpIdHash + presence/verification flags, then parses the attested credential's COSE ES256 key into an uncompressed SEC1 point. The self-attestation statement (`fmt` "none"/"packed") is accepted; device provenance beyond that is out of scope for the self-attestation contract (RFC-0099).
 
