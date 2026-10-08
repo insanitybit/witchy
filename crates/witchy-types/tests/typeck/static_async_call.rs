@@ -111,3 +111,32 @@ fn static_async_call_readiness_rejects_modified_call_metadata() {
             Err(witchy_types::async_readiness::AsyncReadinessError::TypedInputMismatch)));
     }
 }
+
+#[test]
+fn static_async_call_state_factories_reject_changed_construction_and_decoding() {
+    struct Reset;
+    impl Drop for Reset { fn drop(&mut self) { witchy_syntax::opt::set_for_tests(None); } }
+    let _reset = Reset;
+    let task = witchy_syntax::linker::bundled_source("task").expect("bundled task");
+    let source = "from chan import Sender\n\nasync fn send_one(tx: Sender(Int), value: Int):\n    chan.send(tx, value).await\n\nasync fn main():\n    let (tx, rx) = chan.channel(1).await\n    send_one(tx, 7).await\n";
+    for (original, changed, name) in [
+        ("__send_state_frame(__erase(state), preparing, resuming, finishing)",
+            "__send_state_frame(__erase(state), preparing, fn(own encoded): encoded, finishing)", "task.__producer_state_frame"),
+        ("Some((ch, msg)) -> ProduceStateFrame((prepared, prepare, resume, finish, ch, msg))",
+            "Some((ch, msg)) -> poll(finish(prepared))", "task.__send_state_frame"),
+        ("__terminal_send_state_frame(__erase(state), preparing, finishing)",
+            "__terminal_send_state_frame(__erase(state), preparing, fn(own encoded): lazy(fn(): finish(__unerase(encoded))))", "task.__terminal_producer_state_frame"),
+        ("TerminalProduceStateFrame((prepared, finish, ch, msg))",
+            "poll(finish(prepared))", "task.__terminal_send_state_frame"),
+    ] {
+        let modified = task.replacen(original, changed, 1);
+        assert_ne!(modified, task);
+        witchy_syntax::opt::set_for_tests(Some(witchy_syntax::opt::OptSet::none()));
+        super::source::checked_bundle_with_std_override(vec![("main", source)], "main", Some(("task", &modified)))
+            .expect("ordinary caller keeps changed source implementations");
+        witchy_syntax::opt::set_for_tests(Some(witchy_syntax::opt::OptSet::all()));
+        let error = super::source::checked_bundle_with_std_override(vec![("main", source)], "main", Some(("task", &modified)))
+            .expect_err("state lowering requires exact constructor and adapter implementations");
+        assert!(error.contains(&format!("changed scalar scheduler recipe {name}")), "{error}");
+    }
+}

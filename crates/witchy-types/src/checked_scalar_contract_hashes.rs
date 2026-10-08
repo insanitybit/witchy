@@ -1,5 +1,9 @@
 // Frozen normalized contracts keep changed scheduler semantics on the ordinary path.
 const RECIPES: &[(&str, &str, &str)] = &[
+    ("task.__producer_state_frame", "c6a36e6781154cff63ce79016f76f73cba22bc508c707b22087a9e713ab95615", "c6a36e6781154cff63ce79016f76f73cba22bc508c707b22087a9e713ab95615"),
+    ("task.__send_state_frame", "2378f384fcf87737ebac4831f13c94ad6165532e86cc7bc124df2b5f8ef75ded", "2378f384fcf87737ebac4831f13c94ad6165532e86cc7bc124df2b5f8ef75ded"),
+    ("task.__terminal_producer_state_frame", "84676465258e1585c5d17024b11ad384a0a353b8ad3e6eac077d14cd11355913", "84676465258e1585c5d17024b11ad384a0a353b8ad3e6eac077d14cd11355913"),
+    ("task.__terminal_send_state_frame", "5029cd932e7a6494f88d6e541766809810c6fe58c60de59c3f10eedb142c2875", "5029cd932e7a6494f88d6e541766809810c6fe58c60de59c3f10eedb142c2875"),
     ("chan.Receiver", "163b5a8ccabcf2a3e4cf5096028571b827e17ea4789affde8c34d33a14f06e0a", "163b5a8ccabcf2a3e4cf5096028571b827e17ea4789affde8c34d33a14f06e0a"),
     ("chan.Sender", "a07f938fd8f07d7d4aa1e3a523a73edcf87cf3b7003943cc17ab85fa6915a7a4", "a07f938fd8f07d7d4aa1e3a523a73edcf87cf3b7003943cc17ab85fa6915a7a4"),
     ("chan.__recv_lane_frame_loop", "4805e311e3433b1ec28e20ec45671e733cc3836eb38142115ef112c0b73a8373", "4805e311e3433b1ec28e20ec45671e733cc3836eb38142115ef112c0b73a8373"),

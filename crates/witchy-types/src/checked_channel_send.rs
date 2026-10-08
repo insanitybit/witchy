@@ -139,6 +139,23 @@ pub(crate) fn bind_send_preparations(checked: &CheckedModule) -> Result<BTreeMap
         })?;
     }
     if preparations.is_empty() { return Ok(BTreeMap::new()); }
+    let has_state_factory = checked.module().items.iter().any(|item| {
+        let witchy_syntax::ast::Item::Function(function) = item else { return false };
+        let mut found = false;
+        witchy_syntax::ast::visit::visit_block(&function.body, &mut |expression| {
+            if let Expr::Call { name, .. } = expression {
+                found |= crate::suspension_carrier::call_family(name, "task.__producer_state_frame")
+                    || crate::suspension_carrier::call_family(name, "task.__terminal_producer_state_frame");
+            }
+            Ok::<_, ()>(())
+        }).expect("infallible producer factory inventory");
+        found
+    });
+    if has_state_factory {
+        let original = checked.typed_async_source().ok_or("producer state factory lost its original typed source")?;
+        let catalog = checked.runtime_declaration_catalog().map_err(|error| error.to_string())?;
+        crate::checked_scalar_contract::scheduler_contract(checked.module(), original.module(), &catalog)?;
+    }
     if !plain_send_implementation(checked.module()) {
         return Err("compiler producer frame requires the exact checked standard send implementation".into());
     }
