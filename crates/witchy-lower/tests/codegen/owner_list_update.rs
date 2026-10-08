@@ -44,17 +44,29 @@ fn owned_owner_list_replacement_consumes_original_list_token() {
 }
 
 #[test]
-fn captured_owner_list_snapshot_keeps_copying_fallback() {
+fn captured_owner_list_snapshot_consumes_the_mutation_root() {
     let counts = replacement_counts(&program("    let snapshot = values\n    values[0] = replacement\n    let first = snapshot[0]\n    first()"));
     assert_eq!(counts.0, 1);
-    assert!(counts.1 >= 2, "snapshot and replacement retain independent list tokens: {counts:?}");
+    assert_eq!(counts.1, 1, "only the snapshot retains another list token: {counts:?}");
 }
 
 #[test]
-fn owner_list_same_element_replacement_retains_a_copy_correct_path() {
+fn owner_list_same_element_replacement_consumes_the_retained_root() {
     let counts = replacement_counts(&program("    values[0] = values[0]\n    11"));
     assert_eq!(counts.0, 1);
-    assert!(counts.1 >= 1, "retained element read uses shared-list fallback: {counts:?}");
+    assert_eq!(counts.1, 0, "replacement consumes its shared-origin parent token: {counts:?}");
+}
+
+#[test]
+fn owner_list_read_then_replace_consumes_the_shared_origin_root() {
+    let counts = replacement_counts(&program("    let first = values[0]\n    let before = first()\n    values[0] = replacement\n    before"));
+    assert_eq!(counts, (1, 0));
+}
+
+#[test]
+fn owner_list_loop_read_then_replace_keeps_shared_origins_copy_free() {
+    let counts = replacement_counts(&program("    var index = 0\n    while index < 3:\n        let first = values[0]\n        let _ = first()\n        values[0] = replacement\n        index = index + 1\n    12"));
+    assert_eq!(counts, (1, 0));
 }
 
 #[test]

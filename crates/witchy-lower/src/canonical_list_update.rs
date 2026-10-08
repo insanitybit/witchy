@@ -43,7 +43,9 @@ impl FunctionLowerer<'_> {
         site: &abort::Site,
     ) -> Result<ValueId, CanonicalLoweringError> {
         if self.owner_list_family(source).is_some() {
-            if self.owned_gc_token(source) && self.binding_holders(source) <= 1 {
+            if self.carries_token(source) && !self.lent_parameters.contains(&source)
+                && self.binding_holders(source) <= 1
+            {
                 return self.replace_consumed_owner_list(source, index, replacement, list_type, site);
             }
             return self.replace_list_value(source, index, replacement, list_type, site);
