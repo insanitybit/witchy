@@ -2,19 +2,20 @@ use witchy_syntax::ast::{Expr, Item, Module, Stmt};
 use crate::source::TaskAwaitProof;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RegionKind { ScalarScope, PacketScope, SelectDrain }
+pub enum RegionKind { ScalarScope, PacketScope, SelectDrain, ForwardedPacketScope }
 
 impl RegionKind {
     fn companion(self) -> &'static str {
         match self {
             Self::ScalarScope => "__witchy_closed_scalar_root",
-            Self::PacketScope => "__witchy_closed_packet_root",
+            Self::PacketScope | Self::ForwardedPacketScope => "__witchy_closed_packet_root",
             Self::SelectDrain => "__witchy_closed_select_root",
         }
     }
     fn inventory(self, awaits: usize, receive: bool) -> bool {
         match self {
             Self::ScalarScope | Self::PacketScope => awaits == 3 && receive,
+            Self::ForwardedPacketScope => awaits == 4 && receive,
             Self::SelectDrain => matches!(awaits, 5 | 6) && !receive,
         }
     }
@@ -45,6 +46,7 @@ impl ScalarRegionReceipt {
     pub fn root_item(&self) -> u32 { self.root }
     pub fn companion_item(&self) -> u32 { self.companion }
     pub fn covered_awaits(&self) -> &[u32] { &self.awaits }
+    pub fn source_graph_digest(&self) -> &[u8; 32] { &self.source_graph_digest }
     pub fn validate_checked_source(&self, module: &Module, proofs: &[TaskAwaitProof], witness: &crate::source::CheckedSourceWitness) -> bool {
         self.digest() == witness.scalar_region_manifest_digest() && self.validate(module, proofs)
     }
@@ -79,7 +81,7 @@ impl ScalarRegionReceipt {
             bytes.push(u8::from(value.is_some())); if let Some(value) = value { number(bytes, value); }
         }
         let mut bytes = b"witchy-closed-async-region-v2".to_vec();
-        bytes.push(match self.kind { RegionKind::ScalarScope => 0, RegionKind::PacketScope => 1, RegionKind::SelectDrain => 2 });
+        bytes.push(match self.kind { RegionKind::ScalarScope => 0, RegionKind::PacketScope => 1, RegionKind::SelectDrain => 2, RegionKind::ForwardedPacketScope => 3 });
         number(&mut bytes, self.root); number(&mut bytes, self.companion);
         bytes.extend_from_slice(&self.source_graph_digest); bytes.extend_from_slice(&self.companion_digest);
         bytes.extend_from_slice(&self.root_digest);

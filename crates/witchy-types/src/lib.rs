@@ -71,6 +71,7 @@ pub mod witness;
 pub mod views;
 
 mod packet_region_recipe;
+mod packet_region_forwarder;
 mod packet_region_emitter;
 mod checked_packet_region;
 mod packet_region_preparation;

@@ -27,7 +27,7 @@ fn renamed(mut expression: Expr, names: &BTreeMap<String, String>) -> Expr {
 }
 
 pub(crate) fn companion(source: &PacketRegionSource) -> Option<Function> {
-    let producer = PacketActor::derive(&source.actors[source.producer], &source.shape, true)?;
+    let producer = PacketActor::derive_source(&source.actors[source.producer], &source.shape, true, source.forwarder.as_ref())?;
     let receiver = PacketActor::derive(&source.actors[1 - source.producer], &source.shape, false)?;
     let mut scalar = source.scalar_projection()?;
     scalar.actors[source.producer] = producer.function.clone();

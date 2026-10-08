@@ -81,7 +81,9 @@ impl Preparation {
         }
         let bindings = receiver.bindings_read_by(control.selector)?;
         let [endpoint] = bindings.as_slice() else { return Err("implicit packet receive has ambiguous endpoint binding".into()) };
-        Ok(BoundReceipt { kind: witchy_canonical_source::scalar_region::RegionKind::PacketScope, root, companion: companion_item,
+        Ok(BoundReceipt { kind: if rederived.forwarder.is_some() {
+                witchy_canonical_source::scalar_region::RegionKind::ForwardedPacketScope
+            } else { witchy_canonical_source::scalar_region::RegionKind::PacketScope }, root, companion: companion_item,
             graph_digest: *blake3::hash(format!("{rederived:?}").as_bytes()).as_bytes(),
             companion_digest: *blake3::hash(format!("{companion:?}").as_bytes()).as_bytes(), awaits: covered,
             root_digest: *blake3::hash(format!("{root_function:?}").as_bytes()).as_bytes(),
@@ -162,4 +164,24 @@ pub(crate) fn prepare(checked: &CheckedModule, typed: TypedModule, catalog: &Run
     let candidate = typed.reannotate_unless_equal(CheckedAnnotation::Runtime, candidate)
         .map_err(|error| error.to_string())?;
     Ok((candidate, Some(preparation)))
+}
+
+
+pub(crate) fn validate_static_forwarder(checked: &CheckedModule) -> Result<(), String> {
+    let canonical = checked.canonical_source().ok_or("packet region lost canonical source authority")?;
+    if canonical.view().scalar_region().is_none_or(|receipt|
+        !matches!(receipt.kind(), witchy_canonical_source::scalar_region::RegionKind::PacketScope
+            | witchy_canonical_source::scalar_region::RegionKind::ForwardedPacketScope)) { return Ok(()); }
+    let catalog = checked.runtime_declaration_catalog().map_err(|error| error.to_string())?;
+    let source = PacketRegionSource::derive(checked, &catalog).ok_or("packet region lost original source correspondence")?;
+    let view = canonical.view();
+    let receipt = view.scalar_region().ok_or("packet region lost source receipt")?;
+    if receipt.source_graph_digest() != blake3::hash(format!("{source:?}").as_bytes()).as_bytes()
+        || !receipt.validate_checked_source(view.module(), view.task_await_proofs(), view.source_witness())
+    { return Err("packet region receipt differs from independently rederived original source graph".into()); }
+    let forwarded = canonical.view().scalar_region().is_some_and(|receipt|
+        receipt.kind() == witchy_canonical_source::scalar_region::RegionKind::ForwardedPacketScope);
+    if forwarded != source.forwarder.is_some() { return Err("packet receipt changed direct or delegated source inventory".into()); }
+    if let Some(forwarder) = &source.forwarder { forwarder.validate_checked(checked)?; }
+    Ok(())
 }

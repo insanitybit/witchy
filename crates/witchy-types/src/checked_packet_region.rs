@@ -20,6 +20,7 @@ pub(crate) struct PacketRegionSource {
     pub(crate) producer: usize,
     pub(crate) flows: Vec<SourceAsyncControlFlow>,
     pub(crate) shape: PacketShape,
+    pub(crate) forwarder: Option<crate::packet_region_forwarder::PacketSendForwarder>,
 }
 
 fn awaited_call(expression: &Expr) -> Option<(&str, &[Expr])> {
@@ -166,14 +167,30 @@ impl PacketRegionSource {
         }
         let producer = producer?;
         let shape = shape?;
-        PacketActor::derive(&actors[producer], &shape, true)?;
-        PacketActor::derive(&actors[1 - producer], &shape, false)?;
         let inventory = checked.source_async_control_flow().ok()?;
-        let flows = [root, &actors[0], &actors[1]].into_iter().map(|function|
+        let forwarder = if PacketActor::derive(&actors[producer], &shape, true).is_some() { None } else {
+            Some(crate::packet_region_forwarder::PacketSendForwarder::derive(checked, catalog,
+                &actors[producer], &shape, &inventory.callables)?)
+        };
+        PacketActor::derive_source(&actors[producer], &shape, true, forwarder.as_ref())?;
+        PacketActor::derive(&actors[1 - producer], &shape, false)?;
+        let mut flows = [root, &actors[0], &actors[1]].into_iter().map(|function|
             inventory.callables.iter().find(|flow| crate::typed_async_lowering::typed_source_function(typed, &flow.callable)
                 .is_some_and(|source| std::ptr::eq(source, function) || source.name == function.name)).cloned())
             .collect::<Option<Vec<_>>>()?;
+        if let Some(forwarder) = &forwarder { flows.push(forwarder.helper_flow.clone()); }
         for (index, flow) in flows.iter().enumerate() {
+            if index == 3 {
+                let forwarder = forwarder.as_ref()?;
+                if flow != &forwarder.helper_flow { return None; }
+                for operation in &flow.operations {
+                    let expression = operation.expression?;
+                    let helper = crate::typed_async_lowering::typed_source_function(typed, &flow.callable)?;
+                    typed.table().type_of(source_expression(helper, expression)?).and_then(typeck::ty_to_ast)?;
+                    flow.bindings_read_by(expression).ok()?;
+                }
+                continue;
+            }
             if flow.mode.is_opt() { return None; }
             if flow.bindings.iter().map(|binding| binding.name.as_str()).collect::<BTreeSet<_>>().len() != flow.bindings.len()
                 || flow.operations.iter().any(|operation| matches!(operation.kind, SourceAsyncOperationKind::DynamicCall | SourceAsyncOperationKind::Return)) {
@@ -226,7 +243,7 @@ impl PacketRegionSource {
                 flow.bindings_read_by(expression).ok()?;
             }
             let endpoints = if index == 0 { vec![(*sender).clone(), (*receiver).clone()] } else {
-                vec![crate::scalar_region_recipe::ActorRecipe::derive(&PacketActor::derive(&actors[index - 1], &shape, index - 1 == producer)?.function, index - 1 == producer)?.endpoint]
+                vec![crate::scalar_region_recipe::ActorRecipe::derive(&PacketActor::derive_source(&actors[index - 1], &shape, index - 1 == producer, forwarder.as_ref())?.function, index - 1 == producer)?.endpoint]
             };
             for endpoint in endpoints {
                 let binding = flow.bindings.iter().find(|binding| binding.name == endpoint)?;
@@ -241,7 +258,7 @@ impl PacketRegionSource {
         if root_referenced { return None; }
         Some(Self { root: root.clone(), channel_statement: *channel_statement, scope_statement: *scope_statement,
             sender: (*sender).clone(), receiver: (*receiver).clone(), capacity: (*capacity).clone(),
-            actors: actors.try_into().ok()?, arguments: arguments.try_into().ok()?, producer, flows, shape })
+            actors: actors.try_into().ok()?, arguments: arguments.try_into().ok()?, producer, flows, shape, forwarder })
     }
 }
 

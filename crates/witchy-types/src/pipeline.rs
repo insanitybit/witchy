@@ -1555,6 +1555,8 @@ fn attach_canonical_source(
     checked.canonical_source.as_mut().expect("canonical source was installed").select_preparations = select_preparations;
     crate::static_async_call_frame::validate_checked(&checked)
         .map_err(|message| PipelineError::Type(TypeError { message }))?;
+    crate::packet_region_preparation::validate_static_forwarder(&checked)
+        .map_err(|message| PipelineError::Type(TypeError { message }))?;
     Ok(checked)
 }
 
@@ -2366,4 +2368,10 @@ pub fn assert_closed_select_receipt_rejects_forgery(checked: &CheckedModule) {
         assert!(forged.validate(view.module(), view.task_await_proofs()));
         assert!(!forged.validate_checked_source(view.module(), view.task_await_proofs(), view.source_witness()));
     }
+}
+
+
+#[doc(hidden)]
+pub fn assert_packet_forwarding_rejects_changed_binding(checked: &CheckedModule) {
+    crate::packet_region_forwarder::assert_binding_forgery_refused(checked);
 }

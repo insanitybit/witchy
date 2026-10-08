@@ -30,6 +30,14 @@ pub(crate) struct PacketActor {
 fn named(name: &str) -> Type { Type::Named(name.into(), vec![]) }
 
 impl PacketActor {
+    pub(crate) fn derive_source(original: &Function, shape: &PacketShape, producer: bool,
+        forwarder: Option<&crate::packet_region_forwarder::PacketSendForwarder>) -> Option<Self>
+    {
+        if producer && let Some(forwarder) = forwarder {
+            Self::derive(&forwarder.producer_projection(original)?, shape, true)
+        } else { Self::derive(original, shape, producer) }
+    }
+
     pub(crate) fn derive(original: &Function, shape: &PacketShape, producer: bool) -> Option<Self> {
         let mut function = original.clone();
         let endpoint_name = if producer { "chan.Sender" } else { "chan.Receiver" };

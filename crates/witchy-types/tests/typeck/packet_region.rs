@@ -136,3 +136,45 @@ fn packet_region_checks_mixed_scalar_codecs_and_source_branches() {
         assert!(receipt.validate_checked_source(view.module(), view.task_await_proofs(), view.source_witness()));
     }
 }
+
+#[test]
+fn packet_region_composes_an_exact_checked_static_send_forwarder() {
+    struct Reset;
+    impl Drop for Reset { fn drop(&mut self) { witchy_syntax::opt::set_for_tests(None); } }
+    let _reset = Reset;
+    witchy_syntax::opt::set_for_tests(Some(witchy_syntax::opt::OptSet::all()));
+    let source = include_str!("../../../../benchmarks/async_general/helper_packet3.witchy").replace("__MESSAGES__", "32");
+    let checked = super::source::checked_module(&source).expect("checked packet forwarding composition");
+    let view = checked.canonical_source().expect("canonical forwarding source").view();
+    let receipt = view.scalar_region().expect("source facts select existing packet stream surrogate");
+    assert_eq!(receipt.kind(), witchy_canonical_source::scalar_region::RegionKind::ForwardedPacketScope);
+    assert_eq!(receipt.covered_awaits().len(), 4);
+    assert!(receipt.validate_checked_source(view.module(), view.task_await_proofs(), view.source_witness()));
+    let input = checked.typed_async_lowering_input().expect("actual typed static call authority");
+    assert!(input.static_calls.iter().any(|call| call.arguments.len() == 2 && input.static_call_is_acyclic(call)));
+    witchy_types::pipeline::assert_packet_forwarding_rejects_changed_binding(&checked);
+}
+
+#[test]
+fn packet_region_forwarding_falls_back_for_unsupported_helper_semantics() {
+    struct Reset;
+    impl Drop for Reset { fn drop(&mut self) { witchy_syntax::opt::set_for_tests(None); } }
+    let _reset = Reset;
+    let source = include_str!("../../../../benchmarks/async_general/helper_packet3.witchy").replace("__MESSAGES__", "8");
+    for changed in [
+        source.replace("    chan.send(tx, packet).await", "    let ignored = 0\n    chan.send(tx, packet).await"),
+        source.replace("    chan.send(tx, packet).await", "    chan.send(tx, packet).await\n    let ignored = 0"),
+        source.replace("chan.send(tx, packet)", "chan.send(tx, Packet(0, 0, 0))"),
+        source.replace("packet: Packet):", "packet: Packet, ignored: Int = 0):"),
+        source.replace("async fn send_one(tx: Sender(Packet), packet: Packet):", "async fn send_one(packet: Packet, tx: Sender(Packet)):")
+            .replace("send_one(tx, Packet(i, i + 1, i + 2))", "send_one(Packet(i, i + 1, i + 2), tx)"),
+        source.replace("    var i = 0\n    while i < n:",
+            "    let send_one = fn(tx: Sender(Packet), packet: Packet): chan.send(tx, packet)\n    var i = 0\n    while i < n:"),
+    ] {
+        for options in [witchy_syntax::opt::OptSet::none(), witchy_syntax::opt::OptSet::all()] {
+            witchy_syntax::opt::set_for_tests(Some(options));
+            let checked = super::source::checked_module(&changed).expect("unsupported helper keeps ordinary source acceptance");
+            assert!(checked.canonical_source().expect("ordinary checked source").view().scalar_region().is_none(), "{changed}");
+        }
+    }
+}
