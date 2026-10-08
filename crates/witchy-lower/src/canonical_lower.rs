@@ -4331,6 +4331,7 @@ fn lower_function(
         closures,
         result_type: function.ret.clone(),
         value_types_by_source: std::cell::RefCell::new(HashMap::new()),
+        aggregate_layouts_by_source: std::cell::RefCell::new(HashMap::new()),
     };
     let entry = lowerer.new_block(&signature.parameters)?;
     // Checker diagnostics name only the `FunctionId`.
@@ -5152,6 +5153,7 @@ struct FunctionLowerer<'a> {
     /// so an answer never goes stale; record construction asked it per field
     /// per construction, each rescanning the layout bundle's roots.
     value_types_by_source: std::cell::RefCell<HashMap<Type, ValueType>>,
+    aggregate_layouts_by_source: std::cell::RefCell<HashMap<(Type, bool), witchy_wir::layout::LayoutId>>,
 }
 
 /// Validate the retained region-promotion fact at the canonical boundary.
@@ -14294,15 +14296,23 @@ impl FunctionLowerer<'_> {
                 .ok_or(CanonicalLoweringError::UnsupportedExpression("opaque aggregate inactive field"))?;
             return self.lower_opaque_aggregate(source_type, 0, values);
         }
-        let layout = aggregate_layout_for_source(
-            source_type,
-            field_types,
-            nullable_references,
-            self.layout_bundle,
-            self.layouts,
-            &self.closures.layouts,
-            self.definitions,
-        )?;
+        let shape = scalar_aggregate_shape(source_type, self.definitions)
+            .ok_or_else(|| CanonicalLoweringError::UnsupportedType(source_type.clone()))?;
+        if *shape.fields != *field_types {
+            return Err(CanonicalLoweringError::UnsupportedType(source_type.clone()));
+        }
+        let key = (source_type.clone(), nullable_references);
+        let cached = self.aggregate_layouts_by_source.borrow().get(&key).copied();
+        let layout = if let Some(layout) = cached {
+            layout
+        } else {
+            let layout = aggregate_layout_for_source(
+                source_type, field_types, nullable_references, self.layout_bundle,
+                self.layouts, &self.closures.layouts, self.definitions,
+            )?;
+            self.aggregate_layouts_by_source.borrow_mut().insert(key, layout);
+            layout
+        };
         let physical_layout = self
             .layouts
             .resolve_nominal(layout)
