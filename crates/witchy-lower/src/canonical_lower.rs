@@ -4332,6 +4332,7 @@ fn lower_function_attempt(
         reassigned_names: crate::escape::reassigned_names(body).into_iter().collect(),
         known_lambda_values: HashMap::new(),
         capture_free_closures: HashMap::new(),
+        loop_depth: 0,
         binding_scopes: vec![HashMap::new()],
         string_lengths: HashMap::new(),
         opaque_tags: HashMap::new(),
@@ -5109,6 +5110,8 @@ struct FunctionLowerer<'a> {
     /// it is immutable and determined by its function and environment tag,
     /// so every evaluation of the lambda shares it.
     capture_free_closures: HashMap<(FunctionId, i64), ValueId>,
+    /// How many loops enclose the expression being lowered.
+    loop_depth: usize,
     /// Declarations in each active lexical block. A declaration may shadow
     /// an outer binding, while assignments to other outer names survive the
     /// block.
@@ -6106,9 +6109,17 @@ impl FunctionLowerer<'_> {
             // RFC-0165 Net dispatch (Net track).
             Expr::Call { name, args } if name == "__capop.exec" => self.lower_exec(args).map(|_| ()),
             Expr::Call { name, args } if net::is_operation(name) => self.lower_net(name, args).map(|_| ()),
-            Expr::While { cond, body } => self.lower_while(cond, body),
-            Expr::WhileLet { pattern, scrutinee, body } => self.lower_while_let(pattern, scrutinee, body),
-            Expr::For { var, iter, body } => self.lower_for(var, iter, body),
+            Expr::While { .. } | Expr::WhileLet { .. } | Expr::For { .. } => {
+                self.loop_depth += 1;
+                let lowered = match expression {
+                    Expr::While { cond, body } => self.lower_while(cond, body),
+                    Expr::WhileLet { pattern, scrutinee, body } => self.lower_while_let(pattern, scrutinee, body),
+                    Expr::For { var, iter, body } => self.lower_for(var, iter, body),
+                    _ => unreachable!("matched a loop form"),
+                };
+                self.loop_depth -= 1;
+                lowered
+            }
             Expr::Block(block) => self.lower_block_effect(block),
             Expr::Call { name, args } if is_console_print(name) => self.lower_console_print(expression, args),
             Expr::Call { name, args } if compiler_service_import(name).is_some() => {
@@ -12207,9 +12218,10 @@ impl FunctionLowerer<'_> {
         Ok(object)
     }
 
-    /// A shared token of the capture-free closure for `function`: the record
-    /// is allocated once, in the entry block that dominates every use, rather
-    /// than on every evaluation of the lambda (a loop body, a hot callee).
+    /// A shared token of the capture-free closure for `function` evaluated
+    /// inside a loop: the record is allocated once, in the entry block that
+    /// dominates every use, rather than on every iteration. A lambda outside
+    /// any loop keeps its own allocation, so a cold path costs nothing.
     fn capture_free_closure(
         &mut self,
         layout: witchy_wir::layout::LayoutId,
@@ -13306,7 +13318,7 @@ impl FunctionLowerer<'_> {
                 let key = crate::canonical_layouts::canonical_closure_key(&fn_type, self.definitions);
                 let family = self.closures.families.get(&key)
                     .ok_or_else(|| CanonicalLoweringError::MissingLayout(fn_type.clone()))?;
-                if values.is_empty() && family.owner_type.is_none() {
+                if values.is_empty() && family.owner_type.is_none() && self.loop_depth > 0 {
                     return self.capture_free_closure(layout, signature, function, family, environment.tag);
                 }
                 let closure = self.alloc_closure(layout, signature, function, family, environment.tag, values)?;

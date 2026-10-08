@@ -41,3 +41,14 @@ fn main() -> Int:\n    var total = 0\n    var i = 0\n    while i < 10:\n        
 fn main() -> Int:\n    let f = fn(c: Int) -> Int: c + 1\n    var total = 0\n    var i = 0\n    while i < 10:\n        total = total + apply(f, i)\n        i = i + 1\n    total\n");
     assert_eq!(in_loop, hoisted, "the loop's lambda allocates per iteration");
 }
+
+#[test]
+fn a_lambda_on_a_cold_branch_is_built_only_there() {
+    let branch = non_entry_function_values("fn apply(f: fn(Int) -> Int, x: Int) -> Int:\n    f(x)\n\n\
+fn pick(x: Int) -> Int:\n    if x > 100:\n        apply(fn(c: Int) -> Int: c + 1, x)\n    else:\n        x\n\n\
+fn main() -> Int:\n    pick(3)\n");
+    let entry = non_entry_function_values("fn apply(f: fn(Int) -> Int, x: Int) -> Int:\n    f(x)\n\n\
+fn pick(x: Int) -> Int:\n    let f = fn(c: Int) -> Int: c + 1\n    if x > 100:\n        apply(f, x)\n    else:\n        x\n\n\
+fn main() -> Int:\n    pick(3)\n");
+    assert_eq!(branch, entry + 1, "a cold branch's lambda moved to the entry block");
+}
