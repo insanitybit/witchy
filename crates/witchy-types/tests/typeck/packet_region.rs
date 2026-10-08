@@ -100,3 +100,20 @@ fn packet_region_derives_flat_integer_layouts_from_checked_fields() {
         witchy_types::typeck::annotate_checked_source(candidate).expect("ordinary checked flat buffer layout");
     }
 }
+
+#[test]
+fn packet_region_retains_actor_completion_clock_and_original_awaits() {
+    struct Reset;
+    impl Drop for Reset { fn drop(&mut self) { witchy_syntax::opt::set_for_tests(None); } }
+    let _reset = Reset;
+    witchy_syntax::opt::set_for_tests(Some(witchy_syntax::opt::OptSet::all()));
+    let source = include_str!("../../../../benchmarks/async_general/packet3.witchy").replace("__MESSAGES__", "32");
+    let checked = super::source::checked_module(&source).expect("checked receiver completion clock");
+    let view = checked.canonical_source().expect("canonical completion clock").view();
+    let receipt = view.scalar_region().expect("source-derived timed actor companion");
+    assert_eq!(receipt.covered_awaits().len(), 3);
+    assert!(receipt.validate_checked_source(view.module(), view.task_await_proofs(), view.source_witness()));
+    let fallback = source.replace("clock.now_monotonic()", "clock.now()");
+    let checked = super::source::checked_module(&fallback).expect("ordinary nonmonotonic clock source");
+    assert!(checked.canonical_source().unwrap().view().scalar_region().is_none());
+}

@@ -33,6 +33,7 @@ fn renamed_block(mut block: Block, names: &BTreeMap<String, String>, initialize:
                 *statement = Stmt::Assign { name: names.get(name)?.clone(),
                     value: renamed_expression(value.clone(), names), place_depth: 0 };
             }
+            Stmt::Let { value, mutable: false, .. } => *value = renamed_expression(value.clone(), names),
             Stmt::Expr(expression) => *expression = renamed_expression(expression.clone(), names),
             _ => return None,
         }

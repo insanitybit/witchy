@@ -97,7 +97,7 @@ impl PacketRegionSource {
                 }
                 Stmt::Expr(_) => {
                     let fragment = witchy_syntax::ast::Block { stmts: vec![statement.clone()], lines: vec![root.body.lines[index]], region: None };
-                    if !completion(&fragment, &names, &consoles) { return None; }
+                    if !completion(&fragment, &names, &consoles, &clocks) { return None; }
                 }
                 _ => return None,
             }
@@ -149,12 +149,16 @@ impl PacketRegionSource {
                         }
                     }
                 }
-                if !scalar(ty) && !matches!(ty, Type::Named(name, args) if name == "Console" && args.is_empty()) {
+                if !scalar(ty) && !matches!(ty, Type::Named(name, args) if matches!(name.as_str(), "Console" | "Clock") && args.is_empty()) {
                     return None;
                 }
                 if scalar(ty) {
                     if !scalar_expression(argument, &names) { return None; }
-                } else if !matches!(argument, Expr::Var(name) if consoles.contains(name)) { return None; }
+                } else {
+                    let Type::Named(capability, _) = ty else { return None };
+                    let permitted = if capability == "Clock" { &clocks } else { &consoles };
+                    if !matches!(argument, Expr::Var(name) if permitted.contains(name)) { return None; }
+                }
             }
             endpoint?;
             actors.push(actor.clone());

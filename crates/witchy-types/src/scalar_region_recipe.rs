@@ -45,12 +45,19 @@ pub(crate) fn printed_expression(expression: &Expr, bindings: &BTreeSet<String>)
     }
 }
 
-pub(crate) fn completion(block: &Block, bindings: &BTreeSet<String>, consoles: &BTreeSet<String>) -> bool {
+pub(crate) fn completion(block: &Block, bindings: &BTreeSet<String>, consoles: &BTreeSet<String>, clocks: &BTreeSet<String>) -> bool {
+    let mut bindings = bindings.clone();
     block.stmts.iter().all(|statement| match statement {
+        Stmt::Let { name, ty, mutable: false, value } => {
+            let clock = matches!(value, Expr::Call { name, args } if name == "__capop.now_monotonic"
+                && matches!(args.as_slice(), [Expr::Var(receiver)] if clocks.contains(receiver)));
+            ty.as_ref().is_none_or(|ty| matches!(ty, Type::Named(name, args) if args_empty_scalar(name, args)))
+                && (clock || scalar_expression(value, &bindings)) && bindings.insert(name.clone())
+        }
         Stmt::Expr(Expr::Tuple(values)) => values.is_empty(),
         Stmt::Expr(Expr::Call { name, args }) if name == "__capop.print" => {
             matches!(args.as_slice(), [Expr::Var(console), message]
-                if consoles.contains(console) && printed_expression(message, bindings))
+                if consoles.contains(console) && printed_expression(message, &bindings))
         }
         _ => false,
     })
@@ -89,6 +96,9 @@ impl ActorRecipe {
             }
         }
         let endpoint = endpoint?;
+        let clocks = function.params.iter().filter(|parameter|
+            matches!(parameter.ty.as_ref(), Some(Type::Named(name, args)) if name == "Clock" && args.is_empty()))
+            .map(|parameter| parameter.name.clone()).collect::<BTreeSet<_>>();
         let consoles = function.params.iter().filter(|parameter|
             matches!(parameter.ty.as_ref(), Some(Type::Named(name, args)) if name == "Console" && args.is_empty()))
             .map(|parameter| parameter.name.clone()).collect::<BTreeSet<_>>();
@@ -129,7 +139,7 @@ impl ActorRecipe {
         }
         if condition.is_some_and(|condition| !scalar_expression(condition, &names)) { return None; }
         let completion_body = block(&function.body.stmts[*loop_index + 1..], &function.body.lines[*loop_index + 1..]);
-        if !completion(&completion_body, &names, &consoles) { return None; }
+        if !completion(&completion_body, &names, &consoles, &clocks) { return None; }
         Some(Self { initial: block(&function.body.stmts[..*loop_index], &function.body.lines[..*loop_index]),
             loop_prefix: block(prefix, prefix_lines), condition: condition.map(|condition| (*condition).clone()), payload,
             payload_line, condition_line: function.body.lines[*loop_index],
