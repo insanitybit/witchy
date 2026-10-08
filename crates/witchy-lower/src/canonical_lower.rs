@@ -15641,12 +15641,12 @@ impl FunctionLowerer<'_> {
 
         // CloneRef and shared phis demote the original token. The checker
         // independently validates the in-place store on the selected path.
-        let new_object = self.push_owned_or_reuse_scalar_element(old_object, value, &list_type)?;
+        let new_object = self.push_owned_or_reuse_element(old_object, value, &list_type)?;
         self.bindings.insert(name.clone(), new_object);
         Ok(())
     }
 
-    /// Reuse a proven unique scalar list while it has spare capacity.
+    /// Reuse a proven unique list while it has spare capacity.
     /// The full branch still uses the copy-correct geometric growth template.
     fn push_unique_list_element(
         &mut self,
@@ -15693,9 +15693,9 @@ impl FunctionLowerer<'_> {
         Ok(lanes[0])
     }
 
-    /// Select the checked in-place append for a unique scalar list, leaving
-    /// shared and reference-bearing lists on the snapshot-preserving path.
-    fn push_owned_or_reuse_scalar_element(
+    /// Select the checked in-place append for a unique list, leaving shared
+    /// and owner-family lists on the snapshot-preserving path.
+    fn push_owned_or_reuse_element(
         &mut self,
         object: ValueId,
         value: ValueId,
@@ -15778,7 +15778,7 @@ impl FunctionLowerer<'_> {
             }
         }
         if owned_lane.is_some() && !matches!(element_type, ValueType::Gc(_)) {
-            self.push_owned_or_reuse_scalar_element(old_object, value, &list_type)
+            self.push_owned_or_reuse_element(old_object, value, &list_type)
         } else {
             let list = self.clone_reference_token(old_object)?;
             self.push_owned_element(list, value, &list_type)

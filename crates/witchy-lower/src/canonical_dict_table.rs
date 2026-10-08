@@ -215,7 +215,7 @@ impl FunctionLowerer<'_> {
             },
         }));
         let element = self.owned_dict_value(element, element_source_type)?;
-        let grown = self.push_owned_or_reuse_scalar_element(current[0], element, &list_type)?;
+        let grown = self.push_owned_or_reuse_element(current[0], element, &list_type)?;
         let next = self.fresh(ValueType::Size)?;
         self.push_operation(Operation::Dictionary(DictionaryOperation::ReadSlot {
             destination: next,
@@ -300,7 +300,7 @@ impl FunctionLowerer<'_> {
             elements.push(self.owned_dict_value(element, source_type)?);
         }
         let pair = self.lower_aggregate_moving(&pair_type, &pair_shape, 0, elements)?;
-        let grown = self.push_owned_or_reuse_scalar_element(current[0], pair, &list_type)?;
+        let grown = self.push_owned_or_reuse_element(current[0], pair, &list_type)?;
         let next = self.fresh(ValueType::Size)?;
         self.push_operation(Operation::Dictionary(DictionaryOperation::ReadSlot {
             destination: next,

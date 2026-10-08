@@ -59,6 +59,8 @@ mod function_value_tail_cycle;
 mod console_read_line;
 #[path = "misc/guarded_or_pattern_arms.rs"]
 mod guarded_or_pattern_arms;
+#[path = "misc/reference_list_append_aliases.rs"]
+mod reference_list_append_aliases;
 #[path = "misc/unit_equality.rs"]
 mod unit_equality;
 #[path = "misc/opt_fresh_constructor_unique.rs"]
