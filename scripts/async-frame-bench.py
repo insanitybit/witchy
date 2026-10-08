@@ -92,7 +92,7 @@ def main():
     for variant, (binary, std) in variants.items():
         cache = output / (variant + "-verdict-cache")
         cache_home = output / (variant + "-cache-home")
-        environments[variant] = environment | {"WITCHY_SAFEWIR_CHECK_CACHE": str(cache), "XDG_CACHE_HOME": str(cache_home)}
+        environments[variant] = environment | {"WITCHY_SAFEWIR_CHECK_CACHE_DIR": str(cache), "XDG_CACHE_HOME": str(cache_home)}
         metadata["variants"][variant] = {"binary": str(binary), "binary_sha256": digest(binary), "std": str(std),
             "std_files": {str(path.relative_to(std)): digest(path) for path in sorted(std.rglob("*.witchy"))}}
     metadata["fixtures"] = {label: digest(path) for label, path, _ in fixtures}
