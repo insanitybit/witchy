@@ -1908,8 +1908,8 @@ form `e? "msg"` is the string-error convenience: it accepts `Option(T)` or
 `Result(T, String)` and yields `Result(T, String)`. On a `Result`, it prepends
 `"msg: "` to a propagated `String` error; on an `Option`, a propagated `None`
 becomes `Err("msg")`. The enclosing function therefore propagates a `String`
-error. The message may interpolate. Richer typed-error context wrapping is
-tracked by RFC-0054.
+error. The message may interpolate. It intentionally accepts no typed error (see
+RFC-0180).
 
 For typed errors, use either a named error enum or a local anonymous union.
 Named enums are the contract surface for libraries and packages: they can
