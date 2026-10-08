@@ -302,7 +302,7 @@ pub(crate) fn carrier_element_layout_matches(
 
         fn scalar(&self, layout: LayoutId) -> Option<CanonicalScalarKind> {
             match self.0.get(layout)?.kind() {
-                LayoutKind::Scalar(ScalarKind::Unit) => Some(CanonicalScalarKind::Unit),
+                LayoutKind::Scalar(ScalarKind::Unit | ScalarKind::UnitValueSlot) => Some(CanonicalScalarKind::Unit),
                 LayoutKind::Scalar(ScalarKind::Int) => Some(CanonicalScalarKind::Int),
                 LayoutKind::Scalar(ScalarKind::Float) => Some(CanonicalScalarKind::Float),
                 LayoutKind::Scalar(ScalarKind::Bool | ScalarKind::BoolValueSlot) => Some(CanonicalScalarKind::Bool),

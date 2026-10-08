@@ -33,3 +33,15 @@ fn an_unconstrained_empty_dict_defaults_to_unit_slots() {
     let out = output("fn main(console: Console):\n    let empty = dict.new()\n    console.print(\"${empty.length()}\")\n");
     assert_eq!(out, ["0"]);
 }
+
+#[test]
+fn unit_valued_tables_grow_remove_and_list_keys() {
+    let out = output("fn main(console: Console):\n    var seen: Dict(Int, ()) = dict.new()\n    var i = 0\n    while i < 40:\n        let _ = seen.insert(i, ())\n        i = i + 1\n    let gone = seen.remove(7)\n    let _ = seen.insert(7, ())\n    let _ = seen.remove(8)\n    var total = 0\n    for k in seen.keys():\n        total = total + k\n    console.print(\"${seen.length()} ${gone == Some(())} ${seen.contains_key(8)} ${total}\")\n");
+    assert_eq!(out, ["39 true false 772"]);
+}
+
+#[test]
+fn a_closure_captures_a_unit_valued_table() {
+    let out = output("fn main(console: Console):\n    var seen: Dict(String, ()) = dict.new()\n    let _ = seen.insert(\"a\", ())\n    let member = fn(s: String) -> Bool: seen.contains_key(s)\n    console.print(\"${member(\"a\")} ${member(\"b\")}\")\n");
+    assert_eq!(out, ["true false"]);
+}
