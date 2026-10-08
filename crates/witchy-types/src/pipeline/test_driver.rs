@@ -58,6 +58,15 @@ fn async_test_driver(suite: &CheckedTestSuite, ordinal: u64) -> AsyncTestDriver 
     }) else {
         return AsyncTestDriver::General;
     };
+    let mut state_frame = false;
+    if witchy_syntax::ast::visit::visit_module_exprs(suite.checked.module(), &mut |expression| {
+        if let witchy_syntax::ast::Expr::Call { name, .. } = expression {
+            state_frame |= crate::suspension_carrier::call_family(name, "chan.__recv_state_frame");
+        }
+        Ok::<_, ()>(())
+    }).is_err() || state_frame {
+        return AsyncTestDriver::General;
+    }
     if source.mode != witchy_canonical_source::source::SourceExecutionMode::Normal {
         return AsyncTestDriver::General;
     }

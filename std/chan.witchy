@@ -639,3 +639,17 @@ pub fn serve(rx: Receiver(m), state: s, handler: fn(s, m) -> Task(s)) -> Task(()
 // facade for channel-centric programs, but scheduling has a single implementation.
 pub fn run(root: Task(())):
     task.run(root)
+
+pub fn __recv_state_frame(own state: s, prepare: fn(var s) -> Option(Int), resume: fn(own Option(m), var s) -> (), finish: fn(s) -> Task(a)) -> Task(a):
+    let preparing: fn(own __Msg) -> (Option(Int), __Msg) = fn(own encoded):
+        var current: s = __unerase(encoded)
+        let channel = prepare(current)
+        (channel, __erase(current))
+
+    let resuming: fn(own Option(__Msg), own __Msg) -> __Msg = fn(own message, own encoded):
+        var current: s = __unerase(encoded)
+        resume(unerase_option(message), current)
+        __erase(current)
+
+    let finishing: fn(own __Msg) -> Task(a) = fn(own encoded): finish(__unerase(encoded))
+    task.__receive_state_frame(__erase(state), preparing, resuming, finishing)

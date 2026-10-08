@@ -162,9 +162,15 @@ pub struct CanonicalCheckedSource {
     scalar_region: Option<witchy_canonical_source::scalar_region::ScalarRegionReceipt>,
     send_preparations: BTreeMap<usize, crate::checked_channel_send::CheckedSendPreparation>,
     select_preparations: BTreeMap<usize, crate::checked_channel_select::CheckedSelectPreparation>,
+    receive_preparations: BTreeMap<usize, crate::checked_channel_receive::CheckedReceivePreparation>,
 }
 
 impl CanonicalCheckedSource {
+    pub fn checked_receive_preparation(&self, expression: &witchy_syntax::ast::Expr)
+        -> Option<&crate::checked_channel_receive::CheckedReceivePreparation>
+    {
+        self.receive_preparations.get(&(expression as *const _ as usize))
+    }
 
     pub fn checked_select_preparation(&self, expression: &witchy_syntax::ast::Expr)
         -> Option<&crate::checked_channel_select::CheckedSelectPreparation>
@@ -1240,8 +1246,10 @@ fn bind_task_await_proofs(
             let witchy_syntax::ast::Expr::Call { name, args } = expression else { return Ok(()) };
             if crate::suspension_carrier::call_family(name, "task.__producer_frame")
                 || crate::suspension_carrier::call_family(name, "chan.__select2_lane_frame")
+                || crate::suspension_carrier::call_family(name, "chan.__recv_state_frame")
             {
                 let select = crate::suspension_carrier::call_family(name, "chan.__select2_lane_frame");
+                let receive = crate::suspension_carrier::call_family(name, "chan.__recv_state_frame");
                 let callbacks = if select { args.get(2..).unwrap_or(&[]) } else { args.as_slice() };
                 let [_, witchy_syntax::ast::Expr::Lambda { body: prepare, .. },
                     witchy_syntax::ast::Expr::Lambda { body: resume, .. }, _] = callbacks else {
@@ -1256,7 +1264,7 @@ fn bind_task_await_proofs(
                 let mut prepared = Vec::new();
                 witchy_syntax::ast::visit::visit_block(prepare, &mut |expression| {
                     if let witchy_syntax::ast::Expr::Call { name, args } = expression
-                        && crate::suspension_carrier::call_family(name, if select { "task.__prepare_select" } else { "task.__prepare_send" })
+                        && crate::suspension_carrier::call_family(name, if select { "task.__prepare_select" } else if receive { "task.__prepare_recv" } else { "task.__prepare_send" })
                     {
                         let [task] = args.as_slice() else {
                             return Err(refuse("compiler send preparation lacks exact task operand".into()));
@@ -1268,7 +1276,7 @@ fn bind_task_await_proofs(
                             = block.stmts.last() else {
                             return Err(refuse("compiler send preparation does not contain a direct send".into()));
                         };
-                        if !crate::suspension_carrier::call_family(name, if select { "chan.select" } else { "chan.send" }) || args.len() != 2 {
+                        if !crate::suspension_carrier::call_family(name, if select { "chan.select" } else if receive { "chan.recv" } else { "chan.send" }) || args.len() != if receive { 1 } else { 2 } {
                             return Err(refuse("compiler send preparation does not contain a direct send".into()));
                         }
                         prepared.push(task as *const _ as usize);
@@ -1518,10 +1526,14 @@ fn attach_canonical_source(
         scalar_region,
         send_preparations: BTreeMap::new(),
         select_preparations: BTreeMap::new(),
+        receive_preparations: BTreeMap::new(),
     });
     let send_preparations = crate::checked_channel_send::bind_send_preparations(&checked)
         .map_err(|message| PipelineError::Type(TypeError { message }))?;
     checked.canonical_source.as_mut().expect("canonical source was installed").send_preparations = send_preparations;
+    let receive_preparations = crate::checked_channel_receive::bind_receive_preparations(&checked)
+        .map_err(|message| PipelineError::Type(TypeError { message }))?;
+    checked.canonical_source.as_mut().expect("canonical source was installed").receive_preparations = receive_preparations;
     let select_preparations = crate::checked_channel_select::bind_select_preparations(&checked)
         .map_err(|message| PipelineError::Type(TypeError { message }))?;
     checked.canonical_source.as_mut().expect("canonical source was installed").select_preparations = select_preparations;

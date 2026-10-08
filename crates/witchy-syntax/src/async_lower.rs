@@ -50,6 +50,8 @@ use foldhash::{HashMap, HashSet, HashSetExt as _};
 
 mod hoist;
 mod recv_frame;
+mod receive_state;
+pub mod type_hints;
 mod send_frame;
 
 /// Nominal identities whose values carry a declared lifetime relation. Async
@@ -1545,6 +1547,9 @@ impl<'a> Ctx<'a> {
         body: &Block,
         cont: Continuation<'_>,
     ) -> Result<Expr, String> {
+        if let Some(frame_loop) = self.try_lower_receive_state_loop(cond, body, cont)? {
+            return Ok(frame_loop);
+        }
         if let Some(frame_loop) = self.try_lower_channel_frame_loop(cond, body, cont)? {
             return Ok(frame_loop);
         }

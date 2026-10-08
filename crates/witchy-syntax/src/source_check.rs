@@ -99,6 +99,7 @@ impl SourceValidationError {
 /// proof instead of accepting an arbitrary module vector.
 #[derive(Debug)]
 pub struct ResolvedSource {
+    async_local_type_hints: std::cell::RefCell<Vec<crate::async_lower::type_hints::AsyncLocalTypeHint>>,
     modules: Vec<(String, Module)>,
     declarations: crate::type_resolve::ResolvedDeclarations,
     method_owners: crate::type_resolve::MethodOwnerCandidates,
@@ -119,6 +120,10 @@ pub(crate) struct SemanticallyCheckedSource {
 }
 
 impl ResolvedSource {
+    pub fn record_async_local_type_hints(&self, hints: Vec<crate::async_lower::type_hints::AsyncLocalTypeHint>) {
+        *self.async_local_type_hints.borrow_mut() = hints;
+    }
+
     // Only compiler-owned type markers validated by the source namespace pass
     // contribute these imports. Projection imports are internal: the original
     // source still has to pass its ordinary explicit-import checks first.
@@ -404,6 +409,10 @@ impl SemanticallyCheckedSource {
         crate::type_resolve::ResolvedDeclarations,
     ) {
         let mut resolved_modules = self.resolved.modules;
+        let hints = self.resolved.async_local_type_hints.into_inner();
+        for (name, module) in &mut resolved_modules {
+            crate::async_lower::type_hints::apply(name, module, &hints);
+        }
         for (name, module) in &mut resolved_modules {
             if let Some(authorized) = self.resolved.definition_site_type_imports.get(name) {
                 for imported in authorized {
@@ -543,6 +552,7 @@ pub(crate) fn resolve_linked_source(
         })?;
     }
     Ok(ResolvedSource {
+        async_local_type_hints: std::cell::RefCell::new(Vec::new()),
         modules,
         declarations: namespace.declarations,
         method_owners: namespace.method_owners,

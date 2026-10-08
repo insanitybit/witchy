@@ -2293,3 +2293,6 @@ mod scalar_region_authority;
 mod packet_region;
 #[path = "typeck/select_region.rs"]
 mod select_region;
+
+#[path = "typeck/checked_channel_receive.rs"]
+mod checked_channel_receive;

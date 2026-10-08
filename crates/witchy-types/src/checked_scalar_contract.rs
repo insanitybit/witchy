@@ -54,6 +54,7 @@ pub(crate) fn type_hash(definition: &witchy_syntax::ast::TypeDef) -> String {
 include!("checked_scalar_contract_hashes.rs");
 
 pub(crate) fn scheduler_contract(module: &Module, original: &Module, catalog: &RuntimeDeclarationCatalog) -> Result<(), String> {
+    let mut changes = Vec::new();
     for &(name, runtime_hash, original_hash) in RECIPES {
         let kind = if matches!(name, "task.Task" | "task.Step" | "task.Slot" | "task.ChannelId" | "chan.Sender" | "chan.Receiver") {
             DeclarationKind::Type
@@ -75,7 +76,7 @@ pub(crate) fn scheduler_contract(module: &Module, original: &Module, catalog: &R
                     _ => continue,
                 };
                 projection_found = true;
-                if actual_hash != expected_hash { return Err(format!("changed scalar scheduler recipe {name}")); }
+                if actual_hash != expected_hash { changes.push(format!("changed scalar scheduler recipe {name} projection={projection}: {actual_hash}")); }
             }
             // The implicit-receive marker is removed only from the runtime projection.
             if !projection_found && !(projection == 0 && name == "chan.__recv_stream") {
@@ -83,5 +84,5 @@ pub(crate) fn scheduler_contract(module: &Module, original: &Module, catalog: &R
             }
         }
     }
-    Ok(())
+    if changes.is_empty() { Ok(()) } else { Err(changes.join("\n")) }
 }

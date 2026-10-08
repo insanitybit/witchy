@@ -294,5 +294,8 @@ mod async_packet_regions;
 #[path = "misc/async_select_regions.rs"]
 mod async_select_regions;
 
+#[path = "misc/async_receive_state_frames.rs"]
+mod async_receive_state_frames;
+
 #[path = "misc/async_profile_map.rs"]
 mod async_profile_map;

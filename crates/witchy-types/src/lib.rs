@@ -42,6 +42,8 @@ pub mod typed_execution;
 pub mod typed_async_lowering;
 pub mod checked_channel_send;
 pub mod checked_channel_select;
+pub mod checked_channel_receive;
+mod async_local_type_hints;
 mod checked_channel_contract;
 mod checked_scalar_contract;
 mod checked_scalar_region;

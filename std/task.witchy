@@ -102,6 +102,9 @@ sealed type Step(a):
     ReceiveFrame((Int, List(Int), fn(Option(__Msg), var List(Int)) -> Bool, fn(List(Int)) -> Task(a)))
     ReceiveLaneFrame((Int, List(Int), fn(Option(__Msg), Int, var List(Int)) -> Bool, fn(List(Int)) -> Task(a)))
     ProduceFrame((List(Int), fn(Int, var List(Int)) -> Option((Int, __Msg)), fn(Int, var List(Int)) -> Bool, fn(List(Int)) -> Task(a), Int, __Msg))
+    TerminalProduceStateFrame((__Msg, fn(own __Msg) -> Task(a), Int, __Msg))
+    ProduceStateFrame((__Msg, fn(own __Msg) -> (Option((Int, __Msg)), __Msg), fn(own __Msg) -> __Msg, fn(own __Msg) -> Task(a), Int, __Msg))
+    ReceiveStateFrame((__Msg, fn(own __Msg) -> (Option(Int), __Msg), fn(own Option(__Msg), own __Msg) -> __Msg, fn(own __Msg) -> Task(a), Int))
     SelectLaneFrame((List(Int), fn(Int, var List(Int)) -> Option(List(Int)), fn(own Option((Int, __Msg)), Int, var List(Int)) -> Bool, fn(List(Int)) -> Task(a), List(Int)))
 
 // A task communicating via channels, producing an `a`.
@@ -193,6 +196,12 @@ fn and_then_step(own s: Step(a), own k: fn(own a) -> Task(b)) -> Step(b):
             ReceiveLaneFrame((ch, frame, step, fn(state: List(Int)) -> Task(b): and_then(finish(state), k)))
         ProduceFrame((frame, prepare, resume, finish, ch, msg)) ->
             ProduceFrame((frame, prepare, resume, fn(state: List(Int)) -> Task(b): and_then(finish(state), k), ch, msg))
+        TerminalProduceStateFrame((state, finish, ch, msg)) ->
+            TerminalProduceStateFrame((state, fn(own state: __Msg) -> Task(b): and_then(finish(state), k), ch, msg))
+        ProduceStateFrame((state, prepare, resume, finish, ch, msg)) ->
+            ProduceStateFrame((state, prepare, resume, fn(own state: __Msg) -> Task(b): and_then(finish(state), k), ch, msg))
+        ReceiveStateFrame((state, prepare, resume, finish, ch)) ->
+            ReceiveStateFrame((state, prepare, resume, fn(own state: __Msg) -> Task(b): and_then(finish(state), k), ch))
         SelectLaneFrame((frame, prepare, resume, finish, channels)) ->
             SelectLaneFrame((frame, prepare, resume, fn(state: List(Int)) -> Task(b): and_then(finish(state), k), channels))
 
@@ -321,6 +330,61 @@ pub fn __receive_lane_frame(ch: ChannelId, frame: List(Int), step: fn(Option(__M
     match ch:
         ChannelId(id) -> Task(fn(): ReceiveLaneFrame((id, frame, step, finish)))
 
+pub fn __prepare_recv(t: Task(Option(a))) -> Int:
+    match poll(t):
+        Pull(ch, _) -> ch
+        _ ->
+            fail("invalid prepared channel receive")
+            0
+
+pub fn __receive_state_frame(own state: __Msg, prepare: fn(own __Msg) -> (Option(Int), __Msg), resume: fn(own Option(__Msg), own __Msg) -> __Msg, finish: fn(own __Msg) -> Task(a)) -> Task(a):
+    let start: fn() -> Step(a) = fn():
+        let (channel, prepared) = prepare(state)
+        match channel:
+            Some(ch) -> ReceiveStateFrame((prepared, prepare, resume, finish, ch))
+            None -> poll(finish(prepared))
+
+    Task(start)
+
+pub fn __terminal_send_state_frame(own state: __Msg, prepare: fn(own __Msg) -> ((Int, __Msg), __Msg), finish: fn(own __Msg) -> Task(a)) -> Task(a):
+    let start: fn() -> Step(a) = fn():
+        let ((ch, msg), prepared) = prepare(state)
+        TerminalProduceStateFrame((prepared, finish, ch, msg))
+
+    Task(start)
+
+pub fn __terminal_producer_state_frame(own state: s, prepare: fn(var s) -> (Int, __Msg), finish: fn(s) -> Task(a)) -> Task(a):
+    let preparing: fn(own __Msg) -> ((Int, __Msg), __Msg) = fn(own encoded):
+        var current: s = __unerase(encoded)
+        let pending = prepare(current)
+        (pending, __erase(current))
+
+    let finishing: fn(own __Msg) -> Task(a) = fn(own encoded): finish(__unerase(encoded))
+    __terminal_send_state_frame(__erase(state), preparing, finishing)
+
+pub fn __send_state_frame(own state: __Msg, prepare: fn(own __Msg) -> (Option((Int, __Msg)), __Msg), resume: fn(own __Msg) -> __Msg, finish: fn(own __Msg) -> Task(a)) -> Task(a):
+    let start: fn() -> Step(a) = fn():
+        let (pending, prepared) = prepare(state)
+        match pending:
+            Some((ch, msg)) -> ProduceStateFrame((prepared, prepare, resume, finish, ch, msg))
+            None -> poll(finish(prepared))
+
+    Task(start)
+
+pub fn __producer_state_frame(own state: s, prepare: fn(var s) -> Option((Int, __Msg)), resume: fn(var s) -> (), finish: fn(s) -> Task(a)) -> Task(a):
+    let preparing: fn(own __Msg) -> (Option((Int, __Msg)), __Msg) = fn(own encoded):
+        var current: s = __unerase(encoded)
+        let pending = prepare(current)
+        (pending, __erase(current))
+
+    let resuming: fn(own __Msg) -> __Msg = fn(own encoded):
+        var current: s = __unerase(encoded)
+        resume(current)
+        __erase(current)
+
+    let finishing: fn(own __Msg) -> Task(a) = fn(own encoded): finish(__unerase(encoded))
+    __send_state_frame(__erase(state), preparing, resuming, finishing)
+
 pub fn __prepare_send(t: Task(())) -> (Int, __Msg):
     match poll(t):
         Push(ch, msg, _) -> (ch, msg)
@@ -436,6 +500,9 @@ sealed type Slot:
     ReceiveLaneSlot(Int)
     ProduceFrameSlot(Int)
     JoinFrameSlot(Int)
+    TerminalProduceStateSlot(Int)
+    ProduceStateSlot(Int)
+    ReceiveStateSlot(Int)
     SelectLaneSlot(Int)
 
 fn is_live(s: Slot) -> Bool:
@@ -458,6 +525,9 @@ fn is_live(s: Slot) -> Bool:
         ReceiveLaneSlot(_) -> true
         ProduceFrameSlot(_) -> true
         JoinFrameSlot(_) -> true
+        TerminalProduceStateSlot(_) -> true
+        ProduceStateSlot(_) -> true
+        ReceiveStateSlot(_) -> true
         SelectLaneSlot(_) -> true
 
 fn is_parked(s: Slot) -> Bool:
@@ -480,6 +550,9 @@ fn is_parked(s: Slot) -> Bool:
         ReceiveLaneSlot(_) -> true
         ProduceFrameSlot(_) -> true
         JoinFrameSlot(_) -> true
+        TerminalProduceStateSlot(_) -> true
+        ProduceStateSlot(_) -> true
+        ReceiveStateSlot(_) -> true
         SelectLaneSlot(_) -> true
 
 // ---- fixed-capacity ring channels (RFC-0059 Stage 2) ----
@@ -698,6 +771,14 @@ pub fn run(root: Task(())):
     var send_prepares: List(Option(fn(Int, var List(Int)) -> Option((Int, __Msg)))) = []
     var send_resumes: List(Option(fn(Int, var List(Int)) -> Bool)) = []
     var send_finishes: List(Option(fn(List(Int)) -> Task(()))) = []
+    var producer_states: List(Option(__Msg)) = []
+    var producer_state_prepares: List(Option(fn(own __Msg) -> (Option((Int, __Msg)), __Msg))) = []
+    var producer_state_resumes: List(Option(fn(own __Msg) -> __Msg)) = []
+    var producer_state_finishes: List(Option(fn(own __Msg) -> Task(()))) = []
+    var receive_states: List(Option(__Msg)) = []
+    var state_prepares: List(Option(fn(own __Msg) -> (Option(Int), __Msg))) = []
+    var state_resumes: List(Option(fn(own Option(__Msg), own __Msg) -> __Msg)) = []
+    var state_finishes: List(Option(fn(own __Msg) -> Task(()))) = []
     var select_prepares: List(Option(fn(Int, var List(Int)) -> Option(List(Int)))) = []
     var select_resumes: List(Option(fn(own Option((Int, __Msg)), Int, var List(Int)) -> Bool)) = []
     var select_finishes: List(Option(fn(List(Int)) -> Task(()))) = []
@@ -816,6 +897,125 @@ pub fn run(root: Task(())):
                         // before proceeding through the exact existing
                         // erased path, so mixed proven/unproven channel
                         // uses retain FIFO and blocking behavior.
+            else if kind == 7:
+                let ch = list.at(frame_channels, i)
+                let recipe = list.at(frame_recipes, i)
+                match list.at(frame_pending, i):
+                    Some(msg) ->
+                        materialize_typed_i64_channel(ch, channels, typed_i64_channels)
+                        if try_producer_send(ch, msg, channels):
+                            if list.at(frame_phases, i) == 3:
+                                __rfc0152_wake_claim()
+                            else:
+                                unit()
+                            match list.at(producer_states, recipe):
+                                Some(state) ->
+                                    match list.at(producer_state_finishes, recipe):
+                                        Some(finish) -> list.set_at(slots, i, Active(finish(state)))
+                                        None -> fail("missing terminal producer completion")
+                                None -> fail("missing terminal producer state")
+
+                            list.set_at(producer_states, recipe, None)
+                            list.set_at(producer_state_finishes, recipe, None)
+                            list.set_at(frame_kinds, i, 0)
+                            list.set_at(frame_pending, i, None)
+                            prog = true
+                        else:
+                            list.set_at(frame_phases, i, 3)
+                    None -> fail("missing terminal producer message")
+            else if kind == 6:
+                let recipe = list.at(frame_recipes, i)
+                let phase = list.at(frame_phases, i)
+                if phase == 1:
+                    match list.at(producer_states, recipe):
+                        Some(state) ->
+                            match list.at(producer_state_resumes, recipe):
+                                Some(resume) ->
+                                    let resumed = resume(state)
+                                    match list.at(producer_state_prepares, recipe):
+                                        Some(prepare) ->
+                                            let (pending, prepared) = prepare(resumed)
+                                            match pending:
+                                                Some((ch, msg)) ->
+                                                    list.set_at(producer_states, recipe, Some(prepared))
+                                                    list.set_at(frame_channels, i, ch)
+                                                    list.set_at(frame_pending, i, Some(msg))
+                                                    list.set_at(frame_phases, i, 2)
+                                                None ->
+                                                    match list.at(producer_state_finishes, recipe):
+                                                        Some(finish) -> list.set_at(slots, i, Active(finish(prepared)))
+                                                        None -> fail("missing state producer completion")
+
+                                                    list.set_at(frame_kinds, i, 0)
+                                                    list.set_at(producer_states, recipe, None)
+                                                    list.set_at(producer_state_prepares, recipe, None)
+                                                    list.set_at(producer_state_resumes, recipe, None)
+                                                    list.set_at(producer_state_finishes, recipe, None)
+                                        None -> fail("missing state producer preparation")
+                                None -> fail("missing state producer resume")
+                        None -> fail("missing state producer state")
+
+                    prog = true
+                else:
+                    let ch = list.at(frame_channels, i)
+                    match list.at(frame_pending, i):
+                        Some(msg) ->
+                            materialize_typed_i64_channel(ch, channels, typed_i64_channels)
+                            if try_producer_send(ch, msg, channels):
+                                if phase == 3:
+                                    __rfc0152_wake_claim()
+                                else:
+                                    unit()
+                                list.set_at(frame_pending, i, None)
+                                list.set_at(frame_phases, i, 1)
+                                prog = true
+                            else:
+                                list.set_at(frame_phases, i, 3)
+                        None -> fail("missing prepared state producer message")
+            else if kind == 5:
+                let recipe = list.at(frame_recipes, i)
+                if list.at(frame_phases, i) == 1:
+                    match list.at(receive_states, recipe):
+                        Some(state) ->
+                            match list.at(state_resumes, recipe):
+                                Some(resume) ->
+                                    let resumed = resume(list.at(frame_pending, i), state)
+                                    match list.at(state_prepares, recipe):
+                                        Some(prepare) ->
+                                            let (channel, prepared) = prepare(resumed)
+                                            match channel:
+                                                Some(ch) ->
+                                                    list.set_at(receive_states, recipe, Some(prepared))
+                                                    list.set_at(frame_channels, i, ch)
+                                                    list.set_at(frame_phases, i, 2)
+                                                None ->
+                                                    match list.at(state_finishes, recipe):
+                                                        Some(finish) -> list.set_at(slots, i, Active(finish(prepared)))
+                                                        None -> fail("missing state receive completion")
+
+                                                    list.set_at(frame_kinds, i, 0)
+                                                    list.set_at(receive_states, recipe, None)
+                                                    list.set_at(state_prepares, recipe, None)
+                                                    list.set_at(state_resumes, recipe, None)
+                                                    list.set_at(state_finishes, recipe, None)
+                                        None -> fail("missing state receive preparation")
+                                None -> fail("missing state receive resume")
+                        None -> fail("missing state receive state")
+
+                    list.set_at(frame_pending, i, None)
+                    prog = true
+                else:
+                    let ch = list.at(frame_channels, i)
+                    materialize_typed_i64_channel(ch, channels, typed_i64_channels)
+                    let (buf, head, count, cap) = list.at(channels, ch)
+                    if count > 0:
+                        let msg = list.at(buf, head)
+                        list.set_at(channels, ch, (buf, (head + 1) % list.length(buf), count - 1, cap))
+                        list.set_at(frame_pending, i, Some(msg))
+                        list.set_at(frame_phases, i, 1)
+                        prog = true
+                    else:
+                        list.set_at(frame_phases, i, 0)
             else if kind == 4:
                 let phase = list.at(frame_phases, i)
                 let recipe = list.at(frame_recipes, i)
@@ -1526,6 +1726,19 @@ pub fn run(root: Task(())):
                                     list.set_at(send_finishes, recipe, None)
                                 else if kind == 3:
                                     list.set_at(join_continuations, recipe, None)
+                                else if kind == 7:
+                                    list.set_at(producer_states, recipe, None)
+                                    list.set_at(producer_state_finishes, recipe, None)
+                                else if kind == 6:
+                                    list.set_at(producer_states, recipe, None)
+                                    list.set_at(producer_state_prepares, recipe, None)
+                                    list.set_at(producer_state_resumes, recipe, None)
+                                    list.set_at(producer_state_finishes, recipe, None)
+                                else if kind == 5:
+                                    list.set_at(receive_states, recipe, None)
+                                    list.set_at(state_prepares, recipe, None)
+                                    list.set_at(state_resumes, recipe, None)
+                                    list.set_at(state_finishes, recipe, None)
                                 else if kind == 4:
                                     list.set_at(select_prepares, recipe, None)
                                     list.set_at(select_resumes, recipe, None)
@@ -1559,6 +1772,63 @@ pub fn run(root: Task(())):
                                 list.set_at(frame_lengths, i, list.length(frame))
                                 list.set_at(frame_recipes, i, recipe)
                                 list.set_at(slots, i, ReceiveLaneSlot(i))
+                                materialize_typed_i64_channel(ch, channels, typed_i64_channels)
+                                let (buf, head, count, cap) = list.at(channels, ch)
+                                if count > 0:
+                                    let msg = list.at(buf, head)
+                                    list.set_at(channels, ch, (buf, (head + 1) % list.length(buf), count - 1, cap))
+                                    list.set_at(frame_pending, i, Some(msg))
+                                    list.set_at(frame_phases, i, 1)
+                                    prog = true
+                                else:
+                                    list.set_at(frame_phases, i, 0)
+                            TerminalProduceStateFrame((state, finish, ch, msg)) ->
+                                let recipe = list.length(producer_states)
+                                list.push(producer_states, Some(state))
+                                list.push(producer_state_prepares, None)
+                                list.push(producer_state_resumes, None)
+                                list.push(producer_state_finishes, Some(finish))
+                                list.set_at(frame_kinds, i, 7)
+                                list.set_at(frame_channels, i, ch)
+                                list.set_at(frame_recipes, i, recipe)
+                                list.set_at(slots, i, TerminalProduceStateSlot(i))
+                                materialize_typed_i64_channel(ch, channels, typed_i64_channels)
+                                if try_producer_send(ch, msg, channels):
+                                    list.set_at(slots, i, Active(finish(state)))
+                                    list.set_at(producer_states, recipe, None)
+                                    list.set_at(producer_state_finishes, recipe, None)
+                                    list.set_at(frame_kinds, i, 0)
+                                    prog = true
+                                else:
+                                    list.set_at(frame_pending, i, Some(msg))
+                                    list.set_at(frame_phases, i, 3)
+                            ProduceStateFrame((state, prepare, resume, finish, ch, msg)) ->
+                                let recipe = list.length(producer_states)
+                                list.push(producer_states, Some(state))
+                                list.push(producer_state_prepares, Some(prepare))
+                                list.push(producer_state_resumes, Some(resume))
+                                list.push(producer_state_finishes, Some(finish))
+                                list.set_at(frame_kinds, i, 6)
+                                list.set_at(frame_channels, i, ch)
+                                list.set_at(frame_recipes, i, recipe)
+                                list.set_at(slots, i, ProduceStateSlot(i))
+                                materialize_typed_i64_channel(ch, channels, typed_i64_channels)
+                                if try_producer_send(ch, msg, channels):
+                                    list.set_at(frame_phases, i, 1)
+                                    prog = true
+                                else:
+                                    list.set_at(frame_pending, i, Some(msg))
+                                    list.set_at(frame_phases, i, 3)
+                            ReceiveStateFrame((state, prepare, resume, finish, ch)) ->
+                                let recipe = list.length(receive_states)
+                                list.push(receive_states, Some(state))
+                                list.push(state_prepares, Some(prepare))
+                                list.push(state_resumes, Some(resume))
+                                list.push(state_finishes, Some(finish))
+                                list.set_at(frame_kinds, i, 5)
+                                list.set_at(frame_channels, i, ch)
+                                list.set_at(frame_recipes, i, recipe)
+                                list.set_at(slots, i, ReceiveStateSlot(i))
                                 materialize_typed_i64_channel(ch, channels, typed_i64_channels)
                                 let (buf, head, count, cap) = list.at(channels, ch)
                                 if count > 0:
@@ -1636,6 +1906,9 @@ pub fn run(root: Task(())):
                     ReceiveLaneSlot(_) -> fail("receive frame reached ordinary dispatch")
                     ProduceFrameSlot(_) -> fail("producer frame reached ordinary dispatch")
                     JoinFrameSlot(_) -> fail("join frame reached ordinary dispatch")
+                    TerminalProduceStateSlot(_) -> fail("terminal producer frame reached ordinary dispatch")
+                    ProduceStateSlot(_) -> fail("state producer frame reached ordinary dispatch")
+                    ReceiveStateSlot(_) -> fail("state receive frame reached ordinary dispatch")
                     SelectLaneSlot(_) -> fail("select frame reached ordinary dispatch")
 
             i = i + 1
@@ -1715,6 +1988,39 @@ pub fn run(root: Task(())):
                     ReceiveFrameSlot(ch, frame, step, finish, _phase, _pending) ->
                         list.set_at(slots, j, ReceiveFrameSlot(ch, frame, step, finish, 1, None))
                     ReceiveLaneSlot(activation) ->
+                        list.set_at(frame_pending, activation, None)
+                        list.set_at(frame_phases, activation, 1)
+                    TerminalProduceStateSlot(activation) ->
+                        let ch = list.at(frame_channels, activation)
+                        let recipe = list.at(frame_recipes, activation)
+                        match list.at(frame_pending, activation):
+                            Some(msg) ->
+                                let (buf, head, count, cap) = list.at(channels, ch)
+                                __rfc0152_wake_claim()
+                                list.set_at(channels, ch, ring_put(buf, head, count, msg, cap))
+                                match list.at(producer_states, recipe):
+                                    Some(state) ->
+                                        match list.at(producer_state_finishes, recipe):
+                                            Some(finish) -> list.set_at(slots, j, Active(finish(state)))
+                                            None -> fail("missing terminal producer completion")
+                                    None -> fail("missing terminal producer state")
+
+                                list.set_at(producer_states, recipe, None)
+                                list.set_at(producer_state_finishes, recipe, None)
+                                list.set_at(frame_kinds, activation, 0)
+                                list.set_at(frame_pending, activation, None)
+                            None -> fail("missing parked terminal producer message")
+                    ProduceStateSlot(activation) ->
+                        let ch = list.at(frame_channels, activation)
+                        match list.at(frame_pending, activation):
+                            Some(msg) ->
+                                let (buf, head, count, cap) = list.at(channels, ch)
+                                __rfc0152_wake_claim()
+                                list.set_at(channels, ch, ring_put(buf, head, count, msg, cap))
+                                list.set_at(frame_pending, activation, None)
+                                list.set_at(frame_phases, activation, 1)
+                            None -> fail("missing parked state producer message")
+                    ReceiveStateSlot(activation) ->
                         list.set_at(frame_pending, activation, None)
                         list.set_at(frame_phases, activation, 1)
                     SelectLaneSlot(activation) ->

@@ -18,11 +18,11 @@ fn normalized_name(name: &str) -> String {
         return format!("%intrinsic:{:?}", spec.id);
     }
     match name {
-        "Task" | "Done" | "Yield" | "Push" | "Pull2Ready" | "SelectLaneFrame" | "ChannelId" | "unit"
+        "Task" | "Done" | "Yield" | "Push" | "Pull" | "Pull2Ready" | "SelectLaneFrame" | "ChannelId" | "unit"
         | "poll" | "ready_unit" | "and_then" | "and_then_step" | "__channel_select2"
-        | "__prepare_select" | "__select_lane_frame" => format!("task.{name}"),
+        | "__prepare_select" | "__select_lane_frame" | "__channel_recv" | "__prepare_recv" | "ReceiveStateFrame" | "__receive_state_frame" => format!("task.{name}"),
         "done" | "Receiver" | "First" | "Second" | "Closed" | "select2_result" | "select2_frame_decode"
-        | "__rfc0152_selected_materialized" => format!("chan.{name}"),
+        | "__rfc0152_selected_materialized" | "unerase_option" => format!("chan.{name}"),
         _ => name.into(),
     }
 }
@@ -87,5 +87,28 @@ pub(crate) fn select_sequence_body(module: &Module) -> bool {
         Done(v) -> Yield(k(v))
         Yield(t2) -> Yield(and_then(t2, k))
         Pull2Ready(ch0, ch1, cont) -> Pull2Ready(ch0, ch1, fn(tag, o): and_then(cont(tag, o), k))
+"#)
+}
+
+
+pub(crate) fn receive_sequence_body(module: &Module) -> bool {
+    if !exact_body(module, "task.and_then", "fn sequence(t, k):\n    Task(fn(): and_then_step(poll(t), k))\n") {
+        return false;
+    }
+    let Some(function) = module.items.iter().find_map(|item| match item {
+        Item::Function(function) if function.name == "task.and_then_step" => Some(function), _ => None,
+    }) else { return false };
+    let mut function = function.clone();
+    let [witchy_syntax::ast::Stmt::Expr(Expr::Match { arms, .. })] = function.body.stmts.as_mut_slice() else { return false };
+    if arms.iter().any(|arm| !matches!(arm.pattern, Pattern::Ctor { .. })) { return false; }
+    arms.retain(|arm| matches!(&arm.pattern, Pattern::Ctor { name, .. }
+        if matches!(normalized_name(name).as_str(), "task.Done" | "task.Yield" | "task.Pull" | "task.ReceiveStateFrame")));
+    matches_recipe(&function.body, r#"fn sequence(s, k):
+    match s:
+        Done(v) -> Yield(k(v))
+        Yield(t2) -> Yield(and_then(t2, k))
+        Pull(ch, cont) -> Pull(ch, fn(o): and_then(cont(o), k))
+        ReceiveStateFrame((state, prepare, resume, finish, ch)) ->
+            ReceiveStateFrame((state, prepare, resume, fn(own state: __Msg) -> task.Task(b): and_then(finish(state), k), ch))
 "#)
 }

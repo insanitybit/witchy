@@ -11648,6 +11648,11 @@ pub fn check_linked_source_semantics(
     } else {
         None
     };
+    if let Some(typed) = &typed_async_source {
+        let hints = crate::async_local_type_hints::collect(typed).map_err(|message|
+            witchy_syntax::linker::SourceLinkError::Source(witchy_syntax::source_check::SourceCheckError::new(message)))?;
+        source.record_async_local_type_hints(hints);
+    }
     // Check only the standard library this program can reach (see
     // std_pruning; a failure anywhere in the production route after pruning
     // reruns the route unpruned, so a pruned error is never reported).
