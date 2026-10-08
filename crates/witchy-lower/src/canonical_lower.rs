@@ -23,6 +23,8 @@ mod call_storage;
 mod flow_storage;
 #[path = "canonical_match_flow.rs"]
 mod match_flow;
+#[path = "canonical_list_projection.rs"]
+mod list_projection;
 #[path = "canonical_vm_service.rs"]
 mod vm_service;
 #[path = "canonical_par_map.rs"]
@@ -7928,6 +7930,19 @@ impl FunctionLowerer<'_> {
         affine_result: bool,
         declared: Option<&Type>,
     ) -> Result<Option<ValueId>, CanonicalLoweringError> {
+        self.lower_match_with_list_projection(scrutinee, arms, with_value, tail, affine_result, declared, None)
+    }
+
+    fn lower_match_with_list_projection(
+        &mut self,
+        scrutinee: &Expr,
+        arms: &[witchy_syntax::ast::MatchArm],
+        with_value: bool,
+        tail: Option<Vec<ProperTailPathStep>>,
+        affine_result: bool,
+        declared: Option<&Type>,
+        project_list: Option<&abort::Site>,
+    ) -> Result<Option<ValueId>, CanonicalLoweringError> {
         if arms.is_empty() {
             return Err(CanonicalLoweringError::UnsupportedExpression("empty match"));
         }
@@ -8065,7 +8080,11 @@ impl FunctionLowerer<'_> {
                 continue;
             }
             let value = if with_value {
-                let value = self.lower_flow_value_expr_for_storage(&arm.body, declared)?;
+                let value = if let Some(site) = project_list {
+                    self.lower_singleton_projection_arm(&arm.body, declared, site)?
+                } else {
+                    self.lower_flow_value_expr_for_storage(&arm.body, declared)?
+                };
                 value.map(|value| self.detach_bound_result(value, affine_result)).transpose()?
             } else {
                 self.lower_effect_expr(&arm.body)?;
@@ -16786,6 +16805,9 @@ impl FunctionLowerer<'_> {
     }
 
     fn lower_index(&mut self, expression: &Expr, base: &Expr, index: &Expr) -> Result<ValueId, CanonicalLoweringError> {
+        if let Some(value) = self.lower_match_list_projection(expression, base, index)? {
+            return Ok(value);
+        }
         let site = self.diagnostic_site(expression)?;
         let logical_type = self.expression_type(base)?;
         if matches!(StoragePlan::classify(&logical_type, self.definitions, |_| Some(0)),

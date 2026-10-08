@@ -204,6 +204,13 @@ impl FunctionLowerer<'_> {
             else_target: fail, else_arguments: Vec::new(),
         })?;
         self.current = fail;
+        self.abort_index_at(index, length, site, import)?;
+        self.current = proceed;
+        self.restore_snapshot(facts);
+        Ok(())
+    }
+
+    pub(super) fn abort_index_at(&mut self, index: ValueId, length: ValueId, site: &Site, import: witchy_wir::canonical_safewir::ImportId) -> Result<(), CanonicalLoweringError> {
         let function = self.lower_string_literal(&site.function)?;
         let start = self.push_const_size(0)?;
         let function_length = self.string_lengths[&function];
@@ -219,8 +226,6 @@ impl FunctionLowerer<'_> {
             ],
         });
         self.finish_current(Terminator::Trap)?;
-        self.current = proceed;
-        self.restore_snapshot(facts);
         Ok(())
     }
 

@@ -169,6 +169,26 @@ fn run_callback(source_text: &str) -> Result<i64, String> {
 
 #[cfg(feature = "native-test-runtime")]
 #[test]
+fn singleton_match_projection_preserves_snapshots_and_bounds_diagnostics() {
+    use witchy_syntax::opt::OptSet;
+    let _reset = ResetCallbackOptimization;
+    let scalar = "fn select(flag: Bool) -> Int:\n    (match flag:\n        true -> [42]\n        false -> []\n    )[0]\n\nfn main() -> Int:\n    select(true)\n";
+    let snapshot = "fn select(flag: Bool, value: List(Int)) -> List(Int):\n    (match flag:\n        true -> [value]\n        false -> []\n    )[0]\n\nfn main() -> Int:\n    let original = [1, 2]\n    var selected = select(true, original)\n    selected.set_at(0, 9)\n    original.at(0)\n";
+    let callable = "fn select(flag: Bool) -> fn(Int) -> Int:\n    (match flag:\n        true -> [fn(n: Int): n + 1]\n        false -> []\n    )[0]\n\nfn main() -> Int:\n    let selected = select(true)\n    selected(7)\n";
+    let failed = scalar.replace("select(true)", "select(false)");
+    let expected = witchy_syntax::diag::runtime_error("main.select", 2,
+        &witchy_syntax::diag::DiagTemplate::ListIndexOob.render(0, 0, ""));
+    for optimization in [OptSet::none(), OptSet::all()] {
+        witchy_syntax::opt::set_for_tests(Some(optimization));
+        assert_eq!(run_callback_result(scalar), 42);
+        assert_eq!(run_callback_result(snapshot), 1);
+        assert_eq!(run_callback_result(callable), 8);
+        assert_eq!(run_callback(&failed).expect_err("empty projection traps"), expected);
+    }
+}
+
+#[cfg(feature = "native-test-runtime")]
+#[test]
 fn scalar_callback_forwarder_preserves_traps() {
     use witchy_syntax::opt::{Opt, OptSet};
     let _reset = ResetCallbackOptimization;

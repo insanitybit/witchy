@@ -268,3 +268,5 @@ mod capture_free_closure;
 mod unique_fields;
 #[path = "codegen/byte_overwrite.rs"]
 mod byte_overwrite;
+#[path = "codegen/list_projection.rs"]
+mod list_projection;
