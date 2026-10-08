@@ -5,7 +5,7 @@
     "fields": 2,
     "shape": "closed control",
     "validation": "independent checksum; original plain-fold loop shape",
-    "timing": "inclusive channel creation, task construction, scheduling, and fold completion"
+    "timing": "inclusive setup through consumer fold completion; consumer reads end Clock before checksum formatting/output"
   },
   {
     "name": "packet3",
@@ -13,7 +13,7 @@
     "fields": 3,
     "shape": "wider nominal payload",
     "validation": "independent checksum; original plain-fold loop shape",
-    "timing": "inclusive channel creation, task construction, scheduling, and fold completion"
+    "timing": "inclusive setup through consumer fold completion; consumer reads end Clock before checksum formatting/output"
   },
   {
     "name": "packet8",
@@ -21,7 +21,7 @@
     "fields": 8,
     "shape": "wider nominal payload",
     "validation": "independent checksum; original plain-fold loop shape",
-    "timing": "inclusive channel creation, task construction, scheduling, and fold completion"
+    "timing": "inclusive setup through consumer fold completion; consumer reads end Clock before checksum formatting/output"
   },
   {
     "name": "helper_packet3",
@@ -29,21 +29,21 @@
     "fields": 3,
     "shape": "helper-mediated send",
     "validation": "independent checksum; original plain-fold loop shape",
-    "timing": "inclusive channel creation, task construction, scheduling, and fold completion"
+    "timing": "inclusive setup through consumer fold completion; consumer reads end Clock before checksum formatting/output"
   },
   {
     "name": "packet_bool",
     "kind": "scalar",
     "shape": "mixed Int/Bool nominal payload",
     "validation": "checksum plus FIFO and payload",
-    "timing": "inclusive channel creation, task construction, scheduling, and fold completion"
+    "timing": "inclusive setup through consumer fold completion; consumer reads end Clock before checksum formatting/output"
   },
   {
     "name": "packet_string",
     "kind": "string",
     "shape": "allocated String payload",
     "validation": "checksum plus FIFO and payload",
-    "timing": "inclusive channel creation, task construction, scheduling, and fold completion"
+    "timing": "inclusive setup through consumer fold completion; consumer reads end Clock before checksum formatting/output"
   },
   {
     "name": "dynamic_4x1",
@@ -71,5 +71,12 @@
     "consumers": 4,
     "validation": "checksum plus per-producer FIFO",
     "timing": "separate recipe/channel preparation; kernel starts at Scope activation and ends after result collection"
+  },
+  {
+    "name": "cancel_blocked",
+    "kind": "cancellation",
+    "shape": "cancel a String producer parked behind full queue; retain seeded FIFO",
+    "validation": "winner and seeded payload; checksum counts successful cancellation rounds",
+    "timing": "inclusive channel setup, blocked worker activation, cancellation, completion, and seeded receive"
   }
 ]

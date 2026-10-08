@@ -30,12 +30,15 @@ def main():
     for name in ["baseline", "candidate", "baseline-std", "candidate-std", "output"]:
         parser.add_argument("--" + name, type=Path, required=False)
     parser.add_argument("--generate-only", action="store_true")
+    parser.add_argument("--go-procs", type=int, default=os.cpu_count(), help="pin GOMAXPROCS for every Go run")
     parser.add_argument("--messages", type=int, default=1024)
     parser.add_argument("--runs", type=int, default=12)
     parser.add_argument("--go", type=Path, help="Go compiler for matched native async measurements")
     matrix = json.loads((ROOT / "benchmarks/async_general/matrix.json").read_text())
     parser.add_argument("--workload", action="append", choices=[row["name"] for row in matrix])
     args = parser.parse_args()
+    if args.go_procs is None or args.go_procs < 1:
+        parser.error("--go-procs must be positive")
     if args.output is None:
         parser.error("--output is required")
     if args.messages <= 0 or args.messages % 16:
@@ -56,6 +59,8 @@ def main():
         if row["kind"] == "packet":
             fields = row["fields"]
             checksum = fields * n * (n - 1) // 2 + fields * (fields - 1) // 2 * n
+        elif row["kind"] == "cancellation":
+            checksum = n
         elif row["kind"] == "string":
             checksum = n * (n - 1) // 2 + 8 * n + sum(len(str(i)) for i in range(n))
         else:
@@ -81,10 +86,12 @@ def main():
     environment = os.environ.copy()
     for variable in ["WIRDIAG", "WITCHY_CANONICAL_LOWER_DEBUG", "WITCHY_PROFILE", "WITCHY_PERF_MAP", "WITCHY_DEBUG_INFO", "WITCHY_POOL", "WITCHY_OWNER_METRICS"]:
         environment.pop(variable, None)
+    environment.pop("GOMAXPROCS", None)
+    environment["GOMAXPROCS"] = str(args.go_procs)
     environment["WITCHY_OPT"] = "all"
     environments = {}
     metadata = {"platform": platform.platform(), "machine": platform.machine(), "runs": args.runs,
-        "warmups": 2, "optimization": "all", "cpu_count": os.cpu_count(), "load_average_start": os.getloadavg(), "native_cache": "cold per process; only the runner-owned Wasmtime cache is cleared", "std_loading": "release binaries embed std; snapshots record build provenance", "harness_sha256": digest(Path(__file__)), "variants": {}, "messages": args.messages, "workload_contracts": selected, "coverage": {"cancellation": "pending dedicated matched CPU row", "timers": "unavailable: canonical Clock links now/now_monotonic only; no admitted timer wait operation", "real_async_io": "deferred: existing File/Dir callbacks are synchronous func_wrap operations, not suspendable I/O"}}
+        "warmups": 2, "go_procs": args.go_procs, "optimization": "all", "cpu_count": os.cpu_count(), "load_average_start": os.getloadavg(), "native_cache": "cold per process; only the runner-owned Wasmtime cache is cleared", "std_loading": "release binaries embed std; snapshots record build provenance", "harness_sha256": digest(Path(__file__)), "variants": {}, "messages": args.messages, "workload_contracts": selected, "coverage": {"cancellation": "cancel_blocked: cooperative blocked String producer; Go explicit cancel and join", "timers": "unavailable: canonical Clock links now/now_monotonic only; no admitted timer wait operation", "real_async_io": "deferred: existing File/Dir callbacks are synchronous func_wrap operations, not suspendable I/O"}}
     for variant, (binary, std) in variants.items():
         cache = output / (variant + "-verdict-cache")
         cache_home = output / (variant + "-cache-home")
@@ -121,7 +128,7 @@ def main():
                 kernel = re.findall(r"^bench_ns=(\d+)$", run.stdout, re.M)
                 setup = re.findall(r"^setup_ns=(\d+)$", run.stdout, re.M)
                 result = re.sub(r"^(?:bench_ns|setup_ns)=\d+\n?", "", run.stdout, flags=re.M).strip()
-                if run.returncode or result != expected or len(kernel) != 1 or len(setup) > 1 or (label.startswith("dynamic_") and len(setup) != 1):
+                if run.returncode or result != expected or len(kernel) != 1 or len(setup) > 1 or (label.startswith("dynamic_") and len(setup) != 1) or not run.stdout.strip().splitlines()[-1].startswith("bench_ns="):
                     raise RuntimeError(f"{label}/{variant}: invalid result: {run.stdout!r}; {run.stderr[-1500:]}")
                 rss = re.search(r"^\s*(\d+)\s+maximum resident set size$", run.stderr, re.M)
                 sample = {"workload": label, "variant": variant, "iteration": iteration, "kernel_ns": int(kernel[0]),

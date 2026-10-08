@@ -9,16 +9,16 @@ async fn producer(tx: Sender(Packet), n: Int):
         chan.send(tx, Packet(i, i + 1)).await
         i = i + 1
 
-async fn consume(console: Console, rx: Receiver(Packet)):
+async fn consume(console: Console, rx: Receiver(Packet), clock: Clock, bench_t0: Int):
     var sum = 0
     for await packet in rx:
         match packet:
             Packet(left, right) -> sum = sum + left + right
+    let bench_t1 = clock.now_monotonic()
     console.print("${sum}")
+    console.print("bench_ns=${bench_t1 - bench_t0}")
 
 async fn main(console: Console, clock: Clock):
     let bench_t0 = clock.now_monotonic()
     let (tx, rx) = chan.channel(64).await
-    chan.scope([producer(tx, __MESSAGES__), consume(console, rx)]).await
-    let bench_t1 = clock.now_monotonic()
-    console.print("bench_ns=${bench_t1 - bench_t0}")
+    chan.scope([producer(tx, __MESSAGES__), consume(console, rx, clock, bench_t0)]).await
