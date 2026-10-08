@@ -256,7 +256,7 @@ retries = 1
 priority = 85
 
 [[profile.default.overrides]]
-filter = 'test(/^rfc0152_semantic_matrix::rfc0152_phase0_cancelled_string_matrix$|^rfc0152_semantic_matrix::rfc0152_phase0_large_record_payload_matrix$|^rfc0152_semantic_matrix::rfc0152_phase0_quiescence_and_blocked_wake_matrix$|^rfc0152_semantic_matrix::rfc0152_phase0_ready_select4_matrix$|^rfc0152_async_region_formation::rfc0152_region_boundaries_preserve_effect_order_and_backend_parity$|^rfc0129_async_lowering::rfc0129_acceptance_row_1_async_lowering_preserves_source_contracts_on_both_backends$|^rfc0129_schedule_parity::rfc0129_acceptance_row_3_deterministic_schedule_backends_agree$|^rfc0129_cooperative_worker_boundary::rfc0129_acceptance_row_6_/)'
+filter = 'test(/^rfc0152_semantic_matrix::rfc0152_phase0_cancelled_string_matrix$|^rfc0152_semantic_matrix::rfc0152_phase0_large_record_payload_matrix$|^rfc0152_semantic_matrix::rfc0152_phase0_quiescence_and_blocked_wake_matrix$|^rfc0152_semantic_matrix::rfc0152_phase0_ready_select4_matrix$|^rfc0152_async_region_formation::rfc0152_region_boundaries_preserve_effect_order_and_backend_parity$|^rfc0129_async_lowering::rfc0129_acceptance_row_1_async_lowering_preserves_source_contracts_on_(both_backends|admitted_wasm)$|^rfc0129_schedule_parity::rfc0129_acceptance_row_3_deterministic_schedule_backends_agree$|^rfc0129_cooperative_worker_boundary::rfc0129_acceptance_row_6_/)'
 test-group = 'perf-serial'
 slow-timeout = { period = "600s", terminate-after = 2 }
 retries = 1
