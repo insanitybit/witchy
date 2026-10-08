@@ -130,6 +130,9 @@ pub(super) fn candidate_signature_matches_source_inner(
             (super::super::ValueType::Gc(_), _) => false,
             (super::super::ValueType::Ref(_), witchy_syntax::ast::Convention::Own) => matches!(actual.ownership, super::super::ParameterOwnership::Shared),
             (super::super::ValueType::Ref(_), witchy_syntax::ast::Convention::Var)
+                if witchy_canonical_source::unique_writeback::scalar_list(source) => matches!(actual.ownership,
+                    super::super::ParameterOwnership::WriteBack | super::super::ParameterOwnership::UniqueWriteBack),
+            (super::super::ValueType::Ref(_), witchy_syntax::ast::Convention::Var)
                 if affine_owner || matches!(source, witchy_syntax::ast::Type::Qualified(witchy_syntax::ast::TypeQual::Unique, _)) =>
                     actual.ownership == super::super::ParameterOwnership::UniqueWriteBack,
             (_, witchy_syntax::ast::Convention::Var) => actual.ownership == super::super::ParameterOwnership::WriteBack,

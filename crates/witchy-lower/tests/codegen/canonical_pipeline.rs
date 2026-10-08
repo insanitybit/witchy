@@ -29,6 +29,76 @@ fn checked(source: &str) -> CheckedModule {
     .expect("checked source")
 }
 
+const UNIQUE_WRITEBACK_LOOP: &str = "fn update(var values: List(Int)):\n    var i = 0\n    while i < 3:\n        values[0] = values[0] + 1\n        i = i + 1\n\nfn main() -> Int:\n    var values = [1, 2]\n    update(values)\n    values[0]\n";
+
+#[test]
+fn plain_scalar_list_writeback_keeps_its_checked_unique_entry() {
+    use witchy_wir::canonical_safewir::{CallArgument, Operation, Ownership, ParameterOwnership, check_initial_with_witness};
+    let input = checked(UNIQUE_WRITEBACK_LOOP);
+    let candidate = witchy_lower::canonical_pipeline_checks::lowered_candidate(&input);
+    let source = input.canonical_source().expect("source");
+    let id = candidate.source_abi_bindings().entries().iter().find_map(|binding| {
+        let declaration = source.view().closed_callable_declaration(binding.source_declaration_ordinal())?;
+        (declaration.name == "main.update").then_some(binding.function())
+    }).expect("update binding");
+    let function = candidate.functions().iter().find(|function| function.id == id).expect("update");
+    let signature = candidate.signatures().iter().find(|signature| signature.id == function.signature).expect("signature");
+    assert_eq!(signature.contract.parameters[0].ownership, ParameterOwnership::UniqueWriteBack);
+    assert_eq!(function.blocks[function.entry.get() as usize].parameters[0].ownership, Some(Ownership::Unique));
+    assert!(!function.blocks.iter().flat_map(|block| &block.operations).any(|operation|
+        matches!(operation, Operation::Alloc { .. } | Operation::CloneRange { .. })), "a unique scalar-list update copied its input");
+    check_initial_with_witness(candidate.clone(), &source.view()).expect("unique writeback admits");
+    let altered = candidate.clone().transform_functions(|functions| {
+        let function = functions.iter_mut().find(|function| function.id == id).expect("update");
+        function.blocks[function.entry.get() as usize].parameters[0].ownership = Some(Ownership::Shared);
+    });
+    assert!(check_initial_with_witness(altered, &source.view()).is_err(), "a shared entry cannot claim the unique physical ABI");
+    let mut changed = false;
+    let altered = candidate.transform_functions(|functions| {
+        for function in functions {
+            for block in &mut function.blocks {
+                let Some(index) = block.operations.iter().position(|operation|
+                    matches!(operation, Operation::Call { callee, .. } if *callee == id)) else { continue; };
+                let Operation::Call { arguments, .. } = &block.operations[index] else { unreachable!() };
+                let CallArgument::Move(value) = arguments[0] else { panic!("unique input must move") };
+                let shared = witchy_wir::canonical_safewir::ValueId::new(
+                    function.value_types.keys().max().expect("values").get().checked_add(1).expect("fresh value"));
+                function.value_types.insert(shared, function.value_types[&value]);
+                block.operations.insert(index, Operation::CloneRef { destination: shared, source: value });
+                let Operation::Call { arguments, .. } = &mut block.operations[index + 1] else { unreachable!() };
+                arguments[0] = CallArgument::Move(shared);
+                changed = true;
+            }
+        }
+    });
+    assert!(changed, "the mutation must replace a real unique call argument");
+    assert!(check_initial_with_witness(altered, &source.view()).is_err(), "a shared caller token cannot acquire unique argument authority");
+}
+
+#[cfg(feature = "native-test-runtime")]
+#[test]
+fn plain_scalar_list_writeback_preserves_snapshots_and_indirect_calls() {
+    use witchy_syntax::opt::{Opt, OptSet};
+    let _reset = ResetCallbackOptimization;
+    for options in [OptSet::none(), OptSet::none().with(Opt::ClosureElide)] {
+        witchy_syntax::opt::set_for_tests(Some(options));
+        assert_eq!(run_callback_with_heap_audit(UNIQUE_WRITEBACK_LOOP, true).expect("writeback result"), 4);
+        for (source, expected) in [
+            ("fn update(var values: List(Int)):\n    values[0] = 9\n\nfn main() -> Int:\n    var values = [1]\n    let before = values\n    update(values)\n    before[0] * 10 + values[0]\n", 19),
+            ("fn update(var values: List(Int)) -> Int:\n    let before = values\n    values[0] = 9\n    before[0]\n\nfn main() -> Int:\n    var values = [1]\n    let before = update(values)\n    before * 10 + values[0]\n", 19),
+            ("fn update(var values: List(Int)):\n    values[0] = 9\n\nfn apply(f: fn(var List(Int)) -> (), var values: List(Int)):\n    f(values)\n\nfn main() -> Int:\n    var values = [1]\n    let before = values\n    apply(update, values)\n    before[0] * 10 + values[0]\n", 19),
+            ("fn replace(var values: List(Int), let other: List(Int)):\n    values = other\n\nfn main() -> Int:\n    var values = [1]\n    let other = [7]\n    replace(values, other)\n    values[0] = 9\n    other[0] * 10 + values[0]\n", 79),
+            ("fn replace(var values: List(Int), other: List(Int)):\n    values = other\n\nfn main() -> Int:\n    var values = [1]\n    let other = [7]\n    replace(values, other)\n    values[0] = 9\n    other[0] * 10 + values[0]\n", 79),
+            ("type Bag:\n    values: List(Int)\n\nfn update(var values: List(Int)):\n    values[0] = 9\n\nfn main() -> Int:\n    var bag = Bag([1])\n    let before = bag\n    update(bag.values)\n    before.values[0] * 10 + bag.values[0]\n", 19),
+            ("fn digit(var n: Int, value: Int) -> Int:\n    n = n * 10 + value\n    value\n\nfn update(var values: List(Int), first: Int, second: Int):\n    values[0] = first * 10 + second\n\nfn main() -> Int:\n    var values = [0]\n    var order = 0\n    update(values, digit(order, 1), digit(order, 2))\n    order * 100 + values[0]\n", 1212),
+            ("fn update(var values: List(Bool)):\n    values[0] = false\n\nfn main() -> Int:\n    var values = [true]\n    let before = values\n    update(values)\n    if before[0] && !values[0]: 1 else: 0\n", 1),
+            ("fn update(var values: List(Float)):\n    values[0] = 2.5\n\nfn main() -> Int:\n    var values = [1.5]\n    let before = values\n    update(values)\n    if before[0] == 1.5 && values[0] == 2.5: 1 else: 0\n", 1),
+        ] {
+            assert_eq!(run_callback_with_heap_audit(source, true).expect("writeback result"), expected);
+        }
+    }
+}
+
 #[test]
 fn opaque_sum_match_authenticates_tag_once_across_alternatives() {
     use witchy_wir::canonical_safewir::{Operation, closure_owner_contract::OwnerOperation};
@@ -149,6 +219,11 @@ fn run_callback_result(source_text: &str) -> i64 {
 
 #[cfg(feature = "native-test-runtime")]
 pub(super) fn run_callback(source_text: &str) -> Result<i64, String> {
+    run_callback_with_heap_audit(source_text, false)
+}
+
+#[cfg(feature = "native-test-runtime")]
+fn run_callback_with_heap_audit(source_text: &str, audit: bool) -> Result<i64, String> {
     let checked = checked(source_text);
     let candidate = witchy_lower::canonical_pipeline_checks::lowered_candidate(&checked);
     let source = checked.canonical_source().expect("source");
@@ -163,8 +238,29 @@ pub(super) fn run_callback(source_text: &str) -> Result<i64, String> {
     let module = wasmtime::Module::new(&engine, artifact.wasm()).expect("compile admitted callback");
     let mut store = wasmtime::Store::new(&engine, ());
     let instance = diagnostic_linker(&engine).instantiate(&mut store, &module).expect("instantiate callback");
-    instance.get_typed_func::<(), i64>(&mut store, &format!("f{}", main.get()))
-        .expect("callback main export").call(&mut store, ()).map_err(|error| error.root_cause().to_string())
+    let result = instance.get_typed_func::<(), i64>(&mut store, &format!("f{}", main.get()))
+        .expect("callback main export").call(&mut store, ()).map_err(|error| error.root_cause().to_string())?;
+    if audit {
+        let mut global = |name| instance.get_global(&mut store, name).expect("heap global")
+            .get(&mut store).i32().expect("heap address") as usize;
+        let (top, mut free, mut cursor) = (global(witchy_wir::HEAP_TOP_EXPORT),
+            global(witchy_wir::HEAP_FREE_EXPORT), global(witchy_wir::HEAP_BASE_EXPORT));
+        let memory = instance.get_memory(&mut store, "memory").expect("memory");
+        let word = |at: usize| u32::from_le_bytes(memory.data(&store)[at..at + 4].try_into().expect("heap word")) as usize;
+        let mut freed = std::collections::BTreeSet::new();
+        while free != 0 {
+            assert!(freed.insert(free), "free-list cycle or double release");
+            free = word(free);
+        }
+        while cursor + 8 <= top {
+            let size = word(cursor + 4);
+            assert!(size > 0, "allocation must have a nonempty header");
+            assert!(freed.contains(&(cursor + 8)), "allocation survived writeback completion");
+            cursor += 8 + size;
+        }
+        assert_eq!(cursor, top, "the audit visits the complete allocated heap");
+    }
+    Ok(result)
 }
 
 #[cfg(feature = "native-test-runtime")]

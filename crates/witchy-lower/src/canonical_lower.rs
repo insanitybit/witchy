@@ -71,6 +71,8 @@ mod net;
 mod list_update;
 #[path = "canonical_writable.rs"]
 mod writable;
+#[path = "canonical_unique_writeback.rs"]
+mod unique_writeback;
 #[path = "canonical_dict_hash.rs"]
 mod dict_hash;
 #[path = "canonical_dict_table.rs"]
@@ -544,7 +546,7 @@ pub(crate) fn lower_typed_module_with_borrowed_views(
         .iter()
         .map(|ty| {
             let id = function_types[ty];
-            signature_from_type(id, ty, &layouts, &layout_catalog, &closure_layouts, &definitions, borrow_views).map_err(|error| {
+            signature_from_type(id, ty, &layouts, &layout_catalog, &closure_layouts, &definitions, borrow_views, false).map_err(|error| {
                 if std::env::var_os("WITCHY_CANONICAL_LOWER_DEBUG").is_some() {
                     eprintln!("canonical callable signature refused for `{ty:?}`: {error}");
                 }
@@ -684,6 +686,10 @@ pub(crate) fn lower_typed_module_with_borrowed_views(
             let Type::Fn(parameter_types, result_type, _, _) = fn_type.unqualified() else { return Ok(()) };
             let key = crate::canonical_layouts::canonical_closure_key(&fn_type, &definitions);
             let Some(&signature_id) = closure_signatures.get(&key) else { return Ok(()) };
+            let declared = lambda_declared_callable_type(expression, typed.table().type_of(expression))
+                .unwrap_or_else(|| fn_type.clone());
+            // A registered body lets contract derivation verify the unique replacement lane.
+            unique_writeback::specialize(&mut signatures[signature_id.get() as usize], &declared, 1);
             if let Some(carrier) = access_facts
                 .callable_at(typed.module(), expression)
                 .and_then(callable_reference_carrier)
@@ -2365,7 +2371,7 @@ fn checked_signature(
         return Err(CanonicalLoweringError::InvalidCheckedFunctionType(function.name.clone()));
     }
 
-    let checked_signature = signature_from_type(id, &checked, layout_bundle, layouts, closure_layouts, definitions, borrow_views)?;
+    let checked_signature = signature_from_type(id, &checked, layout_bundle, layouts, closure_layouts, definitions, borrow_views, true)?;
     let generic_shared_alias = exact_generic_shared_relay_alias(source, function, &checked)?;
     let declared_shared_alias = if generic_shared_relay_template_candidate(source, &function.name) {
         // The name is not evidence: a monomorphized forwarding carrier is
@@ -2882,6 +2888,7 @@ fn signature_from_type(
     closure_layouts: &ClosureValueLayouts,
     definitions: &BTreeMap<String, TypeDef>,
     borrow_views: bool,
+    specialize_writebacks: bool,
 ) -> Result<FunctionSignature, CanonicalLoweringError> {
     let Type::Fn(parameters, result, conventions, _) = checked.unqualified() else {
         return Err(CanonicalLoweringError::InvalidCheckedFunctionType(format!("{checked:?}")));
@@ -3078,12 +3085,14 @@ fn signature_from_type(
             value_type => ResultContract::Value(value_type),
         });
     }
-    Ok(FunctionSignature {
+    let mut signature = FunctionSignature {
         id,
         parameters: value_parameters,
         results,
         contract: CallableContract { parameters: contract_parameters, results: result_contracts, parameter_effects },
-    })
+    };
+    if specialize_writebacks { unique_writeback::specialize(&mut signature, checked, 0); }
+    Ok(signature)
 }
 
 /// A type-only prefilter for the bounded projected returned carrier. It merely
@@ -9768,6 +9777,7 @@ impl FunctionLowerer<'_> {
                 continue;
             }
             let Some(&value) = outer.get(name) else { continue };
+            if self.sole_token(value) { continue; }
             if self.parameter_names.get(&value) != Some(name) {
                 continue;
             }
@@ -10874,7 +10884,7 @@ impl FunctionLowerer<'_> {
                             }) if value == current)
                 })))
                 .filter(|parameter| !transferred.contains(parameter))
-                .collect::<Vec<_>>();
+                .collect::<BTreeSet<_>>();
             for object in drops {
                 self.push_operation(Operation::DropRef { object });
             }

@@ -186,8 +186,9 @@ impl FunctionLowerer<'_> {
     /// repairs a shared final value (`x = shared_result(x)`) with one copy.
     pub(super) fn unique_write_back_token(&mut self, name: &str, value: ValueId) -> Result<ValueId, CanonicalLoweringError> {
         let Some(ty) = self.write_back_parameter_types.get(name) else { return Ok(value) };
-        if self.opt_mode
-            || !matches!(ty, Type::Qualified(TypeQual::Unique, _))
+        let specialized = witchy_canonical_source::unique_writeback::scalar_list(ty);
+        if (self.opt_mode && !specialized)
+            || !(matches!(ty, Type::Qualified(TypeQual::Unique, _)) || specialized)
             || !matches!(self.values[&value], ValueType::Ref(_))
             || self.sole_token(value)
         {

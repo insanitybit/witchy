@@ -30,6 +30,7 @@ pub mod scalar_region;
 pub mod storage;
 pub mod structural_identity;
 pub mod specialization;
+pub mod unique_writeback;
 
 /// The structural `()` spelling is canonical; legacy names remain accepted
 /// while old source is migrated.
