@@ -229,7 +229,7 @@ pub mod self_checks {
         let mut module = WasmModule::new();
         module.section(&types).section(&imports).section(&functions).section(&memory).section(&globals).section(&exports).section(&code).section(&data);
         let mut config = wasmtime::Config::new();
-        config.wasm_function_references(true).wasm_gc(true).wasm_memory64(true);
+        config.wasm_function_references(true).wasm_gc(true).wasm_memory64(true).memory_may_move(false);
         let engine = wasmtime::Engine::new(&config)?;
         let module = wasmtime::Module::new(&engine, module.finish())
             .unwrap_or_else(|error| panic!("opaque owner kernel fixture module: {error:#}"));

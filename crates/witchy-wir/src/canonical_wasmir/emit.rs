@@ -697,8 +697,9 @@ pub(super) fn emit_alloc(
 ///
 /// With `slow = Some(helper)`, a bump that would not end strictly inside
 /// current memory calls the outlined helper instead of growing (or trapping
-/// at 4 GiB) inline. The free list is empty at that point, so the helper's
-/// own search finds nothing and it takes the same bump. Growth is rare, and
+/// at 4 GiB) inline. The search reaches that point only after finding no block
+/// of exactly `s[0]` bytes, and it writes nothing before a match, so the
+/// helper's own search misses the same way and takes the same bump. Growth is rare, and
 /// its code dominated each allocation site.
 pub(super) fn emit_alloc_core(body: &mut wasm_encoder::Function, s: [u32; 4], slow: Option<u32>) {
     if slow.is_some() {

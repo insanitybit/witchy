@@ -482,7 +482,7 @@ pub mod self_checks {
         let bytes = module.finish();
         wasmparser::Validator::new().validate_all(&bytes).expect("structurally valid destructor");
         let mut config = wasmtime::Config::new();
-        config.max_wasm_stack(64 * 1024).wasm_memory64(true);
+        config.max_wasm_stack(64 * 1024).wasm_memory64(true).memory_may_move(false);
         let engine = wasmtime::Engine::new(&config).unwrap();
         let module = wasmtime::Module::new(&engine, bytes).unwrap();
         let mut store = wasmtime::Store::new(&engine, ());
