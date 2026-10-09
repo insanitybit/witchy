@@ -16,8 +16,10 @@ pub(super) fn static_data_plan(
     let mut offset = STATIC_DATA_BASE;
     let mut plan = Vec::with_capacity(ordered.len());
     for segment in ordered {
-        // A static object's reference names its first byte, so under a scaled
-        // encoding the object starts on a unit boundary.
+        // Under a scaled encoding a static object starts on a unit boundary:
+        // its reference names the unit eight bytes before it (where a heap
+        // object's RC header would be), and STATIC_DATA_BASE keeps that
+        // reference at 1 or more, clear of the null reference 0.
         offset = refs.round_bytes(offset).ok_or(LoweringError::StaticDataAddressOverflow)?;
         let bytes = u32::try_from(segment.bytes().len()).map_err(|_| LoweringError::StaticDataAddressOverflow)?;
         let end = offset.checked_add(bytes).ok_or(LoweringError::StaticDataAddressOverflow)?;

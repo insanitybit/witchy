@@ -1845,7 +1845,7 @@ impl Vm {
         }
         // Objects are laid out back to back: [rc][size][size bytes].
         let mut leaks = 0usize;
-        let (mut cursor, top) = (refs.byte(base), refs.byte(top));
+        let (mut cursor, top) = (refs.unit_byte(base), refs.unit_byte(top));
         while cursor + 8 <= top {
             let size = word(cursor + 4)?;
             let object = cursor + 8;
@@ -2127,7 +2127,7 @@ impl Vm {
         let top = read_global(witchy_wir::HEAP_TOP_EXPORT)?;
         let base = read_global(witchy_wir::HEAP_BASE_EXPORT)?;
         let refs = launch_arguments::Refs::for_heap(self.store.data().module.heap_mode());
-        Some(refs.byte(top) as i64 - refs.byte(base) as i64)
+        Some(refs.unit_byte(top) as i64 - refs.unit_byte(base) as i64)
     }
 
     /// The current capacity in bytes of Wasmtime's GC backing heap.

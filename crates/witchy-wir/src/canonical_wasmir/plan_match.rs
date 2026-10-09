@@ -1144,9 +1144,9 @@ pub(super) fn expected_metadata_prefix(
     let mut memory = MemorySection::new();
     memory.memory(MemoryType { minimum: initial_memory_pages(target.heap_start), maximum: Some(max_memory_pages(source.launch_contract_payload())), memory64: true, shared: false, page_size_log2: None });
     let mut globals = GlobalSection::new();
-    globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(refs.reference(target.heap_start) as i32));
+    globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(refs.unit_of(target.heap_start) as i32));
     globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(0));
-    globals.global(GlobalType { val_type: ValType::I32, mutable: false, shared: false }, &ConstExpr::i32_const(refs.reference(target.heap_start) as i32));
+    globals.global(GlobalType { val_type: ValType::I32, mutable: false, shared: false }, &ConstExpr::i32_const(refs.unit_of(target.heap_start) as i32));
     memory_op_counters::declare_globals(&mut globals);
     let mut module = WasmModule::new();
     module.section(&types).section(&imports).section(&functions);

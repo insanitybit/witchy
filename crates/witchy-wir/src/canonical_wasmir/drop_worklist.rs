@@ -111,6 +111,20 @@ fn at(body: &mut WasmFunctionEncoder, refs: RefEncoding, slot: u32, offset: i32)
     }
 }
 
+/// The address `offset` bytes past the allocator unit in `slot` (a frame,
+/// the stack's end or base).
+fn unit_at(body: &mut WasmFunctionEncoder, refs: RefEncoding, slot: u32, offset: i32) {
+    body.instruction(&I::LocalGet(slot));
+    if offset == 0 {
+        refs.unit(body);
+    } else {
+        refs.unit_base(body);
+        body.instruction(&I::I32Const(offset));
+        refs.add(body);
+        refs.finish(body);
+    }
+}
+
 /// As `at`, adding the offset even when it is zero.
 fn at_const(body: &mut WasmFunctionEncoder, refs: RefEncoding, slot: u32, offset: i32) {
     body.instruction(&I::LocalGet(slot));
@@ -145,7 +159,7 @@ fn reserve(body: &mut WasmFunctionEncoder, refs: RefEncoding, s: &[u32]) {
         I::If(BlockType::Empty), I::Unreachable, I::End,
         I::LocalGet(s[TOP]), I::I32Const(frame), I::I32Add, I::LocalSet(s[END]),
     ]);
-    at(body, refs, s[END], 0);
+    unit_at(body, refs, s[END], 0);
     code(body, [I::I64Const(65535), I::I64Add,
         I::I64Const(65536), I::I64DivU, I::I32WrapI64, I::LocalSet(s[PAGES]),
         I::LocalGet(s[PAGES]), I::I64ExtendI32U, I::MemorySize(0), I::I64GtU, I::If(BlockType::Empty),
@@ -157,11 +171,11 @@ fn reserve(body: &mut WasmFunctionEncoder, refs: RefEncoding, s: &[u32]) {
 /// Publish OBJECT/TAG/INDEX into space already reserved by `reserve`. This is
 /// deliberately non-trapping so ownership transfer is failure-atomic.
 fn commit_push(body: &mut WasmFunctionEncoder, refs: RefEncoding, s: &[u32]) {
-    at(body, refs, s[TOP], 0);
+    unit_at(body, refs, s[TOP], 0);
     code(body, [I::LocalGet(s[OBJECT]), store()]);
-    at(body, refs, s[TOP], 4);
+    unit_at(body, refs, s[TOP], 4);
     code(body, [I::LocalGet(s[TAG]), store()]);
-    at(body, refs, s[TOP], 8);
+    unit_at(body, refs, s[TOP], 8);
     code(body, [I::LocalGet(s[INDEX]), store(),
         I::LocalGet(s[END]), I::LocalSet(s[TOP]),
         I::LocalGet(s[TOP]), I::LocalGet(s[HIGH]), I::I32GtU, I::If(BlockType::Empty),
@@ -195,7 +209,7 @@ fn decrement(body: &mut WasmFunctionEncoder, refs: RefEncoding, s: &[u32]) {
 
 /// The frame's resume index: the parent continues at its next child.
 fn advance(body: &mut WasmFunctionEncoder, refs: RefEncoding, s: &[u32]) {
-    at(body, refs, s[FRAME], 8);
+    unit_at(body, refs, s[FRAME], 8);
     code(body, [I::LocalGet(s[INDEX]), I::I32Const(1), I::I32Add, store()]);
 }
 
@@ -224,11 +238,11 @@ pub(super) fn emit(body: &mut WasmFunctionEncoder, local: &LocalLayout, function
         code(body, [I::Block(BlockType::Empty), I::Loop(BlockType::Empty),
             I::LocalGet(s[TOP]), I::LocalGet(s[BASE]), I::I32Eq, I::If(BlockType::Empty), I::Br(2), I::End,
             I::LocalGet(s[TOP]), I::I32Const(frame_units(refs)), I::I32Sub, I::LocalTee(s[FRAME])]);
-        refs.object(body);
+        refs.unit(body);
         code(body, [load(), I::LocalSet(s[OBJECT])]);
-        at(body, refs, s[FRAME], 4);
+        unit_at(body, refs, s[FRAME], 4);
         code(body, [load(), I::LocalSet(s[TAG])]);
-        at(body, refs, s[FRAME], 8);
+        unit_at(body, refs, s[FRAME], 8);
         code(body, [load(), I::LocalSet(s[INDEX]),
             I::LocalGet(s[INDEX]), I::I32Const(-1), I::I32Eq, I::If(BlockType::Empty),
             I::LocalGet(s[OBJECT]), I::GlobalGet(2), I::I32LtU, I::If(BlockType::Empty)]);
@@ -241,7 +255,7 @@ pub(super) fn emit(body: &mut WasmFunctionEncoder, local: &LocalLayout, function
         decrement(body, refs, s);
         pop(body, s);
         code(body, [I::Br(2), I::End]);
-        at(body, refs, s[FRAME], 8);
+        unit_at(body, refs, s[FRAME], 8);
         code(body, [I::I32Const(0), store(),
             I::I32Const(0), I::LocalSet(s[INDEX]), I::End]);
         // Under `Scaled8`, ADDRESS holds the child slot's offset inside the
@@ -329,7 +343,7 @@ pub(super) fn emit(body: &mut WasmFunctionEncoder, local: &LocalLayout, function
             advance(body, refs, s);
             // OBJECT now holds the child; the parent is still in its frame.
             child_slot(body, refs, s, |body| {
-                at(body, refs, s[FRAME], 0);
+                unit_at(body, refs, s[FRAME], 0);
                 body.instruction(&load());
             });
             code(body, [I::I32Const(0), store(),
@@ -340,9 +354,9 @@ pub(super) fn emit(body: &mut WasmFunctionEncoder, local: &LocalLayout, function
         code(body, [I::Unreachable, I::End, I::End]);
         // Restore the virgin-zero property of memory above the bump
         // frontier before a later ordinary allocation can reuse it.
-        at(body, refs, s[BASE], 0);
+        unit_at(body, refs, s[BASE], 0);
         code(body, [I::I32Const(0), I::LocalGet(s[HIGH]), I::LocalGet(s[BASE]), I::I32Sub]);
-        refs.object(body);
+        refs.unit(body);
         code(body, [I::MemoryFill(0), I::LocalGet(s[BASE]), I::GlobalSet(0)]);
     }
     code(body, [I::Else]);
@@ -359,6 +373,18 @@ fn plan_at(p: &mut Vec<PlanToken>, refs: RefEncoding, slot: u32, offset: i32) {
         refs.plan_object(p);
     } else {
         refs.plan_base(p);
+        p.push(PlanToken::I32Const(offset));
+        refs.plan_add(p);
+        refs.plan_finish(p);
+    }
+}
+
+fn plan_unit_at(p: &mut Vec<PlanToken>, refs: RefEncoding, slot: u32, offset: i32) {
+    p.push(PlanToken::LocalGet(slot));
+    if offset == 0 {
+        refs.plan_unit(p);
+    } else {
+        refs.plan_unit_base(p);
         p.push(PlanToken::I32Const(offset));
         refs.plan_add(p);
         refs.plan_finish(p);
@@ -394,7 +420,7 @@ fn plan_reserve(p: &mut Vec<PlanToken>, refs: RefEncoding, s: &[u32]) {
         P::If("Empty".into()), P::Unreachable, P::End,
         P::LocalGet(s[TOP]), P::I32Const(frame), P::I32Add, P::LocalSet(s[END]),
     ]);
-    plan_at(p, refs, s[END], 0);
+    plan_unit_at(p, refs, s[END], 0);
     p.extend([P::I64Const(65535), P::I64Add,
         P::I64Const(65536), P::I64DivU, P::I32WrapI64, P::LocalSet(s[PAGES]),
         P::LocalGet(s[PAGES]), P::I64ExtendI32U, P::MemorySize, P::I64GtU, P::If("Empty".into()),
@@ -405,11 +431,11 @@ fn plan_reserve(p: &mut Vec<PlanToken>, refs: RefEncoding, s: &[u32]) {
 
 fn plan_commit_push(p: &mut Vec<PlanToken>, refs: RefEncoding, s: &[u32]) {
     use PlanToken as P;
-    plan_at(p, refs, s[TOP], 0);
+    plan_unit_at(p, refs, s[TOP], 0);
     p.extend([P::LocalGet(s[OBJECT]), pstore()]);
-    plan_at(p, refs, s[TOP], 4);
+    plan_unit_at(p, refs, s[TOP], 4);
     p.extend([P::LocalGet(s[TAG]), pstore()]);
-    plan_at(p, refs, s[TOP], 8);
+    plan_unit_at(p, refs, s[TOP], 8);
     p.extend([P::LocalGet(s[INDEX]), pstore(),
         P::LocalGet(s[END]), P::LocalSet(s[TOP]),
         P::LocalGet(s[TOP]), P::LocalGet(s[HIGH]), P::I32GtU, P::If("Empty".into()),
@@ -442,7 +468,7 @@ fn plan_decrement(p: &mut Vec<PlanToken>, refs: RefEncoding, s: &[u32]) {
 }
 fn plan_advance(p: &mut Vec<PlanToken>, refs: RefEncoding, s: &[u32]) {
     use PlanToken as P;
-    plan_at(p, refs, s[FRAME], 8);
+    plan_unit_at(p, refs, s[FRAME], 8);
     p.extend([P::LocalGet(s[INDEX]), P::I32Const(1), P::I32Add, pstore()]);
 }
 
@@ -471,11 +497,11 @@ pub(super) fn plan(p: &mut Vec<PlanToken>, function: FunctionId, layouts: &Layou
         p.extend([P::Block("Empty".into()), P::Loop("Empty".into()),
             P::LocalGet(s[TOP]), P::LocalGet(s[BASE]), P::I32Eq, P::If("Empty".into()), P::Br(2), P::End,
             P::LocalGet(s[TOP]), P::I32Const(frame), P::I32Sub, P::LocalTee(s[FRAME])]);
-        refs.plan_object(p);
+        refs.plan_unit(p);
         p.extend([pload(), P::LocalSet(s[OBJECT])]);
-        plan_at(p, refs, s[FRAME], 4);
+        plan_unit_at(p, refs, s[FRAME], 4);
         p.extend([pload(), P::LocalSet(s[TAG])]);
-        plan_at(p, refs, s[FRAME], 8);
+        plan_unit_at(p, refs, s[FRAME], 8);
         p.extend([pload(), P::LocalSet(s[INDEX]),
             P::LocalGet(s[INDEX]), P::I32Const(-1), P::I32Eq, P::If("Empty".into()),
             P::LocalGet(s[OBJECT]), P::GlobalGet(2), P::I32LtU, P::If("Empty".into())]);
@@ -487,7 +513,7 @@ pub(super) fn plan(p: &mut Vec<PlanToken>, function: FunctionId, layouts: &Layou
             P::LocalGet(s[COUNT]), P::I32Const(1), P::I32GtU, P::If("Empty".into())]);
         plan_decrement(p, refs, s); plan_pop(p, s);
         p.extend([P::Br(2), P::End]);
-        plan_at(p, refs, s[FRAME], 8);
+        plan_unit_at(p, refs, s[FRAME], 8);
         p.extend([P::I32Const(0), pstore(), P::I32Const(0), P::LocalSet(s[INDEX]), P::End]);
         let object = |p: &mut Vec<PlanToken>| if refs == RefEncoding::Byte {
             p.extend([P::LocalGet(s[OBJECT]), P::I32Add]);
@@ -573,7 +599,7 @@ pub(super) fn plan(p: &mut Vec<PlanToken>, function: FunctionId, layouts: &Layou
             plan_reserve(p, refs, s);
             plan_advance(p, refs, s);
             plan_child_slot(p, refs, s, |p| {
-                plan_at(p, refs, s[FRAME], 0);
+                plan_unit_at(p, refs, s[FRAME], 0);
                 p.push(pload());
             });
             p.extend([P::I32Const(0), pstore(),
@@ -582,9 +608,9 @@ pub(super) fn plan(p: &mut Vec<PlanToken>, function: FunctionId, layouts: &Layou
             p.extend([P::Br(1), P::End]);
         }
         p.extend([P::Unreachable, P::End, P::End]);
-        plan_at(p, refs, s[BASE], 0);
+        plan_unit_at(p, refs, s[BASE], 0);
         p.extend([P::I32Const(0), P::LocalGet(s[HIGH]), P::LocalGet(s[BASE]), P::I32Sub]);
-        refs.plan_object(p);
+        refs.plan_unit(p);
         p.extend([P::MemoryFill(0), P::LocalGet(s[BASE]), P::GlobalSet(0)]);
     }
     p.push(P::Else);

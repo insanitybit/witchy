@@ -1,10 +1,13 @@
 //! How a stored 32-bit reference names its object's byte address in the 64-bit
 //! linear memory (RFC-0179 R4).
 //!
-//! `Byte` references are byte addresses below 4 GiB: an access adds its
-//! offset in i32 and widens the sum once. `Scaled8` references count 8-byte
-//! units, reaching 32 GiB: an access widens and shifts the reference first,
-//! then adds its widened i32 offset. Either way every address the engine sees
+//! `Byte` references are payload byte addresses below 4 GiB: an access adds
+//! its offset in i32 and widens the sum once, and the RC header sits 8 bytes
+//! below. `Scaled8` references count 8-byte units, reaching 32 GiB, and name
+//! the unit of the object's RC header, its payload 8 bytes later: an access
+//! widens and shifts the reference, adds 8 for the payload, then its widened
+//! i32 offset. Header and payload share the base `uextend(ref) << 3`, and
+//! the engine folds every constant into the access. Either way every address the engine sees
 //! is a bounded sum (`uextend`, or `uextend << 3` plus `uextend`), so the
 //! vendored range-based elision drops its bounds check, given a reservation
 //! that covers the bound.
@@ -18,7 +21,9 @@
 //! A large-heap program (`@large_heap`) selects `Scaled8`; every other module
 //! is `Byte`. Under `Scaled8` the allocator globals and free-list links count
 //! units, allocation sizes round to whole units, and interior addresses that
-//! outlive one access are held in i64 locals.
+//! outlive one access are held in i64 locals. An allocator unit that is not an
+//! object reference (the frontier, a drop frame) forms its address with
+//! `unit`/`unit_base`, which add no payload offset.
 //!
 //! A `Scaled8` interior offset kept in a range slot is read back after the
 //! slot is written, so the object a range moves or clones must not share a
@@ -50,9 +55,21 @@ impl RefEncoding {
         }
     }
 
-    /// The reference that names byte address `address`, which must be a
-    /// multiple of the unit.
+    /// The reference to the object whose payload starts at byte `address`.
+    /// A `Byte` reference is that address. A `Scaled8` reference names the
+    /// unit of the object's RC header, eight bytes before its payload, so the
+    /// header and the payload share one base: `address` must be a multiple
+    /// of the unit and at least 8.
     pub(crate) fn reference(self, address: u32) -> u32 {
+        match self {
+            Self::Byte => address,
+            Self::Scaled8 => (address - 8) >> 3,
+        }
+    }
+
+    /// The allocator unit (frontier, heap base) that byte `address`, a
+    /// multiple of the unit, starts.
+    pub(crate) fn unit_of(self, address: u32) -> u32 {
         address >> self.shift()
     }
 
@@ -69,9 +86,30 @@ impl RefEncoding {
         u32::MAX - ((1u32 << self.shift()) - 1)
     }
 
-    /// The RC prefix (count and size words) in reference units.
+    /// From an object's first allocator unit (its RC header) to its
+    /// reference: `Byte` references the payload after the 8-byte prefix,
+    /// `Scaled8` the header's own unit.
     pub(crate) fn prefix_units(self) -> i32 {
-        8 >> self.shift()
+        match self {
+            Self::Byte => 8,
+            Self::Scaled8 => 0,
+        }
+    }
+
+    /// After `reference + units(payload)`: the allocator unit after the
+    /// object. `Scaled8` adds the header's unit.
+    pub(crate) fn object_end(self, body: &mut wasm_encoder::Function) {
+        if self == Self::Scaled8 {
+            body.instruction(&wasm_encoder::Instruction::I32Const(1));
+            body.instruction(&wasm_encoder::Instruction::I32Add);
+        }
+    }
+
+    /// Mirror of `object_end`.
+    pub(super) fn plan_object_end(self, plan: &mut Vec<PlanToken>) {
+        if self == Self::Scaled8 {
+            plan.extend([PlanToken::I32Const(1), PlanToken::I32Add]);
+        }
     }
 
     /// The exclusive limit of an object's end byte address: every byte of the
@@ -113,12 +151,30 @@ impl RefEncoding {
         }
     }
 
-    /// After the reference: start its address.
-    pub(super) fn base(self, body: &mut wasm_encoder::Function) {
+    /// After an allocator unit (the frontier, a drop frame): start the
+    /// address of the unit's first byte.
+    pub(super) fn unit_base(self, body: &mut wasm_encoder::Function) {
         if self == Self::Scaled8 {
             body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
             body.instruction(&wasm_encoder::Instruction::I64Const(3));
             body.instruction(&wasm_encoder::Instruction::I64Shl);
+        }
+    }
+
+    /// The address of the allocator unit on the stack.
+    pub(super) fn unit(self, body: &mut wasm_encoder::Function) {
+        self.unit_base(body);
+        self.finish(body);
+    }
+
+    /// After the reference: start the address of its payload. Under
+    /// `Scaled8` the payload is 8 bytes past the header unit; the engine
+    /// folds that constant into the access's offset.
+    pub(super) fn base(self, body: &mut wasm_encoder::Function) {
+        self.unit_base(body);
+        if self == Self::Scaled8 {
+            body.instruction(&wasm_encoder::Instruction::I64Const(8));
+            body.instruction(&wasm_encoder::Instruction::I64Add);
         }
     }
 
@@ -135,9 +191,9 @@ impl RefEncoding {
 
     /// After the reference: the address `below` bytes under its object, an
     /// RC header word. `Byte` subtracts in i32 as it always did. `Scaled8`
-    /// steps back one unit before widening, `(uextend(ref - 1) << 3) +
-    /// (8 - below)`: a 64-bit subtraction may wrap, so the engine could not
-    /// bound it and would keep a bounds check on every header access.
+    /// references the header's unit, so the word is `(uextend(ref) << 3) +
+    /// (8 - below)`: no subtraction (which the engine could not bound), and
+    /// the same base as the payload's fields.
     pub(super) fn header(self, body: &mut wasm_encoder::Function, below: i32) {
         debug_assert!((1..=8).contains(&below));
         match self {
@@ -147,9 +203,7 @@ impl RefEncoding {
                 body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
             }
             Self::Scaled8 => {
-                body.instruction(&wasm_encoder::Instruction::I32Const(1));
-                body.instruction(&wasm_encoder::Instruction::I32Sub);
-                self.base(body);
+                self.unit_base(body);
                 if below != 8 {
                     body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(8 - below)));
                     body.instruction(&wasm_encoder::Instruction::I64Add);
@@ -163,8 +217,7 @@ impl RefEncoding {
         match self {
             Self::Byte => plan.extend([PlanToken::I32Const(below), PlanToken::I32Sub, PlanToken::I64ExtendI32U]),
             Self::Scaled8 => {
-                plan.extend([PlanToken::I32Const(1), PlanToken::I32Sub]);
-                self.plan_base(plan);
+                self.plan_unit_base(plan);
                 if below != 8 {
                     plan.extend([PlanToken::I64Const(i64::from(8 - below)), PlanToken::I64Add]);
                 }
@@ -185,10 +238,24 @@ impl RefEncoding {
         self.finish(body);
     }
 
-    /// Mirror of `base`.
-    pub(super) fn plan_base(self, plan: &mut Vec<PlanToken>) {
+    /// Mirror of `unit_base`.
+    pub(super) fn plan_unit_base(self, plan: &mut Vec<PlanToken>) {
         if self == Self::Scaled8 {
             plan.extend([PlanToken::I64ExtendI32U, PlanToken::I64Const(3), PlanToken::I64Shl]);
+        }
+    }
+
+    /// Mirror of `unit`.
+    pub(super) fn plan_unit(self, plan: &mut Vec<PlanToken>) {
+        self.plan_unit_base(plan);
+        self.plan_finish(plan);
+    }
+
+    /// Mirror of `base`.
+    pub(super) fn plan_base(self, plan: &mut Vec<PlanToken>) {
+        self.plan_unit_base(plan);
+        if self == Self::Scaled8 {
+            plan.extend([PlanToken::I64Const(8), PlanToken::I64Add]);
         }
     }
 

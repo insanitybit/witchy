@@ -337,12 +337,8 @@ fn bounds_check_field_access(
             .and_then(|bound| bound.checked_add(offset_and_size))
             .is_some_and(|end| end <= memory_reservation.saturating_add(memory_guard_size))
     {
-        // The bound proves the index sum never wraps, so a constant addend
-        // can move into the static offset: `(base + x) + (c + offset)` is the
-        // same address as `base + (x + c) + offset`, and the instruction
-        // selector folds the offset into the access while `base + x` is
-        // shared by every field access through `x`.
-        let (index, offset) = peel_constant_addends(&builder.func, index, offset);
+        // Form the same address with constants in the static offset and a
+        // scaled reference's base first (`compute_scaled_first_addr`).
         return Reachable(compute_scaled_first_addr(
             &mut builder.cursor(),
             heap,
@@ -781,56 +777,29 @@ fn index_upper_bound(func: &ir::Function, value: ir::Value, depth: u32) -> Optio
     }
 }
 
-/// witchy (RFC-0179): `compute_addr` for an index whose sum the bound proves
-/// cannot wrap. When the index is `scaled + rest`, with `scaled` a shifted
-/// zero-extended value (a large-heap reference, `uextend(ref) << 3`), the
-/// address is formed as `(heap_base + scaled) + rest`: the same address, but
-/// `heap_base + scaled` is a value of its own, shared by every access through
-/// the reference and hoistable out of a loop that indexes it.
+/// witchy (RFC-0179): `compute_addr` for an index on the elided path,
+/// reassociated. The index's `iadd` tree is flattened into its terms:
+/// constant terms (an `iconst`, or a zero-extended one) move into the static
+/// offset while it fits 32 bits, so the instruction selector folds them into
+/// the access; scaled terms (a shifted zero-extended value, such as a
+/// large-heap reference `uextend(ref) << 3`) are added to the heap base first,
+/// so `heap_base + scaled` is a value of its own, shared by every access
+/// through the reference and hoistable out of a loop that indexes it; the
+/// remaining terms follow in order.
+///
+/// The address is unchanged: addition modulo 2^64 is associative and
+/// commutative, and the static offset is added as the same 64-bit constant.
 fn compute_scaled_first_addr(
     pos: &mut FuncCursor,
     heap: &HeapData,
     addr_ty: ir::Type,
     index: ir::Value,
-    offset: u32,
+    mut offset: u32,
 ) -> ir::Value {
     use ir::{InstructionData, Opcode};
-    let scaled_reference = |v: ir::Value| {
-        let ir::ValueDef::Result(inst, _) = pos.func.dfg.value_def(v) else { return false };
-        let InstructionData::Binary { opcode: Opcode::Ishl, args } = pos.func.dfg.insts[inst] else { return false };
-        matches!(pos.func.dfg.value_def(args[0]), ir::ValueDef::Result(inner, _)
-            if matches!(pos.func.dfg.insts[inner], InstructionData::Unary { opcode: Opcode::Uextend, .. }))
-    };
-    let split = match pos.func.dfg.value_def(index) {
-        ir::ValueDef::Result(inst, _) => match pos.func.dfg.insts[inst] {
-            InstructionData::Binary { opcode: Opcode::Iadd, args } if scaled_reference(args[0]) => Some((args[0], args[1])),
-            InstructionData::Binary { opcode: Opcode::Iadd, args } if scaled_reference(args[1]) => Some((args[1], args[0])),
-            _ => None,
-        },
-        _ => None,
-    };
-    let Some((scaled, rest)) = split else {
-        return compute_addr(pos, heap, addr_ty, index, offset);
-    };
     debug_assert_eq!(pos.func.dfg.value_type(index), addr_ty);
-    let vmctx = vmctx(pos);
-    let heap_base = heap.base.emit(pos, vmctx);
-    let base = pos.ins().iadd(heap_base, scaled);
-    let base_and_index = pos.ins().iadd(base, rest);
-    if offset == 0 {
-        base_and_index
-    } else {
-        let offset_val = pos.ins().iconst(addr_ty, i64::from(offset));
-        pos.ins().iadd(base_and_index, offset_val)
-    }
-}
-
-/// witchy (RFC-0179): split `index = x + c` (repeatedly, `c` an `iconst` or a
-/// zero-extended one) into `x` and `offset + c`, while the offset fits its 32
-/// bits. Only valid where the index's upper bound shows the sum cannot wrap.
-fn peel_constant_addends(func: &ir::Function, mut index: ir::Value, mut offset: u32) -> (ir::Value, u32) {
-    use ir::{InstructionData, Opcode};
-    let constant = |v: ir::Value| {
+    let func = &*pos.func;
+    let constant = |v: ir::Value| -> Option<u64> {
         let ir::ValueDef::Result(inst, _) = func.dfg.value_def(v) else { return None };
         match func.dfg.insts[inst] {
             InstructionData::UnaryImm { opcode: Opcode::Iconst, imm } => {
@@ -848,19 +817,44 @@ fn peel_constant_addends(func: &ir::Function, mut index: ir::Value, mut offset: 
             _ => None,
         }
     };
-    for _ in 0..4 {
-        let ir::ValueDef::Result(inst, _) = func.dfg.value_def(index) else { break };
-        let InstructionData::Binary { opcode: Opcode::Iadd, args } = func.dfg.insts[inst] else { break };
-        let (rest, addend) = match (constant(args[0]), constant(args[1])) {
-            (_, Some(c)) => (args[0], c),
-            (Some(c), None) => (args[1], c),
-            (None, None) => break,
-        };
-        let Some(sum) = u32::try_from(addend).ok().and_then(|c| offset.checked_add(c)) else { break };
-        index = rest;
-        offset = sum;
+    let scaled = |v: ir::Value| {
+        let ir::ValueDef::Result(inst, _) = func.dfg.value_def(v) else { return false };
+        let InstructionData::Binary { opcode: Opcode::Ishl, args } = func.dfg.insts[inst] else { return false };
+        matches!(func.dfg.value_def(args[0]), ir::ValueDef::Result(inner, _)
+            if matches!(func.dfg.insts[inner], InstructionData::Unary { opcode: Opcode::Uextend, .. }))
+    };
+    // Flatten the `iadd` tree left to right, to at most eight terms.
+    const MAX_TERMS: usize = 8;
+    let mut terms = vec![index];
+    loop {
+        let split = terms.iter().position(|&term| match func.dfg.value_def(term) {
+            ir::ValueDef::Result(inst, _) => matches!(func.dfg.insts[inst], InstructionData::Binary { opcode: Opcode::Iadd, .. }),
+            _ => false,
+        });
+        let Some(at) = split.filter(|_| terms.len() < MAX_TERMS) else { break };
+        let ir::ValueDef::Result(inst, _) = func.dfg.value_def(terms[at]) else { unreachable!() };
+        let InstructionData::Binary { args, .. } = func.dfg.insts[inst] else { unreachable!() };
+        terms.splice(at..=at, args);
     }
-    (index, offset)
+    let mut scaled_terms = Vec::new();
+    let mut other_terms = Vec::new();
+    for term in terms {
+        match constant(term).and_then(|c| u32::try_from(c).ok()).and_then(|c| offset.checked_add(c)) {
+            Some(sum) => offset = sum,
+            None if scaled(term) => scaled_terms.push(term),
+            None => other_terms.push(term),
+        }
+    }
+    let vmctx = vmctx(pos);
+    let mut address = heap.base.emit(pos, vmctx);
+    for term in scaled_terms.into_iter().chain(other_terms) {
+        address = pos.ins().iadd(address, term);
+    }
+    if offset != 0 {
+        let offset_val = pos.ins().iconst(addr_ty, i64::from(offset));
+        address = pos.ins().iadd(address, offset_val);
+    }
+    address
 }
 
 fn truncate(value: u64, bits: u32) -> u64 {

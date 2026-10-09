@@ -4122,15 +4122,16 @@
 
 ;; witchy (RFC-0179 T6): a base plus a zero-extended 32-bit index shifted by
 ;; other than the access size (a large-heap reference, `<< 3`, under a 32-bit
-;; load) is one `add ..., uxtw #k`, then the offset folds into the access.
-;; Below the size-scaled rules, so a matching scale still uses the register
-;; addressing mode.
-(rule 6 (amode_no_more_iconst ty (iadd _ x (ishl _ (uextend _ y @ (value_type $I32)) (iconst _ (u64_from_imm64 n)))) offset)
-        (if-let amount (uxtw_shift_amount n))
-        (amode_reg_imm ty (add_uxtw_shift x y amount) offset))
-(rule 5 (amode_no_more_iconst ty (iadd _ (ishl _ (uextend _ y @ (value_type $I32)) (iconst _ (u64_from_imm64 n))) x) offset)
-        (if-let amount (uxtw_shift_amount n))
-        (amode_reg_imm ty (add_uxtw_shift x y amount) offset))
+;; load) is the address value itself in a register, then the offset folds
+;; into the access. The value lowers once (to `add ..., uxtw #k`) and every
+;; access through the same reference shares it. Below the size-scaled rules,
+;; so a matching scale still uses the register addressing mode.
+(rule 6 (amode_no_more_iconst ty val @ (iadd _ _ (ishl _ (uextend _ (value_type $I32)) (iconst _ (u64_from_imm64 n)))) offset)
+        (if-let _ (uxtw_shift_amount n))
+        (amode_reg_imm ty val offset))
+(rule 5 (amode_no_more_iconst ty val @ (iadd _ (ishl _ (uextend _ (value_type $I32)) (iconst _ (u64_from_imm64 n))) _) offset)
+        (if-let _ (uxtw_shift_amount n))
+        (amode_reg_imm ty val offset))
 
 ;; witchy (RFC-0179 T6): an address mode for a register base and an offset.
 (decl amode_reg_imm (Type Reg i32) AMode)

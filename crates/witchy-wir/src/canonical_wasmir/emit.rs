@@ -794,7 +794,7 @@ pub(super) fn emit_alloc_core(body: &mut wasm_encoder::Function, refs: ref_encod
     // refused growth traps rather than writing past memory.
     let emit_end = |body: &mut wasm_encoder::Function| {
         emit_get_index(body, s[1]);
-        refs.object(body);
+        refs.unit(body);
         body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(RC_PREFIX_BYTES)));
         body.instruction(&wasm_encoder::Instruction::I64Add);
         emit_get_index(body, s[0]);
@@ -845,6 +845,7 @@ pub(super) fn emit_alloc_core(body: &mut wasm_encoder::Function, refs: ref_encod
     emit_get_index(body, s[0]);
     refs.units(body);
     body.instruction(&wasm_encoder::Instruction::I32Add);
+    refs.object_end(body);
     body.instruction(&wasm_encoder::Instruction::GlobalSet(0));
     body.instruction(&wasm_encoder::Instruction::Br(2));
     body.instruction(&wasm_encoder::Instruction::End);
@@ -885,11 +886,11 @@ pub(super) fn emit_alloc_core(body: &mut wasm_encoder::Function, refs: ref_encod
     body.instruction(&wasm_encoder::Instruction::End);
     body.instruction(&wasm_encoder::Instruction::End);
     emit_get_index(body, s[1]);
-    refs.object(body);
+    refs.unit(body);
     body.instruction(&wasm_encoder::Instruction::I32Const(1));
     body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
     emit_get_index(body, s[1]);
-    refs.base(body);
+    refs.unit_base(body);
     body.instruction(&wasm_encoder::Instruction::I32Const(4));
     refs.add(body);
     refs.finish(body);

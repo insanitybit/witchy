@@ -883,7 +883,7 @@ fn encode_checked_unvalidated(checked: &CheckedWasmIr) -> Result<Vec<u8>, Encode
     let mut globals = GlobalSection::new();
     globals.global(
         GlobalType { val_type: ValType::I32, mutable: true, shared: false },
-        &ConstExpr::i32_const(target.refs.reference(target.heap_start) as i32),
+        &ConstExpr::i32_const(target.refs.unit_of(target.heap_start) as i32),
     );
     globals.global(
         GlobalType { val_type: ValType::I32, mutable: true, shared: false },
@@ -891,7 +891,7 @@ fn encode_checked_unvalidated(checked: &CheckedWasmIr) -> Result<Vec<u8>, Encode
     );
     globals.global(
         GlobalType { val_type: ValType::I32, mutable: false, shared: false },
-        &ConstExpr::i32_const(target.refs.reference(target.heap_start) as i32),
+        &ConstExpr::i32_const(target.refs.unit_of(target.heap_start) as i32),
     );
     let mut exports = ExportSection::new();
     exports.export("memory", ExportKind::Memory, 0);

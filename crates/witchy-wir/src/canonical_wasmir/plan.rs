@@ -1456,7 +1456,7 @@ pub(super) fn push_alloc_core_plan(plan: &mut Vec<PlanToken>, refs: ref_encoding
         P::GlobalGet(0), P::LocalSet(s[1]),
     ]);
     let mut end = vec![P::LocalGet(s[1])];
-    refs.plan_object(&mut end);
+    refs.plan_unit(&mut end);
     end.extend([P::I64Const(i64::from(RC_PREFIX_BYTES)), P::I64Add, P::LocalGet(s[0]), P::I64ExtendI32U, P::I64Add]);
     plan.extend(end.iter().cloned());
     if slow.is_some() {
@@ -1480,7 +1480,9 @@ pub(super) fn push_alloc_core_plan(plan: &mut Vec<PlanToken>, refs: ref_encoding
     };
     plan.extend([P::LocalGet(s[1]), P::I32Const(refs.prefix_units()), P::I32Add, P::LocalSet(s[2]), P::LocalGet(s[2]), P::LocalGet(s[0])]);
     refs.plan_units(plan);
-    plan.extend([P::I32Add, P::GlobalSet(0), P::Br(2), P::End, P::LocalGet(s[2])]);
+    plan.push(P::I32Add);
+    refs.plan_object_end(plan);
+    plan.extend([P::GlobalSet(0), P::Br(2), P::End, P::LocalGet(s[2])]);
     refs.plan_header(plan, 4);
     plan.extend([load(), P::LocalGet(s[0]), P::I32Eq, P::If(empty()), P::LocalGet(s[3]), P::I32Eqz, P::If(empty())]);
     object(plan, s[2]);
@@ -1495,11 +1497,12 @@ pub(super) fn push_alloc_core_plan(plan: &mut Vec<PlanToken>, refs: ref_encoding
     ]);
     object(plan, s[2]);
     plan.extend([load(), P::LocalSet(s[2]), P::Br(0), P::End, P::End]);
-    object(plan, s[1]);
+    plan.push(P::LocalGet(s[1]));
+    refs.plan_unit(plan);
     plan.push(P::I32Const(1));
     push_store(plan);
     plan.push(P::LocalGet(s[1]));
-    refs.plan_base(plan);
+    refs.plan_unit_base(plan);
     plan.push(P::I32Const(4));
     refs.plan_add(plan);
     refs.plan_finish(plan);

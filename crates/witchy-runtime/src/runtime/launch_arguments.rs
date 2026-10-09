@@ -10,9 +10,11 @@ struct Image {
 }
 
 /// RFC-0179: how a guest reference names a byte. A standard heap's references
-/// are byte addresses; a large heap's count eight-byte units, so every object
-/// it holds starts on a unit boundary and its RC size is a whole number of
-/// units. The allocator globals hold references.
+/// are payload byte addresses. A large heap's count eight-byte units and name
+/// the unit of the object's RC header, its payload eight bytes later, so every
+/// object starts on a unit boundary and its RC size is a whole number of
+/// units. The allocator globals hold units: a header's unit under a large
+/// heap, a byte under a standard one.
 #[derive(Clone, Copy)]
 pub(super) struct Refs {
     shift: u32,
@@ -26,11 +28,27 @@ impl Refs {
         }
     }
 
+    /// The payload's first byte of the object `reference` names.
     pub(super) fn byte(self, reference: u32) -> u64 {
-        u64::from(reference) << self.shift
+        match self.shift {
+            0 => u64::from(reference),
+            shift => (u64::from(reference) << shift) + 8,
+        }
     }
 
+    /// The first byte of an allocator unit (a global's value).
+    pub(super) fn unit_byte(self, unit: u32) -> u64 {
+        u64::from(unit) << self.shift
+    }
+
+    /// The reference to the object whose payload starts at `byte`.
     fn reference(self, byte: u64) -> Result<u32> {
+        let unit = match self.shift { 0 => byte, shift => (byte - 8) >> shift };
+        u32::try_from(unit).map_err(|_| Error::msg("launch argument address overflow"))
+    }
+
+    /// The allocator unit that starts at `byte`.
+    fn unit(self, byte: u64) -> Result<u32> {
         u32::try_from(byte >> self.shift).map_err(|_| Error::msg("launch argument address overflow"))
     }
 
@@ -43,6 +61,7 @@ impl Refs {
 }
 
 fn image(base: u32, refs: Refs, arguments: &[String]) -> Result<Image> {
+    // `base` is the allocator frontier: the unit the image starts at.
     // RC prefix: count, payload size. List payload: length, capacity,
     // eight-byte owned-pointer lanes. String payload: byte length, UTF-8.
     // These are the exact catalog identities admission requires, not values
@@ -59,8 +78,8 @@ fn image(base: u32, refs: Refs, arguments: &[String]) -> Result<Image> {
         total = refs.round(size)?.checked_add(8).and_then(|size| total.checked_add(size))
             .ok_or_else(|| Error::msg("launch argument allocation overflow"))?;
     }
-    let first = refs.byte(base);
-    let end = refs.reference(first + u64::from(total))?;
+    let first = refs.unit_byte(base);
+    let end = refs.unit(first + u64::from(total))?;
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(total as usize).map_err(Error::msg)?;
     bytes.resize(total as usize, 0);
@@ -116,12 +135,12 @@ impl Vm {
         let image = build(base as u32, refs, self.store.data())?;
         let memory = self.instance.get_memory(&mut self.store, "memory")
             .ok_or_else(|| Error::msg("canonical entry lacks memory"))?;
-        let pages = refs.byte(image.end).div_ceil(65536);
+        let pages = refs.unit_byte(image.end).div_ceil(65536);
         let current = memory.size(&self.store);
         if pages > current {
             memory.grow(&mut self.store, pages - current)?;
         }
-        let at = usize::try_from(refs.byte(base as u32)).map_err(Error::msg)?;
+        let at = usize::try_from(refs.unit_byte(base as u32)).map_err(Error::msg)?;
         memory.write(&mut self.store, at, &image.bytes)?;
         top.set(&mut self.store, Val::I32(image.end as i32))?;
         Ok(image.root)
@@ -141,7 +160,7 @@ impl Vm {
         if base == 0 || top < base || root == 0 {
             return Err(Error::msg("service result has invalid canonical heap bounds"));
         }
-        let (base, top, root) = (refs.byte(base), refs.byte(top), refs.byte(root));
+        let (base, top, root) = (refs.unit_byte(base), refs.unit_byte(top), refs.byte(root));
         let memory = self.instance.get_memory(&mut self.store, "memory")
             .ok_or_else(|| Error::msg("service lacks canonical memory"))?;
         let data = memory.data(&self.store);
@@ -184,8 +203,8 @@ fn bytes_image(base: u32, refs: Refs, bytes: &[u8]) -> Result<Image> {
     let size = length.checked_add(4).ok_or_else(|| Error::msg("service byte extent overflow"))?;
     let size = refs.round(size)?;
     let total = size.checked_add(8).ok_or_else(|| Error::msg("service allocation overflow"))?;
-    let first = refs.byte(base);
-    let end = refs.reference(first + u64::from(total))?;
+    let first = refs.unit_byte(base);
+    let end = refs.unit(first + u64::from(total))?;
     let mut image = Vec::new();
     image.try_reserve_exact(total as usize).map_err(Error::msg)?;
     image.extend_from_slice(&1u32.to_le_bytes());
@@ -212,10 +231,11 @@ pub mod tests {
 
     pub fn large_heap_argument_image_is_unit_aligned() {
         // Base unit 4 is byte 32. The list (one lane) is 16 bytes; "abc"
-        // needs 7 and rounds to one unit. The lane names the string's unit.
+        // needs 7 and rounds to one unit. A reference names its header's
+        // unit: the list is unit 4, the string (header at byte 56) unit 7.
         let image = image(4, UNITS, &["abc".into()]).unwrap();
-        assert_eq!((image.root, image.end), (5, 9));
-        assert_eq!(&image.bytes[..24], &[1, 0, 0, 0, 16, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0]);
+        assert_eq!((image.root, image.end), (4, 9));
+        assert_eq!(&image.bytes[..24], &[1, 0, 0, 0, 16, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 7, 0, 0, 0, 0, 0, 0, 0]);
         assert_eq!(&image.bytes[24..], &[1, 0, 0, 0, 8, 0, 0, 0, 3, 0, 0, 0, b'a', b'b', b'c', 0]);
     }
 
@@ -226,7 +246,7 @@ pub mod tests {
         assert_eq!(&image.bytes[12..], &[0, 255, 128]);
         assert!(bytes_image(u32::MAX - 11, BYTE, &[]).is_err());
         let image = bytes_image(4, UNITS, &[0, 255, 128]).unwrap();
-        assert_eq!((image.root, image.end), (5, 6));
+        assert_eq!((image.root, image.end), (4, 6));
         assert_eq!(&image.bytes[..], &[1, 0, 0, 0, 8, 0, 0, 0, 3, 0, 0, 0, 0, 255, 128, 0]);
     }
 }
