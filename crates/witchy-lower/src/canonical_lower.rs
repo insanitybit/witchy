@@ -1718,6 +1718,7 @@ if capability_imports.contains("build_out_write_at") {
     }
     let forwarded_dict_intrinsics = IntrinsicForwarders {
         dict: checked_dict_forwarders(typed.module()),
+        dict_write_backs: checked_dict_write_back_forwarders(typed.module()),
         byte_write_backs: checked_byte_write_back_forwarders(typed.module()),
         scalar_callbacks: scalar_callback::Forwarders::new(typed.module()),
     };
@@ -4191,8 +4192,26 @@ struct IntrinsicForwarders {
     scalar_callbacks: scalar_callback::Forwarders,
     /// Scalar dictionary wrappers (`checked_dict_forwarders`).
     dict: HashMap<String, String>,
+    dict_write_backs: HashMap<String, String>,
     /// `fn f(var b, ...): b = __bytes_k(b, ...)` -> `__bytes_k`.
     byte_write_backs: HashMap<String, String>,
+}
+
+fn checked_dict_write_back_forwarders(module: &witchy_syntax::ast::Module) -> HashMap<String, String> {
+    module.items.iter().filter_map(|item| {
+        let Item::Function(function) = item else { return None };
+        let [receiver, key, value] = function.params.as_slice() else { return None };
+        if receiver.convention != Convention::Var || receiver.default.is_some()
+            || [key, value].iter().any(|parameter| parameter.default.is_some()
+                || !matches!(parameter.convention, Convention::Let | Convention::Borrow))
+        { return None; }
+        let [Stmt::Expr(Expr::Call { name: target, args })] = function.body.stmts.as_slice() else { return None };
+        if target != "dict.__insert_value_extract" || args.len() != function.params.len()
+            || !args.iter().zip(&function.params).all(|(argument, parameter)|
+                matches!(argument, Expr::Var(name) if name == &parameter.name))
+        { return None; }
+        Some((function.name.clone(), target.clone()))
+    }).collect()
 }
 
 /// A byte kernel wrapper whose body writes its `var` buffer back:
@@ -6118,6 +6137,9 @@ impl FunctionLowerer<'_> {
     }
 
     fn lower_effect_expr(&mut self, expression: &Expr) -> Result<(), CanonicalLoweringError> {
+        if let Expr::Call { name, args } = expression
+            && self.try_lower_discarded_dict_writeback(name, args)?
+        { return Ok(()); }
         if let Expr::Call { name, args } = expression
             && self.try_lower_forwarded_byte_writeback_call(expression, name, args)?
         {

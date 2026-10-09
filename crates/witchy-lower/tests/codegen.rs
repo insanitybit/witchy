@@ -272,3 +272,5 @@ mod byte_overwrite;
 mod list_projection;
 #[path = "codegen/owner_list_update.rs"]
 mod owner_list_update;
+#[path = "codegen/discarded_dict_insert.rs"]
+mod discarded_dict_insert;

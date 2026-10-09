@@ -232,7 +232,7 @@ pub(super) fn run_callback(source_text: &str) -> Result<i64, String> {
 }
 
 #[cfg(feature = "native-test-runtime")]
-fn run_callback_with_heap_audit(source_text: &str, audit: bool) -> Result<i64, String> {
+pub(super) fn run_callback_with_heap_audit(source_text: &str, audit: bool) -> Result<i64, String> {
     let checked = checked(source_text);
     let candidate = witchy_lower::canonical_pipeline_checks::lowered_candidate(&checked);
     let source = checked.canonical_source().expect("source");

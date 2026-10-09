@@ -11,6 +11,26 @@ use witchy_wir::canonical_safewir::dictionary::{
 use witchy_wir::layout::LayoutKind;
 
 impl FunctionLowerer<'_> {
+    pub(super) fn try_lower_discarded_dict_writeback(&mut self,
+        callee: &str, args: &[Expr]) -> Result<bool, CanonicalLoweringError>
+    {
+        if !witchy_syntax::opt::enabled(witchy_syntax::opt::Opt::DirectCall)
+            || self.bindings.contains_key(callee) || !self.functions.contains_key(callee)
+        { return Ok(false); }
+        let Some(target) = self.forwarded_dict_intrinsics.dict_write_backs.get(callee) else { return Ok(false) };
+        if self.functions.contains_key(target) { return Ok(false); }
+        let [Expr::Var(receiver), key, value] = args else { return Ok(false) };
+        if !self.mutable_bindings.contains(receiver) { return Ok(false); }
+        let (dict, key_type, value_type) = self.lower_dict_table_operand(&args[0])?;
+        if [&key_type, &value_type].iter().any(|ty|
+            StoragePlan::classify(ty, self.definitions, |_| Some(0)).requires_affine_owner_token())
+        { return Ok(false); }
+        let key = self.lower_expr(key)?;
+        let value = self.lower_expr(value)?;
+        let (rebuilt, _) = self.lower_dict_insert_table(dict, &key_type, &value_type, key, value, false, false)?;
+        self.bindings.insert(receiver.clone(), rebuilt);
+        Ok(true)
+    }
     pub(super) fn is_table_dictionary(
         &mut self,
         source: &Type,

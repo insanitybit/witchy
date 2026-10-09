@@ -98,6 +98,7 @@ pub const COMPILER_STD_NAMES: &[&str] = &[
     "dict.get_or",
     "dict.insert",
     "dict.insert__",
+    "dict.insert__Int__Int",
     "dict.keys",
     "dict.length",
     "dict.new",
