@@ -66,6 +66,10 @@ pub use owner_bridges::{AdmittedOwnerBridge, OwnerBridgeRecipe};
 
 const RC_PREFIX_BYTES: u32 = 8;
 const LINEAR_MEMORY_BYTES: u32 = 65_536;
+/// The 64-bit memory still holds at most 4 GiB: every address is a
+/// zero-extended 32-bit value (RFC-0179). Declared, so the limit does not
+/// depend on the engine's reservation.
+const MAX_MEMORY_PAGES: u64 = 65_536;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum SourceItemId {
@@ -854,7 +858,7 @@ fn encode_checked_unvalidated(checked: &CheckedWasmIr) -> Result<Vec<u8>, Encode
     let mut memory = MemorySection::new();
     memory.memory(MemoryType {
         minimum: initial_memory_pages(target.heap_start),
-        maximum: None,
+        maximum: Some(MAX_MEMORY_PAGES),
         memory64: true,
         shared: false,
         page_size_log2: None,
@@ -933,6 +937,8 @@ fn encode_checked_unvalidated(checked: &CheckedWasmIr) -> Result<Vec<u8>, Encode
     }
     functions.function(retain_type);
     code.function(&outlined_memory::emit_retain());
+    functions.function(retain_type);
+    code.function(&outlined_memory::emit_alloc());
     let mut module = WasmModule::new();
     module
         .section(&types)
@@ -1272,7 +1278,7 @@ fn admit_canonical_with_bytes_for_test(
 #[doc(hidden)]
 pub fn fixture_engine() -> wasmtime::Engine {
     let mut config = wasmtime::Config::new();
-    config.wasm_memory64(true);
+    config.wasm_memory64(true).memory_may_move(false);
     wasmtime::Engine::new(&config).expect("fixture engine")
 }
 

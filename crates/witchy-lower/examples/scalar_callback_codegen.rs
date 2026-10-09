@@ -15,6 +15,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     config.wasm_gc(true);
     config.wasm_simd(true);
     config.wasm_relaxed_simd(true);
+    config.wasm_memory64(true);
+    config.memory_may_move(false);
     let engine = wasmtime::Engine::new(&config)?;
     let module = wasmtime::Module::new(&engine, &wasm)?;
     fs::write(prefix.with_extension("text"), module.text())?;

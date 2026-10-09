@@ -26,7 +26,7 @@ fn emit_slot_address(body: &mut WasmFunctionEncoder, function: &Function, local:
     emit_get(body, local, function.id, dict)?;
     body.instruction(&wasm_encoder::Instruction::I32Const(4));
     body.instruction(&wasm_encoder::Instruction::I32Add);
-    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+    emit_memory_index(body);
     body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
     body.instruction(&wasm_encoder::Instruction::I32GeU);
     body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
@@ -42,7 +42,7 @@ fn emit_slot_address(body: &mut WasmFunctionEncoder, function: &Function, local:
     emit_set_index(body, local.scratch[4]);
     if field != crate::canonical_safewir::dictionary::DictionarySlotField::State {
         emit_get_index(body, local.scratch[4]);
-        body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+        emit_memory_index(body);
         body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
         body.instruction(&wasm_encoder::Instruction::I32Const(1));
         body.instruction(&wasm_encoder::Instruction::I32Ne);
@@ -127,7 +127,7 @@ fn emit_control_base(body: &mut WasmFunctionEncoder, function: &Function, local:
     emit_get(body, local, function.id, dict)?;
     body.instruction(&wasm_encoder::Instruction::I32Const(4));
     body.instruction(&wasm_encoder::Instruction::I32Add);
-    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+    emit_memory_index(body);
     body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
     body.instruction(&wasm_encoder::Instruction::I32Const(32));
     body.instruction(&wasm_encoder::Instruction::I32Mul);
@@ -192,7 +192,7 @@ fn emit_write_control(body: &mut WasmFunctionEncoder, function: &Function, local
     emit_get(body, local, function.id, dict)?;
     body.instruction(&wasm_encoder::Instruction::I32Const(4));
     body.instruction(&wasm_encoder::Instruction::I32Add);
-    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+    emit_memory_index(body);
     body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
     body.instruction(&wasm_encoder::Instruction::I32Add);
     emit_get_index(body, bucket);
@@ -278,7 +278,7 @@ fn emit_clone_exact(body: &mut WasmFunctionEncoder, function: &Function, local: 
     emit_get(body, local, function.id, source)?;
     body.instruction(&wasm_encoder::Instruction::I32Const(4));
     body.instruction(&wasm_encoder::Instruction::I32Add);
-    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+    emit_memory_index(body);
     body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
     emit_get(body, local, function.id, capacity)?;
     body.instruction(&wasm_encoder::Instruction::I32Ne);
@@ -319,7 +319,7 @@ fn emit_clone_exact(body: &mut WasmFunctionEncoder, function: &Function, local: 
         body.instruction(&wasm_encoder::Instruction::I32Add);
         emit_set_index(body, local.scratch[5]);
         emit_get_index(body, local.scratch[5]);
-        body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+        emit_memory_index(body);
         body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
         body.instruction(&wasm_encoder::Instruction::I32Const(1));
         body.instruction(&wasm_encoder::Instruction::I32Eq);
@@ -328,7 +328,7 @@ fn emit_clone_exact(body: &mut WasmFunctionEncoder, function: &Function, local: 
             emit_get_index(body, local.scratch[5]);
             body.instruction(&wasm_encoder::Instruction::I32Const(offset));
             body.instruction(&wasm_encoder::Instruction::I32Add);
-            body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+            emit_memory_index(body);
             body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
             body.instruction(&wasm_encoder::Instruction::Call(retain));
             body.instruction(&wasm_encoder::Instruction::Drop);
@@ -405,7 +405,7 @@ fn emit_rehash(body: &mut WasmFunctionEncoder, function: &Function, local: &Loca
     emit_capacity_guard(body, function, local, capacity)?;
     // A spare empty bucket guarantees termination of linear probing.
     emit_get(body, local, function.id, source)?;
-    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+    emit_memory_index(body);
     body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
     emit_get(body, local, function.id, capacity)?;
     body.instruction(&wasm_encoder::Instruction::I32GeU);
@@ -439,7 +439,7 @@ fn emit_rehash(body: &mut WasmFunctionEncoder, function: &Function, local: &Loca
     emit_get(body, local, function.id, source)?;
     body.instruction(&wasm_encoder::Instruction::I32Const(8));
     body.instruction(&wasm_encoder::Instruction::I32Add);
-    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+    emit_memory_index(body);
     body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
     emit_set_index(body, local.scratch[4]);
     body.instruction(&wasm_encoder::Instruction::Block(BlockType::Empty));
@@ -460,7 +460,7 @@ fn emit_rehash(body: &mut WasmFunctionEncoder, function: &Function, local: &Loca
     emit_get_index(body, local.scratch[5]);
     body.instruction(&wasm_encoder::Instruction::I32Const(4));
     body.instruction(&wasm_encoder::Instruction::I32Add);
-    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+    emit_memory_index(body);
     body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
     emit_get_index(body, local.scratch[10]);
     body.instruction(&wasm_encoder::Instruction::I32And);
@@ -476,7 +476,7 @@ fn emit_rehash(body: &mut WasmFunctionEncoder, function: &Function, local: &Loca
     body.instruction(&wasm_encoder::Instruction::I32Add);
     emit_set_index(body, local.scratch[7]);
     emit_get_index(body, local.scratch[7]);
-    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+    emit_memory_index(body);
     body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
     body.instruction(&wasm_encoder::Instruction::I32Eqz);
     body.instruction(&wasm_encoder::Instruction::BrIf(1));
@@ -496,7 +496,7 @@ fn emit_rehash(body: &mut WasmFunctionEncoder, function: &Function, local: &Loca
     body.instruction(&wasm_encoder::Instruction::I64Const(32));
     body.instruction(&wasm_encoder::Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
     emit_get_index(body, local.scratch[5]);
-    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+    emit_memory_index(body);
     body.instruction(&wasm_encoder::Instruction::I32Load(wasm_encoder::MemArg { offset: 4, align: 2, memory_index: 0 }));
     body.instruction(&wasm_encoder::Instruction::I32Const(25));
     body.instruction(&wasm_encoder::Instruction::I32ShrU);
@@ -508,7 +508,7 @@ fn emit_rehash(body: &mut WasmFunctionEncoder, function: &Function, local: &Loca
                 emit_get_index(body, local.scratch[7]);
                 body.instruction(&wasm_encoder::Instruction::I32Const(offset));
                 body.instruction(&wasm_encoder::Instruction::I32Add);
-                body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+                emit_memory_index(body);
                 body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
                 body.instruction(&wasm_encoder::Instruction::Call(retain));
                 body.instruction(&wasm_encoder::Instruction::Drop);
@@ -518,7 +518,7 @@ fn emit_rehash(body: &mut WasmFunctionEncoder, function: &Function, local: &Loca
     emit_get(body, local, function.id, destination)?;
     body.instruction(&wasm_encoder::Instruction::I32Const(12));
     body.instruction(&wasm_encoder::Instruction::I32Add);
-    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+    emit_memory_index(body);
     body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
     emit_set_index(body, local.scratch[8]);
     emit_get_index(body, local.scratch[6]);
@@ -554,7 +554,7 @@ fn emit_rehash(body: &mut WasmFunctionEncoder, function: &Function, local: &Loca
     emit_get_index(body, local.scratch[5]);
     body.instruction(&wasm_encoder::Instruction::I32Const(8));
     body.instruction(&wasm_encoder::Instruction::I32Add);
-    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+    emit_memory_index(body);
     body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
     emit_set_index(body, local.scratch[4]);
     body.instruction(&wasm_encoder::Instruction::Br(0));
@@ -563,7 +563,7 @@ fn emit_rehash(body: &mut WasmFunctionEncoder, function: &Function, local: &Loca
     emit_get(body, local, function.id, destination)?;
     emit_memory_index(body);
     emit_get(body, local, function.id, source)?;
-    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+    emit_memory_index(body);
     body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
     body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
     if transfer == T::MoveUnique { emit_reclaim(body, local, function, source)?; }
@@ -745,13 +745,13 @@ pub(super) fn emit(
             emit_get(body, local, function.id, *dict)?;
             body.instruction(&wasm_encoder::Instruction::I32Const(header_offset(*field)));
             body.instruction(&wasm_encoder::Instruction::I32Add);
-            body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+            emit_memory_index(body);
             body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
             emit_set(body, local, function.id, *destination)
         }
         DictionaryOperation::ProbeGroup { dict, bucket, fingerprint, matching, special, first_event } => {
             emit_get(body, local, function.id, *dict)?;
-            body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+            emit_memory_index(body);
             body.instruction(&wasm_encoder::Instruction::I32Load(wasm_encoder::MemArg { offset: 4, align: 2, memory_index: 0 }));
             emit_set_index(body, local.scratch[5]);
             emit_get(body, local, function.id, *bucket)?;
@@ -774,7 +774,7 @@ pub(super) fn emit(
                 function: function.id, operation: "Dictionary SIMD scratch",
             })?;
             emit_get_index(body, local.scratch[4]);
-            body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+            emit_memory_index(body);
             body.instruction(&wasm_encoder::Instruction::V128Load(memarg(1)));
             emit_set_index(body, control_vector);
             emit_get_index(body, control_vector);
@@ -803,17 +803,17 @@ pub(super) fn emit(
             match function.value_types.get(destination) {
                 Some(ValueType::Int) => {
                     if *field == crate::canonical_safewir::dictionary::DictionarySlotField::Hash {
-                        body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+                        emit_memory_index(body);
                         body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
                         body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
                     } else {
-                        body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+                        emit_memory_index(body);
                         body.instruction(&wasm_encoder::Instruction::I64Load(memarg(8)));
                     }
                 }
-                Some(ValueType::Float) => { body.instruction(&wasm_encoder::Instruction::I64ExtendI32U); body.instruction(&wasm_encoder::Instruction::F64Load(memarg(8))); }
+                Some(ValueType::Float) => { emit_memory_index(body); body.instruction(&wasm_encoder::Instruction::F64Load(memarg(8))); }
                 Some(ValueType::Size | ValueType::Bool | ValueType::Unit | ValueType::Ref(_)) => {
-                    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+                    emit_memory_index(body);
                     body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
                 }
                 _ => return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Dictionary ReadSlot type" }),
@@ -851,7 +851,7 @@ pub(super) fn emit(
             use crate::canonical_safewir::dictionary::DictionarySlotField;
             emit_slot_address(body, function, local, *dict, *bucket, DictionarySlotField::State)?;
             emit_get_index(body, local.scratch[4]);
-            body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+            emit_memory_index(body);
             body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
             emit_set_index(body, local.scratch[5]);
             emit_get_index(body, local.scratch[5]);
@@ -861,14 +861,14 @@ pub(super) fn emit(
             body.instruction(&wasm_encoder::Instruction::Unreachable);
             body.instruction(&wasm_encoder::Instruction::End);
             emit_get(body, local, function.id, *dict)?;
-            body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+            emit_memory_index(body);
             body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
             emit_set_index(body, local.scratch[10]);
             emit_get_index(body, local.scratch[10]);
             emit_get(body, local, function.id, *dict)?;
             body.instruction(&wasm_encoder::Instruction::I32Const(4));
             body.instruction(&wasm_encoder::Instruction::I32Add);
-            body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+            emit_memory_index(body);
             body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
             body.instruction(&wasm_encoder::Instruction::I32GeU);
             body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
@@ -879,7 +879,7 @@ pub(super) fn emit(
             emit_get(body, local, function.id, *dict)?;
             body.instruction(&wasm_encoder::Instruction::I32Const(12));
             body.instruction(&wasm_encoder::Instruction::I32Add);
-            body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+            emit_memory_index(body);
             body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
             emit_set_index(body, local.scratch[6]);
             emit_get(body, local, function.id, *bucket)?;
@@ -941,7 +941,7 @@ pub(super) fn emit(
             emit_get_index(body, local.scratch[8]);
             body.instruction(&wasm_encoder::Instruction::I32Const(16));
             body.instruction(&wasm_encoder::Instruction::I32Add);
-            body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+            emit_memory_index(body);
             body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
             body.instruction(&wasm_encoder::Instruction::I32Const(1));
             body.instruction(&wasm_encoder::Instruction::I32Sub);
@@ -996,7 +996,7 @@ pub(super) fn emit(
                 emit_get_index(body, local.scratch[4]);
                 body.instruction(&wasm_encoder::Instruction::I32Const(16));
                 body.instruction(&wasm_encoder::Instruction::I32Add);
-                body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+                emit_memory_index(body);
                 body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
                 emit_set_index(body, local.scratch[11]);
             }
@@ -1004,7 +1004,7 @@ pub(super) fn emit(
                 emit_get_index(body, local.scratch[4]);
                 body.instruction(&wasm_encoder::Instruction::I32Const(offset));
                 body.instruction(&wasm_encoder::Instruction::I32Add);
-                body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+                emit_memory_index(body);
                 body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
                 emit_set_index(body, local.scratch[scratch]);
             }
@@ -1052,7 +1052,7 @@ pub(super) fn emit(
                 emit_get_index(body, local.scratch[8]);
                 body.instruction(&wasm_encoder::Instruction::I32Const(offset));
                 body.instruction(&wasm_encoder::Instruction::I32Add);
-                body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+                emit_memory_index(body);
                 body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
                 body.instruction(&wasm_encoder::Instruction::I32Const(delta));
                 body.instruction(&wasm_encoder::Instruction::I32Add);
@@ -1154,15 +1154,18 @@ pub(super) fn plan(
             plan_slot_address(plan, local, *dict, *bucket, *field)?;
             plan.extend([PlanToken::LocalGet(local.scratch[4]), PlanToken::I32Const(slot_offset(*field)), PlanToken::I32Add]);
             let hash = *field == crate::canonical_safewir::dictionary::DictionarySlotField::Hash;
-            plan.extend(match function.value_types.get(destination) {
-                Some(ValueType::Int) if hash => vec![PlanToken::I64ExtendI32U,
-                    PlanToken::I32Load { offset: 0, align: 2, memory: 0 }, PlanToken::I64ExtendI32U],
-                Some(ValueType::Int) => vec![PlanToken::I64ExtendI32U, PlanToken::I64Load { offset: 0, align: 3, memory: 0 }],
-                Some(ValueType::Float) => vec![PlanToken::I64ExtendI32U, PlanToken::F64Load { offset: 0, align: 3, memory: 0 }],
+            let load = match function.value_types.get(destination) {
+                Some(ValueType::Int) if hash => PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
+                Some(ValueType::Int) => PlanToken::I64Load { offset: 0, align: 3, memory: 0 },
+                Some(ValueType::Float) => PlanToken::F64Load { offset: 0, align: 3, memory: 0 },
                 Some(ValueType::Size | ValueType::Bool | ValueType::Unit | ValueType::Ref(_)) =>
-                    vec![PlanToken::I64ExtendI32U, PlanToken::I32Load { offset: 0, align: 2, memory: 0 }],
+                    PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
                 _ => return Err(CanonicalAdmissionError::UnsupportedPlan),
-            });
+            };
+            plan.extend([PlanToken::I64ExtendI32U, load]);
+            if hash && function.value_types.get(destination) == Some(&ValueType::Int) {
+                plan.push(PlanToken::I64ExtendI32U);
+            }
             push_set(plan, local, *destination)?;
             if *transfer == LoadTransfer::CloneShared { push_share_plan(plan, local, *destination, *destination)?; }
             Ok(())

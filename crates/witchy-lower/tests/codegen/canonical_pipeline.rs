@@ -217,6 +217,15 @@ fn run_callback_result(source_text: &str) -> i64 {
     run_callback(source_text).expect("callback result")
 }
 
+/// Admitted modules declare a 64-bit memory that never moves (RFC-0179),
+/// as the production runtime configures it.
+#[cfg(feature = "native-test-runtime")]
+fn memory64_config() -> wasmtime::Config {
+    let mut config = wasmtime::Config::new();
+    config.wasm_memory64(true).memory_may_move(false);
+    config
+}
+
 #[cfg(feature = "native-test-runtime")]
 pub(super) fn run_callback(source_text: &str) -> Result<i64, String> {
     run_callback_with_heap_audit(source_text, false)
@@ -232,7 +241,7 @@ fn run_callback_with_heap_audit(source_text: &str, audit: bool) -> Result<i64, S
         (declaration.name == "main").then_some(binding.function())
     }).expect("main binding");
     let artifact = compile_checked_module_artifact(&checked).expect_lowered("admit callback source");
-    let mut config = wasmtime::Config::new();
+    let mut config = memory64_config();
     config.compiler_inlining(wasmtime::Inlining::Yes);
     let engine = wasmtime::Engine::new(&config).expect("optimized engine");
     let module = wasmtime::Module::new(&engine, artifact.wasm()).expect("compile admitted callback");
@@ -357,7 +366,7 @@ fn import_names(wasm: &[u8]) -> Vec<String> {
 fn run_oob(source: &str) -> String {
     let artifact = compile_checked_module_artifact(&checked(source))
         .expect_lowered("bounds checks permit safe canonical admission");
-    let engine = wasmtime::Engine::default();
+    let engine = wasmtime::Engine::new(&memory64_config()).expect("memory64 engine");
     let module = wasmtime::Module::new(&engine, artifact.wasm()).expect("compile admitted artifact");
     let mut store = wasmtime::Store::new(&engine, ());
     let instance = diagnostic_linker(&engine).instantiate(&mut store, &module)
@@ -371,7 +380,7 @@ fn run_oob(source: &str) -> String {
 fn run_index_result(source: &str, export: &str) -> i64 {
     let artifact = compile_checked_module_artifact(&checked(source))
         .expect_lowered("admit source bounds proof");
-    let engine = wasmtime::Engine::default();
+    let engine = wasmtime::Engine::new(&memory64_config()).expect("memory64 engine");
     let module = wasmtime::Module::new(&engine, artifact.wasm()).expect("compile admitted artifact");
     let mut store = wasmtime::Store::new(&engine, ());
     let instance = diagnostic_linker(&engine).instantiate(&mut store, &module)
@@ -415,7 +424,7 @@ fn production_entry_emits_only_admitted_canonical_bytes() {
         .expect_lowered("public production entry must emit Wasm");
     assert_eq!(bytes, artifact.wasm());
 
-    let mut config = wasmtime::Config::new();
+    let mut config = memory64_config();
     config.wasm_reference_types(true);
     config.wasm_function_references(true);
     config.wasm_gc(true);
@@ -735,7 +744,7 @@ fn list_string_push_moves_owned_elements_and_executes() {
     let source = "fn main(console: Console):\n    var xs = [\"first\"]\n    xs.push(\"second\")\n    console.print(xs[1])\n";
     let artifact = compile_checked_module_artifact(&checked(source))
         .expect_lowered("admit List(String) push artifact");
-    let engine = wasmtime::Engine::default();
+    let engine = wasmtime::Engine::new(&memory64_config()).expect("memory64 engine");
     let module = wasmtime::Module::new(&engine, artifact.wasm()).expect("compile admitted artifact");
     let mut linker = diagnostic_linker(&engine);
     linker.func_wrap("witchy", "console_print", fixture_console_print).expect("bind authenticated Console ABI");

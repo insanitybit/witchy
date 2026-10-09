@@ -1123,6 +1123,7 @@ pub(super) fn expected_metadata_prefix(
     functions.function(address_type);
     for _ in memory_helpers.drops.keys() { functions.function(drop_type); }
     functions.function(retain_type);
+    functions.function(retain_type);
     if let Some(table) = &target.table {
         tables.table(TableType {
             element_type: RefType::FUNCREF,
@@ -1133,7 +1134,7 @@ pub(super) fn expected_metadata_prefix(
         });
     }
     let mut memory = MemorySection::new();
-    memory.memory(MemoryType { minimum: initial_memory_pages(target.heap_start), maximum: None, memory64: true, shared: false, page_size_log2: None });
+    memory.memory(MemoryType { minimum: initial_memory_pages(target.heap_start), maximum: Some(MAX_MEMORY_PAGES), memory64: true, shared: false, page_size_log2: None });
     let mut globals = GlobalSection::new();
     globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(target.heap_start as i32));
     globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(0));
@@ -1215,6 +1216,7 @@ pub(super) fn decode_and_match_plan(
         expected.push(outlined_memory::plan_drop(&layouts, *root)?);
     }
     expected.push(outlined_memory::plan_retain());
+    expected.push(outlined_memory::plan_alloc());
     let mut actual = Vec::new();
     let mut code_count = None;
     let mut section_order = Vec::new();

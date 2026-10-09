@@ -1183,120 +1183,8 @@ pub(super) fn expected_alloc_plan(
         }
         Extent::HeaderPrefix { .. } => return Err(CanonicalAdmissionError::UnsupportedPlan),
     };
-    plan.extend([
-        PlanToken::GlobalGet(1),
-        PlanToken::LocalSet(layout.scratch[2]),
-        PlanToken::I32Const(0),
-        PlanToken::LocalSet(layout.scratch[3]),
-        PlanToken::Block("Empty".to_owned()),
-        PlanToken::Loop("Empty".to_owned()),
-        PlanToken::LocalGet(layout.scratch[2]),
-        PlanToken::I32Eqz,
-        PlanToken::If("Empty".to_owned()),
-        PlanToken::GlobalGet(0),
-        PlanToken::LocalSet(layout.scratch[1]),
-    ]);
-    let end = [
-        PlanToken::LocalGet(layout.scratch[1]),
-        PlanToken::I64ExtendI32U,
-        PlanToken::I64Const(i64::from(RC_PREFIX_BYTES)),
-        PlanToken::I64Add,
-        PlanToken::LocalGet(layout.scratch[0]),
-        PlanToken::I64ExtendI32U,
-        PlanToken::I64Add,
-    ];
-    plan.extend(end.iter().cloned());
-    plan.extend([
-        PlanToken::I64Const(i64::from(u32::MAX)),
-        PlanToken::I64GtU,
-        PlanToken::If("Empty".to_owned()),
-        PlanToken::Unreachable,
-        PlanToken::End,
-    ]);
-    plan.extend(end.iter().cloned());
-    plan.extend([
-        PlanToken::MemorySize,
-        PlanToken::I64Const(i64::from(LINEAR_MEMORY_BYTES)),
-        PlanToken::I64Mul,
-        PlanToken::I64GtU,
-        PlanToken::If("Empty".to_owned()),
-    ]);
-    plan.extend(end.iter().cloned());
-    plan.extend([
-        PlanToken::I64Const(i64::from(LINEAR_MEMORY_BYTES - 1)),
-        PlanToken::I64Add,
-        PlanToken::I64Const(i64::from(LINEAR_MEMORY_BYTES)),
-        PlanToken::I64DivU,
-        PlanToken::MemorySize,
-        PlanToken::I64Sub,
-        PlanToken::MemoryGrow,
-        PlanToken::I64Const(-1),
-        PlanToken::I64Eq,
-        PlanToken::If("Empty".to_owned()),
-        PlanToken::Unreachable,
-        PlanToken::End,
-        PlanToken::End,
-        PlanToken::LocalGet(layout.scratch[1]),
-        PlanToken::I32Const(RC_PREFIX_BYTES as i32),
-        PlanToken::I32Add,
-        PlanToken::LocalSet(layout.scratch[2]),
-        PlanToken::LocalGet(layout.scratch[2]),
-        PlanToken::LocalGet(layout.scratch[0]),
-        PlanToken::I32Add,
-        PlanToken::GlobalSet(0),
-        PlanToken::Br(2),
-        PlanToken::End,
-        PlanToken::LocalGet(layout.scratch[2]),
-        PlanToken::I32Const(4),
-        PlanToken::I32Sub,
-        PlanToken::I64ExtendI32U,
-        PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
-        PlanToken::LocalGet(layout.scratch[0]),
-        PlanToken::I32Eq,
-        PlanToken::If("Empty".to_owned()),
-        PlanToken::LocalGet(layout.scratch[3]),
-        PlanToken::I32Eqz,
-        PlanToken::If("Empty".to_owned()),
-        PlanToken::LocalGet(layout.scratch[2]),
-        PlanToken::I64ExtendI32U,
-        PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
-        PlanToken::GlobalSet(1),
-        PlanToken::Else,
-        PlanToken::LocalGet(layout.scratch[3]),
-        PlanToken::I64ExtendI32U,
-        PlanToken::LocalGet(layout.scratch[2]),
-        PlanToken::I64ExtendI32U,
-        PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
-        PlanToken::I32Store { offset: 0, align: 2, memory: 0 },
-        PlanToken::End,
-        PlanToken::LocalGet(layout.scratch[2]),
-        PlanToken::I32Const(RC_PREFIX_BYTES as i32),
-        PlanToken::I32Sub,
-        PlanToken::LocalSet(layout.scratch[1]),
-        PlanToken::Br(2),
-        PlanToken::End,
-        PlanToken::LocalGet(layout.scratch[2]),
-        PlanToken::LocalSet(layout.scratch[3]),
-        PlanToken::LocalGet(layout.scratch[2]),
-        PlanToken::I64ExtendI32U,
-        PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
-        PlanToken::LocalSet(layout.scratch[2]),
-        PlanToken::Br(0),
-        PlanToken::End,
-        PlanToken::End,
-        PlanToken::LocalGet(layout.scratch[1]),
-        PlanToken::I64ExtendI32U,
-        PlanToken::I32Const(1),
-    ]);
-    push_store(plan);
-    plan.extend([
-        PlanToken::LocalGet(layout.scratch[1]),
-        PlanToken::I32Const(4),
-        PlanToken::I32Add,
-        PlanToken::I64ExtendI32U,
-        PlanToken::LocalGet(layout.scratch[0]),
-    ]);
-    push_store(plan);
+    let s = [0, 1, 2, 3].map(|slot| layout.scratch[slot]);
+    push_alloc_core_plan(plan, s, layout.memory_helpers.as_ref().map(|helpers| helpers.alloc));
     plan.extend([
         PlanToken::LocalGet(layout.scratch[2]),
         PlanToken::LocalSet(plan_local(layout, destination)?),
@@ -1323,6 +1211,66 @@ pub(super) fn expected_alloc_plan(
     }
     let _ = function;
     Ok(())
+}
+
+/// Mirror of `emit_alloc_core`.
+pub(super) fn push_alloc_core_plan(plan: &mut Vec<PlanToken>, s: [u32; 4], slow: Option<u32>) {
+    use PlanToken as P;
+    let empty = || "Empty".to_owned();
+    if slow.is_some() {
+        plan.extend([P::Block(empty()), P::Block(empty())]);
+    }
+    plan.extend([
+        P::GlobalGet(1), P::LocalSet(s[2]), P::I32Const(0), P::LocalSet(s[3]),
+        P::Block(empty()), P::Loop(empty()),
+        P::LocalGet(s[2]), P::I32Eqz, P::If(empty()),
+        P::GlobalGet(0), P::LocalSet(s[1]),
+    ]);
+    let end = [
+        P::LocalGet(s[1]), P::I64ExtendI32U, P::I64Const(i64::from(RC_PREFIX_BYTES)), P::I64Add,
+        P::LocalGet(s[0]), P::I64ExtendI32U, P::I64Add,
+    ];
+    plan.extend(end.iter().cloned());
+    if slow.is_some() {
+        plan.extend([P::MemorySize, P::I64Const(i64::from(LINEAR_MEMORY_BYTES)), P::I64Mul, P::I64GeU, P::BrIf(3)]);
+    } else {
+        plan.extend([P::I64Const(i64::from(u32::MAX)), P::I64GtU, P::If(empty()), P::Unreachable, P::End]);
+        plan.extend(end.iter().cloned());
+        plan.extend([P::MemorySize, P::I64Const(i64::from(LINEAR_MEMORY_BYTES)), P::I64Mul, P::I64GtU, P::If(empty())]);
+        plan.extend(end.iter().cloned());
+        plan.extend([
+            P::I64Const(i64::from(LINEAR_MEMORY_BYTES - 1)), P::I64Add,
+            P::I64Const(i64::from(LINEAR_MEMORY_BYTES)), P::I64DivU,
+            P::MemorySize, P::I64Sub, P::MemoryGrow, P::I64Const(-1), P::I64Eq,
+            P::If(empty()), P::Unreachable, P::End, P::End,
+        ]);
+    }
+    let load = || P::I32Load { offset: 0, align: 2, memory: 0 };
+    plan.extend([
+        P::LocalGet(s[1]), P::I32Const(RC_PREFIX_BYTES as i32), P::I32Add, P::LocalSet(s[2]),
+        P::LocalGet(s[2]), P::LocalGet(s[0]), P::I32Add, P::GlobalSet(0),
+        P::Br(2), P::End,
+        P::LocalGet(s[2]), P::I32Const(4), P::I32Sub, P::I64ExtendI32U, load(),
+        P::LocalGet(s[0]), P::I32Eq, P::If(empty()),
+        P::LocalGet(s[3]), P::I32Eqz, P::If(empty()),
+        P::LocalGet(s[2]), P::I64ExtendI32U, load(), P::GlobalSet(1),
+        P::Else,
+        P::LocalGet(s[3]), P::I64ExtendI32U, P::LocalGet(s[2]), P::I64ExtendI32U, load(),
+        P::I32Store { offset: 0, align: 2, memory: 0 },
+        P::End,
+        P::LocalGet(s[2]), P::I32Const(RC_PREFIX_BYTES as i32), P::I32Sub, P::LocalSet(s[1]),
+        P::Br(2), P::End,
+        P::LocalGet(s[2]), P::LocalSet(s[3]),
+        P::LocalGet(s[2]), P::I64ExtendI32U, load(), P::LocalSet(s[2]),
+        P::Br(0), P::End, P::End,
+        P::LocalGet(s[1]), P::I64ExtendI32U, P::I32Const(1),
+    ]);
+    push_store(plan);
+    plan.extend([P::LocalGet(s[1]), P::I32Const(4), P::I32Add, P::I64ExtendI32U, P::LocalGet(s[0])]);
+    push_store(plan);
+    if let Some(helper) = slow {
+        plan.extend([P::Br(1), P::End, P::LocalGet(s[0]), P::Call(helper), P::LocalSet(s[2]), P::End]);
+    }
 }
 
 pub(super) fn expected_block_operations_plan(

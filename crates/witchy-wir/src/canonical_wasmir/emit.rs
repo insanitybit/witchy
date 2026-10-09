@@ -668,117 +668,8 @@ pub(super) fn emit_alloc(
             return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Alloc extent" });
         }
     };
-    // Search reclaimed storage first. Scratch 2 is the current free-list
-    // handle and scratch 3 is its predecessor. Reuse requires an exact
-    // physical extent: shrinking the header of a larger block would lose its
-    // suffix and corrupt the runtime's contiguous heap walk.
-    body.instruction(&wasm_encoder::Instruction::GlobalGet(1));
-    emit_set_index(body, scratch_index(layout, 2));
-    body.instruction(&wasm_encoder::Instruction::I32Const(0));
-    emit_set_index(body, scratch_index(layout, 3));
-    body.instruction(&wasm_encoder::Instruction::Block(BlockType::Empty));
-    body.instruction(&wasm_encoder::Instruction::Loop(BlockType::Empty));
-    emit_get_index(body, scratch_index(layout, 2));
-    body.instruction(&wasm_encoder::Instruction::I32Eqz);
-    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
-    body.instruction(&wasm_encoder::Instruction::GlobalGet(0));
-    emit_set_index(body, scratch_index(layout, 1));
-    // The object's end in bytes (64-bit, so the sum cannot wrap). When it
-    // lies past the current linear memory, grow by the pages needed; a
-    // refused growth traps rather than writing past memory.
-    let emit_end = |body: &mut wasm_encoder::Function| {
-        emit_get_index(body, scratch_index(layout, 1));
-        body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
-        body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(RC_PREFIX_BYTES)));
-        body.instruction(&wasm_encoder::Instruction::I64Add);
-        emit_get_index(body, scratch_index(layout, 0));
-        body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
-        body.instruction(&wasm_encoder::Instruction::I64Add);
-    };
-    emit_end(body);
-    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(u32::MAX)));
-    body.instruction(&wasm_encoder::Instruction::I64GtU);
-    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
-    body.instruction(&wasm_encoder::Instruction::Unreachable);
-    body.instruction(&wasm_encoder::Instruction::End);
-    emit_end(body);
-    body.instruction(&wasm_encoder::Instruction::MemorySize(0));
-    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(LINEAR_MEMORY_BYTES)));
-    body.instruction(&wasm_encoder::Instruction::I64Mul);
-    body.instruction(&wasm_encoder::Instruction::I64GtU);
-    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
-    emit_end(body);
-    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(LINEAR_MEMORY_BYTES - 1)));
-    body.instruction(&wasm_encoder::Instruction::I64Add);
-    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(LINEAR_MEMORY_BYTES)));
-    body.instruction(&wasm_encoder::Instruction::I64DivU);
-    body.instruction(&wasm_encoder::Instruction::MemorySize(0));
-    body.instruction(&wasm_encoder::Instruction::I64Sub);
-    body.instruction(&wasm_encoder::Instruction::MemoryGrow(0));
-    body.instruction(&wasm_encoder::Instruction::I64Const(-1));
-    body.instruction(&wasm_encoder::Instruction::I64Eq);
-    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
-    body.instruction(&wasm_encoder::Instruction::Unreachable);
-    body.instruction(&wasm_encoder::Instruction::End);
-    body.instruction(&wasm_encoder::Instruction::End);
-    emit_get_index(body, scratch_index(layout, 1));
-    body.instruction(&wasm_encoder::Instruction::I32Const(RC_PREFIX_BYTES as i32));
-    body.instruction(&wasm_encoder::Instruction::I32Add);
-    emit_set_index(body, scratch_index(layout, 2));
-    emit_get_index(body, scratch_index(layout, 2));
-    emit_get_index(body, scratch_index(layout, 0));
-    body.instruction(&wasm_encoder::Instruction::I32Add);
-    body.instruction(&wasm_encoder::Instruction::GlobalSet(0));
-    body.instruction(&wasm_encoder::Instruction::Br(2));
-    body.instruction(&wasm_encoder::Instruction::End);
-    emit_get_index(body, scratch_index(layout, 2));
-    body.instruction(&wasm_encoder::Instruction::I32Const(4));
-    body.instruction(&wasm_encoder::Instruction::I32Sub);
-    emit_memory_index(body);
-    body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
-    emit_get_index(body, scratch_index(layout, 0));
-    body.instruction(&wasm_encoder::Instruction::I32Eq);
-    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
-    emit_get_index(body, scratch_index(layout, 3));
-    body.instruction(&wasm_encoder::Instruction::I32Eqz);
-    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
-    emit_get_index(body, scratch_index(layout, 2));
-    emit_memory_index(body);
-    body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
-    body.instruction(&wasm_encoder::Instruction::GlobalSet(1));
-    body.instruction(&wasm_encoder::Instruction::Else);
-    emit_get_index(body, scratch_index(layout, 3));
-    emit_memory_index(body);
-    emit_get_index(body, scratch_index(layout, 2));
-    emit_memory_index(body);
-    body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
-    body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
-    body.instruction(&wasm_encoder::Instruction::End);
-    emit_get_index(body, scratch_index(layout, 2));
-    body.instruction(&wasm_encoder::Instruction::I32Const(RC_PREFIX_BYTES as i32));
-    body.instruction(&wasm_encoder::Instruction::I32Sub);
-    emit_set_index(body, scratch_index(layout, 1));
-    body.instruction(&wasm_encoder::Instruction::Br(2));
-    body.instruction(&wasm_encoder::Instruction::End);
-    emit_get_index(body, scratch_index(layout, 2));
-    emit_set_index(body, scratch_index(layout, 3));
-    emit_get_index(body, scratch_index(layout, 2));
-    emit_memory_index(body);
-    body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
-    emit_set_index(body, scratch_index(layout, 2));
-    body.instruction(&wasm_encoder::Instruction::Br(0));
-    body.instruction(&wasm_encoder::Instruction::End);
-    body.instruction(&wasm_encoder::Instruction::End);
-    emit_get_index(body, scratch_index(layout, 1));
-    emit_memory_index(body);
-    body.instruction(&wasm_encoder::Instruction::I32Const(1));
-    body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
-    emit_get_index(body, scratch_index(layout, 1));
-    body.instruction(&wasm_encoder::Instruction::I32Const(4));
-    body.instruction(&wasm_encoder::Instruction::I32Add);
-    emit_memory_index(body);
-    emit_get_index(body, scratch_index(layout, 0));
-    body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
+    let s = [0, 1, 2, 3].map(|slot| scratch_index(layout, slot));
+    emit_alloc_core(body, s, layout.memory_helpers.as_ref().map(|helpers| helpers.alloc));
     emit_get_index(body, scratch_index(layout, 2));
     emit_set(body, layout, function.id, destination)?;
     if let (Some(collection), Extent::Counted { count, capacity, .. }) = (collection, extent) {
@@ -798,6 +689,151 @@ pub(super) fn emit_alloc(
         }
     }
     Ok(())
+}
+
+/// The allocator: from the byte size in `s[0]`, reuse an exact free block or
+/// bump-allocate (growing memory as needed), write the RC header, and leave
+/// the object's address in `s[2]`. `s[1]` and `s[3]` are scratch.
+///
+/// With `slow = Some(helper)`, a bump that would not end strictly inside
+/// current memory calls the outlined helper instead of growing (or trapping
+/// at 4 GiB) inline. The free list is empty at that point, so the helper's
+/// own search finds nothing and it takes the same bump. Growth is rare, and
+/// its code dominated each allocation site.
+pub(super) fn emit_alloc_core(body: &mut wasm_encoder::Function, s: [u32; 4], slow: Option<u32>) {
+    if slow.is_some() {
+        body.instruction(&wasm_encoder::Instruction::Block(BlockType::Empty));
+        body.instruction(&wasm_encoder::Instruction::Block(BlockType::Empty));
+    }
+    // Search reclaimed storage first. Scratch 2 is the current free-list
+    // handle and scratch 3 is its predecessor. Reuse requires an exact
+    // physical extent: shrinking the header of a larger block would lose its
+    // suffix and corrupt the runtime's contiguous heap walk.
+    body.instruction(&wasm_encoder::Instruction::GlobalGet(1));
+    emit_set_index(body, s[2]);
+    body.instruction(&wasm_encoder::Instruction::I32Const(0));
+    emit_set_index(body, s[3]);
+    body.instruction(&wasm_encoder::Instruction::Block(BlockType::Empty));
+    body.instruction(&wasm_encoder::Instruction::Loop(BlockType::Empty));
+    emit_get_index(body, s[2]);
+    body.instruction(&wasm_encoder::Instruction::I32Eqz);
+    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+    body.instruction(&wasm_encoder::Instruction::GlobalGet(0));
+    emit_set_index(body, s[1]);
+    // The object's end in bytes (64-bit, so the sum cannot wrap). When it
+    // lies past the current linear memory, grow by the pages needed; a
+    // refused growth traps rather than writing past memory.
+    let emit_end = |body: &mut wasm_encoder::Function| {
+        emit_get_index(body, s[1]);
+        body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+        body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(RC_PREFIX_BYTES)));
+        body.instruction(&wasm_encoder::Instruction::I64Add);
+        emit_get_index(body, s[0]);
+        body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+        body.instruction(&wasm_encoder::Instruction::I64Add);
+    };
+    if slow.is_some() {
+        // Past this search's if, loop and block, label 3 is the slow path.
+        emit_end(body);
+        body.instruction(&wasm_encoder::Instruction::MemorySize(0));
+        body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(LINEAR_MEMORY_BYTES)));
+        body.instruction(&wasm_encoder::Instruction::I64Mul);
+        body.instruction(&wasm_encoder::Instruction::I64GeU);
+        body.instruction(&wasm_encoder::Instruction::BrIf(3));
+    } else {
+        emit_end(body);
+        body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(u32::MAX)));
+        body.instruction(&wasm_encoder::Instruction::I64GtU);
+        body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+        body.instruction(&wasm_encoder::Instruction::Unreachable);
+        body.instruction(&wasm_encoder::Instruction::End);
+        emit_end(body);
+        body.instruction(&wasm_encoder::Instruction::MemorySize(0));
+        body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(LINEAR_MEMORY_BYTES)));
+        body.instruction(&wasm_encoder::Instruction::I64Mul);
+        body.instruction(&wasm_encoder::Instruction::I64GtU);
+        body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+        emit_end(body);
+        body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(LINEAR_MEMORY_BYTES - 1)));
+        body.instruction(&wasm_encoder::Instruction::I64Add);
+        body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(LINEAR_MEMORY_BYTES)));
+        body.instruction(&wasm_encoder::Instruction::I64DivU);
+        body.instruction(&wasm_encoder::Instruction::MemorySize(0));
+        body.instruction(&wasm_encoder::Instruction::I64Sub);
+        body.instruction(&wasm_encoder::Instruction::MemoryGrow(0));
+        body.instruction(&wasm_encoder::Instruction::I64Const(-1));
+        body.instruction(&wasm_encoder::Instruction::I64Eq);
+        body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+        body.instruction(&wasm_encoder::Instruction::Unreachable);
+        body.instruction(&wasm_encoder::Instruction::End);
+        body.instruction(&wasm_encoder::Instruction::End);
+    }
+    emit_get_index(body, s[1]);
+    body.instruction(&wasm_encoder::Instruction::I32Const(RC_PREFIX_BYTES as i32));
+    body.instruction(&wasm_encoder::Instruction::I32Add);
+    emit_set_index(body, s[2]);
+    emit_get_index(body, s[2]);
+    emit_get_index(body, s[0]);
+    body.instruction(&wasm_encoder::Instruction::I32Add);
+    body.instruction(&wasm_encoder::Instruction::GlobalSet(0));
+    body.instruction(&wasm_encoder::Instruction::Br(2));
+    body.instruction(&wasm_encoder::Instruction::End);
+    emit_get_index(body, s[2]);
+    body.instruction(&wasm_encoder::Instruction::I32Const(4));
+    body.instruction(&wasm_encoder::Instruction::I32Sub);
+    emit_memory_index(body);
+    body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
+    emit_get_index(body, s[0]);
+    body.instruction(&wasm_encoder::Instruction::I32Eq);
+    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+    emit_get_index(body, s[3]);
+    body.instruction(&wasm_encoder::Instruction::I32Eqz);
+    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
+    emit_get_index(body, s[2]);
+    emit_memory_index(body);
+    body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
+    body.instruction(&wasm_encoder::Instruction::GlobalSet(1));
+    body.instruction(&wasm_encoder::Instruction::Else);
+    emit_get_index(body, s[3]);
+    emit_memory_index(body);
+    emit_get_index(body, s[2]);
+    emit_memory_index(body);
+    body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
+    body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
+    body.instruction(&wasm_encoder::Instruction::End);
+    emit_get_index(body, s[2]);
+    body.instruction(&wasm_encoder::Instruction::I32Const(RC_PREFIX_BYTES as i32));
+    body.instruction(&wasm_encoder::Instruction::I32Sub);
+    emit_set_index(body, s[1]);
+    body.instruction(&wasm_encoder::Instruction::Br(2));
+    body.instruction(&wasm_encoder::Instruction::End);
+    emit_get_index(body, s[2]);
+    emit_set_index(body, s[3]);
+    emit_get_index(body, s[2]);
+    emit_memory_index(body);
+    body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
+    emit_set_index(body, s[2]);
+    body.instruction(&wasm_encoder::Instruction::Br(0));
+    body.instruction(&wasm_encoder::Instruction::End);
+    body.instruction(&wasm_encoder::Instruction::End);
+    emit_get_index(body, s[1]);
+    emit_memory_index(body);
+    body.instruction(&wasm_encoder::Instruction::I32Const(1));
+    body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
+    emit_get_index(body, s[1]);
+    body.instruction(&wasm_encoder::Instruction::I32Const(4));
+    body.instruction(&wasm_encoder::Instruction::I32Add);
+    emit_memory_index(body);
+    emit_get_index(body, s[0]);
+    body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
+    if let Some(helper) = slow {
+        body.instruction(&wasm_encoder::Instruction::Br(1));
+        body.instruction(&wasm_encoder::Instruction::End);
+        emit_get_index(body, s[0]);
+        body.instruction(&wasm_encoder::Instruction::Call(helper));
+        emit_set_index(body, s[2]);
+        body.instruction(&wasm_encoder::Instruction::End);
+    }
 }
 
 /// A fixed layout's allocation size, when it and the allocator prefix fit

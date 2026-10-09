@@ -8,6 +8,7 @@ pub(super) struct Helpers {
     pub address: u32,
     pub drops: BTreeMap<crate::layout::LayoutId, u32>,
     pub retain: u32,
+    pub alloc: u32,
 }
 
 impl Helpers {
@@ -35,7 +36,9 @@ impl Helpers {
         let retain = u32::try_from(drops.len()).ok()
             .and_then(|count| first.checked_add(1)?.checked_add(count))
             .ok_or(EncodeError::UnsupportedLayout { function: FunctionId::new(u32::MAX), operation: "memory helper index" })?;
-        Ok(std::sync::Arc::new(Self { address: first, drops, retain }))
+        let alloc = retain.checked_add(1)
+            .ok_or(EncodeError::UnsupportedLayout { function: FunctionId::new(u32::MAX), operation: "memory helper index" })?;
+        Ok(std::sync::Arc::new(Self { address: first, drops, retain, alloc }))
     }
 }
 
@@ -122,4 +125,21 @@ pub(super) fn plan_retain() -> (Vec<(u32, String)>, Vec<PlanToken>) {
         P::LocalGet(0), P::I32Const(8), P::I32Sub, P::I64ExtendI32U, P::LocalGet(1), P::I32Const(1), P::I32Add,
         P::I32Store { offset: 0, align: 2, memory: 0 }, P::End, P::LocalGet(0), P::End,
     ])
+}
+
+// Allocation of `size` bytes (the parameter) returning the object address,
+// including memory growth. Allocation sites inline everything but growth.
+pub(super) fn emit_alloc() -> WasmFunctionEncoder {
+    let mut body = WasmFunctionEncoder::new([(3, ValType::I32)]);
+    emit_alloc_core(&mut body, [0, 1, 2, 3], None);
+    body.instruction(&wasm_encoder::Instruction::LocalGet(2));
+    body.instruction(&wasm_encoder::Instruction::End);
+    body
+}
+
+pub(super) fn plan_alloc() -> (Vec<(u32, String)>, Vec<PlanToken>) {
+    let mut plan = Vec::new();
+    push_alloc_core_plan(&mut plan, [0, 1, 2, 3], None);
+    plan.extend([PlanToken::LocalGet(2), PlanToken::End]);
+    (vec![(3, "i32".into())], plan)
 }
