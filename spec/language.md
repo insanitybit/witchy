@@ -710,6 +710,22 @@ fn main(console: Console):
     console.print(normalize(" Witchy "))
 ```
 
+**Heap size.** A program's heap holds up to 4 GiB, and a run grants it 1 GiB by
+default. `@large_heap` on the entry `main` raises the program's heap to 32 GiB
+and asks the launcher for all of it; `witchy caps` reports it as
+`heap   large (32 GiB)`. `witchy run` and a trusted app grant it;
+`witchy sandbox` grants it only with `--large-heap`. It is a property of the
+whole program, so the attribute on any other function is an error. A single
+value still holds under 4 GiB; the larger heap is room for more of them. A
+run that exhausts its limit stops with an error naming the limit it reached.
+
+```witchy
+@large_heap
+fn main(console: Console):
+    let counts = [1, 2, 3]
+    console.print("${counts.length()}")
+```
+
 **Recursive proper tail calls use constant control stack.** A call qualifies
 when its complete result becomes the current function's result directly, with no
 caller calculation, write-back, drop, conversion, loan cleanup, or error
