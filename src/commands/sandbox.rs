@@ -79,6 +79,7 @@ pub(crate) fn run_file_sandboxed(
     args: Vec<String>,
     signing_key: Option<[u8; 32]>,
     named_secrets: Vec<runtime::SecretGrant>,
+    heap: crate::commands::wasm_exec::HeapGrant,
     confinement: witchy_confinement::EnforcementMode,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     let (checked, stem) = link_file_checked(path)?;
@@ -131,6 +132,7 @@ pub(crate) fn run_file_sandboxed(
         named_secrets,
         Vec::new(),
         true,
+        heap,
         confinement,
     )
 }
@@ -162,6 +164,7 @@ pub(crate) fn run_file_grants(
     grants_path: &str,
     accept_grants: bool,
     args: Vec<String>,
+    heap: crate::commands::wasm_exec::HeapGrant,
     confinement: witchy_confinement::EnforcementMode,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     use std::io::IsTerminal;
@@ -279,6 +282,7 @@ pub(crate) fn run_file_grants(
         named_secrets,
         user_cap_fields,
         true,
+        heap,
         confinement,
     )
 }

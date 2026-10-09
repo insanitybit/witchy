@@ -61,10 +61,11 @@ pub(crate) fn run_wasm_file(
     signing_key: Option<[u8; 32]>,
     named_secrets: Vec<runtime::SecretGrant>,
     strict_dir: bool,
+    heap: crate::commands::wasm_exec::HeapGrant,
     confinement: witchy_confinement::EnforcementMode,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("cannot read `{path}`: {e}"))?;
-    run_wasm_module(&bytes, dir_roots, file_grants, net_allow, fetch_origins, env_allow, exec_allow, args, signing_key, named_secrets, strict_dir, confinement)
+    run_wasm_module(&bytes, dir_roots, file_grants, net_allow, fetch_origins, env_allow, exec_allow, args, signing_key, named_secrets, strict_dir, heap, confinement)
 }
 
 /// Detect, from a compiled wasm program, whether its `main` returns an `Int` — so
@@ -150,6 +151,7 @@ pub(crate) fn run_wasm_module(
     signing_key: Option<[u8; 32]>,
     named_secrets: Vec<runtime::SecretGrant>,
     strict_dir: bool,
+    heap: crate::commands::wasm_exec::HeapGrant,
     confinement: witchy_confinement::EnforcementMode,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     use crate::runtime::Capabilities;
@@ -308,7 +310,7 @@ pub(crate) fn run_wasm_module(
         caps.secrets.extend(named_secrets);
     }
     match &admitted {
-        Some(artifact) => run_admitted_prepared(artifact, caps, confinement),
+        Some(artifact) => run_admitted_prepared(artifact, caps, heap, confinement),
         None => run_prepared_wasm(bytes, caps, confinement),
     }
 }
@@ -363,7 +365,7 @@ pub(crate) fn run_trusted_application(
     // Retain fresh admission and its instance-bound owner recipes through launch.
     let mut rt = Runtime::batch().map_err(|error| error.to_string())?;
     let mut vm = rt
-        .spawn_admitted(&artifact, caps, run_memory_pages(&artifact))
+        .spawn_admitted(&artifact, caps, run_memory_pages(&artifact, HeapGrant::Large)?)
         .map_err(|error| error.to_string())?;
     vm.run().map_err(|error| error.root_cause().to_string())?;
     let leaks = vm.canonical_heap_leaks().map_err(|error| error.to_string())?;
@@ -405,12 +407,14 @@ pub(crate) fn run_prepared_wasm(
 fn run_admitted_prepared(
     artifact: &witchy_wir::AdmittedCanonicalArtifact,
     caps: runtime::Capabilities,
+    heap: HeapGrant,
     confinement: witchy_confinement::EnforcementMode,
 ) -> Result<(Vec<String>, Option<i32>), String> {
+    let pages = run_memory_pages(artifact, heap)?;
     crate::commands::confinement::arm(&caps, confinement)?;
     let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
     let mut vm = rt
-        .spawn_admitted(artifact, caps, run_memory_pages(artifact))
+        .spawn_admitted(artifact, caps, pages)
         .map_err(|e| e.to_string())?;
     vm.run().map_err(|e| e.root_cause().to_string())?;
     Ok(split_exit_code(vm.output(), artifact.wasm()))
@@ -435,13 +439,33 @@ fn split_exit_code(mut lines: Vec<String>, wasm: &[u8]) -> (Vec<String>, Option<
 /// a separate, deliberate resource-limit demonstration.)
 pub(crate) const RUN_MEMORY_PAGES: usize = 16384;
 
+/// Whether the launcher grants a `@large_heap` program the 32 GiB it asks for
+/// (RFC-0179). The program only declares the demand; like every other
+/// authority, the grant is the launcher's. A trusted launch (`witchy run`, a
+/// signed application, tests) grants it; a sandbox grants it only when its
+/// operator passes `--large-heap`; a dependency's build step never does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HeapGrant {
+    Large,
+    Standard,
+}
+
 /// The run's page limit for an admitted program: `RUN_MEMORY_PAGES`, unless
-/// its `main` declared `@large_heap` (RFC-0179), which asks for the whole
-/// 32 GiB its encoding addresses.
-pub(crate) fn run_memory_pages(artifact: &witchy_wir::AdmittedCanonicalArtifact) -> usize {
-    match artifact.heap_mode() {
-        witchy_wir::HeapMode::Standard => RUN_MEMORY_PAGES,
-        mode @ witchy_wir::HeapMode::Large => mode.max_pages() as usize,
+/// its `main` declared `@large_heap` and the launch grants it, which gives the
+/// whole 32 GiB its encoding addresses. A declared but ungranted large heap is
+/// refused before the program starts, as undeclared authority is.
+pub(crate) fn run_memory_pages(
+    artifact: &witchy_wir::AdmittedCanonicalArtifact,
+    grant: HeapGrant,
+) -> Result<usize, String> {
+    match (artifact.heap_mode(), grant) {
+        (witchy_wir::HeapMode::Standard, _) => Ok(RUN_MEMORY_PAGES),
+        (mode @ witchy_wir::HeapMode::Large, HeapGrant::Large) => Ok(mode.max_pages() as usize),
+        (witchy_wir::HeapMode::Large, HeapGrant::Standard) => Err(
+            "this program's `main` declares `@large_heap` (up to 32 GiB), which this launch \
+             does not grant; `witchy sandbox --large-heap` grants it, a build step never does"
+                .to_string(),
+        ),
     }
 }
 
@@ -476,7 +500,7 @@ pub(crate) fn run_admitted_artifact(
                     net_listen: true,
                     ..Default::default()
                 },
-                run_memory_pages(artifact),
+                run_memory_pages(artifact, HeapGrant::Large)?,
             )
             .map_err(|e| e.to_string())?;
         vm.run().map_err(|e| e.root_cause().to_string())?;
@@ -507,7 +531,7 @@ pub(crate) fn run_admitted_test_artifact(artifact: &witchy_wir::AdmittedCanonica
                 quiet: true,
                 ..Default::default()
             },
-            run_memory_pages(artifact),
+            run_memory_pages(artifact, HeapGrant::Large)?,
         )
         .map_err(|e| e.to_string())?;
     vm.run().map_err(|e| e.root_cause().to_string())?;
@@ -545,6 +569,7 @@ mod tests {
             None,
             Vec::new(),
             false,
+            HeapGrant::Large,
             witchy_confinement::EnforcementMode::Disabled,
         )
         .expect_err("textual imports must not reach the production guest runner");
@@ -566,7 +591,7 @@ mod tests {
         let _ = std::fs::remove_file(&wasm);
         let run = |bytes: &[u8]| run_wasm_module(
             bytes, Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, None, Vec::new(), None,
-            Vec::new(), true, witchy_confinement::EnforcementMode::Disabled,
+            Vec::new(), true, HeapGrant::Large, witchy_confinement::EnforcementMode::Disabled,
         );
         // Re-admission reads only the embedded source: the original file is gone.
         assert_eq!(run(&sealed).expect("portable wasm runs").0, ["genuine"]);

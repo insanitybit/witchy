@@ -560,7 +560,7 @@ fn run_wasm_fixtures(
 ) -> Result<FixtureBackendOutcome, String> {
     let mut runtime = runtime::Runtime::batch().map_err(|error| error.to_string())?;
     let outcome = runtime
-        .run_admitted_fixtures(artifact, plan.clone(), crate::run_memory_pages(artifact))
+        .run_admitted_fixtures(artifact, plan.clone(), crate::run_memory_pages(artifact, crate::HeapGrant::Large)?)
         .map_err(|error| error.to_string())?;
     let (passed, error) = match outcome.result {
         runtime::FixtureWasmResult::Passed => (true, None),
@@ -767,6 +767,7 @@ fn run_tests_in_module(
                     Vec::new(),
                     Vec::new(),
                     true,
+                    crate::HeapGrant::Large,
                     witchy_confinement::EnforcementMode::Disabled,
                 )
                 .map(|(output, _)| output)

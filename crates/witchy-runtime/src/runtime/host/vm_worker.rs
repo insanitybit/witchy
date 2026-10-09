@@ -680,6 +680,13 @@ fn run_server_worker(
     let result = (|| {
     let entry = program.artifact.entry().cloned()
         .ok_or_else(|| Error::msg("server worker lacks admitted canonical entry metadata"))?;
+    // A `@large_heap` program (RFC-0179) runs only once its launch granted
+    // the large heap, so its workers inherit that grant.
+    let heap = program.artifact.heap_mode();
+    let memory_bytes = match heap {
+        witchy_wir::HeapMode::Standard => 16384 * 64 * 1024,
+        witchy_wir::HeapMode::Large => heap.max_bytes() as usize,
+    };
     let (mut store, instance) = spawn_worker(
         engine,
         &WorkerModule::Admitted(program),
@@ -688,8 +695,9 @@ fn run_server_worker(
         false,
         Some(listener),
         None,
-        StoreLimitsBuilder::new().memory_size(16384 * 64 * 1024).build(),
+        StoreLimitsBuilder::new().memory_size(memory_bytes).build(),
     )?;
+    store.data_mut().limits.set_launch(heap, memory_bytes);
     store.data_mut().server_startup = Some(startup);
     let mut vm = Vm { store, instance, aborted: false, entry: Some(entry) };
     vm.run()?;

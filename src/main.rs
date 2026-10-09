@@ -34,7 +34,7 @@ mod commands;
 pub(crate) use commands::sandbox::run_file_sandboxed;
 #[cfg(test)]
 pub(crate) use commands::test_runner::run_tests_in_file;
-pub(crate) use commands::wasm_exec::{run_admitted_artifact, run_admitted_test_artifact, RUN_MEMORY_PAGES, run_memory_pages};
+pub(crate) use commands::wasm_exec::{run_admitted_artifact, run_admitted_test_artifact, RUN_MEMORY_PAGES, run_memory_pages, HeapGrant};
 #[cfg(test)]
 pub(crate) use commands::wasm_exec::run_wasm_file;
 mod lsp;
@@ -181,6 +181,7 @@ pub(crate) fn execute_file_exit(
         named_secrets,
         Vec::new(),
         false,
+        HeapGrant::Large,
         witchy_confinement::EnforcementMode::Disabled,
     )
         .map(|(lines, code)| (lines, code.unwrap_or(0)))

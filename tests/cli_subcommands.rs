@@ -798,6 +798,27 @@ fn caps_reports_a_large_heap() {
 }
 
 #[test]
+fn sandbox_refuses_an_ungranted_large_heap() {
+    // RFC-0179: the program declares the demand; only the launcher grants it.
+    let dir = workdir("sandbox-large-heap-refused");
+    let src = write(&dir, "l.witchy", "@large_heap\nfn main(console: Console):\n    console.print(\"ran\")\n");
+    let out = run(&["sandbox", &src]);
+    assert!(!out.status.success(), "an ungranted large heap must not run");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("`@large_heap`") && stderr.contains("--large-heap"), "{stderr}");
+    assert!(!String::from_utf8_lossy(&out.stdout).contains("ran"));
+}
+
+#[test]
+fn sandbox_runs_a_large_heap_the_operator_grants() {
+    let dir = workdir("sandbox-large-heap-granted");
+    let src = write(&dir, "l.witchy", "@large_heap\nfn main(console: Console):\n    console.print(\"ran\")\n");
+    let out = run(&["sandbox", "--large-heap", &src]);
+    assert!(out.status.success(), "a granted large heap runs: {}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "ran");
+}
+
+#[test]
 fn caps_requires_a_typechecking_source() {
     // BUG-179: a footprint over code that doesn't type-check is meaningless.
     let dir = workdir("caps-typeck");

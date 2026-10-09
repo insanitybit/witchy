@@ -37,16 +37,16 @@ impl HeapLimiter {
             return None;
         }
         let size = gib(limit);
-        let large = gib(HeapMode::Large.max_bytes() as usize);
+        let reached = if limit == run_limit && (limit as u64) < heap.max_bytes() {
+            format!("the {size} memory limit for a run")
+        } else {
+            format!("the program's {size} heap limit")
+        };
         Some(match heap {
-            HeapMode::Large => format!("out of memory: the program's {size} heap limit was reached"),
-            HeapMode::Standard if limit == run_limit => format!(
-                "out of memory: the {size} memory limit for a run was reached; \
-                 mark `main` with `@large_heap` to raise it to {large}"
-            ),
+            HeapMode::Large => format!("out of memory: {reached} was reached"),
             HeapMode::Standard => format!(
-                "out of memory: the {size} heap limit was reached; \
-                 mark `main` with `@large_heap` to raise it to {large}"
+                "out of memory: {reached} was reached; mark `main` with `@large_heap` to raise it to {}",
+                gib(HeapMode::Large.max_bytes() as usize)
             ),
         })
     }
@@ -60,9 +60,12 @@ impl ResourceLimiter for HeapLimiter {
     fn memory_growing(&mut self, current: usize, desired: usize, maximum: Option<usize>) -> wasmtime::Result<bool> {
         let declared = maximum.unwrap_or(usize::MAX);
         let allowed = desired <= declared && self.limits.memory_growing(current, desired, maximum)?;
-        if !allowed && let Some((_, run_limit)) = self.launch {
-            self.refused = Some(if desired > declared { declared.min(run_limit) } else { run_limit });
-        }
+        // Only the latest growth counts: a refusal the program survived (a host
+        // call that reported it) must not explain a later, unrelated trap.
+        self.refused = match self.launch {
+            Some((_, run_limit)) if !allowed => Some(if desired > declared { declared.min(run_limit) } else { run_limit }),
+            _ => None,
+        };
         Ok(allowed)
     }
 

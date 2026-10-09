@@ -446,7 +446,8 @@ pub(super) fn check_target_availability(module: &Module) -> Result<(), TypeError
 pub(super) fn check_large_heap_placement(module: &Module) -> Result<(), TypeError> {
     for item in &module.items {
         let Item::Function(function) = item else { continue };
-        if function.name != "main" && function.attributes.iter().any(|attribute| attribute == "large_heap") {
+        let entry = function.name == "main" && !function.comptime_only;
+        if !entry && function.attributes.iter().any(|attribute| attribute == "large_heap") {
             return terr(format!(
                 "`@large_heap` on `{}`: the attribute belongs on the program's entry `main` only",
                 function.name

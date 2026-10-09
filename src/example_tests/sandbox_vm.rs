@@ -125,6 +125,7 @@ fn unoptimized() -> ResetOptimization {
             vec!["../secret.txt".to_string()],
             None,
             Vec::new(),
+            crate::HeapGrant::Standard,
             witchy_confinement::EnforcementMode::Disabled,
         )
         .expect_err("a `..` traversal must be denied");

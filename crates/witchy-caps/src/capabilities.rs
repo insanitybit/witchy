@@ -1114,7 +1114,7 @@ pub fn heap_mode(module: &Module) -> HeapMode {
         .items
         .iter()
         .find_map(|item| match item {
-            Item::Function(function) if function.name == "main" => {
+            Item::Function(function) if function.name == "main" && !function.comptime_only => {
                 Some(HeapMode::from_main_attributes(function.attributes.iter().map(String::as_str)))
             }
             _ => None,

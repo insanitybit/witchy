@@ -53,7 +53,7 @@ use crate::{codegen, interpreter, parser};
         let tmp = std::env::temp_dir().join(format!("witchy_tier1_precompiled_{}.wasm", std::process::id()));
         let out = tmp.to_str().unwrap();
         crate::emit_wasm_file("examples/calc/src/calc.witchy", out).expect("emit-wasm");
-        let run = |path: &str| crate::run_wasm_file(path, Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, None, Vec::new(), None, Vec::new(), false, witchy_confinement::EnforcementMode::Disabled);
+        let run = |path: &str| crate::run_wasm_file(path, Vec::new(), Vec::new(), Vec::new(), Vec::new(), None, None, Vec::new(), None, Vec::new(), false, crate::HeapGrant::Large, witchy_confinement::EnforcementMode::Disabled);
         let expected = [
             "2 + 3 * 4       => 14",
             "(2 + 3) * 4     => 20",

@@ -145,13 +145,13 @@ pub(crate) fn run_compile() -> Result<bool, wasmtime::Error> {
                     super::execution::run_checked_compiled(
                         &linked.checked, dir_roots, Vec::new(), vec![net_allow], Vec::new(),
                         None, None, Vec::new(), launch_args, None, Vec::new(), Vec::new(),
-                        true, witchy_confinement::EnforcementMode::BestEffort,
+                        true, crate::HeapGrant::Large, witchy_confinement::EnforcementMode::BestEffort,
                     )?
                 } else {
                     super::execution::run_precompiled_checked_compiled(
                         &linked, dir_roots, Vec::new(), vec![net_allow], Vec::new(),
                         None, None, Vec::new(), launch_args, None, Vec::new(), Vec::new(),
-                        true, witchy_confinement::EnforcementMode::BestEffort,
+                        true, crate::HeapGrant::Large, witchy_confinement::EnforcementMode::BestEffort,
                     )?
                 };
                 for line in lines { println!("{line}"); }

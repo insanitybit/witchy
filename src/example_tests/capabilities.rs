@@ -628,6 +628,7 @@ fn yes(b: Bool) -> String:
             vec!["data.txt".to_string()],
             None,
             Vec::new(),
+            crate::HeapGrant::Standard,
             witchy_confinement::EnforcementMode::Disabled,
         )
         .expect("sandbox run");

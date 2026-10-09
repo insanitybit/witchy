@@ -5,6 +5,7 @@ use witchy_caps::capabilities;
 use witchy_lower::codegen;
 use witchy_runtime::runtime::{self, Runtime};
 use crate::{commands, run_memory_pages};
+use crate::commands::wasm_exec::HeapGrant;
 use crate::source::PrecompiledCheckedModule;
 
 /// Run an already-linked module on the compiled (WASM) backend with dev grants
@@ -30,6 +31,7 @@ pub(crate) fn run_checked_compiled(
     named_secrets: Vec<runtime::SecretGrant>,
     user_cap_fields: Vec<Vec<String>>,
     strict_dir: bool,
+    heap: crate::commands::wasm_exec::HeapGrant,
     confinement: witchy_confinement::EnforcementMode,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     let artifact = match codegen::compile_checked_module_artifact(checked) {
@@ -52,6 +54,7 @@ pub(crate) fn run_checked_compiled(
         named_secrets,
         user_cap_fields,
         strict_dir,
+        heap,
         confinement,
     )
 }
@@ -74,6 +77,7 @@ pub(crate) fn run_precompiled_checked_compiled(
     named_secrets: Vec<runtime::SecretGrant>,
     user_cap_fields: Vec<Vec<String>>,
     strict_dir: bool,
+    heap: crate::commands::wasm_exec::HeapGrant,
     confinement: witchy_confinement::EnforcementMode,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     let artifact = match codegen::compile_checked_module_artifact(&linked.checked) {
@@ -96,6 +100,7 @@ pub(crate) fn run_precompiled_checked_compiled(
         named_secrets,
         user_cap_fields,
         strict_dir,
+        heap,
         confinement,
     )
 }
@@ -118,6 +123,7 @@ pub(crate) fn run_checked_test_driver_compiled(
     named_secrets: Vec<runtime::SecretGrant>,
     user_cap_fields: Vec<Vec<String>>,
     strict_dir: bool,
+    heap: crate::commands::wasm_exec::HeapGrant,
     confinement: witchy_confinement::EnforcementMode,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     let wasm = match codegen::compile_checked_test_driver_artifact(checked) {
@@ -140,6 +146,7 @@ pub(crate) fn run_checked_test_driver_compiled(
         named_secrets,
         user_cap_fields,
         strict_dir,
+        heap,
         confinement,
     )
 }
@@ -168,6 +175,7 @@ fn run_compiled(
     named_secrets: Vec<runtime::SecretGrant>,
     user_cap_fields: Vec<Vec<String>>,
     strict_dir: bool,
+    heap: crate::commands::wasm_exec::HeapGrant,
     confinement: witchy_confinement::EnforcementMode,
 ) -> Result<(Vec<String>, Option<i32>), String> {
     // Install the compiler-service natives (compiler.footprint/diff/doc),
@@ -317,14 +325,19 @@ fn run_compiled(
         }
         caps.secrets.extend(named_secrets);
     }
+    let pages = match &wasm {
+        CompiledWasm::Admitted(artifact) | CompiledWasm::AdmittedWithExternalLibraries(artifact, _) => {
+            run_memory_pages(artifact, heap)?
+        }
+    };
     commands::confinement::arm(&caps, confinement)?;
     let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
     let mut vm = match &wasm {
         CompiledWasm::Admitted(artifact) => {
-            rt.spawn_admitted(artifact, caps, run_memory_pages(artifact))
+            rt.spawn_admitted(artifact, caps, pages)
         }
         CompiledWasm::AdmittedWithExternalLibraries(artifact, libraries) => {
-            rt.spawn_admitted_with_external_libraries(artifact, caps, run_memory_pages(artifact), libraries)
+            rt.spawn_admitted_with_external_libraries(artifact, caps, pages, libraries)
         }
     }
     .map_err(|e| e.to_string())?;

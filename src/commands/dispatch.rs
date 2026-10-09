@@ -460,6 +460,8 @@ pub(crate) fn run() -> wasmtime::Result<()> {
         // RFC-0013: pre-approve the grant (skip the interactive confirmation),
         // for non-interactive launches (CI, installers, scripts).
         let mut accept_grants = false;
+        // RFC-0179: grant a `@large_heap` program the 32 GiB it declares.
+        let mut large_heap = false;
         let mut confinement = witchy_confinement::EnforcementMode::BestEffort;
         let mut path: Option<String> = None;
         let mut prog_args: Vec<String> = Vec::new();
@@ -495,6 +497,7 @@ pub(crate) fn run() -> wasmtime::Result<()> {
                 },
                 // RFC-0013: accept the grant without the interactive prompt.
                 "--accept-grants" if path.is_none() => accept_grants = true,
+                "--large-heap" if path.is_none() => large_heap = true,
                 // RFC-0012: each `--file` grants one file to a `main` `File` param,
                 // positionally (the i-th `--file` backs the i-th `File` parameter).
                 "--file" if path.is_none() => match argv.next() {
@@ -567,12 +570,13 @@ pub(crate) fn run() -> wasmtime::Result<()> {
             }
         }
         let Some(path) = path else {
-            eprintln!("usage: witchy sandbox [--confine <best-effort|required>] [--grants <doc.toml> [--accept-grants] | [--dir <root>] [--file <path>]... [--net <host:port>]... [--fetch <scheme://host:port>]... [--env <NAME>]... [--exec <PROGRAM>]... [--signing-key <seed-file>] [--secret name=value] [--secret-file name=path]] <file.witchy> [args...]");
+            eprintln!("usage: witchy sandbox [--confine <best-effort|required>] [--large-heap] [--grants <doc.toml> [--accept-grants] | [--dir <root>] [--file <path>]... [--net <host:port>]... [--fetch <scheme://host:port>]... [--env <NAME>]... [--exec <PROGRAM>]... [--signing-key <seed-file>] [--secret name=value] [--secret-file name=path]] <file.witchy> [args...]");
             std::process::exit(1);
         };
         // A precompiled `.wasm` runs directly (authority from its launch metadata
         // plus imports); a source is compiled then run with its computed grant.
         // With `--grants`, the whole grant comes from the document (cross-checked).
+        let heap = if large_heap { commands::wasm_exec::HeapGrant::Large } else { commands::wasm_exec::HeapGrant::Standard };
         let result = if let Some(doc) = grants_doc {
             if path.ends_with(".wasm") {
                 eprintln!("--grants applies to a `.witchy` not a precompiled `.wasm`");
@@ -583,14 +587,15 @@ pub(crate) fn run() -> wasmtime::Result<()> {
                 &doc,
                 accept_grants,
                 prog_args,
+                heap,
                 confinement,
             )
         } else if path.ends_with(".wasm") {
             // `sandbox` is the strict path: a `Dir`-importing artifact needs an
             // explicit `--dir` (BUG-106), just like the source form.
-            commands::wasm_exec::run_wasm_file(&path, dir_roots, file_grants, net_allow, fetch_origins, env_allow, exec_allow, prog_args, signing_key, named_secrets, true, confinement)
+            commands::wasm_exec::run_wasm_file(&path, dir_roots, file_grants, net_allow, fetch_origins, env_allow, exec_allow, prog_args, signing_key, named_secrets, true, heap, confinement)
         } else {
-            commands::sandbox::run_file_sandboxed(&path, dir_roots, file_grants, net_allow, fetch_origins, env_allow, exec_allow, prog_args, signing_key, named_secrets, confinement)
+            commands::sandbox::run_file_sandboxed(&path, dir_roots, file_grants, net_allow, fetch_origins, env_allow, exec_allow, prog_args, signing_key, named_secrets, heap, confinement)
         };
         match result {
             Ok((lines, exit_code)) => {
@@ -896,7 +901,7 @@ pub(crate) fn run() -> wasmtime::Result<()> {
             Some(path) if path.ends_with(".wasm") => {
                 // Dev run: default a `Dir` to the cwd (not strict) — the convenience
                 // the source `witchy <file>` run keeps.
-                match commands::wasm_exec::run_wasm_file(path, Vec::new(), Vec::new(), net_allow, fetch_origins, None, None, prog_args, signing_key, named_secrets, false, witchy_confinement::EnforcementMode::Disabled) {
+                match commands::wasm_exec::run_wasm_file(path, Vec::new(), Vec::new(), net_allow, fetch_origins, None, None, prog_args, signing_key, named_secrets, false, crate::HeapGrant::Large, witchy_confinement::EnforcementMode::Disabled) {
                     Ok((lines, code)) => {
                         for line in lines {
                             println!("{line}");

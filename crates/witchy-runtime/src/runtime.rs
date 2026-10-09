@@ -834,6 +834,9 @@ impl LargeHeapEngine {
     fn from_config(config: &Config) -> Self {
         let mut config = config.clone();
         config.memory_reservation(LARGE_HEAP_RESERVATION);
+        // The opt-in pool (`WITCHY_POOL`) pre-reserves slots sized for a 1 GiB
+        // standard run; a large program allocates its one memory on demand.
+        config.allocation_strategy(wasmtime::InstanceAllocationStrategy::OnDemand);
         Self { config, engine: None }
     }
 
