@@ -110,7 +110,8 @@ fn scaled_module() -> String {
            (func (export \"byte\") (param i32 i32) (result i64) {address} i64.load8_u)
            (func (export \"word\") (param i32 i32) (result i64) {address} i64.load32_u offset=4)
            (func (export \"long\") (param i32 i32) (result i64) {address} i64.load offset=8)
-           (func (export \"field\") (param i32 i32) (result i64) {address} i64.const 12 i64.add i64.load32_u offset=4))"
+           (func (export \"field\") (param i32 i32) (result i64) {address} i64.const 12 i64.add i64.load32_u offset=4)
+           (func (export \"narrow\") (param i32 i32) (result i64) {address} i32.const 20 i64.extend_i32_u i64.add i64.load8_u))"
     )
 }
 
@@ -133,7 +134,7 @@ proptest::proptest! {
         loads in proptest::collection::vec((
             proptest::prop_oneof![0u32..16_400, proptest::prelude::any::<u32>(), (u32::MAX - 16)..=u32::MAX],
             proptest::prop_oneof![0u32..64, 131_000u32..131_100, proptest::prelude::any::<u32>()],
-            0usize..4,
+            0usize..5,
         ), 1..64)
     ) {
         use std::sync::OnceLock;
@@ -149,8 +150,9 @@ proptest::proptest! {
         let model: Vec<u8> = (0..SCALED_PAGES * 65536).map(|at| (at * 131 % 251) as u8).collect();
         memory.write(&mut store, 0, &model).unwrap();
         for (reference, offset, kind) in loads {
-            // `field` adds a constant the engine moves into the static offset.
-            let (export, at, size) = [("byte", 0, 1), ("word", 4, 4), ("long", 8, 8), ("field", 16, 4)][kind];
+            // `field` and `narrow` add a constant (an `iconst`, and a
+            // zero-extended one) the engine moves into the static offset.
+            let (export, at, size) = [("byte", 0, 1), ("word", 4, 4), ("long", 8, 8), ("field", 16, 4), ("narrow", 20, 1)][kind];
             let load = instance.get_typed_func::<(i32, i32), i64>(&mut store, export).unwrap();
             let address = (u64::from(reference) << 3) + u64::from(offset) + at;
             let got = load.call(&mut store, (reference as i32, offset as i32));
