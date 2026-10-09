@@ -500,15 +500,37 @@ impl<'a> AccessVerifier<'a> {
         &self,
         function: &Function,
     ) -> Result<Option<AccessSignature>, AccessFlowError> {
+        self.declaration_signature_at(function, None)
+    }
+
+    /// The declaration's contract, at `conventions` when an owning adapter
+    /// makes it fill a slot with other conventions than its own.
+    fn declaration_signature_at(
+        &self,
+        function: &Function,
+        conventions: Option<&[Convention]>,
+    ) -> Result<Option<AccessSignature>, AccessFlowError> {
         let resolved = self.table.function_type(&function.name);
-        let signature = match resolved {
-            Some(resolved) => AccessSignature::from_resolved_function_with_catalog(
+        let signature = match (resolved, conventions) {
+            (Some(resolved), None) => AccessSignature::from_resolved_function_with_catalog(
                 function,
                 &resolved,
                 &self.borrow_catalog,
             ),
-            None => AccessSignature::from_function_with_catalog(
+            (Some(resolved), Some(conventions)) => AccessSignature::from_resolved_parts_with_catalog(
+                function.params.iter().map(|param| param.ty.as_ref()).collect(),
+                function.ret.as_ref(),
+                conventions.to_vec(),
+                &resolved,
+                &self.borrow_catalog,
+            ),
+            (None, None) => AccessSignature::from_function_with_catalog(
                 function,
+                &self.borrow_catalog,
+            ),
+            (None, Some(conventions)) => AccessSignature::from_function_at_conventions_with_catalog(
+                function,
+                conventions.to_vec(),
                 &self.borrow_catalog,
             ),
         };
@@ -634,8 +656,11 @@ impl<'a> AccessVerifier<'a> {
         expression: &Expr,
     ) -> Result<Option<AccessSignature>, AccessFlowError> {
         let Some(function) = self.functions.get(name) else { return Ok(None) };
+        let adapter = self.table.let_callable_adapter(expression);
         let Some(resolved) = self.resolved_expression_type(expression) else {
-            return self.declaration_signature(function);
+            // A generic body leaves the use unresolved; an adapted use still
+            // carries the slot's conventions over the declaration's types.
+            return self.declaration_signature_at(function, adapter);
         };
         let Type::Fn(params, _, _, _) = resolved.unqualified() else { return Ok(None) };
         if params.len() != function.params.len() {
@@ -644,7 +669,7 @@ impl<'a> AccessVerifier<'a> {
         // A value the checker accepted through the owning adapter has the
         // adapter's contract: the slot's conventions, which the rewrite in
         // `crate::let_callable_adapter` gives the lambda that replaces it.
-        if let Some(conventions) = self.table.let_callable_adapter(expression) {
+        if let Some(conventions) = adapter {
             return AccessSignature::from_resolved_parts_with_catalog(
                 function.params.iter().map(|param| param.ty.as_ref()).collect(),
                 function.ret.as_ref(),

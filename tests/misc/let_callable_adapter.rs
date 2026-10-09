@@ -73,3 +73,27 @@ fn lend(f: fn(let String) -> String, s: String) -> String:\n    f(s)\n\n\
 fn main(console: Console):\n    console.print(lend(owned, \"a\"))\n");
     assert!(error.contains("expected `fn(let String) -> String`, found `fn(String) -> String`"), "{error}");
 }
+
+#[test]
+fn a_generic_let_function_adapts_inside_a_generic_body() {
+    let out = output("fn len(let xs: List(a)) -> Int:\n    xs.length()\n\n\
+fn lens(xss: List(List(a))) -> List(Int):\n    xss.map(len)\n\n\
+fn main(console: Console):\n    console.print(\"${lens([[1, 2], [3]])}\")\n");
+    assert_eq!(out, ["[2, 1]"]);
+}
+
+#[test]
+fn only_the_let_positions_of_a_mixed_function_adapt() {
+    let out = output("fn join2(let a: String, b: String) -> String:\n    a + b\n\n\
+fn combine(f: fn(String, String) -> String, x: String, y: String) -> String:\n    f(x, y)\n\n\
+fn main(console: Console):\n    console.print(combine(join2, \"x\", \"y\"))\n");
+    assert_eq!(out, ["xy"]);
+}
+
+#[test]
+fn an_own_parameter_does_not_adapt() {
+    let error = refusal("fn take(own s: String) -> String:\n    s\n\n\
+fn apply(f: fn(String) -> String, s: String) -> String:\n    f(s)\n\n\
+fn main(console: Console):\n    console.print(apply(take, \"a\"))\n");
+    assert!(error.contains("found `fn(own String) -> String`"), "{error}");
+}

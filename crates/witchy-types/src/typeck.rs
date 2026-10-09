@@ -5636,8 +5636,12 @@ impl Checker {
         if !adapted {
             return actual;
         }
+        // Like every expression-keyed fact, record only on the persistent
+        // tree: a transient re-inference checks a clone that is freed at once.
         let key = arg as *const Expr as usize;
-        self.let_callable_adapters.insert(key, expected_conventions.clone());
+        if self.type_record.is_some() {
+            self.let_callable_adapters.insert(key, expected_conventions.clone());
+        }
         let adapted = Ty::Fn(params.clone(), result.clone(), expected_conventions, references.clone(), *qualifiers);
         if let Some(record) = &mut self.type_record
             && let Some(entry) = record.get_mut(&key)
@@ -12881,6 +12885,12 @@ impl TypeTable {
             .map(String::as_str)
     }
 
+    /// Whether any use still awaits its owning adapter. The canonical source
+    /// preparation rewrites them all, so its final table must have none.
+    pub fn has_let_callable_adapters(&self) -> bool {
+        !self.let_callable_adapters.is_empty()
+    }
+
     /// The slot conventions this exact function value meets through the
     /// owning adapter `crate::let_callable_adapter` builds, if it needs one.
     pub fn let_callable_adapter(&self, e: &Expr) -> Option<&[Convention]> {
@@ -13323,6 +13333,7 @@ fn normalized_facts(module: &Module, table: &TypeTable, typed: &TypedModule) -> 
     for key in &table.non_completing { add("noncompleting", key, String::new()); }
     for (key, value) in &table.affine_expression_types { add("affine", key, format!("{value:?}")); }
     for (key, value) in &table.declared_function_values { add("declared", key, value.clone()); }
+    for (key, value) in &table.let_callable_adapters { add("let_adapter", key, format!("{value:?}")); }
     for (key, value) in &table.existential_packs { add("pack", key, format!("{value:?}")); }
     for (key, value) in &table.existential_upcasts { add("upcast", key, format!("{value:?}")); }
     for (key, value) in &table.record_projections { add("projection", key, format!("{value:?}")); }

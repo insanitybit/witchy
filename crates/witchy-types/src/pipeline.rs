@@ -1624,6 +1624,13 @@ fn canonicalize_callable_instances<'catalog>(
     ).map_err(|message| PipelineError::Type(TypeError { message }))?;
     let typed = preparation.extend(typed)
         .map_err(|message| PipelineError::Type(TypeError { message }))?;
+    // Lowering would read an unrewritten adapted use at the declaration's
+    // conventions, not the slot's: refuse rather than mismatch.
+    if typed.table().has_let_callable_adapters() {
+        return Err(PipelineError::Type(TypeError {
+            message: "a function value accepted through its owning adapter was not rewritten".into(),
+        }));
+    }
     Ok((typed, preparation))
 }
 

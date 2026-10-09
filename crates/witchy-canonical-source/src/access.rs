@@ -1213,6 +1213,18 @@ impl AccessSignature {
         function: &Function,
         catalog: &BorrowRelationCatalog,
     ) -> Result<Self, AccessSignatureError> {
+        let conventions = function.params.iter().map(|param| param.convention).collect();
+        Self::from_function_at_conventions_with_catalog(function, conventions, catalog)
+    }
+
+    /// The declaration's contract at the conventions of the callable slot it
+    /// fills, which differ from its own only where an adapter owns a `let`
+    /// argument for it.
+    pub fn from_function_at_conventions_with_catalog(
+        function: &Function,
+        conventions: Vec<Convention>,
+        catalog: &BorrowRelationCatalog,
+    ) -> Result<Self, AccessSignatureError> {
         let params = function
             .params
             .iter()
@@ -1228,7 +1240,6 @@ impl AccessSignature {
             .ret
             .clone()
             .ok_or(AccessSignatureError::MissingResultType)?;
-        let conventions = function.params.iter().map(|param| param.convention).collect();
         let mut signature = Self::from_parts_with_catalog(params, result, conventions, catalog)?;
         signature.callable_contract = CallableQualifiers::new(function.pure, false);
         Ok(signature)

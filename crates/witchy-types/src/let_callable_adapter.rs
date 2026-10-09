@@ -10,7 +10,9 @@
 //! later stage sees an ordinary closure and an ordinary call.
 
 use witchy_syntax::ast::visit::{visit_block_mut, visit_expr_mut};
-use witchy_syntax::ast::{Block, Convention, Expr, Item, Module, Param, Stmt};
+use std::collections::HashSet;
+
+use witchy_syntax::ast::{Block, CallableQualifiers, Convention, Expr, Item, Module, Param, Stmt, Type};
 
 use crate::typeck::{Ty, TypeTable, ty_to_ast};
 
@@ -18,10 +20,21 @@ use crate::typeck::{Ty, TypeTable, ty_to_ast};
 /// was rewritten (so the caller re-annotates, since new nodes change the
 /// address-keyed `TypeTable`).
 pub fn rewrite_let_callable_adapters(module: &mut Module, table: &TypeTable) -> bool {
+    if !table.has_let_callable_adapters() {
+        return false;
+    }
+    // A use inside a generic body has no resolved type to read the target's
+    // purity from, so take it from the declarations.
+    let pure: HashSet<String> = module.items.iter()
+        .filter_map(|item| match item {
+            Item::Function(function) if function.pure => Some(function.name.clone()),
+            _ => None,
+        })
+        .collect();
     let mut changed = false;
     let mut visitor = |expression: &mut Expr| -> Result<(), ()> {
         if let Some(conventions) = table.let_callable_adapter(expression) {
-            changed |= adapt(expression, conventions, table);
+            changed |= adapt(expression, conventions, table, &pure);
         }
         Ok(())
     };
@@ -44,21 +57,27 @@ pub fn rewrite_let_callable_adapters(module: &mut Module, table: &TypeTable) -> 
 /// The linker's eta lambda for a module-qualified function already forwards
 /// to it, so its parameters take the slot's conventions. A bare function name
 /// becomes the same eta shape, `fn(__eta0, ...): target(__eta0, ...)`, keeping
-/// the target's qualifiers so a `pure` target still fills a `pure` slot.
-fn adapt(expression: &mut Expr, conventions: &[Convention], table: &TypeTable) -> bool {
+/// the target's purity so a `pure` target still fills a `pure` slot. Its
+/// parameters carry their checked types when the use has one; inside a
+/// generic body they are left to the recheck to infer from the call.
+fn adapt(expression: &mut Expr, conventions: &[Convention], table: &TypeTable, pure: &HashSet<String>) -> bool {
     if let Expr::Lambda { params, .. } = expression {
         for (param, convention) in params.iter_mut().zip(conventions) {
             param.convention = *convention;
         }
         return true;
     }
-    let Some(Ty::Fn(params, _, _, _, qualifiers)) = table.type_of(expression) else { return false };
+    let types: Vec<Option<Type>> = match table.type_of(expression) {
+        Some(Ty::Fn(params, ..)) if params.len() == conventions.len() => params.iter().map(ty_to_ast).collect(),
+        _ => vec![None; conventions.len()],
+    };
     let Expr::Var(target) = expression else { return false };
-    let names = (0..params.len()).map(|index| format!("__eta{index}")).collect::<Vec<_>>();
+    let qualifiers = CallableQualifiers::new(pure.contains(target), false);
+    let names = (0..conventions.len()).map(|index| format!("__eta{index}")).collect::<Vec<_>>();
     *expression = Expr::Lambda {
-        params: names.iter().zip(params.iter()).zip(conventions).map(|((name, ty), convention)| Param {
+        params: names.iter().zip(types).zip(conventions).map(|((name, ty), convention)| Param {
             name: name.clone(),
-            ty: ty_to_ast(ty),
+            ty,
             convention: *convention,
             default: None,
         }).collect(),
@@ -71,7 +90,7 @@ fn adapt(expression: &mut Expr, conventions: &[Convention], table: &TypeTable) -
             region: None,
         },
         ret: None,
-        qualifiers: *qualifiers,
+        qualifiers,
     };
     true
 }
