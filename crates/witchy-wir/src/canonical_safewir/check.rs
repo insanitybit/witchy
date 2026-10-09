@@ -583,7 +583,7 @@ fn check_static_data<S: ModuleStage>(
                 if bindings.insert(*data, binding.clone()).is_some_and(|previous| previous != binding) {
                     return Err(InitialCheckError::InconsistentStaticDataUse(*data));
                 }
-                if layout_contains_pointer(*layout, layouts, &mut Vec::new()) {
+                if static_data_has_live_pointer(*layout, Some(segment.bytes()), layouts, &mut Vec::new()) {
                     return Err(InitialCheckError::PointerBearingStaticData {
                         function: function.id,
                         object: *destination,
@@ -644,8 +644,18 @@ fn normalized_static_data_use(
     Some(NormalizedStaticDataUse { layout, extent })
 }
 
-fn layout_contains_pointer(
+/// Static bytes can carry a pointer slot only while it is a null *nullable*
+/// slot: a static object is never dropped, so an edge stored in it would
+/// never be released, and nothing authenticates a pointee behind an unmanaged
+/// address. A null `OwnedNullable` slot establishes no edge and reads as
+/// absent; a payload-free sum variant has nothing else in its pointer slots.
+/// A null in a slot the layout declares present (`Owned`, `Borrowed`) would
+/// read as a live object at address zero, so it counts as live. So does a
+/// slot whose bytes cannot be located (a dynamic child, an unresolvable
+/// layout).
+fn static_data_has_live_pointer(
     layout: crate::layout::LayoutId,
+    bytes: Option<&[u8]>,
     layouts: &crate::layout::LayoutInterner,
     visiting: &mut Vec<crate::layout::LayoutId>,
 ) -> bool {
@@ -657,13 +667,35 @@ fn layout_contains_pointer(
         return true;
     };
     visiting.push(layout);
-    let result = descriptor.fields().iter().any(|field| match field.kind() {
-        crate::layout::FieldKind::Scalar(_) => false,
-        crate::layout::FieldKind::Pointer { .. } => true,
-        crate::layout::FieldKind::Inline(child) => layout_contains_pointer(child, layouts, visiting),
+    let result = descriptor.fields().iter().any(|field| {
+        let start = field.offset() as usize;
+        match field.kind() {
+            crate::layout::FieldKind::Scalar(_) => false,
+            crate::layout::FieldKind::Pointer { slot, .. } => {
+                !bytes.is_some_and(|bytes| static_pointer_slot_is_absent(slot, bytes, start))
+            }
+            crate::layout::FieldKind::Inline(child) => {
+                let child_bytes = bytes.and_then(|bytes| {
+                    let Ok(resolved) = layouts.resolve_nominal(child) else { return None };
+                    let crate::layout::LayoutSize::Fixed(size) = layouts.get(resolved)?.size() else { return None };
+                    start.checked_add(size as usize).and_then(|end| bytes.get(start..end))
+                });
+                static_data_has_live_pointer(child, child_bytes, layouts, visiting)
+            }
+        }
     });
     visiting.pop();
     result
+}
+
+/// A canonical pointer slot is four little-endian bytes; only a nullable slot
+/// may hold the all-zero absent encoding.
+fn static_pointer_slot_is_absent(slot: crate::layout::PointerSlot, bytes: &[u8], start: usize) -> bool {
+    slot == crate::layout::PointerSlot::OwnedNullable
+        && start
+            .checked_add(4)
+            .and_then(|end| bytes.get(start..end))
+            .is_some_and(|slot| slot.iter().all(|byte| *byte == 0))
 }
 
 fn static_data_extent_matches(
@@ -820,7 +852,14 @@ fn canonical_fixed_layout_bytes(
     if let crate::layout::LayoutKind::Scalar(kind) = descriptor.kind() {
         return canonical_scalar_bytes(*kind, bytes);
     }
-    if !matches!(descriptor.kind(), crate::layout::LayoutKind::Tuple { .. } | crate::layout::LayoutKind::PackedRecord { .. }) {
+    // A pointer value slot is admitted only through its field rule below: a
+    // static slot must be null.
+    if !matches!(
+        descriptor.kind(),
+        crate::layout::LayoutKind::Tuple { .. }
+            | crate::layout::LayoutKind::PackedRecord { .. }
+            | crate::layout::LayoutKind::RuntimePointerValueSlot { .. }
+    ) {
         return false;
     }
     visiting.push(layout);
@@ -837,7 +876,7 @@ fn canonical_fixed_layout_bytes(
                 let Some(end) = start.checked_add(child_size as usize) else { return false };
                 bytes.get(start..end).is_some_and(|field_bytes| canonical_fixed_layout_bytes(child, field_bytes, layouts, visiting))
             }
-            crate::layout::FieldKind::Pointer { .. } => false,
+            crate::layout::FieldKind::Pointer { slot, .. } => static_pointer_slot_is_absent(slot, bytes, start),
         }
     });
     visiting.pop();

@@ -178,6 +178,11 @@ impl FunctionLowerer<'_> {
         if matches!(ty.unqualified(), Type::Named(head, arguments) if head == "List" && arguments.len() == 1) {
             return self.clone_list_value_for_storage(value, ty.unqualified());
         }
+        // A payload-free variant is a shared static object; a `unique`
+        // result needs its own fresh shell.
+        if self.is_static_variant(value) && scalar_aggregate_shape(ty.unqualified(), self.definitions).is_some() {
+            return self.clone_aggregate_for_storage(value, ty.unqualified());
+        }
         Ok(value)
     }
 

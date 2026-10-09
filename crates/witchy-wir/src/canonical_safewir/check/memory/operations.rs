@@ -708,8 +708,13 @@ impl<'a> MemoryChecker<'a> {
                 extent: extent.clone(),
                 ownership: Ownership::Shared,
                 allocation_class: None,
-                shared_immutable: false,
-                initialized_owned_slots: false,
+                // Static bytes are immutable shared storage: the retain and
+                // release helpers skip them, so a static lane meets a shared
+                // heap lane at a phi exactly as two shared heap lanes do.
+                shared_immutable: true,
+                // Every slot of a static object is written by its segment;
+                // a nullable pointer slot it holds is null, never garbage.
+                initialized_owned_slots: true,
             },
         );
         self.state.static_data_objects.insert(destination);

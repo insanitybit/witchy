@@ -17,6 +17,9 @@ mod storage_move;
 mod regex;
 #[path = "canonical_constructor_storage.rs"]
 mod constructor_storage;
+#[path = "canonical_static_variants.rs"]
+mod static_variants;
+use static_variants::StaticVariantSegments;
 #[path = "canonical_call_storage.rs"]
 mod call_storage;
 #[path = "canonical_flow_storage.rs"]
@@ -125,7 +128,7 @@ use witchy_wir::canonical_safewir::{
     Terminator, Ownership, ValueId, ValueType,
 };
 use witchy_wir::layout::{
-    HeaderLayout, LayoutBundle, LayoutInterner, LayoutKind, LayoutSize, PointerSlot, ScalarKind,
+    FieldKind, HeaderLayout, LayoutBundle, LayoutInterner, LayoutKind, LayoutSize, PointerSlot, ScalarKind,
 };
 use witchy_wir::canonical_safewir::{GcTypeId, closure_owner_contract::{
     CaptureOrdinal, CaptureStorage, CaptureTransfer, ConstructorId, OwnerCapture,
@@ -443,6 +446,7 @@ pub(crate) fn lower_typed_module_with_borrowed_views(
             ))
         })
         .collect::<Result<BTreeMap<_, _>, CanonicalLoweringError>>()?;
+    let static_variants = std::cell::RefCell::new(StaticVariantSegments::starting_after(string_payloads.len())?);
     // Callable identity is structural.  Intern every concrete checked `Fn`
     // type, including types which occur only in parameters or lambda
     // expressions, before assigning any declaration/function IDs.  A source
@@ -1797,6 +1801,7 @@ if capability_imports.contains("build_out_write_at") {
             &layouts,
             &layout_catalog,
             &string_data_ids,
+            &static_variants,
             &host_imports,
             &packed_records,
             &definitions,
@@ -1861,6 +1866,7 @@ if capability_imports.contains("build_out_write_at") {
             &layouts,
             &layout_catalog,
             &string_data_ids,
+            &static_variants,
             &host_imports,
             &packed_records,
             &definitions,
@@ -1930,6 +1936,7 @@ if capability_imports.contains("build_out_write_at") {
         .collect::<BTreeSet<_>>();
     let static_data_segments = all_static_data_segments
         .into_iter()
+        .chain(static_variants.into_inner().into_segments())
         .filter(|segment| referenced_static_data.contains(&segment.id()))
         .collect();
     let candidate = CanonicalModule::from_lowering_with_static_data(LoweredModuleParts {
@@ -4279,6 +4286,7 @@ fn lower_function(
     layout_bundle: &LayoutBundle,
     layouts: &LayoutInterner,
     string_data_ids: &BTreeMap<Vec<u8>, witchy_wir::canonical_safewir::StaticDataId>,
+    static_variants: &std::cell::RefCell<StaticVariantSegments>,
     host_imports: &HostImports,
     packed_records: &HashMap<String, &TypeDef>,
     definitions: &BTreeMap<String, TypeDef>,
@@ -4290,7 +4298,7 @@ fn lower_function(
     loop {
         // A discarded attempt's tail-site locations name its own blocks.
         let known_sites = proper_tail_locations.keys().copied().collect::<BTreeSet<_>>();
-        match lower_function_attempt(&forced, function, body, id, item, opt_mode, lambda_path.clone(), lambda_names, signature, functions, forwarded_dict_intrinsics, direct_shared_alias_callees, checked_parameter_conventions, signatures, call_tables, tail_manifest, proper_tail_locations, type_table, checked_module, access_facts, loan_facts, view_facts, dictionary_comparators, dictionary_equivalents, layout_bundle, layouts, string_data_ids, host_imports, packed_records, definitions, closures, environment, canonical_source)? {
+        match lower_function_attempt(&forced, function, body, id, item, opt_mode, lambda_path.clone(), lambda_names, signature, functions, forwarded_dict_intrinsics, direct_shared_alias_callees, checked_parameter_conventions, signatures, call_tables, tail_manifest, proper_tail_locations, type_table, checked_module, access_facts, loan_facts, view_facts, dictionary_comparators, dictionary_equivalents, layout_bundle, layouts, string_data_ids, static_variants, host_imports, packed_records, definitions, closures, environment, canonical_source)? {
             LoweringAttempt::Lowered(function) => return Ok(function),
             LoweringAttempt::Retry(names) => {
                 proper_tail_locations.retain(|site, _| known_sites.contains(site));
@@ -4328,6 +4336,7 @@ fn lower_function_attempt(
     layout_bundle: &LayoutBundle,
     layouts: &LayoutInterner,
     string_data_ids: &BTreeMap<Vec<u8>, witchy_wir::canonical_safewir::StaticDataId>,
+    static_variants: &std::cell::RefCell<StaticVariantSegments>,
     host_imports: &HostImports,
     packed_records: &HashMap<String, &TypeDef>,
     definitions: &BTreeMap<String, TypeDef>,
@@ -4437,6 +4446,7 @@ fn lower_function_attempt(
         layout_bundle,
         layouts,
         string_data_ids,
+        static_variants,
         host_imports,
         packed_records,
         definitions,
@@ -5276,6 +5286,8 @@ struct FunctionLowerer<'a> {
     layout_bundle: &'a LayoutBundle,
     layouts: &'a LayoutInterner,
     string_data_ids: &'a BTreeMap<Vec<u8>, witchy_wir::canonical_safewir::StaticDataId>,
+    /// Shared static objects for payload-free sum variants, interned module-wide.
+    static_variants: &'a std::cell::RefCell<StaticVariantSegments>,
     host_imports: &'a HostImports,
     closures: &'a ClosureContext,
     packed_records: &'a HashMap<String, &'a TypeDef>,
@@ -7212,16 +7224,24 @@ impl FunctionLowerer<'_> {
                 }
                 arm_facts[index] = self.snapshot_facts();
             }
-            let all_tokens = values.iter().any(|value| self.carries_token(*value));
+            // A static variant lane is cloned into token shape (a runtime
+            // no-op) even when no lane carries a token: the phi then looks
+            // like any constructor result to every consumer, instead of a
+            // shared static the store paths cannot move.
+            let all_tokens = values.iter().any(|value| self.carries_token(*value) || self.is_static_variant(*value));
             for (index, (end, _)) in arms.iter().enumerate() {
                 self.restore_snapshot(arm_facts[index].clone());
                 self.current = *end;
                 if all_tokens && !self.carries_token(values[index]) {
-                    self.ensure_string_extent(values[index])?;
-                    if !self.string_lengths.contains_key(&values[index]) {
-                        return Err(CanonicalLoweringError::UnsupportedExpression("mixed token and static join lanes"));
+                    if self.is_static_variant(values[index]) {
+                        values[index] = self.clone_reference_token(values[index])?;
+                    } else {
+                        self.ensure_string_extent(values[index])?;
+                        if !self.string_lengths.contains_key(&values[index]) {
+                            return Err(CanonicalLoweringError::UnsupportedExpression("mixed token and static join lanes"));
+                        }
+                        values[index] = self.clone_string_for_storage(values[index])?;
                     }
-                    values[index] = self.clone_string_for_storage(values[index])?;
                 }
                 arm_facts[index] = self.snapshot_facts();
             }
@@ -11069,7 +11089,34 @@ impl FunctionLowerer<'_> {
     }
 
     fn is_static_string(&self, value: ValueId) -> bool {
-        self.static_data_values.contains(&value)
+        self.static_data_values.contains(&value) && self.string_lengths.contains_key(&value)
+    }
+
+    /// A shared static object of a payload-free sum variant, or a join
+    /// parameter over such objects: a reference lane with no token and no
+    /// string extent that is known shared. Cloning it yields a token the
+    /// runtime never counts (retain and release skip static addresses), so
+    /// it can meet a token lane at a join.
+    fn is_static_variant(&self, value: ValueId) -> bool {
+        self.is_static_variant_via(value, &mut BTreeSet::new())
+    }
+
+    /// A static datum without a string extent, or a block parameter every
+    /// one of whose incoming arguments is one. Nothing else qualifies: a
+    /// `let` parameter or a shared heap phi has its own token shape rules.
+    fn is_static_variant_via(&self, value: ValueId, visited: &mut BTreeSet<ValueId>) -> bool {
+        if !matches!(self.values.get(&value), Some(ValueType::Ref(_))) || self.string_lengths.contains_key(&value) {
+            return false;
+        }
+        if self.static_data_values.contains(&value) {
+            return true;
+        }
+        if !visited.insert(value) {
+            return true;
+        }
+        self.incoming_edges.get(&value).is_some_and(|arguments| {
+            !arguments.is_empty() && arguments.iter().all(|argument| self.is_static_variant_via(*argument, visited))
+        })
     }
 
     /// Whether `value` holds a reference-count token the release placer
@@ -11175,7 +11222,7 @@ impl FunctionLowerer<'_> {
         if lanes.is_empty() || !matches!(self.values[&lanes[0].1], ValueType::Ref(_)) {
             return Ok(false);
         }
-        if !lanes.iter().any(|(_, value)| self.carries_token(*value)) {
+        if !lanes.iter().any(|(_, value)| self.carries_token(*value) || self.is_static_variant(*value)) {
             return Ok(false);
         }
         for (block, value) in lanes.iter_mut() {
@@ -11183,6 +11230,12 @@ impl FunctionLowerer<'_> {
                 continue;
             }
             self.current = *block;
+            if self.is_static_variant(*value) {
+                // A static variant clones to a token the runtime never counts:
+                // retain and release both skip addresses below the heap base.
+                *value = self.clone_reference_token(*value)?;
+                continue;
+            }
             if !self.string_lengths.contains_key(value) {
                 // A static String lane must authenticate its own header before
                 // it can be cloned into the token shape of the other edge.
@@ -13628,6 +13681,18 @@ impl FunctionLowerer<'_> {
             return Err(CanonicalLoweringError::CallArityMismatch {
                 callee: name.to_owned(), expected: variant.arity, actual: arguments.len(),
             });
+        }
+        // A payload-free variant of a non-affine sum written in source is
+        // one shared static object per module, never a fresh allocation. The
+        // kernel constructors (`lower_aggregate_for_source`) still allocate:
+        // several of them promise a fresh unique shell to their consumers.
+        if shape.tagged && variant.arity == 0
+            && witchy_canonical_source::storage::affine_storage_shape(&source_type, self.definitions).is_none()
+            && self.closures.layouts.opaque_type(&source_type, self.definitions).is_none()
+        {
+            let result = self.lower_static_nullary_variant(&source_type, &shape, index)?;
+            self.complete_region_must_transfer(expression, result)?;
+            return Ok(result);
         }
         let values = self.lower_checked_aggregate_payload(arguments, &shape, index)?;
         let result = self.lower_aggregate_for_source(&source_type, &shape, index, values)?;
