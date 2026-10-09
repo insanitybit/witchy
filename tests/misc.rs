@@ -303,6 +303,8 @@ mod async_profile_map;
 mod bytes_to_string_decode;
 #[path = "misc/std_let_params.rs"]
 mod std_let_params;
+#[path = "misc/let_callable_adapter.rs"]
+mod let_callable_adapter;
 #[path = "misc/memory64_range_elision.rs"]
 mod memory64_range_elision;
 

@@ -76,6 +76,10 @@ pub(super) struct Checker {
     /// A persistent bare declaration expression checked as a function value.
     /// Local bindings and transient desugar nodes never mint this origin.
     pub(super) declared_function_values: HashMap<usize, String>,
+    /// Function values with `let` parameters accepted where the expected
+    /// callable takes those parameters owned, with the slot's conventions;
+    /// `let_callable_adapter` rewrites each into an owning lambda.
+    pub(super) let_callable_adapters: HashMap<usize, std::rc::Rc<[Convention]>>,
     /// Directed concrete-to-existential coercions discovered while checking.
     /// The types remain checker types until the ending substitution is known.
     /// [`TypeTable`] preserves unresolved requests so final existential

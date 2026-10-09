@@ -1595,8 +1595,11 @@ fn canonicalize_callable_instances<'catalog>(
     // A rewrite that changed something consumes the table with the module
     // below; one that changed nothing leaves the checked annotation intact.
     let mut typed = typed;
+    // A named function value accepted in an owned callable slot despite its
+    // `let` parameters becomes its owning lambda here, for the same reason.
     let try_rewritten = typed.rewrite_preserving_nodes(|table, module| {
-        crate::try_context::rewrite_try_ctx_module(module, table)
+        let adapted = crate::let_callable_adapter::rewrite_let_callable_adapters(module, table);
+        crate::try_context::rewrite_try_ctx_module(module, table) | adapted
     });
     let lowering = if try_rewritten {
         crate::traits::CheckedWasmLowering::Lowered(

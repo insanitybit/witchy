@@ -67,6 +67,7 @@ pub mod std_pruning;
 pub mod std_pruning_roots;
 pub mod typeck;
 pub mod try_context;
+pub mod let_callable_adapter;
 pub mod witness;
 pub mod views;
 

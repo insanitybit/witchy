@@ -5597,6 +5597,56 @@ impl Checker {
         self.unify(expected, actual)
     }
 
+    /// A named function whose parameters borrow (`let`) meets a callable slot
+    /// that passes those arguments owned. The value is accepted at the slot's
+    /// conventions and recorded; `crate::let_callable_adapter` turns it into
+    /// `fn(p): f(p)` with an owned `p`, which lends `p` to `f` and drops it.
+    /// The function is named either bare (`shout`) or module-qualified, which
+    /// the linker has already eta-expanded (`string.trim`) with the
+    /// declaration's conventions. Only owned-to-`let` positions adapt: `var`,
+    /// `own` and exclusive reference positions must still match exactly, and
+    /// any other value is returned unchanged for the ordinary check to judge.
+    fn adapt_let_callable(&mut self, arg: &Expr, expected: &Ty, actual: Ty) -> Ty {
+        let named_function = match arg {
+            Expr::Var(name) => self.lookup(name).is_none() && self.fn_sigs.contains_key(name),
+            Expr::Lambda { params, body, .. } => self.linker_eta_opt_contract(params, body).is_some(),
+            _ => false,
+        };
+        if !named_function {
+            return actual;
+        }
+        let Ty::Fn(_, _, expected_conventions, _, _) = self.resolve(expected) else { return actual };
+        let Ty::Fn(params, result, conventions, references, qualifiers) = &actual else { return actual };
+        if expected_conventions.len() != conventions.len() {
+            return actual;
+        }
+        let mut adapted = false;
+        for (index, (want, has)) in expected_conventions.iter().zip(conventions.iter()).enumerate() {
+            if want == has {
+                continue;
+            }
+            if *want != Convention::Let
+                || *has != Convention::Borrow
+                || references.get(index).copied().unwrap_or(false)
+            {
+                return actual;
+            }
+            adapted = true;
+        }
+        if !adapted {
+            return actual;
+        }
+        let key = arg as *const Expr as usize;
+        self.let_callable_adapters.insert(key, expected_conventions.clone());
+        let adapted = Ty::Fn(params.clone(), result.clone(), expected_conventions, references.clone(), *qualifiers);
+        if let Some(record) = &mut self.type_record
+            && let Some(entry) = record.get_mut(&key)
+        {
+            entry.0 = adapted.clone();
+        }
+        adapted
+    }
+
     /// A rooted slice is a retained immutable carrier, not an owned `List`.
     /// Only catalogued read-only sequence operations may consume this
     /// compatibility at their receiver position; list mutation never reaches
@@ -7092,6 +7142,7 @@ impl Checker {
             }
             _ => {
                 let at = self.infer(expr)?;
+                let at = self.adapt_let_callable(expr, expected, at);
                 self.coerce_arg(expected, &at)?;
                 Ok(at)
             }
@@ -7537,6 +7588,7 @@ impl Checker {
                 self.infer_expected(arg, param_ty)
             };
             let at = inferred.map_err(|e| in_call_context(&display, e))?;
+            let at = self.adapt_let_callable(arg, param_ty, at);
             self.remember_owned_operand(arg, &at);
             if opt_callable {
                 self.require_opt_value_provenance(arg, &self.opt_value_requirement(param_ty), &display, index)?;
@@ -11973,6 +12025,9 @@ pub struct TypeTable {
     /// Exact checker-authenticated source declaration behind a function-value
     /// expression. This remains valid for a generic use-site instantiation.
     declared_function_values: HashMap<usize, String>,
+    /// Function values accepted through an owning adapter, with the
+    /// conventions of the slot they fill; see `crate::let_callable_adapter`.
+    let_callable_adapters: HashMap<usize, Rc<[Convention]>>,
     /// Canonical view expressions retain their carrier type even while a
     /// generic payload variable remains unresolved. These are authenticated
     /// formation facts, not general permission for downstream consumers to
@@ -12824,6 +12879,12 @@ impl TypeTable {
             .then(|| self.declared_function_values.get(&(e as *const Expr as usize)))
             .flatten()
             .map(String::as_str)
+    }
+
+    /// The slot conventions this exact function value meets through the
+    /// owning adapter `crate::let_callable_adapter` builds, if it needs one.
+    pub fn let_callable_adapter(&self, e: &Expr) -> Option<&[Convention]> {
+        self.let_callable_adapters.get(&(e as *const Expr as usize)).map(|conventions| &conventions[..])
     }
 
     pub(crate) fn view_type_of(&self, e: &Expr) -> Option<&Ty> {
@@ -13909,6 +13970,7 @@ impl TypeTable {
             self.affine_expression_types.remove(&key);
             self.compiler_owned_materializations.remove(&key);
             self.declared_function_values.remove(&key);
+            self.let_callable_adapters.remove(&key);
             self.view_types.remove(&key);
             self.local_callees.remove(&key);
             self.non_completing.remove(&key);
@@ -13929,6 +13991,7 @@ impl TypeTable {
             affine_expression_types,
             compiler_owned_materializations,
             declared_function_values,
+            let_callable_adapters,
             view_types,
             local_callees,
             non_completing,
@@ -13944,6 +14007,7 @@ impl TypeTable {
         self.affine_expression_types.extend(affine_expression_types);
         self.compiler_owned_materializations.extend(compiler_owned_materializations);
         self.declared_function_values.extend(declared_function_values);
+        self.let_callable_adapters.extend(let_callable_adapters);
         self.view_types.extend(view_types);
         self.local_callees.extend(local_callees);
         self.non_completing.extend(non_completing);
@@ -14112,6 +14176,7 @@ fn run_check_seeded(
         type_record: if record { Some(HashMap::new()) } else { None },
         compiler_owned_materializations: HashSet::new(),
         declared_function_values: HashMap::new(),
+        let_callable_adapters: HashMap::new(),
         // Construction requests are also retained during ordinary checking so
         // capability payloads resolved only by the ending substitution are
         // rejected before annotation or lowering.
@@ -14846,6 +14911,7 @@ fn run_check_seeded(
             affine_expression_types,
             compiler_owned_materializations: c.compiler_owned_materializations,
             declared_function_values: c.declared_function_values,
+            let_callable_adapters: c.let_callable_adapters,
             view_types,
             local_callees,
             non_completing,

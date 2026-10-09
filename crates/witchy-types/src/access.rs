@@ -641,6 +641,20 @@ impl<'a> AccessVerifier<'a> {
         if params.len() != function.params.len() {
             return Ok(None);
         }
+        // A value the checker accepted through the owning adapter has the
+        // adapter's contract: the slot's conventions, which the rewrite in
+        // `crate::let_callable_adapter` gives the lambda that replaces it.
+        if let Some(conventions) = self.table.let_callable_adapter(expression) {
+            return AccessSignature::from_resolved_parts_with_catalog(
+                function.params.iter().map(|param| param.ty.as_ref()).collect(),
+                function.ret.as_ref(),
+                conventions.to_vec(),
+                &resolved,
+                &self.borrow_catalog,
+            )
+                .map(Some)
+                .map_err(Self::signature_error);
+        }
         AccessSignature::from_resolved_function_with_catalog(
             function,
             &resolved,
@@ -1796,8 +1810,12 @@ impl<'a> AccessVerifier<'a> {
                         message: "lambda has no finalized checked type or checked expression context"
                             .into(),
                     })?;
-                let conventions: Vec<Convention> =
-                    params.iter().map(|parameter| parameter.convention).collect();
+                // An eta lambda accepted through the owning adapter takes the
+                // slot's conventions (see `signature_for_function_value`).
+                let conventions: Vec<Convention> = match self.table.let_callable_adapter(expression) {
+                    Some(conventions) => conventions.to_vec(),
+                    None => params.iter().map(|parameter| parameter.convention).collect(),
+                };
                 let mut signature = AccessSignature::from_resolved_parts_with_catalog(
                     params.iter().map(|parameter| parameter.ty.as_ref()).collect(),
                     ret.as_ref(),
