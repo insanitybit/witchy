@@ -312,6 +312,7 @@ mod runtime {
             use crate::Outcome;
             use witchy_runtime::runtime::self_checks::launch_arguments_tests as checks;
             #[test] fn argument_image_rejects_address_overflow() { checks::argument_image_rejects_address_overflow().check() }
+            #[test] fn large_heap_argument_image_is_unit_aligned() { checks::large_heap_argument_image_is_unit_aligned().check() }
             #[test] fn service_byte_image_is_owned_binary_and_rejects_overflow() { checks::service_byte_image_is_owned_binary_and_rejects_overflow().check() }
         }
     }

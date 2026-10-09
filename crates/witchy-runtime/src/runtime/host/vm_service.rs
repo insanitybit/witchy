@@ -1,5 +1,6 @@
 //! Canonical RFC-0032 services. Only sealed admitted site recipes launch a
 //! callback; externrefs carry actual Rust resources, never integer handles.
+use crate::runtime::GuestAddress;
 
 use std::sync::{Arc, Mutex};
 use wasmtime::{Caller, Error, ExternRef, Linker, Result, Rooted, StoreLimitsBuilder, TypedFunc};
@@ -49,11 +50,11 @@ impl Drop for Worker {
 #[derive(Clone)]
 struct Response(Arc<[u8]>);
 
-pub(super) fn link(linker: &mut Linker<VmState>) -> Result<()> {
-    linker.func_wrap("witchy", "vm_service_start", start)?;
-    linker.func_wrap("witchy", "vm_service_step", step)?;
+pub(super) fn link<P: GuestAddress>(linker: &mut Linker<VmState>) -> Result<()> {
+    linker.func_wrap("witchy", "vm_service_start", start::<P>)?;
+    linker.func_wrap("witchy", "vm_service_step", step::<P>)?;
     linker.func_wrap("witchy", "vm_service_response_size", response_size)?;
-    linker.func_wrap("witchy", "vm_service_response_into", response_into)?;
+    linker.func_wrap("witchy", "vm_service_response_into", response_into::<P>)?;
     linker.func_wrap("witchy", "vm_service_close", close)?;
     Ok(())
 }
@@ -64,21 +65,21 @@ fn resource<T: Clone + 'static>(caller: &Caller<'_, VmState>, reference: Option<
         .ok_or_else(|| Error::msg(format!("wrong runtime {kind} kind")))
 }
 
-fn range(length: usize, pointer: i32, count: i32) -> Result<std::ops::Range<usize>> {
-    let start = pointer as u32 as usize;
+fn range<P: GuestAddress>(length: usize, pointer: P, count: i32) -> Result<std::ops::Range<usize>> {
+    let start = pointer.offset();
     let end = start.checked_add(count as u32 as usize)
         .filter(|end| *end <= length)
         .ok_or_else(|| Error::msg("service slice outside guest memory"))?;
     Ok(start..end)
 }
 
-fn input(caller: &mut Caller<'_, VmState>, pointer: i32, length: i32) -> Result<Vec<u8>> {
+fn input<P: GuestAddress>(caller: &mut Caller<'_, VmState>, pointer: P, length: i32) -> Result<Vec<u8>> {
     let memory = crate::runtime::memory_of(caller)?;
     let data = memory.data(&*caller);
     Ok(data[range(data.len(), pointer, length)?].to_vec())
 }
 
-fn start(mut caller: Caller<'_, VmState>, site: i64, pointer: i32, length: i32) -> Result<Option<Rooted<ExternRef>>> {
+fn start<P: GuestAddress>(mut caller: Caller<'_, VmState>, site: i64, pointer: P, length: i32) -> Result<Option<Rooted<ExternRef>>> {
     let site = u32::try_from(site).map_err(|_| Error::msg("invalid admitted service site ID"))?;
     let WorkerModule::Admitted(program) = &caller.data().module else {
         return Err(Error::msg("service requires sealed admitted worker metadata"));
@@ -120,7 +121,7 @@ fn start(mut caller: Caller<'_, VmState>, site: i64, pointer: i32, length: i32) 
     }).map(Some)
 }
 
-fn step(mut caller: Caller<'_, VmState>, reference: Option<Rooted<ExternRef>>, pointer: i32, length: i32) -> Result<Option<Rooted<ExternRef>>> {
+fn step<P: GuestAddress>(mut caller: Caller<'_, VmState>, reference: Option<Rooted<ExternRef>>, pointer: P, length: i32) -> Result<Option<Rooted<ExternRef>>> {
     let service: Service = resource(&caller, reference, "Service")?;
     let mut state = service.state.lock().map_err(|_| Error::msg("service state poisoned"))?;
     // Remove the live worker before any fallible read, allocation, invocation,
@@ -169,7 +170,7 @@ fn response_size(caller: Caller<'_, VmState>, reference: Option<Rooted<ExternRef
     Ok(u32::try_from(response.0.len()).map_err(|_| Error::msg("service response exceeds wasm32"))? as i32)
 }
 
-fn response_into(mut caller: Caller<'_, VmState>, reference: Option<Rooted<ExternRef>>, pointer: i32, capacity: i32) -> Result<i32> {
+fn response_into<P: GuestAddress>(mut caller: Caller<'_, VmState>, reference: Option<Rooted<ExternRef>>, pointer: P, capacity: i32) -> Result<i32> {
     let response: Response = resource(&caller, reference, "Response")?;
     let required = u32::try_from(response.0.len()).map_err(|_| Error::msg("service response exceeds wasm32"))?;
     let memory = crate::runtime::memory_of(&mut caller)?;

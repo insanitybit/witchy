@@ -1,4 +1,5 @@
 //! Canonical Fetch retains the existing HTTP provider, not BuildNet's wire protocol.
+use crate::runtime::GuestAddress;
 use std::sync::Arc;
 use wasmtime::{bail, Caller, Error, ExternRef, Linker, Result, Rooted};
 
@@ -51,12 +52,12 @@ pub(in crate::runtime) fn authenticate_response_capture(state: &VmState, data: &
     authenticate_response(state, data).map(|_| ())
 }
 
-pub(in crate::runtime) fn link(linker: &mut Linker<VmState>) -> Result<()> {
-    linker.func_wrap("witchy", "net_fetch_at", net_fetch_at)?;
-    linker.func_wrap("witchy", "fetch_only_at", fetch_only_at)?;
-    linker.func_wrap("witchy", "fetch_send_at", fetch_send_at)?;
+pub(in crate::runtime) fn link<P: GuestAddress>(linker: &mut Linker<VmState>) -> Result<()> {
+    linker.func_wrap("witchy", "net_fetch_at", net_fetch_at::<P>)?;
+    linker.func_wrap("witchy", "fetch_only_at", fetch_only_at::<P>)?;
+    linker.func_wrap("witchy", "fetch_send_at", fetch_send_at::<P>)?;
     linker.func_wrap("witchy", "fetch_response_size", response_size)?;
-    linker.func_wrap("witchy", "fetch_response_into", response_into)?;
+    linker.func_wrap("witchy", "fetch_response_into", response_into::<P>)?;
     Ok(())
 }
 
@@ -95,9 +96,9 @@ fn host_fetch_only(
     ExternRef::new(&mut caller, Authority { policy: narrowed, ..authority }).map(Some)
 }
 
-fn fetch_only_at(
+fn fetch_only_at<P: GuestAddress>(
     mut caller: Caller<'_, VmState>, fetch: Option<Rooted<ExternRef>>,
-    origins_ptr: i32, origins_len: i32,
+    origins_ptr: P, origins_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
     let authority = fetch_authority_ref(&caller, fetch)?;
     let memory = memory_of(&mut caller)?;
@@ -109,9 +110,9 @@ fn fetch_only_at(
     ExternRef::new(&mut caller, Authority { policy, ..authority }).map(Some)
 }
 
-fn net_fetch_at(
+fn net_fetch_at<P: GuestAddress>(
     mut caller: Caller<'_, VmState>, net: Option<Rooted<ExternRef>>,
-    origins_ptr: i32, origins_len: i32,
+    origins_ptr: P, origins_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
     let token = net.ok_or_else(|| Error::msg("Net externref is null"))?;
     let data = token.data(&caller)?.ok_or_else(|| Error::msg("Net externref has no host data"))?;
@@ -130,10 +131,10 @@ fn net_fetch_at(
     ExternRef::new(&mut caller, authority).map(Some)
 }
 
-fn fetch_send_at(
+fn fetch_send_at<P: GuestAddress>(
     mut caller: Caller<'_, VmState>, fetch: Option<Rooted<ExternRef>>,
-    method_ptr: i32, method_len: i32, url_ptr: i32, url_len: i32,
-    headers_ptr: i32, headers_len: i32, body_ptr: i32, body_len: i32,
+    method_ptr: P, method_len: i32, url_ptr: P, url_len: i32,
+    headers_ptr: P, headers_len: i32, body_ptr: P, body_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
     let authority = fetch_authority_ref(&caller, fetch)?;
     let mem = memory_of(&mut caller)?;
@@ -194,14 +195,14 @@ fn response_size(caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) 
     checked_response_len(response(&caller, token)?.len())
 }
 
-fn response_into(
+fn response_into<P: GuestAddress>(
     mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>,
-    out_ptr: i32, capacity: i32,
+    out_ptr: P, capacity: i32,
 ) -> Result<i32> {
     let bytes = response(&caller, token)?;
     let required = checked_response_len(bytes.len())?;
     let memory = memory_of(&mut caller)?;
-    let start = usize::try_from(out_ptr).map_err(|_| Error::msg("negative Fetch output pointer"))?;
+    let start = out_ptr.offset();
     let capacity = usize::try_from(capacity).map_err(|_| Error::msg("negative Fetch output capacity"))?;
     start.checked_add(capacity).filter(|end| *end <= memory.data_size(&caller))
         .ok_or_else(|| Error::msg("Fetch output slice lies outside guest memory"))?;

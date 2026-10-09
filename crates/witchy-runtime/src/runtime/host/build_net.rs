@@ -1,5 +1,6 @@
 //! Build-only plaintext fetches through an instance-bound exact host grant.
 //! Responses use the shared immutable carrier, never pending guest buffers.
+use crate::runtime::GuestAddress;
 use std::sync::Arc;
 use wasmtime::{bail, Caller, Error, ExternRef, Linker, Result, Rooted};
 use super::super::{memory_of, read_slice_str, VmState};
@@ -36,15 +37,15 @@ pub(in crate::runtime) fn authenticate_capture(state: &VmState, data: &dyn std::
     authenticate(&state.build_net_issuer, data).map(|_| ())
 }
 
-pub(in crate::runtime) fn link(linker: &mut Linker<VmState>) -> Result<()> {
+pub(in crate::runtime) fn link<P: GuestAddress>(linker: &mut Linker<VmState>) -> Result<()> {
     // Linkage exposes no mint operation and grants no network authority.
-    linker.func_wrap("witchy", "build_net_fetch", fetch)?;
+    linker.func_wrap("witchy", "build_net_fetch", fetch::<P>)?;
     Ok(())
 }
 
-fn fetch(
+fn fetch<P: GuestAddress>(
     mut caller: Caller<'_, VmState>, grant: Option<Rooted<ExternRef>>,
-    host_ptr: i32, host_len: i32, path_ptr: i32, path_len: i32,
+    host_ptr: P, host_len: i32, path_ptr: P, path_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
     let grant = grant.ok_or_else(|| Error::msg("fetch_build: null capability"))?;
     let data = grant.data(&caller)?.ok_or_else(|| Error::msg("fetch_build: missing capability data"))?;

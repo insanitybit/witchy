@@ -1,3 +1,4 @@
+use crate::runtime::GuestAddress;
 use wasmtime::{bail, Caller, Extern, Linker, Result};
 
 use super::super::{memory_of, read_wstr, slice, VmState};
@@ -12,10 +13,10 @@ pub(super) fn require_console_token(
     Ok(())
 }
 
-pub(super) fn host_print_captured(
+pub(super) fn host_print_captured<P: GuestAddress>(
     caller: Caller<'_, VmState>,
     token: Option<wasmtime::Rooted<wasmtime::ExternRef>>,
-    ptr: i32,
+    ptr: P,
     len: i32,
 ) -> Result<()> {
     let token = token.ok_or_else(|| wasmtime::Error::msg("missing Console token"))?;
@@ -31,19 +32,19 @@ pub(super) fn host_print_captured(
 /// `unreachable`) — so the kernel links it unconditionally; codegen calls it
 /// right before the trap so the compiled abort carries the interpreter's
 /// exact message.
-pub(in crate::runtime) fn link_abort(linker: &mut Linker<VmState>) -> Result<()> {
+pub(in crate::runtime) fn link_abort<P: GuestAddress>(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "__witchy_abort", host_witchy_abort)?;
-    linker.func_wrap("witchy", "__witchy_abort_at", host_witchy_abort_at)?;
-    linker.func_wrap("witchy", "__witchy_list_bounds_at", host_witchy_list_bounds_at)?;
-    linker.func_wrap("witchy", "__witchy_bytes_bounds_at", host_witchy_bytes_bounds_at)?;
-    linker.func_wrap("witchy", "__witchy_parse_int_at", host_witchy_parse_int_at)?;
+    linker.func_wrap("witchy", "__witchy_abort_at", host_witchy_abort_at::<P>)?;
+    linker.func_wrap("witchy", "__witchy_list_bounds_at", host_witchy_list_bounds_at::<P>)?;
+    linker.func_wrap("witchy", "__witchy_bytes_bounds_at", host_witchy_bytes_bounds_at::<P>)?;
+    linker.func_wrap("witchy", "__witchy_parse_int_at", host_witchy_parse_int_at::<P>)?;
     Ok(())
 }
 
 /// Register the Console string print.
-pub(in crate::runtime) fn link_fixture_console(linker: &mut Linker<VmState>) -> Result<()> {
+pub(in crate::runtime) fn link_fixture_console<P: GuestAddress>(linker: &mut Linker<VmState>) -> Result<()> {
     #[cfg(feature = "test-fixtures")]
-    linker.func_wrap("witchy", "console_print_at", super::canonical_fixture::print_at)?;
+    linker.func_wrap("witchy", "console_print_at", super::canonical_fixture::print_at::<P>)?;
     #[cfg(not(feature = "test-fixtures"))]
     linker.func_wrap("witchy", "console_print_at", |
         _caller: Caller<'_, VmState>,
@@ -57,9 +58,9 @@ pub(in crate::runtime) fn link_fixture_console(linker: &mut Linker<VmState>) -> 
 }
 
 /// Register the Console string print.
-pub(in crate::runtime) fn link_print(linker: &mut Linker<VmState>) -> Result<()> {
-    linker.func_wrap("witchy", "print", host_print)?;
-    linker.func_wrap("witchy", "console_print", host_print_captured)?;
+pub(in crate::runtime) fn link_print<P: GuestAddress>(linker: &mut Linker<VmState>) -> Result<()> {
+    linker.func_wrap("witchy", "print", host_print::<P>)?;
+    linker.func_wrap("witchy", "console_print", host_print_captured::<P>)?;
     Ok(())
 }
 
@@ -77,7 +78,7 @@ pub mod canonical_console_tests {
             super::super::super::Capabilities::none(), 1, None, &[])?;
         let mut store = vm.store;
         let mut linker = Linker::new(&engine);
-        link_abort(&mut linker)?;
+        link_abort::<i32>(&mut linker)?;
         let module = wasmtime::Module::new(&engine, r#"(module
             (import "witchy" "__witchy_list_bounds_at" (func $bounds (param i64 i32 i32 i32 i32)))
             (memory (export "memory") 1)
@@ -106,7 +107,7 @@ pub mod canonical_console_tests {
             super::super::super::Capabilities::none(), 1, None, &[])?;
         let mut store = vm.store;
         let mut linker = Linker::new(&engine);
-        link_abort(&mut linker)?;
+        link_abort::<i32>(&mut linker)?;
         let module = wasmtime::Module::new(&engine, r#"(module
             (import "witchy" "__witchy_abort_at" (func $abort (param i32 i32 i32 i32 i32)))
             (memory (export "memory") 1)
@@ -139,7 +140,7 @@ pub mod canonical_console_tests {
         }, 1, None, &[])?;
         let mut store = vm.store;
         let mut linker = Linker::new(&engine);
-        link_print(&mut linker)?;
+        link_print::<i32>(&mut linker)?;
         let module = wasmtime::Module::new(&engine, r#"(module
             (import "witchy" "console_print" (func $print (param externref i32 i32)))
             (memory (export "memory") 1)
@@ -225,17 +226,17 @@ fn guest_i64_global(caller: &mut Caller<'_, VmState>, name: &str) -> Option<i64>
 
 /// Canonical diagnostic ABI: raw byte slices, never implicit String headers or
 /// a stale site global. All reads finish before rendering the terminal error.
-fn diagnostic_text(data: &[u8], ptr: i32, len: i32) -> Result<&str> {
-    let start = ptr as u32 as usize;
+fn diagnostic_text<P: GuestAddress>(data: &[u8], ptr: P, len: i32) -> Result<&str> {
+    let start = ptr.offset();
     let end = start.checked_add(len as u32 as usize)
         .ok_or_else(|| wasmtime::Error::msg("abort slice overflow"))?;
     let bytes = data.get(start..end).ok_or_else(|| wasmtime::Error::msg("abort slice out of bounds"))?;
     std::str::from_utf8(bytes).map_err(|_| wasmtime::Error::msg("abort slice is not UTF-8"))
 }
 
-fn host_witchy_list_bounds_at(
+fn host_witchy_list_bounds_at<P: GuestAddress>(
     mut caller: Caller<'_, VmState>, index: i64, length: i32,
-    function_ptr: i32, function_len: i32, line: i32,
+    function_ptr: P, function_len: i32, line: i32,
 ) -> Result<()> {
     let memory = memory_of(&mut caller)?;
     let function = diagnostic_text(memory.data(&caller), function_ptr, function_len)?;
@@ -247,9 +248,9 @@ fn host_witchy_list_bounds_at(
     bail!("{}", witchy_syntax::diag::runtime_error(function, line as u32, &core));
 }
 
-fn host_witchy_bytes_bounds_at(
+fn host_witchy_bytes_bounds_at<P: GuestAddress>(
     mut caller: Caller<'_, VmState>, index: i64, length: i32,
-    function_ptr: i32, function_len: i32, line: i32,
+    function_ptr: P, function_len: i32, line: i32,
 ) -> Result<()> {
     let memory = memory_of(&mut caller)?;
     let function = diagnostic_text(memory.data(&caller), function_ptr, function_len)?;
@@ -261,9 +262,9 @@ fn host_witchy_bytes_bounds_at(
     bail!("{}", witchy_syntax::diag::runtime_error(function, line as u32, &core));
 }
 
-fn host_witchy_parse_int_at(
-    mut caller: Caller<'_, VmState>, source_ptr: i32, source_len: i32,
-    function_ptr: i32, function_len: i32, line: i32,
+fn host_witchy_parse_int_at<P: GuestAddress>(
+    mut caller: Caller<'_, VmState>, source_ptr: P, source_len: i32,
+    function_ptr: P, function_len: i32, line: i32,
 ) -> Result<()> {
     let memory = memory_of(&mut caller)?;
     let data = memory.data(&caller);
@@ -277,9 +278,9 @@ fn host_witchy_parse_int_at(
     bail!("{}", witchy_syntax::diag::runtime_error(function, line as u32, &core));
 }
 
-fn host_witchy_abort_at(
-    mut caller: Caller<'_, VmState>, message_ptr: i32, message_len: i32,
-    function_ptr: i32, function_len: i32, line: i32,
+fn host_witchy_abort_at<P: GuestAddress>(
+    mut caller: Caller<'_, VmState>, message_ptr: P, message_len: i32,
+    function_ptr: P, function_len: i32, line: i32,
 ) -> Result<()> {
     let memory = memory_of(&mut caller)?;
     let data = memory.data(&caller);
@@ -293,7 +294,7 @@ fn host_witchy_abort_at(
     bail!("{}", witchy_syntax::diag::runtime_error(function, line as u32, &core));
 }
 
-fn host_print(mut caller: Caller<'_, VmState>, ptr: i32, len: i32) -> Result<()> {
+fn host_print<P: GuestAddress>(mut caller: Caller<'_, VmState>, ptr: P, len: i32) -> Result<()> {
     let mem = memory_of(&mut caller)?;
     let data = mem.data(&caller);
     let bytes = slice(data, ptr, len)?;

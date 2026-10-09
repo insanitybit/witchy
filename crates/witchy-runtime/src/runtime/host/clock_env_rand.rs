@@ -1,3 +1,4 @@
+use crate::runtime::GuestAddress;
 use wasmtime::{Caller, Error, ExternRef, Linker, Result, Rooted};
 use std::sync::Arc;
 use witchy_wir::canonical_safewir::ENV_IMPORT_NAMES;
@@ -61,12 +62,12 @@ pub(in crate::runtime) fn link_rand(linker: &mut Linker<VmState>) -> Result<()> 
 }
 
 /// Register the `Env` lookup imports.
-pub(in crate::runtime) fn link_env(linker: &mut Linker<VmState>) -> Result<()> {
+pub(in crate::runtime) fn link_env<P: GuestAddress>(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "mint_env", host_mint_env)?;
     linker.func_wrap("witchy", "env_only", host_env_only)?;
     // The canonical route's Env lookup, under the SAME `Env` grant as its
     // frozen siblings: an ungranted program cannot link it.
-    linker.func_wrap("witchy", ENV_IMPORT_NAMES[0], host_env_get_at)?;
+    linker.func_wrap("witchy", ENV_IMPORT_NAMES[0], host_env_get_at::<P>)?;
     Ok(())
 }
 
@@ -187,10 +188,10 @@ fn env_lookup(env: &EnvAuthority, name: &str) -> (u8, Vec<u8>) {
 /// `env_get_at(env, name, name_len) -> response`: look `name` up once. A
 /// forged or wrong-kind token traps; a name the grant does not cover is the
 /// response's `Denied` status, not a trap.
-fn host_env_get_at(
+fn host_env_get_at<P: GuestAddress>(
     mut caller: Caller<'_, VmState>,
     env: Option<Rooted<ExternRef>>,
-    name_ptr: i32,
+    name_ptr: P,
     name_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
     let env = env_authority_ref(&caller, env)?;

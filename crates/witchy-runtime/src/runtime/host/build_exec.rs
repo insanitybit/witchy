@@ -1,5 +1,6 @@
 //! Build-only tool execution from an instance-bound map of confined files.
 //! Guest strings select explicit entries; they never become ambient executables.
+use crate::runtime::GuestAddress;
 use std::{collections::BTreeMap, sync::Arc};
 use wasmtime::{bail, Caller, Error, ExternRef, Linker, Result, Rooted};
 use super::super::{memory_of, read_slice_str, VmState};
@@ -42,14 +43,14 @@ pub(in crate::runtime) fn authenticate_capture(state: &VmState, data: &dyn std::
     authenticate(&state.build_exec_issuer, data).map(|_| ())
 }
 
-pub(in crate::runtime) fn link(linker: &mut Linker<VmState>) -> Result<()> {
-    linker.func_wrap("witchy", "build_exec_run", run)?;
+pub(in crate::runtime) fn link<P: GuestAddress>(linker: &mut Linker<VmState>) -> Result<()> {
+    linker.func_wrap("witchy", "build_exec_run", run::<P>)?;
     Ok(())
 }
 
-fn run(
+fn run<P: GuestAddress>(
     mut caller: Caller<'_, VmState>, grant: Option<Rooted<ExternRef>>,
-    tool_ptr: i32, tool_len: i32, input_ptr: i32, input_len: i32,
+    tool_ptr: P, tool_len: i32, input_ptr: P, input_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
     let grant = grant.ok_or_else(|| Error::msg("run_tool: null capability"))?;
     let data = grant.data(&caller)?.ok_or_else(|| Error::msg("run_tool: missing capability data"))?;

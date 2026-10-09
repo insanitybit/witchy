@@ -7,6 +7,7 @@
 //! message), an optional predicate answer, and on success whatever capability
 //! the operation minted. The getters only borrow that snapshot and exercise no
 //! authority: a response exists only because an authorized operation issued it.
+use crate::runtime::GuestAddress;
 use std::sync::Arc;
 
 use wasmtime::{Caller, Error, ExternRef, Linker, Result, Rooted};
@@ -40,11 +41,11 @@ pub(in crate::runtime) enum Minted {
 
 /// Register the response getters. They grant nothing, so they link
 /// unconditionally: without an operation that issued one, no response exists.
-pub(in crate::runtime) fn link(linker: &mut Linker<VmState>) -> Result<()> {
+pub(in crate::runtime) fn link<P: GuestAddress>(linker: &mut Linker<VmState>) -> Result<()> {
     let [status, size, into, flag, take_dir, take_file, take_net, take_socket, take_listener] = CAP_RESPONSE_IMPORT_NAMES;
     linker.func_wrap("witchy", status, host_status)?;
     linker.func_wrap("witchy", size, host_size)?;
-    linker.func_wrap("witchy", into, host_into)?;
+    linker.func_wrap("witchy", into, host_into::<P>)?;
     linker.func_wrap("witchy", flag, host_flag)?;
     linker.func_wrap("witchy", take_dir, |caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>| take(caller, token, "Dir", |m| matches!(m, Minted::Dir(_))))?;
     linker.func_wrap("witchy", take_file, |caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>| take(caller, token, "File", |m| matches!(m, Minted::File(_))))?;
@@ -110,10 +111,10 @@ fn host_size(caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) -> R
 /// Copy the whole payload when `capacity` holds it and answer its length
 /// either way. The buffer is preflighted in full and a short one is left
 /// untouched: no partial copy, no consumed state.
-fn host_into(mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>, out_ptr: i32, capacity: i32) -> Result<i32> {
+fn host_into<P: GuestAddress>(mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>, out_ptr: P, capacity: i32) -> Result<i32> {
     let bytes = response(&caller, token)?.bytes;
     let required = length(bytes.len())?;
-    let start = usize::try_from(out_ptr).map_err(|_| Error::msg("negative capability response pointer"))?;
+    let start = out_ptr.offset();
     let room = usize::try_from(capacity).map_err(|_| Error::msg("negative capability response capacity"))?;
     let memory = memory_of(&mut caller)?;
     let end = start.checked_add(room).filter(|end| *end <= memory.data_size(&caller))

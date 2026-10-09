@@ -1,5 +1,6 @@
 //! Bounded-slice Exec adapter. Core admission/catalog wiring is separate:
 //! these imports confer no grant beyond the existing exact Exec/Dir tokens.
+use crate::runtime::GuestAddress;
 use std::sync::Arc;
 use wasmtime::{Caller, Error, ExternRef, Linker, Result, Rooted};
 use super::{dir_authority_ref, dir_require_read, exec_authority_ref, memory_of, run_exec, VmState};
@@ -7,34 +8,34 @@ use super::{dir_authority_ref, dir_require_read, exec_authority_ref, memory_of, 
 /// Immutable process result, not an Exec grant or a caller-chosen token ID.
 struct ExecResponse(Arc<[u8]>);
 
-pub(super) fn link(linker: &mut Linker<VmState>) -> Result<()> {
-    linker.func_wrap("witchy", "exec_run_at", run_at)?;
+pub(super) fn link<P: GuestAddress>(linker: &mut Linker<VmState>) -> Result<()> {
+    linker.func_wrap("witchy", "exec_run_at", run_at::<P>)?;
     linker.func_wrap("witchy", "exec_response_size", response_size)?;
-    linker.func_wrap("witchy", "exec_response_into", response_into)?;
+    linker.func_wrap("witchy", "exec_response_into", response_into::<P>)?;
     Ok(())
 }
 
-fn range(ptr: i32, len: i32, limit: usize) -> Result<std::ops::Range<usize>> {
-    let start = ptr as u32 as usize;
+fn range<P: GuestAddress>(ptr: P, len: i32, limit: usize) -> Result<std::ops::Range<usize>> {
+    let start = ptr.offset();
     let end = start.checked_add(len as u32 as usize)
         .filter(|end| *end <= limit)
         .ok_or_else(|| Error::msg("Exec slice lies outside guest memory"))?;
     Ok(start..end)
 }
 
-fn text(data: &[u8], ptr: i32, len: i32) -> Result<String> {
+fn text<P: GuestAddress>(data: &[u8], ptr: P, len: i32) -> Result<String> {
     let bytes = &data[range(ptr, len, data.len())?];
     std::str::from_utf8(bytes).map(str::to_owned)
         .map_err(|_| Error::msg("Exec input slice is not valid UTF-8"))
 }
 
-fn run_at(
+fn run_at<P: GuestAddress>(
     mut caller: Caller<'_, VmState>,
     exec: Option<Rooted<ExternRef>>,
     dir: Option<Rooted<ExternRef>>,
-    path_ptr: i32, path_len: i32,
-    args_ptr: i32, args_len: i32,
-    stdin_ptr: i32, stdin_len: i32,
+    path_ptr: P, path_len: i32,
+    args_ptr: P, args_len: i32,
+    stdin_ptr: P, stdin_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
     // Authenticate both authorities before touching guest memory. Copy every
     // input before the one effect, using the std Exec ABI's NUL-joined argv.
@@ -62,9 +63,9 @@ fn response_size(caller: Caller<'_, VmState>, value: Option<Rooted<ExternRef>>) 
     Ok(response(&caller, value)?.len() as i32)
 }
 
-fn response_into(
+fn response_into<P: GuestAddress>(
     mut caller: Caller<'_, VmState>, value: Option<Rooted<ExternRef>>,
-    out_ptr: i32, capacity: i32,
+    out_ptr: P, capacity: i32,
 ) -> Result<i32> {
     let bytes = response(&caller, value)?;
     let memory = memory_of(&mut caller)?;

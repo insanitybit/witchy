@@ -1,3 +1,4 @@
+use crate::runtime::GuestAddress;
 use wasmtime::{Caller, Error, ExternRef, Linker, Result, Rooted};
 use std::sync::Arc;
 
@@ -13,39 +14,39 @@ use super::super::{
 };
 
 /// Register the root `Dir` grant mint.
-pub(in crate::runtime) fn link_mint_dir(linker: &mut Linker<VmState>) -> Result<()> {
+pub(in crate::runtime) fn link_mint_dir<P: GuestAddress>(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "mint_dir", host_mint_dir)?;
     // Narrowing never widens, so it links under any Dir grant.
-    linker.func_wrap("witchy", "dir_only_at", host_dir_only_at)?;
+    linker.func_wrap("witchy", "dir_only_at", host_dir_only_at::<P>)?;
     Ok(())
 }
 
 /// Register the Dir read family under a `Dir[Read]` grant: a program without
 /// the right cannot even link the import.
-pub(in crate::runtime) fn link_dir_read(linker: &mut Linker<VmState>) -> Result<()> {
+pub(in crate::runtime) fn link_dir_read<P: GuestAddress>(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "dir_only", host_dir_only)?;
     linker.func_wrap("witchy", "dir_list_at", host_dir_list_at)?;
-    linker.func_wrap("witchy", "dir_exists_at", host_dir_exists_at)?;
-    linker.func_wrap("witchy", "dir_is_dir_at", host_dir_is_dir_at)?;
-    linker.func_wrap("witchy", "dir_subtree_open_at", host_dir_subtree_open_at)?;
-    linker.func_wrap("witchy", "dir_read_file_at", host_dir_read_file_at)?;
-    linker.func_wrap("witchy", "dir_read_bytes_at", host_dir_read_bytes_at)?;
-    linker.func_wrap("witchy", "dir_read_at", host_dir_read_at)?;
+    linker.func_wrap("witchy", "dir_exists_at", host_dir_exists_at::<P>)?;
+    linker.func_wrap("witchy", "dir_is_dir_at", host_dir_is_dir_at::<P>)?;
+    linker.func_wrap("witchy", "dir_subtree_open_at", host_dir_subtree_open_at::<P>)?;
+    linker.func_wrap("witchy", "dir_read_file_at", host_dir_read_file_at::<P>)?;
+    linker.func_wrap("witchy", "dir_read_bytes_at", host_dir_read_bytes_at::<P>)?;
+    linker.func_wrap("witchy", "dir_read_at", host_dir_read_at::<P>)?;
     Ok(())
 }
 
 /// Register the Dir write family under a `Dir[Write]` grant.
-pub(in crate::runtime) fn link_dir_write(linker: &mut Linker<VmState>) -> Result<()> {
-    linker.func_wrap("witchy", "dir_write_file_at", host_dir_write_file_at)?;
-    linker.func_wrap("witchy", "dir_append_at", host_dir_append_at)?;
-    linker.func_wrap("witchy", "dir_append_bytes_at", host_dir_append_bytes_at)?;
-    linker.func_wrap("witchy", "dir_set_executable_at", host_dir_set_executable_at)?;
-    linker.func_wrap("witchy", "dir_rename_at", host_dir_rename_at)?;
-    linker.func_wrap("witchy", "dir_write_at", host_dir_write_at)?;
-    linker.func_wrap("witchy", "dir_make_dir_at", host_dir_make_dir_at)?;
-    linker.func_wrap("witchy", "dir_create_new_at", host_dir_create_new_at)?;
-    linker.func_wrap("witchy", "dir_replace_at", host_dir_replace_at)?;
-    linker.func_wrap("witchy", "dir_write_bytes_at", host_dir_write_bytes_at)?;
+pub(in crate::runtime) fn link_dir_write<P: GuestAddress>(linker: &mut Linker<VmState>) -> Result<()> {
+    linker.func_wrap("witchy", "dir_write_file_at", host_dir_write_file_at::<P>)?;
+    linker.func_wrap("witchy", "dir_append_at", host_dir_append_at::<P>)?;
+    linker.func_wrap("witchy", "dir_append_bytes_at", host_dir_append_bytes_at::<P>)?;
+    linker.func_wrap("witchy", "dir_set_executable_at", host_dir_set_executable_at::<P>)?;
+    linker.func_wrap("witchy", "dir_rename_at", host_dir_rename_at::<P>)?;
+    linker.func_wrap("witchy", "dir_write_at", host_dir_write_at::<P>)?;
+    linker.func_wrap("witchy", "dir_make_dir_at", host_dir_make_dir_at::<P>)?;
+    linker.func_wrap("witchy", "dir_create_new_at", host_dir_create_new_at::<P>)?;
+    linker.func_wrap("witchy", "dir_replace_at", host_dir_replace_at::<P>)?;
+    linker.func_wrap("witchy", "dir_write_bytes_at", host_dir_write_bytes_at::<P>)?;
     Ok(())
 }
 
@@ -56,8 +57,8 @@ pub(in crate::runtime) fn link_file_read(linker: &mut Linker<VmState>) -> Result
 }
 
 /// Register the File write leaf op (RFC-0012).
-pub(in crate::runtime) fn link_file_write(linker: &mut Linker<VmState>) -> Result<()> {
-    linker.func_wrap("witchy", "file_write_at", host_file_write_at)?;
+pub(in crate::runtime) fn link_file_write<P: GuestAddress>(linker: &mut Linker<VmState>) -> Result<()> {
+    linker.func_wrap("witchy", "file_write_at", host_file_write_at::<P>)?;
     Ok(())
 }
 
@@ -69,11 +70,11 @@ pub(in crate::runtime) fn link_mint_file(linker: &mut Linker<VmState>) -> Result
 
 /// Register the Exec subprocess spawn. The executable is named through a
 /// `Dir[Read]` capability, so `exec_run` reuses the shared confinement path.
-pub(in crate::runtime) fn link_exec(linker: &mut Linker<VmState>) -> Result<()> {
+pub(in crate::runtime) fn link_exec<P: GuestAddress>(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "mint_exec", host_mint_exec)?;
     linker.func_wrap("witchy", "exec_only", host_exec_only)?;
     linker.func_wrap("witchy", "exec_run", host_exec_run)?;
-    canonical_exec::link(linker)?;
+    canonical_exec::link::<P>(linker)?;
     Ok(())
 }
 
@@ -265,8 +266,8 @@ fn host_dir_only(
 /// policy is the current one narrowed by `policy`. Refinement only shrinks (a
 /// malformed or disjoint one denies everything), so it needs no right and never
 /// fails; the rights and backing are the receiver's.
-fn host_dir_only_at(
-    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>, policy_ptr: i32, policy_len: i32,
+fn host_dir_only_at<P: GuestAddress>(
+    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>, policy_ptr: P, policy_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
     let dir = dir_authority_ref(&caller, d)?;
     let memory = memory_of(&mut caller)?;
@@ -340,16 +341,16 @@ fn dir_bytes_length(length: usize) -> Result<i32> {
 /// host-side payload. The same limit covers Dir and File reads.
 const MAX_CAP_READ_BYTES: u64 = 64 << 20;
 
-fn dir_storage_range(ptr: i32, length: i32, limit: usize) -> Result<std::ops::Range<usize>> {
-    let start = usize::try_from(ptr).map_err(|_| Error::msg("negative Dir storage slice pointer"))?;
+fn dir_storage_range<P: GuestAddress>(ptr: P, length: i32, limit: usize) -> Result<std::ops::Range<usize>> {
+    let start = ptr.offset();
     let length = usize::try_from(length).map_err(|_| Error::msg("negative Dir storage slice length"))?;
     let end = start.checked_add(length).filter(|end| *end <= limit)
         .ok_or_else(|| Error::msg("Dir storage slice lies outside guest memory"))?;
     Ok(start..end)
 }
 
-fn host_dir_read_bytes_at(
-    caller: Caller<'_, VmState>, dir: Option<Rooted<ExternRef>>, path_ptr: i32, path_len: i32,
+fn host_dir_read_bytes_at<P: GuestAddress>(
+    caller: Caller<'_, VmState>, dir: Option<Rooted<ExternRef>>, path_ptr: P, path_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
     dir_read_response(caller, dir, path_ptr, path_len, false)
 }
@@ -358,8 +359,8 @@ fn host_dir_read_bytes_at(
 /// once. Rights are checked first and a missing right or forged token still
 /// traps; a request the grant does not cover, and every filesystem failure,
 /// is the response's status and message (RFC-0126 rule 3).
-fn host_dir_read_at(
-    caller: Caller<'_, VmState>, dir: Option<Rooted<ExternRef>>, path_ptr: i32, path_len: i32,
+fn host_dir_read_at<P: GuestAddress>(
+    caller: Caller<'_, VmState>, dir: Option<Rooted<ExternRef>>, path_ptr: P, path_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
     dir_read_response(caller, dir, path_ptr, path_len, true)
 }
@@ -368,8 +369,8 @@ fn host_dir_read_at(
 /// checked first and a missing right or forged token still traps; a request
 /// the grant does not cover, and every filesystem failure, is the response's
 /// status and a guest-safe message. Later getters only borrow this snapshot.
-fn dir_read_response(
-    mut caller: Caller<'_, VmState>, dir: Option<Rooted<ExternRef>>, path_ptr: i32, path_len: i32, text: bool,
+fn dir_read_response<P: GuestAddress>(
+    mut caller: Caller<'_, VmState>, dir: Option<Rooted<ExternRef>>, path_ptr: P, path_len: i32, text: bool,
 ) -> Result<Option<Rooted<ExternRef>>> {
     let dir = dir_authority_ref(&caller, dir)?;
     dir_require_read(&dir)?;
@@ -576,8 +577,8 @@ fn dir_navigate(dir: &DirAuthority, rel: &str, to: Navigation) -> Result<Minted,
 
 /// One navigation answered as a response that carries the minted capability
 /// on success. Rights are checked first and still trap.
-fn dir_navigation_response(
-    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>, path_ptr: i32, path_len: i32, to: Navigation,
+fn dir_navigation_response<P: GuestAddress>(
+    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>, path_ptr: P, path_len: i32, to: Navigation,
 ) -> Result<Option<Rooted<ExternRef>>> {
     let dir = dir_authority_ref(&caller, d)?;
     if to == Navigation::WriteFile { dir_require_write(&dir)?; } else { dir_require_read(&dir)?; }
@@ -591,22 +592,22 @@ fn dir_navigation_response(
 }
 
 /// `dir_subtree_open_at(dir, path) -> response`: `dir.subtree(path)`.
-fn host_dir_subtree_open_at(
-    caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>, path_ptr: i32, path_len: i32,
+fn host_dir_subtree_open_at<P: GuestAddress>(
+    caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>, path_ptr: P, path_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
     dir_navigation_response(caller, d, path_ptr, path_len, Navigation::Subtree)
 }
 
 /// `dir_read_file_at(dir, path) -> response`: `dir.read_file(path)`.
-fn host_dir_read_file_at(
-    caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>, path_ptr: i32, path_len: i32,
+fn host_dir_read_file_at<P: GuestAddress>(
+    caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>, path_ptr: P, path_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
     dir_navigation_response(caller, d, path_ptr, path_len, Navigation::ReadFile)
 }
 
 /// `dir_write_file_at(dir, path) -> response`: `dir.write_file(path)`.
-fn host_dir_write_file_at(
-    caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>, path_ptr: i32, path_len: i32,
+fn host_dir_write_file_at<P: GuestAddress>(
+    caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>, path_ptr: P, path_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
     dir_navigation_response(caller, d, path_ptr, path_len, Navigation::WriteFile)
 }
@@ -698,9 +699,9 @@ fn guest_write_failure(kind: ConfineErrorKind, rel: &str) -> String {
 
 /// Authenticate a write-family call and read its path (and optional data)
 /// slices; a missing right, forged token, or bad slice traps.
-fn dir_write_inputs(
+fn dir_write_inputs<P: GuestAddress>(
     caller: &mut Caller<'_, VmState>, d: Option<Rooted<ExternRef>>,
-    path_ptr: i32, path_len: i32, data: Option<(i32, i32)>,
+    path_ptr: P, path_len: i32, data: Option<(P, i32)>,
 ) -> Result<(DirAuthority, String, Vec<u8>)> {
     let dir = dir_authority_ref(caller, d)?;
     dir_require_write(&dir)?;
@@ -720,9 +721,9 @@ fn text(bytes: Vec<u8>) -> Result<String> {
 }
 
 /// `dir_write_at(dir, path, data) -> response`: `dir.write(path, data)`.
-fn host_dir_write_at(
+fn host_dir_write_at<P: GuestAddress>(
     mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>,
-    path_ptr: i32, path_len: i32, data_ptr: i32, data_len: i32,
+    path_ptr: P, path_len: i32, data_ptr: P, data_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
     let (dir, path, bytes) = dir_write_inputs(&mut caller, d, path_ptr, path_len, Some((data_ptr, data_len)))?;
     let contents = text(bytes)?;
@@ -731,9 +732,9 @@ fn host_dir_write_at(
 }
 
 /// `dir_append_at(dir, path, data) -> response`: `dir.append(path, data)`.
-fn host_dir_append_at(
+fn host_dir_append_at<P: GuestAddress>(
     mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>,
-    path_ptr: i32, path_len: i32, data_ptr: i32, data_len: i32,
+    path_ptr: P, path_len: i32, data_ptr: P, data_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
     let (dir, path, bytes) = dir_write_inputs(&mut caller, d, path_ptr, path_len, Some((data_ptr, data_len)))?;
     let contents = text(bytes)?;
@@ -742,9 +743,9 @@ fn host_dir_append_at(
 }
 
 /// `dir_write_bytes_at(dir, path, data) -> response`.
-fn host_dir_write_bytes_at(
+fn host_dir_write_bytes_at<P: GuestAddress>(
     mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>,
-    path_ptr: i32, path_len: i32, data_ptr: i32, data_len: i32,
+    path_ptr: P, path_len: i32, data_ptr: P, data_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
     let (dir, path, bytes) = dir_write_inputs(&mut caller, d, path_ptr, path_len, Some((data_ptr, data_len)))?;
     let outcome = dir_write_bytes_typed(&dir, &path, &bytes, false).map(|()| false);
@@ -752,9 +753,9 @@ fn host_dir_write_bytes_at(
 }
 
 /// `dir_append_bytes_at(dir, path, data) -> response`.
-fn host_dir_append_bytes_at(
+fn host_dir_append_bytes_at<P: GuestAddress>(
     mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>,
-    path_ptr: i32, path_len: i32, data_ptr: i32, data_len: i32,
+    path_ptr: P, path_len: i32, data_ptr: P, data_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
     let (dir, path, bytes) = dir_write_inputs(&mut caller, d, path_ptr, path_len, Some((data_ptr, data_len)))?;
     let outcome = dir_write_bytes_typed(&dir, &path, &bytes, true).map(|()| false);
@@ -763,9 +764,9 @@ fn host_dir_append_bytes_at(
 
 /// `dir_create_new_at(dir, path, data) -> response`: create `path` only if
 /// nothing occupies the name; an occupied visible name is `AlreadyExists`.
-fn host_dir_create_new_at(
+fn host_dir_create_new_at<P: GuestAddress>(
     mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>,
-    path_ptr: i32, path_len: i32, data_ptr: i32, data_len: i32,
+    path_ptr: P, path_len: i32, data_ptr: P, data_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
     let (dir, path, bytes) = dir_write_inputs(&mut caller, d, path_ptr, path_len, Some((data_ptr, data_len)))?;
     let contents = text(bytes)?;
@@ -783,9 +784,9 @@ fn host_dir_create_new_at(
 }
 
 /// `dir_replace_at(dir, path, data) -> response`: atomically replace `path`.
-fn host_dir_replace_at(
+fn host_dir_replace_at<P: GuestAddress>(
     mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>,
-    path_ptr: i32, path_len: i32, data_ptr: i32, data_len: i32,
+    path_ptr: P, path_len: i32, data_ptr: P, data_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
     let (dir, path, bytes) = dir_write_inputs(&mut caller, d, path_ptr, path_len, Some((data_ptr, data_len)))?;
     let contents = text(bytes)?;
@@ -798,8 +799,8 @@ fn host_dir_replace_at(
 }
 
 /// `dir_set_executable_at(dir, path) -> response`.
-fn host_dir_set_executable_at(
-    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>, path_ptr: i32, path_len: i32,
+fn host_dir_set_executable_at<P: GuestAddress>(
+    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>, path_ptr: P, path_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
     let (dir, path, _) = dir_write_inputs(&mut caller, d, path_ptr, path_len, None)?;
     let outcome = (|| {
@@ -815,8 +816,8 @@ fn host_dir_set_executable_at(
 
 /// `dir_make_dir_at(dir, path) -> response`: create the directory path
 /// (idempotent).
-fn host_dir_make_dir_at(
-    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>, path_ptr: i32, path_len: i32,
+fn host_dir_make_dir_at<P: GuestAddress>(
+    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>, path_ptr: P, path_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
     let (dir, path, _) = dir_write_inputs(&mut caller, d, path_ptr, path_len, None)?;
     let outcome = (|| {
@@ -830,9 +831,9 @@ fn host_dir_make_dir_at(
 /// `dir_rename_at(dir, from, to) -> response`: both names are judged as a
 /// write target of the source's kind; a source the grant cannot see is
 /// `NotFound`, exactly like a missing one.
-fn host_dir_rename_at(
+fn host_dir_rename_at<P: GuestAddress>(
     mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>,
-    from_ptr: i32, from_len: i32, to_ptr: i32, to_len: i32,
+    from_ptr: P, from_len: i32, to_ptr: P, to_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
     let (dir, from, to_bytes) = dir_write_inputs(&mut caller, d, from_ptr, from_len, Some((to_ptr, to_len)))?;
     let to = text(to_bytes)?;
@@ -883,22 +884,22 @@ fn host_dir_rename_at(
 /// `dir_exists_at(dir, path) -> response`: `dir.exists(path)`. An escape or a
 /// name the policy refuses is `Denied`; otherwise the flag is whether the
 /// grant can see an entry there, so an invisible entry answers `false`.
-fn host_dir_exists_at(
-    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>, path_ptr: i32, path_len: i32,
+fn host_dir_exists_at<P: GuestAddress>(
+    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>, path_ptr: P, path_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
     dir_probe_response(&mut caller, d, path_ptr, path_len, false)
 }
 
 /// `dir_is_dir_at(dir, path) -> response`: `dir.is_dir(path)`, as
 /// `dir_exists_at` but true only for a visible directory.
-fn host_dir_is_dir_at(
-    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>, path_ptr: i32, path_len: i32,
+fn host_dir_is_dir_at<P: GuestAddress>(
+    mut caller: Caller<'_, VmState>, d: Option<Rooted<ExternRef>>, path_ptr: P, path_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
     dir_probe_response(&mut caller, d, path_ptr, path_len, true)
 }
 
-fn dir_probe_response(
-    caller: &mut Caller<'_, VmState>, d: Option<Rooted<ExternRef>>, path_ptr: i32, path_len: i32, directory: bool,
+fn dir_probe_response<P: GuestAddress>(
+    caller: &mut Caller<'_, VmState>, d: Option<Rooted<ExternRef>>, path_ptr: P, path_len: i32, directory: bool,
 ) -> Result<Option<Rooted<ExternRef>>> {
     let dir = dir_authority_ref(caller, d)?;
     dir_require_read(&dir)?;
@@ -939,8 +940,8 @@ fn dir_probe_response(
 /// rule 3). A missing Write right or forged token traps; a filesystem failure
 /// is the status with a fixed message that names no path. Writes never follow
 /// the leaf.
-fn host_file_write_at(
-    mut caller: Caller<'_, VmState>, f: Option<Rooted<ExternRef>>, data_ptr: i32, data_len: i32,
+fn host_file_write_at<P: GuestAddress>(
+    mut caller: Caller<'_, VmState>, f: Option<Rooted<ExternRef>>, data_ptr: P, data_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
     let file = file_authority_ref(&caller, f)?;
     if !file.rights.write {

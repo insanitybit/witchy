@@ -1,4 +1,5 @@
 //! Admitted Console slices only. No legacy mint import or ambient Console grant.
+use crate::runtime::GuestAddress;
 use std::any::Any;
 use std::sync::Arc;
 use wasmtime::{Caller, Error, ExternRef, Result, Rooted, Store};
@@ -29,17 +30,17 @@ pub(in crate::runtime) fn mint(store: &mut Store<VmState>) -> Result<Rooted<Exte
     ExternRef::new(store, ConsoleToken { issuer, kind: 0, write: true })
 }
 
-fn text(data: &[u8], pointer: i32, length: i32) -> Result<String> {
-    let start = pointer as u32 as usize;
+fn text<P: GuestAddress>(data: &[u8], pointer: P, length: i32) -> Result<String> {
+    let start = pointer.offset();
     let end = start.checked_add(length as u32 as usize)
         .ok_or_else(|| Error::msg("fixture Console slice overflow"))?;
     let bytes = data.get(start..end).ok_or_else(|| Error::msg("fixture Console slice out of bounds"))?;
     String::from_utf8(bytes.to_vec()).map_err(|_| Error::msg("fixture Console slice is not UTF-8"))
 }
 
-pub(super) fn print_at(
+pub(super) fn print_at<P: GuestAddress>(
     mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>,
-    message_ptr: i32, message_len: i32, function_ptr: i32, function_len: i32, line: i32,
+    message_ptr: P, message_len: i32, function_ptr: P, function_len: i32, line: i32,
 ) -> Result<()> {
     let token = token.ok_or_else(|| Error::msg("fixture Console token is null"))?;
     let payload = token.data(&caller)?.ok_or_else(|| Error::msg("fixture Console token has no payload"))?;

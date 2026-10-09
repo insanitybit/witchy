@@ -1,3 +1,4 @@
+use crate::runtime::GuestAddress;
 use wasmtime::{Caller, Error, Linker, Result};
 use witchy_syntax::intrinsics;
 
@@ -21,13 +22,13 @@ pub(in crate::runtime) fn link_staging(linker: &mut Linker<VmState>) -> Result<(
 /// WAT), code-point strings, and the hex/base64 transforms bridged to the same
 /// native registry the interpreter uses (byte-for-byte parity, no byte-level
 /// work in WAT).
-pub(in crate::runtime) fn link_pure(linker: &mut Linker<VmState>) -> Result<()> {
-    super::regex::link(linker)?;
+pub(in crate::runtime) fn link_pure<P: GuestAddress>(linker: &mut Linker<VmState>) -> Result<()> {
+    super::regex::link::<P>(linker)?;
     linker.func_wrap("witchy", "user_cap_field_len", host_user_cap_field_len)?;
     linker.func_wrap("witchy", "regex_match_spans_len", host_regex_match_spans_len)?;
     linker.func_wrap("witchy", "regex_count", host_regex_count)?;
     linker.func_wrap("witchy", "regex_replace_all_len", host_regex_replace_all_len)?;
-    linker.func_wrap("witchy", "float_to_str", host_float_to_str)?;
+    linker.func_wrap("witchy", "float_to_str", host_float_to_str::<P>)?;
     linker.func_wrap("witchy", "string_from_code", host_string_from_code)?;
     linker.func_wrap("witchy", "encoding", host_encoding)?;
     Ok(())
@@ -36,7 +37,7 @@ pub(in crate::runtime) fn link_pure(linker: &mut Linker<VmState>) -> Result<()> 
 /// Format an f64 with Rust's `Display` (matching the interpreter's float
 /// `to_string`), write the bytes at `out_ptr`, and return the byte length. The
 /// guest reserves a generous buffer; an f64's decimal form never exceeds it.
-fn host_float_to_str(mut caller: Caller<'_, VmState>, x: f64, out_ptr: i32) -> Result<i32> {
+fn host_float_to_str<P: GuestAddress>(mut caller: Caller<'_, VmState>, x: f64, out_ptr: P) -> Result<i32> {
     let s = witchy_syntax::fmt::render_float(x);
     let bytes = s.into_bytes();
     // The canonical caller reserves `FLOAT_RENDER_BUFFER_BYTES`; the legacy
@@ -46,7 +47,7 @@ fn host_float_to_str(mut caller: Caller<'_, VmState>, x: f64, out_ptr: i32) -> R
         return Err(Error::msg(format!("float rendering of {} bytes exceeds the guest buffer", bytes.len())));
     }
     let mem = memory_of(&mut caller)?;
-    mem.write(&mut caller, out_ptr as usize, &bytes)
+    mem.write(&mut caller, out_ptr.offset(), &bytes)
         .map_err(|e| Error::msg(format!("writing float string into guest memory: {e}")))?;
     Ok(bytes.len() as i32)
 }

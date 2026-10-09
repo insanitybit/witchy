@@ -1,11 +1,12 @@
 //! Stateless canonical regex: checked slices, with no staged pending payload.
+use crate::runtime::GuestAddress;
 use wasmtime::{Caller, Error, Linker, Result};
 use super::super::{memory_of, read_slice_str, VmState};
 
-pub(in crate::runtime) fn link(linker: &mut Linker<VmState>) -> Result<()> {
-    linker.func_wrap("witchy", "regex_match_spans_into", host_spans)?;
-    linker.func_wrap("witchy", "regex_count_slices", host_count)?;
-    linker.func_wrap("witchy", "regex_replace_all_into", host_replace_all)?;
+pub(in crate::runtime) fn link<P: GuestAddress>(linker: &mut Linker<VmState>) -> Result<()> {
+    linker.func_wrap("witchy", "regex_match_spans_into", host_spans::<P>)?;
+    linker.func_wrap("witchy", "regex_count_slices", host_count::<P>)?;
+    linker.func_wrap("witchy", "regex_replace_all_into", host_replace_all::<P>)?;
     Ok(())
 }
 
@@ -16,30 +17,30 @@ fn compile(pattern: &str) -> Result<::regex::Regex> {
 
 /// The bounded output slice `[output, output + capacity)`, checked against
 /// memory before anything is computed or written.
-fn output_range(memory: &[u8], output: i32, capacity: i32) -> Result<std::ops::Range<usize>> {
-    let start = usize::try_from(output).map_err(|_| Error::msg("negative regex output pointer"))?;
+fn output_range<P: GuestAddress>(memory: &[u8], output: P, capacity: i32) -> Result<std::ops::Range<usize>> {
+    let start = output.offset();
     let capacity = usize::try_from(capacity).map_err(|_| Error::msg("negative regex output capacity"))?;
     let end = start.checked_add(capacity).ok_or_else(|| Error::msg("regex output slice overflow"))?;
     if end > memory.len() { return Err(Error::msg("regex output slice exceeds memory")); }
     Ok(start..end)
 }
 
-fn host_count(mut caller: Caller<'_, VmState>, pattern: i32, pattern_len: i32,
-    text: i32, text_len: i32) -> Result<i32> {
+fn host_count<P: GuestAddress>(mut caller: Caller<'_, VmState>, pattern: P, pattern_len: i32,
+    text: P, text_len: i32) -> Result<i32> {
     let memory = memory_of(&mut caller)?;
     count(memory.data(&caller), pattern, pattern_len, text, text_len)
 }
 
-fn count(memory: &[u8], pattern: i32, pattern_len: i32, text: i32, text_len: i32) -> Result<i32> {
+fn count<P: GuestAddress>(memory: &[u8], pattern: P, pattern_len: i32, text: P, text_len: i32) -> Result<i32> {
     let pattern = read_slice_str(memory, pattern, pattern_len)?;
     let text = read_slice_str(memory, text, text_len)?;
     i32::try_from(compile(&pattern)?.find_iter(&text).count())
         .map_err(|_| Error::msg("regex match count exceeds ABI size"))
 }
 
-fn host_replace_all(mut caller: Caller<'_, VmState>, pattern: i32, pattern_len: i32,
-    text: i32, text_len: i32, replacement: i32, replacement_len: i32,
-    output: i32, capacity: i32) -> Result<i32> {
+fn host_replace_all<P: GuestAddress>(mut caller: Caller<'_, VmState>, pattern: P, pattern_len: i32,
+    text: P, text_len: i32, replacement: P, replacement_len: i32,
+    output: P, capacity: i32) -> Result<i32> {
     let memory = memory_of(&mut caller)?;
     replace_all_into(memory.data_mut(&mut caller), pattern, pattern_len, text, text_len,
         replacement, replacement_len, output, capacity)
@@ -52,9 +53,9 @@ fn host_replace_all(mut caller: Caller<'_, VmState>, pattern: i32, pattern_len: 
 /// copy of the replacement), so the host never materializes it: the size is
 /// counted from the match spans, and the pieces are written straight into
 /// the guest's own buffer, which the guest allocated under its own limits.
-fn replace_all_into(memory: &mut [u8], pattern: i32, pattern_len: i32,
-    text: i32, text_len: i32, replacement: i32, replacement_len: i32,
-    output: i32, capacity: i32) -> Result<i32> {
+fn replace_all_into<P: GuestAddress>(memory: &mut [u8], pattern: P, pattern_len: i32,
+    text: P, text_len: i32, replacement: P, replacement_len: i32,
+    output: P, capacity: i32) -> Result<i32> {
     let pattern = read_slice_str(memory, pattern, pattern_len)?;
     let text = read_slice_str(memory, text, text_len)?;
     let replacement = read_slice_str(memory, replacement, replacement_len)?;
@@ -84,14 +85,14 @@ fn replace_all_into(memory: &mut [u8], pattern: i32, pattern_len: i32,
     Ok(required_abi)
 }
 
-fn host_spans(mut caller: Caller<'_, VmState>, pattern: i32, pattern_len: i32,
-    text: i32, text_len: i32, output: i32, capacity: i32) -> Result<i32> {
+fn host_spans<P: GuestAddress>(mut caller: Caller<'_, VmState>, pattern: P, pattern_len: i32,
+    text: P, text_len: i32, output: P, capacity: i32) -> Result<i32> {
     let memory = memory_of(&mut caller)?;
     spans_into(memory.data_mut(&mut caller), pattern, pattern_len, text, text_len, output, capacity)
 }
 
-fn spans_into(memory: &mut [u8], pattern: i32, pattern_len: i32,
-    text: i32, text_len: i32, output: i32, capacity: i32) -> Result<i32> {
+fn spans_into<P: GuestAddress>(memory: &mut [u8], pattern: P, pattern_len: i32,
+    text: P, text_len: i32, output: P, capacity: i32) -> Result<i32> {
     let pattern = read_slice_str(memory, pattern, pattern_len)?;
     let text = read_slice_str(memory, text, text_len)?;
     let range = output_range(memory, output, capacity)?;

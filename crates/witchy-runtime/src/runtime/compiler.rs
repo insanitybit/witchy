@@ -6,6 +6,7 @@
 //! compiler's implementation modules — so post-compilation enforcement can
 //! shed its parser/type/WIR implementation dependencies as the
 //! implementation moves above the kernel.
+use crate::runtime::GuestAddress;
 
 use super::{memory_of, read_slice_str, read_wstr, VmState};
 use wasmtime::{Caller, Error, Linker, Result};
@@ -71,13 +72,13 @@ impl CompilerServices for RegistryCompilerServices {
     }
 }
 
-pub(super) fn link(linker: &mut Linker<VmState>) -> Result<()> {
+pub(super) fn link<P: GuestAddress>(linker: &mut Linker<VmState>) -> Result<()> {
     linker.func_wrap("witchy", "compiler_footprint_len", host_compiler_footprint_len)?;
     linker.func_wrap("witchy", "compiler_diff_len", host_compiler_diff_len)?;
-    linker.func_wrap("witchy", "compiler_footprint_into", host_compiler_footprint_into)?;
-    linker.func_wrap("witchy", "compiler_diff_into", host_compiler_diff_into)?;
-    linker.func_wrap("witchy", "compiler_doc_into", host_compiler_doc_into)?;
-    linker.func_wrap("witchy", "compiler_doc_result_json_into", host_compiler_doc_result_json_into)?;
+    linker.func_wrap("witchy", "compiler_footprint_into", host_compiler_footprint_into::<P>)?;
+    linker.func_wrap("witchy", "compiler_diff_into", host_compiler_diff_into::<P>)?;
+    linker.func_wrap("witchy", "compiler_doc_into", host_compiler_doc_into::<P>)?;
+    linker.func_wrap("witchy", "compiler_doc_result_json_into", host_compiler_doc_result_json_into::<P>)?;
     linker.func_wrap("witchy", "compiler_doc_len", host_compiler_doc_len)?;
     linker.func_wrap(
         "witchy",
@@ -120,11 +121,11 @@ fn host_compiler_diff_len(
 /// the footprint JSON from an explicitly bounded UTF-8 source slice. The
 /// complete output range is checked before invoking the service; a short
 /// output buffer receives no prefix and the required byte length is returned.
-fn host_compiler_footprint_into(
+fn host_compiler_footprint_into<P: GuestAddress>(
     mut caller: Caller<'_, VmState>,
-    src_ptr: i32,
+    src_ptr: P,
     src_len: i32,
-    out_ptr: i32,
+    out_ptr: P,
     out_capacity: i32,
 ) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
@@ -138,13 +139,13 @@ fn host_compiler_footprint_into(
 
 /// `compiler_diff_into(old_ptr, old_len, new_ptr, new_len, out_ptr,
 /// out_capacity)`: the bounded, non-staged counterpart to `compiler_diff_len`.
-fn host_compiler_diff_into(
+fn host_compiler_diff_into<P: GuestAddress>(
     mut caller: Caller<'_, VmState>,
-    old_ptr: i32,
+    old_ptr: P,
     old_len: i32,
-    new_ptr: i32,
+    new_ptr: P,
     new_len: i32,
-    out_ptr: i32,
+    out_ptr: P,
     out_capacity: i32,
 ) -> Result<i32> {
     let mem = memory_of(&mut caller)?;
@@ -161,8 +162,8 @@ fn host_compiler_diff_into(
     write_result_bytes(&mut caller, out_ptr, out_capacity, &bytes)
 }
 
-fn checked_guest_range(data_len: usize, ptr: i32, len: i32, what: &str) -> Result<(usize, usize)> {
-    let start = u64::from(u32::from_ne_bytes(ptr.to_ne_bytes()));
+fn checked_guest_range<P: GuestAddress>(data_len: usize, ptr: P, len: i32, what: &str) -> Result<(usize, usize)> {
+    let start = ptr.offset() as u64;
     let length = u64::from(u32::from_ne_bytes(len.to_ne_bytes()));
     let end = start + length;
     if end > data_len as u64 {
@@ -171,18 +172,18 @@ fn checked_guest_range(data_len: usize, ptr: i32, len: i32, what: &str) -> Resul
     Ok((start as usize, length as usize))
 }
 
-fn host_compiler_doc_into(
+fn host_compiler_doc_into<P: GuestAddress>(
     caller: Caller<'_, VmState>,
-    name_ptr: i32, name_len: i32, src_ptr: i32, src_len: i32,
-    out_ptr: i32, out_capacity: i32,
+    name_ptr: P, name_len: i32, src_ptr: P, src_len: i32,
+    out_ptr: P, out_capacity: i32,
 ) -> Result<i32> {
     compiler_doc_into(caller, name_ptr, name_len, src_ptr, src_len, out_ptr, out_capacity, false)
 }
 
-fn host_compiler_doc_result_json_into(
+fn host_compiler_doc_result_json_into<P: GuestAddress>(
     caller: Caller<'_, VmState>,
-    name_ptr: i32, name_len: i32, src_ptr: i32, src_len: i32,
-    out_ptr: i32, out_capacity: i32,
+    name_ptr: P, name_len: i32, src_ptr: P, src_len: i32,
+    out_ptr: P, out_capacity: i32,
 ) -> Result<i32> {
     compiler_doc_into(caller, name_ptr, name_len, src_ptr, src_len, out_ptr, out_capacity, true)
 }
@@ -190,10 +191,10 @@ fn host_compiler_doc_result_json_into(
 /// Stateless documentation: preflight all slices before invoking the trusted
 /// source-as-data renderer. Snapshot both inputs before any output write, even
 /// when a raw host-boundary test supplies overlapping slices.
-fn compiler_doc_into(
+fn compiler_doc_into<P: GuestAddress>(
     mut caller: Caller<'_, VmState>,
-    name_ptr: i32, name_len: i32, src_ptr: i32, src_len: i32,
-    out_ptr: i32, out_capacity: i32, result_json: bool,
+    name_ptr: P, name_len: i32, src_ptr: P, src_len: i32,
+    out_ptr: P, out_capacity: i32, result_json: bool,
 ) -> Result<i32> {
     let memory = memory_of(&mut caller)?;
     let data = memory.data(&caller);
@@ -211,19 +212,19 @@ fn compiler_doc_into(
     write_result_bytes(&mut caller, out_ptr, out_capacity, result.as_bytes())
 }
 
-fn read_unsigned_slice_str(data: &[u8], ptr: i32, len: i32) -> Result<String> {
+fn read_unsigned_slice_str<P: GuestAddress>(data: &[u8], ptr: P, len: i32) -> Result<String> {
     let (start, length) = checked_guest_range(data.len(), ptr, len, "host input")?;
     std::str::from_utf8(&data[start..start + length])
         .map(str::to_owned)
         .map_err(|e| Error::msg(format!("host slice is not valid UTF-8: {e}")))
 }
 
-fn write_result_bytes(caller: &mut Caller<'_, VmState>, out_ptr: i32, out_capacity: i32, bytes: &[u8]) -> Result<i32> {
+fn write_result_bytes<P: GuestAddress>(caller: &mut Caller<'_, VmState>, out_ptr: P, out_capacity: i32, bytes: &[u8]) -> Result<i32> {
     let mem = memory_of(caller)?;
     write_result_bytes_to_memory(mem.data_mut(caller), out_ptr, out_capacity, bytes)
 }
 
-fn write_result_bytes_to_memory(data: &mut [u8], out_ptr: i32, out_capacity: i32, bytes: &[u8]) -> Result<i32> {
+fn write_result_bytes_to_memory<P: GuestAddress>(data: &mut [u8], out_ptr: P, out_capacity: i32, bytes: &[u8]) -> Result<i32> {
     let (start, capacity) = checked_guest_range(data.len(), out_ptr, out_capacity, "compiler output")?;
     let required = required_result_size(bytes.len())?;
     if bytes.len() <= capacity {

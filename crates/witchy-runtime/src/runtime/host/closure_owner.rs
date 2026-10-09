@@ -1759,7 +1759,7 @@ pub mod tests {
         let mut store = vm.store;
         // Test-only registration: production has no corresponding import yet.
         let mut linker = wasmtime::Linker::new(&engine);
-        linker.func_wrap("test", "captured_console", super::super::console::host_print_captured)?;
+        linker.func_wrap("test", "captured_console", super::super::console::host_print_captured::<i32>)?;
         let consumer = wasmtime::Module::new(&engine, r#"(module
             (import "test" "captured_console" (func $print (param externref i32 i32)))
             (memory (export "memory") 1)

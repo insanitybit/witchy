@@ -1,6 +1,7 @@
 //! Canonical BuildRead: an instance-bound grant and a single-read immutable
 //! response. Neither a path nor a response can mint filesystem authority.
 //! Kind13 also carries BuildEnv lookup results; None is not an empty string.
+use crate::runtime::GuestAddress;
 use std::sync::Arc;
 use wasmtime::{bail, Caller, Error, ExternRef, Linker, Result, Rooted};
 use super::super::{memory_of, read_slice_str, VmState};
@@ -55,10 +56,10 @@ pub(in crate::runtime) fn authenticate_response_capture(state: &VmState, data: &
     authenticate_response(&state.build_read_issuer, data).map(|_| ())
 }
 
-pub(in crate::runtime) fn link(linker: &mut Linker<VmState>) -> Result<()> {
-    linker.func_wrap("witchy", "build_read_at", read_at)?;
+pub(in crate::runtime) fn link<P: GuestAddress>(linker: &mut Linker<VmState>) -> Result<()> {
+    linker.func_wrap("witchy", "build_read_at", read_at::<P>)?;
     linker.func_wrap("witchy", "build_read_response_size", response_size)?;
-    linker.func_wrap("witchy", "build_read_response_into", response_into)?;
+    linker.func_wrap("witchy", "build_read_response_into", response_into::<P>)?;
     linker.func_wrap("witchy", "build_response_is_some", response_is_some)?;
     Ok(())
 }
@@ -80,9 +81,9 @@ pub(super) fn new_response(
     ExternRef::new(&mut store, Response { issuer, bytes })
 }
 
-fn read_at(
+fn read_at<P: GuestAddress>(
     mut caller: Caller<'_, VmState>, grant: Option<Rooted<ExternRef>>,
-    path_ptr: i32, path_len: i32,
+    path_ptr: P, path_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
     let grant = grant.ok_or_else(|| Error::msg("read_build: null capability"))?;
     let data = grant.data(&caller)?.ok_or_else(|| Error::msg("read_build: missing capability data"))?;
@@ -124,17 +125,17 @@ fn response_size(caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) 
     checked_response_len(response(&caller, token)?.len())
 }
 
-fn output_range(ptr: i32, capacity: i32, limit: usize) -> Result<std::ops::Range<usize>> {
-    let start = usize::try_from(ptr).map_err(|_| Error::msg("negative BuildRead output pointer"))?;
+fn output_range<P: GuestAddress>(ptr: P, capacity: i32, limit: usize) -> Result<std::ops::Range<usize>> {
+    let start = ptr.offset();
     let capacity = usize::try_from(capacity).map_err(|_| Error::msg("negative BuildRead output capacity"))?;
     let end = start.checked_add(capacity).filter(|end| *end <= limit)
         .ok_or_else(|| Error::msg("BuildRead output slice lies outside guest memory"))?;
     Ok(start..end)
 }
 
-fn response_into(
+fn response_into<P: GuestAddress>(
     mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>,
-    out_ptr: i32, capacity: i32,
+    out_ptr: P, capacity: i32,
 ) -> Result<i32> {
     let bytes = response(&caller, token)?;
     let required = checked_response_len(bytes.len())?;

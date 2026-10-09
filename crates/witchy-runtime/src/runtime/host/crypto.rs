@@ -1,3 +1,4 @@
+use crate::runtime::GuestAddress;
 use wasmtime::{bail, Caller, Error, ExternRef, Linker, Result, Rooted};
 use witchy_syntax::intrinsics;
 
@@ -70,12 +71,12 @@ pub(in crate::runtime) fn link_keyed(linker: &mut Linker<VmState>) -> Result<()>
 }
 
 /// Register authority-free crypto operations.
-pub(in crate::runtime) fn link_pure(linker: &mut Linker<VmState>) -> Result<()> {
-    extensions::link(linker)?;
-    linker.func_wrap("witchy", "crypto_ed25519_verify_slices", host_ed25519_verify_slices)?;
-    linker.func_wrap("witchy", "crypto_rsa_pkcs1_sha256_verify_slices", host_rsa_pkcs1_sha256_verify_slices)?;
-    linker.func_wrap("witchy", "crypto_sha256_slices", host_sha256_slices)?;
-    linker.func_wrap("witchy", "crypto_rune_hash_slices", host_rune_hash_slices)?;
+pub(in crate::runtime) fn link_pure<P: GuestAddress>(linker: &mut Linker<VmState>) -> Result<()> {
+    extensions::link::<P>(linker)?;
+    linker.func_wrap("witchy", "crypto_ed25519_verify_slices", host_ed25519_verify_slices::<P>)?;
+    linker.func_wrap("witchy", "crypto_rsa_pkcs1_sha256_verify_slices", host_rsa_pkcs1_sha256_verify_slices::<P>)?;
+    linker.func_wrap("witchy", "crypto_sha256_slices", host_sha256_slices::<P>)?;
+    linker.func_wrap("witchy", "crypto_rune_hash_slices", host_rune_hash_slices::<P>)?;
     linker.func_wrap(
         "witchy",
         intrinsics::CRYPTO_ED25519_VERIFY_STATUS,
@@ -142,11 +143,11 @@ fn host_ed25519_verify_status(
 
 /// Canonical authority-free verification: every input is a complete bounded
 /// read slice, not a guest object header. No guest state is changed or retained.
-fn host_ed25519_verify_slices(
+fn host_ed25519_verify_slices<P: GuestAddress>(
     mut caller: Caller<'_, VmState>,
-    pk_ptr: i32, pk_len: i32,
-    msg_ptr: i32, msg_len: i32,
-    sig_ptr: i32, sig_len: i32,
+    pk_ptr: P, pk_len: i32,
+    msg_ptr: P, msg_len: i32,
+    sig_ptr: P, sig_len: i32,
 ) -> Result<i64> {
     let memory = memory_of(&mut caller)?;
     let data = memory.data(&caller);
@@ -165,8 +166,8 @@ fn host_ed25519_verify_slices(
     ed25519_status(&args)
 }
 
-fn ed25519_slice_range(ptr: i32, len: i32, limit: usize) -> Result<std::ops::Range<usize>> {
-    let start = ptr as u32 as usize;
+fn ed25519_slice_range<P: GuestAddress>(ptr: P, len: i32, limit: usize) -> Result<std::ops::Range<usize>> {
+    let start = ptr.offset();
     let end = start.checked_add(len as u32 as usize)
         .filter(|end| *end <= limit)
         .ok_or_else(|| Error::msg("Ed25519 input slice lies outside guest memory"))?;
@@ -208,16 +209,16 @@ pub mod rsa_slices_tests;
 /// Authority-free RSA verification over three initialized read slices. Validate
 /// every range before decoding, and every string before the native provider can
 /// short-circuit on a malformed public key. No guest writes or retained state.
-fn host_rsa_pkcs1_sha256_verify_slices(
+fn host_rsa_pkcs1_sha256_verify_slices<P: GuestAddress>(
     mut caller: Caller<'_, VmState>,
-    pk_ptr: i32, pk_len: i32,
-    msg_ptr: i32, msg_len: i32,
-    sig_ptr: i32, sig_len: i32,
+    pk_ptr: P, pk_len: i32,
+    msg_ptr: P, msg_len: i32,
+    sig_ptr: P, sig_len: i32,
 ) -> Result<i64> {
     let memory = memory_of(&mut caller)?;
     let data = memory.data(&caller);
-    let range = |ptr: i32, len: i32| {
-        let start = ptr as u32 as usize;
+    let range = |ptr: P, len: i32| {
+        let start = ptr.offset();
         start.checked_add(len as u32 as usize)
             .filter(|end| *end <= data.len())
             .map(|end| start..end)
@@ -238,24 +239,24 @@ fn host_rsa_pkcs1_sha256_verify_slices(
     }
 }
 
-fn host_sha256_slices(caller: Caller<'_, VmState>, input: i32, len: i32, output: i32, capacity: i32) -> Result<i32> {
+fn host_sha256_slices<P: GuestAddress>(caller: Caller<'_, VmState>, input: P, len: i32, output: P, capacity: i32) -> Result<i32> {
     hash_slices(caller, input, len, output, capacity, HashSlices::Sha256)
 }
 
-fn host_rune_hash_slices(caller: Caller<'_, VmState>, input: i32, len: i32, output: i32, capacity: i32) -> Result<i32> {
+fn host_rune_hash_slices<P: GuestAddress>(caller: Caller<'_, VmState>, input: P, len: i32, output: P, capacity: i32) -> Result<i32> {
     hash_slices(caller, input, len, output, capacity, HashSlices::Rune)
 }
 
 enum HashSlices { Sha256, Rune }
 
-fn hash_slices(
-    mut caller: Caller<'_, VmState>, input: i32, len: i32, output: i32, capacity: i32,
+fn hash_slices<P: GuestAddress>(
+    mut caller: Caller<'_, VmState>, input: P, len: i32, output: P, capacity: i32,
     kind: HashSlices,
 ) -> Result<i32> {
     let memory = memory_of(&mut caller)?;
     let data = memory.data(&caller);
-    let range = |ptr: i32, len: i32| {
-        let start = ptr as u32 as usize;
+    let range = |ptr: P, len: i32| {
+        let start = ptr.offset();
         start.checked_add(len as u32 as usize).filter(|end| *end <= data.len())
             .map(|end| start..end)
             .ok_or_else(|| Error::msg("crypto hash slice lies outside guest memory"))

@@ -1316,6 +1316,14 @@ impl WorkerModule {
         match self { Self::Unadmitted(module) => module, Self::Admitted(program) => &program.module }
     }
 
+    /// Raw Wasm declares no launch contract and runs with the standard heap.
+    fn heap_mode(&self) -> witchy_wir::HeapMode {
+        match self {
+            Self::Unadmitted(_) => witchy_wir::HeapMode::Standard,
+            Self::Admitted(program) => program.artifact.heap_mode(),
+        }
+    }
+
     fn admitted(&self) -> Result<&Arc<AdmittedWorkerModule>> {
         match self {
             Self::Admitted(program) if program.artifact.entry().is_some() => Ok(program),
@@ -1813,9 +1821,12 @@ impl Vm {
         let Some(memory) = self.instance.get_memory(&mut self.store, "memory") else {
             return Ok(None);
         };
+        // RFC-0179: the globals and free-list links are references; the walk
+        // runs over bytes. A large heap's RC sizes are whole units.
+        let refs = launch_arguments::Refs::for_heap(self.store.data().module.heap_mode());
         let data = memory.data(&self.store);
-        let word = |at: u32| -> Result<u32> {
-            let at = at as usize;
+        let word = |at: u64| -> Result<u32> {
+            let at = usize::try_from(at).map_err(|_| Error::msg("HEAP CHECK: heap word is outside linear memory"))?;
             data.get(at..at + 4)
                 .map(|bytes| u32::from_le_bytes(bytes.try_into().expect("four bytes")))
                 .ok_or_else(|| Error::msg(format!("HEAP CHECK: heap word {at:#x} is outside linear memory")))
@@ -1824,21 +1835,21 @@ impl Vm {
         let mut freed = std::collections::BTreeSet::new();
         let mut cursor = free;
         while cursor != 0 {
-            if !freed.insert(cursor) {
+            if !freed.insert(refs.byte(cursor)) {
                 return Err(Error::msg("HEAP CHECK: the reclaimed free list is cyclic"));
             }
-            cursor = word(cursor)?;
+            cursor = word(refs.byte(cursor))?;
         }
         // Objects are laid out back to back: [rc][size][size bytes].
         let mut leaks = 0usize;
-        let mut cursor = base;
-        while cursor.saturating_add(8) <= top {
+        let (mut cursor, top) = (refs.byte(base), refs.byte(top));
+        while cursor + 8 <= top {
             let size = word(cursor + 4)?;
             let object = cursor + 8;
             if !freed.contains(&object) {
                 leaks += 1;
             }
-            cursor = object.saturating_add(size);
+            cursor = object + u64::from(size);
             if size == 0 {
                 return Err(Error::msg(format!("HEAP CHECK: object at {object:#x} has a zero-length header")));
             }
@@ -2112,7 +2123,8 @@ impl Vm {
         };
         let top = read_global(witchy_wir::HEAP_TOP_EXPORT)?;
         let base = read_global(witchy_wir::HEAP_BASE_EXPORT)?;
-        Some(i64::from(top) - i64::from(base))
+        let refs = launch_arguments::Refs::for_heap(self.store.data().module.heap_mode());
+        Some(refs.byte(top) as i64 - refs.byte(base) as i64)
     }
 
     /// The current capacity in bytes of Wasmtime's GC backing heap.
@@ -2541,7 +2553,7 @@ impl Runtime {
         }
 
         let mut linker: Linker<VmState> = Linker::new(&engine);
-        link_capability_imports(&mut linker, &caps)?;
+        link_capability_imports_for(&mut linker, &caps, module.heap_mode())?;
         if compiler_fuel.is_some() { host::compiler_syntax::register(&mut linker)?; }
         if let WorkerModule::Admitted(program) = &module {
             host::closure_owner::register(&mut linker, &program.artifact)?;
@@ -2602,7 +2614,7 @@ impl Runtime {
             store.set_epoch_deadline(1);
         }
         let mut linker: Linker<VmState> = Linker::new(&self.engine);
-        link_capability_imports(&mut linker, &caps)?;
+        link_capability_imports_for(&mut linker, &caps, witchy_wir::HeapMode::Standard)?;
         host::fixture::link_basic(&mut linker, &roots)?;
         host::fixture::link_filesystem(&mut linker, &roots)?;
         host::fixture::link_fetch(&mut linker, &roots)?;
@@ -2756,7 +2768,22 @@ impl AuthenticatedExternalLibrary {
     }
 }
 
-pub(crate) fn link_capability_imports(
+/// RFC-0179: a large-heap program passes host buffer addresses as i64 byte
+/// addresses (its references are scaled units); every other module, raw Wasm
+/// included, passes i32. A module linked at the wrong width fails to
+/// instantiate on the import's type, never misreads a buffer.
+pub(crate) fn link_capability_imports_for(
+    linker: &mut Linker<VmState>,
+    caps: &Capabilities,
+    heap: witchy_wir::HeapMode,
+) -> Result<()> {
+    match heap {
+        witchy_wir::HeapMode::Standard => link_capability_imports::<i32>(linker, caps),
+        witchy_wir::HeapMode::Large => link_capability_imports::<i64>(linker, caps),
+    }
+}
+
+fn link_capability_imports<P: GuestAddress>(
     linker: &mut Linker<VmState>,
     caps: &Capabilities,
 ) -> Result<()> {
@@ -2767,19 +2794,19 @@ pub(crate) fn link_capability_imports(
     linker.func_wrap("witchy", "heap_unregister", host_heap_unregister)?;
     linker.func_wrap("witchy", "heap_frontier", host_heap_frontier)?;
 
-    host::console::link_abort(linker)?;
+    host::console::link_abort::<P>(linker)?;
     // These imports expose no guest mint; each call authenticates its token.
     host::clock_env_rand::link_canonical_clock(linker)?;
-    host::secret::link_canonical(linker)?;
+    host::secret::link_canonical::<P>(linker)?;
     host::crypto::link_canonical_keyed(linker)?;
     host::secret_response::link_canonical(linker)?;
-    host::cap_response::link(linker)?;
+    host::cap_response::link::<P>(linker)?;
     // Linking the fixture ABI grants no provider or token. Its handler checks
     // the private fixture session before reading guest memory or producing output.
-    host::console::link_fixture_console(linker)?;
+    host::console::link_fixture_console::<P>(linker)?;
     // --- capability wiring: only granted host functions are defined ---
     if caps.print {
-        host::console::link_print(linker)?;
+        host::console::link_print::<P>(linker)?;
     }
     if caps.console_read {
         host::console::link_console_read(linker)?;
@@ -2794,7 +2821,7 @@ pub(crate) fn link_capability_imports(
         host::clock_env_rand::link_clock(linker)?;
     }
     if caps.env {
-        host::clock_env_rand::link_env(linker)?;
+        host::clock_env_rand::link_env::<P>(linker)?;
     }
     // The Dir family is linked per RIGHT, so a module compiled against a
     // write operation cannot even instantiate under a read-only grant.
@@ -2804,13 +2831,13 @@ pub(crate) fn link_capability_imports(
     let dir_write = caps.dir_write || caps.dir_rights.iter().any(|r| r.write);
     let has_readable_dir = has_real_dir && dir_read;
     if has_real_dir {
-        host::filesystem::link_mint_dir(linker)?;
+        host::filesystem::link_mint_dir::<P>(linker)?;
     }
     if has_readable_dir {
-        host::filesystem::link_dir_read(linker)?;
+        host::filesystem::link_dir_read::<P>(linker)?;
     }
     if has_real_dir && dir_write {
-        host::filesystem::link_dir_write(linker)?;
+        host::filesystem::link_dir_write::<P>(linker)?;
     }
     // RFC-0012 File leaf ops: usable on a File obtained by navigation (above) OR
     // granted directly to `main` (`--file`), so they are linked whenever either a
@@ -2830,7 +2857,7 @@ pub(crate) fn link_capability_imports(
         host::filesystem::link_file_read(linker)?;
     }
     if (has_real_dir && dir_write) || direct_file_write {
-        host::filesystem::link_file_write(linker)?;
+        host::filesystem::link_file_write::<P>(linker)?;
     }
     // (RFC-0005 Stage 2) The `run` wrapper mints each `--file` `main` param as an
     // `externref` via `mint_file`; only reachable when a direct File grant exists.
@@ -2840,14 +2867,14 @@ pub(crate) fn link_capability_imports(
     // The Exec capability: spawn a confined subprocess. The executable is named
     // through a `Dir[Read]` capability, so `exec_run` reuses `dir_base`/`confine`.
     if caps.exec {
-        host::filesystem::link_exec(linker)?;
+        host::filesystem::link_exec::<P>(linker)?;
     }
     let net = caps.net_allow.is_some() || !caps.net_grants.is_empty();
     // The admitted canonical Net ABI authenticates an opaque capability token
     // at each call, so its registration is not authority.  It must be present
     // even when an unreachable public helper mentions Net but `main` does not:
     // Wasmtime resolves all imports before it can start the admitted entry.
-    host::network::link_canonical(linker)?;
+    host::network::link_canonical::<P>(linker)?;
     // (RFC-0005 Stage 3) The `run` wrapper mints each root `Net` param as an
     // `externref` via `mint_net`; only reachable when a Net grant exists.
     if net {
@@ -2869,7 +2896,7 @@ pub(crate) fn link_capability_imports(
         host::fetch::link_mint(linker)?;
     }
     // Canonical linkage is authority-free; every call authenticates a token.
-    host::fetch::link(linker)?;
+    host::fetch::link::<P>(linker)?;
     if !caps.fetch_grants.is_empty() || (net && caps.net_connect) {
         host::fetch::link_ops(linker)?;
     }
@@ -2886,11 +2913,11 @@ pub(crate) fn link_capability_imports(
     // without a `BuildOut` grant, and `read_build` without a `BuildRead` one.
     // Canonical imports may be present in uncalled public declarations. The
     // operation authenticates a private token; linking itself grants nothing.
-    host::build_out::link(linker)?;
-    host::build_read::link(linker)?;
-    host::build_env::link(linker)?;
-    host::build_exec::link(linker)?;
-    host::build_net::link(linker)?;
+    host::build_out::link::<P>(linker)?;
+    host::build_read::link::<P>(linker)?;
+    host::build_env::link::<P>(linker)?;
+    host::build_exec::link::<P>(linker)?;
+    host::build_net::link::<P>(linker)?;
     if caps.build_out.is_some() {
         host::build::link_out(linker)?;
     }
@@ -2905,7 +2932,7 @@ pub(crate) fn link_capability_imports(
     // build_exec_run now has the authenticated token/slice ABI. Do not also
     // register the old zero-representation staging ABI under the same name.
     host::staging::link_staging(linker)?;
-    host::vm_worker::link_vm(linker)?;
+    host::vm_worker::link_vm::<P>(linker)?;
     // Field-length staging helpers (`[len]` of a host cell's string/list field).
     // They carry no authority — data reads — and the WIR static prelude declares
     // them unconditionally, so define harmless stubs here. Ordinary programs
@@ -2916,13 +2943,13 @@ pub(crate) fn link_capability_imports(
     // Native-stdlib functions carry no authority, so they're always
     // available — the same `crypto` module the interpreter exposes, here as a
     // host import that bridges to the shared `native` registry.
-    host::crypto::link_pure(linker)?;
+    host::crypto::link_pure::<P>(linker)?;
     host::secret::link_lookup(linker)?;
     host::crypto::link_reveal(linker)?;
     // The compiler's footprint analyses are pure functions of their source
     // arguments — the toolchain exposed to witchy, same registry bridge.
-    compiler::link(linker)?;
-    host::staging::link_pure(linker)?;
+    compiler::link::<P>(linker)?;
+    host::staging::link_pure::<P>(linker)?;
     Ok(())
 }
 
@@ -3190,9 +3217,9 @@ fn memory_of(caller: &mut Caller<'_, VmState>) -> Result<Memory> {
 /// ABI types these slices as strings, so invalid UTF-8 is a contract violation
 /// and traps here rather than being lossily repaired the way `read_wstr`
 /// repairs the frozen route's already-checked objects.
-fn read_slice_str(data: &[u8], ptr: i32, len: i32) -> Result<String> {
-    if ptr < 0 || len < 0 {
-        return Err(Error::msg(format!("negative host slice ({ptr}, {len})")));
+fn read_slice_str<P: GuestAddress>(data: &[u8], ptr: P, len: i32) -> Result<String> {
+    if len < 0 {
+        return Err(Error::msg(format!("negative host slice length ({len})")));
     }
     let bytes = slice(data, ptr, len)?;
     std::str::from_utf8(bytes)

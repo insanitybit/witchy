@@ -7,13 +7,14 @@
 //! it, but every denial answers the same whether or not the name resolves. Any other failure is `Io` with a fixed reason. A message names
 //! the address only as the guest spelled it, never a resolved address or
 //! operating-system error text.
+use crate::runtime::GuestAddress;
 use super::*;
 use super::policy::{fail, respond, slice_text, Minted, ALREADY_EXISTS, DENIED, IO};
 use witchy_caps::capabilities::AdmitFailure;
 
-pub(super) fn link_connect(linker: &mut Linker<VmState>) -> Result<()> {
-    linker.func_wrap("witchy", "net_connect_at", connect_at)?;
-    linker.func_wrap("witchy", "net_resolve_at", resolve_at)?;
+pub(super) fn link_connect<P: GuestAddress>(linker: &mut Linker<VmState>) -> Result<()> {
+    linker.func_wrap("witchy", "net_connect_at", connect_at::<P>)?;
+    linker.func_wrap("witchy", "net_resolve_at", resolve_at::<P>)?;
     Ok(())
 }
 
@@ -30,16 +31,16 @@ fn require_net_right(granted: bool, verb: &str) -> Result<()> {
     bail!("Net grant does not carry the {verb} right")
 }
 
-pub(super) fn link_listen(linker: &mut Linker<VmState>) -> Result<()> {
-    linker.func_wrap("witchy", "net_listen_at", listen_at)?;
-    linker.func_wrap("witchy", "net_listen_tls_at", listen_tls_at)?;
+pub(super) fn link_listen<P: GuestAddress>(linker: &mut Linker<VmState>) -> Result<()> {
+    linker.func_wrap("witchy", "net_listen_at", listen_at::<P>)?;
+    linker.func_wrap("witchy", "net_listen_tls_at", listen_tls_at::<P>)?;
     linker.func_wrap("witchy", "net_accept_at", accept_at)?;
     Ok(())
 }
 
-pub(super) fn link_socket_io(linker: &mut Linker<VmState>) -> Result<()> {
-    linker.func_wrap("witchy", "net_send_at", send_at)?;
-    linker.func_wrap("witchy", "net_send_line_at", send_line_at)?;
+pub(super) fn link_socket_io<P: GuestAddress>(linker: &mut Linker<VmState>) -> Result<()> {
+    linker.func_wrap("witchy", "net_send_at", send_at::<P>)?;
+    linker.func_wrap("witchy", "net_send_line_at", send_line_at::<P>)?;
     linker.func_wrap("witchy", "net_recv_line_at", recv_line_at)?;
     linker.func_wrap("witchy", "net_recv_bytes_at", recv_bytes_at)?;
     linker.func_wrap("witchy", "net_recv_all_at", recv_all_at)?;
@@ -90,7 +91,7 @@ fn socket(stream: Box<dyn Stream>) -> Minted {
     Minted::Socket(SocketResource { stream: Arc::new(Mutex::new(std::io::BufReader::new(stream))) })
 }
 
-fn connect_at(mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>, ptr: i32, len: i32) -> Result<Option<Rooted<ExternRef>>> {
+fn connect_at<P: GuestAddress>(mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>, ptr: P, len: i32) -> Result<Option<Rooted<ExternRef>>> {
     let net = net_authority_ref(&caller, token)?;
     require_net_right(caller.data().caps.net_connect, "Connect")?;
     let address = slice_text(&mut caller, ptr, len)?;
@@ -107,7 +108,7 @@ fn connect_at(mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>,
 
 /// `net_resolve_at(net, host) -> response`: the host's addresses, NUL-joined.
 /// A host the grant does not name is `Denied` before any DNS query.
-fn resolve_at(mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>, ptr: i32, len: i32) -> Result<Option<Rooted<ExternRef>>> {
+fn resolve_at<P: GuestAddress>(mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>, ptr: P, len: i32) -> Result<Option<Rooted<ExternRef>>> {
     let net = net_authority_ref(&caller, token)?;
     require_net_right(caller.data().caps.net_connect, "Connect")?;
     let host = slice_text(&mut caller, ptr, len)?;
@@ -126,11 +127,11 @@ fn resolve_at(mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>,
 /// bytes never enter guest memory. An address the grant does not admit is
 /// `Denied` before the certificate is parsed or a socket opened; an unusable
 /// certificate or key is `Io` with a fixed reason.
-fn listen_tls_at(
+fn listen_tls_at<P: GuestAddress>(
     mut caller: Caller<'_, VmState>,
     token: Option<Rooted<ExternRef>>,
-    address_ptr: i32, address_len: i32,
-    cert_ptr: i32, cert_len: i32,
+    address_ptr: P, address_len: i32,
+    cert_ptr: P, cert_len: i32,
     key: Option<Rooted<ExternRef>>,
 ) -> Result<Option<Rooted<ExternRef>>> {
     let net = net_authority_ref(&caller, token)?;
@@ -165,7 +166,7 @@ fn listen_tls_at(
 
 /// `net_listen_at(net, addr) -> response`. An address already bound is
 /// `AlreadyExists`.
-fn listen_at(mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>, ptr: i32, len: i32) -> Result<Option<Rooted<ExternRef>>> {
+fn listen_at<P: GuestAddress>(mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>, ptr: P, len: i32) -> Result<Option<Rooted<ExternRef>>> {
     let net = net_authority_ref(&caller, token)?;
     require_net_right(caller.data().caps.net_listen, "Listen")?;
     let address = slice_text(&mut caller, ptr, len)?;
@@ -215,7 +216,7 @@ fn accept_at(mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>) 
     }
 }
 
-fn send(mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>, ptr: i32, len: i32, line: bool) -> Result<Option<Rooted<ExternRef>>> {
+fn send<P: GuestAddress>(mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>, ptr: P, len: i32, line: bool) -> Result<Option<Rooted<ExternRef>>> {
     use std::io::Write;
     let socket = socket_resource_ref(&caller, token)?;
     let text = slice_text(&mut caller, ptr, len)?;
@@ -230,11 +231,11 @@ fn send(mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>, ptr: 
     }
 }
 
-fn send_at(caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>, ptr: i32, len: i32) -> Result<Option<Rooted<ExternRef>>> {
+fn send_at<P: GuestAddress>(caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>, ptr: P, len: i32) -> Result<Option<Rooted<ExternRef>>> {
     send(caller, token, ptr, len, false)
 }
 
-fn send_line_at(caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>, ptr: i32, len: i32) -> Result<Option<Rooted<ExternRef>>> {
+fn send_line_at<P: GuestAddress>(caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>, ptr: P, len: i32) -> Result<Option<Rooted<ExternRef>>> {
     send(caller, token, ptr, len, true)
 }
 

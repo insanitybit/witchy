@@ -1,4 +1,5 @@
 //! BuildEnv is a sealed snapshot of explicitly granted names, not ambient Env.
+use crate::runtime::GuestAddress;
 use std::{collections::BTreeMap, sync::Arc};
 use wasmtime::{bail, Caller, Error, ExternRef, Linker, Result, Rooted};
 use super::super::{memory_of, read_slice_str, VmState};
@@ -35,15 +36,15 @@ pub(in crate::runtime) fn authenticate_capture(state: &VmState, data: &dyn std::
     authenticate(&state.build_env_issuer, data).map(|_| ())
 }
 
-pub(in crate::runtime) fn link(linker: &mut Linker<VmState>) -> Result<()> {
+pub(in crate::runtime) fn link<P: GuestAddress>(linker: &mut Linker<VmState>) -> Result<()> {
     // Linking exposes no mint operation and grants no access by itself.
-    linker.func_wrap("witchy", "build_env_at", env_at)?;
+    linker.func_wrap("witchy", "build_env_at", env_at::<P>)?;
     Ok(())
 }
 
-fn env_at(
+fn env_at<P: GuestAddress>(
     mut caller: Caller<'_, VmState>, grant: Option<Rooted<ExternRef>>,
-    key_ptr: i32, key_len: i32,
+    key_ptr: P, key_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
     let grant = grant.ok_or_else(|| Error::msg("get_build_env: null capability"))?;
     let data = grant.data(&caller)?.ok_or_else(|| Error::msg("get_build_env: missing capability data"))?;

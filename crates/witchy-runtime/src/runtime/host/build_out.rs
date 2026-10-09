@@ -1,5 +1,6 @@
 //! Canonical BuildOut: explicit, instance-bound write authority and bounded
 //! UTF-8 inputs. No guest pointer or path is ever a capability constructor.
+use crate::runtime::GuestAddress;
 use std::sync::Arc;
 use wasmtime::{bail, Caller, ExternRef, Linker, Result, Rooted};
 use super::super::{confine, memory_of, read_slice_str, VmState};
@@ -29,13 +30,13 @@ pub(in crate::runtime) fn authenticate_capture(state: &VmState, data: &dyn std::
     authenticate(&state.build_out_issuer, data).map(|_| ())
 }
 
-pub(in crate::runtime) fn link(linker: &mut Linker<VmState>) -> Result<()> {
-    linker.func_wrap("witchy", "build_out_write_at", write)?;
+pub(in crate::runtime) fn link<P: GuestAddress>(linker: &mut Linker<VmState>) -> Result<()> {
+    linker.func_wrap("witchy", "build_out_write_at", write::<P>)?;
     Ok(())
 }
 
-fn write(mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>,
-    name_ptr: i32, name_len: i32, contents_ptr: i32, contents_len: i32,
+fn write<P: GuestAddress>(mut caller: Caller<'_, VmState>, token: Option<Rooted<ExternRef>>,
+    name_ptr: P, name_len: i32, contents_ptr: P, contents_len: i32,
 ) -> Result<()> {
     let token = token.ok_or_else(|| wasmtime::Error::msg("write_out: null capability"))?;
     let data = token.data(&caller)?.ok_or_else(|| wasmtime::Error::msg("write_out: missing capability data"))?;

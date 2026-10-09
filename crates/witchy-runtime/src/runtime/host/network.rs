@@ -1,3 +1,4 @@
+use crate::runtime::GuestAddress;
 use std::sync::{Arc, Mutex};
 
 use wasmtime::{bail, Caller, Error, ExternRef, Linker, Result, Rooted};
@@ -20,11 +21,11 @@ pub(super) mod policy;
 /// remains gated by the corresponding grant below.  This lets an admitted module
 /// keep an unreachable public Net helper without making instantiation depend on
 /// authority that its entry point did not request.
-pub(in crate::runtime) fn link_canonical(linker: &mut Linker<VmState>) -> Result<()> {
-    canonical::link_connect(linker)?;
-    policy::link(linker)?;
-    canonical::link_listen(linker)?;
-    canonical::link_socket_io(linker)?;
+pub(in crate::runtime) fn link_canonical<P: GuestAddress>(linker: &mut Linker<VmState>) -> Result<()> {
+    canonical::link_connect::<P>(linker)?;
+    policy::link::<P>(linker)?;
+    canonical::link_listen::<P>(linker)?;
+    canonical::link_socket_io::<P>(linker)?;
     linker.func_wrap("witchy", "net_accept", host_net_accept)?;
     linker.func_wrap("witchy", "net_close", host_net_close)?;
     super::vm_worker::link_serve_pool(linker)?;

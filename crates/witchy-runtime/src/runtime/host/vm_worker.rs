@@ -1,3 +1,4 @@
+use crate::runtime::GuestAddress;
 use std::sync::Arc;
 
 #[path = "vm_service.rs"]
@@ -18,7 +19,7 @@ use wasmtime::{
 use witchy_test_host::{FixtureHost, HostHandle};
 
 use super::super::{
-    link_capability_imports, memory_of, read_wbytes, read_wbytes_list, slice,
+    link_capability_imports_for, memory_of, read_wbytes, read_wbytes_list, slice,
     vmstate_from_caps, Capabilities, DirAuthority, DirBacking, ListenerResource, VmState,
     AdmittedWorkerModule, WorkerModule, Vm,
 };
@@ -29,9 +30,9 @@ use super::super::{
 /// callback's parameter list, is the physical sandbox boundary. Capability-
 /// passing spawns grant the worker only the `Dir` the caller already holds and
 /// explicitly passes: a re-grant, not new authority.
-pub(in crate::runtime) fn link_vm(linker: &mut Linker<VmState>) -> Result<()> {
-    vm_service::link(linker)?;
-    admitted_par_map::link(linker)?;
+pub(in crate::runtime) fn link_vm<P: GuestAddress>(linker: &mut Linker<VmState>) -> Result<()> {
+    vm_service::link::<P>(linker)?;
+    admitted_par_map::link::<P>(linker)?;
     linker.func_wrap("witchy", "vm_par_map_run", host_vm_par_map_run)?;
     linker.func_wrap("witchy", "vm_par_map_write", host_vm_par_map_write)?;
     linker.func_wrap("witchy", "vm_par_map_bytes_run", host_vm_par_map_bytes_run)?;
@@ -209,7 +210,7 @@ fn spawn_worker(
         store.set_epoch_deadline(u64::MAX);
     }
     let mut linker: Linker<VmState> = Linker::new(engine);
-    link_capability_imports(&mut linker, caps)?;
+    link_capability_imports_for(&mut linker, caps, program.heap_mode())?;
     if let WorkerModule::Admitted(program) = program {
         // Registration mints a fresh instance identity and fresh host owners;
         // the admission product contains no parent's live GC references.
@@ -376,7 +377,7 @@ fn run_with_fixture_dir_worker(
     store.data_mut().fixture_host = Some(fixture_host);
     let result = (|| {
         let mut linker: Linker<VmState> = Linker::new(engine);
-        link_capability_imports(&mut linker, &caps)?;
+        link_capability_imports_for(&mut linker, &caps, witchy_wir::HeapMode::Standard)?;
         super::fixture::link_granted_filesystem(&mut linker)?;
         linker.define_unknown_imports_as_traps(module)?;
         let instance = linker.instantiate(&mut store, module)?;

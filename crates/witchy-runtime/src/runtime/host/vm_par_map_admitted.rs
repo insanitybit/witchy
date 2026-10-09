@@ -1,17 +1,18 @@
 //! Source-bound scalar parallel map over fresh admitted, zero-grant workers.
+use crate::runtime::GuestAddress;
 use std::sync::Arc;
 use wasmtime::{Caller, Error, Linker, Result, StoreLimitsBuilder};
 
 use super::{AdmittedWorkerModule, Capabilities, PendingAdmittedParMap, VmState, WorkerModule,
     spawn_worker};
 
-pub(super) fn link(linker: &mut Linker<VmState>) -> Result<()> {
-    linker.func_wrap("witchy", "vm_par_map_admitted_run", run)?;
-    linker.func_wrap("witchy", "vm_par_map_admitted_write", write)?;
+pub(super) fn link<P: GuestAddress>(linker: &mut Linker<VmState>) -> Result<()> {
+    linker.func_wrap("witchy", "vm_par_map_admitted_run", run::<P>)?;
+    linker.func_wrap("witchy", "vm_par_map_admitted_write", write::<P>)?;
     Ok(())
 }
 
-fn read_inputs(caller: &mut Caller<'_, VmState>, pointer: i32, length: i32) -> Result<Vec<i64>> {
+fn read_inputs<P: GuestAddress>(caller: &mut Caller<'_, VmState>, pointer: P, length: i32) -> Result<Vec<i64>> {
     let count = usize::try_from(length).map_err(|_| Error::msg("negative parallel-map input count"))?;
     let byte_count = count.checked_mul(8).ok_or_else(|| Error::msg("parallel-map input length overflow"))?;
     let byte_count = i32::try_from(byte_count).map_err(|_| Error::msg("parallel-map input length overflow"))?;
@@ -41,7 +42,7 @@ fn run_chunk(program: Arc<AdmittedWorkerModule>, export: &str, inputs: &[i64],
     Ok(results)
 }
 
-fn run(mut caller: Caller<'_, VmState>, raw_site: i64, pointer: i32, length: i32) -> Result<i32> {
+fn run<P: GuestAddress>(mut caller: Caller<'_, VmState>, raw_site: i64, pointer: P, length: i32) -> Result<i32> {
     let site = u32::try_from(raw_site).map_err(|_| Error::msg("invalid admitted parallel-map site"))?;
     if caller.data().pending_admitted_par_map.is_some() {
         return Err(Error::msg("parallel-map result is still pending"));
@@ -81,7 +82,7 @@ fn run(mut caller: Caller<'_, VmState>, raw_site: i64, pointer: i32, length: i32
     Ok(count)
 }
 
-fn write(mut caller: Caller<'_, VmState>, raw_site: i64, pointer: i32, length: i32) -> Result<i32> {
+fn write<P: GuestAddress>(mut caller: Caller<'_, VmState>, raw_site: i64, pointer: P, length: i32) -> Result<i32> {
     let site = u32::try_from(raw_site).map_err(|_| Error::msg("invalid admitted parallel-map write site"))?;
     let pending = caller.data_mut().pending_admitted_par_map.take()
         .ok_or_else(|| Error::msg("parallel-map write has no pending run"))?;
@@ -93,6 +94,6 @@ fn write(mut caller: Caller<'_, VmState>, raw_site: i64, pointer: i32, length: i
     let mut bytes = Vec::with_capacity(expected);
     for value in pending.values { bytes.extend_from_slice(&value.to_le_bytes()); }
     let memory = crate::runtime::memory_of(&mut caller)?;
-    memory.write(&mut caller, pointer as u32 as usize, &bytes)?;
+    memory.write(&mut caller, pointer.offset(), &bytes)?;
     Ok(length)
 }

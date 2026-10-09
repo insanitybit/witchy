@@ -1,3 +1,4 @@
+use crate::runtime::GuestAddress;
 use wasmtime::{Caller, Error, ExternRef, Linker, Result, Rooted};
 use std::sync::Arc;
 
@@ -58,14 +59,14 @@ pub(in crate::runtime) fn canonical_secret_material_ref(
     Ok(authenticate_secret(caller.data(), data)?.material.clone())
 }
 
-pub(in crate::runtime) fn link_canonical(linker: &mut Linker<VmState>) -> Result<()> {
-    linker.func_wrap("witchy", "secretstore_lookup_at", host_secretstore_lookup_at)?;
+pub(in crate::runtime) fn link_canonical<P: GuestAddress>(linker: &mut Linker<VmState>) -> Result<()> {
+    linker.func_wrap("witchy", "secretstore_lookup_at", host_secretstore_lookup_at::<P>)?;
     Ok(())
 }
 
-fn host_secretstore_lookup_at(
+fn host_secretstore_lookup_at<P: GuestAddress>(
     mut caller: Caller<'_, VmState>, store: Option<Rooted<ExternRef>>,
-    name_ptr: i32, name_len: i32,
+    name_ptr: P, name_len: i32,
 ) -> Result<Option<Rooted<ExternRef>>> {
     let store = store.ok_or_else(|| Error::msg("SecretStore: null capability"))?;
     let data = store.data(&caller)?.ok_or_else(|| Error::msg("SecretStore: missing capability data"))?;
