@@ -117,7 +117,7 @@ pub fn reflect_option(o: Option(a)) -> Mirror where a: Reflect:
 // Reflect a list of `Reflect` elements. This is a free function rather than an
 // `impl Reflect for List(a)` because method dispatch on a `List` receiver binds to
 // the `list` module, so the generated `reflect` for a record's List field calls this.
-pub fn reflect_list(let xs: List(a)) -> Mirror where a: Reflect:
+pub fn reflect_list(xs: List(a)) -> Mirror where a: Reflect:
     var out = []
     for x in xs:
         list.push(out, reflect(x))
@@ -150,7 +150,7 @@ impl Reflect for Result(a, e) where a: Reflect, e: Reflect:
 // A `Set` reflects to the same `MList` shape as its insertion-order `to_list`
 // view. Reflection is an encoding protocol, not a reconstruction protocol, so
 // JSON sees a set as an array and `derive(Deserialize)` remains per-type.
-pub fn reflect_set(let s: Set(a)) -> Mirror where a: Reflect:
+pub fn reflect_set(s: Set(a)) -> Mirror where a: Reflect:
     var out = []
     for x in set.to_list(s):
         list.push(out, reflect(x))
@@ -168,7 +168,7 @@ impl Reflect for Set(a) where a: Reflect:
 // `Dict(k, v)` deserialize round trip. A free function for the same reason
 // `reflect_list` is: a `Dict` receiver's `.reflect()` would bind to the `dict`
 // module, so the generated `reflect` for a `Dict` field routes here.
-pub fn reflect_dict(let d: Dict(k, v)) -> Mirror where k: Reflect, v: Reflect:
+pub fn reflect_dict(d: Dict(k, v)) -> Mirror where k: Reflect, v: Reflect:
     var fields = []
     for pair in dict.pairs(d):
         let (key, val) = pair

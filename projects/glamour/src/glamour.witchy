@@ -1072,7 +1072,7 @@ pub fn route_url(route: RouteDef, values: List((String, String))) -> Result(Safe
                 if segment.starts_with("*"):
                     let name = segment.drop(1)
                     let value = parameter_value(values, name) ?? ""
-                    built.push(value.split("/").map(url.encode).join("/"))
+                    built.push(value.split("/").map(fn(part: String): url.encode(part)).join("/"))
                 else if segment.starts_with(":"):
                     let name = segment.drop(1)
                     let value = parameter_value(values, name) ?? ""

@@ -3597,7 +3597,7 @@ Reflect a single value through a generic helper. Generated record/tuple impls us
 
 Reflect an `Option` to a `Some`/`None` `MVariant`. Match bindings retain the constructor field's generic type, so the payload dispatches directly.
 
-#### `fn reflect_list(let xs: List(a)) -> Mirror where a: Reflect`
+#### `fn reflect_list(xs: List(a)) -> Mirror where a: Reflect`
 
 Reflect a list of `Reflect` elements. This is a free function rather than an `impl Reflect for List(a)` because method dispatch on a `List` receiver binds to the `list` module, so the generated `reflect` for a record's List field calls this.
 
@@ -3605,11 +3605,11 @@ Reflect a list of `Reflect` elements. This is a free function rather than an `im
 
 Reflect a `Result` to an `Ok`/`Err` `MVariant`, dispatching directly on the typed constructor binding.
 
-#### `fn reflect_set(let s: Set(a)) -> Mirror where a: Reflect`
+#### `fn reflect_set(s: Set(a)) -> Mirror where a: Reflect`
 
 A `Set` reflects to the same `MList` shape as its insertion-order `to_list` view. Reflection is an encoding protocol, not a reconstruction protocol, so JSON sees a set as an array and `derive(Deserialize)` remains per-type.
 
-#### `fn reflect_dict(let d: Dict(k, v)) -> Mirror where k: Reflect, v: Reflect`
+#### `fn reflect_dict(d: Dict(k, v)) -> Mirror where k: Reflect, v: Reflect`
 
 A `Dict` reflects to an `MRecord` - the same string-keyed shape a record uses, so `json` encodes it as an object and `debug` renders it record-style. Each key is rendered to a string (an object/record key is always a string), each value reflects through the `v: Reflect` bound. This is intentionally one-way for encoding/debug: reflection does not preserve enough key structure for a general `Dict(k, v)` deserialize round trip. A free function for the same reason `reflect_list` is: a `Dict` receiver's `.reflect()` would bind to the `dict` module, so the generated `reflect` for a `Dict` field routes here.
 
