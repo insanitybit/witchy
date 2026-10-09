@@ -7592,7 +7592,9 @@ impl Checker {
                 self.infer_expected(arg, param_ty)
             };
             let at = inferred.map_err(|e| in_call_context(&display, e))?;
-            let at = self.adapt_let_callable(arg, param_ty, at);
+            // An isolated VM callback is checked against its own copy contract
+            // below with the declaration's exact conventions; it never adapts.
+            let at = if typed_vm_callback { at } else { self.adapt_let_callable(arg, param_ty, at) };
             self.remember_owned_operand(arg, &at);
             if opt_callable {
                 self.require_opt_value_provenance(arg, &self.opt_value_requirement(param_ty), &display, index)?;
