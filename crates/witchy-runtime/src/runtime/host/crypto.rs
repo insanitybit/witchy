@@ -9,23 +9,23 @@ use crate::value::NativeValue as Value;
 #[path = "crypto_extensions.rs"]
 pub(in crate::runtime) mod extensions;
 
-pub(in crate::runtime) fn link_canonical_keyed(linker: &mut Linker<VmState>) -> Result<()> {
-    linker.func_wrap("witchy", "crypto_sign_into", host_crypto_sign_into)?;
-    linker.func_wrap("witchy", "crypto_public_key_into", host_crypto_public_key_into)?;
+pub(in crate::runtime) fn link_canonical_keyed<P: GuestAddress>(linker: &mut Linker<VmState>) -> Result<()> {
+    linker.func_wrap("witchy", "crypto_sign_into", host_crypto_sign_into::<P>)?;
+    linker.func_wrap("witchy", "crypto_public_key_into", host_crypto_public_key_into::<P>)?;
     Ok(())
 }
 
-fn checked_keyed_output(data: &[u8], ptr: i32, capacity: i32) -> Result<std::ops::Range<usize>> {
-    if ptr < 0 || capacity < 0 { bail!("negative keyed crypto output slice"); }
-    let start = ptr as usize;
+fn checked_keyed_output<P: GuestAddress>(data: &[u8], ptr: P, capacity: i32) -> Result<std::ops::Range<usize>> {
+    if capacity < 0 { bail!("negative keyed crypto output capacity"); }
+    let start = ptr.offset();
     let end = start.checked_add(capacity as usize)
         .filter(|end| *end <= data.len()).ok_or_else(|| Error::msg("keyed crypto output slice out of bounds"))?;
     Ok(start..end)
 }
 
-fn host_crypto_sign_into(
+fn host_crypto_sign_into<P: GuestAddress>(
     mut caller: Caller<'_, VmState>, key: Option<Rooted<ExternRef>>,
-    msg_ptr: i32, msg_len: i32, out_ptr: i32, out_cap: i32,
+    msg_ptr: P, msg_len: i32, out_ptr: P, out_cap: i32,
 ) -> Result<i32> {
     let material = super::secret::canonical_secret_material_ref(&caller, key)?;
     let memory = memory_of(&mut caller)?;
@@ -42,8 +42,8 @@ fn host_crypto_sign_into(
     Ok(128)
 }
 
-fn host_crypto_public_key_into(
-    mut caller: Caller<'_, VmState>, key: Option<Rooted<ExternRef>>, out_ptr: i32, out_cap: i32,
+fn host_crypto_public_key_into<P: GuestAddress>(
+    mut caller: Caller<'_, VmState>, key: Option<Rooted<ExternRef>>, out_ptr: P, out_cap: i32,
 ) -> Result<i32> {
     let material = super::secret::canonical_secret_material_ref(&caller, key)?;
     let memory = memory_of(&mut caller)?;

@@ -95,11 +95,12 @@ fn unbounded_and_overlarge_indices_keep_their_check() {
 }
 
 /// R4's address shape, `(uextend(ref) << 3) + uextend(offset)` plus a static
-/// offset, on the large-heap reservation (36 GiB, memory never moves, Spectre
+/// offset, on the large-heap engine's configuration (48 GiB reservation, no
+/// guard region as for any 64-bit memory, memory never moves, Spectre
 /// mitigation at its default). CVE-2026-34971 miscompiled exactly this shape
 /// on aarch64, so every load is checked against a Rust model of the memory:
 /// in bounds it reads the model's bytes, otherwise it traps.
-const LARGE_RESERVATION: u64 = 36 << 30;
+const LARGE_RESERVATION: u64 = 48 << 30;
 const SCALED_PAGES: u64 = 2;
 
 fn scaled_module() -> String {
@@ -108,18 +109,20 @@ fn scaled_module() -> String {
         "(module (memory (export \"memory\") i64 {SCALED_PAGES})
            (func (export \"byte\") (param i32 i32) (result i64) {address} i64.load8_u)
            (func (export \"word\") (param i32 i32) (result i64) {address} i64.load32_u offset=4)
-           (func (export \"long\") (param i32 i32) (result i64) {address} i64.load offset=8))"
+           (func (export \"long\") (param i32 i32) (result i64) {address} i64.load offset=8)
+           (func (export \"field\") (param i32 i32) (result i64) {address} i64.const 12 i64.add i64.load32_u offset=4))"
     )
 }
 
 #[test]
 fn scaled_reference_loads_need_no_explicit_check() {
-    // ref < 2^32, so (ref << 3) + offset stays under 2^35 + 2^32: inside a
-    // 36 GiB reservation, past an 8 GiB one.
+    // (ref << 3) + uextend(offset) reaches 2^35 + 2^32, so a field past it
+    // ends beyond 36 GiB: only the 48 GiB reservation covers every access
+    // without a guard region.
     let wat = scaled_module();
-    let covered = code_bytes(&engine_with(LARGE_RESERVATION, 32 << 20), &wat);
-    let short = code_bytes(&engine(), &wat);
-    assert!(covered + 24 < short, "covered {covered} code bytes, 8 GiB reservation {short}");
+    let covered = code_bytes(&engine_with(LARGE_RESERVATION, 0), &wat);
+    let short = code_bytes(&engine_with(36 << 30, 0), &wat);
+    assert!(covered + 24 < short, "covered {covered} code bytes, 36 GiB reservation {short}");
 }
 
 proptest::proptest! {
@@ -130,13 +133,13 @@ proptest::proptest! {
         loads in proptest::collection::vec((
             proptest::prop_oneof![0u32..16_400, proptest::prelude::any::<u32>(), (u32::MAX - 16)..=u32::MAX],
             proptest::prop_oneof![0u32..64, 131_000u32..131_100, proptest::prelude::any::<u32>()],
-            0usize..3,
+            0usize..4,
         ), 1..64)
     ) {
         use std::sync::OnceLock;
         static ENGINE: OnceLock<(Engine, Module)> = OnceLock::new();
         let (engine, module) = ENGINE.get_or_init(|| {
-            let engine = engine_with(LARGE_RESERVATION, 32 << 20);
+            let engine = engine_with(LARGE_RESERVATION, 0);
             let module = Module::new(&engine, scaled_module()).unwrap();
             (engine, module)
         });
@@ -146,7 +149,8 @@ proptest::proptest! {
         let model: Vec<u8> = (0..SCALED_PAGES * 65536).map(|at| (at * 131 % 251) as u8).collect();
         memory.write(&mut store, 0, &model).unwrap();
         for (reference, offset, kind) in loads {
-            let (export, at, size) = [("byte", 0, 1), ("word", 4, 4), ("long", 8, 8)][kind];
+            // `field` adds a constant the engine moves into the static offset.
+            let (export, at, size) = [("byte", 0, 1), ("word", 4, 4), ("long", 8, 8), ("field", 16, 4)][kind];
             let load = instance.get_typed_func::<(i32, i32), i64>(&mut store, export).unwrap();
             let address = (u64::from(reference) << 3) + u64::from(offset) + at;
             let got = load.call(&mut store, (reference as i32, offset as i32));

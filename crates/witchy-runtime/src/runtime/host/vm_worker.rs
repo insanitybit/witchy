@@ -377,6 +377,7 @@ fn run_with_fixture_dir_worker(
     store.data_mut().fixture_host = Some(fixture_host);
     let result = (|| {
         let mut linker: Linker<VmState> = Linker::new(engine);
+        // A raw fixture worker carries no launch contract: i32 addresses.
         link_capability_imports_for(&mut linker, &caps, witchy_wir::HeapMode::Standard)?;
         super::fixture::link_granted_filesystem(&mut linker)?;
         linker.define_unknown_imports_as_traps(module)?;

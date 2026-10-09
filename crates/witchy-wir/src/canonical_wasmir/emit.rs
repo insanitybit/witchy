@@ -849,10 +849,7 @@ pub(super) fn emit_alloc_core(body: &mut wasm_encoder::Function, refs: ref_encod
     body.instruction(&wasm_encoder::Instruction::Br(2));
     body.instruction(&wasm_encoder::Instruction::End);
     emit_get_index(body, s[2]);
-    refs.base(body);
-    body.instruction(&wasm_encoder::Instruction::I32Const(4));
-    refs.sub(body);
-    refs.finish(body);
+    refs.header(body, 4);
     body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
     emit_get_index(body, s[0]);
     body.instruction(&wasm_encoder::Instruction::I32Eq);
@@ -971,10 +968,7 @@ pub(super) fn emit_clone_ref(
     body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
     body.instruction(&wasm_encoder::Instruction::Else);
     emit_get_index(body, scratch_index(layout, 1));
-    layout.refs.base(body);
-    body.instruction(&wasm_encoder::Instruction::I32Const(8));
-    layout.refs.sub(body);
-    layout.refs.finish(body);
+    layout.refs.header(body, 8);
     body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
     emit_set_index(body, scratch_index(layout, 2));
     emit_get_index(body, scratch_index(layout, 2));
@@ -989,10 +983,7 @@ pub(super) fn emit_clone_ref(
     body.instruction(&wasm_encoder::Instruction::Unreachable);
     body.instruction(&wasm_encoder::Instruction::End);
     emit_get_index(body, scratch_index(layout, 1));
-    layout.refs.base(body);
-    body.instruction(&wasm_encoder::Instruction::I32Const(8));
-    layout.refs.sub(body);
-    layout.refs.finish(body);
+    layout.refs.header(body, 8);
     emit_get_index(body, scratch_index(layout, 2));
     body.instruction(&wasm_encoder::Instruction::I32Const(1));
     body.instruction(&wasm_encoder::Instruction::I32Add);
@@ -1210,46 +1201,15 @@ pub(super) fn emit_raw_byte_slice_address(
     Ok(())
 }
 
-/// `emit_raw_byte_slice_address` for `Scaled8` references, as an i64 memory
-/// index. An object stays below 4 GiB, so the range is authenticated within
-/// it (`start + length` fits u32, as the checker requires); the i64 sum from
-/// the shifted reference cannot wrap.
-#[allow(clippy::too_many_arguments)]
-fn emit_scaled_raw_byte_slice_index(
-    body: &mut wasm_encoder::Function,
-    layout: &LocalLayout,
-    function: FunctionId,
-    value_types: &BTreeMap<ValueId, ValueType>,
-    layouts: &LayoutInterner,
-    place: &Place,
-    access: AccessMode,
-    length: ValueId,
-) -> Result<(), EncodeError> {
-    let (object, start, length) = raw_byte_slice_place(function, value_types, layouts, place, access, length)
-        .map_err(EncodeError::Lowering)?;
-    emit_get(body, layout, function, start)?;
-    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
-    emit_get(body, layout, function, length)?;
-    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
-    body.instruction(&wasm_encoder::Instruction::I64Add);
-    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(u32::MAX - 4)));
-    body.instruction(&wasm_encoder::Instruction::I64GtU);
-    body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
-    body.instruction(&wasm_encoder::Instruction::Unreachable);
-    body.instruction(&wasm_encoder::Instruction::End);
-    emit_get(body, layout, function, object)?;
-    layout.refs.base(body);
-    body.instruction(&wasm_encoder::Instruction::I32Const(4));
-    layout.refs.add(body);
-    emit_get(body, layout, function, start)?;
-    layout.refs.add(body);
-    Ok(())
-}
-
-/// `emit_copy_bytes` for `Scaled8` references: both ranges as i64 memory
-/// indices into one `memory.copy`, which keeps memmove semantics. The inline
-/// small and medium copies of the `Byte` path keep i32 addresses in scratch
-/// locals, which cannot hold an address past 4 GiB.
+/// `emit_copy_bytes` for `Scaled8` references. Each range is kept as its
+/// object reference plus an i32 offset inside the object (`4 + start`), and
+/// every access forms `(uextend(ref) << 3) + uextend(offset + cursor)`. An
+/// object stays below 4 GiB, so the range is authenticated within it and the
+/// i32 sums are exact; the engine bounds the address even inside a loop,
+/// where an i64 address held in a local would reach it as an unbounded
+/// block parameter and keep its bounds check. The cascade is the `Byte`
+/// path's: inline 1-8 byte copies, a disjoint medium copy loop, and
+/// `memory.copy` (memmove) otherwise.
 fn emit_scaled_copy_bytes(
     body: &mut wasm_encoder::Function,
     function: &Function,
@@ -1259,13 +1219,149 @@ fn emit_scaled_copy_bytes(
     length: ValueId,
     layouts: &LayoutInterner,
 ) -> Result<(), EncodeError> {
-    emit_scaled_raw_byte_slice_index(body, layout, function.id, &function.value_types, layouts,
-        destination, AccessMode::Write, length)?;
-    emit_scaled_raw_byte_slice_index(body, layout, function.id, &function.value_types, layouts,
-        source, AccessMode::Read, length)?;
+    use wasm_encoder::Instruction as I;
+    let place = |place, access| raw_byte_slice_place(function.id, &function.value_types, layouts, place, access, length)
+        .map_err(EncodeError::Lowering);
+    let (destination_object, destination_start, length) = place(destination, AccessMode::Write)?;
+    let (source_object, source_start, _) = place(source, AccessMode::Read)?;
+    let (destination_local, source_local, length_local) = (scratch_index(layout, 0), scratch_index(layout, 1), scratch_index(layout, 2));
+    for (start, offset_local) in [(destination_start, destination_local), (source_start, source_local)] {
+        emit_get(body, layout, function.id, start)?;
+        body.instruction(&I::I64ExtendI32U);
+        emit_get(body, layout, function.id, length)?;
+        body.instruction(&I::I64ExtendI32U);
+        body.instruction(&I::I64Add);
+        body.instruction(&I::I64Const(i64::from(u32::MAX - 4)));
+        body.instruction(&I::I64GtU);
+        body.instruction(&I::If(BlockType::Empty));
+        body.instruction(&I::Unreachable);
+        body.instruction(&I::End);
+        emit_get(body, layout, function.id, start)?;
+        body.instruction(&I::I32Const(4));
+        body.instruction(&I::I32Add);
+        body.instruction(&I::LocalSet(offset_local));
+    }
     emit_get(body, layout, function.id, length)?;
-    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
-    body.instruction(&wasm_encoder::Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
+    body.instruction(&I::LocalSet(length_local));
+    let cursor = scratch_index(layout, 5);
+    let at = |body: &mut wasm_encoder::Function, object: ValueId, offset_local: u32, step: Option<u32>, plus: i32| -> Result<(), EncodeError> {
+        emit_get(body, layout, function.id, object)?;
+        layout.refs.base(body);
+        body.instruction(&I::LocalGet(offset_local));
+        if let Some(step) = step {
+            body.instruction(&I::LocalGet(step));
+            body.instruction(&I::I32Add);
+        }
+        if plus != 0 {
+            body.instruction(&I::I32Const(plus));
+            body.instruction(&I::I32Add);
+        }
+        body.instruction(&I::I64ExtendI32U);
+        body.instruction(&I::I64Add);
+        Ok(())
+    };
+    let destination_at = |body: &mut wasm_encoder::Function, step, plus| at(body, destination_object, destination_local, step, plus);
+    let source_at = |body: &mut wasm_encoder::Function, step, plus| at(body, source_object, source_local, step, plus);
+    let bulk = |body: &mut wasm_encoder::Function| -> Result<(), EncodeError> {
+        destination_at(body, None, 0)?;
+        source_at(body, None, 0)?;
+        body.instruction(&I::LocalGet(length_local));
+        body.instruction(&I::I64ExtendI32U);
+        body.instruction(&I::MemoryCopy { src_mem: 0, dst_mem: 0 });
+        Ok(())
+    };
+    body.instruction(&I::LocalGet(length_local));
+    body.instruction(&I::I32Const(8));
+    body.instruction(&I::I32LeU);
+    body.instruction(&I::If(BlockType::Empty));
+    for width in 1..=8 {
+        body.instruction(&I::LocalGet(length_local));
+        body.instruction(&I::I32Const(width));
+        body.instruction(&I::I32Eq);
+        body.instruction(&I::If(BlockType::Empty));
+        let (load, store, chunk) = match width {
+            1 => (I::I32Load8U(memarg(1)), I::I32Store8(memarg(1)), 1),
+            2 | 3 => (I::I32Load16U(memarg(2)), I::I32Store16(memarg(2)), 2),
+            8 => (I::I64Load(memarg(8)), I::I64Store(memarg(8)), 8),
+            _ => (I::I32Load(memarg(4)), I::I32Store(memarg(4)), 4),
+        };
+        if chunk == width {
+            destination_at(body, None, 0)?;
+            source_at(body, None, 0)?;
+            body.instruction(&load);
+            body.instruction(&store);
+        } else {
+            let (first, last) = (scratch_index(layout, 3), scratch_index(layout, 4));
+            let offset = width - chunk;
+            source_at(body, None, 0)?;
+            body.instruction(&load);
+            body.instruction(&I::LocalSet(first));
+            source_at(body, None, offset)?;
+            body.instruction(&load);
+            body.instruction(&I::LocalSet(last));
+            destination_at(body, None, 0)?;
+            body.instruction(&I::LocalGet(first));
+            body.instruction(&store);
+            destination_at(body, None, offset)?;
+            body.instruction(&I::LocalGet(last));
+            body.instruction(&store);
+        }
+        body.instruction(&I::Else);
+    }
+    bulk(body)?;
+    for _ in 1..=8 {
+        body.instruction(&I::End);
+    }
+    body.instruction(&I::Else);
+    // Medium copies inline only when the ranges are disjoint, as for `Byte`.
+    body.instruction(&I::LocalGet(length_local));
+    body.instruction(&I::I32Const(9));
+    body.instruction(&I::I32GeU);
+    body.instruction(&I::LocalGet(length_local));
+    body.instruction(&I::I32Const(4096));
+    body.instruction(&I::I32LeU);
+    body.instruction(&I::I32And);
+    for (first, second) in [(true, false), (false, true)] {
+        // first.end <= second.start
+        if first { destination_at(body, Some(length_local), 0)?; } else { source_at(body, Some(length_local), 0)?; }
+        if second { destination_at(body, None, 0)?; } else { source_at(body, None, 0)?; }
+        body.instruction(&I::I64LeU);
+    }
+    body.instruction(&I::I32Or);
+    body.instruction(&I::I32And);
+    body.instruction(&I::If(BlockType::Empty));
+    body.instruction(&I::I32Const(0));
+    body.instruction(&I::LocalSet(cursor));
+    for width in [8, 1] {
+        body.instruction(&I::Block(BlockType::Empty));
+        body.instruction(&I::Loop(BlockType::Empty));
+        body.instruction(&I::LocalGet(cursor));
+        body.instruction(&I::I32Const(width));
+        body.instruction(&I::I32Add);
+        body.instruction(&I::LocalGet(length_local));
+        body.instruction(&I::I32GtU);
+        body.instruction(&I::BrIf(1));
+        destination_at(body, Some(cursor), 0)?;
+        source_at(body, Some(cursor), 0)?;
+        if width == 8 {
+            body.instruction(&I::I64Load(memarg(8)));
+            body.instruction(&I::I64Store(memarg(8)));
+        } else {
+            body.instruction(&I::I32Load8U(memarg(1)));
+            body.instruction(&I::I32Store8(memarg(1)));
+        }
+        body.instruction(&I::LocalGet(cursor));
+        body.instruction(&I::I32Const(width));
+        body.instruction(&I::I32Add);
+        body.instruction(&I::LocalSet(cursor));
+        body.instruction(&I::Br(0));
+        body.instruction(&I::End);
+        body.instruction(&I::End);
+    }
+    body.instruction(&I::Else);
+    bulk(body)?;
+    body.instruction(&I::End);
+    body.instruction(&I::End);
     Ok(())
 }
 
@@ -1743,10 +1839,7 @@ pub(super) fn emit_clone_range(
         body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
         body.instruction(&wasm_encoder::Instruction::Else);
         emit_get_index(body, scratch_index(layout, 3));
-        layout.refs.base(body);
-        body.instruction(&wasm_encoder::Instruction::I32Const(8));
-        layout.refs.sub(body);
-        layout.refs.finish(body);
+        layout.refs.header(body, 8);
         body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
         emit_set_index(body, scratch_index(layout, 4));
         emit_get_index(body, scratch_index(layout, 4));
@@ -1761,10 +1854,7 @@ pub(super) fn emit_clone_range(
         body.instruction(&wasm_encoder::Instruction::Unreachable);
         body.instruction(&wasm_encoder::Instruction::End);
         emit_get_index(body, scratch_index(layout, 3));
-        layout.refs.base(body);
-        body.instruction(&wasm_encoder::Instruction::I32Const(8));
-        layout.refs.sub(body);
-        layout.refs.finish(body);
+        layout.refs.header(body, 8);
         emit_get_index(body, scratch_index(layout, 4));
         body.instruction(&wasm_encoder::Instruction::I32Const(1));
         body.instruction(&wasm_encoder::Instruction::I32Add);
@@ -1965,10 +2055,7 @@ pub(super) fn emit_instruction(
         ScalarInstruction::Load { destination, place, transfer } => {
             if is_raw_allocation_capacity_load(function.id, &function.value_types, layouts, place) {
                 emit_get(body, layout, function.id, place.object())?;
-                layout.refs.base(body);
-                body.instruction(&wasm_encoder::Instruction::I32Const(4));
-                layout.refs.sub(body);
-                layout.refs.finish(body);
+                layout.refs.header(body, 4);
                 body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
                 body.instruction(&wasm_encoder::Instruction::I32Const(4));
                 body.instruction(&wasm_encoder::Instruction::I32Sub);

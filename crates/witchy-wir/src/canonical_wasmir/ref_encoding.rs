@@ -10,19 +10,15 @@
 //! that covers the bound.
 //!
 //! A site that forms an address pushes the reference, calls `base`, pushes
-//! each i32 offset followed by `add`, and ends with `finish`. Under `Byte` the
-//! sequence is exactly the i32 sum and one widening it always was. The planner
-//! derives the same tokens through the `plan_*` mirrors.
+//! each i32 offset followed by `add`, and ends with `finish`; an RC header
+//! word below the object goes through `header`. Under `Byte` the sequence is
+//! exactly the i32 sum and one widening it always was. The planner derives
+//! the same tokens through the `plan_*` mirrors.
 //!
-//! No module selects `Scaled8` yet. The allocator, the drop worklist and the
-//! dictionary, owner and closure kernels still form `Byte` addresses, and
-//! several cache absolute interior addresses in i32 scratch locals, which
-//! `Scaled8` must replace with object-relative offsets. The allocator's
-//! globals are byte-valued too: the static-data boundary that retain and
-//! clone compare a reference against (`global 2`) and the free-list head
-//! that reclaim stores into an object (`global 1`) must count the same units
-//! as references. The selection that maps a large-heap program to `Scaled8`
-//! lands with that conversion.
+//! A large-heap program (`@large_heap`) selects `Scaled8`; every other module
+//! is `Byte`. Under `Scaled8` the allocator globals and free-list links count
+//! units, allocation sizes round to whole units, and interior addresses that
+//! outlive one access are held in i64 locals.
 //!
 //! A `Scaled8` interior offset kept in a range slot is read back after the
 //! slot is written, so the object a range moves or clones must not share a
@@ -137,15 +133,43 @@ impl RefEncoding {
         };
     }
 
-    /// After an i32 byte offset: subtract it from the address.
-    pub(super) fn sub(self, body: &mut wasm_encoder::Function) {
+    /// After the reference: the address `below` bytes under its object, an
+    /// RC header word. `Byte` subtracts in i32 as it always did. `Scaled8`
+    /// steps back one unit before widening, `(uextend(ref - 1) << 3) +
+    /// (8 - below)`: a 64-bit subtraction may wrap, so the engine could not
+    /// bound it and would keep a bounds check on every header access.
+    pub(super) fn header(self, body: &mut wasm_encoder::Function, below: i32) {
+        debug_assert!((1..=8).contains(&below));
         match self {
-            Self::Byte => body.instruction(&wasm_encoder::Instruction::I32Sub),
-            Self::Scaled8 => {
+            Self::Byte => {
+                body.instruction(&wasm_encoder::Instruction::I32Const(below));
+                body.instruction(&wasm_encoder::Instruction::I32Sub);
                 body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
-                body.instruction(&wasm_encoder::Instruction::I64Sub)
             }
-        };
+            Self::Scaled8 => {
+                body.instruction(&wasm_encoder::Instruction::I32Const(1));
+                body.instruction(&wasm_encoder::Instruction::I32Sub);
+                self.base(body);
+                if below != 8 {
+                    body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(8 - below)));
+                    body.instruction(&wasm_encoder::Instruction::I64Add);
+                }
+            }
+        }
+    }
+
+    /// Mirror of `header`.
+    pub(super) fn plan_header(self, plan: &mut Vec<PlanToken>, below: i32) {
+        match self {
+            Self::Byte => plan.extend([PlanToken::I32Const(below), PlanToken::I32Sub, PlanToken::I64ExtendI32U]),
+            Self::Scaled8 => {
+                plan.extend([PlanToken::I32Const(1), PlanToken::I32Sub]);
+                self.plan_base(plan);
+                if below != 8 {
+                    plan.extend([PlanToken::I64Const(i64::from(8 - below)), PlanToken::I64Add]);
+                }
+            }
+        }
     }
 
     /// End the address: the memory index is on the stack.
@@ -173,14 +197,6 @@ impl RefEncoding {
         match self {
             Self::Byte => plan.push(PlanToken::I32Add),
             Self::Scaled8 => plan.extend([PlanToken::I64ExtendI32U, PlanToken::I64Add]),
-        }
-    }
-
-    /// Mirror of `sub`.
-    pub(super) fn plan_sub(self, plan: &mut Vec<PlanToken>) {
-        match self {
-            Self::Byte => plan.push(PlanToken::I32Sub),
-            Self::Scaled8 => plan.extend([PlanToken::I64ExtendI32U, PlanToken::I64Sub]),
         }
     }
 

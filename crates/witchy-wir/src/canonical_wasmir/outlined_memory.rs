@@ -118,10 +118,7 @@ pub(super) fn emit_retain(refs: ref_encoding::RefEncoding) -> WasmFunctionEncode
     memory_op_counters::emit_bump(&mut body, memory_op_counters::Counter::Retains);
     let header = |body: &mut WasmFunctionEncoder| {
         body.instruction(&I::LocalGet(0));
-        refs.base(body);
-        body.instruction(&I::I32Const(8));
-        refs.sub(body);
-        refs.finish(body);
+        refs.header(body, 8);
     };
     for instruction in [I::LocalGet(0), I::GlobalGet(2), I::I32LtU, I::If(BlockType::Empty), I::Else] {
         body.instruction(&instruction);
@@ -146,10 +143,7 @@ pub(super) fn plan_retain(refs: ref_encoding::RefEncoding) -> (Vec<(u32, String)
     memory_op_counters::plan_bump(&mut plan, memory_op_counters::Counter::Retains);
     let header = |plan: &mut Vec<PlanToken>| {
         plan.push(P::LocalGet(0));
-        refs.plan_base(plan);
-        plan.push(P::I32Const(8));
-        refs.plan_sub(plan);
-        refs.plan_finish(plan);
+        refs.plan_header(plan, 8);
     };
     plan.extend([P::LocalGet(0), P::GlobalGet(2), P::I32LtU, P::If("Empty".into()), P::Else]);
     header(&mut plan);

@@ -185,10 +185,7 @@ fn pop(body: &mut WasmFunctionEncoder, s: &[u32]) {
 
 fn header(body: &mut WasmFunctionEncoder, refs: RefEncoding, s: &[u32]) {
     body.instruction(&I::LocalGet(s[OBJECT]));
-    refs.base(body);
-    body.instruction(&I::I32Const(8));
-    refs.sub(body);
-    refs.finish(body);
+    refs.header(body, 8);
 }
 
 fn decrement(body: &mut WasmFunctionEncoder, refs: RefEncoding, s: &[u32]) {
@@ -436,10 +433,7 @@ fn plan_pop(p: &mut Vec<PlanToken>, s: &[u32]) {
 }
 fn plan_header(p: &mut Vec<PlanToken>, refs: RefEncoding, s: &[u32]) {
     p.push(PlanToken::LocalGet(s[OBJECT]));
-    refs.plan_base(p);
-    p.push(PlanToken::I32Const(8));
-    refs.plan_sub(p);
-    refs.plan_finish(p);
+    refs.plan_header(p, 8);
 }
 fn plan_decrement(p: &mut Vec<PlanToken>, refs: RefEncoding, s: &[u32]) {
     use PlanToken as P;

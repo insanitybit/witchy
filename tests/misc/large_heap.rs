@@ -145,6 +145,27 @@ proptest::proptest! {
 }
 
 #[test]
+fn large_heap_signs_with_a_granted_secret() {
+    // Keyed crypto reads and writes guest buffers through 64-bit addresses.
+    const SIGN: &str = "import crypto\nfn main(console: Console, signer: Secret):\n    let sig = crypto.sign(signer, \"sign me\")\n    console.print(crypto.public_key(signer))\n    match crypto.ed25519_verify(crypto.public_key(signer), \"sign me\", sig):\n        Ok(true) -> console.print(\"verified\")\n        _ -> console.print(\"FAILED\")\n";
+    let run = |source: &str| {
+        let seed = [7u8; 32];
+        let caps = Capabilities {
+            signing_key: Some(seed),
+            secrets: vec![witchy::runtime::SecretGrant::new("signing", seed.to_vec())],
+            ..console()
+        };
+        let mut runtime = Runtime::batch().expect("create runtime");
+        let mut vm = runtime.spawn_admitted(&admit(source), caps, 64).expect("spawn program");
+        vm.run().expect("run program");
+        vm.output().to_vec()
+    };
+    let standard = run(SIGN);
+    assert_eq!(standard[1], "verified");
+    assert_eq!(run(&SIGN.replace("fn main(", "@large_heap\nfn main(")), standard);
+}
+
+#[test]
 fn large_heap_entry_receives_its_arguments() {
     let artifact = admit("@large_heap\nfn main(console: Console, args: List(String)):\n    for arg in args:\n        console.print(arg.to_upper())\n");
     let mut runtime = Runtime::batch().expect("create runtime");

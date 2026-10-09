@@ -337,6 +337,12 @@ fn bounds_check_field_access(
             .and_then(|bound| bound.checked_add(offset_and_size))
             .is_some_and(|end| end <= memory_reservation.saturating_add(memory_guard_size))
     {
+        // The bound proves the index sum never wraps, so a constant addend
+        // can move into the static offset: `(base + x) + (c + offset)` is the
+        // same address as `base + (x + c) + offset`, and the instruction
+        // selector folds the offset into the access while `base + x` is
+        // shared by every field access through `x`.
+        let (index, offset) = peel_constant_addends(&builder.func, index, offset);
         return Reachable(compute_addr(
             &mut builder.cursor(),
             heap,
@@ -773,6 +779,44 @@ fn index_upper_bound(func: &ir::Function, value: ir::Value, depth: u32) -> Optio
         }
         _ => None,
     }
+}
+
+/// witchy (RFC-0179): split `index = x + c` (repeatedly, `c` an `iconst` or a
+/// zero-extended one) into `x` and `offset + c`, while the offset fits its 32
+/// bits. Only valid where the index's upper bound shows the sum cannot wrap.
+fn peel_constant_addends(func: &ir::Function, mut index: ir::Value, mut offset: u32) -> (ir::Value, u32) {
+    use ir::{InstructionData, Opcode};
+    let constant = |v: ir::Value| {
+        let ir::ValueDef::Result(inst, _) = func.dfg.value_def(v) else { return None };
+        match func.dfg.insts[inst] {
+            InstructionData::UnaryImm { opcode: Opcode::Iconst, imm } => {
+                Some(truncate(imm.bits() as u64, func.dfg.value_type(v).bits()))
+            }
+            InstructionData::Unary { opcode: Opcode::Uextend, arg } => match func.dfg.value_def(arg) {
+                ir::ValueDef::Result(inner, _) => match func.dfg.insts[inner] {
+                    InstructionData::UnaryImm { opcode: Opcode::Iconst, imm } => {
+                        Some(truncate(imm.bits() as u64, func.dfg.value_type(arg).bits()))
+                    }
+                    _ => None,
+                },
+                _ => None,
+            },
+            _ => None,
+        }
+    };
+    for _ in 0..4 {
+        let ir::ValueDef::Result(inst, _) = func.dfg.value_def(index) else { break };
+        let InstructionData::Binary { opcode: Opcode::Iadd, args } = func.dfg.insts[inst] else { break };
+        let (rest, addend) = match (constant(args[0]), constant(args[1])) {
+            (_, Some(c)) => (args[0], c),
+            (Some(c), None) => (args[1], c),
+            (None, None) => break,
+        };
+        let Some(sum) = u32::try_from(addend).ok().and_then(|c| offset.checked_add(c)) else { break };
+        index = rest;
+        offset = sum;
+    }
+    (index, offset)
 }
 
 fn truncate(value: u64, bits: u32) -> u64 {

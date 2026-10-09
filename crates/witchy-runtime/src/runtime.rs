@@ -816,11 +816,14 @@ fn enable_bounded_memory64(config: &mut Config) {
     config.memory_may_move(false);
 }
 
-/// RFC-0179: a `@large_heap` program forms addresses up to 36 GiB (a 32 GiB
-/// heap plus one object's 32-bit offset), so its engine reserves that much
-/// and the range-based elision still drops every bounds check. The default
-/// reservation covers a standard program's 4 GiB.
-const LARGE_HEAP_RESERVATION: u64 = 36 << 30;
+/// RFC-0179: a `@large_heap` program forms addresses as a shifted reference
+/// (below 32 GiB) plus zero-extended 32-bit offsets and a static offset. A
+/// 64-bit memory gets no guard region, so the range-based elision needs the
+/// whole bound inside the reservation: 48 GiB covers the reference plus four
+/// 32-bit addends, and every such access keeps no bounds check. It is
+/// address space only. The default reservation covers a standard program's
+/// 4 GiB.
+const LARGE_HEAP_RESERVATION: u64 = 48 << 30;
 
 /// The engine for `@large_heap` programs: the runtime's `Config` with the
 /// larger reservation, built on first use. A module compiled for one engine
@@ -2554,7 +2557,14 @@ impl Runtime {
 
         let mut linker: Linker<VmState> = Linker::new(&engine);
         link_capability_imports_for(&mut linker, &caps, module.heap_mode())?;
-        if compiler_fuel.is_some() { host::compiler_syntax::register(&mut linker)?; }
+        if compiler_fuel.is_some() {
+            // A compiler session runs a recipe module, never a program's
+            // `@large_heap` entry; its syntax imports take i32 addresses.
+            if module.heap_mode() == witchy_wir::HeapMode::Large {
+                bail!("a compiler session cannot run a large-heap module");
+            }
+            host::compiler_syntax::register(&mut linker)?;
+        }
         if let WorkerModule::Admitted(program) = &module {
             host::closure_owner::register(&mut linker, &program.artifact)?;
             link_authenticated_external_imports(
@@ -2614,6 +2624,7 @@ impl Runtime {
             store.set_epoch_deadline(1);
         }
         let mut linker: Linker<VmState> = Linker::new(&self.engine);
+        // Raw fixture Wasm carries no launch contract: its addresses are i32.
         link_capability_imports_for(&mut linker, &caps, witchy_wir::HeapMode::Standard)?;
         host::fixture::link_basic(&mut linker, &roots)?;
         host::fixture::link_filesystem(&mut linker, &roots)?;
@@ -2798,7 +2809,7 @@ fn link_capability_imports<P: GuestAddress>(
     // These imports expose no guest mint; each call authenticates its token.
     host::clock_env_rand::link_canonical_clock(linker)?;
     host::secret::link_canonical::<P>(linker)?;
-    host::crypto::link_canonical_keyed(linker)?;
+    host::crypto::link_canonical_keyed::<P>(linker)?;
     host::secret_response::link_canonical(linker)?;
     host::cap_response::link::<P>(linker)?;
     // Linking the fixture ABI grants no provider or token. Its handler checks

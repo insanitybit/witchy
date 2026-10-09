@@ -526,10 +526,7 @@ pub(super) fn push_share_plan(
         PlanToken::Else,
         PlanToken::LocalGet(layout.scratch[1]),
     ]);
-    layout.refs.plan_base(plan);
-    plan.push(PlanToken::I32Const(8));
-    layout.refs.plan_sub(plan);
-    layout.refs.plan_finish(plan);
+    layout.refs.plan_header(plan, 8);
     plan.extend([
         PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
         PlanToken::LocalSet(layout.scratch[2]),
@@ -546,10 +543,7 @@ pub(super) fn push_share_plan(
         PlanToken::End,
         PlanToken::LocalGet(layout.scratch[1]),
     ]);
-    layout.refs.plan_base(plan);
-    plan.push(PlanToken::I32Const(8));
-    layout.refs.plan_sub(plan);
-    layout.refs.plan_finish(plan);
+    layout.refs.plan_header(plan, 8);
     plan.extend([
         PlanToken::LocalGet(layout.scratch[2]),
         PlanToken::I32Const(1),
@@ -731,43 +725,117 @@ pub(super) fn push_raw_byte_slice_address_plan(
     Ok(())
 }
 
-/// Mirror of `emit_scaled_raw_byte_slice_index`.
-fn push_scaled_raw_byte_slice_index_plan(
+/// Mirror of `emit_scaled_copy_bytes`.
+fn push_scaled_copy_bytes_plan(
     plan: &mut Vec<PlanToken>,
     function: &Function,
     layout: &LocalLayout,
     layouts: &LayoutInterner,
-    place: &Place,
-    access: AccessMode,
+    destination: &Place,
+    source: &Place,
     length: ValueId,
 ) -> Result<(), CanonicalAdmissionError> {
-    let (object, start, length) = raw_byte_slice_place(
-        function.id,
-        &function.value_types,
-        layouts,
-        place,
-        access,
-        length,
-    )
-    .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
-    push_get(plan, layout, start)?;
-    plan.push(PlanToken::I64ExtendI32U);
+    use PlanToken as P;
+    let place = |place, access| raw_byte_slice_place(function.id, &function.value_types, layouts, place, access, length)
+        .map_err(|_| CanonicalAdmissionError::UnsupportedPlan);
+    let (destination_object, destination_start, length) = place(destination, AccessMode::Write)?;
+    let (source_object, source_start, _) = place(source, AccessMode::Read)?;
+    let (destination_local, source_local, length_local) = (scratch_index(layout, 0), scratch_index(layout, 1), scratch_index(layout, 2));
+    for (start, offset_local) in [(destination_start, destination_local), (source_start, source_local)] {
+        push_get(plan, layout, start)?;
+        plan.push(P::I64ExtendI32U);
+        push_get(plan, layout, length)?;
+        plan.extend([P::I64ExtendI32U, P::I64Add, P::I64Const(i64::from(u32::MAX - 4)), P::I64GtU,
+            P::If("Empty".to_owned()), P::Unreachable, P::End]);
+        push_get(plan, layout, start)?;
+        plan.extend([P::I32Const(4), P::I32Add, P::LocalSet(offset_local)]);
+    }
     push_get(plan, layout, length)?;
+    plan.push(P::LocalSet(length_local));
+    let cursor = scratch_index(layout, 5);
+    let at = |plan: &mut Vec<PlanToken>, object: ValueId, offset_local: u32, step: Option<u32>, plus: i32| -> Result<(), CanonicalAdmissionError> {
+        push_get(plan, layout, object)?;
+        layout.refs.plan_base(plan);
+        plan.push(P::LocalGet(offset_local));
+        if let Some(step) = step {
+            plan.extend([P::LocalGet(step), P::I32Add]);
+        }
+        if plus != 0 {
+            plan.extend([P::I32Const(plus), P::I32Add]);
+        }
+        plan.extend([P::I64ExtendI32U, P::I64Add]);
+        Ok(())
+    };
+    let destination_at = |plan: &mut Vec<PlanToken>, step, plus| at(plan, destination_object, destination_local, step, plus);
+    let source_at = |plan: &mut Vec<PlanToken>, step, plus| at(plan, source_object, source_local, step, plus);
+    let bulk = |plan: &mut Vec<PlanToken>| -> Result<(), CanonicalAdmissionError> {
+        destination_at(plan, None, 0)?;
+        source_at(plan, None, 0)?;
+        plan.extend([P::LocalGet(length_local), P::I64ExtendI32U, P::MemoryCopy { source: 0, destination: 0 }]);
+        Ok(())
+    };
+    plan.extend([P::LocalGet(length_local), P::I32Const(8), P::I32LeU, P::If("Empty".to_owned())]);
+    for width in 1..=8 {
+        plan.extend([P::LocalGet(length_local), P::I32Const(width), P::I32Eq, P::If("Empty".to_owned())]);
+        let (load, store, chunk) = match width {
+            1 => (P::I32Load8U { offset: 0, align: 0, memory: 0 }, P::I32Store8 { offset: 0, align: 0, memory: 0 }, 1),
+            2 | 3 => (P::I32Load16U { offset: 0, align: 1, memory: 0 }, P::I32Store16 { offset: 0, align: 1, memory: 0 }, 2),
+            8 => (P::I64Load { offset: 0, align: 3, memory: 0 }, P::I64Store { offset: 0, align: 3, memory: 0 }, 8),
+            _ => (P::I32Load { offset: 0, align: 2, memory: 0 }, P::I32Store { offset: 0, align: 2, memory: 0 }, 4),
+        };
+        if chunk == width {
+            destination_at(plan, None, 0)?;
+            source_at(plan, None, 0)?;
+            plan.extend([load, store]);
+        } else {
+            let (first, last) = (scratch_index(layout, 3), scratch_index(layout, 4));
+            let offset = width - chunk;
+            source_at(plan, None, 0)?;
+            plan.extend([load.clone(), P::LocalSet(first)]);
+            source_at(plan, None, offset)?;
+            plan.extend([load, P::LocalSet(last)]);
+            destination_at(plan, None, 0)?;
+            plan.extend([P::LocalGet(first), store.clone()]);
+            destination_at(plan, None, offset)?;
+            plan.extend([P::LocalGet(last), store]);
+        }
+        plan.push(P::Else);
+    }
+    bulk(plan)?;
+    plan.extend(std::iter::repeat_n(P::End, 8));
+    plan.push(P::Else);
     plan.extend([
-        PlanToken::I64ExtendI32U,
-        PlanToken::I64Add,
-        PlanToken::I64Const(i64::from(u32::MAX - 4)),
-        PlanToken::I64GtU,
-        PlanToken::If("Empty".to_owned()),
-        PlanToken::Unreachable,
-        PlanToken::End,
+        P::LocalGet(length_local), P::I32Const(9), P::I32GeU,
+        P::LocalGet(length_local), P::I32Const(4096), P::I32LeU,
+        P::I32And,
     ]);
-    push_get(plan, layout, object)?;
-    layout.refs.plan_base(plan);
-    plan.push(PlanToken::I32Const(4));
-    layout.refs.plan_add(plan);
-    push_get(plan, layout, start)?;
-    layout.refs.plan_add(plan);
+    for (first, second) in [(true, false), (false, true)] {
+        if first { destination_at(plan, Some(length_local), 0)?; } else { source_at(plan, Some(length_local), 0)?; }
+        if second { destination_at(plan, None, 0)?; } else { source_at(plan, None, 0)?; }
+        plan.push(P::I64LeU);
+    }
+    plan.extend([P::I32Or, P::I32And, P::If("Empty".to_owned()), P::I32Const(0), P::LocalSet(cursor)]);
+    for width in [8, 1] {
+        plan.extend([
+            P::Block("Empty".to_owned()), P::Loop("Empty".to_owned()),
+            P::LocalGet(cursor), P::I32Const(width), P::I32Add,
+            P::LocalGet(length_local), P::I32GtU, P::BrIf(1),
+        ]);
+        destination_at(plan, Some(cursor), 0)?;
+        source_at(plan, Some(cursor), 0)?;
+        if width == 8 {
+            plan.extend([P::I64Load { offset: 0, align: 3, memory: 0 }, P::I64Store { offset: 0, align: 3, memory: 0 }]);
+        } else {
+            plan.extend([P::I32Load8U { offset: 0, align: 0, memory: 0 }, P::I32Store8 { offset: 0, align: 0, memory: 0 }]);
+        }
+        plan.extend([
+            P::LocalGet(cursor), P::I32Const(width), P::I32Add,
+            P::LocalSet(cursor), P::Br(0), P::End, P::End,
+        ]);
+    }
+    plan.push(P::Else);
+    bulk(plan)?;
+    plan.extend([P::End, P::End]);
     Ok(())
 }
 
@@ -781,11 +849,7 @@ pub(super) fn push_copy_bytes_plan(
     length: ValueId,
 ) -> Result<(), CanonicalAdmissionError> {
     if layout.refs == super::ref_encoding::RefEncoding::Scaled8 {
-        push_scaled_raw_byte_slice_index_plan(plan, function, layout, layouts, destination, AccessMode::Write, length)?;
-        push_scaled_raw_byte_slice_index_plan(plan, function, layout, layouts, source, AccessMode::Read, length)?;
-        push_get(plan, layout, length)?;
-        plan.extend([PlanToken::I64ExtendI32U, PlanToken::MemoryCopy { source: 0, destination: 0 }]);
-        return Ok(());
+        return push_scaled_copy_bytes_plan(plan, function, layout, layouts, destination, source, length);
     }
     let destination_local = scratch_index(layout, 0);
     let source_local = scratch_index(layout, 1);
@@ -1212,10 +1276,7 @@ pub(super) fn push_clone_range_plan(
             PlanToken::Else,
             PlanToken::LocalGet(layout.scratch[3]),
         ]);
-        layout.refs.plan_base(plan);
-        plan.push(PlanToken::I32Const(8));
-        layout.refs.plan_sub(plan);
-        layout.refs.plan_finish(plan);
+        layout.refs.plan_header(plan, 8);
         plan.extend([
             load,
             PlanToken::LocalSet(layout.scratch[4]),
@@ -1232,10 +1293,7 @@ pub(super) fn push_clone_range_plan(
             PlanToken::End,
             PlanToken::LocalGet(layout.scratch[3]),
         ]);
-        layout.refs.plan_base(plan);
-        plan.push(PlanToken::I32Const(8));
-        layout.refs.plan_sub(plan);
-        layout.refs.plan_finish(plan);
+        layout.refs.plan_header(plan, 8);
         plan.extend([
             PlanToken::LocalGet(layout.scratch[4]),
             PlanToken::I32Const(1),
@@ -1423,10 +1481,7 @@ pub(super) fn push_alloc_core_plan(plan: &mut Vec<PlanToken>, refs: ref_encoding
     plan.extend([P::LocalGet(s[1]), P::I32Const(refs.prefix_units()), P::I32Add, P::LocalSet(s[2]), P::LocalGet(s[2]), P::LocalGet(s[0])]);
     refs.plan_units(plan);
     plan.extend([P::I32Add, P::GlobalSet(0), P::Br(2), P::End, P::LocalGet(s[2])]);
-    refs.plan_base(plan);
-    plan.push(P::I32Const(4));
-    refs.plan_sub(plan);
-    refs.plan_finish(plan);
+    refs.plan_header(plan, 4);
     plan.extend([load(), P::LocalGet(s[0]), P::I32Eq, P::If(empty()), P::LocalGet(s[3]), P::I32Eqz, P::If(empty())]);
     object(plan, s[2]);
     plan.extend([load(), P::GlobalSet(1), P::Else]);
@@ -1698,10 +1753,7 @@ pub(super) fn expected_block_operations_plan(
             {
                 if is_raw_allocation_capacity_load(function.id, &function.value_types, layouts, place) {
                     push_get(&mut plan, &layout, place.object())?;
-                    layout.refs.plan_base(&mut plan);
-                    plan.push(PlanToken::I32Const(4));
-                    layout.refs.plan_sub(&mut plan);
-                    layout.refs.plan_finish(&mut plan);
+                    layout.refs.plan_header(&mut plan, 4);
                     plan.extend([
                         PlanToken::I32Load { offset: 0, align: 2, memory: 0 },
                         PlanToken::I32Const(4), PlanToken::I32Sub,
