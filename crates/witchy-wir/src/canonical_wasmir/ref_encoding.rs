@@ -17,8 +17,16 @@
 //! No module selects `Scaled8` yet. The allocator, the drop worklist and the
 //! dictionary, owner and closure kernels still form `Byte` addresses, and
 //! several cache absolute interior addresses in i32 scratch locals, which
-//! `Scaled8` must replace with object-relative offsets. The selection that
-//! maps a large-heap program to `Scaled8` lands with that conversion.
+//! `Scaled8` must replace with object-relative offsets. The allocator's
+//! globals are byte-valued too: the static-data boundary that retain and
+//! clone compare a reference against (`global 2`) and the free-list head
+//! that reclaim stores into an object (`global 1`) must count the same units
+//! as references. The selection that maps a large-heap program to `Scaled8`
+//! lands with that conversion.
+//!
+//! A `Scaled8` interior offset kept in a range slot is read back after the
+//! slot is written, so the object a range moves or clones must not share a
+//! local with the range's slots.
 
 use super::plan::PlanToken;
 

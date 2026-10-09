@@ -103,7 +103,8 @@ fn context<'a>(function: &'a Function, local: &'a LocalLayout<'a>, op: &O) -> Re
             indices.insert(START, local_scratch[1]);
         }
     }
-    let local = LocalLayout { refs: local.refs, memory_helpers: local.memory_helpers.clone(),
+    // The owner kernels still form Byte addresses (see `ref_encoding`).
+    let local = LocalLayout { refs: ref_encoding::RefEncoding::Byte, memory_helpers: local.memory_helpers.clone(),
         owner_scratch: local.owner_scratch,
         owner_bridges,
         indices,
