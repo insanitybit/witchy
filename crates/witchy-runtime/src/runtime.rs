@@ -805,6 +805,16 @@ fn build_module_with_binaryen<'a>(
     Ok(module)
 }
 
+/// Admitted modules declare a 64-bit linear memory addressed by
+/// zero-extended 32-bit values (RFC-0179). A memory that never moves keeps
+/// its whole reservation plus guard mapped or faulting, so the vendored
+/// range-based elision drops every explicit bounds check on those
+/// addresses, as for a 32-bit memory.
+fn enable_bounded_memory64(config: &mut Config) {
+    config.wasm_memory64(true);
+    config.memory_may_move(false);
+}
+
 fn build_module(engine: &Engine, opt_wasm: &[u8], cacheable: bool) -> Result<Module> {
     let required = binaryen_required();
     build_module_with_binaryen(engine, opt_wasm, cacheable, required, || {
@@ -2178,7 +2188,7 @@ impl Runtime {
         // (RFC-0165); frozen modules never emit it, so admitting the proposal
         // changes nothing for them. RFC-0090's resource probes still gate B4.
         config.wasm_tail_call(true);
-        config.wasm_memory64(false);
+        enable_bounded_memory64(&mut config);
         config.wasm_wide_arithmetic(false);
         // The encoder hints each check whose failure arm only traps, so
         // Cranelift lays that arm out of line. Hints never change semantics.
@@ -2256,7 +2266,7 @@ impl Runtime {
         // (RFC-0165); frozen modules never emit it, so admitting the proposal
         // changes nothing for them. RFC-0090's resource probes still gate B4.
         config.wasm_tail_call(true);
-        config.wasm_memory64(false);
+        enable_bounded_memory64(&mut config);
         // Wasmtime 49 turned wide arithmetic on by default; witchy emits none
         // of its instructions, so it stays outside the admitted surface.
         config.wasm_wide_arithmetic(false);

@@ -829,8 +829,9 @@ pub(super) fn emit(body: &mut WasmFunctionEncoder, function: &Function, local: &
             let extent = Extent::FixedBytes(u64::from(size));
             emit_alloc(body, &function, &local, layouts, ENV, environment, &extent)?;
             emit_get(body, &local, function.id, ENV)?;
+            emit_memory_index(body);
             body.instruction(&I::I32Const(0));
-            body.instruction(&I::I32Const(size as i32));
+            body.instruction(&I::I64Const(i64::from(size)));
             body.instruction(&I::MemoryFill(0));
             let tag = field_access(function.id, layouts, ENV, environment, 0).map_err(EncodeError::Lowering)?;
             emit_projected_address(body, &function, &local, tag)?;
@@ -944,7 +945,7 @@ pub(super) fn plan(plan: &mut Vec<PlanToken>, function: &Function, layouts: &Lay
             let LayoutSize::Fixed(size) = descriptor.size() else { return Err(CanonicalAdmissionError::UnsupportedPlan); };
             expected_alloc_plan(plan, &function, &local, None, ENV, &Extent::FixedBytes(u64::from(size)))?;
             push_get(plan, &local, ENV)?;
-            plan.extend([PlanToken::I32Const(0), PlanToken::I32Const(size as i32), PlanToken::MemoryFill(0)]);
+            plan.extend([PlanToken::I64ExtendI32U, PlanToken::I32Const(0), PlanToken::I64Const(i64::from(size)), PlanToken::MemoryFill(0)]);
             let access = field_access(function.id, layouts, ENV, environment, 0).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
             push_projected_address_plan(plan, &function, &local, access)?;
             plan.extend([PlanToken::I64Const(constructor.environment_tag), PlanToken::I64Store { offset: 0, align: 3, memory: 0 }]);

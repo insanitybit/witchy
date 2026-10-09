@@ -61,7 +61,7 @@ pub fn canonical_dictionary_scalar_insert_lookup_executes() {
     let checked = validate_final_for_test(check_initial_with_test_witness(module).expect("dictionary initial validation"))
         .expect("dictionary final validation");
     let artifact = admit_canonical_for_test(checked).expect("dictionary Wasm plan admission");
-    let engine = wasmtime::Engine::default();
+    let engine = crate::canonical_wasmir::fixture_engine();
     let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
     let mut store = wasmtime::Store::new(&engine, ());
     let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
@@ -135,7 +135,7 @@ pub fn canonical_dictionary_owned_clone_preserves_value() {
     let checked = validate_final_for_test(check_initial_with_test_witness(module).expect("owned dictionary initial validation"))
         .expect("owned dictionary final validation");
     let artifact = admit_canonical_for_test(checked).expect("owned dictionary Wasm plan admission");
-    let engine = wasmtime::Engine::default();
+    let engine = crate::canonical_wasmir::fixture_engine();
     let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
     let mut store = wasmtime::Store::new(&engine, ());
     let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
@@ -208,7 +208,7 @@ fn validated() -> ValidatedSafeWir {
 }
 
 fn execute(bytes: &[u8]) -> (i32, i64) {
-    let engine = wasmtime::Engine::default();
+    let engine = crate::canonical_wasmir::fixture_engine();
     let module = wasmtime::Module::new(&engine, bytes).unwrap();
     let mut store = wasmtime::Store::new(&engine, ());
     let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();

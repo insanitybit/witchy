@@ -855,7 +855,7 @@ fn encode_checked_unvalidated(checked: &CheckedWasmIr) -> Result<Vec<u8>, Encode
     memory.memory(MemoryType {
         minimum: initial_memory_pages(target.heap_start),
         maximum: None,
-        memory64: false,
+        memory64: true,
         shared: false,
         page_size_log2: None,
     });
@@ -885,7 +885,7 @@ fn encode_checked_unvalidated(checked: &CheckedWasmIr) -> Result<Vec<u8>, Encode
     let static_data_offsets: BTreeMap<_, _> = target.static_data.iter().map(|segment| (segment.id, segment.offset)).collect();
     let mut data = DataSection::new();
     for segment in &target.static_data {
-        data.active(0, &ConstExpr::i32_const(segment.offset as i32), segment.bytes.clone());
+        data.active(0, &ConstExpr::i64_const(i64::from(segment.offset)), segment.bytes.clone());
     }
     // Indexed once rather than scanned per function. Both lookups are
     // functions of the module, so inside the loop they were O(functions^2)
@@ -1266,6 +1266,16 @@ fn admit_canonical_with_bytes_for_test(
     let target_witness = decode_and_match_plan(&source, &target, &bytes)?;
     admit_parts(source, target, receipt, bytes, checked_source, final_module_digest, authority_digest, target_witness, None)
 }
+/// A Wasmtime engine for self-check fixtures that run backend kernels:
+/// admitted modules declare a 64-bit linear memory (RFC-0179).
+#[cfg(feature = "raw-encoder-test-api")]
+#[doc(hidden)]
+pub fn fixture_engine() -> wasmtime::Engine {
+    let mut config = wasmtime::Config::new();
+    config.wasm_memory64(true);
+    wasmtime::Engine::new(&config).expect("fixture engine")
+}
+
 #[cfg(feature = "raw-encoder-test-api")]
 #[doc(hidden)]
 #[path = "canonical_wasmir/tests"]
@@ -1528,7 +1538,7 @@ pub mod self_checks {
     #[cfg(feature = "native")]
     fn run_size_add(module: ValidatedSafeWir) -> Result<u32, wasmtime::Error> {
         let wasm = encode_validated(module).expect("validated size addition encodes");
-        let engine = wasmtime::Engine::default();
+        let engine = crate::canonical_wasmir::fixture_engine();
         let module = wasmtime::Module::new(&engine, wasm)?;
         let mut store = wasmtime::Store::new(&engine, ());
         let instance = wasmtime::Instance::new(&mut store, &module, &[])?;
@@ -1539,7 +1549,7 @@ pub mod self_checks {
     #[cfg(feature = "native")]
     fn run_int_add(module: ValidatedSafeWir) -> Result<i64, wasmtime::Error> {
         let artifact = admit_canonical_for_test(module).expect("validated int addition admits");
-        let engine = wasmtime::Engine::default();
+        let engine = crate::canonical_wasmir::fixture_engine();
         let module = wasmtime::Module::new(&engine, artifact.wasm())?;
         let mut store = wasmtime::Store::new(&engine, ());
         let instance = wasmtime::Instance::new(&mut store, &module, &[])?;
@@ -1808,7 +1818,7 @@ pub mod self_checks {
     pub fn encoded_structured_branch_executes_both_arms() {
         let wasm = encode_validated(checked_branch()).expect("structured branch encodes");
         wasmparser::validate(&wasm).expect("structured branch is valid Wasm");
-        let engine = wasmtime::Engine::default();
+        let engine = crate::canonical_wasmir::fixture_engine();
         let module = wasmtime::Module::new(&engine, &wasm).unwrap();
         let mut store = wasmtime::Store::new(&engine, ());
         let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
@@ -1822,7 +1832,7 @@ pub mod self_checks {
         let artifact = admit_canonical_for_test(checked_loop()).expect("structured loop artifact admits");
         let wasm = artifact.wasm();
         wasmparser::validate(&wasm).expect("structured loop is valid Wasm");
-        let engine = wasmtime::Engine::default();
+        let engine = crate::canonical_wasmir::fixture_engine();
         let module = wasmtime::Module::new(&engine, &wasm).unwrap();
         let mut store = wasmtime::Store::new(&engine, ());
         let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
@@ -1987,7 +1997,7 @@ pub mod self_checks {
     pub fn admitted_scalar_var_tail_call_executes_with_return_call_indirect() {
         let artifact = admit_canonical_for_test(checked_var_tail_call())
             .expect("scalar indirect proper-tail call artifact admits");
-        let engine = wasmtime::Engine::default();
+        let engine = crate::canonical_wasmir::fixture_engine();
         let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
         let mut store = wasmtime::Store::new(&engine, ());
         let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
@@ -2489,7 +2499,7 @@ pub mod self_checks {
             i64::from(u32::MAX) + 1,
         );
         let wasm = encode_validated(validated).expect("overflow narrow encodes with a trap");
-        let engine = wasmtime::Engine::default();
+        let engine = crate::canonical_wasmir::fixture_engine();
         let module = wasmtime::Module::new(&engine, &wasm).unwrap();
         let mut store = wasmtime::Store::new(&engine, ());
         let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
@@ -2508,7 +2518,7 @@ pub mod self_checks {
             19,
         );
         let wasm = encode_validated(validated).expect("valid narrow encodes");
-        let engine = wasmtime::Engine::default();
+        let engine = crate::canonical_wasmir::fixture_engine();
         let module = wasmtime::Module::new(&engine, &wasm).unwrap();
         let mut store = wasmtime::Store::new(&engine, ());
         let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
@@ -3263,7 +3273,7 @@ pub mod self_checks {
         let mut boundary = WasmFunctionEncoder::new(vec![(local_count, ValType::I32)]);
         if share {
             emit_clone_ref(&mut boundary, &layout, destination, object, &function).unwrap();
-            boundary.instruction(&wasm_encoder::Instruction::I32Const(0));
+            boundary.instruction(&wasm_encoder::Instruction::I64Const(0));
             boundary.instruction(&wasm_encoder::Instruction::LocalGet(1));
             boundary.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
         } else {
@@ -3272,12 +3282,12 @@ pub mod self_checks {
         boundary.instruction(&wasm_encoder::Instruction::End);
 
         let mut state = WasmFunctionEncoder::new(Vec::new());
-        state.instruction(&wasm_encoder::Instruction::I32Const(0));
+        state.instruction(&wasm_encoder::Instruction::I64Const(0));
         state.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
         state.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
         state.instruction(&wasm_encoder::Instruction::I64Const(32));
         state.instruction(&wasm_encoder::Instruction::I64Shl);
-        state.instruction(&wasm_encoder::Instruction::I32Const(16));
+        state.instruction(&wasm_encoder::Instruction::I64Const(16));
         state.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
         state.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
         state.instruction(&wasm_encoder::Instruction::I64Or);
@@ -3293,7 +3303,7 @@ pub mod self_checks {
         memory.memory(MemoryType {
             minimum: 1,
             maximum: None,
-            memory64: false,
+            memory64: true,
             shared: false,
             page_size_log2: None,
         });
@@ -3317,7 +3327,7 @@ pub mod self_checks {
         code.function(&boundary);
         code.function(&state);
         let mut data = DataSection::new();
-        data.active(0, &ConstExpr::i32_const(16), if max_rc { vec![0xff; 4] } else { vec![0; 4] });
+        data.active(0, &ConstExpr::i64_const(16), if max_rc { vec![0xff; 4] } else { vec![0; 4] });
         let mut module = WasmModule::new();
         module
             .section(&types)
@@ -3528,7 +3538,7 @@ pub mod self_checks {
     #[cfg(feature = "native")]
     pub fn packed_scalar_collection_oob_guard_traps_in_wasmtime() {
         let wasm = encode_validated(checked_packed_list_fixture(true)).expect("OOB fixture encodes");
-        let engine = wasmtime::Engine::default();
+        let engine = crate::canonical_wasmir::fixture_engine();
         let module = wasmtime::Module::new(&engine, &wasm).unwrap();
         let mut store = wasmtime::Store::new(&engine, ());
         let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
@@ -3543,7 +3553,7 @@ pub mod self_checks {
         let receipt = check_correspondence(source.module(), &target).unwrap();
         assert_eq!(receipt.mappings.len(), 13);
         let wasm = encode_validated(source).expect("two scalar collections encode");
-        let engine = wasmtime::Engine::default();
+        let engine = crate::canonical_wasmir::fixture_engine();
         let module = wasmtime::Module::new(&engine, &wasm).unwrap();
         let mut store = wasmtime::Store::new(&engine, ());
         let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
@@ -3566,7 +3576,7 @@ pub mod self_checks {
             16_383,
         ))
         .expect("large allocation module encodes");
-        let engine = wasmtime::Engine::default();
+        let engine = crate::canonical_wasmir::fixture_engine();
         let module = wasmtime::Module::new(&engine, &wasm).unwrap();
         // The allocator grows linear memory for an object past the current
         // size; the growth is observable through the exported bump pointer.
@@ -3589,7 +3599,7 @@ pub mod self_checks {
     #[cfg(feature = "native")]
     pub fn share_at_max_refcount_traps_before_destination_or_refcount_write() {
         let wasm = rc_boundary_module(true, true);
-        let engine = wasmtime::Engine::default();
+        let engine = crate::canonical_wasmir::fixture_engine();
         let module = wasmtime::Module::new(&engine, &wasm).unwrap();
         let mut store = wasmtime::Store::new(&engine, ());
         let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
@@ -3602,7 +3612,7 @@ pub mod self_checks {
     #[cfg(feature = "native")]
     pub fn release_at_zero_refcount_traps_before_decrement() {
         let wasm = rc_boundary_module(false, false);
-        let engine = wasmtime::Engine::default();
+        let engine = crate::canonical_wasmir::fixture_engine();
         let module = wasmtime::Module::new(&engine, &wasm).unwrap();
         let mut store = wasmtime::Store::new(&engine, ());
         let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
@@ -3647,7 +3657,7 @@ pub mod self_checks {
             move_cells,
         ))
         .expect("scalar range fixture admits before execution");
-        let engine = wasmtime::Engine::default();
+        let engine = crate::canonical_wasmir::fixture_engine();
         let module = wasmtime::Module::new(&engine, artifact.wasm())?;
         let mut store = wasmtime::Store::new(&engine, ());
         let instance = wasmtime::Instance::new(&mut store, &module, &[])?;
@@ -3714,7 +3724,7 @@ pub mod self_checks {
         let mut functions = FunctionSection::new();
         functions.function(0);
         let mut memories = MemorySection::new();
-        memories.memory(MemoryType { minimum: 1, maximum: None, memory64: false, shared: false, page_size_log2: None });
+        memories.memory(MemoryType { minimum: 1, maximum: None, memory64: true, shared: false, page_size_log2: None });
         let mut exports = ExportSection::new();
         exports.export("probe", ExportKind::Func, 0);
         let mut code = CodeSection::new();
@@ -3731,7 +3741,7 @@ pub mod self_checks {
 
     #[cfg(feature = "native")]
     fn run_raw_scalar_clone_range_probe(arguments: [i32; 5]) -> Result<(), wasmtime::Error> {
-        let engine = wasmtime::Engine::default();
+        let engine = crate::canonical_wasmir::fixture_engine();
         let module = wasmtime::Module::new(&engine, raw_scalar_clone_range_probe())?;
         let mut store = wasmtime::Store::new(&engine, ());
         let instance = wasmtime::Instance::new(&mut store, &module, &[])?;
@@ -3830,7 +3840,7 @@ pub mod self_checks {
         memories.memory(MemoryType {
             minimum: 1,
             maximum: None,
-            memory64: false,
+            memory64: true,
             shared: false,
             page_size_log2: None,
         });
@@ -4047,7 +4057,7 @@ pub mod self_checks {
         let artifact = admit_canonical_for_test(validated)
             .expect("pointer CloneRange admits through exact-byte matching");
         wasmparser::validate(artifact.wasm()).expect("admitted pointer CloneRange is valid Wasm");
-        let engine = wasmtime::Engine::default();
+        let engine = crate::canonical_wasmir::fixture_engine();
         let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
         let mut store = wasmtime::Store::new(&engine, ());
         let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
@@ -4148,7 +4158,7 @@ pub mod self_checks {
     #[cfg(feature = "native")]
     pub fn encoded_scalar_module_executes() {
         let wasm = encode_validated(checked_scalar()).expect("validated scalar authority encodes");
-        let engine = wasmtime::Engine::default();
+        let engine = crate::canonical_wasmir::fixture_engine();
         let module = wasmtime::Module::new(&engine, &wasm).expect("wasmtime accepts encoded scalar");
         let mut store = wasmtime::Store::new(&engine, ());
         let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instance creates");

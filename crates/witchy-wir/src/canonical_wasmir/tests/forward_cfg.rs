@@ -66,7 +66,7 @@ pub fn source_edges_and_forward_schedule_remain_checked() {
 pub fn shared_forward_join_executes_and_mutated_edge_refuses() {
     let validated = || finalize(candidate(false,false,false));
     let artifact = admit_canonical_for_test(validated()).expect("shared forward join admits");
-    let engine = wasmtime::Engine::default();
+    let engine = crate::canonical_wasmir::fixture_engine();
     let module = wasmtime::Module::new(&engine,artifact.wasm()).unwrap();
     let mut store = wasmtime::Store::new(&engine,());
     let instance = wasmtime::Instance::new(&mut store,&module,&[]).unwrap();

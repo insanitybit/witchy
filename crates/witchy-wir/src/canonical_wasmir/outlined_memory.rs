@@ -102,10 +102,10 @@ pub(super) fn emit_retain() -> WasmFunctionEncoder {
     let mut body = WasmFunctionEncoder::new([(1, ValType::I32)]);
     for instruction in [
         I::LocalGet(0), I::GlobalGet(2), I::I32LtU, I::If(BlockType::Empty), I::Else,
-        I::LocalGet(0), I::I32Const(8), I::I32Sub, I::I32Load(memarg(4)), I::LocalSet(1),
+        I::LocalGet(0), I::I32Const(8), I::I32Sub, I::I64ExtendI32U, I::I32Load(memarg(4)), I::LocalSet(1),
         I::LocalGet(1), I::I32Eqz, I::If(BlockType::Empty), I::Unreachable, I::End,
         I::LocalGet(1), I::I32Const(-1), I::I32Eq, I::If(BlockType::Empty), I::Unreachable, I::End,
-        I::LocalGet(0), I::I32Const(8), I::I32Sub, I::LocalGet(1), I::I32Const(1), I::I32Add,
+        I::LocalGet(0), I::I32Const(8), I::I32Sub, I::I64ExtendI32U, I::LocalGet(1), I::I32Const(1), I::I32Add,
         I::I32Store(memarg(4)), I::End, I::LocalGet(0), I::End,
     ] { body.instruction(&instruction); }
     body
@@ -116,10 +116,10 @@ pub(super) fn plan_retain() -> (Vec<(u32, String)>, Vec<PlanToken>) {
     (vec![(1, "i32".into())], vec![
         P::LocalGet(0), P::GlobalGet(2), P::I32LtU, P::If("Empty".into()), P::Else,
         P::LocalGet(0), P::I32Const(8), P::I32Sub,
-        P::I32Load { offset: 0, align: 2, memory: 0 }, P::LocalSet(1),
+        P::I64ExtendI32U, P::I32Load { offset: 0, align: 2, memory: 0 }, P::LocalSet(1),
         P::LocalGet(1), P::I32Eqz, P::If("Empty".into()), P::Unreachable, P::End,
         P::LocalGet(1), P::I32Const(-1), P::I32Eq, P::If("Empty".into()), P::Unreachable, P::End,
-        P::LocalGet(0), P::I32Const(8), P::I32Sub, P::LocalGet(1), P::I32Const(1), P::I32Add,
+        P::LocalGet(0), P::I32Const(8), P::I32Sub, P::I64ExtendI32U, P::LocalGet(1), P::I32Const(1), P::I32Add,
         P::I32Store { offset: 0, align: 2, memory: 0 }, P::End, P::LocalGet(0), P::End,
     ])
 }

@@ -1133,7 +1133,7 @@ pub(super) fn expected_metadata_prefix(
         });
     }
     let mut memory = MemorySection::new();
-    memory.memory(MemoryType { minimum: initial_memory_pages(target.heap_start), maximum: None, memory64: false, shared: false, page_size_log2: None });
+    memory.memory(MemoryType { minimum: initial_memory_pages(target.heap_start), maximum: None, memory64: true, shared: false, page_size_log2: None });
     let mut globals = GlobalSection::new();
     globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(target.heap_start as i32));
     globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(0));
@@ -1313,14 +1313,16 @@ pub(super) fn decode_and_match_plan(
                         return Err(CanonicalAdmissionError::PlanMismatch("nonzero data memory"));
                     }
                     let mut operators = offset_expr.get_operators_reader();
-                    let wasmparser::Operator::I32Const { value } = operators
+                    // The 64-bit memory takes an i64 offset; static data
+                    // still lies below 4 GiB.
+                    let wasmparser::Operator::I64Const { value } = operators
                         .read()
                         .map_err(|error| CanonicalAdmissionError::WasmValidation(error.to_string()))?
                     else {
                         return Err(CanonicalAdmissionError::PlanMismatch("dynamic data offset"));
                     };
                     let offset = u32::try_from(value)
-                        .map_err(|_| CanonicalAdmissionError::PlanMismatch("negative data offset"))?;
+                        .map_err(|_| CanonicalAdmissionError::PlanMismatch("data offset outside 32-bit static data"))?;
                     actual_data.push((offset, data.data.to_vec()));
                 }
             }

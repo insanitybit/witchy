@@ -204,7 +204,7 @@ pub mod self_checks {
         functions.function(4);
         functions.function(5);
         let mut memory = MemorySection::new();
-        memory.memory(MemoryType { minimum: 1, maximum: Some(1), memory64: false, shared: false, page_size_log2: None });
+        memory.memory(MemoryType { minimum: 1, maximum: Some(1), memory64: true, shared: false, page_size_log2: None });
         let mut globals = GlobalSection::new();
         for (value, mutable) in [(160, true), (0, true), (16, false)] {
             globals.global(GlobalType { val_type: ValType::I32, mutable, shared: false }, &ConstExpr::i32_const(value));
@@ -225,11 +225,11 @@ pub mod self_checks {
         }
         bytes[72..75].copy_from_slice(b"abc");
         let mut data = DataSection::new();
-        data.active(0, &ConstExpr::i32_const(0), bytes);
+        data.active(0, &ConstExpr::i64_const(0), bytes);
         let mut module = WasmModule::new();
         module.section(&types).section(&imports).section(&functions).section(&memory).section(&globals).section(&exports).section(&code).section(&data);
         let mut config = wasmtime::Config::new();
-        config.wasm_function_references(true).wasm_gc(true);
+        config.wasm_function_references(true).wasm_gc(true).wasm_memory64(true);
         let engine = wasmtime::Engine::new(&config)?;
         let module = wasmtime::Module::new(&engine, module.finish())
             .unwrap_or_else(|error| panic!("opaque owner kernel fixture module: {error:#}"));

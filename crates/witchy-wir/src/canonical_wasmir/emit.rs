@@ -139,6 +139,13 @@ pub(super) fn scratch_index(layout: &LocalLayout, slot: usize) -> u32 {
     layout.scratch[slot]
 }
 
+/// Widen the i32 address on top of the stack to the index of the 64-bit
+/// linear memory (RFC-0179). Every load, store and bulk-memory operand passes
+/// through here, so the engine can bound each index by `u32::MAX`.
+pub(super) fn emit_memory_index(body: &mut wasm_encoder::Function) {
+    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+}
+
 pub(super) fn memarg(width: u32) -> MemArg {
     MemArg { offset: 0, align: width.next_power_of_two().trailing_zeros() as u32, memory_index: 0 }
 }
@@ -175,6 +182,7 @@ pub(super) fn emit_access_base(
         }
         body.instruction(&wasm_encoder::Instruction::I32Add);
     }
+    emit_memory_index(body);
     Ok(u64::from(access.offset))
 }
 
@@ -232,6 +240,7 @@ pub(super) fn emit_projected_address(
         body.instruction(&wasm_encoder::Instruction::I32Const(access.offset as i32));
         body.instruction(&wasm_encoder::Instruction::I32Const(maximum as i32));
         body.instruction(&wasm_encoder::Instruction::Call(helpers.address));
+        emit_memory_index(body);
         return Ok(());
     }
         emit_get(body, layout, function.id, access.object)?;
@@ -246,6 +255,7 @@ pub(super) fn emit_projected_address(
         emit_get(body, layout, function.id, access.object)?;
         body.instruction(&wasm_encoder::Instruction::I32Const(access.offset as i32));
         body.instruction(&wasm_encoder::Instruction::I32Add);
+        emit_memory_index(body);
         return Ok(());
     }
     emit_get(body, layout, function.id, access.object)?;
@@ -263,6 +273,7 @@ pub(super) fn emit_projected_address(
     body.instruction(&wasm_encoder::Instruction::Unreachable);
     body.instruction(&wasm_encoder::Instruction::End);
     body.instruction(&wasm_encoder::Instruction::I32WrapI64);
+    emit_memory_index(body);
     Ok(())
 }
 
@@ -692,7 +703,6 @@ pub(super) fn emit_alloc(
     body.instruction(&wasm_encoder::Instruction::End);
     emit_end(body);
     body.instruction(&wasm_encoder::Instruction::MemorySize(0));
-    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
     body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(LINEAR_MEMORY_BYTES)));
     body.instruction(&wasm_encoder::Instruction::I64Mul);
     body.instruction(&wasm_encoder::Instruction::I64GtU);
@@ -703,12 +713,10 @@ pub(super) fn emit_alloc(
     body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(LINEAR_MEMORY_BYTES)));
     body.instruction(&wasm_encoder::Instruction::I64DivU);
     body.instruction(&wasm_encoder::Instruction::MemorySize(0));
-    body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
     body.instruction(&wasm_encoder::Instruction::I64Sub);
-    body.instruction(&wasm_encoder::Instruction::I32WrapI64);
     body.instruction(&wasm_encoder::Instruction::MemoryGrow(0));
-    body.instruction(&wasm_encoder::Instruction::I32Const(-1));
-    body.instruction(&wasm_encoder::Instruction::I32Eq);
+    body.instruction(&wasm_encoder::Instruction::I64Const(-1));
+    body.instruction(&wasm_encoder::Instruction::I64Eq);
     body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
     body.instruction(&wasm_encoder::Instruction::Unreachable);
     body.instruction(&wasm_encoder::Instruction::End);
@@ -726,6 +734,7 @@ pub(super) fn emit_alloc(
     emit_get_index(body, scratch_index(layout, 2));
     body.instruction(&wasm_encoder::Instruction::I32Const(4));
     body.instruction(&wasm_encoder::Instruction::I32Sub);
+    emit_memory_index(body);
     body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
     emit_get_index(body, scratch_index(layout, 0));
     body.instruction(&wasm_encoder::Instruction::I32Eq);
@@ -734,11 +743,14 @@ pub(super) fn emit_alloc(
     body.instruction(&wasm_encoder::Instruction::I32Eqz);
     body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
     emit_get_index(body, scratch_index(layout, 2));
+    emit_memory_index(body);
     body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
     body.instruction(&wasm_encoder::Instruction::GlobalSet(1));
     body.instruction(&wasm_encoder::Instruction::Else);
     emit_get_index(body, scratch_index(layout, 3));
+    emit_memory_index(body);
     emit_get_index(body, scratch_index(layout, 2));
+    emit_memory_index(body);
     body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
     body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
     body.instruction(&wasm_encoder::Instruction::End);
@@ -751,17 +763,20 @@ pub(super) fn emit_alloc(
     emit_get_index(body, scratch_index(layout, 2));
     emit_set_index(body, scratch_index(layout, 3));
     emit_get_index(body, scratch_index(layout, 2));
+    emit_memory_index(body);
     body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
     emit_set_index(body, scratch_index(layout, 2));
     body.instruction(&wasm_encoder::Instruction::Br(0));
     body.instruction(&wasm_encoder::Instruction::End);
     body.instruction(&wasm_encoder::Instruction::End);
     emit_get_index(body, scratch_index(layout, 1));
+    emit_memory_index(body);
     body.instruction(&wasm_encoder::Instruction::I32Const(1));
     body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
     emit_get_index(body, scratch_index(layout, 1));
     body.instruction(&wasm_encoder::Instruction::I32Const(4));
     body.instruction(&wasm_encoder::Instruction::I32Add);
+    emit_memory_index(body);
     emit_get_index(body, scratch_index(layout, 0));
     body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
     emit_get_index(body, scratch_index(layout, 2));
@@ -770,12 +785,14 @@ pub(super) fn emit_alloc(
         emit_get_index(body, scratch_index(layout, 2));
         body.instruction(&wasm_encoder::Instruction::I32Const(collection.length_offset as i32));
         body.instruction(&wasm_encoder::Instruction::I32Add);
+        emit_memory_index(body);
         emit_get(body, layout, function.id, *count)?;
         body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
         if let Some(capacity_offset) = collection.capacity_offset {
             emit_get_index(body, scratch_index(layout, 2));
             body.instruction(&wasm_encoder::Instruction::I32Const(capacity_offset as i32));
             body.instruction(&wasm_encoder::Instruction::I32Add);
+            emit_memory_index(body);
             emit_get(body, layout, function.id, *capacity)?;
             body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
         }
@@ -809,6 +826,7 @@ pub(super) fn emit_update_count(
         emit_get(body, layout, function.id, object)?;
         body.instruction(&wasm_encoder::Instruction::I32Const(capacity_offset as i32));
         body.instruction(&wasm_encoder::Instruction::I32Add);
+        emit_memory_index(body);
         body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
         body.instruction(&wasm_encoder::Instruction::I32GtU);
         body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
@@ -818,6 +836,7 @@ pub(super) fn emit_update_count(
     emit_get(body, layout, function.id, object)?;
     body.instruction(&wasm_encoder::Instruction::I32Const(collection.length_offset as i32));
     body.instruction(&wasm_encoder::Instruction::I32Add);
+    emit_memory_index(body);
     emit_get(body, layout, function.id, count)?;
     body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
     Ok(())
@@ -844,6 +863,7 @@ pub(super) fn emit_clone_ref(
     emit_get_index(body, scratch_index(layout, 1));
     body.instruction(&wasm_encoder::Instruction::I32Const(8));
     body.instruction(&wasm_encoder::Instruction::I32Sub);
+    emit_memory_index(body);
     body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
     emit_set_index(body, scratch_index(layout, 2));
     emit_get_index(body, scratch_index(layout, 2));
@@ -860,6 +880,7 @@ pub(super) fn emit_clone_ref(
     emit_get_index(body, scratch_index(layout, 1));
     body.instruction(&wasm_encoder::Instruction::I32Const(8));
     body.instruction(&wasm_encoder::Instruction::I32Sub);
+    emit_memory_index(body);
     emit_get_index(body, scratch_index(layout, 2));
     body.instruction(&wasm_encoder::Instruction::I32Const(1));
     body.instruction(&wasm_encoder::Instruction::I32Add);
@@ -874,6 +895,7 @@ pub(super) fn emit_reclaim(body: &mut wasm_encoder::Function, layout: &LocalLayo
     emit_get(body, layout, function.id, object)?;
     emit_set_index(body, scratch_index(layout, 1));
     emit_get_index(body, scratch_index(layout, 1));
+    emit_memory_index(body);
     body.instruction(&wasm_encoder::Instruction::GlobalGet(1));
     body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
     emit_get_index(body, scratch_index(layout, 1));
@@ -883,6 +905,7 @@ pub(super) fn emit_reclaim(body: &mut wasm_encoder::Function, layout: &LocalLayo
 
 pub(super) fn emit_reclaim_local(body: &mut wasm_encoder::Function, layout: &LocalLayout, slot: usize) {
     emit_get_index(body, scratch_index(layout, slot));
+    emit_memory_index(body);
     body.instruction(&wasm_encoder::Instruction::GlobalGet(1));
     body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
     emit_get_index(body, scratch_index(layout, slot));
@@ -1111,25 +1134,33 @@ pub(super) fn emit_copy_bytes(
         match width {
             1 => {
                 body.instruction(&wasm_encoder::Instruction::LocalGet(destination_local));
+                emit_memory_index(body);
                 body.instruction(&wasm_encoder::Instruction::LocalGet(source_local));
+                emit_memory_index(body);
                 body.instruction(&wasm_encoder::Instruction::I32Load8U(memarg(1)));
                 body.instruction(&wasm_encoder::Instruction::I32Store8(memarg(1)));
             }
             2 => {
                 body.instruction(&wasm_encoder::Instruction::LocalGet(destination_local));
+                emit_memory_index(body);
                 body.instruction(&wasm_encoder::Instruction::LocalGet(source_local));
+                emit_memory_index(body);
                 body.instruction(&wasm_encoder::Instruction::I32Load16U(memarg(2)));
                 body.instruction(&wasm_encoder::Instruction::I32Store16(memarg(2)));
             }
             4 => {
                 body.instruction(&wasm_encoder::Instruction::LocalGet(destination_local));
+                emit_memory_index(body);
                 body.instruction(&wasm_encoder::Instruction::LocalGet(source_local));
+                emit_memory_index(body);
                 body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
                 body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
             }
             8 => {
                 body.instruction(&wasm_encoder::Instruction::LocalGet(destination_local));
+                emit_memory_index(body);
                 body.instruction(&wasm_encoder::Instruction::LocalGet(source_local));
+                emit_memory_index(body);
                 body.instruction(&wasm_encoder::Instruction::I64Load(memarg(8)));
                 body.instruction(&wasm_encoder::Instruction::I64Store(memarg(8)));
             }
@@ -1140,8 +1171,10 @@ pub(super) fn emit_copy_bytes(
                 let last = scratch_index(layout, 4);
                 body.instruction(&wasm_encoder::Instruction::LocalGet(source_local));
                 if chunk == 2 {
+                    emit_memory_index(body);
                     body.instruction(&wasm_encoder::Instruction::I32Load16U(memarg(2)));
                 } else {
+                    emit_memory_index(body);
                     body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
                 }
                 body.instruction(&wasm_encoder::Instruction::LocalSet(first));
@@ -1149,12 +1182,15 @@ pub(super) fn emit_copy_bytes(
                 body.instruction(&wasm_encoder::Instruction::I32Const(offset));
                 body.instruction(&wasm_encoder::Instruction::I32Add);
                 if chunk == 2 {
+                    emit_memory_index(body);
                     body.instruction(&wasm_encoder::Instruction::I32Load16U(memarg(2)));
                 } else {
+                    emit_memory_index(body);
                     body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
                 }
                 body.instruction(&wasm_encoder::Instruction::LocalSet(last));
                 body.instruction(&wasm_encoder::Instruction::LocalGet(destination_local));
+                emit_memory_index(body);
                 body.instruction(&wasm_encoder::Instruction::LocalGet(first));
                 if chunk == 2 {
                     body.instruction(&wasm_encoder::Instruction::I32Store16(memarg(2)));
@@ -1164,6 +1200,7 @@ pub(super) fn emit_copy_bytes(
                 body.instruction(&wasm_encoder::Instruction::LocalGet(destination_local));
                 body.instruction(&wasm_encoder::Instruction::I32Const(offset));
                 body.instruction(&wasm_encoder::Instruction::I32Add);
+                emit_memory_index(body);
                 body.instruction(&wasm_encoder::Instruction::LocalGet(last));
                 if chunk == 2 {
                     body.instruction(&wasm_encoder::Instruction::I32Store16(memarg(2)));
@@ -1177,8 +1214,11 @@ pub(super) fn emit_copy_bytes(
     }
     // Preserve memory.copy's zero-length endpoint check as well.
     body.instruction(&wasm_encoder::Instruction::LocalGet(destination_local));
+    emit_memory_index(body);
     body.instruction(&wasm_encoder::Instruction::LocalGet(source_local));
+    emit_memory_index(body);
     body.instruction(&wasm_encoder::Instruction::LocalGet(length_local));
+    emit_memory_index(body);
     body.instruction(&wasm_encoder::Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
     for _ in 1..=8 {
         body.instruction(&wasm_encoder::Instruction::End);
@@ -1222,13 +1262,16 @@ pub(super) fn emit_copy_bytes(
         body.instruction(&wasm_encoder::Instruction::LocalGet(destination_local));
         body.instruction(&wasm_encoder::Instruction::LocalGet(cursor));
         body.instruction(&wasm_encoder::Instruction::I32Add);
+        emit_memory_index(body);
         body.instruction(&wasm_encoder::Instruction::LocalGet(source_local));
         body.instruction(&wasm_encoder::Instruction::LocalGet(cursor));
         body.instruction(&wasm_encoder::Instruction::I32Add);
         if width == 8 {
+            emit_memory_index(body);
             body.instruction(&wasm_encoder::Instruction::I64Load(memarg(8)));
             body.instruction(&wasm_encoder::Instruction::I64Store(memarg(8)));
         } else {
+            emit_memory_index(body);
             body.instruction(&wasm_encoder::Instruction::I32Load8U(memarg(1)));
             body.instruction(&wasm_encoder::Instruction::I32Store8(memarg(1)));
         }
@@ -1242,8 +1285,11 @@ pub(super) fn emit_copy_bytes(
     }
     body.instruction(&wasm_encoder::Instruction::Else);
     body.instruction(&wasm_encoder::Instruction::LocalGet(destination_local));
+    emit_memory_index(body);
     body.instruction(&wasm_encoder::Instruction::LocalGet(source_local));
+    emit_memory_index(body);
     body.instruction(&wasm_encoder::Instruction::LocalGet(length_local));
+    emit_memory_index(body);
     body.instruction(&wasm_encoder::Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
     body.instruction(&wasm_encoder::Instruction::End);
     body.instruction(&wasm_encoder::Instruction::End);
@@ -1314,6 +1360,7 @@ pub(super) fn emit_move_range_element_address(
     body.instruction(&wasm_encoder::Instruction::I64Mul);
     body.instruction(&wasm_encoder::Instruction::I64Add);
     body.instruction(&wasm_encoder::Instruction::I32WrapI64);
+    emit_memory_index(body);
 }
 
 pub(super) fn emit_move_range(
@@ -1432,6 +1479,7 @@ pub(super) fn emit_clone_range(
         body.instruction(&wasm_encoder::Instruction::I32Const(destination_layout.stride as i32));
         body.instruction(&wasm_encoder::Instruction::I32Mul);
         body.instruction(&wasm_encoder::Instruction::I32Add);
+        emit_memory_index(body);
         body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
         emit_set_index(body, scratch_index(layout, 3));
         emit_get_index(body, scratch_index(layout, 3));
@@ -1442,6 +1490,7 @@ pub(super) fn emit_clone_range(
         emit_get_index(body, scratch_index(layout, 3));
         body.instruction(&wasm_encoder::Instruction::I32Const(8));
         body.instruction(&wasm_encoder::Instruction::I32Sub);
+        emit_memory_index(body);
         body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
         emit_set_index(body, scratch_index(layout, 4));
         emit_get_index(body, scratch_index(layout, 4));
@@ -1458,6 +1507,7 @@ pub(super) fn emit_clone_range(
         emit_get_index(body, scratch_index(layout, 3));
         body.instruction(&wasm_encoder::Instruction::I32Const(8));
         body.instruction(&wasm_encoder::Instruction::I32Sub);
+        emit_memory_index(body);
         emit_get_index(body, scratch_index(layout, 4));
         body.instruction(&wasm_encoder::Instruction::I32Const(1));
         body.instruction(&wasm_encoder::Instruction::I32Add);
@@ -1472,10 +1522,13 @@ pub(super) fn emit_clone_range(
         body.instruction(&wasm_encoder::Instruction::End);
     }
     body.instruction(&wasm_encoder::Instruction::LocalGet(scratch_index(layout, 2)));
+    emit_memory_index(body);
     body.instruction(&wasm_encoder::Instruction::LocalGet(scratch_index(layout, 1)));
+    emit_memory_index(body);
     emit_get(body, layout, function.id, count)?;
     body.instruction(&wasm_encoder::Instruction::I32Const(destination_layout.stride as i32));
     body.instruction(&wasm_encoder::Instruction::I32Mul);
+    emit_memory_index(body);
     body.instruction(&wasm_encoder::Instruction::MemoryCopy { src_mem: 0, dst_mem: 0 });
     Ok(())
 }
@@ -1656,6 +1709,7 @@ pub(super) fn emit_instruction(
                 emit_get(body, layout, function.id, place.object())?;
                 body.instruction(&wasm_encoder::Instruction::I32Const(4));
                 body.instruction(&wasm_encoder::Instruction::I32Sub);
+                emit_memory_index(body);
                 body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
                 body.instruction(&wasm_encoder::Instruction::I32Const(4));
                 body.instruction(&wasm_encoder::Instruction::I32Sub);
