@@ -63,7 +63,10 @@ impl RefEncoding {
     pub(crate) fn reference(self, address: u32) -> u32 {
         match self {
             Self::Byte => address,
-            Self::Scaled8 => (address - 8) >> 3,
+            Self::Scaled8 => {
+                debug_assert!(address >= 8 && address % 8 == 0, "a scaled reference names a unit 8 bytes before its payload");
+                (address - 8) >> 3
+            }
         }
     }
 

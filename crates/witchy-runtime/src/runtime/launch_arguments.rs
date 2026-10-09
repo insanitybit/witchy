@@ -43,7 +43,13 @@ impl Refs {
 
     /// The reference to the object whose payload starts at `byte`.
     fn reference(self, byte: u64) -> Result<u32> {
-        let unit = match self.shift { 0 => byte, shift => (byte - 8) >> shift };
+        let unit = match self.shift {
+            0 => byte,
+            shift => {
+                debug_assert!(byte >= 8, "a scaled reference names a unit 8 bytes before its payload");
+                (byte - 8) >> shift
+            }
+        };
         u32::try_from(unit).map_err(|_| Error::msg("launch argument address overflow"))
     }
 
