@@ -15,6 +15,8 @@ merge-queue result for that claim.
 | [RFC-0165 ledger](0165-acceptance-ledger.md) | Bounded implementation evidence and remaining safety limits. |
 | [SafeWIR judgment](0162-safewir-judgment.md) | Independent schema-1 memory-validation rules. |
 | [RFC-0163](0163-authority-validated-codegen.md) | Proposed stronger codegen and host-authority validation. |
+| [RFC-0178](0178-region-reclamation.md) | Proposed region reclamation by rewind with no release path for region-born values; supplies RFC-0175's region handles. |
+| [RFC-0181](0181-inline-aggregate-layout.md) | Proposed inline storage for fixed-size records, `var` on a projection, and checked field/index write summaries. |
 | [RFC-0180](0180-error-sets.md) | Proposed typed remainder for anonymous-union error patterns; the union as the one error mechanism (deletes `From` at `?`); keeps `? "msg"` String-only. |
 | [Current work](current-work.md) | Priority order, retained performance obligations, and parked proposals. |
 | [Historical recovery](retired-rfcs.md) | Git retrieval and current authority for removed RFCs. |
