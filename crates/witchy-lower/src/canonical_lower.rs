@@ -11028,7 +11028,8 @@ impl FunctionLowerer<'_> {
         // closure constructor a separate parameter-disposition exception.
         let mut transferred = Vec::new();
         match &operation {
-            Operation::Store { value, transfer: witchy_wir::canonical_safewir::StoreTransfer::MoveUnique, .. }
+            Operation::Store { value, transfer: witchy_wir::canonical_safewir::StoreTransfer::MoveUnique
+                | witchy_wir::canonical_safewir::StoreTransfer::ReplaceMoveUnique, .. }
             | Operation::MoveValue { source: value, .. }
             | Operation::DropRef { object: value }
             | Operation::Release { object: value }

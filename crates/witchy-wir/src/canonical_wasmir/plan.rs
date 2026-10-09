@@ -1795,12 +1795,26 @@ pub(super) fn expected_block_operations_plan(
                 }
             }
             Operation::Store { place, value, transfer }
-                if matches!(transfer, StoreTransfer::CopyScalar | StoreTransfer::MoveUnique | StoreTransfer::CloneShared) =>
+                if matches!(transfer, StoreTransfer::CopyScalar | StoreTransfer::MoveUnique | StoreTransfer::CloneShared | StoreTransfer::ReplaceCloneShared | StoreTransfer::ReplaceMoveUnique) =>
             {
-                if *transfer == StoreTransfer::CloneShared && !static_values.contains(value) {
+                if matches!(transfer, StoreTransfer::CloneShared | StoreTransfer::ReplaceCloneShared) && !static_values.contains(value) {
                     push_share_plan(&mut plan, &layout, *value, *value)?;
                 }
+                let access = resolve_memory_place_for_values(function.id, &function.value_types, layouts, place)
+                    .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
+                if transfer.replaces_owned() {
+                    let offset = push_access_base_plan(&mut plan, function, &layout, access)?;
+                    plan.extend([PlanToken::I32Load { offset, align: 2, memory: 0 }, PlanToken::LocalSet(layout.scratch[0])]);
+                }
                 push_memory_store_plan(&mut plan, function, layouts, &layout, place, *value)?;
+                if transfer.replaces_owned() {
+                    let child = access.pointer_layout.ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
+                    if let Some(index) = layout.memory_helpers.as_ref().and_then(|helpers| helpers.drops.get(&child)) {
+                        plan.extend([PlanToken::LocalGet(layout.scratch[0]), PlanToken::Call(*index)]);
+                    } else {
+                        drop_worklist::plan(&mut plan, function.id, layouts, &layout, child)?;
+                    }
+                }
             }
             Operation::CopyBytes { destination, source, length } => {
                 push_copy_bytes_plan(

@@ -89,7 +89,7 @@ pub struct BoundsGuardRedundancy;
 impl Analysis for BoundsGuardRedundancy {
     type Result = BTreeMap<(BlockId, usize), bool>;
     type Fact = bool;
-    const VERSION: u32 = 1;
+    const VERSION: u32 = 2;
 
     fn compute(module: &CanonicalModule<InitialValid>, function: &Function) -> Self::Result {
         redundant_bounds_guards(function, &raw_byte_layouts(module))
@@ -107,7 +107,36 @@ pub(super) fn redundant_bounds_guards(
     function: &Function,
     raw_bytes: &BTreeSet<crate::layout::LayoutId>,
 ) -> BTreeMap<(BlockId, usize), bool> {
-    implied_guards(function, raw_bytes, |_| true)
+    let mut redundant = implied_guards(function, raw_bytes, |_| true);
+    let mut replacement_indices = BTreeSet::new();
+    let mut comparisons = BTreeMap::new();
+    let mut constants = BTreeSet::new();
+    for operation in function.blocks.iter().flat_map(|block| &block.operations) {
+        match operation {
+            Operation::Store { place, transfer, .. } if transfer.replaces_owned() => {
+                if let super::Projection::Element { index } = place.projection() {
+                    replacement_indices.insert(*index);
+                }
+            }
+            Operation::Compare { destination, operator: ComparisonOperator::LessUnsigned, left, right } => {
+                comparisons.insert(*destination, (*left, *right));
+            }
+            Operation::ConstSize { destination, .. } => { constants.insert(*destination); }
+            _ => {}
+        }
+    }
+    for block in &function.blocks {
+        for (position, operation) in block.operations.iter().enumerate() {
+            if let Operation::Guard { condition, kind: GuardKind::Bounds } = operation
+                && comparisons.get(condition).is_some_and(|(index, count)|
+                    replacement_indices.contains(index) && !constants.contains(count))
+            {
+                // Replacing an owned edge reads its logical slot under the current owner generation.
+                redundant.insert((block.id, position), false);
+            }
+        }
+    }
+    redundant
 }
 
 /// The counted layouts whose elements are raw bytes, resolved as the memory

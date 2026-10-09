@@ -524,7 +524,7 @@ fn operation_flow(
             consume(owned, *source)?;
             owned.insert(*destination);
         }
-        Operation::Store { value, transfer: StoreTransfer::MoveUnique, .. } if is_reference(function, *value) => {
+        Operation::Store { value, transfer: StoreTransfer::MoveUnique | StoreTransfer::ReplaceMoveUnique, .. } if is_reference(function, *value) => {
             consume(owned, *value)?;
         }
         Operation::DropRef { object } | Operation::Release { object } => consume(owned, *object)?,

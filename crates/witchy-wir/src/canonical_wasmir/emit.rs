@@ -2100,18 +2100,34 @@ pub(super) fn emit_instruction(
             }
         }
         ScalarInstruction::Store { place, value, transfer } => {
-            if !matches!(*transfer, StoreTransfer::CopyScalar | StoreTransfer::MoveUnique | StoreTransfer::CloneShared) {
+            if !matches!(*transfer, StoreTransfer::CopyScalar | StoreTransfer::MoveUnique | StoreTransfer::CloneShared | StoreTransfer::ReplaceCloneShared | StoreTransfer::ReplaceMoveUnique) {
                 return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Store transfer" });
             }
             let access = resolve_memory_place(function, layouts, place).map_err(EncodeError::Lowering)?;
-            if *transfer == StoreTransfer::CloneShared && !static_values.contains(value) {
+            if matches!(transfer, StoreTransfer::CloneShared | StoreTransfer::ReplaceCloneShared) && !static_values.contains(value) {
                 // Retain before publishing the second edge. Assigning the
                 // source local to itself preserves its existing owned token.
                 // A static child needs no retain: the helper would return
                 // at its heap-base check.
                 emit_clone_ref(body, layout, *value, *value, function)?;
             }
+            if transfer.replaces_owned() {
+                let offset = emit_access_base(body, function, layout, access)?;
+                body.instruction(&wasm_encoder::Instruction::I32Load(memarg_at(4, offset)));
+                emit_set_index(body, scratch_index(layout, 0));
+            }
             emit_typed_store(body, function, layout, access, *value)?;
+            if transfer.replaces_owned() {
+                let Some(child) = access.pointer_layout else {
+                    return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Store replace child" });
+                };
+                if let Some(index) = layout.memory_helpers.as_ref().and_then(|helpers| helpers.drops.get(&child)) {
+                    body.instruction(&wasm_encoder::Instruction::LocalGet(scratch_index(layout, 0)));
+                    body.instruction(&wasm_encoder::Instruction::Call(*index));
+                } else {
+                    drop_worklist::emit(body, layout, function.id, layouts, child)?;
+                }
+            }
         }
         ScalarInstruction::CopyBytes { destination, source, length } => {
             emit_copy_bytes(body, function, layout, destination, source, *length, layouts)?;

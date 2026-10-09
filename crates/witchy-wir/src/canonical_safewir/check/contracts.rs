@@ -1196,8 +1196,12 @@ fn derive_operation(
             );
         }
         Operation::InitNullableOwned { place } => { add_effect(summary, origin_of(origins, place.object()), MemoryEffect::Write); }
-        Operation::Store { place, value, .. } => {
+        Operation::Store { place, value, transfer } => {
             add_effect(summary, origin_of(origins, place.object()), MemoryEffect::Write);
+            if transfer.replaces_owned() {
+                add_effect(summary, origin_of(origins, place.object()), MemoryEffect::Read);
+                add_effect(summary, origin_of(origins, place.object()), MemoryEffect::Release);
+            }
             mark_escape(summary, origin_of(origins, *value));
         }
         Operation::UpdateCount { object, .. } => { add_effect(summary, origin_of(origins, *object), MemoryEffect::Write); }

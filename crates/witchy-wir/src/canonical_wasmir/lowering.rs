@@ -917,7 +917,8 @@ pub(super) fn lower_operation(
             let access = resolve_memory_place_for_values(function, value_types, layouts, place)?;
             let valid_transfer = match access.pointer_layout {
                 Some(pointee) => {
-                    matches!(*transfer, StoreTransfer::MoveUnique | StoreTransfer::CloneShared)
+                    matches!(*transfer, StoreTransfer::MoveUnique | StoreTransfer::CloneShared | StoreTransfer::ReplaceMoveUnique | StoreTransfer::ReplaceCloneShared)
+                        && (!transfer.replaces_owned() || access.pointer_slot == Some(PointerSlot::Owned))
                         && place.value_type() == ValueType::Ref(pointee)
                         && value_types.get(value) == Some(&ValueType::Ref(pointee))
                 }

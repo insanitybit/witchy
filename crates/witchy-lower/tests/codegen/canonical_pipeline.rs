@@ -896,9 +896,138 @@ fn opaque_scalar_list_writeback_has_a_matching_physical_declaration() {
     }
 }
 
+#[test]
+fn unique_reference_list_assignment_uses_atomic_owned_slot_replacement() {
+    use witchy_wir::canonical_safewir::{Operation, StoreTransfer};
+    let input = checked("mode opt\nfn main() -> Int:\n    var xs = [[10], [20]]\n    xs[0] = [30]\n    xs[0][0]\n");
+    let candidate = witchy_lower::canonical_pipeline_checks::lowered_candidate(&input);
+    assert!(candidate.functions().iter().flat_map(|function| &function.blocks)
+        .flat_map(|block| &block.operations).any(|operation| matches!(operation,
+            Operation::Store { transfer: StoreTransfer::ReplaceCloneShared | StoreTransfer::ReplaceMoveUnique, .. })));
+    compile_checked_module_artifact(&input).expect_lowered("admit atomic reference replacement");
+}
+
 #[cfg(feature = "native-test-runtime")]
 #[test]
 fn scalar_list_field_writeback_preserves_nested_snapshots_and_argument_order() {
     let source = "type Stack:\n    items: List(Int)\n    total: Int\n\nfn append(value: Int, var values: List(Int)):\n    values.push(value)\n\nfn main() -> Int:\n    var stack = Stack([1], 2)\n    let old_items = stack.items\n    append(stack.total, stack.items)\n    let old = stack\n    for i in 0..3:\n        append(i, stack.items)\n    old_items.length() * 1000 + old.items.length() * 100 + stack.items.length() * 10 + stack.items[1]\n";
     assert_eq!(run_callback_with_heap_audit(source, true).expect("field snapshot result"), 1252);
+}
+
+#[cfg(feature = "native-test-runtime")]
+#[test]
+fn owned_reference_list_replacement_keeps_child_and_parent_snapshots() {
+    for (source, expected) in [
+        ("mode opt\nfn main() -> Int:\n    var xs = [[10], [20]]\n    let child = xs[0]\n    xs[0] = [30]\n    child[0] + xs[0][0]\n", 40),
+        ("mode opt\nfn main() -> Int:\n    var xs = [[10], [20]]\n    let snapshot = xs\n    xs[0] = [30]\n    snapshot[0][0] + xs[0][0]\n", 40),
+        ("mode opt\nfn main() -> Int:\n    var xs = [[10], [20]]\n    xs[0] = xs[0]\n    xs[0][0] + xs[1][0]\n", 30),
+        ("fn main() -> Int:\n    var xs = [[10], [20]]\n    if xs[1][0] == 20:\n        xs[0] = [30]\n    xs[0][0] + xs[1][0]\n", 50),
+        ("fn main() -> Int:\n    var xs = [[10], [20]]\n    var turn = 0\n    while turn < 4:\n        if turn % 2 == 0:\n            xs[0] = [turn + 30]\n        turn += 1\n    xs[0][0] + xs[1][0]\n", 52),
+    ] {
+        assert_eq!(run_index_result(source, "f0"), expected);
+    }
+}
+
+#[cfg(feature = "native-test-runtime")]
+#[test]
+fn owned_reference_replacement_append_pop_preserves_snapshots_and_reclaims_heap() {
+    use witchy_wir::{HEAP_BASE_EXPORT, HEAP_FREE_EXPORT, HEAP_TOP_EXPORT};
+    let source = "fn main() -> Int:\n    var xs = [[10], [20]]\n    let child = xs[0]\n    xs[0] = [30]\n    let snapshot = xs\n    xs.push([40])\n    let removed = match xs.pop():\n        Some(tail) -> tail[0]\n        None -> 0\n    child[0] + snapshot[0][0] + removed + xs[0][0]\n";
+    let artifact = compile_checked_module_artifact(&checked(source)).expect_lowered("admit replacement then append and pop");
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = diagnostic_linker(&engine).instantiate(&mut store, &module).unwrap();
+    let main = instance.get_typed_func::<(), i64>(&mut store, "f0").unwrap();
+    assert_eq!(main.call(&mut store, ()).unwrap(), 110);
+    let mut global = |name| instance.get_global(&mut store, name).unwrap().get(&mut store).i32().unwrap() as u32;
+    let (base, top, free) = (global(HEAP_BASE_EXPORT), global(HEAP_TOP_EXPORT), global(HEAP_FREE_EXPORT));
+    let memory = instance.get_memory(&mut store, "memory").unwrap();
+    let data = memory.data(&store);
+    let word = |at: u32| u32::from_le_bytes(data[at as usize..at as usize + 4].try_into().unwrap());
+    let mut freed = std::collections::BTreeSet::new();
+    let mut cursor = free;
+    while cursor != 0 {
+        assert!(freed.insert(cursor), "reclaimed free list must be acyclic");
+        cursor = word(cursor);
+    }
+    let mut cursor = base;
+    let mut live = 0;
+    while cursor + 8 <= top {
+        let size = word(cursor + 4);
+        assert!(size > 0, "heap allocation has a physical extent");
+        let object = cursor + 8;
+        live += usize::from(!freed.contains(&object));
+        cursor = object + size;
+    }
+    assert_eq!(cursor, top);
+    assert_eq!(live, 0);
+}
+
+#[test]
+fn actual_reference_packet_benchmarks_admit_guard_elision_without_function_fallback() {
+    use witchy_types::runtime_type::{AuthenticatedModuleOwners, ModuleLoadIdentity, PackageCoordinate, PackageSource};
+    use witchy_wir::canonical_safewir::{Operation, check_initial_with_witness, validate_final};
+    use witchy_wir::canonical_safewir::optimize::remove_redundant_bounds_guards_before_check;
+    let _reset = ResetCallbackOptimization;
+    witchy_syntax::opt::set_for_tests(Some(witchy_syntax::opt::OptSet::all()));
+    for (name, fixture) in [
+        ("packet_string", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../benchmarks/async_general/packet_string.witchy"))),
+        ("dynamic_4x1", include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../benchmarks/async_general/dynamic_4x1.witchy"))),
+    ] {
+        let text = fixture.replace("__MESSAGES__", "32");
+        let workspace = PackageCoordinate::new(PackageSource::Workspace, "example/atomic-guard", "0.1.0").unwrap();
+        let toolchain = PackageCoordinate::new(PackageSource::Toolchain, "witchy/std", "0.1.0").unwrap();
+        let mut assignments = vec![("main".to_owned(), ModuleLoadIdentity::new(workspace, ["main"]).unwrap())];
+        assignments.extend(witchy_syntax::linker::STD_MODULES.iter().map(|module|
+            ((*module).to_owned(), ModuleLoadIdentity::new(toolchain.clone(), ["std", *module]).unwrap())));
+        let owners = AuthenticatedModuleOwners::from_loader_assignments(assignments).unwrap();
+        let input = witchy_types::pipeline::link_checked_authenticated_from_source_bundle_with_user_modules(
+            vec![("main".into(), text.as_bytes().to_vec())], "main", witchy_syntax::linker::ComptimeExpander::new(no_expand),
+            &std::collections::HashSet::from(["main".into()]), owners).expect("authenticated benchmark source");
+        let source = input.canonical_source().unwrap();
+        witchy_canonical_source::aggregates::with_shape_memo(source.type_definitions(), || {
+        for borrowed in [false, true] {
+            let candidate = if borrowed {
+                witchy_lower::canonical_pipeline_checks::lowered_borrowed_candidate(&input)
+            } else { witchy_lower::canonical_pipeline_checks::lowered_candidate(&input) };
+            let guards = |module: &witchy_wir::canonical_safewir::CanonicalModule<witchy_wir::canonical_safewir::LoweredCandidate>|
+                module.functions().iter().flat_map(|function| &function.blocks).flat_map(|block| &block.operations)
+                    .filter(|operation| matches!(operation, Operation::Guard { .. })).count();
+            assert!(candidate.functions().iter().flat_map(|function| &function.blocks).flat_map(|block| &block.operations)
+                .any(|operation| matches!(operation, Operation::Store { transfer, .. } if transfer.replaces_owned())),
+                "{name} borrowed={borrowed} must exercise atomic replacement");
+            let optimized = remove_redundant_bounds_guards_before_check(&candidate, &std::collections::BTreeSet::new())
+                .expect("unrelated redundant guards remain removable");
+            assert!(guards(&optimized) < guards(&candidate), "{name} borrowed={borrowed} must remove guards");
+            let initial = check_initial_with_witness(optimized, &source.view())
+                .unwrap_or_else(|error| panic!("{name} borrowed={borrowed}: {error:?}"));
+            let validated = validate_final(initial, &source.view()).expect("guard-elided benchmark validates without excluding a function");
+            if borrowed {
+                witchy_wir::admit_canonical_with_observer(validated, &source.view(), |_, _| ())
+                    .expect("emit the validated guard-elided benchmark");
+            }
+        }
+        });
+    }
+}
+
+#[test]
+fn scalar_list_guards_remain_elidable_without_owned_edge_replacement() {
+    use witchy_wir::canonical_safewir::{Operation, check_initial_with_witness, validate_final};
+    use witchy_wir::canonical_safewir::optimize::remove_redundant_bounds_guards_before_check;
+    let _reset = ResetCallbackOptimization;
+    witchy_syntax::opt::set_for_tests(Some(witchy_syntax::opt::OptSet::all()));
+    let input = checked("fn read(xs: List(Int), i: Int) -> Int:\n    if i >= 0 && i < list.length(xs):\n        xs[i] + xs[i]\n    else:\n        0\n\nfn main() -> Int:\n    read([10, 20], 1)\n");
+    let candidate = witchy_lower::canonical_pipeline_checks::lowered_candidate(&input);
+    let guards = |module: &witchy_wir::canonical_safewir::CanonicalModule<witchy_wir::canonical_safewir::LoweredCandidate>|
+        module.functions().iter().flat_map(|function| &function.blocks).flat_map(|block| &block.operations)
+            .filter(|operation| matches!(operation, Operation::Guard { .. })).count();
+    assert!(!candidate.functions().iter().flat_map(|function| &function.blocks).flat_map(|block| &block.operations)
+        .any(|operation| matches!(operation, Operation::Store { transfer, .. } if transfer.replaces_owned())));
+    let optimized = remove_redundant_bounds_guards_before_check(&candidate, &std::collections::BTreeSet::new()).unwrap();
+    assert!(guards(&optimized) < guards(&candidate));
+    let source = input.canonical_source().unwrap();
+    let initial = check_initial_with_witness(optimized, &source.view()).unwrap();
+    validate_final(initial, &source.view()).unwrap();
 }

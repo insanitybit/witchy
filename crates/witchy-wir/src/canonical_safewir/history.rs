@@ -338,6 +338,8 @@ impl CanonicalWriter {
             StoreTransfer::CopyScalar => 0,
             StoreTransfer::CloneShared => 1,
             StoreTransfer::MoveUnique => 2,
+            StoreTransfer::ReplaceCloneShared => 3,
+            StoreTransfer::ReplaceMoveUnique => 4,
         });
     }
 

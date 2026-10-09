@@ -311,11 +311,11 @@ pub const RULES: &[RuleEntry] = &[
     RuleEntry {
         rule: CanonicalRuleId::Store,
         judgment: "check/memory.rs::MemoryChecker::store",
-        predicate: "the object is uniquely owned and writable; a scalar store copies (a byte slot takes a `Size` the path proves fits a byte); a reference store moves a unique token or a shared clone into an empty slot and never overwrites a stored reference or an initialized prefix; the stored value is complete",
-        semantics: "store: writes the cell; MoveUnique transfers its token and CloneShared retains the new field edge",
+        predicate: "the object is uniquely owned and writable; a scalar store copies (a byte slot takes a `Size` the path proves fits a byte); ordinary reference stores move a unique token or a shared clone into an empty slot and never overwrite a stored reference or an initialized prefix; the stored value is complete; replacement transfers require a sole complete RC parent, an initialized nonnullable owned slot within logical length, and no recursive affine child plan or self-owned edge",
+        semantics: "store: writes the cell; MoveUnique transfers its token and CloneShared retains the new field edge; ReplaceCloneShared retains before storing and releasing the old edge, while ReplaceMoveUnique transfers before releasing the old edge; replacement preserves parent completeness",
         backend: RuleBackend::Receipt(CorrespondenceRule::MemoryStore),
-        admits: &[t(Launch, "admitted_ascii_case_mapping_writes_bytes_under_a_byte_bound")],
-        refuses: &[t(Memory, "store_cannot_overwrite_a_stored_reference")],
+        admits: &[t(Launch, "admitted_ascii_case_mapping_writes_bytes_under_a_byte_bound"), t(EvidenceFile::UniquePopBackend, "same_child_owned_replacement_preserves_snapshots_and_releases")],
+        refuses: &[t(Memory, "store_cannot_overwrite_a_stored_reference"), t(Memory, "owned_replacement_requires_complete_unique_logical_slot")],
     },
     RuleEntry {
         rule: CanonicalRuleId::ClosureSlot,

@@ -342,6 +342,14 @@ pub enum StoreTransfer {
     CopyScalar,
     CloneShared,
     MoveUnique,
+    ReplaceCloneShared,
+    ReplaceMoveUnique,
+}
+
+impl StoreTransfer {
+    pub fn replaces_owned(self) -> bool {
+        matches!(self, Self::ReplaceCloneShared | Self::ReplaceMoveUnique)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

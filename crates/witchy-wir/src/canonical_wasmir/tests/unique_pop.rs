@@ -56,6 +56,19 @@ fn candidate(pointer: bool, mutation: Option<u8>) -> CanonicalModule<LoweredCand
         // tail child. The caller retains this token across both extractions.
         make.push(Operation::Load { destination: v(8), place: Place::projected(v(3), Projection::Element { index: if matches!(mutation, Some(10..=12)) { v(0) } else { v(1) } }, payload, AccessMode::Read), transfer: LoadTransfer::CloneShared });
     }
+    if matches!(mutation, Some(13..=15)) {
+        assert!(pointer);
+        if mutation == Some(14) {
+            make.push(Operation::Alloc { destination: v(10), layout: child,
+                extent: Extent::Counted { header_bytes: child_base, count: v(0), capacity: v(0), stride_bytes: child_stride },
+                class: AllocationClass::ReferenceCounted });
+        }
+        make.push(Operation::Store {
+            place: Place::projected(v(3), Projection::Element { index: v(1) }, payload, AccessMode::Write),
+            value: if mutation == Some(14) { v(10) } else { v(8) },
+            transfer: if mutation == Some(13) { StoreTransfer::ReplaceCloneShared } else { StoreTransfer::ReplaceMoveUnique },
+        });
+    }
     let mut returned_root = v(3);
     if matches!(mutation, Some(3..=6 | 10..=12)) {
         assert!(pointer);
@@ -113,6 +126,7 @@ fn candidate(pointer: bool, mutation: Option<u8>) -> CanonicalModule<LoweredCand
     };
     let mut make_types = BTreeMap::from([(v(0), ValueType::Size), (v(1), ValueType::Size), (v(2), ValueType::Size), (v(3), root), (v(4), payload), (v(5), ValueType::Bool), (v(6), ValueType::Bool)]);
     if pointer { make_types.extend([(v(7), payload), (v(8), payload)]); }
+    if mutation == Some(14) { make_types.insert(v(10), payload); }
     if matches!(mutation, Some(3..=6 | 10..=12)) { make_types.extend([(v(9), payload), (v(10), payload)]); }
     if matches!(mutation, Some(4 | 6 | 11 | 12)) { make_types.insert(v(11), root); }
     if mutation == Some(9) { make_types.insert(v(7), payload); }
@@ -177,7 +191,7 @@ fn candidate(pointer: bool, mutation: Option<u8>) -> CanonicalModule<LoweredCand
                 Operation::Store { place: Place::projected(v(0), Projection::Element { index: v(10) }, payload, AccessMode::Write), value: v(11), transfer: StoreTransfer::MoveUnique },
             ]);
         }
-        Some(3..=6 | 8..=12) | None => {},
+        Some(3..=6 | 8..=15) | None => {},
 
         _ => panic!("unknown negative fixture"),
     }
@@ -196,4 +210,31 @@ pub fn unique_pop_checker_refuses_shared_container_missing_bounds_and_non_tail()
     // A raw pointer-bearing parameter has no checked source element plan, so
     // its popped element is a shared token, never a unique one.
     check_initial_with_test_witness(candidate(true, None)).expect("pointer pop yields a shared token");
+}
+
+#[cfg(feature = "native")]
+pub fn same_child_owned_replacement_preserves_snapshots_and_releases() {
+    assert!(check_initial_with_test_witness(candidate(true, Some(15))).is_err(), "shared child cannot move as unique");
+    for mutation in [13, 14] {
+    let artifact = admit_canonical_for_test(finalize(candidate(true, Some(mutation))))
+        .expect("atomic same-child replacement admits");
+    let engine = wasmtime::Engine::default();
+    let module = wasmtime::Module::new(&engine, artifact.wasm()).unwrap();
+    let mut store = wasmtime::Store::new(&engine, ());
+    let instance = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
+    let run = instance.get_typed_func::<(), i32>(&mut store, "f4").unwrap();
+    assert_eq!(run.call(&mut store, ()).unwrap(), 42);
+    let make = instance.get_typed_func::<(), (i32, i32)>(&mut store, "f0").unwrap();
+    let (root, snapshot) = make.call(&mut store, ()).unwrap();
+    let memory = instance.get_memory(&mut store, "memory").unwrap();
+    let count = |store: &wasmtime::Store<()>| {
+        let offset = snapshot as usize - 8;
+        u32::from_le_bytes(memory.data(store)[offset..offset + 4].try_into().unwrap())
+    };
+    assert_eq!(count(&store), if mutation == 13 { 2 } else { 1 });
+    instance.get_typed_func::<i32, ()>(&mut store, "f2").unwrap().call(&mut store, root).unwrap();
+    assert_eq!(count(&store), 1);
+    instance.get_typed_func::<i32, ()>(&mut store, "f3").unwrap().call(&mut store, snapshot).unwrap();
+    assert_eq!(instance.get_global(&mut store, HEAP_FREE_EXPORT).unwrap().get(&mut store).i32(), Some(snapshot));
+    }
 }

@@ -2722,9 +2722,6 @@ pub mod self_checks {
 
 
     pub fn store_cannot_overwrite_a_stored_reference() {
-        // B2 "replace": a slot that already holds a reference is never
-        // overwritten in place; the old token would leak. Replacement is
-        // a load (or drop) followed by a store into a fresh object.
         with_pointer_slot_checker(|checker, _list, pointee| {
             let place = Place::projected(
                 SOURCE,
@@ -2750,6 +2747,105 @@ pub mod self_checks {
                 checker.check(&Operation::Store { place, value: LOADED, transfer: StoreTransfer::CloneShared }),
                 Err(InitialCheckError::UnsupportedMemoryOperation { operation: "Store(overwrite reference)", .. })
             ));
+        });
+    }
+
+    pub fn owned_replacement_requires_complete_unique_logical_slot() {
+        for fault in 0..5 {
+            with_pointer_slot_checker(|checker, _list, pointee| {
+                let place = Place::projected(SOURCE, Projection::Element { index: START }, ValueType::Ref(pointee), AccessMode::Write);
+                checker.check(&Operation::Store { place: place.clone(), value: CHILD, transfer: StoreTransfer::MoveUnique }).unwrap();
+                checker.state.objects.get_mut(&SOURCE).unwrap().initialized_owned_slots = true;
+                checker.check(&Operation::Load {
+                    destination: LOADED,
+                    place: Place::projected(SOURCE, Projection::Element { index: START }, ValueType::Ref(pointee), AccessMode::Read),
+                    transfer: LoadTransfer::CloneShared,
+                }).unwrap();
+                match fault {
+                    1 => checker.state.objects.get_mut(&SOURCE).unwrap().ownership = Ownership::Shared,
+                    2 => {
+                        checker.state.objects.get_mut(&SOURCE).unwrap().initialized_owned_slots = false;
+                        checker.state.stored_objects.remove(&(SOURCE, SlotIdentity::Constant(0)));
+                    }
+                    3 => {
+                        let Extent::Counted { count, .. } = &mut checker.state.objects.get_mut(&SOURCE).unwrap().extent else { panic!() };
+                        *count = ZERO;
+                        checker.state.stored_objects.remove(&(SOURCE, SlotIdentity::Constant(0)));
+                    }
+                    4 => checker.state.objects.get_mut(&SOURCE).unwrap().allocation_class = None,
+                    _ => {}
+                }
+                let result = checker.check(&Operation::Store { place, value: LOADED, transfer: StoreTransfer::ReplaceCloneShared });
+                if fault == 0 {
+                    assert_eq!(result, Ok(true));
+                    assert!(checker.live_object(SOURCE).unwrap().initialized_owned_slots);
+                    assert_eq!(checker.live_object(LOADED).unwrap().ownership, Ownership::Shared);
+                    assert_eq!(checker.check(&Operation::DropRef { object: SOURCE }), Ok(true));
+                    assert_eq!(checker.check(&Operation::DropRef { object: LOADED }), Ok(true));
+                } else {
+                    assert!(result.is_err(), "fault {fault}");
+                }
+            });
+        }
+        for recursive_child in [false, true] {
+            with_pointer_slot_checker(|checker, _list, pointee| {
+                let place = Place::projected(SOURCE, Projection::Element { index: START }, ValueType::Ref(pointee), AccessMode::Write);
+                checker.check(&Operation::Store { place: place.clone(), value: CHILD, transfer: StoreTransfer::MoveUnique }).unwrap();
+                checker.check(&Operation::Load {
+                    destination: LOADED,
+                    place: Place::projected(SOURCE, Projection::Element { index: START }, ValueType::Ref(pointee), AccessMode::Read),
+                    transfer: LoadTransfer::CloneShared,
+                }).unwrap();
+                let plan = if recursive_child {
+                    super::super::AffinePhysicalPlan::Sequence { element: pointee, child: Box::new(super::super::AffinePhysicalPlan::Leaf) }
+                } else { super::super::AffinePhysicalPlan::Leaf };
+                checker.state.affine_plans.insert(SOURCE, plan);
+                let result = checker.check(&Operation::Store { place, value: LOADED, transfer: StoreTransfer::ReplaceCloneShared });
+                if recursive_child {
+                    assert!(matches!(result, Err(InitialCheckError::UnsupportedMemoryOperation {
+                        operation: "Store(affine child without recursive move proof)", .. })));
+                } else {
+                    assert_eq!(result, Ok(true));
+                    checker.require_complete_value_initialized(SOURCE, "replacement preserves complete leaf parent").unwrap();
+                }
+            });
+        }
+        for semantics in [PointerSlot::Owned, PointerSlot::OwnedNullable] {
+            with_fixed_pointer_checker(semantics, |checker, child| {
+                let place = nullable_field(SOURCE, child, AccessMode::Write);
+                checker.check(&Operation::Store { place: place.clone(), value: CHILD, transfer: StoreTransfer::MoveUnique }).unwrap();
+                checker.check(&Operation::Load {
+                    destination: LOADED, place: nullable_field(SOURCE, child, AccessMode::Read),
+                    transfer: if semantics == PointerSlot::Owned { LoadTransfer::CloneShared } else { LoadTransfer::ClonePresent },
+                }).unwrap();
+                let result = checker.check(&Operation::Store { place, value: LOADED, transfer: StoreTransfer::ReplaceCloneShared });
+                if semantics == PointerSlot::Owned {
+                    assert_eq!(result, Ok(true));
+                    assert_eq!(checker.check(&Operation::DropRef { object: SOURCE }), Ok(true));
+                    assert_eq!(checker.check(&Operation::DropRef { object: LOADED }), Ok(true));
+                } else {
+                    assert!(result.is_err());
+                }
+            });
+        }
+    }
+
+    pub fn owned_replacement_cannot_publish_uninitialized_spare_capacity() {
+        with_pointer_slot_checker(|checker, _list, pointee| {
+            checker.state.constants.insert(CAPACITY, 3);
+            checker.state.constants.insert(ALIAS_LENGTH, 2);
+            let place = Place::projected(SOURCE, Projection::Element { index: START }, ValueType::Ref(pointee), AccessMode::Write);
+            checker.check(&Operation::Store { place: place.clone(), value: CHILD, transfer: StoreTransfer::MoveUnique }).unwrap();
+            checker.check(&Operation::Load {
+                destination: LOADED,
+                place: Place::projected(SOURCE, Projection::Element { index: START }, ValueType::Ref(pointee), AccessMode::Read),
+                transfer: LoadTransfer::CloneShared,
+            }).unwrap();
+            checker.check(&Operation::Store { place, value: LOADED, transfer: StoreTransfer::ReplaceCloneShared }).unwrap();
+            checker.require_complete_value_initialized(SOURCE, "replacement preserves logical prefix").unwrap();
+            let result = checker.check(&Operation::UpdateCount { object: SOURCE, count: ALIAS_LENGTH });
+            assert!(matches!(result,
+                Err(InitialCheckError::UnsupportedMemoryOperation { operation: "UpdateCount(pointer slot uninitialized)", .. })), "{result:?}");
         });
     }
 

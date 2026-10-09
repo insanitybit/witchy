@@ -88,6 +88,8 @@ mod canonical_safewir {
                 #[test] fn scalar_clone_range_is_ownership_safe_and_admitted() { witchy_wir::self_checks::canonical_safewir_check_memory::scalar_clone_range_is_ownership_safe_and_admitted() }
                 #[test] fn scalar_move_range_is_bounds_checked_and_admitted() { witchy_wir::self_checks::canonical_safewir_check_memory::scalar_move_range_is_bounds_checked_and_admitted() }
                 #[test] fn shared_static_storage_clones_and_drops_without_mutation_authority() { witchy_wir::self_checks::canonical_safewir_check_memory::shared_static_storage_clones_and_drops_without_mutation_authority() }
+                #[test] fn owned_replacement_cannot_publish_uninitialized_spare_capacity() { witchy_wir::self_checks::canonical_safewir_check_memory::owned_replacement_cannot_publish_uninitialized_spare_capacity() }
+                #[test] fn owned_replacement_requires_complete_unique_logical_slot() { witchy_wir::self_checks::canonical_safewir_check_memory::owned_replacement_requires_complete_unique_logical_slot() }
                 #[test] fn store_cannot_overwrite_a_stored_reference() { witchy_wir::self_checks::canonical_safewir_check_memory::store_cannot_overwrite_a_stored_reference() }
             }
         }
@@ -214,6 +216,8 @@ mod canonical_wasmir {
             #[test] fn owned_field_take_admits_shared_child() { witchy_wir::self_checks::canonical_wasmir::nullable_admission::owned_field_take_admits_shared_child() }
         }
         mod unique_pop {
+            #[cfg(feature = "native")]
+            #[test] fn same_child_owned_replacement_preserves_snapshots_and_releases() { witchy_wir::self_checks::canonical_wasmir::unique_pop::same_child_owned_replacement_preserves_snapshots_and_releases() }
             #[test] fn unique_pop_checker_refuses_shared_container_missing_bounds_and_non_tail() { witchy_wir::self_checks::canonical_wasmir::unique_pop::unique_pop_checker_refuses_shared_container_missing_bounds_and_non_tail() }
         }
         #[cfg(feature = "native")]

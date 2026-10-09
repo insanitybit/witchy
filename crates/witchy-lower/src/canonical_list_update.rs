@@ -50,13 +50,15 @@ impl FunctionLowerer<'_> {
             }
             return self.replace_list_value(source, index, replacement, list_type, site);
         }
-        if !self.sole_token(source) {
+        if !self.sole_token(source)
+            || matches!(StoragePlan::classify(&list_type, self.definitions, |_| Some(0)), StoragePlan::MoveOnlyList(_))
+        {
             return self.replace_list_value(source, index, replacement, list_type, site);
         }
         let (layout, element_type, header_bytes, stride_bytes) = list_layout(
             &list_type, self.layout_bundle, self.layouts, &self.closures.layouts, self.definitions,
         )?;
-        if matches!(element_type, ValueType::Ref(_) | ValueType::Gc(_))
+        if matches!(element_type, ValueType::Gc(_))
             || self.values[&source] != ValueType::Ref(layout)
             || self.values[&index] != ValueType::Int
             || self.values[&replacement] != element_type
@@ -64,6 +66,27 @@ impl FunctionLowerer<'_> {
             return self.replace_list_value(source, index, replacement, list_type, site);
         }
         self.diagnose_list_index(source, index, site)?;
+        let (replacement, transfer) = if matches!(element_type, ValueType::Ref(_)) {
+            let Type::Named(_, arguments) = list_type.unqualified() else {
+                return Err(CanonicalLoweringError::UnsupportedListElement(list_type));
+            };
+            let [element_source_type] = arguments.as_slice() else {
+                return Err(CanonicalLoweringError::UnsupportedListElement(list_type));
+            };
+            let replacement = self.owned_for_storage(replacement, element_source_type)?;
+            let transfer = match sequence_element_store_transfer(
+                RetainedElementTransfer::for_element(element_source_type, self.definitions), element_type,
+            )? {
+                witchy_wir::canonical_safewir::StoreTransfer::CloneShared =>
+                    witchy_wir::canonical_safewir::StoreTransfer::ReplaceCloneShared,
+                witchy_wir::canonical_safewir::StoreTransfer::MoveUnique =>
+                    witchy_wir::canonical_safewir::StoreTransfer::ReplaceMoveUnique,
+                _ => return Err(CanonicalLoweringError::UnsupportedListElement(list_type)),
+            };
+            (replacement, transfer)
+        } else {
+            (replacement, witchy_wir::canonical_safewir::StoreTransfer::CopyScalar)
+        };
         self.ensure_list_extent(source)?;
         let (length, capacity) = self.tracked_lanes(source).ok_or(
             CanonicalLoweringError::UnsupportedExpression("list place extent"),
@@ -85,7 +108,7 @@ impl FunctionLowerer<'_> {
                 AccessMode::Write,
             ),
             value: replacement,
-            transfer: witchy_wir::canonical_safewir::StoreTransfer::CopyScalar,
+            transfer,
         });
         Ok(source)
     }

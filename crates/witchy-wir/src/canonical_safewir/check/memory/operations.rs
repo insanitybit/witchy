@@ -528,9 +528,11 @@ impl<'a> MemoryChecker<'a> {
             }
             Operation::Store { place, value, transfer } => {
                 self.store(place, *value, *transfer)?;
-                self.invalidate_full_current_prefixes(place.object());
+                if !transfer.replaces_owned() {
+                    self.invalidate_full_current_prefixes(place.object());
+                }
                 self.rebase_extent_generation(place.object())?;
-                if *transfer == StoreTransfer::MoveUnique {
+                if matches!(transfer, StoreTransfer::MoveUnique | StoreTransfer::ReplaceMoveUnique) {
                     self.invalidate_full_current_prefixes(*value);
                 }
                 Ok(true)
@@ -1380,17 +1382,50 @@ impl<'a> MemoryChecker<'a> {
             return self.unsupported("Store(affine child without recursive move proof)");
         }
         let key = self.reference_slot(place)?;
-        if self.stored_slot_by_identity(key.0, key.1).is_some()
+        let replacing = transfer.replaces_owned();
+        if replacing {
+            self.require_complete_value_initialized(place.object(), "Store(replace incomplete parent)")?;
+            let root = self.live_object(place.object())?;
+            if root.ownership != Ownership::Unique
+                || root.allocation_class != Some(AllocationClass::ReferenceCounted)
+                || !self.is_sole_live_token(place.object(), root.identity)
+                || self.state.affine_plans.get(&place.object()).is_some_and(|plan|
+                    !matches!(plan, super::super::AffinePhysicalPlan::Leaf))
+            {
+                return self.unsupported("Store(replace without sole complete RC parent)");
+            }
+            let owned = match place.projection() {
+                Projection::Field { .. } => self.owned_fixed_field(place)? == Some(layout),
+                Projection::Element { index } => {
+                    let Extent::Counted { count, .. } = root.extent else {
+                        return self.unsupported("Store(replace unknown extent)");
+                    };
+                    if !self.less_than_for_owner(place.object(), *index, count) {
+                        return self.unsupported("Store(replace outside logical length)");
+                    }
+                    self.descriptor(root.layout)?.kind().packed_element_layout().is_some_and(|element|
+                        matches!(self.descriptor(element).map(|slot| slot.kind()),
+                            Ok(LayoutKind::RuntimePointerValueSlot { pointee, semantics: PointerSlot::Owned }) if *pointee == layout))
+                }
+                _ => false,
+            };
+            if !owned {
+                return self.unsupported("Store(replace non-owned slot)");
+            }
+        }
+        if !replacing && (self.stored_slot_by_identity(key.0, key.1).is_some()
             || (matches!(place.projection(), Projection::Field { .. })
                 && self.live_object(place.object())?.initialized_owned_slots
-                && !self.nullable_slot_absent(key.0, key.1))
+                && !self.nullable_slot_absent(key.0, key.1)))
         {
             return self.unsupported("Store(overwrite reference)");
         }
         if self.same_allocation(place.object(), value) {
             return self.unsupported("Store(self-owned edge)");
         }
-        if let Projection::Element { index } = place.projection() {
+        if let Projection::Element { index } = place.projection()
+            && !replacing
+        {
             let root = self.live_object(place.object())?;
             if root.initialized_owned_slots {
                 let Extent::Counted { count, .. } = root.extent else {
@@ -1430,7 +1465,7 @@ impl<'a> MemoryChecker<'a> {
         // static child into unproven classless storage.
         stored.shared_immutable |= source_is_static;
         match transfer {
-            StoreTransfer::MoveUnique => {
+            StoreTransfer::MoveUnique | StoreTransfer::ReplaceMoveUnique => {
                 if stored.ownership != Ownership::Unique {
                     return Err(InitialCheckError::InvalidOwnership {
                         function: self.function.id,
@@ -1443,7 +1478,7 @@ impl<'a> MemoryChecker<'a> {
                     .expect("live source exists")
                     .ownership = Ownership::Consumed;
             }
-            StoreTransfer::CloneShared => {
+            StoreTransfer::CloneShared | StoreTransfer::ReplaceCloneShared => {
                 if stored.ownership != Ownership::Shared
                     || !Self::is_managed_storage(&stored)
                 {
@@ -1474,6 +1509,27 @@ impl<'a> MemoryChecker<'a> {
             self.state.nullable_present_slots.insert(key);
         }
         self.state.stored_objects.insert(key, stored);
+        if replacing {
+            let complete_summary = self.live_object(place.object())?.initialized_owned_slots;
+            self.state.objects.get_mut(&place.object()).expect("live parent exists").initialized_owned_slots = true;
+            if matches!(place.projection(), Projection::Element { .. }) {
+                let root = self.live_object(place.object())?;
+                let identity = root.identity;
+                let Extent::Counted { count, .. } = root.extent else { unreachable!() };
+                let element = self.descriptor(root.layout)?.kind().packed_element_layout().expect("checked collection");
+                let containers = self.state.objects.iter().filter_map(|(value, object)|
+                    (object.identity == identity).then_some(*value)).collect::<SortedSet<_>>();
+                self.state.stored_objects.retain(|(container, _), _| !containers.contains(container));
+                self.seed_managed_prefix(place.object(), count, element)?;
+                for (range, state) in &mut self.state.range_states {
+                    if containers.contains(&range.object) && state.initialized && state.ownership != Ownership::Consumed {
+                        state.ownership = Ownership::Shared;
+                    }
+                }
+                self.invalidate_affine_list_root(place.object());
+                self.state.objects.get_mut(&place.object()).expect("live parent exists").initialized_owned_slots = complete_summary;
+            }
+        }
         self.consolidate_fixed_fields(place.object())?;
         Ok(())
     }
