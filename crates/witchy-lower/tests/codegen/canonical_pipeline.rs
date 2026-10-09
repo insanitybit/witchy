@@ -886,3 +886,10 @@ fn opaque_scalar_list_writeback_has_a_matching_physical_declaration() {
         compile_checked_module_artifact(&input).expect_lowered("opaque writeback source authority");
     }
 }
+
+#[cfg(feature = "native-test-runtime")]
+#[test]
+fn scalar_list_field_writeback_preserves_nested_snapshots_and_argument_order() {
+    let source = "type Stack:\n    items: List(Int)\n    total: Int\n\nfn append(value: Int, var values: List(Int)):\n    values.push(value)\n\nfn main() -> Int:\n    var stack = Stack([1], 2)\n    let old_items = stack.items\n    append(stack.total, stack.items)\n    let old = stack\n    for i in 0..3:\n        append(i, stack.items)\n    old_items.length() * 1000 + old.items.length() * 100 + stack.items.length() * 10 + stack.items[1]\n";
+    assert_eq!(run_callback_with_heap_audit(source, true).expect("field snapshot result"), 1252);
+}

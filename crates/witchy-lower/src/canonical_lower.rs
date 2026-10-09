@@ -12764,7 +12764,14 @@ impl FunctionLowerer<'_> {
                             .is_some_and(|place| place.detached_owned_field);
                         let value = if detached_owned_field {
                             self.owned_parameters.retain(|owned| *owned != value);
-                            value
+                            if contract.ownership == ParameterOwnership::UniqueWriteBack
+                                && witchy_canonical_source::unique_writeback::scalar_list(&ty)
+                            {
+                                // Taking an ordinary owned field does not transport its recursive Leaf certificate.
+                                self.clone_list_value_for_storage(value, &ty)?
+                            } else {
+                                value
+                            }
                         } else if contract.ownership == ParameterOwnership::UniqueWriteBack
                             && matches!(ty.unqualified(), Type::Named(name, args) if name == "Dict" && args.len() == 2)
                             && self.is_table_dictionary(&ty)?

@@ -30,6 +30,13 @@ pub(super) fn affine_abi_proofs<S: ModuleStage>(
         };
         for (index, ty) in parameters.iter().enumerate() {
             let Some(shape) = affine_storage_shape(ty, source.type_definitions()) else {
+                if let Some(plan) = scalar_writeback_leaf(candidate, ty,
+                    conventions.get(index).copied().unwrap_or(Convention::Let),
+                    signature.contract.parameters.get(index), &layouts, source, &mut proofs.layouts)
+                {
+                    proof.parameters[index] = Some(plan);
+                    continue;
+                }
                 if source.storage_plan(ty.unqualified()).requires_affine_owner_token() {
                     return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: ordinal });
                 }
@@ -114,6 +121,13 @@ pub(super) fn affine_abi_proofs<S: ModuleStage>(
         for (source_index, ty) in parameters.iter().enumerate() {
             let physical_index = source_index + 1;
             let Some(shape) = affine_storage_shape(ty, source.type_definitions()) else {
+                if let Some(plan) = scalar_writeback_leaf(candidate, ty,
+                    conventions.get(source_index).copied().unwrap_or(Convention::Let),
+                    signature.contract.parameters.get(physical_index), &layouts, source, &mut proofs.layouts)
+                {
+                    proof.parameters[physical_index] = Some(plan);
+                    continue;
+                }
                 if source.storage_plan(ty.unqualified()).requires_affine_owner_token() {
                     return Err(refuse());
                 }
@@ -163,6 +177,49 @@ pub(super) fn affine_abi_proofs<S: ModuleStage>(
             && proofs.signatures.insert(signature.id, proof.clone()).is_some_and(|prior| prior != proof)
         {
             return Err(refuse());
+        }
+    }
+    for binding in candidate.adapter_bindings().entries() {
+        let target = candidate.functions().iter().find(|function| function.id == binding.target())
+            .ok_or(CandidateAbiBindingError::MissingCandidateFunction { function: binding.target() })?;
+        let adapter = candidate.functions().iter().find(|function| function.id == binding.adapter())
+            .ok_or(CandidateAbiBindingError::MissingCandidateFunction { function: binding.adapter() })?;
+        let Some(source_binding) = candidate.source_abi_bindings().entries().iter()
+            .find(|source_binding| source_binding.function() == target.id) else { continue };
+        let Some(Type::Fn(parameters, _, conventions, _)) = source.closed_callable_signature(source_binding.source_declaration_ordinal())
+            else { continue };
+        let Some(target_proof) = proofs.signatures.get(&target.signature) else { continue };
+        let target_signature = candidate.signatures().iter().find(|signature| signature.id == target.signature)
+            .ok_or(CandidateAbiBindingError::MissingCandidateSignature { function: target.id })?;
+        let adapter_signature = candidate.signatures().iter().find(|signature| signature.id == adapter.signature)
+            .ok_or(CandidateAbiBindingError::MissingCandidateSignature { function: adapter.id })?;
+        if adapter_signature.parameters.get(1..) != Some(target_signature.parameters.as_slice())
+            || adapter_signature.results != target_signature.results
+            || adapter_signature.contract.parameters.get(1..) != Some(target_signature.contract.parameters.as_slice())
+        {
+            return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: source_binding.source_declaration_ordinal() });
+        }
+        let mut proof = AffineSignatureProof {
+            parameters: vec![None; adapter_signature.parameters.len()],
+            results: vec![None; adapter_signature.results.len()],
+        };
+        let writebacks = conventions.iter().enumerate().filter_map(|(index, convention)|
+            (*convention == Convention::Var).then_some(index)).collect::<Vec<_>>();
+        let Some(hidden_start) = target_signature.results.len().checked_sub(writebacks.len()) else { continue };
+        for (index, ty) in parameters.iter().enumerate() {
+            if conventions.get(index) != Some(&Convention::Var)
+                || !witchy_canonical_source::unique_writeback::scalar_list(ty)
+                || target_proof.parameters.get(index) != Some(&Some(AffinePhysicalPlan::Leaf))
+                || target_signature.contract.parameters[index].ownership != crate::canonical_safewir::ParameterOwnership::UniqueWriteBack
+            { continue; }
+            proof.parameters[index + 1] = Some(AffinePhysicalPlan::Leaf);
+            let offset = writebacks.iter().position(|parameter| *parameter == index).expect("checked var parameter");
+            proof.results[hidden_start + offset] = target_proof.results[hidden_start + offset].clone();
+        }
+        if proof.parameters.iter().any(Option::is_some)
+            && proofs.signatures.insert(adapter.signature, proof.clone()).is_some_and(|prior| prior != proof)
+        {
+            return Err(CandidateAbiBindingError::SourceAbiMismatch { source_declaration: source_binding.source_declaration_ordinal() });
         }
     }
     bind_owner_environments(candidate, source, &layouts, &mut proofs)?;
@@ -389,4 +446,30 @@ fn bind_plan<S: ModuleStage>(
     };
     if catalog.insert(layout, plan.clone()).is_some_and(|prior| prior != plan) { return None; }
     Some(plan)
+}
+
+fn scalar_writeback_leaf<S: ModuleStage>(
+    candidate: &CanonicalModule<S>,
+    source_type: &Type,
+    convention: Convention,
+    parameter: Option<&crate::canonical_safewir::ParameterContract>,
+    layouts: &crate::layout::LayoutInterner,
+    source: &witchy_canonical_source::source::CanonicalSourceView<'_>,
+    catalog: &mut BTreeMap<crate::layout::LayoutId, AffinePhysicalPlan>,
+) -> Option<AffinePhysicalPlan> {
+    if convention != Convention::Var || !witchy_canonical_source::unique_writeback::scalar_list(source_type) {
+        return None;
+    }
+    let crate::canonical_safewir::ParameterContract {
+        value_type: crate::canonical_safewir::ValueType::Ref(layout),
+        ownership: crate::canonical_safewir::ParameterOwnership::UniqueWriteBack,
+    } = parameter? else { return None };
+    if !layout_matches_source_with_closures(*layout, source_type, layouts, source.type_definitions(),
+        candidate.closure_layouts(), candidate.signatures(), &mut CorrespondenceContext::with_owners(candidate))
+    {
+        return None;
+    }
+    if catalog.get(layout).is_some_and(|plan| *plan != AffinePhysicalPlan::Leaf) { return None; }
+    catalog.insert(*layout, AffinePhysicalPlan::Leaf);
+    Some(AffinePhysicalPlan::Leaf)
 }
