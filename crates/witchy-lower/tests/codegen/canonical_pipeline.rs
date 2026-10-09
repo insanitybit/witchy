@@ -1031,3 +1031,17 @@ fn scalar_list_guards_remain_elidable_without_owned_edge_replacement() {
     let initial = check_initial_with_witness(optimized, &source.view()).unwrap();
     validate_final(initial, &source.view()).unwrap();
 }
+
+#[cfg(feature = "native-test-runtime")]
+#[test]
+fn nested_reference_append_preserves_join_entry_ownership() {
+    let source = "fn main() -> Int:\n    var xs = [\"a\"]\n    xs.push(\"b\")\n    var outer: List(List(String)) = []\n    outer.push(xs)\n    xs.push(\"c\")\n    outer[0].push(\"d\")\n    let rendered = \"${outer} ${xs}\"\n    if rendered == \"[[a, b, d]] [a, b, c]\": 1 else: 0\n";
+    assert_eq!(run_callback_with_heap_audit(source, true).expect("nested append snapshots"), 1);
+}
+
+#[cfg(feature = "native-test-runtime")]
+#[test]
+fn reference_join_shared_incoming_values_preserve_snapshots() {
+    let source = "fn choose(flag: Bool) -> Int:\n    let base = [[10]]\n    var current = if flag: base else: [[20]]\n    current[0] = [30]\n    base[0][0] * 100 + current[0][0]\n\nfn main() -> Int:\n    choose(true) + choose(false)\n";
+    assert_eq!(run_callback_with_heap_audit(source, true).expect("shared incoming snapshots"), 2060);
+}

@@ -4723,6 +4723,8 @@ fn demote_shared_reference_phis(
     // Propagate that loss of uniqueness through the completed graph before
     // requesting ownership judgments from the independent checker.
     let mut shared = BTreeSet::new();
+    // A clone after a join changes the token in the body, not its entry contract.
+    let mut shared_on_entry = BTreeSet::new();
     // A call's ordinary result and its write-back lanes have independent
     // contracts. Demoting an authenticated unique write-back here would
     // invalidate earlier call preparation on the next loop iteration.
@@ -4760,7 +4762,7 @@ fn demote_shared_reference_phis(
     let parameters = function.blocks.iter().map(|block| (block.id, &block.parameters))
         .collect::<BTreeMap<_, _>>();
     loop {
-        let before = shared.len();
+        let before = (shared.len(), shared_on_entry.len());
         for block in &function.blocks {
             for operation in &block.operations {
                 if let Operation::MoveValue { destination, source } = operation
@@ -4778,12 +4780,15 @@ fn demote_shared_reference_phis(
             for (target, arguments) in edges {
                 if let Some(parameters) = parameters.get(&target) {
                     for (argument, parameter) in arguments.iter().zip(parameters.iter()) {
-                        if shared.contains(argument) { shared.insert(parameter.value); }
+                        if shared.contains(argument) {
+                            shared.insert(parameter.value);
+                            shared_on_entry.insert(parameter.value);
+                        }
                     }
                 }
             }
         }
-        if shared.len() == before { break; }
+        if (shared.len(), shared_on_entry.len()) == before { break; }
     }
     // The entry block's parameters are the signature's contract, which the
     // checker judges at each use; this pass only joins block parameters.
@@ -4792,7 +4797,7 @@ fn demote_shared_reference_phis(
         for parameter in &mut block.parameters {
             if parameter.ownership == Some(Ownership::Unique)
                 && matches!(parameter.value_type, ValueType::Ref(_))
-                && shared.contains(&parameter.value)
+                && shared_on_entry.contains(&parameter.value)
             {
                 parameter.ownership = Some(Ownership::Shared);
             }
