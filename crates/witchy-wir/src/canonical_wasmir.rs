@@ -1275,8 +1275,7 @@ fn admit_canonical_with_bytes_for_test(
 /// A Wasmtime engine for self-check fixtures that run backend kernels:
 /// admitted modules declare a 64-bit linear memory (RFC-0179).
 #[cfg(feature = "raw-encoder-test-api")]
-#[doc(hidden)]
-pub fn fixture_engine() -> wasmtime::Engine {
+pub(crate) fn fixture_engine() -> wasmtime::Engine {
     let mut config = wasmtime::Config::new();
     config.wasm_memory64(true).memory_may_move(false);
     wasmtime::Engine::new(&config).expect("fixture engine")
