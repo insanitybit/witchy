@@ -19,7 +19,7 @@ impl StructuredEmitter<'_> {
                 emit_instruction(self.body, self.source_function, self.layout,
                     &instruction.operation, self.function_indices, self.signature_indices,
                     self.import_indices, self.imports, self.static_data, self.layouts,
-                    self.owner_cleanup_function)?;
+                    self.owner_cleanup_function, &self.static_values)?;
             }
             let depth = |target, conditional| {
                 positions.get(&target).and_then(|target| forward_cfg::depth(position, *target, conditional))

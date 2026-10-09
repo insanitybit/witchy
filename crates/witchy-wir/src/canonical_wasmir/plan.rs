@@ -1522,6 +1522,7 @@ pub(super) fn expected_block_operations_plan(
     static_data_offsets: &BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
     aggregates: &mut BTreeMap<ValueId, Vec<ValueId>>,
     owner_cleanup_function: Option<u32>,
+    static_values: &BTreeSet<ValueId>,
 ) -> Result<Vec<PlanToken>, CanonicalAdmissionError> {
     // The independent function planner has already derived and checked this
     // whole-function layout. Borrow it and the original block: rebuilding a
@@ -1793,7 +1794,7 @@ pub(super) fn expected_block_operations_plan(
             Operation::Store { place, value, transfer }
                 if matches!(transfer, StoreTransfer::CopyScalar | StoreTransfer::MoveUnique | StoreTransfer::CloneShared) =>
             {
-                if *transfer == StoreTransfer::CloneShared {
+                if *transfer == StoreTransfer::CloneShared && !static_values.contains(value) {
                     push_share_plan(&mut plan, &layout, *value, *value)?;
                 }
                 push_memory_store_plan(&mut plan, function, layouts, &layout, place, *value)?;
@@ -1818,6 +1819,13 @@ pub(super) fn expected_block_operations_plan(
             Operation::UpdateCount { object, count } => {
                 push_update_count_plan(&mut plan, function, layouts, &layout, *object, *count)?;
             }
+            // A static object's token is a no-op for the runtime helpers:
+            // the plan copies the local, or drops nothing, like the encoder.
+            Operation::CloneRef { destination, source } if static_values.contains(source) => {
+                push_get(&mut plan, &layout, *source)?;
+                push_set(&mut plan, &layout, *destination)?;
+            }
+            Operation::Release { object } | Operation::DropRef { object } if static_values.contains(object) => {}
             Operation::CloneRef { destination, source } => {
                 push_share_plan(&mut plan, &layout, *destination, *source)?;
             }

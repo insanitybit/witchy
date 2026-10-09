@@ -12,7 +12,7 @@ impl PlanEmitter<'_> {
             self.plan.extend(expected_block_operations_plan(self.source_function, block,
                 self.layout, self.layouts, self.function_indices, self.signature_indices,
                 self.imports, self.import_indices, self.static_data_offsets,
-                &mut self.aggregates, self.owner_cleanup_function)?);
+                &mut self.aggregates, self.owner_cleanup_function, &self.static_values)?);
             let depth = |target, conditional| positions.get(&target)
                 .and_then(|target| forward_cfg::depth(position, *target, conditional))
                 .or_else(|| self.escape_label(target).and_then(|label| {

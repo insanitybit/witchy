@@ -1981,6 +1981,7 @@ pub(super) fn emit_instruction(
     static_data: &BTreeMap<crate::canonical_safewir::StaticDataId, u32>,
     layouts: &LayoutInterner,
     owner_cleanup_function: Option<u32>,
+    static_values: &BTreeSet<ValueId>,
 ) -> Result<(), EncodeError> {
     match instruction {
         ScalarInstruction::ProofNoop => {}
@@ -2102,9 +2103,11 @@ pub(super) fn emit_instruction(
                 return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Store transfer" });
             }
             let access = resolve_memory_place(function, layouts, place).map_err(EncodeError::Lowering)?;
-            if *transfer == StoreTransfer::CloneShared {
+            if *transfer == StoreTransfer::CloneShared && !static_values.contains(value) {
                 // Retain before publishing the second edge. Assigning the
                 // source local to itself preserves its existing owned token.
+                // A static child needs no retain: the helper would return
+                // at its heap-base check.
                 emit_clone_ref(body, layout, *value, *value, function)?;
             }
             emit_typed_store(body, function, layout, access, *value)?;
@@ -2119,6 +2122,13 @@ pub(super) fn emit_instruction(
             emit_clone_range(body, function, layout, destination, source, *count, layouts)?;
         }
         ScalarInstruction::UpdateCount { object, count } => emit_update_count(body, function, layout, layouts, *object, *count)?,
+        // A static object's token is a no-op for the runtime helpers; copy
+        // the local, or drop nothing, instead of calling them.
+        ScalarInstruction::CloneRef { destination, source } if static_values.contains(source) => {
+            emit_get(body, layout, function.id, *source)?;
+            emit_set(body, layout, function.id, *destination)?;
+        }
+        ScalarInstruction::Release { object } if static_values.contains(object) => {}
         ScalarInstruction::CloneRef { destination, source } => emit_clone_ref(body, layout, *destination, *source, function)?,
         ScalarInstruction::Release { object } => emit_release(body, layout, function, *object, layouts)?,
         ScalarInstruction::Reclaim { object } => emit_reclaim(body, layout, function, *object)?,

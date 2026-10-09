@@ -52,6 +52,7 @@ mod owner_bridges;
 mod owner_operation_kernel;
 mod dictionary_kernel;
 mod lowering;
+mod static_values;
 use self::lowering::*;
 mod correspondence;
 pub(crate) use self::correspondence::*;

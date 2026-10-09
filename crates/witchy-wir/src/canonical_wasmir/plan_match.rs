@@ -5,6 +5,8 @@ mod forward;
 
 pub(super) struct PlanEmitter<'a> {
     source_function: &'a Function,
+    /// References this function proves static (`static_values`).
+    static_values: BTreeSet<ValueId>,
     /// Blocks by id: the structured walk looks blocks up on every path,
     /// join, and reachability step, so the lookup must not scan the body.
     blocks_by_id: BTreeMap<crate::canonical_safewir::BlockId, &'a BasicBlock>,
@@ -697,6 +699,7 @@ impl<'a> PlanEmitter<'a> {
             self.static_data_offsets,
             &mut self.aggregates,
             self.owner_cleanup_function,
+            &self.static_values,
         )?);
         self.emit_block_terminator(start, &block.terminator, stop)
     }
@@ -772,7 +775,7 @@ impl<'a> PlanEmitter<'a> {
         self.plan.push(PlanToken::Loop("Empty".to_owned()));
         let loop_label = self.labels.len();
         self.labels.push(StructuredLabel::Loop);
-        self.plan.extend(expected_block_operations_plan(self.source_function, block, self.layout, self.layouts, self.function_indices, self.signature_indices, self.imports, self.import_indices, self.static_data_offsets, &mut self.aggregates, self.owner_cleanup_function)?);
+        self.plan.extend(expected_block_operations_plan(self.source_function, block, self.layout, self.layouts, self.function_indices, self.signature_indices, self.imports, self.import_indices, self.static_data_offsets, &mut self.aggregates, self.owner_cleanup_function, &self.static_values)?);
         self.loops.push((header, loop_label));
         if let Some(exit) = exit {
             self.loop_exits.push((exit, block_label));
@@ -996,6 +999,7 @@ pub(super) fn expected_function_plan(
         .map(|block| block.id));
     let mut emitter = PlanEmitter {
         source_function: function,
+        static_values: static_values::static_values(function),
         blocks_by_id: function.blocks.iter().map(|block| (block.id, block)).collect(),
         layout: &layout,
         layouts,

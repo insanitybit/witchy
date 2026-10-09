@@ -144,6 +144,8 @@ pub(super) fn reverse_loop_members(
 pub(super) struct StructuredEmitter<'a> {
     body: &'a mut WasmFunctionEncoder,
     source_function: &'a Function,
+    /// References this function proves static (`static_values`).
+    static_values: BTreeSet<ValueId>,
     target_function: &'a WasmFunction,
     /// Target blocks by id, for the same reason as the plan emitter's map.
     blocks_by_id: BTreeMap<crate::canonical_safewir::BlockId, &'a WasmBlock>,
@@ -981,6 +983,7 @@ impl StructuredEmitter<'_> {
                 self.static_data,
                 self.layouts,
                 self.owner_cleanup_function,
+                &self.static_values,
             )?;
         }
         self.emit_block_terminator(start, block.terminator.operation, stop)
@@ -1113,6 +1116,7 @@ impl StructuredEmitter<'_> {
                 self.static_data,
                 self.layouts,
                 self.owner_cleanup_function,
+                &self.static_values,
             )?;
         }
         self.loops.push((header, loop_label));
@@ -1277,6 +1281,7 @@ pub(super) fn encode_function(
     let mut emitter = StructuredEmitter {
         body: &mut body,
         source_function,
+        static_values: static_values::static_values(source_function),
         target_function,
         blocks_by_id: target_function.blocks.iter().map(|block| (block.id, block)).collect(),
         layout: &layout,
