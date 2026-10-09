@@ -60,6 +60,7 @@ mod runtime {
             use witchy_runtime::runtime::self_checks::compiler_tests as checks;
             #[test] fn bounded_compiler_imports_execute_utf8_bounds_and_no_partial_write() { checks::bounded_compiler_imports_execute_utf8_bounds_and_no_partial_write().check() }
             #[test] fn bounded_compiler_result_requires_full_capacity_and_valid_utf8_input() { checks::bounded_compiler_result_requires_full_capacity_and_valid_utf8_input().check() }
+            #[test] fn wide_guest_ranges_reject_wrapping_sums() { checks::wide_guest_ranges_reject_wrapping_sums().check() }
         }
     }
     mod host {

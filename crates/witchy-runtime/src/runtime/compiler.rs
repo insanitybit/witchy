@@ -165,7 +165,9 @@ fn host_compiler_diff_into<P: GuestAddress>(
 fn checked_guest_range<P: GuestAddress>(data_len: usize, ptr: P, len: i32, what: &str) -> Result<(usize, usize)> {
     let start = ptr.offset() as u64;
     let length = u64::from(u32::from_ne_bytes(len.to_ne_bytes()));
-    let end = start + length;
+    // A 64-bit guest address may sit near u64::MAX: the sum must not wrap.
+    let end = start.checked_add(length)
+        .ok_or_else(|| Error::msg(format!("{what} ({start}+{length}) lies outside guest memory")))?;
     if end > data_len as u64 {
         return Err(Error::msg(format!("{what} ({start}..{end}) lies outside guest memory")));
     }
@@ -374,6 +376,15 @@ pub mod tests {
 
         assert!(read_slice_str(&memory, 2, 4).is_err());
         assert!(write_result_bytes_to_memory(&mut memory, 31, 2, b"x").is_err());
+    }
+
+    pub fn wide_guest_ranges_reject_wrapping_sums() {
+        // A large heap passes 64-bit byte addresses; one near u64::MAX plus a
+        // length must be refused, not wrap into range.
+        assert!(super::checked_guest_range(32, -1i64, 8, "range").is_err());
+        assert!(super::checked_guest_range(32, i64::MAX, 1, "range").is_err());
+        assert_eq!(super::checked_guest_range(32, 24i64, 8, "range").unwrap(), (24, 8));
+        assert!(read_slice_str(&[0; 32], -1i64, 1).is_err());
     }
 
     pub fn bounded_compiler_imports_execute_utf8_bounds_and_no_partial_write() {

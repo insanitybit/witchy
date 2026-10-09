@@ -93,3 +93,70 @@ fn unbounded_and_overlarge_indices_keep_their_check() {
     // A bound past the reservation (32 GiB > 8 GiB) is not elided.
     assert!(load(&engine, &module(SHIFTED_PAST_RESERVATION, 1), u32::MAX as u64).is_err());
 }
+
+/// R4's address shape, `(uextend(ref) << 3) + uextend(offset)` plus a static
+/// offset, on the large-heap reservation (36 GiB, memory never moves, Spectre
+/// mitigation at its default). CVE-2026-34971 miscompiled exactly this shape
+/// on aarch64, so every load is checked against a Rust model of the memory:
+/// in bounds it reads the model's bytes, otherwise it traps.
+const LARGE_RESERVATION: u64 = 36 << 30;
+const SCALED_PAGES: u64 = 2;
+
+fn scaled_module() -> String {
+    let address = "local.get 0 i64.extend_i32_u i64.const 3 i64.shl local.get 1 i64.extend_i32_u i64.add";
+    format!(
+        "(module (memory (export \"memory\") i64 {SCALED_PAGES})
+           (func (export \"byte\") (param i32 i32) (result i64) {address} i64.load8_u)
+           (func (export \"word\") (param i32 i32) (result i64) {address} i64.load32_u offset=4)
+           (func (export \"long\") (param i32 i32) (result i64) {address} i64.load offset=8))"
+    )
+}
+
+#[test]
+fn scaled_reference_loads_need_no_explicit_check() {
+    // ref < 2^32, so (ref << 3) + offset stays under 2^35 + 2^32: inside a
+    // 36 GiB reservation, past an 8 GiB one.
+    let wat = scaled_module();
+    let covered = code_bytes(&engine_with(LARGE_RESERVATION, 32 << 20), &wat);
+    let short = code_bytes(&engine(), &wat);
+    assert!(covered + 24 < short, "covered {covered} code bytes, 8 GiB reservation {short}");
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::prelude::ProptestConfig::with_cases(
+        std::env::var("PROPTEST_CASES").ok().and_then(|cases| cases.parse().ok()).unwrap_or(256)))]
+    #[test]
+    fn scaled_reference_loads_match_the_memory_model(
+        loads in proptest::collection::vec((
+            proptest::prop_oneof![0u32..16_400, proptest::prelude::any::<u32>(), (u32::MAX - 16)..=u32::MAX],
+            proptest::prop_oneof![0u32..64, 131_000u32..131_100, proptest::prelude::any::<u32>()],
+            0usize..3,
+        ), 1..64)
+    ) {
+        use std::sync::OnceLock;
+        static ENGINE: OnceLock<(Engine, Module)> = OnceLock::new();
+        let (engine, module) = ENGINE.get_or_init(|| {
+            let engine = engine_with(LARGE_RESERVATION, 32 << 20);
+            let module = Module::new(&engine, scaled_module()).unwrap();
+            (engine, module)
+        });
+        let mut store = Store::new(engine, ());
+        let instance = Instance::new(&mut store, module, &[]).unwrap();
+        let memory = instance.get_memory(&mut store, "memory").unwrap();
+        let model: Vec<u8> = (0..SCALED_PAGES * 65536).map(|at| (at * 131 % 251) as u8).collect();
+        memory.write(&mut store, 0, &model).unwrap();
+        for (reference, offset, kind) in loads {
+            let (export, at, size) = [("byte", 0, 1), ("word", 4, 4), ("long", 8, 8)][kind];
+            let load = instance.get_typed_func::<(i32, i32), i64>(&mut store, export).unwrap();
+            let address = (u64::from(reference) << 3) + u64::from(offset) + at;
+            let got = load.call(&mut store, (reference as i32, offset as i32));
+            if address + size <= model.len() as u64 {
+                let mut bytes = [0u8; 8];
+                bytes[..size as usize].copy_from_slice(&model[address as usize..(address + size) as usize]);
+                proptest::prop_assert_eq!(got.unwrap(), i64::from_le_bytes(bytes), "{} at {:#x}", export, address);
+            } else {
+                proptest::prop_assert!(got.is_err(), "{} at {:#x} read outside the memory", export, address);
+            }
+        }
+    }
+}
