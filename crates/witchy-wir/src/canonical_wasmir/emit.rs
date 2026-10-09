@@ -637,6 +637,7 @@ pub(super) fn emit_alloc(
     layout_id: crate::layout::LayoutId,
     extent: &Extent,
 ) -> Result<(), EncodeError> {
+    memory_op_counters::emit_bump(body, memory_op_counters::Counter::Allocs);
     // The object's byte size lands in scratch 0: a counted collection
     // computes it from its capacity, a fixed layout (a record) is a constant.
     let collection = match extent {

@@ -1110,6 +1110,7 @@ pub(super) fn expected_metadata_prefix(
     exports.export(HEAP_TOP_EXPORT, ExportKind::Global, 0);
     exports.export(HEAP_FREE_EXPORT, ExportKind::Global, 1);
     exports.export(HEAP_BASE_EXPORT, ExportKind::Global, 2);
+    memory_op_counters::declare_exports(&mut exports);
     let import_count = u32::try_from(target.imports.len() + target.owner_bridges.len()).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
     for (index, function) in target.functions.iter().enumerate() {
         let type_index = signature_indices.get(&function.signature).copied()
@@ -1139,6 +1140,7 @@ pub(super) fn expected_metadata_prefix(
     globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(target.heap_start as i32));
     globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(0));
     globals.global(GlobalType { val_type: ValType::I32, mutable: false, shared: false }, &ConstExpr::i32_const(target.heap_start as i32));
+    memory_op_counters::declare_globals(&mut globals);
     let mut module = WasmModule::new();
     module.section(&types).section(&imports).section(&functions);
     if target.table.is_some() {

@@ -142,6 +142,7 @@ pub(super) fn emit(body: &mut WasmFunctionEncoder, local: &LocalLayout, function
     let ids: BTreeMap<_, _> = table.keys().enumerate().map(|(index, id)| (*id, index as i32)).collect();
     let s = &local.scratch;
     if s.len() < SCRATCH { return Err(EncodeError::UnsupportedLayout { function, operation: "DropRef scratch" }); }
+    memory_op_counters::emit_bump(body, memory_op_counters::Counter::Releases);
     // Static and shared roots need no temporary storage, including at the
     // memory limit. Only a last-reference graph needs the traversal stack.
     code(body, [I::LocalGet(s[OBJECT]), I::GlobalGet(2), I::I32LtU, I::If(BlockType::Empty), I::Else,
@@ -315,6 +316,7 @@ pub(super) fn plan(p: &mut Vec<PlanToken>, function: FunctionId, layouts: &Layou
     let ids: BTreeMap<_, _> = table.keys().enumerate().map(|(index, id)| (*id, index as i32)).collect();
     let s = &local.scratch;
     if s.len() < SCRATCH { return Err(CanonicalAdmissionError::UnsupportedPlan); }
+    memory_op_counters::plan_bump(p, memory_op_counters::Counter::Releases);
     p.extend([P::LocalGet(s[OBJECT]), P::GlobalGet(2), P::I32LtU, P::If("Empty".into()), P::Else,
         P::LocalGet(s[OBJECT]), P::I32Const(8), P::I32Sub, PlanToken::I64ExtendI32U, pload(), P::LocalSet(s[COUNT]),
         P::LocalGet(s[COUNT]), P::I32Eqz, P::If("Empty".into()), P::Unreachable, P::End,

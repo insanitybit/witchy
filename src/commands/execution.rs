@@ -350,6 +350,11 @@ fn run_compiled(
             )
         }
     })?;
+    // A module encoded under WITCHY_COUNT_MEMORY_OPS reports its exact
+    // allocation, retain and release counts for the kernel A/B harness.
+    if let Some(counts) = vm.canonical_memory_op_counts() {
+        eprintln!("memory_ops allocs={} retains={} releases={}", counts.allocs, counts.retains, counts.releases);
+    }
     let mut lines = vm.output();
     // At the process boundary an Int-returning `main` is the exit code (the
     // run export surfaces it as the final print_int line; pop and convert).

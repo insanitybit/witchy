@@ -191,6 +191,8 @@ mod rfc0167_call_result_storage;
 mod rfc0167_generic_argument_storage;
 #[path = "misc/rfc0167_branch_result_storage.rs"]
 mod rfc0167_branch_result_storage;
+#[path = "misc/memory_op_counters.rs"]
+mod memory_op_counters;
 #[path = "misc/rfc0167_branch_argument_storage.rs"]
 mod rfc0167_branch_argument_storage;
 #[path = "misc/rfc0167_generic_constructor_storage.rs"]

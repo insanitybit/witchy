@@ -19,6 +19,7 @@ pub use canonical_wasmir::{
     AdmittedOwnerBridge, OwnerBridgeRecipe,
     AdmittedVmService, AdmittedParMap, AdmittedExternalWasmImport, AdmittedCanonicalArtifact, CanonicalAdmissionError, CanonicalEntry, CapabilityKind,
     CanonicalEntryResult, HEAP_BASE_EXPORT, HEAP_FREE_EXPORT, HEAP_TOP_EXPORT, admit_canonical,
+    memory_op_counters::{COUNT_ALLOCS_EXPORT, COUNT_RELEASES_EXPORT, COUNT_RETAINS_EXPORT},
 };
 pub use canonical_wasmir::admit_canonical_with_observer;
 pub mod abi_catalog;

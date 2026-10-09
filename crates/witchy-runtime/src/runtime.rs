@@ -1404,6 +1404,15 @@ pub struct FixtureWasmOutcome {
 }
 
 /// A spawned VM plus the entrypoint we can drive.
+/// Exact allocation, retain and release counts of a module encoded under
+/// `WITCHY_COUNT_MEMORY_OPS` (see `witchy_wir::canonical_wasmir::memory_op_counters`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MemoryOpCounts {
+    pub allocs: u64,
+    pub retains: u64,
+    pub releases: u64,
+}
+
 pub struct Vm {
     store: Store<VmState>,
     instance: wasmtime::Instance,
@@ -1729,6 +1738,20 @@ impl Vm {
     /// out-of-object overrun that is in-bounds for the linear memory, so wasmtime never
     /// saw it. A no-op (and free) when nothing was registered, i.e. on uninstrumented
     /// builds. Drains the shadow so a reused VM starts clean.
+    /// Allocation, retain and release counts of a module encoded under
+    /// `WITCHY_COUNT_MEMORY_OPS`; `None` for an ordinary module.
+    pub fn canonical_memory_op_counts(&mut self) -> Option<MemoryOpCounts> {
+        let mut read_global = |name: &str| -> Option<u64> {
+            let global = self.instance.get_global(&mut self.store, name)?;
+            global.get(&mut self.store).i64().map(|value| value as u64)
+        };
+        Some(MemoryOpCounts {
+            allocs: read_global(witchy_wir::COUNT_ALLOCS_EXPORT)?,
+            retains: read_global(witchy_wir::COUNT_RETAINS_EXPORT)?,
+            releases: read_global(witchy_wir::COUNT_RELEASES_EXPORT)?,
+        })
+    }
+
     /// Audit an admitted canonical module's heap after its entry returned:
     /// every reference-counted object between the heap base and the bump
     /// pointer must be on the reclaimed free list. Under callee-drops a

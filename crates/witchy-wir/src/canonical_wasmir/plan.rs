@@ -1146,6 +1146,7 @@ pub(super) fn expected_alloc_plan(
     destination: ValueId,
     extent: &Extent,
 ) -> Result<(), CanonicalAdmissionError> {
+    memory_op_counters::plan_bump(plan, memory_op_counters::Counter::Allocs);
     // Mirror of `emit_alloc`: the size in scratch 0 comes from the capacity
     // of a counted collection or is a fixed layout's constant.
     let collection = match extent {

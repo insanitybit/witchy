@@ -44,6 +44,7 @@ use crate::layout::{
 // pointer when the checked extent does not fit.
 pub(crate) mod drop_worklist;
 mod outlined_memory;
+pub(crate) mod memory_op_counters;
 mod scalar_locals;
 pub(crate) mod closure_owner_kernel;
 mod owner_bridges;
@@ -885,6 +886,8 @@ fn encode_checked_unvalidated(checked: &CheckedWasmIr) -> Result<Vec<u8>, Encode
     exports.export(HEAP_TOP_EXPORT, ExportKind::Global, 0);
     exports.export(HEAP_FREE_EXPORT, ExportKind::Global, 1);
     exports.export(HEAP_BASE_EXPORT, ExportKind::Global, 2);
+    memory_op_counters::declare_globals(&mut globals);
+    memory_op_counters::declare_exports(&mut exports);
     let mut code = CodeSection::new();
     let static_data_offsets: BTreeMap<_, _> = target.static_data.iter().map(|segment| (segment.id, segment.offset)).collect();
     let mut data = DataSection::new();
