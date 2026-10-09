@@ -104,6 +104,38 @@ in progress on 2026-10-08. If either stalls for more than a few days, the
 blocked slice lands its new files and tests anyway and leaves the shared hunk
 as a documented follow-up, so the queue stays moving.
 
+## Baseline, 2026-10-09 (master `6329b3ab0`, release build, Apple M-series)
+
+Counts are per whole kernel run from `scripts/kernel-ab.py`. Releases count
+every `DropRef` entry, including the no-op drop of a static object, so
+releases can exceed allocs plus retains.
+
+| kernel | allocs | retains | releases | note |
+|---|---:|---:|---:|---|
+| fib, loop_sum, collatz, mandelbrot, closure_calls | 6 | 0 | 14 | pure compute; the Go gap is codegen, not memory |
+| nsieve | 9 | 0 | 17 | |
+| fannkuch | 18 | 0 | 26 | |
+| list_sum | 28 | 0 | 36 | |
+| record_build | 26 | 3 | 36 | |
+| knucleotide | 200,028 | 628,540 | 657,138 | |
+| expr_eval | 2,621,416 | 3,932,100 | 3,932,124 | |
+| dict_count | 3,000,018 | 0 | 3,000,025 | one alloc per insert |
+| word_count | 3,001,020 | 5,999,000 | 12,999,026 | |
+| binary_trees | 13,107,156 | 19,660,600 | 19,660,664 | half the allocs are `Leaf` (BUG-0166) |
+
+**Incremental wins the table exposes**, all lowering changes in
+`canonical_lower.rs`, which `perf/async-transport-driver` is editing on
+2026-10-09, so they land after it:
+
+1. **Nullary variants as static objects** (BUG-0166, local `bugs/`). `None`,
+   `Leaf` and every argument-less constructor allocate a 24-byte object. The
+   static-data path strings already use removes the allocation, the retain and
+   the release. Halves binary_trees' allocations.
+2. **Move `let` locals into constructors.** `let a = Node(..); Node(a, Leaf)`
+   retains `a`. A local used once is a move.
+3. **Lend pattern-bound children to `let` callees.** `Node(l, r) -> check(l)`
+   retains `l` for the call. binary_trees' `check` does four retains per node.
+
 ## What done looks like
 
 - binary_trees, word_count, fannkuch, nsieve at 0 allocs/iter and 0 rc-ops/iter
