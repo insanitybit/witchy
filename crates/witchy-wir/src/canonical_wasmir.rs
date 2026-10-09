@@ -45,6 +45,7 @@ use crate::layout::{
 pub(crate) mod drop_worklist;
 mod outlined_memory;
 pub(crate) mod memory_op_counters;
+mod ref_encoding;
 mod scalar_locals;
 pub(crate) mod closure_owner_kernel;
 mod owner_bridges;
@@ -936,10 +937,10 @@ fn encode_checked_unvalidated(checked: &CheckedWasmIr) -> Result<Vec<u8>, Encode
     code.function(&outlined_memory::emit_address());
     for root in memory_helpers.drops.keys() {
         functions.function(drop_type);
-        code.function(&outlined_memory::emit_drop(&layouts, *root)?);
+        code.function(&outlined_memory::emit_drop(&layouts, *root, ref_encoding::RefEncoding::Byte)?);
     }
     functions.function(retain_type);
-    code.function(&outlined_memory::emit_retain());
+    code.function(&outlined_memory::emit_retain(ref_encoding::RefEncoding::Byte));
     functions.function(retain_type);
     code.function(&outlined_memory::emit_alloc());
     let mut module = WasmModule::new();
@@ -3270,6 +3271,7 @@ pub mod self_checks {
         // exactly the production destructor's scratch area.
         let local_count = scratch_count + 1;
         let layout = LocalLayout {
+            refs: ref_encoding::RefEncoding::Byte,
             memory_helpers: None,
             owner_scratch: None,
             owner_bridges: Vec::new(),

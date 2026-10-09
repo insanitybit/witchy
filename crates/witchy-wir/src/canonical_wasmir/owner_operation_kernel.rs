@@ -103,7 +103,7 @@ fn context<'a>(function: &'a Function, local: &'a LocalLayout<'a>, op: &O) -> Re
             indices.insert(START, local_scratch[1]);
         }
     }
-    let local = LocalLayout { memory_helpers: local.memory_helpers.clone(),
+    let local = LocalLayout { refs: local.refs, memory_helpers: local.memory_helpers.clone(),
         owner_scratch: local.owner_scratch,
         owner_bridges,
         indices,
@@ -235,7 +235,7 @@ fn cleanup_helper_context(bridge: &AdmittedOwnerBridge) -> (Function, LocalLayou
         .collect(),
         blocks: Vec::new(),
     };
-    let local = LocalLayout { memory_helpers: None,
+    let local = LocalLayout { refs: ref_encoding::RefEncoding::Byte, memory_helpers: None,
         owner_scratch: None,
         owner_bridges: Vec::new(),
         indices: [(environment, 1), (index, 2)].into_iter().collect(),

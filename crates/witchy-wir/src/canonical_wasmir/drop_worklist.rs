@@ -465,7 +465,7 @@ pub mod self_checks {
         exports.export("memory", ExportKind::Memory, 0);
         exports.export("frontier", ExportKind::Global, 0);
         exports.export("free", ExportKind::Global, 1);
-        let local = LocalLayout { memory_helpers: None,
+        let local = LocalLayout { refs: ref_encoding::RefEncoding::Byte, memory_helpers: None,
             owner_scratch: None,
             owner_bridges: Vec::new(),
             indices: BTreeMap::new(),

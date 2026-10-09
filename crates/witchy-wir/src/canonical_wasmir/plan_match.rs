@@ -1215,9 +1215,9 @@ pub(super) fn decode_and_match_plan(
     }
     expected.push(outlined_memory::plan_address());
     for root in memory_helpers.drops.keys() {
-        expected.push(outlined_memory::plan_drop(&layouts, *root)?);
+        expected.push(outlined_memory::plan_drop(&layouts, *root, ref_encoding::RefEncoding::Byte)?);
     }
-    expected.push(outlined_memory::plan_retain());
+    expected.push(outlined_memory::plan_retain(ref_encoding::RefEncoding::Byte));
     expected.push(outlined_memory::plan_alloc());
     let mut actual = Vec::new();
     let mut code_count = None;

@@ -159,7 +159,7 @@ pub mod self_checks {
             blocks: Vec::new(),
         };
         let count = drop_worklist::SCRATCH as u32;
-        let local = LocalLayout { memory_helpers: None, owner_scratch: None, owner_bridges: Vec::new(),
+        let local = LocalLayout { refs: ref_encoding::RefEncoding::Byte, memory_helpers: None, owner_scratch: None, owner_bridges: Vec::new(),
             indices: [(owner, 0), (env, 2), (index, 3)].into_iter().collect(),
             extra_types: Vec::new(), scratch: (4..4 + count).collect(), owner_context: Default::default(),
         };
@@ -177,7 +177,7 @@ pub mod self_checks {
                 }],
             }).unwrap();
         drop_owner.instruction(&wasm_encoder::Instruction::End);
-        let original_local = LocalLayout { memory_helpers: None, owner_scratch: None, owner_bridges: Vec::new(),
+        let original_local = LocalLayout { refs: ref_encoding::RefEncoding::Byte, memory_helpers: None, owner_scratch: None, owner_bridges: Vec::new(),
             indices: [(original, 0)].into_iter().collect(), extra_types: Vec::new(), scratch: (1..1 + count).collect(),
             owner_context: Default::default(),
         };

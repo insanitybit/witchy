@@ -68,11 +68,12 @@ pub(super) fn plan_address() -> (Vec<(u32, String)>, Vec<PlanToken>) {
     ])
 }
 
-fn drop_locals() -> LocalLayout<'static> {
+fn drop_locals(refs: ref_encoding::RefEncoding) -> LocalLayout<'static> {
     // The object argument is scratch slot zero. Destruction still uses the
     // existing iterative worklist, not recursive Wasm calls. Helpers cannot
     // call user code or reenter the instance while that worklist is live.
     LocalLayout {
+        refs,
         memory_helpers: None,
         owner_scratch: None,
         owner_bridges: Vec::new(),
@@ -83,16 +84,24 @@ fn drop_locals() -> LocalLayout<'static> {
     }
 }
 
-pub(super) fn emit_drop(layouts: &LayoutInterner, root: crate::layout::LayoutId) -> Result<WasmFunctionEncoder, EncodeError> {
+pub(super) fn emit_drop(
+    layouts: &LayoutInterner,
+    root: crate::layout::LayoutId,
+    refs: ref_encoding::RefEncoding,
+) -> Result<WasmFunctionEncoder, EncodeError> {
     let mut body = WasmFunctionEncoder::new([(drop_worklist::SCRATCH as u32 - 1, ValType::I32)]);
-    drop_worklist::emit(&mut body, &drop_locals(), FunctionId::new(u32::MAX), layouts, root)?;
+    drop_worklist::emit(&mut body, &drop_locals(refs), FunctionId::new(u32::MAX), layouts, root)?;
     body.instruction(&wasm_encoder::Instruction::End);
     Ok(body)
 }
 
-pub(super) fn plan_drop(layouts: &LayoutInterner, root: crate::layout::LayoutId) -> Result<(Vec<(u32, String)>, Vec<PlanToken>), CanonicalAdmissionError> {
+pub(super) fn plan_drop(
+    layouts: &LayoutInterner,
+    root: crate::layout::LayoutId,
+    refs: ref_encoding::RefEncoding,
+) -> Result<(Vec<(u32, String)>, Vec<PlanToken>), CanonicalAdmissionError> {
     let mut plan = Vec::new();
-    drop_worklist::plan(&mut plan, FunctionId::new(u32::MAX), layouts, &drop_locals(), root)?;
+    drop_worklist::plan(&mut plan, FunctionId::new(u32::MAX), layouts, &drop_locals(refs), root)?;
     plan.push(PlanToken::End);
     Ok((vec![(drop_worklist::SCRATCH as u32 - 1, "i32".into())], plan))
 }
@@ -100,32 +109,55 @@ pub(super) fn plan_drop(layouts: &LayoutInterner, root: crate::layout::LayoutId)
 // Retain is also used implicitly by Load(CloneShared/ClonePresent) and
 // Store(CloneShared). Keep presence checks and publication at their original
 // call sites; this kernel only performs the existing RC transition.
-pub(super) fn emit_retain() -> WasmFunctionEncoder {
+pub(super) fn emit_retain(refs: ref_encoding::RefEncoding) -> WasmFunctionEncoder {
     use wasm_encoder::Instruction as I;
     let mut body = WasmFunctionEncoder::new([(1, ValType::I32)]);
     memory_op_counters::emit_bump(&mut body, memory_op_counters::Counter::Retains);
+    let header = |body: &mut WasmFunctionEncoder| {
+        body.instruction(&I::LocalGet(0));
+        refs.base(body);
+        body.instruction(&I::I32Const(8));
+        refs.sub(body);
+        refs.finish(body);
+    };
+    for instruction in [I::LocalGet(0), I::GlobalGet(2), I::I32LtU, I::If(BlockType::Empty), I::Else] {
+        body.instruction(&instruction);
+    }
+    header(&mut body);
     for instruction in [
-        I::LocalGet(0), I::GlobalGet(2), I::I32LtU, I::If(BlockType::Empty), I::Else,
-        I::LocalGet(0), I::I32Const(8), I::I32Sub, I::I64ExtendI32U, I::I32Load(memarg(4)), I::LocalSet(1),
+        I::I32Load(memarg(4)), I::LocalSet(1),
         I::LocalGet(1), I::I32Eqz, I::If(BlockType::Empty), I::Unreachable, I::End,
         I::LocalGet(1), I::I32Const(-1), I::I32Eq, I::If(BlockType::Empty), I::Unreachable, I::End,
-        I::LocalGet(0), I::I32Const(8), I::I32Sub, I::I64ExtendI32U, I::LocalGet(1), I::I32Const(1), I::I32Add,
+    ] { body.instruction(&instruction); }
+    header(&mut body);
+    for instruction in [
+        I::LocalGet(1), I::I32Const(1), I::I32Add,
         I::I32Store(memarg(4)), I::End, I::LocalGet(0), I::End,
     ] { body.instruction(&instruction); }
     body
 }
 
-pub(super) fn plan_retain() -> (Vec<(u32, String)>, Vec<PlanToken>) {
+pub(super) fn plan_retain(refs: ref_encoding::RefEncoding) -> (Vec<(u32, String)>, Vec<PlanToken>) {
     use PlanToken as P;
     let mut plan = Vec::new();
     memory_op_counters::plan_bump(&mut plan, memory_op_counters::Counter::Retains);
+    let header = |plan: &mut Vec<PlanToken>| {
+        plan.push(P::LocalGet(0));
+        refs.plan_base(plan);
+        plan.push(P::I32Const(8));
+        refs.plan_sub(plan);
+        refs.plan_finish(plan);
+    };
+    plan.extend([P::LocalGet(0), P::GlobalGet(2), P::I32LtU, P::If("Empty".into()), P::Else]);
+    header(&mut plan);
     plan.extend([
-        P::LocalGet(0), P::GlobalGet(2), P::I32LtU, P::If("Empty".into()), P::Else,
-        P::LocalGet(0), P::I32Const(8), P::I32Sub,
-        P::I64ExtendI32U, P::I32Load { offset: 0, align: 2, memory: 0 }, P::LocalSet(1),
+        P::I32Load { offset: 0, align: 2, memory: 0 }, P::LocalSet(1),
         P::LocalGet(1), P::I32Eqz, P::If("Empty".into()), P::Unreachable, P::End,
         P::LocalGet(1), P::I32Const(-1), P::I32Eq, P::If("Empty".into()), P::Unreachable, P::End,
-        P::LocalGet(0), P::I32Const(8), P::I32Sub, P::I64ExtendI32U, P::LocalGet(1), P::I32Const(1), P::I32Add,
+    ]);
+    header(&mut plan);
+    plan.extend([
+        P::LocalGet(1), P::I32Const(1), P::I32Add,
         P::I32Store { offset: 0, align: 2, memory: 0 }, P::End, P::LocalGet(0), P::End,
     ]);
     (vec![(1, "i32".into())], plan)
