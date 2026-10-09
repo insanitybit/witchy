@@ -1911,11 +1911,12 @@ becomes `Err("msg")`. The enclosing function therefore propagates a `String`
 error. The message may interpolate. It intentionally accepts no typed error (see
 RFC-0180).
 
-For typed errors, use either a named error enum or a local anonymous union.
-Named enums are the contract surface for libraries and packages: they can
-derive or implement protocols and can absorb lower-level errors through
-`From`. Anonymous unions are the local structural tier: `Result(T, .[A | B])`
-can propagate through `?` into `Result(U, .[A | B | C])` with no wrapper.
+For typed errors, use an anonymous union, named by a `type X = .[...]` alias
+when a library needs a name for it. `Result(T, .[A | B])` propagates through
+`?` into `Result(U, .[A | B | C])` with no wrapper, and that widening is the
+one typed-error rule of `?`. RFC-0180 removes the older `From`-directed
+conversion at `?`; until it is implemented, an `impl From(E1) for E2` still
+lets `?` convert a nominal `E1` into `E2`, but new code should not rely on it.
 The context form `e? "msg"` intentionally stays a `String`-error tool; on a
 union-error `Result`, match and rewrap or add an explicit payload tag such as
 `.Context(String)`.

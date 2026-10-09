@@ -5,9 +5,9 @@ status: proposed
 created: 2026-10-08
 tracking: >
   Typed remainder for anonymous-union error patterns, so handling a tag removes
-  it from the error set; the decided boundary between `From`-converted nominal
-  errors and widened anonymous unions; and the decision that `? "msg"` stays the
-  String-error tool.
+  it from the error set; the union as the one error mechanism, deleting
+  `From`-directed conversion at `?` and std's error `From` impls; and the
+  decision that `? "msg"` stays the String-error tool.
 ---
 
 # RFC-0180: Error sets
@@ -103,27 +103,41 @@ runtime representation: the remainder shares the representation of its parent
 union, which is why widening is representation-preserving and why the
 remainder value can be returned without being rebuilt.
 
-### Decision: nominal `From` at package boundaries, unions for local composition
+### Decision: one error mechanism, the union
 
-Both mechanisms stay. The rule, now written down:
+Error types are anonymous unions, named by alias when a library needs a name:
 
-- A **nominal** error type (`type HttpError: ...` with `impl Error`) is the
-  contract surface of a module that other packages depend on. It can carry
-  `impl`s and invariants, and `?` converts into it through `From`. Std's
-  trust-boundary APIs (`JwtError`, `DeserializeError`, `EncodingError`,
-  `HttpError`, `SemverError`) stay nominal.
-- An **anonymous union** is for composition that does not deserve a
-  declaration: inside a module, across a few private helpers, or for a
-  function whose distinct failure modes a caller branches on but no package
-  needs to name.
-- Std adds **no new `From` impls between std error types** whose only job is
-  to let `?` nest one module's enum inside another's. That nesting is the
-  pattern RFC-0054 inherited from Rust and this RFC rejects: an I/O failure
-  that can reach a caller through three different variants is awkward to
-  handle at exactly the level that wants to handle it. Where a std function
-  genuinely fails in two modules' ways, it returns a union of the two nominal
-  types, `.[Io(IoError) | Parse(ParseError)]`, so the caller sees both and
-  the remainder rule lets it peel one off.
+```sh
+type HttpError = .[Timeout(Duration) | Status(Int) | BadUrl(String)]
+
+fn get(u: String) -> Result(Body, HttpError):
+    let url = url.parse(u)?      // .[BadUrl(String)] widens into HttpError
+    ...
+```
+
+`?` has exactly one typed-error rule, union widening. The `From`-directed
+conversion at `?` that RFC-0054 added is **deleted**, together with every std
+`impl From(E1) for E2` whose job was to let `?` nest one module's error enum
+inside another's (26 on 2026-10-08). That nesting is the pattern RFC-0054
+inherited from Rust and this RFC rejects: an I/O failure that can reach a
+caller through three different variants is awkward to handle at exactly the
+level that wants to handle it. A function that fails in two modules' ways
+returns the union of their tags, the caller sees both, and the remainder rule
+lets it peel one off.
+
+Std's trust-boundary error types (`JwtError`, `DeserializeError`,
+`EncodingError`, `HttpError`, `SemverError`, and the rest) become union
+aliases. Their tags and payloads are unchanged; only the declaration form and
+the conversions go. `Show` for an error renders through the union's tags, so
+the std `Error: Show` bound keeps its one job, letting generic code and the CLI
+print any error. A nominal `type X:` declaration is still a legal `e` in
+`Result(T, e)`, since it is an ordinary value, but it gets no conversion at `?`
+and the spec stops recommending it for errors.
+
+The nominal-enum-plus-`From` and union-widening paths both existed because
+they were designed years apart. Keeping both would give the language two ways
+to say the same thing, with the worse one carrying std. Break, don't deprecate:
+the std migration is one cut.
 
 ### Decision: `? "msg"` stays the String tool
 
@@ -169,6 +183,14 @@ with the type-level claims pinned by `witchy check` diagnostics.
 8. **Spec.** `spec/language.md`'s typed-error paragraph references this RFC,
    its executed example demonstrates the remainder, and no `RFC-0054`
    forward reference remains in `spec/`.
+9. **No conversion at `?`.** `?` on `Result(T, E1)` inside a function
+   returning `Result(U, E2)`, where `E1` is a nominal type with an
+   `impl From(E1) for E2`, is a type error naming union widening as the
+   typed-error rule. The `From`-insertion code in typeck is gone, not gated.
+10. **Std on unions.** No `impl From(...) for <std error type>` remains in
+    `std/`, every std error type is a union alias, and the existing std
+    differential tests for those modules pass unchanged except for the
+    declaration form.
 
 The source tree walker is not acceptance evidence (RFC-0167).
 
@@ -179,8 +201,9 @@ The source tree walker is not acceptance evidence (RFC-0167).
   `match` remainder is the general form of which it would be sugar.
 - Inferred error sets in return position (Zig's `!T`). Return types stay
   explicit; the compiler tells you what to write.
-- Migrating std's `Result(T, String)` APIs. RFC-0054 settled which std
-  surfaces are typed; this RFC only fixes how typed errors compose and reduce.
+- Migrating std's `Result(T, String)` APIs to typed errors. RFC-0054 settled
+  which std surfaces are typed; this RFC changes the form of the typed ones,
+  not the set.
 - Error cause chains (`source()`). Not requested by any witchy program yet.
 
 ## Drawbacks
