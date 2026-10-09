@@ -325,3 +325,5 @@ debug = false
 [patch.crates-io]
 # RFC-0179: Wasmtime 49 bounds checks with range-based elision; see vendor/README.md.
 wasmtime-internal-cranelift = { path = "vendor/wasmtime-internal-cranelift" }
+# RFC-0179 T6: aarch64 `add xd, xn, wm, uxtw #k` for scaled large-heap references; see vendor/README.md.
+cranelift-codegen = { path = "vendor/cranelift-codegen" }

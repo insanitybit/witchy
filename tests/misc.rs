@@ -311,6 +311,8 @@ mod std_let_params;
 mod let_callable_adapter;
 #[path = "misc/memory64_range_elision.rs"]
 mod memory64_range_elision;
+#[path = "misc/aarch64_uxtw_shift.rs"]
+mod aarch64_uxtw_shift;
 
 #[path = "misc/channel_handle_clones.rs"]
 mod channel_handle_clones;

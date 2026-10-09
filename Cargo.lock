@@ -399,8 +399,6 @@ dependencies = [
 [[package]]
 name = "cranelift-codegen"
 version = "0.136.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "63826cef0bf70e61d56cc930aa4ee423638f66dc3cfc10d683e73138a6d177b8"
 dependencies = [
  "bumpalo",
  "cranelift-assembler-x64",

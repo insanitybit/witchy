@@ -25,7 +25,29 @@ load or store while `heap + x` is shared by every field access through `x`
 A 64-bit memory gets no guard region, so `bound + offset + access_size` must
 fit the reservation itself.
 
-The patch is carried here and is not sent upstream. When Wasmtime is
-upgraded, re-vendor the matching version and re-apply the change; the test
-`memory64_range_elision` in `crates/witchy-runtime/tests/runtime` pins its
-behavior.
+On the same path, `compute_scaled_first_addr` forms an index `scaled + rest`,
+with `scaled` a shifted zero-extended value (a large-heap reference,
+`uextend(ref) << 3`), as `(heap_base + scaled) + rest`. The address is the
+same, since the bound proves nothing wraps. But `heap_base + scaled` becomes
+a value of its own, shared by every access through the reference and
+hoistable out of a loop that indexes it.
+
+The test `memory64_range_elision` (`tests/misc`) pins its behavior.
+
+## cranelift-codegen 0.136.2
+
+This is crates.io `cranelift-codegen` 0.136.2, used through `[patch.crates-io]`.
+It carries one change, in the aarch64 backend (RFC-0179 T6). A new
+`AluRRRExtendShift` instruction is the ADD/SUB extended-register form with
+its imm3 shift (`add xd, xn, wm, uxtw #k`, k 1-4); upstream always emits a
+zero shift. `lower.isle` lowers `iadd(x, ishl(uextend(y: i32), k))` to it, and
+an address-mode rule in `inst.isle` uses it for a base plus an index scaled
+by other than the access size. A large-heap reference under a 32-bit load is
+one such index.
+
+The changes sit in `inst.isle`, `lower.isle`, `lower/isle.rs`, `inst/mod.rs`
+and `inst/emit.rs`, each marked `witchy (RFC-0179 T6)`.
+`tests/misc/aarch64_uxtw_shift.rs` pins the value and the fold.
+
+Neither patch is sent upstream. When Wasmtime is upgraded, re-vendor the
+matching versions and re-apply both.

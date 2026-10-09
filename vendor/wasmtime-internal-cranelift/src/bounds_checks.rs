@@ -343,7 +343,7 @@ fn bounds_check_field_access(
         // selector folds the offset into the access while `base + x` is
         // shared by every field access through `x`.
         let (index, offset) = peel_constant_addends(&builder.func, index, offset);
-        return Reachable(compute_addr(
+        return Reachable(compute_scaled_first_addr(
             &mut builder.cursor(),
             heap,
             env.pointer_type(),
@@ -778,6 +778,50 @@ fn index_upper_bound(func: &ir::Function, value: ir::Value, depth: u32) -> Optio
             Some(other.fold(mask, u64::min))
         }
         _ => None,
+    }
+}
+
+/// witchy (RFC-0179): `compute_addr` for an index whose sum the bound proves
+/// cannot wrap. When the index is `scaled + rest`, with `scaled` a shifted
+/// zero-extended value (a large-heap reference, `uextend(ref) << 3`), the
+/// address is formed as `(heap_base + scaled) + rest`: the same address, but
+/// `heap_base + scaled` is a value of its own, shared by every access through
+/// the reference and hoistable out of a loop that indexes it.
+fn compute_scaled_first_addr(
+    pos: &mut FuncCursor,
+    heap: &HeapData,
+    addr_ty: ir::Type,
+    index: ir::Value,
+    offset: u32,
+) -> ir::Value {
+    use ir::{InstructionData, Opcode};
+    let scaled_reference = |v: ir::Value| {
+        let ir::ValueDef::Result(inst, _) = pos.func.dfg.value_def(v) else { return false };
+        let InstructionData::Binary { opcode: Opcode::Ishl, args } = pos.func.dfg.insts[inst] else { return false };
+        matches!(pos.func.dfg.value_def(args[0]), ir::ValueDef::Result(inner, _)
+            if matches!(pos.func.dfg.insts[inner], InstructionData::Unary { opcode: Opcode::Uextend, .. }))
+    };
+    let split = match pos.func.dfg.value_def(index) {
+        ir::ValueDef::Result(inst, _) => match pos.func.dfg.insts[inst] {
+            InstructionData::Binary { opcode: Opcode::Iadd, args } if scaled_reference(args[0]) => Some((args[0], args[1])),
+            InstructionData::Binary { opcode: Opcode::Iadd, args } if scaled_reference(args[1]) => Some((args[1], args[0])),
+            _ => None,
+        },
+        _ => None,
+    };
+    let Some((scaled, rest)) = split else {
+        return compute_addr(pos, heap, addr_ty, index, offset);
+    };
+    debug_assert_eq!(pos.func.dfg.value_type(index), addr_ty);
+    let vmctx = vmctx(pos);
+    let heap_base = heap.base.emit(pos, vmctx);
+    let base = pos.ins().iadd(heap_base, scaled);
+    let base_and_index = pos.ins().iadd(base, rest);
+    if offset == 0 {
+        base_and_index
+    } else {
+        let offset_val = pos.ins().iconst(addr_ty, i64::from(offset));
+        pos.ins().iadd(base_and_index, offset_val)
     }
 }
 
