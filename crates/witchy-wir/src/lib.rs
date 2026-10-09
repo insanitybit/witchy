@@ -22,6 +22,7 @@ pub use canonical_wasmir::{
     memory_op_counters::{COUNT_ALLOCS_EXPORT, COUNT_RELEASES_EXPORT, COUNT_RETAINS_EXPORT},
 };
 pub use canonical_wasmir::admit_canonical_with_observer;
+pub use witchy_canonical_source::capabilities::HeapMode;
 pub mod abi_catalog;
 
 // In-crate checks that need private internals. The lib is `test = false`

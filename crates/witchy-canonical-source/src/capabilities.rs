@@ -22,6 +22,7 @@ pub fn externref_cap_name(name: &str) -> Option<&'static str> {
 }
 pub use witchy_cap_model::CapabilityKind;
 pub use witchy_cap_model::CapabilityClass;
+pub use witchy_cap_model::HeapMode;
 pub use witchy_cap_model::authority::root_origin_permits_entry;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

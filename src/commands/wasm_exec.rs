@@ -363,7 +363,7 @@ pub(crate) fn run_trusted_application(
     // Retain fresh admission and its instance-bound owner recipes through launch.
     let mut rt = Runtime::batch().map_err(|error| error.to_string())?;
     let mut vm = rt
-        .spawn_admitted(&artifact, caps, RUN_MEMORY_PAGES)
+        .spawn_admitted(&artifact, caps, run_memory_pages(&artifact))
         .map_err(|error| error.to_string())?;
     vm.run().map_err(|error| error.root_cause().to_string())?;
     let leaks = vm.canonical_heap_leaks().map_err(|error| error.to_string())?;
@@ -410,7 +410,7 @@ fn run_admitted_prepared(
     crate::commands::confinement::arm(&caps, confinement)?;
     let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
     let mut vm = rt
-        .spawn_admitted(artifact, caps, RUN_MEMORY_PAGES)
+        .spawn_admitted(artifact, caps, run_memory_pages(artifact))
         .map_err(|e| e.to_string())?;
     vm.run().map_err(|e| e.root_cause().to_string())?;
     Ok(split_exit_code(vm.output(), artifact.wasm()))
@@ -434,6 +434,16 @@ fn split_exit_code(mut lines: Vec<String>, wasm: &[u8]) -> (Vec<String>, Option<
 /// still bounding a runaway. (The tiny per-VM caps used by the scheduler are
 /// a separate, deliberate resource-limit demonstration.)
 pub(crate) const RUN_MEMORY_PAGES: usize = 16384;
+
+/// The run's page limit for an admitted program: `RUN_MEMORY_PAGES`, unless
+/// its `main` declared `@large_heap` (RFC-0179), which asks for the whole
+/// 32 GiB its encoding addresses.
+pub(crate) fn run_memory_pages(artifact: &witchy_wir::AdmittedCanonicalArtifact) -> usize {
+    match artifact.heap_mode() {
+        witchy_wir::HeapMode::Standard => RUN_MEMORY_PAGES,
+        mode @ witchy_wir::HeapMode::Large => mode.max_pages() as usize,
+    }
+}
 
 /// Run an admitted canonical artifact (RFC-0165) under the dev grants on a
 /// shared per-thread engine, entering the validated launch entry recorded at
@@ -466,7 +476,7 @@ pub(crate) fn run_admitted_artifact(
                     net_listen: true,
                     ..Default::default()
                 },
-                RUN_MEMORY_PAGES,
+                run_memory_pages(artifact),
             )
             .map_err(|e| e.to_string())?;
         vm.run().map_err(|e| e.root_cause().to_string())?;
@@ -497,7 +507,7 @@ pub(crate) fn run_admitted_test_artifact(artifact: &witchy_wir::AdmittedCanonica
                 quiet: true,
                 ..Default::default()
             },
-            RUN_MEMORY_PAGES,
+            run_memory_pages(artifact),
         )
         .map_err(|e| e.to_string())?;
     vm.run().map_err(|e| e.root_cause().to_string())?;

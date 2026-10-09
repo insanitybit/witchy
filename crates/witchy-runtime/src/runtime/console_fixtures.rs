@@ -52,7 +52,8 @@ impl Runtime {
         }
         let mut host = witchy_test_host::FixtureHost::new(plan)
             .map_err(|error| Error::msg(format!("invalid fixture plan: {error}")))?;
-        let module = WorkerModule::from_admitted(&self.engine, artifact)?;
+        let engine = self.engine_for(artifact.heap_mode())?;
+        let module = WorkerModule::from_admitted(&engine, artifact)?;
         let mut caps = Capabilities::none();
         for _ in entry.argument_positions() {
             caps.args = match host.invoke(witchy_test_host::HostRequest::Argv, None)
@@ -63,15 +64,16 @@ impl Runtime {
             };
         }
         let limits = StoreLimitsBuilder::new().memory_size(memory_pages_max * 64 * 1024).build();
-        let mut state = vmstate_from_caps(self.next_id, &caps, limits, None, &self.engine,
+        let mut state = vmstate_from_caps(self.next_id, &caps, limits, None, &engine,
             module.module(), self.preempt, self.compiler_services.clone())?;
         state.module = module.clone();
+        state.limits.set_launch(artifact.heap_mode(), memory_pages_max * 64 * 1024);
         state.fixture_host = Some(host);
         state.fixture_console = Some(Arc::new(host::canonical_fixture::Session));
-        let mut store = Store::new(&self.engine, state);
+        let mut store = Store::new(&engine, state);
         store.limiter(|state| &mut state.limits);
         if self.preempt { store.set_epoch_deadline(1); }
-        let mut linker = Linker::new(&self.engine);
+        let mut linker = Linker::new(&engine);
         link_capability_imports(&mut linker, &caps)?;
         host::closure_owner::register(&mut linker, artifact)?;
         let instance = linker.instantiate(&mut store, module.module())?;

@@ -26,6 +26,7 @@ mod compiler;
 pub mod comptime;
 mod host;
 mod launch_arguments;
+mod heap_limit;
 #[cfg(feature = "test-fixtures")]
 mod console_fixtures;
 
@@ -815,6 +816,35 @@ fn enable_bounded_memory64(config: &mut Config) {
     config.memory_may_move(false);
 }
 
+/// RFC-0179: a `@large_heap` program forms addresses up to 36 GiB (a 32 GiB
+/// heap plus one object's 32-bit offset), so its engine reserves that much
+/// and the range-based elision still drops every bounds check. The default
+/// reservation covers a standard program's 4 GiB.
+const LARGE_HEAP_RESERVATION: u64 = 36 << 30;
+
+/// The engine for `@large_heap` programs: the runtime's `Config` with the
+/// larger reservation, built on first use. A module compiled for one engine
+/// runs only in that engine, so admitted large programs compile here.
+struct LargeHeapEngine {
+    config: Config,
+    engine: Option<Engine>,
+}
+
+impl LargeHeapEngine {
+    fn from_config(config: &Config) -> Self {
+        let mut config = config.clone();
+        config.memory_reservation(LARGE_HEAP_RESERVATION);
+        Self { config, engine: None }
+    }
+
+    fn engine(&mut self) -> Result<&Engine> {
+        if self.engine.is_none() {
+            self.engine = Some(Engine::new(&self.config)?);
+        }
+        Ok(self.engine.as_ref().expect("built above"))
+    }
+}
+
 fn build_module(engine: &Engine, opt_wasm: &[u8], cacheable: bool) -> Result<Module> {
     let required = binaryen_required();
     build_module_with_binaryen(engine, opt_wasm, cacheable, required, || {
@@ -1300,7 +1330,7 @@ pub struct VmState {
     /// so `runtime/compiler.rs` depends on the interface, not the
     /// implementation.
     compiler_services: Arc<dyn compiler::CompilerServices>,
-    pub(crate) limits: StoreLimits,
+    pub(crate) limits: heap_limit::HeapLimiter,
     /// Everything the VM has printed (via the `print`/`print_int`
     /// capabilities), so the host can observe a compiled program's output.
     pub(crate) output: Arc<Mutex<Vec<String>>>,
@@ -1709,10 +1739,18 @@ impl Vm {
     /// operation. Guest-routed aborts already carry their complete diagnostic;
     /// capability host failures arrive as a bare core and are completed here.
     fn contextualize_run_error(&mut self, error: Error) -> Error {
-        let core = error.root_cause().to_string();
+        let out_of_memory = self.store.data().limits.out_of_memory(&error);
+        let core = match &out_of_memory {
+            Some(message) => message.clone(),
+            None => error.root_cause().to_string(),
+        };
         if core.starts_with("runtime error: ") {
             return error;
         }
+        let error = match out_of_memory {
+            Some(message) => Error::msg(message),
+            None => error,
+        };
         let site = self
             .instance
             .get_global(&mut self.store, "__witchy_diagnostic_site")
@@ -2104,6 +2142,7 @@ impl Vm {
 /// out VM ids.
 pub struct Runtime {
     engine: Engine,
+    large_heap: LargeHeapEngine,
     next_id: VmId,
     preempt: bool,
     /// Whether the ordinary optimized-Wasm and Wasmtime compilation caches are
@@ -2231,6 +2270,7 @@ impl Runtime {
                 Engine::new(&config)?
             }
         };
+        rt.large_heap = LargeHeapEngine::from_config(&config);
         Ok(rt)
     }
 
@@ -2352,11 +2392,20 @@ impl Runtime {
         };
         Ok(Self {
             engine,
+            large_heap: LargeHeapEngine::from_config(&config),
             next_id: 1,
             preempt,
             executable_cache,
             compiler_services: Arc::new(compiler::RegistryCompilerServices),
         })
+    }
+
+    /// The engine that runs a program of `mode`.
+    fn engine_for(&mut self, mode: witchy_wir::HeapMode) -> Result<Engine> {
+        match mode {
+            witchy_wir::HeapMode::Standard => Ok(self.engine.clone()),
+            witchy_wir::HeapMode::Large => self.large_heap.engine().cloned(),
+        }
     }
 
     /// Spawn a VM from untrusted external WAT/wasm source, granting it exactly `caps` and
@@ -2412,7 +2461,7 @@ impl Runtime {
         if artifact.compiler_session().is_some() {
             bail!("compiler recipe requires the dedicated comptime launcher");
         }
-        let module = WorkerModule::from_admitted(&self.engine, artifact)?;
+        let module = WorkerModule::from_admitted(&self.engine_for(artifact.heap_mode())?, artifact)?;
         self.instantiate_module(module, caps, memory_pages_max, artifact.entry().cloned(), &[])
     }
 
@@ -2426,7 +2475,7 @@ impl Runtime {
         memory_pages_max: usize,
         libraries: &[AuthenticatedExternalLibrary],
     ) -> Result<Vm> {
-        let module = WorkerModule::from_admitted(&self.engine, artifact)?;
+        let module = WorkerModule::from_admitted(&self.engine_for(artifact.heap_mode())?, artifact)?;
         self.instantiate_module(module, caps, memory_pages_max, artifact.entry().cloned(), libraries)
     }
 
@@ -2451,6 +2500,9 @@ impl Runtime {
             bail!("compiler recipe and dedicated session launch must match");
         }
         let id = self.next_id;
+        // The module's engine, which differs from `self.engine` for a
+        // `@large_heap` program; its store and linker must match it.
+        let engine = module.module().engine().clone();
 
         let limits = StoreLimitsBuilder::new()
             .memory_size(memory_pages_max * 64 * 1024)
@@ -2460,19 +2512,22 @@ impl Runtime {
             &caps,
             limits,
             None,
-            &self.engine,
+            &engine,
             module.module(),
             self.preempt,
             self.compiler_services.clone(),
         )?;
         state.module = module.clone();
+        if let WorkerModule::Admitted(program) = &module {
+            state.limits.set_launch(program.artifact.heap_mode(), memory_pages_max * 64 * 1024);
+        }
 
         let compiler_fuel = session.map(|(session, fuel)| {
             state.compiler_syntax = Some(session);
             fuel
         });
 
-        let mut store = Store::new(&self.engine, state);
+        let mut store = Store::new(&engine, state);
         store.limiter(|s| &mut s.limits);
         if let Some(fuel) = compiler_fuel { store.set_fuel(fuel)?; }
         // Deadline of 1 epoch; we never advance the engine epoch during a
@@ -2482,7 +2537,7 @@ impl Runtime {
             store.set_epoch_deadline(1);
         }
 
-        let mut linker: Linker<VmState> = Linker::new(&self.engine);
+        let mut linker: Linker<VmState> = Linker::new(&engine);
         link_capability_imports(&mut linker, &caps)?;
         if compiler_fuel.is_some() { host::compiler_syntax::register(&mut linker)?; }
         if let WorkerModule::Admitted(program) = &module {
@@ -2490,7 +2545,7 @@ impl Runtime {
             link_authenticated_external_imports(
                 &mut linker,
                 &mut store,
-                &self.engine,
+                &engine,
                 &program.artifact,
                 external_libraries,
             )?;
@@ -2621,10 +2676,12 @@ impl Runtime {
             bail!("budgeted execution requires a preemptible Witchy runtime");
         }
         let engine = self.engine.clone();
+        let large_heap = self.large_heap.engine.clone();
         let (cancel, cancelled) = std::sync::mpsc::sync_channel(0);
         let watchdog = std::thread::spawn(move || {
             if cancelled.recv_timeout(budget).is_err() {
                 engine.increment_epoch();
+                if let Some(engine) = large_heap { engine.increment_epoch(); }
             }
         });
         let result = execute();
@@ -2957,7 +3014,7 @@ fn vmstate_from_caps(
         id,
         caps: caps.clone(),
         compiler_services,
-        limits,
+        limits: limits.into(),
         output: Arc::new(Mutex::new(Vec::new())),
         captured_output_bytes: 0,
         console_input: caps.console_input.clone().map(Into::into),

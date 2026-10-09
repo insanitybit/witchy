@@ -1135,7 +1135,7 @@ pub(super) fn expected_metadata_prefix(
         });
     }
     let mut memory = MemorySection::new();
-    memory.memory(MemoryType { minimum: initial_memory_pages(target.heap_start), maximum: Some(MAX_MEMORY_PAGES), memory64: true, shared: false, page_size_log2: None });
+    memory.memory(MemoryType { minimum: initial_memory_pages(target.heap_start), maximum: Some(max_memory_pages(source.launch_contract_payload())), memory64: true, shared: false, page_size_log2: None });
     let mut globals = GlobalSection::new();
     globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(target.heap_start as i32));
     globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(0));

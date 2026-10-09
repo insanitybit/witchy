@@ -555,9 +555,9 @@ impl Parser {
         let mut attributes = Vec::new();
         while self.eat(&Tok::At) {
             let attribute = self.ident()?;
-            if !matches!(attribute.as_str(), "dynamic" | "browser" | "server" | "static") {
+            if !matches!(attribute.as_str(), "dynamic" | "browser" | "server" | "static" | "large_heap") {
                 return Err(self.error(format!(
-                    "unknown declaration attribute `@{attribute}` — supported attributes: @dynamic, @browser, @server, @static"
+                    "unknown declaration attribute `@{attribute}` — supported attributes: @dynamic, @browser, @server, @static, @large_heap"
                 )));
             }
             if attributes.contains(&attribute) {

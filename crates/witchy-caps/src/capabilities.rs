@@ -19,6 +19,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use witchy_cap_model::{CapabilityClass, NET_TRANSPORT_RIGHTS, NET_VERB_RIGHTS};
+pub use witchy_cap_model::HeapMode;
 // The capability catalog itself, re-exported so consumers reached through
 // `witchy-caps` can consult the authoritative rights vocabulary without adding a
 // direct `witchy-cap-model` dependency.
@@ -34,15 +35,16 @@ pub type Rights = BTreeSet<&'static str>;
 /// Keep this wire format here so checked-source construction and legacy artifact
 /// packaging cannot silently encode different capability contracts.
 pub fn launch_contract_payload(module: &Module) -> Vec<u8> {
-    const VERSION: u8 = 1;
     let caps = run_grant(module);
-    let mut payload = Vec::with_capacity(2 + caps.len() * 2);
-    payload.push(VERSION);
+    let heap = heap_mode(module);
+    let mut payload = Vec::with_capacity(3 + caps.len() * 2);
+    payload.push(heap.launch_version());
     payload.push(u8::try_from(caps.len()).expect("host capability count fits in one byte"));
     for (name, rights) in caps {
         payload.push(launch_cap_tag(name).expect("the capability analyzer emits known host capabilities"));
         payload.push(launch_rights_mask(name, &rights));
     }
+    payload.extend(heap.launch_trailer());
     payload
 }
 
@@ -806,6 +808,9 @@ pub struct Footprint {
     /// entrypoint demands (empty if it ships no build step). A separate axis from
     /// the runtime `total` — they are granted and gated independently.
     pub build: CapSet,
+    /// RFC-0179: the heap mode `main` declares. Not authority, but a resource
+    /// a launcher grants (`@large_heap` asks for up to 32 GiB).
+    pub heap: HeapMode,
 }
 
 /// What changed between two versions of a module's footprint. `added` is a
@@ -1077,6 +1082,7 @@ pub fn analyze(module: &Module) -> Footprint {
         brands,
         user_caps,
         build,
+        heap: heap_mode(module),
     }
 }
 
@@ -1098,6 +1104,21 @@ pub fn run_grant(module: &Module) -> CapSet {
         .into_iter()
         .find(|e| e.name == "main")
         .map(|e| e.capabilities)
+        .unwrap_or_default()
+}
+
+/// RFC-0179: the heap mode the entry `main`'s attributes declare. Standard when
+/// there is no `main`.
+pub fn heap_mode(module: &Module) -> HeapMode {
+    module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Function(function) if function.name == "main" => {
+                Some(HeapMode::from_main_attributes(function.attributes.iter().map(String::as_str)))
+            }
+            _ => None,
+        })
         .unwrap_or_default()
 }
 

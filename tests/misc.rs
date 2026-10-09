@@ -303,6 +303,8 @@ mod async_receive_state_frames;
 mod async_profile_map;
 #[path = "misc/bytes_to_string_decode.rs"]
 mod bytes_to_string_decode;
+#[path = "misc/large_heap.rs"]
+mod large_heap;
 #[path = "misc/std_let_params.rs"]
 mod std_let_params;
 #[path = "misc/let_callable_adapter.rs"]

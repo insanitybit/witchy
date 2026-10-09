@@ -4,7 +4,7 @@ use witchy_syntax::ast;
 use witchy_caps::capabilities;
 use witchy_lower::codegen;
 use witchy_runtime::runtime::{self, Runtime};
-use crate::{commands, RUN_MEMORY_PAGES};
+use crate::{commands, run_memory_pages};
 use crate::source::PrecompiledCheckedModule;
 
 /// Run an already-linked module on the compiled (WASM) backend with dev grants
@@ -321,10 +321,10 @@ fn run_compiled(
     let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
     let mut vm = match &wasm {
         CompiledWasm::Admitted(artifact) => {
-            rt.spawn_admitted(artifact, caps, RUN_MEMORY_PAGES)
+            rt.spawn_admitted(artifact, caps, run_memory_pages(artifact))
         }
         CompiledWasm::AdmittedWithExternalLibraries(artifact, libraries) => {
-            rt.spawn_admitted_with_external_libraries(artifact, caps, RUN_MEMORY_PAGES, libraries)
+            rt.spawn_admitted_with_external_libraries(artifact, caps, run_memory_pages(artifact), libraries)
         }
     }
     .map_err(|e| e.to_string())?;

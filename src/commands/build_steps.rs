@@ -157,7 +157,7 @@ let caps = runtime::Capabilities {
 };
 super::confinement::arm(&caps, confinement)?;
 let mut runtime = runtime::Runtime::batch().map_err(|error| error.to_string())?;
-let mut vm = runtime.spawn_admitted(&artifact, caps, crate::RUN_MEMORY_PAGES)
+let mut vm = runtime.spawn_admitted(&artifact, caps, crate::run_memory_pages(&artifact))
     .map_err(|error| error.to_string())?;
 vm.run().map_err(|error| error.root_cause().to_string())?;
 let leaks = vm.canonical_heap_leaks().map_err(|error| error.to_string())?;

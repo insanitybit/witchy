@@ -441,6 +441,21 @@ pub(super) fn check_target_availability(module: &Module) -> Result<(), TypeError
     Ok(())
 }
 
+/// RFC-0179: `@large_heap` is a property of the program, declared once on its
+/// entry `main`. After linking only the entry module's `main` keeps that name.
+pub(super) fn check_large_heap_placement(module: &Module) -> Result<(), TypeError> {
+    for item in &module.items {
+        let Item::Function(function) = item else { continue };
+        if function.name != "main" && function.attributes.iter().any(|attribute| attribute == "large_heap") {
+            return terr(format!(
+                "`@large_heap` on `{}`: the attribute belongs on the program's entry `main` only",
+                function.name
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// RFC-0038: a `grantable capability` may be granted to a root entrypoint, so it
 /// must be **bare** — carrying zero transitive built-in host authority. Otherwise
 /// granting it would be an invisible `Net`/`Dir`/`Secret` grant (and a later

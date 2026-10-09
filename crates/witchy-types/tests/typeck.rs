@@ -2110,6 +2110,13 @@ fn main() -> Int:
     }
 
     #[test]
+    fn large_heap_is_refused_on_a_function_other_than_main() {
+        let error = check_str("@large_heap\nfn helper() -> Int:\n    1\n")
+            .expect_err("@large_heap belongs on the entry main");
+        assert!(error.contains("@large_heap") && error.contains("helper") && error.contains("`main`"), "{error}");
+    }
+
+    #[test]
     fn target_availability_rejects_cross_target_calls_and_function_values() {
         check_str(
             "@browser\nfn browser_api() -> Int:\n    1\n\n\

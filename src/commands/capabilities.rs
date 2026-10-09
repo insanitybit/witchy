@@ -43,6 +43,10 @@ pub(crate) fn report_capabilities(path: &str) -> Result<(), String> {
         let names: Vec<&str> = fp.user_caps.iter().map(String::as_str).collect();
         println!("  {:<width$}  {}", "user caps", names.join(", "));
     }
+    // RFC-0179: a `@large_heap` program asks its launcher for up to 32 GiB.
+    if fp.heap == capability_model::HeapMode::Large {
+        println!("  {:<width$}  large ({} GiB)", "heap", capability_model::HeapMode::Large.max_bytes() >> 30);
+    }
     // The build axis (only when the rune ships a `build` step). Runtime authority
     // is enforced by the type system; the build footprint is the supply-chain
     // signal — what a rune's build step is allowed to do, outside the consumer's

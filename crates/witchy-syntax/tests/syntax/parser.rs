@@ -219,3 +219,12 @@ fn string_literal_record_field_names_are_rejected() {
     assert!(lit_err.to_string().contains("expected an identifier"), "{lit_err}");
 }
 
+#[test]
+fn large_heap_attribute_parses_and_formats_to_itself() {
+    let source = "@large_heap\nfn main(console: Console):\n    console.print(\"big\")\n";
+    let module = parse_module(source).expect("@large_heap is a declaration attribute");
+    let Item::Function(main) = &module.items[0] else { panic!("main is a function") };
+    assert_eq!(main.attributes, ["large_heap"]);
+    assert_eq!(witchy_syntax::format::reformat(source).as_deref(), Some(source));
+}
+

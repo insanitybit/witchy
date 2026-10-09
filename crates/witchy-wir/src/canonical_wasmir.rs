@@ -68,10 +68,14 @@ pub use owner_bridges::{AdmittedOwnerBridge, OwnerBridgeRecipe};
 
 const RC_PREFIX_BYTES: u32 = 8;
 const LINEAR_MEMORY_BYTES: u32 = 65_536;
-/// The 64-bit memory still holds at most 4 GiB: every address is a
-/// zero-extended 32-bit value (RFC-0179). Declared, so the limit does not
-/// depend on the engine's reservation.
-const MAX_MEMORY_PAGES: u64 = 65_536;
+/// The declared memory maximum, so the limit does not depend on the engine's
+/// reservation (RFC-0179). A standard program's addresses are zero-extended
+/// 32-bit values, so its memory holds at most 4 GiB; a `@large_heap`
+/// program's launch contract raises that to 32 GiB. The encoder reads the
+/// lowered target's contract and the planner reads the source's.
+fn max_memory_pages(launch_contract_payload: &[u8]) -> u64 {
+    witchy_canonical_source::capabilities::HeapMode::from_launch_contract(launch_contract_payload).max_pages()
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum SourceItemId {
@@ -462,6 +466,7 @@ impl AdmittedExternalWasmImport {
 #[derive(Clone, PartialEq, Eq)]
 pub struct AdmittedCanonicalArtifact {
     compiler_session: Option<witchy_syntax::compiler_session::CompilerSessionContract>,
+    heap_mode: witchy_canonical_source::capabilities::HeapMode,
     compiler_syntax_seeds: Option<std::sync::Arc<witchy_syntax::compiler_session::seeds::CompilerSyntaxSeeds>>,
     vm_services: Vec<AdmittedVmService>,
     par_maps: Vec<AdmittedParMap>,
@@ -632,6 +637,12 @@ impl CanonicalEntry {
 impl AdmittedCanonicalArtifact {
     pub fn compiler_session(&self) -> Option<&witchy_syntax::compiler_session::CompilerSessionContract> {
         self.compiler_session.as_ref()
+    }
+
+    /// RFC-0179: the heap mode the program's launch contract declares. The
+    /// runtime sizes the engine's reservation and the run's page limit by it.
+    pub fn heap_mode(&self) -> witchy_canonical_source::capabilities::HeapMode {
+        self.heap_mode
     }
 
     pub fn compiler_syntax_seeds(&self) -> Option<&std::sync::Arc<witchy_syntax::compiler_session::seeds::CompilerSyntaxSeeds>> {
@@ -860,7 +871,7 @@ fn encode_checked_unvalidated(checked: &CheckedWasmIr) -> Result<Vec<u8>, Encode
     let mut memory = MemorySection::new();
     memory.memory(MemoryType {
         minimum: initial_memory_pages(target.heap_start),
-        maximum: Some(MAX_MEMORY_PAGES),
+        maximum: Some(max_memory_pages(&target.launch_contract_payload)),
         memory64: true,
         shared: false,
         page_size_log2: None,
@@ -1049,6 +1060,7 @@ fn admit_parts(
     let wasm_digest = digest_bytes(b"witchy/canonical-wasmir/wasm/v1", &[&bytes]);
     Ok(AdmittedCanonicalArtifact {
         compiler_session: witchy_syntax::compiler_session::CompilerSessionContract::decode(_source.launch_contract_payload()),
+        heap_mode: witchy_canonical_source::capabilities::HeapMode::from_launch_contract(_source.launch_contract_payload()),
         compiler_syntax_seeds: None,
         vm_services: _source.vm_services().iter().map(|site| AdmittedVmService {
             id: site.id(), callback_export: format!("f{}", site.callback().get()),

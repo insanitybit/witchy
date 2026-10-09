@@ -12,6 +12,7 @@ use witchy_wir::layout::{
 
 const LAUNCH_SECTION: &str = "witchy.launch";
 const LAUNCH_VERSION: u8 = 1;
+const LARGE_HEAP_LAUNCH_VERSION: u8 = 2;
 const LAYOUT_SECTION: &str = "witchy.layouts";
 
 const CAP_TAGS: [(&str, u8); 11] = [
@@ -215,16 +216,22 @@ fn decode_contract(data: &[u8]) -> Result<capabilities::CapSet, String> {
     if data.len() < 2 {
         return Err(invalid_contract("truncated header"));
     }
-    if data[0] != LAUNCH_VERSION {
-        return Err(invalid_contract(&format!("unsupported version {}", data[0])));
-    }
+    // RFC-0179: version 2 is version 1 followed by the large-heap byte `1`.
+    let trailer = match data[0] {
+        LAUNCH_VERSION => 0,
+        LARGE_HEAP_LAUNCH_VERSION => 1,
+        version => return Err(invalid_contract(&format!("unsupported version {version}"))),
+    };
     let count = usize::from(data[1]);
-    if data.len() != 2 + count * 2 {
+    if data.len() != 2 + count * 2 + trailer {
         return Err(invalid_contract("entry count does not match the payload length"));
+    }
+    if trailer == 1 && data[data.len() - 1] != 1 {
+        return Err(invalid_contract("unknown heap mode"));
     }
 
     let mut caps = capabilities::CapSet::new();
-    for entry in data[2..].chunks_exact(2) {
+    for entry in data[2..data.len() - trailer].chunks_exact(2) {
         let cap = tag_cap(entry[0])
             .ok_or_else(|| invalid_contract(&format!("unknown capability tag {}", entry[0])))?;
         let tags = right_tags(cap);
@@ -291,6 +298,29 @@ mod tests {
         assert_eq!(decoded, capabilities::run_grant(&module));
     }
 
+    #[test]
+    fn standard_launch_contract_stays_at_version_one() {
+        let module = witchy_syntax::parser::parse_module("fn main(console: Console):\n    return\n").unwrap();
+        let payload = capabilities::launch_contract_payload(&module);
+        assert_eq!(payload[0], 1);
+        assert_eq!(payload.len(), 2 + 2 * usize::from(payload[1]));
+        assert_eq!(capabilities::HeapMode::from_launch_contract(&payload), capabilities::HeapMode::Standard);
+    }
+
+    #[test]
+    fn large_heap_launch_contract_round_trips_its_mode_and_capabilities() {
+        let standard = witchy_syntax::parser::parse_module("fn main(console: Console):\n    return\n").unwrap();
+        let module = witchy_syntax::parser::parse_module("@large_heap\nfn main(console: Console):\n    return\n").unwrap();
+        let payload = capabilities::launch_contract_payload(&module);
+        let mut expected = capabilities::launch_contract_payload(&standard);
+        expected[0] = 2;
+        expected.push(1);
+        assert_eq!(payload, expected);
+        assert_eq!(capabilities::HeapMode::from_launch_contract(&payload), capabilities::HeapMode::Large);
+        let wasm = embed_launch_contract(Module::new().finish(), &module);
+        assert_eq!(launch_contract(&wasm).unwrap().expect("launch section"), capabilities::run_grant(&module));
+    }
+
     /// (RFC-0121) The launch contract's rights tables must cover every capability
     /// that HAS rights. A missing table is silent: `right_tags` returns `&[]`, so
     /// `rights_mask` encodes 0 and the contract decodes as right-free — a narrowed
@@ -333,7 +363,7 @@ mod tests {
         let mut wasm = Module::new().finish();
         CustomSection {
             name: Cow::Borrowed(LAUNCH_SECTION),
-            data: Cow::Borrowed(&[LAUNCH_VERSION + 1, 0]),
+            data: Cow::Borrowed(&[4, 0]), // 3 is a compiler-session payload
         }
         .append_to(&mut wasm);
         let error = launch_contract(&wasm).expect_err("unknown metadata cannot be ignored");

@@ -14724,6 +14724,7 @@ fn run_check_seeded(
     // diving into bodies so a malformed entry point is reported up front.
     check_dynamic_method_declarations(module)?;
     check_target_availability(module)?;
+    check_large_heap_placement(module)?;
     check_main_signature(module)?;
     // RFC-0038: a `grantable` capability must be BARE (no transitive host authority),
     // checked module-wide (a grantable cap is invalid regardless of `main`).

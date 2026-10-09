@@ -15,8 +15,15 @@ use std::time::Instant;
 #[cfg(test)]
 use witchy_types::typeck;
 
-/// Wasm linear-memory pages for a stats run (mirrors the CLI's run budget).
-const STATS_MEMORY_PAGES: usize = 16384;
+/// Wasm linear-memory pages for a stats run (mirrors the CLI's run budget,
+/// including a `@large_heap` program's 32 GiB).
+fn stats_memory_pages(artifact: &witchy_wir::AdmittedCanonicalArtifact) -> usize {
+    match artifact.heap_mode() {
+        witchy_wir::HeapMode::Standard => 16384,
+        mode @ witchy_wir::HeapMode::Large => mode.max_pages() as usize,
+    }
+}
+
 
 /// Deterministic counters from one program run.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -226,7 +233,7 @@ pub fn run_prepared(prepared: &PreparedProgram) -> Result<TimedStats, String> {
     };
     let mut rt = Runtime::batch().map_err(|e| e.to_string())?;
     let mut vm = rt
-        .spawn_admitted(&prepared.artifact, caps, STATS_MEMORY_PAGES)
+        .spawn_admitted(&prepared.artifact, caps, stats_memory_pages(&prepared.artifact))
         .map_err(|e| e.to_string())?;
     let execution_started = Instant::now();
     vm.run().map_err(|e| e.root_cause().to_string())?;

@@ -787,6 +787,17 @@ fn doc_counts_comptime_emitted_apis() {
 }
 
 #[test]
+fn caps_reports_a_large_heap() {
+    // RFC-0179: `@large_heap` asks the launcher for up to 32 GiB; caps shows it.
+    let dir = workdir("caps-large-heap");
+    let src = write(&dir, "l.witchy", "@large_heap\nfn main(console: Console):\n    console.print(\"hi\")\n");
+    let out = run(&["caps", &src]);
+    assert!(out.status.success(), "caps should succeed: {}", String::from_utf8_lossy(&out.stderr));
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.lines().any(|line| line.trim() == "heap   large (32 GiB)"), "{stdout}");
+}
+
+#[test]
 fn caps_requires_a_typechecking_source() {
     // BUG-179: a footprint over code that doesn't type-check is meaningless.
     let dir = workdir("caps-typeck");

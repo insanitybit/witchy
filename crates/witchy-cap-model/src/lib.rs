@@ -8,6 +8,9 @@
 #![deny(unsafe_code)]
 
 pub mod authority;
+pub mod heap;
+
+pub use heap::HeapMode;
 
 /// The one audited gateway for this process's environment. `unsafe` is allowed
 /// ONLY here: environment mutation is unsound under edition 2024 and the module
