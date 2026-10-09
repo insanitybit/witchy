@@ -9,10 +9,13 @@ pub(super) struct Helpers {
     pub drops: BTreeMap<crate::layout::LayoutId, u32>,
     pub retain: u32,
     pub alloc: u32,
+    /// The module's reference encoding, which every function layout and
+    /// helper of the module shares.
+    pub refs: ref_encoding::RefEncoding,
 }
 
 impl Helpers {
-    pub fn new(source: &CanonicalModule<InitialValid>, first: u32) -> Result<std::sync::Arc<Self>, EncodeError> {
+    pub fn new(source: &CanonicalModule<InitialValid>, first: u32, refs: ref_encoding::RefEncoding) -> Result<std::sync::Arc<Self>, EncodeError> {
         let mut roots = BTreeSet::new();
         for function in source.functions() {
             for block in &function.blocks {
@@ -38,7 +41,7 @@ impl Helpers {
             .ok_or(EncodeError::UnsupportedLayout { function: FunctionId::new(u32::MAX), operation: "memory helper index" })?;
         let alloc = retain.checked_add(1)
             .ok_or(EncodeError::UnsupportedLayout { function: FunctionId::new(u32::MAX), operation: "memory helper index" })?;
-        Ok(std::sync::Arc::new(Self { address: first, drops, retain, alloc }))
+        Ok(std::sync::Arc::new(Self { address: first, drops, retain, alloc, refs }))
     }
 }
 
@@ -80,7 +83,7 @@ fn drop_locals(refs: ref_encoding::RefEncoding) -> LocalLayout<'static> {
         indices: BTreeMap::new(),
         extra_types: vec![ValType::I32; drop_worklist::SCRATCH - 1],
         scratch: (0..drop_worklist::SCRATCH as u32).collect(),
-        owner_context: Default::default(),
+        owner_context: Default::default(), wide: Vec::new(),
     }
 }
 
@@ -165,17 +168,17 @@ pub(super) fn plan_retain(refs: ref_encoding::RefEncoding) -> (Vec<(u32, String)
 
 // Allocation of `size` bytes (the parameter) returning the object address,
 // including memory growth. Allocation sites inline everything but growth.
-pub(super) fn emit_alloc() -> WasmFunctionEncoder {
+pub(super) fn emit_alloc(refs: ref_encoding::RefEncoding) -> WasmFunctionEncoder {
     let mut body = WasmFunctionEncoder::new([(3, ValType::I32)]);
-    emit_alloc_core(&mut body, [0, 1, 2, 3], None);
+    emit_alloc_core(&mut body, refs, [0, 1, 2, 3], None);
     body.instruction(&wasm_encoder::Instruction::LocalGet(2));
     body.instruction(&wasm_encoder::Instruction::End);
     body
 }
 
-pub(super) fn plan_alloc() -> (Vec<(u32, String)>, Vec<PlanToken>) {
+pub(super) fn plan_alloc(refs: ref_encoding::RefEncoding) -> (Vec<(u32, String)>, Vec<PlanToken>) {
     let mut plan = Vec::new();
-    push_alloc_core_plan(&mut plan, [0, 1, 2, 3], None);
+    push_alloc_core_plan(&mut plan, refs, [0, 1, 2, 3], None);
     plan.extend([PlanToken::LocalGet(2), PlanToken::End]);
     (vec![(3, "i32".into())], plan)
 }

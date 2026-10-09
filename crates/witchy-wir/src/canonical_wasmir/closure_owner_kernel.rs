@@ -161,7 +161,7 @@ pub mod self_checks {
         let count = drop_worklist::SCRATCH as u32;
         let local = LocalLayout { refs: ref_encoding::RefEncoding::Byte, memory_helpers: None, owner_scratch: None, owner_bridges: Vec::new(),
             indices: [(owner, 0), (env, 2), (index, 3)].into_iter().collect(),
-            extra_types: Vec::new(), scratch: (4..4 + count).collect(), owner_context: Default::default(),
+            extra_types: Vec::new(), scratch: (4..4 + count).collect(), owner_context: Default::default(), wide: Vec::new(),
         };
         let mut drop_owner = WasmFunctionEncoder::new([(1, ValType::Ref(RefType::ANYREF)), (count + 2, ValType::I32)]);
         emit_final_release(&mut drop_owner, &local, &function, &layouts, owner, 1, env,
@@ -179,7 +179,7 @@ pub mod self_checks {
         drop_owner.instruction(&wasm_encoder::Instruction::End);
         let original_local = LocalLayout { refs: ref_encoding::RefEncoding::Byte, memory_helpers: None, owner_scratch: None, owner_bridges: Vec::new(),
             indices: [(original, 0)].into_iter().collect(), extra_types: Vec::new(), scratch: (1..1 + count).collect(),
-            owner_context: Default::default(),
+            owner_context: Default::default(), wide: Vec::new(),
         };
         let mut drop_original = WasmFunctionEncoder::new([(count, ValType::I32)]);
         emit_release(&mut drop_original, &original_local, &function, original, &layouts).unwrap();

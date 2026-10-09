@@ -9,12 +9,16 @@ pub(super) fn initial_memory_pages(heap_start: u32) -> u64 {
 
 pub(super) fn static_data_plan(
     segments: &[crate::canonical_safewir::StaticDataSegment],
+    refs: ref_encoding::RefEncoding,
 ) -> Result<(Vec<WasmStaticData>, u32), LoweringError> {
     let mut ordered = segments.iter().collect::<Vec<_>>();
     ordered.sort_by_key(|segment| segment.id());
     let mut offset = STATIC_DATA_BASE;
     let mut plan = Vec::with_capacity(ordered.len());
     for segment in ordered {
+        // A static object's reference names its first byte, so under a scaled
+        // encoding the object starts on a unit boundary.
+        offset = refs.round_bytes(offset).ok_or(LoweringError::StaticDataAddressOverflow)?;
         let bytes = u32::try_from(segment.bytes().len()).map_err(|_| LoweringError::StaticDataAddressOverflow)?;
         let end = offset.checked_add(bytes).ok_or(LoweringError::StaticDataAddressOverflow)?;
         plan.push(WasmStaticData { id: segment.id(), offset, bytes: segment.bytes().to_vec() });

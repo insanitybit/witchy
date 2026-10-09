@@ -253,10 +253,17 @@ pub(super) fn validate_external_call_lowering(
     Ok(())
 }
 
+/// A host buffer's address is the byte address of its first element: an
+/// i32 under `Byte`, an i64 under `Scaled8`, whose heap passes 4 GiB.
 pub(super) fn host_import_wasm_signature(
     function: FunctionId,
     import: &ImportContract,
+    refs: ref_encoding::RefEncoding,
 ) -> Result<(Vec<ValType>, Vec<ValType>), LoweringError> {
+    let address = match refs {
+        ref_encoding::RefEncoding::Byte => ValType::I32,
+        ref_encoding::RefEncoding::Scaled8 => ValType::I64,
+    };
     let mut parameters = Vec::new();
     for role in &import.parameter_roles {
         match role {
@@ -264,10 +271,10 @@ pub(super) fn host_import_wasm_signature(
             HostParameterRole::Capability(_) => parameters.push(ValType::EXTERNREF),
             HostParameterRole::Buffer { value_type: ValueType::Ref(_), access: AccessMode::Read, extent: HostBufferExtent::Slice }
             | HostParameterRole::Buffer { value_type: ValueType::Ref(_), access: AccessMode::Write, extent: HostBufferExtent::Slice } => {
-                parameters.extend([ValType::I32, ValType::I32]);
+                parameters.extend([address, ValType::I32]);
             }
             HostParameterRole::Buffer { value_type: ValueType::Ref(_), access: AccessMode::Write, extent: HostBufferExtent::AtLeast(_) } => {
-                parameters.push(ValType::I32);
+                parameters.push(address);
             }
             _ => return Err(LoweringError::UnsupportedOperation { function, operation: "HostCall import signature" }),
         }
@@ -312,9 +319,10 @@ pub(super) fn import_wasm_signature(
     function: FunctionId,
     import: &ImportContract,
     signatures: &BTreeMap<crate::canonical_safewir::FunctionSignatureId, FunctionSignature>,
+    refs: ref_encoding::RefEncoding,
 ) -> Result<(Vec<ValType>, Vec<ValType>), LoweringError> {
     match &import.abi_identity {
-        ImportContractIdentity::AuthenticatedAbi(_) => host_import_wasm_signature(function, import),
+        ImportContractIdentity::AuthenticatedAbi(_) => host_import_wasm_signature(function, import, refs),
         ImportContractIdentity::AuthenticatedExternal(_) => {
             let signature = signatures.get(&import.signature)
                 .ok_or(LoweringError::UnsupportedOperation { function, operation: "ExternalCall missing signature" })?;
@@ -1222,7 +1230,9 @@ pub(super) fn lower_validated(module: &ValidatedSafeWir) -> Result<WasmIr, Lower
     let module = module.module();
     let (_, layouts) = crate::layout::LayoutBundle::decode_canonical(&module.layouts().canonical_bytes())
         .map_err(|_| LoweringError::InvalidLayoutBundle)?;
-    let (static_data, heap_start) = static_data_plan(module.static_data_segments())?;
+    let refs = ref_encoding::RefEncoding::for_heap(
+        witchy_canonical_source::capabilities::HeapMode::from_launch_contract(module.launch_contract_payload()));
+    let (static_data, heap_start) = static_data_plan(module.static_data_segments(), refs)?;
     let imports = module.imports().iter().map(|import| (import.id, import.clone())).collect::<BTreeMap<_, _>>();
     let signatures = module.signatures().iter().map(|signature| (signature.id, signature.clone())).collect::<BTreeMap<_, _>>();
     let has_function_table = module.functions().iter().flat_map(|function| function.blocks.iter()).any(|block| {
@@ -1260,6 +1270,7 @@ pub(super) fn lower_validated(module: &ValidatedSafeWir) -> Result<WasmIr, Lower
             functions: module.functions().iter().map(|function| function.id).collect(),
         }),
         heap_start,
+        refs,
         functions: module
             .functions()
             .iter()

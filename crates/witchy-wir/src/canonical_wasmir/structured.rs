@@ -1225,6 +1225,7 @@ pub(super) fn encode_function(
     let mut layout = local_layout(source_function, signature, layouts)?;
     layout.owner_bridges = owner_bridges.iter().collect();
     layout.memory_helpers = Some(memory_helpers.clone());
+    layout.adopt_refs(memory_helpers.refs, signature.parameters.len());
     let local_declarations: Vec<_> = layout.extra_types.iter().copied().map(|ty| (1, ty)).collect();
     let mut body = WasmFunctionEncoder::new(local_declarations);
     if target_function.entry != source_function.entry {

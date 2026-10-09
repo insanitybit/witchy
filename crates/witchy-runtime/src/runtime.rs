@@ -3233,8 +3233,27 @@ fn fill_slice(
     Ok(full)
 }
 
-fn slice(data: &[u8], ptr: i32, len: i32) -> Result<&[u8]> {
-    let start = ptr as usize;
+/// A guest buffer address as an admitted module passes it to the host: an
+/// i32 byte address under the byte reference encoding, an i64 one under the
+/// scaled encoding of a `@large_heap` program (RFC-0179 R4). Host functions
+/// that take a buffer are generic over it, and the linker registers the
+/// instantiation that matches the module's encoding.
+pub(crate) trait GuestAddress: wasmtime::WasmTy + Copy + Send + Sync + 'static {
+    /// The byte offset into linear memory. Every access is still bounded by
+    /// the memory it reads.
+    fn offset(self) -> usize;
+}
+
+impl GuestAddress for i32 {
+    fn offset(self) -> usize { self as u32 as usize }
+}
+
+impl GuestAddress for i64 {
+    fn offset(self) -> usize { usize::try_from(self as u64).unwrap_or(usize::MAX) }
+}
+
+fn slice<P: GuestAddress>(data: &[u8], ptr: P, len: i32) -> Result<&[u8]> {
+    let start = ptr.offset();
     let end = start
         .checked_add(len as usize)
         .ok_or_else(|| Error::msg("pointer + length overflows"))?;

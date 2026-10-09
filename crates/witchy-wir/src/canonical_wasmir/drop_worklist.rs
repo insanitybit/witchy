@@ -8,6 +8,7 @@
 use super::*;
 use crate::layout::LayoutId;
 use wasm_encoder::Instruction as I;
+use super::ref_encoding::RefEncoding;
 
 pub(super) const SCRATCH: usize = 12;
 const OBJECT: usize = 0;
@@ -88,14 +89,64 @@ fn code(body: &mut WasmFunctionEncoder, instructions: impl IntoIterator<Item = I
 fn load() -> I<'static> { I::I32Load(memarg(4)) }
 fn store() -> I<'static> { I::I32Store(memarg(4)) }
 
+/// A frame's size in reference units: 12 bytes under `Byte`, two 8-byte
+/// units under `Scaled8`, so every frame address is itself a reference.
+fn frame_units(refs: RefEncoding) -> i32 {
+    match refs {
+        RefEncoding::Byte => FRAME_BYTES,
+        RefEncoding::Scaled8 => 2,
+    }
+}
+
+/// The address `offset` bytes past the reference in `slot`.
+fn at(body: &mut WasmFunctionEncoder, refs: RefEncoding, slot: u32, offset: i32) {
+    body.instruction(&I::LocalGet(slot));
+    if offset == 0 {
+        refs.object(body);
+    } else {
+        refs.base(body);
+        body.instruction(&I::I32Const(offset));
+        refs.add(body);
+        refs.finish(body);
+    }
+}
+
+/// As `at`, adding the offset even when it is zero.
+fn at_const(body: &mut WasmFunctionEncoder, refs: RefEncoding, slot: u32, offset: i32) {
+    body.instruction(&I::LocalGet(slot));
+    refs.base(body);
+    body.instruction(&I::I32Const(offset));
+    refs.add(body);
+    refs.finish(body);
+}
+
+/// The address of the child slot in ADDRESS: `Byte` keeps the slot's
+/// absolute address, `Scaled8` its offset inside the parent that `parent`
+/// pushes.
+fn child_slot(body: &mut WasmFunctionEncoder, refs: RefEncoding, s: &[u32], parent: impl FnOnce(&mut WasmFunctionEncoder)) {
+    match refs {
+        RefEncoding::Byte => code(body, [I::LocalGet(s[ADDRESS]), I::I64ExtendI32U]),
+        RefEncoding::Scaled8 => {
+            parent(body);
+            refs.base(body);
+            body.instruction(&I::LocalGet(s[ADDRESS]));
+            refs.add(body);
+            refs.finish(body);
+        }
+    }
+}
+
 /// Reserve one frame before transferring ownership into it. Every instruction
 /// that can trap runs here, while the parent still owns its child edge.
-fn reserve(body: &mut WasmFunctionEncoder, s: &[u32]) {
+fn reserve(body: &mut WasmFunctionEncoder, refs: RefEncoding, s: &[u32]) {
+    let frame = frame_units(refs);
     code(body, [
-        I::LocalGet(s[TOP]), I::I32Const((u32::MAX - FRAME_BYTES as u32) as i32), I::I32GtU,
+        I::LocalGet(s[TOP]), I::I32Const((u32::MAX - frame as u32) as i32), I::I32GtU,
         I::If(BlockType::Empty), I::Unreachable, I::End,
-        I::LocalGet(s[TOP]), I::I32Const(FRAME_BYTES), I::I32Add, I::LocalSet(s[END]),
-        I::LocalGet(s[END]), I::I64ExtendI32U, I::I64Const(65535), I::I64Add,
+        I::LocalGet(s[TOP]), I::I32Const(frame), I::I32Add, I::LocalSet(s[END]),
+    ]);
+    at(body, refs, s[END], 0);
+    code(body, [I::I64Const(65535), I::I64Add,
         I::I64Const(65536), I::I64DivU, I::I32WrapI64, I::LocalSet(s[PAGES]),
         I::LocalGet(s[PAGES]), I::I64ExtendI32U, I::MemorySize(0), I::I64GtU, I::If(BlockType::Empty),
         I::LocalGet(s[PAGES]), I::I64ExtendI32U, I::MemorySize(0), I::I64Sub, I::MemoryGrow(0),
@@ -105,34 +156,50 @@ fn reserve(body: &mut WasmFunctionEncoder, s: &[u32]) {
 
 /// Publish OBJECT/TAG/INDEX into space already reserved by `reserve`. This is
 /// deliberately non-trapping so ownership transfer is failure-atomic.
-fn commit_push(body: &mut WasmFunctionEncoder, s: &[u32]) {
-    code(body, [
-        I::LocalGet(s[TOP]), I::I64ExtendI32U, I::LocalGet(s[OBJECT]), store(),
-        I::LocalGet(s[TOP]), I::I32Const(4), I::I32Add, I::I64ExtendI32U, I::LocalGet(s[TAG]), store(),
-        I::LocalGet(s[TOP]), I::I32Const(8), I::I32Add, I::I64ExtendI32U, I::LocalGet(s[INDEX]), store(),
+fn commit_push(body: &mut WasmFunctionEncoder, refs: RefEncoding, s: &[u32]) {
+    at(body, refs, s[TOP], 0);
+    code(body, [I::LocalGet(s[OBJECT]), store()]);
+    at(body, refs, s[TOP], 4);
+    code(body, [I::LocalGet(s[TAG]), store()]);
+    at(body, refs, s[TOP], 8);
+    code(body, [I::LocalGet(s[INDEX]), store(),
         I::LocalGet(s[END]), I::LocalSet(s[TOP]),
         I::LocalGet(s[TOP]), I::LocalGet(s[HIGH]), I::I32GtU, I::If(BlockType::Empty),
         I::LocalGet(s[TOP]), I::LocalTee(s[HIGH]), I::GlobalSet(0), I::End,
     ]);
 }
 
-fn push(body: &mut WasmFunctionEncoder, s: &[u32]) {
-    reserve(body, s);
-    commit_push(body, s);
+fn push(body: &mut WasmFunctionEncoder, refs: RefEncoding, s: &[u32]) {
+    reserve(body, refs, s);
+    commit_push(body, refs, s);
 }
 
-fn reclaim(body: &mut WasmFunctionEncoder, s: &[u32]) {
-    code(body, [I::LocalGet(s[OBJECT]), I::I64ExtendI32U, I::GlobalGet(1), store(),
-        I::LocalGet(s[OBJECT]), I::GlobalSet(1)]);
+fn reclaim(body: &mut WasmFunctionEncoder, refs: RefEncoding, s: &[u32]) {
+    at(body, refs, s[OBJECT], 0);
+    code(body, [I::GlobalGet(1), store(), I::LocalGet(s[OBJECT]), I::GlobalSet(1)]);
 }
 
 fn pop(body: &mut WasmFunctionEncoder, s: &[u32]) {
     code(body, [I::LocalGet(s[FRAME]), I::LocalSet(s[TOP])]);
 }
 
-fn decrement(body: &mut WasmFunctionEncoder, s: &[u32]) {
-    code(body, [I::LocalGet(s[OBJECT]), I::I32Const(8), I::I32Sub, I::I64ExtendI32U,
-        I::LocalGet(s[COUNT]), I::I32Const(1), I::I32Sub, store()]);
+fn header(body: &mut WasmFunctionEncoder, refs: RefEncoding, s: &[u32]) {
+    body.instruction(&I::LocalGet(s[OBJECT]));
+    refs.base(body);
+    body.instruction(&I::I32Const(8));
+    refs.sub(body);
+    refs.finish(body);
+}
+
+fn decrement(body: &mut WasmFunctionEncoder, refs: RefEncoding, s: &[u32]) {
+    header(body, refs, s);
+    code(body, [I::LocalGet(s[COUNT]), I::I32Const(1), I::I32Sub, store()]);
+}
+
+/// The frame's resume index: the parent continues at its next child.
+fn advance(body: &mut WasmFunctionEncoder, refs: RefEncoding, s: &[u32]) {
+    at(body, refs, s[FRAME], 8);
+    code(body, [I::LocalGet(s[INDEX]), I::I32Const(1), I::I32Add, store()]);
 }
 
 pub(super) fn emit(body: &mut WasmFunctionEncoder, local: &LocalLayout, function: FunctionId,
@@ -141,52 +208,69 @@ pub(super) fn emit(body: &mut WasmFunctionEncoder, local: &LocalLayout, function
     let table = rows(function, layouts, root)?;
     let ids: BTreeMap<_, _> = table.keys().enumerate().map(|(index, id)| (*id, index as i32)).collect();
     let s = &local.scratch;
+    let refs = local.refs;
     if s.len() < SCRATCH { return Err(EncodeError::UnsupportedLayout { function, operation: "DropRef scratch" }); }
     memory_op_counters::emit_bump(body, memory_op_counters::Counter::Releases);
     // Static and shared roots need no temporary storage, including at the
     // memory limit. Only a last-reference graph needs the traversal stack.
-    code(body, [I::LocalGet(s[OBJECT]), I::GlobalGet(2), I::I32LtU, I::If(BlockType::Empty), I::Else,
-        I::LocalGet(s[OBJECT]), I::I32Const(8), I::I32Sub, I::I64ExtendI32U, load(), I::LocalSet(s[COUNT]),
+    code(body, [I::LocalGet(s[OBJECT]), I::GlobalGet(2), I::I32LtU, I::If(BlockType::Empty), I::Else]);
+    header(body, refs, s);
+    code(body, [load(), I::LocalSet(s[COUNT]),
         I::LocalGet(s[COUNT]), I::I32Eqz, I::If(BlockType::Empty), I::Unreachable, I::End,
         I::LocalGet(s[COUNT]), I::I32Const(1), I::I32Eq, I::If(BlockType::Empty)]);
     if matches!(&table[&root], Children::Fields(fields) if fields.is_empty()) {
-        reclaim(body, s);
+        reclaim(body, refs, s);
     } else {
         code(body, [I::GlobalGet(0), I::LocalTee(s[BASE]), I::LocalTee(s[TOP]), I::LocalSet(s[HIGH]),
             I::I32Const(ids[&root]), I::LocalSet(s[TAG]), I::I32Const(0), I::LocalSet(s[INDEX])]);
-        push(body, s);
+        push(body, refs, s);
         code(body, [I::Block(BlockType::Empty), I::Loop(BlockType::Empty),
             I::LocalGet(s[TOP]), I::LocalGet(s[BASE]), I::I32Eq, I::If(BlockType::Empty), I::Br(2), I::End,
-            I::LocalGet(s[TOP]), I::I32Const(FRAME_BYTES), I::I32Sub, I::LocalTee(s[FRAME]), I::I64ExtendI32U, load(), I::LocalSet(s[OBJECT]),
-            I::LocalGet(s[FRAME]), I::I32Const(4), I::I32Add, I::I64ExtendI32U, load(), I::LocalSet(s[TAG]),
-            I::LocalGet(s[FRAME]), I::I32Const(8), I::I32Add, I::I64ExtendI32U, load(), I::LocalSet(s[INDEX]),
+            I::LocalGet(s[TOP]), I::I32Const(frame_units(refs)), I::I32Sub, I::LocalTee(s[FRAME])]);
+        refs.object(body);
+        code(body, [load(), I::LocalSet(s[OBJECT])]);
+        at(body, refs, s[FRAME], 4);
+        code(body, [load(), I::LocalSet(s[TAG])]);
+        at(body, refs, s[FRAME], 8);
+        code(body, [load(), I::LocalSet(s[INDEX]),
             I::LocalGet(s[INDEX]), I::I32Const(-1), I::I32Eq, I::If(BlockType::Empty),
             I::LocalGet(s[OBJECT]), I::GlobalGet(2), I::I32LtU, I::If(BlockType::Empty)]);
         pop(body, s);
-        code(body, [I::Br(2), I::End,
-            I::LocalGet(s[OBJECT]), I::I32Const(8), I::I32Sub, I::I64ExtendI32U, load(), I::LocalSet(s[COUNT]),
+        code(body, [I::Br(2), I::End]);
+        header(body, refs, s);
+        code(body, [load(), I::LocalSet(s[COUNT]),
             I::LocalGet(s[COUNT]), I::I32Eqz, I::If(BlockType::Empty), I::Unreachable, I::End,
             I::LocalGet(s[COUNT]), I::I32Const(1), I::I32GtU, I::If(BlockType::Empty)]);
-        decrement(body, s);
+        decrement(body, refs, s);
         pop(body, s);
-        code(body, [I::Br(2), I::End,
-            I::LocalGet(s[FRAME]), I::I32Const(8), I::I32Add, I::I64ExtendI32U, I::I32Const(0), store(),
+        code(body, [I::Br(2), I::End]);
+        at(body, refs, s[FRAME], 8);
+        code(body, [I::I32Const(0), store(),
             I::I32Const(0), I::LocalSet(s[INDEX]), I::End]);
+        // Under `Scaled8`, ADDRESS holds the child slot's offset inside the
+        // parent rather than its address.
+        let relative = |offset: I<'static>| -> Vec<I<'static>> {
+            match refs {
+                RefEncoding::Byte => vec![I::LocalGet(s[OBJECT]), offset, I::I32Add],
+                RefEncoding::Scaled8 => vec![offset],
+            }
+        };
         for (id, children) in &table {
             code(body, [I::LocalGet(s[TAG]), I::I32Const(ids[id]), I::I32Eq, I::If(BlockType::Empty)]);
             match children {
                 Children::Fields(fields) if fields.is_empty() => {
-                    reclaim(body, s); pop(body, s);
+                    reclaim(body, refs, s); pop(body, s);
                     code(body, [I::Br(1), I::End]);
                     continue;
                 }
                 Children::Fields(fields) => {
                     code(body, [I::LocalGet(s[INDEX]), I::I32Const(fields.len() as i32), I::I32GeU, I::If(BlockType::Empty)]);
-                    reclaim(body, s); pop(body, s);
+                    reclaim(body, refs, s); pop(body, s);
                     code(body, [I::Br(2), I::End, I::I32Const(-1), I::LocalSet(s[CHILD_TAG])]);
                     for (index, (offset, child, nullable)) in fields.iter().enumerate() {
-                        code(body, [I::LocalGet(s[INDEX]), I::I32Const(index as i32), I::I32Eq, I::If(BlockType::Empty),
-                            I::LocalGet(s[OBJECT]), I::I32Const(*offset as i32), I::I32Add, I::LocalSet(s[ADDRESS]),
+                        code(body, [I::LocalGet(s[INDEX]), I::I32Const(index as i32), I::I32Eq, I::If(BlockType::Empty)]);
+                        code(body, relative(I::I32Const(*offset as i32)));
+                        code(body, [I::LocalSet(s[ADDRESS]),
                             I::I32Const(ids[child]), I::LocalSet(s[CHILD_TAG]),
                             I::I32Const(i32::from(*nullable)), I::LocalSet(s[PAGES]), I::End]);
                     }
@@ -194,34 +278,38 @@ pub(super) fn emit(body: &mut WasmFunctionEncoder, local: &LocalLayout, function
                         I::If(BlockType::Empty), I::Unreachable, I::End]);
                 }
                 Children::Elements(collection, child) => {
-                    code(body, [I::LocalGet(s[OBJECT]), I::I32Const(collection.length_offset as i32), I::I32Add,
-                        I::I64ExtendI32U, load(), I::LocalSet(s[COUNT])]);
+                    at_const(body, refs, s[OBJECT], collection.length_offset as i32);
+                    code(body, [load(), I::LocalSet(s[COUNT])]);
                     if let Some(capacity) = collection.capacity_offset {
-                        code(body, [I::LocalGet(s[COUNT]), I::LocalGet(s[OBJECT]), I::I32Const(capacity as i32),
-                            I::I32Add, I::I64ExtendI32U, load(), I::I32GtU, I::If(BlockType::Empty), I::Unreachable, I::End]);
+                        body.instruction(&I::LocalGet(s[COUNT]));
+                        at_const(body, refs, s[OBJECT], capacity as i32);
+                        code(body, [load(), I::I32GtU, I::If(BlockType::Empty), I::Unreachable, I::End]);
                     }
                     code(body, [I::LocalGet(s[INDEX]), I::LocalGet(s[COUNT]), I::I32GeU, I::If(BlockType::Empty)]);
-                    reclaim(body, s); pop(body, s);
-                    code(body, [I::Br(2), I::End,
-                        I::LocalGet(s[OBJECT]), I::I32Const(collection.data_offset as i32), I::I32Add,
-                        I::LocalGet(s[INDEX]), I::I32Const(collection.stride as i32), I::I32Mul, I::I32Add,
+                    reclaim(body, refs, s); pop(body, s);
+                    code(body, [I::Br(2), I::End]);
+                    code(body, relative(I::I32Const(collection.data_offset as i32)));
+                    code(body, [I::LocalGet(s[INDEX]), I::I32Const(collection.stride as i32), I::I32Mul, I::I32Add,
                         I::LocalSet(s[ADDRESS]), I::I32Const(ids[child]), I::LocalSet(s[CHILD_TAG]),
                         I::I32Const(i32::from(collection.pointer_slot == Some(PointerSlot::OwnedNullable))), I::LocalSet(s[PAGES])]);
                 }
                 Children::Dictionary(fields) => {
-                    code(body, [I::LocalGet(s[OBJECT]), I::I32Const(4), I::I32Add, I::I64ExtendI32U, load(), I::LocalSet(s[COUNT]),
+                    at(body, refs, s[OBJECT], 4);
+                    code(body, [load(), I::LocalSet(s[COUNT]),
                         I::LocalGet(s[INDEX]), I::LocalGet(s[COUNT]), I::I32Const(fields.len() as i32), I::I32Mul,
                         I::I32GeU, I::If(BlockType::Empty)]);
-                    reclaim(body, s); pop(body, s);
+                    reclaim(body, refs, s); pop(body, s);
                     code(body, [I::Br(2), I::End,
                         I::LocalGet(s[INDEX]), I::I32Const(fields.len() as i32), I::I32DivU,
-                        I::I32Const(32), I::I32Mul, I::LocalGet(s[OBJECT]), I::I32Add,
-                        I::I32Const(20), I::I32Add, I::LocalSet(s[ADDRESS]),
-                        I::LocalGet(s[ADDRESS]), I::I64ExtendI32U, load(), I::I32Const(1), I::I32Ne,
-                        I::If(BlockType::Empty),
-                        I::LocalGet(s[FRAME]), I::I32Const(8), I::I32Add, I::I64ExtendI32U,
-                        I::LocalGet(s[INDEX]), I::I32Const(1), I::I32Add, store(),
-                        I::Br(2), I::End]);
+                        I::I32Const(32), I::I32Mul]);
+                    if refs == RefEncoding::Byte {
+                        code(body, [I::LocalGet(s[OBJECT]), I::I32Add]);
+                    }
+                    code(body, [I::I32Const(20), I::I32Add, I::LocalSet(s[ADDRESS])]);
+                    child_slot(body, refs, s, |body| { body.instruction(&I::LocalGet(s[OBJECT])); });
+                    code(body, [load(), I::I32Const(1), I::I32Ne, I::If(BlockType::Empty)]);
+                    advance(body, refs, s);
+                    code(body, [I::Br(2), I::End]);
                     for (index, (offset, child)) in fields.iter().enumerate() {
                         code(body, [I::LocalGet(s[INDEX]), I::I32Const(fields.len() as i32), I::I32RemU,
                             I::I32Const(index as i32), I::I32Eq, I::If(BlockType::Empty),
@@ -233,42 +321,84 @@ pub(super) fn emit(body: &mut WasmFunctionEncoder, local: &LocalLayout, function
             }
             // Transfer exactly one child to a new frame. The parent resumes
             // at its next slot only after this child has finished.
-            code(body, [I::LocalGet(s[ADDRESS]), I::I64ExtendI32U, load(), I::LocalSet(s[OBJECT]),
+            child_slot(body, refs, s, |body| { body.instruction(&I::LocalGet(s[OBJECT])); });
+            code(body, [load(), I::LocalSet(s[OBJECT]),
                 I::LocalGet(s[OBJECT]), I::I32Eqz, I::LocalGet(s[PAGES]), I::I32And,
-                I::If(BlockType::Empty),
-                I::LocalGet(s[FRAME]), I::I32Const(8), I::I32Add, I::I64ExtendI32U,
-                I::LocalGet(s[INDEX]), I::I32Const(1), I::I32Add, store(),
-                I::Br(2), I::End,
+                I::If(BlockType::Empty)]);
+            advance(body, refs, s);
+            code(body, [I::Br(2), I::End,
                 I::LocalGet(s[OBJECT]), I::I32Eqz, I::If(BlockType::Empty), I::Unreachable, I::End]);
-            reserve(body, s);
-            code(body, [I::LocalGet(s[FRAME]), I::I32Const(8), I::I32Add, I::I64ExtendI32U,
-                I::LocalGet(s[INDEX]), I::I32Const(1), I::I32Add, store(),
-                I::LocalGet(s[ADDRESS]), I::I64ExtendI32U, I::I32Const(0), store(),
+            reserve(body, refs, s);
+            advance(body, refs, s);
+            // OBJECT now holds the child; the parent is still in its frame.
+            child_slot(body, refs, s, |body| {
+                at(body, refs, s[FRAME], 0);
+                body.instruction(&load());
+            });
+            code(body, [I::I32Const(0), store(),
                 I::LocalGet(s[CHILD_TAG]), I::LocalSet(s[TAG]), I::I32Const(-1), I::LocalSet(s[INDEX])]);
-            commit_push(body, s);
+            commit_push(body, refs, s);
             code(body, [I::Br(1), I::End]);
         }
-        code(body, [I::Unreachable, I::End, I::End,
-            // Restore the virgin-zero property of memory above the bump
-            // frontier before a later ordinary allocation can reuse it.
-            I::LocalGet(s[BASE]), I::I64ExtendI32U, I::I32Const(0), I::LocalGet(s[HIGH]), I::LocalGet(s[BASE]), I::I32Sub,
-            I::I64ExtendI32U, I::MemoryFill(0), I::LocalGet(s[BASE]), I::GlobalSet(0)]);
+        code(body, [I::Unreachable, I::End, I::End]);
+        // Restore the virgin-zero property of memory above the bump
+        // frontier before a later ordinary allocation can reuse it.
+        at(body, refs, s[BASE], 0);
+        code(body, [I::I32Const(0), I::LocalGet(s[HIGH]), I::LocalGet(s[BASE]), I::I32Sub]);
+        refs.object(body);
+        code(body, [I::MemoryFill(0), I::LocalGet(s[BASE]), I::GlobalSet(0)]);
     }
     code(body, [I::Else]);
-    decrement(body, s);
+    decrement(body, refs, s);
     code(body, [I::End, I::End]);
     Ok(())
 }
 
 // Expected instruction mapping is authored separately from `emit`; it never
 // invokes the encoder or decodes its output to invent an expected plan.
-fn plan_reserve(p: &mut Vec<PlanToken>, s: &[u32]) {
+fn plan_at(p: &mut Vec<PlanToken>, refs: RefEncoding, slot: u32, offset: i32) {
+    p.push(PlanToken::LocalGet(slot));
+    if offset == 0 {
+        refs.plan_object(p);
+    } else {
+        refs.plan_base(p);
+        p.push(PlanToken::I32Const(offset));
+        refs.plan_add(p);
+        refs.plan_finish(p);
+    }
+}
+
+fn plan_at_const(p: &mut Vec<PlanToken>, refs: RefEncoding, slot: u32, offset: i32) {
+    p.push(PlanToken::LocalGet(slot));
+    refs.plan_base(p);
+    p.push(PlanToken::I32Const(offset));
+    refs.plan_add(p);
+    refs.plan_finish(p);
+}
+
+fn plan_child_slot(p: &mut Vec<PlanToken>, refs: RefEncoding, s: &[u32], parent: impl FnOnce(&mut Vec<PlanToken>)) {
+    match refs {
+        RefEncoding::Byte => p.extend([PlanToken::LocalGet(s[ADDRESS]), PlanToken::I64ExtendI32U]),
+        RefEncoding::Scaled8 => {
+            parent(p);
+            refs.plan_base(p);
+            p.push(PlanToken::LocalGet(s[ADDRESS]));
+            refs.plan_add(p);
+            refs.plan_finish(p);
+        }
+    }
+}
+
+fn plan_reserve(p: &mut Vec<PlanToken>, refs: RefEncoding, s: &[u32]) {
     use PlanToken as P;
+    let frame = match refs { RefEncoding::Byte => 12, RefEncoding::Scaled8 => 2 };
     p.extend([
-        P::LocalGet(s[TOP]), P::I32Const((u32::MAX - 12) as i32), P::I32GtU,
+        P::LocalGet(s[TOP]), P::I32Const((u32::MAX - frame as u32) as i32), P::I32GtU,
         P::If("Empty".into()), P::Unreachable, P::End,
-        P::LocalGet(s[TOP]), P::I32Const(12), P::I32Add, P::LocalSet(s[END]),
-        P::LocalGet(s[END]), P::I64ExtendI32U, P::I64Const(65535), P::I64Add,
+        P::LocalGet(s[TOP]), P::I32Const(frame), P::I32Add, P::LocalSet(s[END]),
+    ]);
+    plan_at(p, refs, s[END], 0);
+    p.extend([P::I64Const(65535), P::I64Add,
         P::I64Const(65536), P::I64DivU, P::I32WrapI64, P::LocalSet(s[PAGES]),
         P::LocalGet(s[PAGES]), P::I64ExtendI32U, P::MemorySize, P::I64GtU, P::If("Empty".into()),
         P::LocalGet(s[PAGES]), P::I64ExtendI32U, P::MemorySize, P::I64Sub, P::MemoryGrow,
@@ -276,36 +406,50 @@ fn plan_reserve(p: &mut Vec<PlanToken>, s: &[u32]) {
     ]);
 }
 
-fn plan_commit_push(p: &mut Vec<PlanToken>, s: &[u32]) {
+fn plan_commit_push(p: &mut Vec<PlanToken>, refs: RefEncoding, s: &[u32]) {
     use PlanToken as P;
-    p.extend([
-        P::LocalGet(s[TOP]), P::I64ExtendI32U, P::LocalGet(s[OBJECT]), pstore(),
-        P::LocalGet(s[TOP]), P::I32Const(4), P::I32Add, P::I64ExtendI32U, P::LocalGet(s[TAG]), pstore(),
-        P::LocalGet(s[TOP]), P::I32Const(8), P::I32Add, P::I64ExtendI32U, P::LocalGet(s[INDEX]), pstore(),
+    plan_at(p, refs, s[TOP], 0);
+    p.extend([P::LocalGet(s[OBJECT]), pstore()]);
+    plan_at(p, refs, s[TOP], 4);
+    p.extend([P::LocalGet(s[TAG]), pstore()]);
+    plan_at(p, refs, s[TOP], 8);
+    p.extend([P::LocalGet(s[INDEX]), pstore(),
         P::LocalGet(s[END]), P::LocalSet(s[TOP]),
         P::LocalGet(s[TOP]), P::LocalGet(s[HIGH]), P::I32GtU, P::If("Empty".into()),
         P::LocalGet(s[TOP]), P::LocalTee(s[HIGH]), P::GlobalSet(0), P::End,
     ]);
 }
 
-fn plan_push(p: &mut Vec<PlanToken>, s: &[u32]) {
-    plan_reserve(p, s);
-    plan_commit_push(p, s);
+fn plan_push(p: &mut Vec<PlanToken>, refs: RefEncoding, s: &[u32]) {
+    plan_reserve(p, refs, s);
+    plan_commit_push(p, refs, s);
 }
 
 fn pload() -> PlanToken { PlanToken::I32Load { offset: 0, align: 2, memory: 0 } }
 fn pstore() -> PlanToken { PlanToken::I32Store { offset: 0, align: 2, memory: 0 } }
-fn plan_reclaim(p: &mut Vec<PlanToken>, s: &[u32]) {
-    p.extend([PlanToken::LocalGet(s[OBJECT]), PlanToken::I64ExtendI32U, PlanToken::GlobalGet(1), pstore(),
-        PlanToken::LocalGet(s[OBJECT]), PlanToken::GlobalSet(1)]);
+fn plan_reclaim(p: &mut Vec<PlanToken>, refs: RefEncoding, s: &[u32]) {
+    plan_at(p, refs, s[OBJECT], 0);
+    p.extend([PlanToken::GlobalGet(1), pstore(), PlanToken::LocalGet(s[OBJECT]), PlanToken::GlobalSet(1)]);
 }
 fn plan_pop(p: &mut Vec<PlanToken>, s: &[u32]) {
     p.extend([PlanToken::LocalGet(s[FRAME]), PlanToken::LocalSet(s[TOP])]);
 }
-fn plan_decrement(p: &mut Vec<PlanToken>, s: &[u32]) {
+fn plan_header(p: &mut Vec<PlanToken>, refs: RefEncoding, s: &[u32]) {
+    p.push(PlanToken::LocalGet(s[OBJECT]));
+    refs.plan_base(p);
+    p.push(PlanToken::I32Const(8));
+    refs.plan_sub(p);
+    refs.plan_finish(p);
+}
+fn plan_decrement(p: &mut Vec<PlanToken>, refs: RefEncoding, s: &[u32]) {
     use PlanToken as P;
-    p.extend([P::LocalGet(s[OBJECT]), P::I32Const(8), P::I32Sub, P::I64ExtendI32U,
-        P::LocalGet(s[COUNT]), P::I32Const(1), P::I32Sub, pstore()]);
+    plan_header(p, refs, s);
+    p.extend([P::LocalGet(s[COUNT]), P::I32Const(1), P::I32Sub, pstore()]);
+}
+fn plan_advance(p: &mut Vec<PlanToken>, refs: RefEncoding, s: &[u32]) {
+    use PlanToken as P;
+    plan_at(p, refs, s[FRAME], 8);
+    p.extend([P::LocalGet(s[INDEX]), P::I32Const(1), P::I32Add, pstore()]);
 }
 
 pub(super) fn plan(p: &mut Vec<PlanToken>, function: FunctionId, layouts: &LayoutInterner,
@@ -315,84 +459,107 @@ pub(super) fn plan(p: &mut Vec<PlanToken>, function: FunctionId, layouts: &Layou
     let table = rows(function, layouts, root).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
     let ids: BTreeMap<_, _> = table.keys().enumerate().map(|(index, id)| (*id, index as i32)).collect();
     let s = &local.scratch;
+    let refs = local.refs;
+    let frame = match refs { RefEncoding::Byte => 12, RefEncoding::Scaled8 => 2 };
     if s.len() < SCRATCH { return Err(CanonicalAdmissionError::UnsupportedPlan); }
     memory_op_counters::plan_bump(p, memory_op_counters::Counter::Releases);
-    p.extend([P::LocalGet(s[OBJECT]), P::GlobalGet(2), P::I32LtU, P::If("Empty".into()), P::Else,
-        P::LocalGet(s[OBJECT]), P::I32Const(8), P::I32Sub, PlanToken::I64ExtendI32U, pload(), P::LocalSet(s[COUNT]),
+    p.extend([P::LocalGet(s[OBJECT]), P::GlobalGet(2), P::I32LtU, P::If("Empty".into()), P::Else]);
+    plan_header(p, refs, s);
+    p.extend([pload(), P::LocalSet(s[COUNT]),
         P::LocalGet(s[COUNT]), P::I32Eqz, P::If("Empty".into()), P::Unreachable, P::End,
         P::LocalGet(s[COUNT]), P::I32Const(1), P::I32Eq, P::If("Empty".into())]);
     if matches!(&table[&root], Children::Fields(fields) if fields.is_empty()) {
-        plan_reclaim(p, s);
+        plan_reclaim(p, refs, s);
     } else {
         p.extend([P::GlobalGet(0), P::LocalTee(s[BASE]), P::LocalTee(s[TOP]), P::LocalSet(s[HIGH]),
             P::I32Const(ids[&root]), P::LocalSet(s[TAG]), P::I32Const(0), P::LocalSet(s[INDEX])]);
-        plan_push(p, s);
+        plan_push(p, refs, s);
         p.extend([P::Block("Empty".into()), P::Loop("Empty".into()),
             P::LocalGet(s[TOP]), P::LocalGet(s[BASE]), P::I32Eq, P::If("Empty".into()), P::Br(2), P::End,
-            P::LocalGet(s[TOP]), P::I32Const(12), P::I32Sub, P::LocalTee(s[FRAME]), PlanToken::I64ExtendI32U, pload(), P::LocalSet(s[OBJECT]),
-            P::LocalGet(s[FRAME]), P::I32Const(4), P::I32Add, PlanToken::I64ExtendI32U, pload(), P::LocalSet(s[TAG]),
-            P::LocalGet(s[FRAME]), P::I32Const(8), P::I32Add, PlanToken::I64ExtendI32U, pload(), P::LocalSet(s[INDEX]),
+            P::LocalGet(s[TOP]), P::I32Const(frame), P::I32Sub, P::LocalTee(s[FRAME])]);
+        refs.plan_object(p);
+        p.extend([pload(), P::LocalSet(s[OBJECT])]);
+        plan_at(p, refs, s[FRAME], 4);
+        p.extend([pload(), P::LocalSet(s[TAG])]);
+        plan_at(p, refs, s[FRAME], 8);
+        p.extend([pload(), P::LocalSet(s[INDEX]),
             P::LocalGet(s[INDEX]), P::I32Const(-1), P::I32Eq, P::If("Empty".into()),
             P::LocalGet(s[OBJECT]), P::GlobalGet(2), P::I32LtU, P::If("Empty".into())]);
         plan_pop(p, s);
-        p.extend([P::Br(2), P::End,
-            P::LocalGet(s[OBJECT]), P::I32Const(8), P::I32Sub, PlanToken::I64ExtendI32U, pload(), P::LocalSet(s[COUNT]),
+        p.extend([P::Br(2), P::End]);
+        plan_header(p, refs, s);
+        p.extend([pload(), P::LocalSet(s[COUNT]),
             P::LocalGet(s[COUNT]), P::I32Eqz, P::If("Empty".into()), P::Unreachable, P::End,
             P::LocalGet(s[COUNT]), P::I32Const(1), P::I32GtU, P::If("Empty".into())]);
-        plan_decrement(p, s); plan_pop(p, s);
-        p.extend([P::Br(2), P::End,
-            P::LocalGet(s[FRAME]), P::I32Const(8), P::I32Add, P::I64ExtendI32U, P::I32Const(0), pstore(),
-            P::I32Const(0), P::LocalSet(s[INDEX]), P::End]);
+        plan_decrement(p, refs, s); plan_pop(p, s);
+        p.extend([P::Br(2), P::End]);
+        plan_at(p, refs, s[FRAME], 8);
+        p.extend([P::I32Const(0), pstore(), P::I32Const(0), P::LocalSet(s[INDEX]), P::End]);
+        let object = |p: &mut Vec<PlanToken>| if refs == RefEncoding::Byte {
+            p.extend([P::LocalGet(s[OBJECT]), P::I32Add]);
+        };
         for (id, children) in &table {
             p.extend([P::LocalGet(s[TAG]), P::I32Const(ids[id]), P::I32Eq, P::If("Empty".into())]);
             match children {
                 Children::Fields(fields) if fields.is_empty() => {
-                    plan_reclaim(p, s); plan_pop(p, s);
+                    plan_reclaim(p, refs, s); plan_pop(p, s);
                     p.extend([P::Br(1), P::End]);
                     continue;
                 }
                 Children::Fields(fields) => {
                     p.extend([P::LocalGet(s[INDEX]), P::I32Const(fields.len() as i32), P::I32GeU, P::If("Empty".into())]);
-                    plan_reclaim(p, s); plan_pop(p, s);
+                    plan_reclaim(p, refs, s); plan_pop(p, s);
                     p.extend([P::Br(2), P::End, P::I32Const(-1), P::LocalSet(s[CHILD_TAG])]);
                     for (index, (offset, child, nullable)) in fields.iter().enumerate() {
-                        p.extend([P::LocalGet(s[INDEX]), P::I32Const(index as i32), P::I32Eq, P::If("Empty".into()),
-                            P::LocalGet(s[OBJECT]), P::I32Const(*offset as i32), P::I32Add, P::LocalSet(s[ADDRESS]),
-                        P::I32Const(ids[child]), P::LocalSet(s[CHILD_TAG]),
-                        P::I32Const(i32::from(*nullable)), P::LocalSet(s[PAGES]), P::End]);
+                        p.extend([P::LocalGet(s[INDEX]), P::I32Const(index as i32), P::I32Eq, P::If("Empty".into())]);
+                        // Byte: OBJECT + offset; Scaled8: the offset alone.
+                        if refs == RefEncoding::Byte {
+                            p.extend([P::LocalGet(s[OBJECT]), P::I32Const(*offset as i32), P::I32Add]);
+                        } else {
+                            p.push(P::I32Const(*offset as i32));
+                        }
+                        p.extend([P::LocalSet(s[ADDRESS]),
+                            P::I32Const(ids[child]), P::LocalSet(s[CHILD_TAG]),
+                            P::I32Const(i32::from(*nullable)), P::LocalSet(s[PAGES]), P::End]);
                     }
                     p.extend([P::LocalGet(s[CHILD_TAG]), P::I32Const(-1), P::I32Eq,
                         P::If("Empty".into()), P::Unreachable, P::End]);
                 }
                 Children::Elements(collection, child) => {
-                    p.extend([P::LocalGet(s[OBJECT]), P::I32Const(collection.length_offset as i32), P::I32Add,
-                        PlanToken::I64ExtendI32U, pload(), P::LocalSet(s[COUNT])]);
+                    plan_at_const(p, refs, s[OBJECT], collection.length_offset as i32);
+                    p.extend([pload(), P::LocalSet(s[COUNT])]);
                     if let Some(capacity) = collection.capacity_offset {
-                        p.extend([P::LocalGet(s[COUNT]), P::LocalGet(s[OBJECT]), P::I32Const(capacity as i32),
-                            P::I32Add, PlanToken::I64ExtendI32U, pload(), P::I32GtU, P::If("Empty".into()), P::Unreachable, P::End]);
+                        p.push(P::LocalGet(s[COUNT]));
+                        plan_at_const(p, refs, s[OBJECT], capacity as i32);
+                        p.extend([pload(), P::I32GtU, P::If("Empty".into()), P::Unreachable, P::End]);
                     }
                     p.extend([P::LocalGet(s[INDEX]), P::LocalGet(s[COUNT]), P::I32GeU, P::If("Empty".into())]);
-                    plan_reclaim(p, s); plan_pop(p, s);
-                    p.extend([P::Br(2), P::End,
-                        P::LocalGet(s[OBJECT]), P::I32Const(collection.data_offset as i32), P::I32Add,
-                        P::LocalGet(s[INDEX]), P::I32Const(collection.stride as i32), P::I32Mul, P::I32Add,
+                    plan_reclaim(p, refs, s); plan_pop(p, s);
+                    p.extend([P::Br(2), P::End]);
+                    if refs == RefEncoding::Byte {
+                        p.extend([P::LocalGet(s[OBJECT]), P::I32Const(collection.data_offset as i32), P::I32Add]);
+                    } else {
+                        p.push(P::I32Const(collection.data_offset as i32));
+                    }
+                    p.extend([P::LocalGet(s[INDEX]), P::I32Const(collection.stride as i32), P::I32Mul, P::I32Add,
                         P::LocalSet(s[ADDRESS]), P::I32Const(ids[child]), P::LocalSet(s[CHILD_TAG]),
                         P::I32Const(i32::from(collection.pointer_slot == Some(PointerSlot::OwnedNullable))), P::LocalSet(s[PAGES])]);
                 }
                 Children::Dictionary(fields) => {
-                    p.extend([P::LocalGet(s[OBJECT]), P::I32Const(4), P::I32Add, PlanToken::I64ExtendI32U, pload(), P::LocalSet(s[COUNT]),
+                    plan_at(p, refs, s[OBJECT], 4);
+                    p.extend([pload(), P::LocalSet(s[COUNT]),
                         P::LocalGet(s[INDEX]), P::LocalGet(s[COUNT]), P::I32Const(fields.len() as i32), P::I32Mul,
                         P::I32GeU, P::If("Empty".into())]);
-                    plan_reclaim(p, s); plan_pop(p, s);
+                    plan_reclaim(p, refs, s); plan_pop(p, s);
                     p.extend([P::Br(2), P::End,
                         P::LocalGet(s[INDEX]), P::I32Const(fields.len() as i32), P::I32DivU,
-                        P::I32Const(32), P::I32Mul, P::LocalGet(s[OBJECT]), P::I32Add,
-                        P::I32Const(20), P::I32Add, P::LocalSet(s[ADDRESS]),
-                        P::LocalGet(s[ADDRESS]), PlanToken::I64ExtendI32U, pload(), P::I32Const(1), P::I32Ne,
-                        P::If("Empty".into()),
-                        P::LocalGet(s[FRAME]), P::I32Const(8), P::I32Add, P::I64ExtendI32U,
-                        P::LocalGet(s[INDEX]), P::I32Const(1), P::I32Add, pstore(),
-                        P::Br(2), P::End]);
+                        P::I32Const(32), P::I32Mul]);
+                    object(p);
+                    p.extend([P::I32Const(20), P::I32Add, P::LocalSet(s[ADDRESS])]);
+                    plan_child_slot(p, refs, s, |p| p.push(P::LocalGet(s[OBJECT])));
+                    p.extend([pload(), P::I32Const(1), P::I32Ne, P::If("Empty".into())]);
+                    plan_advance(p, refs, s);
+                    p.extend([P::Br(2), P::End]);
                     for (index, (offset, child)) in fields.iter().enumerate() {
                         p.extend([P::LocalGet(s[INDEX]), P::I32Const(fields.len() as i32), P::I32RemU,
                             P::I32Const(index as i32), P::I32Eq, P::If("Empty".into()),
@@ -402,27 +569,32 @@ pub(super) fn plan(p: &mut Vec<PlanToken>, function: FunctionId, layouts: &Layou
                     p.extend([P::I32Const(0), P::LocalSet(s[PAGES])]);
                 }
             }
-            p.extend([P::LocalGet(s[ADDRESS]), PlanToken::I64ExtendI32U, pload(), P::LocalSet(s[OBJECT]),
+            plan_child_slot(p, refs, s, |p| p.push(P::LocalGet(s[OBJECT])));
+            p.extend([pload(), P::LocalSet(s[OBJECT]),
                 P::LocalGet(s[OBJECT]), P::I32Eqz, P::LocalGet(s[PAGES]), P::I32And,
-                P::If("Empty".into()),
-                P::LocalGet(s[FRAME]), P::I32Const(8), P::I32Add, P::I64ExtendI32U,
-                P::LocalGet(s[INDEX]), P::I32Const(1), P::I32Add, pstore(),
-                P::Br(2), P::End,
+                P::If("Empty".into())]);
+            plan_advance(p, refs, s);
+            p.extend([P::Br(2), P::End,
                 P::LocalGet(s[OBJECT]), P::I32Eqz, P::If("Empty".into()), P::Unreachable, P::End]);
-            plan_reserve(p, s);
-            p.extend([P::LocalGet(s[FRAME]), P::I32Const(8), P::I32Add, P::I64ExtendI32U,
-                P::LocalGet(s[INDEX]), P::I32Const(1), P::I32Add, pstore(),
-                P::LocalGet(s[ADDRESS]), P::I64ExtendI32U, P::I32Const(0), pstore(),
+            plan_reserve(p, refs, s);
+            plan_advance(p, refs, s);
+            plan_child_slot(p, refs, s, |p| {
+                plan_at(p, refs, s[FRAME], 0);
+                p.push(pload());
+            });
+            p.extend([P::I32Const(0), pstore(),
                 P::LocalGet(s[CHILD_TAG]), P::LocalSet(s[TAG]), P::I32Const(-1), P::LocalSet(s[INDEX])]);
-            plan_commit_push(p, s);
+            plan_commit_push(p, refs, s);
             p.extend([P::Br(1), P::End]);
         }
-        p.extend([P::Unreachable, P::End, P::End,
-            P::LocalGet(s[BASE]), P::I64ExtendI32U, P::I32Const(0), P::LocalGet(s[HIGH]), P::LocalGet(s[BASE]), P::I32Sub,
-            P::I64ExtendI32U, P::MemoryFill(0), P::LocalGet(s[BASE]), P::GlobalSet(0)]);
+        p.extend([P::Unreachable, P::End, P::End]);
+        plan_at(p, refs, s[BASE], 0);
+        p.extend([P::I32Const(0), P::LocalGet(s[HIGH]), P::LocalGet(s[BASE]), P::I32Sub]);
+        refs.plan_object(p);
+        p.extend([P::MemoryFill(0), P::LocalGet(s[BASE]), P::GlobalSet(0)]);
     }
     p.push(P::Else);
-    plan_decrement(p, s);
+    plan_decrement(p, refs, s);
     p.extend([P::End, P::End]);
     Ok(())
 }
@@ -471,7 +643,7 @@ pub mod self_checks {
             indices: BTreeMap::new(),
             extra_types: Vec::new(),
             scratch: (1..=SCRATCH as u32).collect(),
-            owner_context: Default::default(),
+            owner_context: Default::default(), wide: Vec::new(),
         };
         let mut body = WasmFunctionEncoder::new([(SCRATCH as u32, ValType::I32)]);
         code(&mut body, [I::LocalGet(0), I::LocalSet(local.scratch[OBJECT])]);

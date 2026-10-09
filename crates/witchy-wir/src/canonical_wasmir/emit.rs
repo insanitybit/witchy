@@ -40,6 +40,28 @@ pub(super) struct LocalLayout<'a> {
     // This function's owner-kernel context, parked between environment
     // operations (see `owner_operation_kernel::OwnerScratch`).
     pub(super) owner_context: owner_operation_kernel::ParkedContext,
+    /// Under `Scaled8`, i64 locals that hold interior byte addresses, which
+    /// no longer fit an i32 scratch slot. Empty under `Byte`.
+    pub(super) wide: Vec<u32>,
+}
+
+/// The i64 address locals a `Scaled8` function declares after its other
+/// locals.
+pub(super) const WIDE_ADDRESS_LOCALS: usize = 5;
+
+impl LocalLayout<'_> {
+    /// Adopt the module's reference encoding. A `Scaled8` function declares
+    /// its i64 address locals last, so its other local indices are those a
+    /// `Byte` function has.
+    pub(super) fn adopt_refs(&mut self, refs: ref_encoding::RefEncoding, parameters: usize) {
+        self.refs = refs;
+        if refs == ref_encoding::RefEncoding::Scaled8 {
+            for _ in 0..WIDE_ADDRESS_LOCALS {
+                self.wide.push((parameters + self.extra_types.len()) as u32);
+                self.extra_types.push(ValType::I64);
+            }
+        }
+    }
 }
 
 pub(super) fn local_layout<'a>(
@@ -134,7 +156,7 @@ let mut scratch = vec![0; drop_worklist::SCRATCH];
         indices,
         extra_types,
         scratch,
-        owner_context: Default::default(),
+        owner_context: Default::default(), wide: Vec::new(),
     })
 }
 
@@ -685,7 +707,7 @@ pub(super) fn emit_alloc(
             if *header_bytes != collection.data_offset || *stride_bytes != collection.stride {
                 return Err(EncodeError::UnsupportedLayout { function: function.id, operation: "Alloc extent" });
             }
-            let maximum = (u32::MAX - collection.data_offset) / collection.stride;
+            let maximum = (layout.refs.max_alloc_bytes() - collection.data_offset) / collection.stride;
             emit_u32_trap_if_gt(body, layout, function.id, *capacity, maximum)?;
             emit_get(body, layout, function.id, *capacity)?;
             body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
@@ -693,12 +715,13 @@ pub(super) fn emit_alloc(
             body.instruction(&wasm_encoder::Instruction::I64Mul);
             body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(collection.data_offset)));
             body.instruction(&wasm_encoder::Instruction::I64Add);
+            layout.refs.round_i64(body);
             body.instruction(&wasm_encoder::Instruction::I32WrapI64);
             emit_set_index(body, scratch_index(layout, 0));
             Some(collection)
         }
         Extent::FixedBytes(bytes) => {
-            let bytes = fixed_alloc_bytes(*bytes)
+            let bytes = fixed_alloc_bytes(*bytes).and_then(|bytes| layout.refs.round_bytes(bytes))
                 .ok_or(EncodeError::UnsupportedLayout { function: function.id, operation: "Alloc extent" })?;
             body.instruction(&wasm_encoder::Instruction::I32Const(bytes as i32));
             emit_set_index(body, scratch_index(layout, 0));
@@ -709,7 +732,7 @@ pub(super) fn emit_alloc(
         }
     };
     let s = [0, 1, 2, 3].map(|slot| scratch_index(layout, slot));
-    emit_alloc_core(body, s, layout.memory_helpers.as_ref().map(|helpers| helpers.alloc));
+    emit_alloc_core(body, layout.refs, s, layout.memory_helpers.as_ref().map(|helpers| helpers.alloc));
     emit_get_index(body, scratch_index(layout, 2));
     emit_set(body, layout, function.id, destination)?;
     if let (Some(collection), Extent::Counted { count, capacity, .. }) = (collection, extent) {
@@ -743,7 +766,10 @@ pub(super) fn emit_alloc(
 /// of exactly `s[0]` bytes, and it writes nothing before a match, so the
 /// helper's own search misses the same way and takes the same bump. Growth is rare, and
 /// its code dominated each allocation site.
-pub(super) fn emit_alloc_core(body: &mut wasm_encoder::Function, s: [u32; 4], slow: Option<u32>) {
+///
+/// Under `Scaled8` the frontier (`global 0`), the free list (`global 1`) and
+/// `s[1]`/`s[2]` count reference units, and `s[0]` is a whole number of them.
+pub(super) fn emit_alloc_core(body: &mut wasm_encoder::Function, refs: ref_encoding::RefEncoding, s: [u32; 4], slow: Option<u32>) {
     if slow.is_some() {
         body.instruction(&wasm_encoder::Instruction::Block(BlockType::Empty));
         body.instruction(&wasm_encoder::Instruction::Block(BlockType::Empty));
@@ -768,7 +794,7 @@ pub(super) fn emit_alloc_core(body: &mut wasm_encoder::Function, s: [u32; 4], sl
     // refused growth traps rather than writing past memory.
     let emit_end = |body: &mut wasm_encoder::Function| {
         emit_get_index(body, s[1]);
-        body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+        refs.object(body);
         body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(RC_PREFIX_BYTES)));
         body.instruction(&wasm_encoder::Instruction::I64Add);
         emit_get_index(body, s[0]);
@@ -785,7 +811,7 @@ pub(super) fn emit_alloc_core(body: &mut wasm_encoder::Function, s: [u32; 4], sl
         body.instruction(&wasm_encoder::Instruction::BrIf(3));
     } else {
         emit_end(body);
-        body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(u32::MAX)));
+        body.instruction(&wasm_encoder::Instruction::I64Const(refs.max_end()));
         body.instruction(&wasm_encoder::Instruction::I64GtU);
         body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
         body.instruction(&wasm_encoder::Instruction::Unreachable);
@@ -812,19 +838,21 @@ pub(super) fn emit_alloc_core(body: &mut wasm_encoder::Function, s: [u32; 4], sl
         body.instruction(&wasm_encoder::Instruction::End);
     }
     emit_get_index(body, s[1]);
-    body.instruction(&wasm_encoder::Instruction::I32Const(RC_PREFIX_BYTES as i32));
+    body.instruction(&wasm_encoder::Instruction::I32Const(refs.prefix_units()));
     body.instruction(&wasm_encoder::Instruction::I32Add);
     emit_set_index(body, s[2]);
     emit_get_index(body, s[2]);
     emit_get_index(body, s[0]);
+    refs.units(body);
     body.instruction(&wasm_encoder::Instruction::I32Add);
     body.instruction(&wasm_encoder::Instruction::GlobalSet(0));
     body.instruction(&wasm_encoder::Instruction::Br(2));
     body.instruction(&wasm_encoder::Instruction::End);
     emit_get_index(body, s[2]);
+    refs.base(body);
     body.instruction(&wasm_encoder::Instruction::I32Const(4));
-    body.instruction(&wasm_encoder::Instruction::I32Sub);
-    emit_memory_index(body);
+    refs.sub(body);
+    refs.finish(body);
     body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
     emit_get_index(body, s[0]);
     body.instruction(&wasm_encoder::Instruction::I32Eq);
@@ -833,19 +861,19 @@ pub(super) fn emit_alloc_core(body: &mut wasm_encoder::Function, s: [u32; 4], sl
     body.instruction(&wasm_encoder::Instruction::I32Eqz);
     body.instruction(&wasm_encoder::Instruction::If(BlockType::Empty));
     emit_get_index(body, s[2]);
-    emit_memory_index(body);
+    refs.object(body);
     body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
     body.instruction(&wasm_encoder::Instruction::GlobalSet(1));
     body.instruction(&wasm_encoder::Instruction::Else);
     emit_get_index(body, s[3]);
-    emit_memory_index(body);
+    refs.object(body);
     emit_get_index(body, s[2]);
-    emit_memory_index(body);
+    refs.object(body);
     body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
     body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
     body.instruction(&wasm_encoder::Instruction::End);
     emit_get_index(body, s[2]);
-    body.instruction(&wasm_encoder::Instruction::I32Const(RC_PREFIX_BYTES as i32));
+    body.instruction(&wasm_encoder::Instruction::I32Const(refs.prefix_units()));
     body.instruction(&wasm_encoder::Instruction::I32Sub);
     emit_set_index(body, s[1]);
     body.instruction(&wasm_encoder::Instruction::Br(2));
@@ -853,20 +881,21 @@ pub(super) fn emit_alloc_core(body: &mut wasm_encoder::Function, s: [u32; 4], sl
     emit_get_index(body, s[2]);
     emit_set_index(body, s[3]);
     emit_get_index(body, s[2]);
-    emit_memory_index(body);
+    refs.object(body);
     body.instruction(&wasm_encoder::Instruction::I32Load(memarg(4)));
     emit_set_index(body, s[2]);
     body.instruction(&wasm_encoder::Instruction::Br(0));
     body.instruction(&wasm_encoder::Instruction::End);
     body.instruction(&wasm_encoder::Instruction::End);
     emit_get_index(body, s[1]);
-    emit_memory_index(body);
+    refs.object(body);
     body.instruction(&wasm_encoder::Instruction::I32Const(1));
     body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
     emit_get_index(body, s[1]);
+    refs.base(body);
     body.instruction(&wasm_encoder::Instruction::I32Const(4));
-    body.instruction(&wasm_encoder::Instruction::I32Add);
-    emit_memory_index(body);
+    refs.add(body);
+    refs.finish(body);
     emit_get_index(body, s[0]);
     body.instruction(&wasm_encoder::Instruction::I32Store(memarg(4)));
     if let Some(helper) = slow {
@@ -1098,6 +1127,21 @@ pub(super) fn emit_host_scalar_slice_address(
     let (object, start, length, stride, data_offset) =
         host_scalar_slice_place(function, value_types, layouts, place, access, length)
             .map_err(EncodeError::Lowering)?;
+    if layout.refs == ref_encoding::RefEncoding::Scaled8 {
+        // The i64 address needs no 32-bit range check: nothing wraps, and
+        // the host bounds the range by the memory it reads.
+        emit_get(body, layout, function, object)?;
+        layout.refs.object(body);
+        body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(data_offset)));
+        body.instruction(&wasm_encoder::Instruction::I64Add);
+        emit_get(body, layout, function, start)?;
+        body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
+        body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(stride)));
+        body.instruction(&wasm_encoder::Instruction::I64Mul);
+        body.instruction(&wasm_encoder::Instruction::I64Add);
+        let _ = length;
+        return Ok(());
+    }
     emit_get(body, layout, function, object)?;
     body.instruction(&wasm_encoder::Instruction::I64ExtendI32U);
     body.instruction(&wasm_encoder::Instruction::I64Const(i64::from(data_offset)));

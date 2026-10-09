@@ -103,14 +103,13 @@ fn context<'a>(function: &'a Function, local: &'a LocalLayout<'a>, op: &O) -> Re
             indices.insert(START, local_scratch[1]);
         }
     }
-    // The owner kernels still form Byte addresses (see `ref_encoding`).
-    let local = LocalLayout { refs: ref_encoding::RefEncoding::Byte, memory_helpers: local.memory_helpers.clone(),
+    let local = LocalLayout { refs: local.refs, memory_helpers: local.memory_helpers.clone(),
         owner_scratch: local.owner_scratch,
         owner_bridges,
         indices,
         extra_types,
         scratch: local_scratch,
-        owner_context: Default::default(),
+        owner_context: Default::default(), wide: local.wide.clone(),
     };
     Ok((Cow::Owned(function), Cow::Owned(local), bridge, scratch[2]))
 }
@@ -220,7 +219,7 @@ fn release_binding(bridge: &AdmittedOwnerBridge, release_import: u32) -> closure
     }
 }
 
-fn cleanup_helper_context(bridge: &AdmittedOwnerBridge) -> (Function, LocalLayout) {
+fn cleanup_helper_context(bridge: &AdmittedOwnerBridge, refs: ref_encoding::RefEncoding) -> (Function, LocalLayout) {
     let environment = ENV;
     let index = TEMP;
     let scratch_start = 3;
@@ -236,13 +235,13 @@ fn cleanup_helper_context(bridge: &AdmittedOwnerBridge) -> (Function, LocalLayou
         .collect(),
         blocks: Vec::new(),
     };
-    let local = LocalLayout { refs: ref_encoding::RefEncoding::Byte, memory_helpers: None,
+    let local = LocalLayout { refs, memory_helpers: None,
         owner_scratch: None,
         owner_bridges: Vec::new(),
         indices: [(environment, 1), (index, 2)].into_iter().collect(),
         extra_types: vec![ValType::I32; 2 + drop_worklist::SCRATCH],
         scratch: (scratch_start..scratch_start + drop_worklist::SCRATCH as u32).collect(),
-        owner_context: Default::default(),
+        owner_context: Default::default(), wide: Vec::new(),
     };
     (function, local)
 }
@@ -250,8 +249,9 @@ fn cleanup_helper_context(bridge: &AdmittedOwnerBridge) -> (Function, LocalLayou
 pub(super) fn emit_cleanup_helper(
     layouts: &LayoutInterner,
     bridge: &AdmittedOwnerBridge,
+    refs: ref_encoding::RefEncoding,
 ) -> Result<WasmFunctionEncoder, EncodeError> {
-    let (function, local) = cleanup_helper_context(bridge);
+    let (function, local) = cleanup_helper_context(bridge, refs);
     let mut body = WasmFunctionEncoder::new([(2 + drop_worklist::SCRATCH as u32, ValType::I32)]);
     closure_owner_kernel::emit_cleanup_helper(
         &mut body,
@@ -269,8 +269,9 @@ pub(super) fn emit_cleanup_helper(
 pub(super) fn plan_cleanup_helper(
     layouts: &LayoutInterner,
     bridge: &AdmittedOwnerBridge,
+    refs: ref_encoding::RefEncoding,
 ) -> Result<(Vec<(u32, String)>, Vec<PlanToken>), CanonicalAdmissionError> {
-    let (function, local) = cleanup_helper_context(bridge);
+    let (function, local) = cleanup_helper_context(bridge, refs);
     let mut plan = Vec::new();
     closure_owner_kernel::plan_cleanup_helper(
         &mut plan,
@@ -830,7 +831,7 @@ pub(super) fn emit(body: &mut WasmFunctionEncoder, function: &Function, local: &
             let extent = Extent::FixedBytes(u64::from(size));
             emit_alloc(body, &function, &local, layouts, ENV, environment, &extent)?;
             emit_get(body, &local, function.id, ENV)?;
-            emit_memory_index(body);
+            local.refs.object(body);
             body.instruction(&I::I32Const(0));
             body.instruction(&I::I64Const(i64::from(size)));
             body.instruction(&I::MemoryFill(0));
@@ -946,7 +947,8 @@ pub(super) fn plan(plan: &mut Vec<PlanToken>, function: &Function, layouts: &Lay
             let LayoutSize::Fixed(size) = descriptor.size() else { return Err(CanonicalAdmissionError::UnsupportedPlan); };
             expected_alloc_plan(plan, &function, &local, None, ENV, &Extent::FixedBytes(u64::from(size)))?;
             push_get(plan, &local, ENV)?;
-            plan.extend([PlanToken::I64ExtendI32U, PlanToken::I32Const(0), PlanToken::I64Const(i64::from(size)), PlanToken::MemoryFill(0)]);
+            local.refs.plan_object(plan);
+            plan.extend([PlanToken::I32Const(0), PlanToken::I64Const(i64::from(size)), PlanToken::MemoryFill(0)]);
             let access = field_access(function.id, layouts, ENV, environment, 0).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
             push_projected_address_plan(plan, &function, &local, access)?;
             plan.extend([PlanToken::I64Const(constructor.environment_tag), PlanToken::I64Store { offset: 0, align: 3, memory: 0 }]);

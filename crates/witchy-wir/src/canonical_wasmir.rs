@@ -259,6 +259,9 @@ struct WasmIr {
     imports: Vec<WasmImport>,
     table: Option<WasmTable>,
     heap_start: u32,
+    /// How stored references name byte addresses, chosen by the launch
+    /// contract's heap mode (RFC-0179 R4).
+    refs: ref_encoding::RefEncoding,
     functions: Vec<WasmFunction>,
 }
 
@@ -801,7 +804,7 @@ fn encode_checked_unvalidated(checked: &CheckedWasmIr) -> Result<Vec<u8>, Encode
     let owner_cleanup_bridge = owner_cleanup_bridge(&target.owner_bridges);
     let owner_cleanup_function = owner_cleanup_bridge
         .map(|_| import_count + target.functions.len() as u32);
-    let memory_helpers = outlined_memory::Helpers::new(source, import_count + target.functions.len() as u32 + u32::from(owner_cleanup_bridge.is_some()))?;
+    let memory_helpers = outlined_memory::Helpers::new(source, import_count + target.functions.len() as u32 + u32::from(owner_cleanup_bridge.is_some()), target.refs)?;
     let function_indices: BTreeMap<_, _> = target.functions.iter().enumerate().map(|(index, function)| (function.id, import_count + index as u32)).collect();
     let mut import_indices: BTreeMap<_, _> = source.imports().iter().enumerate().map(|(index, import)| (import.id, index as u32)).collect();
     for (index, bridge) in target.owner_bridges.iter().enumerate() { import_indices.insert(bridge.id(), source.imports().len() as u32 + index as u32); }
@@ -819,7 +822,7 @@ fn encode_checked_unvalidated(checked: &CheckedWasmIr) -> Result<Vec<u8>, Encode
     }
     let mut import_type_indices = BTreeMap::new();
     for (index, import) in source.imports().iter().enumerate() {
-        let (parameters, results) = import_wasm_signature(FunctionId::new(u32::MAX), import, &signatures_by_id)
+        let (parameters, results) = import_wasm_signature(FunctionId::new(u32::MAX), import, &signatures_by_id, target.refs)
             .map_err(EncodeError::Lowering)?;
         let type_index = u32::try_from(source.signatures().len() + index)
             .map_err(|_| EncodeError::Lowering(LoweringError::UnsupportedOperation { function: FunctionId::new(u32::MAX), operation: "import type count" }))?;
@@ -879,7 +882,7 @@ fn encode_checked_unvalidated(checked: &CheckedWasmIr) -> Result<Vec<u8>, Encode
     let mut globals = GlobalSection::new();
     globals.global(
         GlobalType { val_type: ValType::I32, mutable: true, shared: false },
-        &ConstExpr::i32_const(target.heap_start as i32),
+        &ConstExpr::i32_const(target.refs.reference(target.heap_start) as i32),
     );
     globals.global(
         GlobalType { val_type: ValType::I32, mutable: true, shared: false },
@@ -887,7 +890,7 @@ fn encode_checked_unvalidated(checked: &CheckedWasmIr) -> Result<Vec<u8>, Encode
     );
     globals.global(
         GlobalType { val_type: ValType::I32, mutable: false, shared: false },
-        &ConstExpr::i32_const(target.heap_start as i32),
+        &ConstExpr::i32_const(target.refs.reference(target.heap_start) as i32),
     );
     let mut exports = ExportSection::new();
     exports.export("memory", ExportKind::Memory, 0);
@@ -901,7 +904,9 @@ fn encode_checked_unvalidated(checked: &CheckedWasmIr) -> Result<Vec<u8>, Encode
     memory_op_counters::declare_globals(&mut globals);
     memory_op_counters::declare_exports(&mut exports);
     let mut code = CodeSection::new();
-    let static_data_offsets: BTreeMap<_, _> = target.static_data.iter().map(|segment| (segment.id, segment.offset)).collect();
+    // A static object's reference, which a `StaticData` instruction loads.
+    let static_data_offsets: BTreeMap<_, _> = target.static_data.iter()
+        .map(|segment| (segment.id, target.refs.reference(segment.offset))).collect();
     let mut data = DataSection::new();
     for segment in &target.static_data {
         data.active(0, &ConstExpr::i64_const(i64::from(segment.offset)), segment.bytes.clone());
@@ -942,18 +947,18 @@ fn encode_checked_unvalidated(checked: &CheckedWasmIr) -> Result<Vec<u8>, Encode
     }
     if let (Some(bridge), Some(type_index)) = (owner_cleanup_bridge, owner_cleanup_type) {
         functions.function(type_index);
-        code.function(&owner_operation_kernel::emit_cleanup_helper(&layouts, bridge)?);
+        code.function(&owner_operation_kernel::emit_cleanup_helper(&layouts, bridge, target.refs)?);
     }
     functions.function(address_type);
     code.function(&outlined_memory::emit_address());
     for root in memory_helpers.drops.keys() {
         functions.function(drop_type);
-        code.function(&outlined_memory::emit_drop(&layouts, *root, ref_encoding::RefEncoding::Byte)?);
+        code.function(&outlined_memory::emit_drop(&layouts, *root, target.refs)?);
     }
     functions.function(retain_type);
-    code.function(&outlined_memory::emit_retain(ref_encoding::RefEncoding::Byte));
+    code.function(&outlined_memory::emit_retain(target.refs));
     functions.function(retain_type);
-    code.function(&outlined_memory::emit_alloc());
+    code.function(&outlined_memory::emit_alloc(target.refs));
     let mut module = WasmModule::new();
     module
         .section(&types)
@@ -3290,7 +3295,7 @@ pub mod self_checks {
             indices: [(object, 0), (destination, 1)].into_iter().collect(),
             extra_types: vec![ValType::I32; usize::try_from(local_count).unwrap()],
             scratch: (2..2 + scratch_count).collect(),
-            owner_context: Default::default(),
+            owner_context: Default::default(), wide: Vec::new(),
         };
         let mut boundary = WasmFunctionEncoder::new(vec![(local_count, ValType::I32)]);
         if share {

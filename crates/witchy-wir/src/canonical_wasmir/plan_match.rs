@@ -954,9 +954,10 @@ pub(super) fn expected_function_plan(
     // planning, rather than from a second `local_layout` of the function by
     // the caller (the layout's slot verification was ~7% of admission).
     let mut layout = local_layout(function, signature, layouts).map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
-    let locals = layout.extra_types.iter().map(|ty| (1, planned_local_kind(*ty))).collect();
     layout.owner_bridges = owner_bridges.iter().collect();
     layout.memory_helpers = Some(memory_helpers.clone());
+    layout.adopt_refs(memory_helpers.refs, signature.parameters.len());
+    let locals = layout.extra_types.iter().map(|ty| (1, planned_local_kind(*ty))).collect();
     let successors_by_block: BTreeMap<_, _> = function
         .blocks
         .iter()
@@ -1040,6 +1041,8 @@ pub(super) fn expected_metadata_prefix(
     source: &CanonicalModule<InitialValid>,
     target: &WasmIr,
 ) -> Result<Vec<u8>, CanonicalAdmissionError> {
+    let refs = ref_encoding::RefEncoding::for_heap(
+        witchy_canonical_source::capabilities::HeapMode::from_launch_contract(source.launch_contract_payload()));
     let mut types = TypeSection::new();
     for signature in source.signatures() {
         let parameters = signature.parameters.iter().enumerate()
@@ -1065,7 +1068,7 @@ pub(super) fn expected_metadata_prefix(
     for (index, import) in target.imports.iter().enumerate() {
         let contract = *contracts_by_id.get(&import.id)
             .ok_or(CanonicalAdmissionError::UnsupportedPlan)?;
-        let (parameters, results) = import_wasm_signature(FunctionId::new(u32::MAX), contract, &signatures_by_id)
+        let (parameters, results) = import_wasm_signature(FunctionId::new(u32::MAX), contract, &signatures_by_id, refs)
             .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
         let type_index = u32::try_from(source.signatures().len() + index)
             .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
@@ -1086,7 +1089,7 @@ pub(super) fn expected_metadata_prefix(
     let retain_type = types.len();
     types.ty().function([ValType::I32], [ValType::I32]);
     let memory_helpers = outlined_memory::Helpers::new(source,
-        (target.imports.len() + target.owner_bridges.len() + target.functions.len()) as u32 + u32::from(owner_cleanup_bridge.is_some()))
+        (target.imports.len() + target.owner_bridges.len() + target.functions.len()) as u32 + u32::from(owner_cleanup_bridge.is_some()), refs)
         .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
     let mut imports = ImportSection::new();
     for import in &target.imports {
@@ -1137,9 +1140,9 @@ pub(super) fn expected_metadata_prefix(
     let mut memory = MemorySection::new();
     memory.memory(MemoryType { minimum: initial_memory_pages(target.heap_start), maximum: Some(max_memory_pages(source.launch_contract_payload())), memory64: true, shared: false, page_size_log2: None });
     let mut globals = GlobalSection::new();
-    globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(target.heap_start as i32));
+    globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(refs.reference(target.heap_start) as i32));
     globals.global(GlobalType { val_type: ValType::I32, mutable: true, shared: false }, &ConstExpr::i32_const(0));
-    globals.global(GlobalType { val_type: ValType::I32, mutable: false, shared: false }, &ConstExpr::i32_const(target.heap_start as i32));
+    globals.global(GlobalType { val_type: ValType::I32, mutable: false, shared: false }, &ConstExpr::i32_const(refs.reference(target.heap_start) as i32));
     memory_op_counters::declare_globals(&mut globals);
     let mut module = WasmModule::new();
     module.section(&types).section(&imports).section(&functions);
@@ -1164,7 +1167,9 @@ pub(super) fn decode_and_match_plan(
     if bytes.len() < metadata.len() || bytes[..metadata.len()] != metadata[..] {
         return Err(CanonicalAdmissionError::PlanMismatch("module metadata"));
     }
-    let (expected_static_data, expected_heap_start) = static_data_plan(source.static_data_segments())
+    let refs = ref_encoding::RefEncoding::for_heap(
+        witchy_canonical_source::capabilities::HeapMode::from_launch_contract(source.launch_contract_payload()));
+    let (expected_static_data, expected_heap_start) = static_data_plan(source.static_data_segments(), refs)
         .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
     if target.heap_start != expected_heap_start || target.static_data != expected_static_data {
         return Err(CanonicalAdmissionError::PlanMismatch("static-data lowering"));
@@ -1175,7 +1180,7 @@ pub(super) fn decode_and_match_plan(
     let owner_cleanup_bridge = owner_cleanup_bridge(&target.owner_bridges);
     let owner_cleanup_function = owner_cleanup_bridge
         .map(|_| import_count + target.functions.len() as u32);
-    let memory_helpers = outlined_memory::Helpers::new(source, import_count + target.functions.len() as u32 + u32::from(owner_cleanup_bridge.is_some()))
+    let memory_helpers = outlined_memory::Helpers::new(source, import_count + target.functions.len() as u32 + u32::from(owner_cleanup_bridge.is_some()), refs)
         .map_err(|_| CanonicalAdmissionError::UnsupportedPlan)?;
     let function_indices: BTreeMap<_, _> = target.functions.iter().enumerate()
         .map(|(index, function)| (function.id, import_count + index as u32))
@@ -1186,8 +1191,8 @@ pub(super) fn decode_and_match_plan(
     let mut import_indices: BTreeMap<_, _> = target.imports.iter().enumerate()
         .map(|(index, import)| (import.id, index as u32)).collect();
     for (index, bridge) in target.owner_bridges.iter().enumerate() { import_indices.insert(bridge.id(), target.imports.len() as u32 + index as u32); }
-    let static_data_offsets: BTreeMap<_, _> = target.static_data.iter()
-        .map(|segment| (segment.id, segment.offset))
+    let static_data_offsets: BTreeMap<_, _> = expected_static_data.iter()
+        .map(|segment| (segment.id, refs.reference(segment.offset)))
         .collect();
     // Both of these are functions of the module, not of one function in it.
     // Built inside the per-function closure they were quadratic: the import
@@ -1211,14 +1216,14 @@ pub(super) fn decode_and_match_plan(
         source.functions().iter().map(plan).collect::<Result<Vec<_>, _>>()?
     };
     if let Some(bridge) = owner_cleanup_bridge {
-        expected.push(owner_operation_kernel::plan_cleanup_helper(&layouts, bridge)?);
+        expected.push(owner_operation_kernel::plan_cleanup_helper(&layouts, bridge, refs)?);
     }
     expected.push(outlined_memory::plan_address());
     for root in memory_helpers.drops.keys() {
-        expected.push(outlined_memory::plan_drop(&layouts, *root, ref_encoding::RefEncoding::Byte)?);
+        expected.push(outlined_memory::plan_drop(&layouts, *root, refs)?);
     }
-    expected.push(outlined_memory::plan_retain(ref_encoding::RefEncoding::Byte));
-    expected.push(outlined_memory::plan_alloc());
+    expected.push(outlined_memory::plan_retain(refs));
+    expected.push(outlined_memory::plan_alloc(refs));
     let mut actual = Vec::new();
     let mut code_count = None;
     let mut section_order = Vec::new();
