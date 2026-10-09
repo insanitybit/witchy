@@ -31,6 +31,57 @@ fn shifted_zero_extended_add_matches_rust() {
     }
 }
 
+/// Loads whose address is `base + (uextend(y) << k)` with k unlike the access
+/// size (the address-mode rule), plus a second zero-extended addend (the
+/// scaled-first address form), at every static-offset shape: zero, unaligned
+/// (simm9), aligned (uimm12) and large (register). Each reads the model's
+/// bytes in bounds and traps outside them.
+#[test]
+fn scaled_index_loads_match_the_memory_model() {
+    const PAGES: u64 = 20;
+    let mut config = Config::new();
+    config.wasm_memory64(true);
+    config.memory_reservation(48 << 30);
+    config.memory_guard_size(0);
+    config.memory_reservation_for_growth(0);
+    config.memory_may_move(false);
+    let engine = Engine::new(&config).unwrap();
+    let offsets = [0u64, 3, 1000, 1 << 20];
+    let mut funcs = String::new();
+    for (shift, load) in [(1u32, "i64.load32_u"), (2, "i64.load"), (3, "i64.load16_u")] {
+        for offset in offsets {
+            funcs += &format!("(func (export \"one_{shift}_{offset}\") (param i32 i32) (result i64)
+                local.get 0 i64.extend_i32_u i64.const {shift} i64.shl {load} offset={offset})\n");
+            funcs += &format!("(func (export \"two_{shift}_{offset}\") (param i32 i32) (result i64)
+                local.get 0 i64.extend_i32_u i64.const {shift} i64.shl local.get 1 i64.extend_i32_u i64.add {load} offset={offset})\n");
+        }
+    }
+    let module = Module::new(&engine, format!("(module (memory (export \"memory\") i64 {PAGES}) {funcs})")).unwrap();
+    let mut store = Store::new(&engine, ());
+    let instance = Instance::new(&mut store, &module, &[]).unwrap();
+    let memory = instance.get_memory(&mut store, "memory").unwrap();
+    let model: Vec<u8> = (0..PAGES * 65536).map(|at| (at * 167 % 253) as u8).collect();
+    memory.write(&mut store, 0, &model).unwrap();
+    for (shift, width) in [(1u32, 4u64), (2, 8), (3, 2)] {
+        for offset in offsets {
+            for (y, z) in [(0u32, 0u32), (1, 1), (37, 5), (100_000, 3), (163_000, 0), (0, 1_300_000), (u32::MAX, 0), (5, u32::MAX)] {
+                for (name, second) in [("one", 0u64), ("two", u64::from(z))] {
+                    let f = instance.get_typed_func::<(i32, i32), i64>(&mut store, &format!("{name}_{shift}_{offset}")).unwrap();
+                    let address = (u64::from(y) << shift) + second + offset;
+                    let got = f.call(&mut store, (y as i32, z as i32));
+                    if address + width <= model.len() as u64 {
+                        let mut bytes = [0u8; 8];
+                        bytes[..width as usize].copy_from_slice(&model[address as usize..(address + width) as usize]);
+                        assert_eq!(got.unwrap(), i64::from_le_bytes(bytes), "{name}_{shift}_{offset} y={y} z={z}");
+                    } else {
+                        assert!(got.is_err(), "{name}_{shift}_{offset} y={y} z={z} read outside the memory");
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[cfg(target_arch = "aarch64")]
 #[test]
 fn foldable_shift_is_one_instruction() {
