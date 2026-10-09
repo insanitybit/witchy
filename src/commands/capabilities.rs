@@ -138,6 +138,14 @@ pub(crate) fn report_capability_diff(old_path: &str, new_path: &str) -> Result<b
         );
         flagged = true;
     }
+    if d.large_heap_added {
+        // RFC-0179: not authority, but a resource the launcher must grant.
+        println!(
+            "HEAP WIDENING: the newer version's `main` declares `@large_heap` and asks its launcher \
+             for up to 32 GiB. Review before trusting."
+        );
+        flagged = true;
+    }
     if !d.added.is_empty() {
         println!(
             "WIDENING: the newer version demands new host authority ({}). Review before trusting.",

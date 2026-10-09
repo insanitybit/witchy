@@ -680,8 +680,8 @@ fn run_server_worker(
     let result = (|| {
     let entry = program.artifact.entry().cloned()
         .ok_or_else(|| Error::msg("server worker lacks admitted canonical entry metadata"))?;
-    // A `@large_heap` program (RFC-0179) runs only once its launch granted
-    // the large heap, so its workers inherit that grant.
+    // A worker's bound is its program's declared heap (RFC-0179), as for the
+    // other worker VMs; it does not yet inherit the primary's run limit.
     let heap = program.artifact.heap_mode();
     let memory_bytes = match heap {
         witchy_wir::HeapMode::Standard => 16384 * 64 * 1024,

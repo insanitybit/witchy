@@ -840,6 +840,9 @@ pub struct FootprintDiff {
     /// policy TCB), and ones it dropped (a narrowing, always safe).
     pub user_caps_added: BTreeSet<String>,
     pub user_caps_removed: BTreeSet<String>,
+    /// RFC-0179: the newer version declares `@large_heap` and the older did not
+    /// (a widening: it asks the launcher for up to 32 GiB).
+    pub large_heap_added: bool,
 }
 
 impl FootprintDiff {
@@ -849,7 +852,7 @@ impl FootprintDiff {
     /// reviewed decision, never something a version bump slips in. Brand changes
     /// are intentional refinements, not authority, so they never trip this.
     pub fn widened(&self) -> bool {
-        !self.added.is_empty() || !self.build_added.is_empty() || !self.user_caps_added.is_empty()
+        !self.added.is_empty() || !self.build_added.is_empty() || !self.user_caps_added.is_empty() || self.large_heap_added
     }
 
     /// Whether the *build* axis specifically widened — the consuming project must
@@ -895,6 +898,7 @@ pub fn diff(old: &Footprint, new: &Footprint) -> FootprintDiff {
         refinements_gained: new.brands.difference(&old.brands).cloned().collect(),
         user_caps_added: new.user_caps.difference(&old.user_caps).cloned().collect(),
         user_caps_removed: old.user_caps.difference(&new.user_caps).cloned().collect(),
+        large_heap_added: new.heap == HeapMode::Large && old.heap != HeapMode::Large,
     }
 }
 

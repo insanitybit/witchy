@@ -332,6 +332,16 @@ pub fn serve(net: Net) -> Int:
     }
 
     #[test]
+    fn diff_flags_a_newly_declared_large_heap_as_a_widening() {
+        let old = footprint("fn main(console: Console):\n    console.print(\"x\")\n");
+        let new = footprint("@large_heap\nfn main(console: Console):\n    console.print(\"x\")\n");
+        let d = diff(&old, &new);
+        assert!(d.added.is_empty() && d.large_heap_added);
+        assert!(d.widened());
+        assert!(!diff(&new, &old).widened(), "dropping the large heap narrows");
+    }
+
+    #[test]
     fn diff_treats_dropped_authority_as_a_safe_narrowing() {
         // Giving up `Net` is a narrowing — recorded in `removed`, never widened().
         let old = footprint(r#"

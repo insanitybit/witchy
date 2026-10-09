@@ -49,5 +49,5 @@ fn refused_growth_names_the_run_limit_and_the_marker() {
     let mut vm = runtime.spawn_admitted(&artifact, console(), 32).expect("spawn program");
     let error = vm.run().expect_err("the list outgrows the run limit").root_cause().to_string();
     assert!(error.contains("out of memory: the 2 MiB memory limit for a run was reached"), "{error}");
-    assert!(error.contains("mark `main` with `@large_heap` to raise it to 32 GiB"), "{error}");
+    assert!(error.contains("mark `main` with `@large_heap` to ask for a larger heap"), "{error}");
 }

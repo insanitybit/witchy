@@ -45,8 +45,7 @@ impl HeapLimiter {
         Some(match heap {
             HeapMode::Large => format!("out of memory: {reached} was reached"),
             HeapMode::Standard => format!(
-                "out of memory: {reached} was reached; mark `main` with `@large_heap` to raise it to {}",
-                gib(HeapMode::Large.max_bytes() as usize)
+                "out of memory: {reached} was reached; mark `main` with `@large_heap` to ask for a larger heap"
             ),
         })
     }
