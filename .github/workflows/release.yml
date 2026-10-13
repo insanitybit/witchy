@@ -239,7 +239,7 @@ jobs:
             --commit "$WITCHY_BUILD_COMMIT" \
             --target "$TARGET"
       - name: Upload workflow artifact
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: witchy-${{ needs.version.outputs.version }}-${{ matrix.target }}
           path: dist/witchy-${{ needs.version.outputs.version }}-${{ matrix.target }}.tar.gz
@@ -275,7 +275,7 @@ jobs:
           }
           ./scripts/release-checksums.sh --output dist/SHA256SUMS dist/witchy-"$VERSION"-*.tar.gz
       - name: Upload exact release assets
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: witchy-${{ needs.version.outputs.version }}-release-assets
           path: |
