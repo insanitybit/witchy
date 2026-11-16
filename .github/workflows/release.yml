@@ -130,7 +130,7 @@ jobs:
           ref: ${{ needs.version.outputs.commit }}
           persist-credentials: false
       - uses: ./.github/actions/install-rust
-      - uses: taiki-e/install-action@16b05812d776ae1dfaabc8277e421fb6d2506419 # v2.82.7
+      - uses: taiki-e/install-action@cfdb7ed4ccc7c7dce37759eae89dc5674b469b39 # v2.90.3
         with:
           tool: nextest
       - name: Build
