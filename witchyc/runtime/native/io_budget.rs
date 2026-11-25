@@ -237,7 +237,6 @@ pub(super) unsafe fn bounded_file_read(
 ) -> u64 {
     use core::ffi::{c_int, c_void};
     unsafe extern "C" {
-        fn witchy_broker_file_read(channel: c_int, slot: u32, out: *mut u8, len: usize) -> c_int;
         fn write(fd: c_int, bytes: *const c_void, length: usize) -> isize;
         safe fn exit(status: c_int) -> !;
     }
@@ -246,13 +245,15 @@ pub(super) unsafe fn bounded_file_read(
     }
     // At the exact limit check for EOF without writing a probe into guest storage.
     let limit = witchy_filesystem_remaining();
-    let mut probe = 0;
-    let (output, requested) = if limit == 0 {
-        (&raw mut probe, 1)
+    let mut probe = [0];
+    let output = if limit == 0 {
+        &mut probe[..]
     } else {
-        (bytes, count.min(limit as usize))
+        // SAFETY: the caller supplies `count` writable bytes at `bytes`, and
+        // `count` is not zero here.
+        unsafe { core::slice::from_raw_parts_mut(bytes, count.min(limit as usize)) }
     };
-    let result = unsafe { witchy_broker_file_read(channel, slot, output, requested) };
+    let result = super::broker_transport::witchy_broker_file_read(channel, slot, output);
     if result < 0 {
         let message = b"witchy: native file read failed; the run is stopped\n";
         unsafe {

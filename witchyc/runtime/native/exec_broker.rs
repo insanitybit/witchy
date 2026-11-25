@@ -494,18 +494,6 @@ fn executes_granted_program_and_enforces_timeout() {
     unsafe extern "C" {
         fn socketpair(domain: c_int, kind: c_int, protocol: c_int, fds: *mut c_int) -> c_int;
         fn waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
-        fn witchy_broker_exec_args(channel: c_int, bytes: *const u8, len: usize) -> c_int;
-        fn witchy_broker_exec_run(
-            channel: c_int,
-            program: u32,
-            timeout: u32,
-            budget: u32,
-            argc: u32,
-            code: *mut i64,
-            length: *mut u32,
-            error_length: *mut u32,
-        ) -> c_int;
-        fn witchy_broker_exec_out(channel: c_int, bytes: *mut u8, capacity: usize) -> c_int;
     }
     let executable = std::env::current_exe().unwrap();
     let parent = CString::new(executable.parent().unwrap().as_os_str().as_bytes()).unwrap();
@@ -568,14 +556,7 @@ fn executes_granted_program_and_enforces_timeout() {
         }
         for _ in 0..3 {
             let mut head = [0u8; 4];
-            if !unsafe {
-                super::broker_transport::witchy_broker_transfer(
-                    channel[1],
-                    head.as_mut_ptr(),
-                    ptr::null(),
-                    4,
-                )
-            } {
+            if !super::broker_transport::witchy_broker_receive(channel[1], &mut head) {
                 unsafe {
                     _exit(1);
                 }
@@ -584,14 +565,10 @@ fn executes_granted_program_and_enforces_timeout() {
             let mut data = [0u8; 16384];
             if count > data.len()
                 || (head[0] != 29
-                    && !unsafe {
-                        super::broker_transport::witchy_broker_transfer(
-                            channel[1],
-                            data.as_mut_ptr(),
-                            ptr::null(),
-                            count,
-                        )
-                    })
+                    && !super::broker_transport::witchy_broker_receive(
+                        channel[1],
+                        &mut data[..count],
+                    ))
             {
                 unsafe {
                     _exit(2);
@@ -607,14 +584,7 @@ fn executes_granted_program_and_enforces_timeout() {
                 _exit(3)
             };
             if !super::broker_transport::witchy_broker_reply(channel[1], 0, answer)
-                || !unsafe {
-                    super::broker_transport::witchy_broker_transfer(
-                        channel[1],
-                        ptr::null_mut(),
-                        data.as_ptr(),
-                        answer,
-                    )
-                }
+                || !super::broker_transport::witchy_broker_send(channel[1], &data[..answer])
             {
                 unsafe {
                     _exit(3);
@@ -630,28 +600,26 @@ fn executes_granted_program_and_enforces_timeout() {
     }
     let arguments = b"--exact\0exec_broker::subprocess_helper\0--nocapture\0";
     assert_eq!(
-        unsafe { witchy_broker_exec_args(channel[0], arguments.as_ptr(), arguments.len()) },
+        super::broker_transport::witchy_broker_exec_args(channel[0], arguments),
         0
     );
     let (mut code, mut out_len, mut err_len) = (0, 0, 0);
     assert_eq!(
-        unsafe {
-            witchy_broker_exec_run(
-                channel[0],
-                0,
-                1000,
-                1024,
-                3,
-                &mut code,
-                &mut out_len,
-                &mut err_len,
-            )
-        },
+        super::broker_transport::witchy_broker_exec_run(
+            channel[0],
+            0,
+            1000,
+            1024,
+            3,
+            &mut code,
+            &mut out_len,
+            &mut err_len,
+        ),
         0
     );
     assert_eq!(code, 0);
     let mut output = [0; 1024];
-    let count = unsafe { witchy_broker_exec_out(channel[0], output.as_mut_ptr(), output.len()) };
+    let count = super::broker_transport::witchy_broker_exec_out(channel[0], &mut output);
     assert_eq!(count as u32, out_len + err_len);
     assert!(
         output[..count as usize]

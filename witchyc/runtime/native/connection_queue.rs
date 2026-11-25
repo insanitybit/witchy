@@ -127,12 +127,6 @@ struct NativeSocket {
 
 unsafe extern "C" {
     safe fn witchy_net_close(channel: c_int, slot: u32) -> c_int;
-    fn witchy_net_flush_queue(
-        channel: c_int,
-        slot: u32,
-        bytes: *const u8,
-        len: *mut usize,
-    ) -> c_int;
 }
 
 const SOCKET_IO_ERROR: c_int = 5;
@@ -150,9 +144,12 @@ impl NativeSocket {
         if self.queued_length > self.queued.len() {
             return SOCKET_IO_ERROR;
         }
-        unsafe {
-            witchy_net_flush_queue(channel, slot, self.queued.as_ptr(), &mut self.queued_length)
-        }
+        super::broker_transport::witchy_net_flush_queue(
+            channel,
+            slot,
+            &self.queued,
+            &mut self.queued_length,
+        )
     }
 }
 
@@ -677,11 +674,10 @@ unsafe fn socket_transfer(channel: c_int, slot: u32, op: u64, operand: u64, coun
     unsafe extern "C" {
         safe fn witchy_network_remaining() -> u64;
         safe fn witchy_network_charge(bytes: usize);
-        fn witchy_net_send(channel: c_int, slot: u32, bytes: *const u8, len: usize) -> c_int;
-        fn witchy_net_receive(channel: c_int, slot: u32, bytes: *mut u8, len: usize) -> c_int;
-        fn witchy_net_try_send(channel: c_int, slot: u32, bytes: *const u8, len: usize) -> c_int;
-        fn witchy_net_try_receive(channel: c_int, slot: u32, bytes: *mut u8, len: usize) -> c_int;
     }
+    use super::broker_transport::{
+        witchy_net_receive, witchy_net_send, witchy_net_try_receive, witchy_net_try_send,
+    };
     const TOO_LARGE: u64 = 3;
     const IO: u64 = SOCKET_IO_ERROR as u64;
     const WOULD_BLOCK: u64 = 7;
@@ -716,7 +712,7 @@ unsafe fn socket_transfer(channel: c_int, slot: u32, op: u64, operand: u64, coun
             return 257;
         }
         let mut byte = 0;
-        let size = unsafe { witchy_net_receive(channel, slot, &mut byte, 1) };
+        let size = witchy_net_receive(channel, slot, core::slice::from_mut(&mut byte));
         return match size {
             ..0 => 257,
             0 => 256,
@@ -730,9 +726,10 @@ unsafe fn socket_transfer(channel: c_int, slot: u32, op: u64, operand: u64, coun
     let nonblocking = matches!(op, 12 | 13);
     if nonblocking {
         if socket.queued_length != 0 {
-            let sent = unsafe {
-                witchy_net_try_send(channel, slot, socket.queued.as_ptr(), socket.queued_length)
+            let Some(queued) = socket.queued.get(..socket.queued_length) else {
+                return IO << 32;
             };
+            let sent = witchy_net_try_send(channel, slot, queued);
             if sent < 0 {
                 return transfer_error(sent);
             }
@@ -757,12 +754,25 @@ unsafe fn socket_transfer(channel: c_int, slot: u32, op: u64, operand: u64, coun
     }
     let len = count.min(budget).min(SOCKET_CHUNK as u64) as usize;
     let bytes = operand as usize as *mut u8;
+    let missing = bytes.is_null() && len != 0;
+    // An empty span needs no guest memory, and its address may be null.
+    let bytes = if len == 0 {
+        core::ptr::NonNull::dangling().as_ptr()
+    } else {
+        bytes
+    };
+    // SAFETY: the guest dispatcher supplies a span of `count` bytes, readable
+    // for a send and writable for a receive, and `len` is at most `count`.
+    // No span is formed from a null address.
     let size = unsafe {
         match op {
-            7 => witchy_net_send(channel, slot, bytes, len),
-            8 => witchy_net_receive(channel, slot, bytes, len),
-            12 => witchy_net_try_send(channel, slot, bytes, len),
-            13 => witchy_net_try_receive(channel, slot, bytes, len),
+            7 | 8 | 12 | 13 if missing => -1,
+            7 => witchy_net_send(channel, slot, core::slice::from_raw_parts(bytes, len)),
+            8 => witchy_net_receive(channel, slot, core::slice::from_raw_parts_mut(bytes, len)),
+            12 => witchy_net_try_send(channel, slot, core::slice::from_raw_parts(bytes, len)),
+            13 => {
+                witchy_net_try_receive(channel, slot, core::slice::from_raw_parts_mut(bytes, len))
+            }
             _ => core::arch::asm!("brk #0", options(noreturn, nostack)),
         }
     };
@@ -895,11 +905,6 @@ unsafe fn socket_poll(
     group: u64,
 ) -> u64 {
     unsafe extern "C" {
-        fn witchy_net_poll(
-            channel: c_int,
-            request: *mut [u8; SOCKET_SLOTS + 1],
-            timeout: u32,
-        ) -> c_int;
         fn witchy_timer_due(handle: u64, due: *mut u64) -> bool;
         safe fn witchy_clock_now_ms(grant: u64) -> u64;
     }
@@ -971,7 +976,7 @@ unsafe fn socket_poll(
             .min(timeout.into()) as u32;
     }
     if (has_socket || soonest.is_some())
-        && unsafe { witchy_net_poll(channel, &mut request, timeout) } < 0
+        && super::broker_transport::witchy_net_poll(channel, &mut request, timeout) < 0
     {
         unsafe { core::arch::asm!("brk #0", options(noreturn, nostack)) }
     }

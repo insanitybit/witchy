@@ -128,19 +128,6 @@ fn broker_reads_only_the_granted_directory() {
             port: *mut u16,
             relay: *mut c_int,
         ) -> c_int;
-        fn witchy_broker_file_open(
-            channel: c_int,
-            slot: u32,
-            path: *const u8,
-            length: usize,
-            kind: u32,
-        ) -> c_int;
-        fn witchy_broker_file_read(
-            channel: c_int,
-            slot: u32,
-            bytes: *mut u8,
-            length: usize,
-        ) -> c_int;
         fn witchy_broker_file_close(channel: c_int, slot: u32) -> c_int;
     }
     let root = std::env::temp_dir().join(format!("witchy-linux-broker-e2e-{}", std::process::id()));
@@ -177,19 +164,19 @@ fn broker_reads_only_the_granted_directory() {
     }
     let path = b"\x10allowed";
     assert_eq!(
-        unsafe { witchy_broker_file_open(channel, 0, path.as_ptr(), path.len(), 1) },
+        broker_transport::witchy_broker_file_open(channel, 0, path, 1),
         0
     );
     let mut bytes = [0; 8];
     assert_eq!(
-        unsafe { witchy_broker_file_read(channel, 0, bytes.as_mut_ptr(), bytes.len()) },
+        broker_transport::witchy_broker_file_read(channel, 0, &mut bytes),
         4
     );
     assert_eq!(&bytes[..4], b"safe");
     assert_eq!(unsafe { witchy_broker_file_close(channel, 0) }, 0);
     let denied = b"\x10../etc/passwd";
     assert_ne!(
-        unsafe { witchy_broker_file_open(channel, 0, denied.as_ptr(), denied.len(), 1) },
+        broker_transport::witchy_broker_file_open(channel, 0, denied, 1),
         0
     );
     unsafe {
@@ -228,18 +215,6 @@ fn confined_broker_runs_only_the_granted_executable() {
             port: *mut u16,
             relay: *mut c_int,
         ) -> c_int;
-        fn witchy_broker_exec_args(channel: c_int, bytes: *const u8, len: usize) -> c_int;
-        fn witchy_broker_exec_run(
-            channel: c_int,
-            program: u32,
-            timeout: u32,
-            budget: u32,
-            argc: u32,
-            code: *mut i64,
-            length: *mut u32,
-            error_length: *mut u32,
-        ) -> c_int;
-        fn witchy_broker_exec_out(channel: c_int, bytes: *mut u8, capacity: usize) -> c_int;
     }
     let executable = std::env::current_exe().unwrap();
     let parent = CString::new(executable.parent().unwrap().as_os_str().as_bytes()).unwrap();
@@ -274,21 +249,28 @@ fn confined_broker_runs_only_the_granted_executable() {
     }
     let args = b"--exact\0exec_broker::linux_subprocess_helper\0--nocapture\0";
     assert_eq!(
-        unsafe { witchy_broker_exec_args(channel, args.as_ptr(), args.len()) },
+        broker_transport::witchy_broker_exec_args(channel, args),
         0
     );
     let mut code = 0;
     let mut size = 0;
     let mut errors = 0;
     assert_eq!(
-        unsafe {
-            witchy_broker_exec_run(channel, 0, 1000, 1024, 3, &mut code, &mut size, &mut errors)
-        },
+        broker_transport::witchy_broker_exec_run(
+            channel,
+            0,
+            1000,
+            1024,
+            3,
+            &mut code,
+            &mut size,
+            &mut errors
+        ),
         0
     );
     assert_eq!(code, 0);
     let mut output = [0u8; 1024];
-    let got = unsafe { witchy_broker_exec_out(channel, output.as_mut_ptr(), output.len()) };
+    let got = broker_transport::witchy_broker_exec_out(channel, &mut output);
     assert!(
         got > 0
             && output[..got as usize]
@@ -296,9 +278,16 @@ fn confined_broker_runs_only_the_granted_executable() {
                 .any(|s| s == b"linux-exec-hello")
     );
     assert_eq!(
-        unsafe {
-            witchy_broker_exec_run(channel, 1, 1000, 1024, 0, &mut code, &mut size, &mut errors)
-        },
+        broker_transport::witchy_broker_exec_run(
+            channel,
+            1,
+            1000,
+            1024,
+            0,
+            &mut code,
+            &mut size,
+            &mut errors
+        ),
         4
     );
     unsafe {
@@ -336,8 +325,6 @@ fn confined_broker_connects_to_the_granted_endpoint() {
             relay: *mut c_int,
         ) -> c_int;
         fn witchy_net_connect(channel: c_int, slot: u32, endpoint: u32) -> c_int;
-        fn witchy_net_send(channel: c_int, slot: u32, bytes: *const u8, len: usize) -> c_int;
-        fn witchy_net_receive(channel: c_int, slot: u32, bytes: *mut u8, len: usize) -> c_int;
         fn witchy_net_close(channel: c_int, slot: u32) -> c_int;
     }
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -368,16 +355,13 @@ fn confined_broker_connects_to_the_granted_endpoint() {
     assert!(channel >= 0 && relay > 0, "broker failed to start");
     assert_eq!(unsafe { witchy_net_connect(channel, 0, 0) }, 0);
     let (mut peer, _) = listener.accept().unwrap();
-    assert_eq!(
-        unsafe { witchy_net_send(channel, 0, b"ping".as_ptr(), 4) },
-        4
-    );
+    assert_eq!(broker_transport::witchy_net_send(channel, 0, b"ping"), 4);
     let mut bytes = [0; 4];
     peer.read_exact(&mut bytes).unwrap();
     assert_eq!(&bytes, b"ping");
     peer.write_all(b"pong").unwrap();
     assert_eq!(
-        unsafe { witchy_net_receive(channel, 0, bytes.as_mut_ptr(), 4) },
+        broker_transport::witchy_net_receive(channel, 0, &mut bytes),
         4
     );
     assert_eq!(&bytes, b"pong");

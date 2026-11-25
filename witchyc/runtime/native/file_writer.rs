@@ -7,6 +7,7 @@ use core::{
 };
 
 use super::{
+    broker_transport::{witchy_broker_file_commit, witchy_broker_output_open},
     file_reader::channel,
     io_budget::{witchy_filesystem_charge, witchy_filesystem_remaining},
 };
@@ -46,20 +47,6 @@ unsafe extern "C" {
     fn free(bytes: *mut c_void);
     fn write(fd: c_int, bytes: *const c_void, length: usize) -> isize;
     safe fn exit(status: c_int) -> !;
-    fn witchy_broker_output_open(
-        channel: c_int,
-        slot: u32,
-        path: *const u8,
-        length: usize,
-        exclusive: bool,
-        append: bool,
-    ) -> c_int;
-    fn witchy_broker_file_commit(
-        channel: c_int,
-        slot: u32,
-        bytes: *const u8,
-        length: usize,
-    ) -> c_int;
     safe fn witchy_broker_output_drop(channel: c_int, slot: u32) -> c_int;
 }
 
@@ -80,6 +67,9 @@ unsafe extern "C" fn witchy_open_directory_output(
     append: bool,
 ) -> u64 {
     let outputs = unsafe { &mut *(&raw mut OUTPUTS) };
+    // SAFETY: the directory dispatcher supplies `length` readable bytes at
+    // `path` that stay valid for the duration of the call.
+    let path = unsafe { core::slice::from_raw_parts(path, length) };
     for _ in 0..SLOTS {
         let handle = NEXT.get();
         if handle == u64::MAX {
@@ -95,9 +85,7 @@ unsafe extern "C" fn witchy_open_directory_output(
         if bytes.is_null() {
             return IO;
         }
-        let result = unsafe {
-            witchy_broker_output_open(channel(), slot as u32, path, length, exclusive, append)
-        };
+        let result = witchy_broker_output_open(channel(), slot as u32, path, exclusive, append);
         if result != 0 {
             unsafe { free(bytes.cast()) };
             return status(result);
@@ -135,12 +123,13 @@ unsafe extern "C" fn witchy_write_file(op: u64, handle: u64, value: u64, count: 
     match op {
         0 => return 0,
         3 | 4 => {
-            let result = unsafe {
-                if op == 3 {
-                    witchy_broker_file_commit(channel, slot as u32, output.bytes, output.length)
-                } else {
-                    witchy_broker_output_drop(channel, slot as u32)
-                }
+            let result = if op == 3 {
+                // SAFETY: a live output owns `CAPACITY` bytes at `bytes`, of
+                // which writes have initialized the first `length`.
+                let staged = unsafe { core::slice::from_raw_parts(output.bytes, output.length) };
+                witchy_broker_file_commit(channel, slot as u32, staged)
+            } else {
+                witchy_broker_output_drop(channel, slot as u32)
             };
             if slot != SLOTS {
                 unsafe { free(output.bytes.cast()) };

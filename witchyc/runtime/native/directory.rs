@@ -3,6 +3,10 @@
 use super::global::Global;
 use core::ffi::c_int;
 
+use super::broker_transport::{
+    witchy_broker_directory_change, witchy_broker_file_open, witchy_broker_file_probe,
+    witchy_broker_rename,
+};
 use super::file_reader::channel;
 
 const SLOTS: usize = 16;
@@ -65,36 +69,13 @@ static NEXT: Global<u64> = Global::new(16384);
 unsafe extern "C" {
     safe fn witchy_broker_root_close(channel: c_int, writable: bool) -> c_int;
     safe fn witchy_broker_file_close(channel: c_int, slot: u32) -> c_int;
-    fn witchy_broker_rename(
-        channel: c_int,
-        source: u32,
-        from: *const u8,
-        from_len: usize,
-        to: *const u8,
-        to_len: usize,
-    ) -> c_int;
-    fn witchy_broker_directory_change(
-        channel: c_int,
-        source: u32,
-        path: *const u8,
-        length: usize,
-        remove: bool,
-    ) -> c_int;
     fn witchy_open_directory_output(
         path: *const u8,
         length: usize,
         exclusive: bool,
         append: bool,
     ) -> u64;
-    fn witchy_broker_file_probe(channel: c_int, path: *const u8, length: usize) -> c_int;
     safe fn witchy_broker_directory_list(channel: c_int, slot: u32, source: u8) -> c_int;
-    fn witchy_broker_file_open(
-        channel: c_int,
-        slot: u32,
-        path: *const u8,
-        length: usize,
-        kind: u32,
-    ) -> c_int;
     #[link_name = "write"]
     fn write_stderr(fd: c_int, bytes: *const core::ffi::c_void, length: usize) -> isize;
     safe fn exit(status: c_int) -> !;
@@ -192,32 +173,30 @@ extern "C" fn witchy_directory(op: u64, handle: u64, value: u64) -> u64 {
         if from_len >= PATH_CAPACITY - 1 || len >= PATH_CAPACITY - 1 {
             return 2;
         }
-        return unsafe {
-            witchy_broker_rename(
-                channel,
-                source as u32,
-                from.bytes.as_ptr().add(1),
-                from_len,
-                path.bytes.as_ptr().add(1),
-                len,
-            )
-        } as u64;
+        return witchy_broker_rename(
+            channel,
+            source as u32,
+            &from.bytes[1..1 + from_len],
+            &path.bytes[1..1 + len],
+        ) as u64;
     }
     if op != 6 && (len == 0 || len == PATH_CAPACITY - 1) {
         return if op == 4 { 0 } else { 2 };
     }
     path.bytes[0] = source as u8;
-    let bytes = path.bytes.as_ptr();
+    // `Path::push` keeps the source byte and `len` path bytes inside the array.
+    let bytes = &path.bytes[..len + 1];
     match op {
         7 | 10 => {
-            return unsafe {
-                witchy_broker_directory_change(channel, source as u32, bytes.add(1), len, op == 10)
-            } as u64;
+            return witchy_broker_directory_change(channel, source as u32, &bytes[1..], op == 10)
+                as u64;
         }
         8 | 9 | 11 => {
-            return unsafe { witchy_open_directory_output(bytes, len + 1, op == 9, op == 11) };
+            return unsafe {
+                witchy_open_directory_output(bytes.as_ptr(), bytes.len(), op == 9, op == 11)
+            };
         }
-        4 => return unsafe { witchy_broker_file_probe(channel, bytes, len + 1) } as u64,
+        4 => return witchy_broker_file_probe(channel, bytes) as u64,
         _ => {}
     }
     let kind = match op {
@@ -238,12 +217,10 @@ extern "C" fn witchy_directory(op: u64, handle: u64, value: u64) -> u64 {
         }
         // The source path belongs to a live slot or a root, so the new
         // slot cannot alias it. End the path borrow before resetting it.
-        let result = unsafe {
-            if op == 6 {
-                witchy_broker_directory_list(channel, slot as u32, source as u8)
-            } else {
-                witchy_broker_file_open(channel, slot as u32, bytes, len + 1, kind)
-            }
+        let result = if op == 6 {
+            witchy_broker_directory_list(channel, slot as u32, source as u8)
+        } else {
+            witchy_broker_file_open(channel, slot as u32, bytes, kind)
         };
         if result == -1 {
             let message = b"witchy: the directory grant reached a secret's source, or its broker failed; the run is stopped\n";

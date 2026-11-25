@@ -137,8 +137,7 @@ unsafe fn relay(
     if let Some(slot) = streams.get_mut(connection_slot) {
         *slot = connection;
     }
-    let mut scratch = [0; CHUNK];
-    let bytes = scratch.as_mut_ptr();
+    let mut scratch = [0u8; CHUNK];
     let (mut operation, mut count, mut frame_slot) = (0, 0, 0);
     while unsafe {
         witchy_broker_read_request(channel, &mut operation, &mut count, &mut frame_slot)
@@ -180,16 +179,14 @@ unsafe fn relay(
                 if count > CHUNK
                     || (operation != 29
                         && count != 0
-                        && !unsafe { witchy_broker_transfer(channel, bytes, null(), count) })
+                        && !witchy_broker_receive(channel, &mut scratch[..count]))
                 {
                     break;
                 }
-                // SAFETY: `bytes` is the CHUNK-byte scratch buffer and `capacity <= CHUNK`.
-                let buffer = unsafe { core::slice::from_raw_parts_mut(bytes, capacity) };
                 let Some(answer) = witchy_exec_request(
                     channel,
                     operation,
-                    buffer,
+                    &mut scratch[..capacity],
                     if operation == 29 { 0 } else { count },
                 ) else {
                     witchy_broker_reply(channel, 2, 0);
@@ -197,7 +194,9 @@ unsafe fn relay(
                 };
                 witchy_broker_reply(channel, 0, answer)
                     && (answer == 0
-                        || unsafe { witchy_broker_transfer(channel, null_mut(), bytes, answer) })
+                        || scratch
+                            .get(..answer)
+                            .is_some_and(|bytes| witchy_broker_send(channel, bytes)))
             }
             17 | 21 | 23 => {
                 let writable = if slot == SLOTS {
@@ -210,10 +209,11 @@ unsafe fn relay(
                 if writable < 0
                     || count >= CHUNK
                     || (count == 0 && operation != 23)
-                    || !unsafe { witchy_broker_transfer(channel, bytes, null(), count) }
+                    || !witchy_broker_receive(channel, &mut scratch[..count])
                 {
                     break;
                 }
+                let bytes = scratch.as_mut_ptr();
                 let code = unsafe {
                     if operation == 23 {
                         witchy_broker_rename_rooted(writable, bytes, count, mode)
@@ -228,8 +228,7 @@ unsafe fn relay(
                         )
                     }
                 };
-                witchy_broker_reply(channel, 0, 1)
-                    && unsafe { witchy_broker_transfer(channel, null_mut(), &code, 1) }
+                witchy_broker_reply(channel, 0, 1) && witchy_broker_send(channel, &[code])
             }
             16 | 18 | 19 | 20 | 22 => unsafe {
                 witchy_broker_output_request(
@@ -237,7 +236,7 @@ unsafe fn relay(
                     operation,
                     slot,
                     count,
-                    bytes,
+                    scratch.as_mut_ptr(),
                     &mut outputs,
                     &mut output,
                     output_name,
@@ -265,22 +264,25 @@ unsafe fn relay(
                 witchy_broker_reply(channel, u8::from(result != 0), 0)
             }
             9 => {
-                if count != 19 || !unsafe { witchy_broker_transfer(channel, bytes, null(), count) }
-                {
+                if count != 19 || !witchy_broker_receive(channel, &mut scratch[..count]) {
                     break;
                 }
-                let timeout = unsafe { u16::from_be_bytes([bytes.read(), bytes.add(1).read()]) };
-                let bits = unsafe { bytes.add(2) };
+                let timeout = u16::from_be_bytes([scratch[0], scratch[1]]);
+                let bits = &mut scratch[2..19];
                 if timeout > 5000
                     || !unsafe {
-                        witchy_broker_readiness(listener, &streams, bits.cast(), i32::from(timeout))
+                        witchy_broker_readiness(
+                            listener,
+                            &streams,
+                            bits.as_mut_ptr().cast(),
+                            i32::from(timeout),
+                        )
                     }
                 {
                     witchy_broker_reply(channel, 2, 0);
                     break;
                 }
-                witchy_broker_reply(channel, 0, 17)
-                    && unsafe { witchy_broker_transfer(channel, null_mut(), bits, 17) }
+                witchy_broker_reply(channel, 0, 17) && witchy_broker_send(channel, bits)
             }
             _ => {
                 let Some(stream) = streams.get_mut(slot) else {
@@ -294,7 +296,7 @@ unsafe fn relay(
                             operation,
                             slot,
                             count,
-                            bytes,
+                            scratch.as_mut_ptr(),
                             root,
                             write_root,
                             combined,
@@ -314,7 +316,7 @@ unsafe fn relay(
                             stream,
                             operation,
                             count,
-                            bytes,
+                            scratch.as_mut_ptr(),
                         )
                     }
                 }

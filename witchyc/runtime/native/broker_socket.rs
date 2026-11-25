@@ -507,14 +507,7 @@ unsafe extern "C" fn witchy_net_start(
         }
         let [hi, lo] = port.to_be_bytes();
         let ready = [0, hi, lo];
-        if !unsafe {
-            super::broker_transport::witchy_broker_transfer(
-                worker,
-                ptr::null_mut(),
-                ready.as_ptr(),
-                ready.len(),
-            )
-        } {
+        if !super::broker_transport::witchy_broker_send(worker, &ready) {
             _exit(2)
         }
         let mode = if !data_only {
@@ -569,14 +562,7 @@ unsafe extern "C" fn witchy_net_start(
     };
     if parent < 0
         || unsafe { poll(&mut startup, 1, 5000) } != 1
-        || !unsafe {
-            super::broker_transport::witchy_broker_transfer(
-                parent,
-                ready.as_mut_ptr(),
-                ptr::null(),
-                ready.len(),
-            )
-        }
+        || !super::broker_transport::witchy_broker_receive(parent, &mut ready)
         || ready[0] != 0
     {
         if parent >= 0 {
@@ -605,7 +591,7 @@ pub(super) unsafe fn witchy_broker_stream_request(
     count: usize,
     bytes: *mut u8,
 ) -> bool {
-    use super::broker_transport::{witchy_broker_reply, witchy_broker_transfer};
+    use super::broker_transport::{witchy_broker_receive, witchy_broker_reply, witchy_broker_send};
     unsafe extern "C" {
         fn send(fd: c_int, bytes: *const c_void, len: usize, flags: c_int) -> isize;
         fn recv(fd: c_int, bytes: *mut u8, len: usize, flags: c_int) -> isize;
@@ -621,6 +607,8 @@ pub(super) unsafe fn witchy_broker_stream_request(
     #[cfg(target_os = "linux")]
     const DONTWAIT: c_int = 0x40;
     let mut stream = unsafe { slot.read() };
+    // SAFETY: the relay lends its 16 KiB scratch exclusively for this call.
+    let bytes = unsafe { core::slice::from_raw_parts_mut(bytes, 16384) };
     let accepting = matches!(operation, 5 | 6);
     let opening = operation == 1 || accepting;
     if count > 16384
@@ -671,7 +659,7 @@ pub(super) unsafe fn witchy_broker_stream_request(
         }
         2 | 3 | 7 | 8 => {
             let sending = matches!(operation, 2 | 7);
-            if sending && !unsafe { witchy_broker_transfer(channel, bytes, ptr::null(), count) } {
+            if sending && !witchy_broker_receive(channel, &mut bytes[..count]) {
                 return false;
             }
             if count == 0 && operation != 3 {
@@ -680,10 +668,10 @@ pub(super) unsafe fn witchy_broker_stream_request(
                 loop {
                     let result = unsafe {
                         match operation {
-                            2 => send(stream, bytes.cast(), count, 0),
-                            7 => send(stream, bytes.cast(), count, DONTWAIT),
-                            8 => recv(stream, bytes, count, DONTWAIT),
-                            _ => read(stream, bytes.cast(), count),
+                            2 => send(stream, bytes.as_ptr().cast(), count, 0),
+                            7 => send(stream, bytes.as_ptr().cast(), count, DONTWAIT),
+                            8 => recv(stream, bytes.as_mut_ptr(), count, DONTWAIT),
+                            _ => read(stream, bytes.as_mut_ptr().cast(), count),
                         }
                     };
                     if result >= 0 && result as usize <= count {
@@ -712,8 +700,7 @@ pub(super) unsafe fn witchy_broker_stream_request(
     };
     unsafe { slot.write(stream) };
     witchy_broker_reply(channel, status, size)
-        && (payload == 0
-            || unsafe { witchy_broker_transfer(channel, ptr::null_mut(), bytes, payload) })
+        && (payload == 0 || witchy_broker_send(channel, &bytes[..payload]))
 }
 
 /// Idle guests can compute indefinitely. Once the header begins, the socket
@@ -739,14 +726,7 @@ pub(super) unsafe fn witchy_broker_read_request(
         }
     }
     let mut header = [0; 4];
-    if !unsafe {
-        super::broker_transport::witchy_broker_transfer(
-            channel,
-            header.as_mut_ptr(),
-            ptr::null(),
-            header.len(),
-        )
-    } {
+    if !super::broker_transport::witchy_broker_receive(channel, &mut header) {
         return false;
     }
     let [opcode, hi, lo, source] = header;

@@ -1,5 +1,9 @@
 //! Guest-visible Exec capabilities and run handles. Broker operations are
 //! serialized by the guest thread; handles are never recycled in a run.
+use super::broker_transport::{
+    witchy_broker_exec_args, witchy_broker_exec_env, witchy_broker_exec_input,
+    witchy_broker_exec_out, witchy_broker_exec_run,
+};
 use super::global::{Global, Table};
 use super::{exec_pending::Buffer, file_reader};
 use core::{
@@ -17,21 +21,7 @@ const CHUNK: usize = 16384;
 unsafe extern "C" {
     static witchy_entry_grants: u64;
     fn malloc(size: usize) -> *mut c_void;
-    fn witchy_broker_exec_args(channel: c_int, bytes: *const u8, length: usize) -> c_int;
-    fn witchy_broker_exec_input(channel: c_int, bytes: *const u8, length: usize) -> c_int;
-    fn witchy_broker_exec_env(channel: c_int, bytes: *const u8, length: usize) -> c_int;
     safe fn witchy_broker_exec_cwd(channel: c_int, source: u32, writable: bool) -> c_int;
-    fn witchy_broker_exec_run(
-        channel: c_int,
-        program: u32,
-        timeout: u32,
-        budget: u32,
-        argc: u32,
-        code: *mut i64,
-        length: *mut u32,
-        err_length: *mut u32,
-    ) -> c_int;
-    fn witchy_broker_exec_out(channel: c_int, bytes: *mut u8, capacity: usize) -> c_int;
     safe fn witchy_directory(op: u64, handle: u64, value: u64) -> u64;
 }
 
@@ -226,13 +216,9 @@ fn reset(entry: &mut Entry) {
     entry.env_value_len = 0;
 }
 
-fn send(
-    channel: c_int,
-    bytes: &[u8],
-    send: unsafe extern "C" fn(c_int, *const u8, usize) -> c_int,
-) {
+fn send(channel: c_int, bytes: &[u8], send: fn(c_int, &[u8]) -> c_int) {
     for part in bytes.chunks(CHUNK) {
-        if unsafe { send(channel, part.as_ptr(), part.len()) } != 0 {
+        if send(channel, part) != 0 {
             trap();
         }
     }
@@ -269,18 +255,16 @@ fn start(entry: &mut Entry, program: u32) -> u64 {
     });
     let budget = allowed.min(u64::from(u32::MAX - 1)) as u32;
     let (mut code, mut out, mut err) = (0i64, 0u32, 0u32);
-    let status = unsafe {
-        witchy_broker_exec_run(
-            channel,
-            program,
-            timeout as u32,
-            budget,
-            entry.argc,
-            &mut code,
-            &mut out,
-            &mut err,
-        )
-    };
+    let status = witchy_broker_exec_run(
+        channel,
+        program,
+        timeout as u32,
+        budget,
+        entry.argc,
+        &mut code,
+        &mut out,
+        &mut err,
+    );
     reset(entry);
     if status != 0 {
         return failed(status as u8);
@@ -299,7 +283,7 @@ fn start(entry: &mut Entry, program: u32) -> u64 {
         let mut remaining = length;
         while remaining != 0 {
             let want = remaining.min(CHUNK);
-            let got = unsafe { witchy_broker_exec_out(channel, chunk.as_mut_ptr(), want) };
+            let got = witchy_broker_exec_out(channel, &mut chunk[..want]);
             if got <= 0 || got as usize > want || !buffer.append(&chunk[..got as usize]) {
                 trap();
             }
@@ -601,28 +585,17 @@ fn guest_handles_run_only_a_granted_program() {
         }
         loop {
             let mut head = [0u8; 4];
-            if !unsafe {
-                super::broker_transport::witchy_broker_transfer(
-                    sockets[1],
-                    head.as_mut_ptr(),
-                    ptr::null(),
-                    4,
-                )
-            } {
+            if !super::broker_transport::witchy_broker_receive(sockets[1], &mut head) {
                 break;
             }
             let count = u16::from_be_bytes([head[1], head[2]]) as usize;
             let mut data = [0u8; CHUNK];
             if count > CHUNK
                 || (head[0] != 29
-                    && !unsafe {
-                        super::broker_transport::witchy_broker_transfer(
-                            sockets[1],
-                            data.as_mut_ptr(),
-                            ptr::null(),
-                            count,
-                        )
-                    })
+                    && !super::broker_transport::witchy_broker_receive(
+                        sockets[1],
+                        &mut data[..count],
+                    ))
             {
                 unsafe {
                     _exit(1);
@@ -638,14 +611,7 @@ fn guest_handles_run_only_a_granted_program() {
                 _exit(2)
             };
             if !super::broker_transport::witchy_broker_reply(sockets[1], 0, answer)
-                || !unsafe {
-                    super::broker_transport::witchy_broker_transfer(
-                        sockets[1],
-                        ptr::null_mut(),
-                        data.as_ptr(),
-                        answer,
-                    )
-                }
+                || !super::broker_transport::witchy_broker_send(sockets[1], &data[..answer])
             {
                 unsafe {
                     _exit(2);

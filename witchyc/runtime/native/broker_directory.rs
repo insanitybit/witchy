@@ -1069,6 +1069,8 @@ unsafe fn witchy_broker_commit_output(
         safe fn fsync(fd: c_int) -> c_int;
     }
     const EINTR: c_int = 4;
+    // SAFETY: the caller supplies 16 KiB of exclusive scratch for this call.
+    let scratch = unsafe { core::slice::from_raw_parts_mut(scratch, 16384) };
     // O_RDWR | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW.
     #[cfg(target_os = "macos")]
     const FLAGS: c_int = 0x0100_0b02;
@@ -1125,21 +1127,15 @@ unsafe fn witchy_broker_commit_output(
     let mut ok = fd >= 0;
     while length != 0 {
         let chunk = length.min(16384);
-        if !unsafe {
-            super::broker_transport::witchy_broker_transfer(
-                channel,
-                scratch,
-                core::ptr::null(),
-                chunk,
-            )
-        } {
+        if !super::broker_transport::witchy_broker_receive(channel, &mut scratch[..chunk]) {
             ok = false;
             break;
         }
         if ok {
             let mut offset = 0;
             while offset < chunk {
-                let count = unsafe { write(fd, scratch.add(offset).cast(), chunk - offset) };
+                let rest = &scratch[offset..chunk];
+                let count = unsafe { write(fd, rest.as_ptr().cast(), rest.len()) };
                 if count < 0 && super::errno::get() == EINTR {
                     continue;
                 }
@@ -1172,7 +1168,7 @@ unsafe fn witchy_broker_commit_output(
             parent,
             name,
             fd,
-            scratch,
+            scratch.as_mut_ptr(),
             mode,
             entries,
             ok,
@@ -1457,20 +1453,21 @@ pub(super) unsafe fn witchy_broker_output_request(
     data_only: u32,
     entries: *mut u64,
 ) -> bool {
-    use super::broker_transport::{witchy_broker_reply, witchy_broker_transfer};
-    use core::ptr::null;
+    use super::broker_transport::{witchy_broker_receive, witchy_broker_reply};
     let outputs = unsafe { &mut *outputs };
+    // SAFETY: the broker loop lends its 16 KiB scratch exclusively for this call.
+    let scratch = unsafe { core::slice::from_raw_parts_mut(scratch, 16384) };
     if matches!(operation, 18 | 20 | 22) {
         let Some(output) = outputs.get_mut(slot) else {
             return false;
         };
         if output.parent >= 0
             || !(2..16384).contains(&count)
-            || !unsafe { witchy_broker_transfer(channel, scratch, null(), count) }
+            || !witchy_broker_receive(channel, &mut scratch[..count])
         {
             return false;
         }
-        let source = usize::from(unsafe { scratch.read() });
+        let source = usize::from(scratch[0]);
         let base = if source == 16 {
             write_root
         } else if unsafe { &*kinds }
@@ -1481,19 +1478,13 @@ pub(super) unsafe fn witchy_broker_output_request(
         } else {
             -1
         };
-        let path = unsafe { scratch.add(1) };
         let mut failure = 2;
-        if base >= 0
-            && super::broker_path::relative_path(
-                unsafe { core::slice::from_raw_parts(path, count - 1) },
-                data_only,
-            )
-        {
-            unsafe { scratch.add(count).write(0) };
+        if base >= 0 && super::broker_path::relative_path(&scratch[1..count], data_only) {
+            scratch[count] = 0;
             output.parent = unsafe {
                 witchy_broker_open_output_parent(
                     base,
-                    path.cast(),
+                    scratch[1..].as_ptr().cast(),
                     output.name.as_mut_ptr(),
                     data_only != 0,
                 )
@@ -1533,12 +1524,12 @@ pub(super) unsafe fn witchy_broker_output_request(
     let commit = operation == 16;
     if *parent < 0
         || count != if commit { 4 } else { 0 }
-        || !unsafe { witchy_broker_transfer(channel, scratch, null(), count) }
+        || !witchy_broker_receive(channel, &mut scratch[..count])
     {
         return false;
     }
     let length = if commit {
-        u32::from_be_bytes(unsafe { scratch.cast::<[u8; 4]>().read() }) as usize
+        u32::from_be_bytes([scratch[0], scratch[1], scratch[2], scratch[3]]) as usize
     } else {
         0
     };
@@ -1553,7 +1544,14 @@ pub(super) unsafe fn witchy_broker_output_request(
     let code = if commit {
         unsafe {
             witchy_broker_commit_output(
-                channel, temporary, *parent, name, length, scratch, mode, entries,
+                channel,
+                temporary,
+                *parent,
+                name,
+                length,
+                scratch.as_mut_ptr(),
+                mode,
+                entries,
             )
         }
     } else {
@@ -1580,13 +1578,15 @@ pub(super) unsafe fn witchy_broker_file_request(
     listings: *mut [Listing; 16],
 ) -> bool {
     use super::broker_transport::{
-        witchy_broker_reply as reply, witchy_broker_transfer as transfer,
+        witchy_broker_receive as receive, witchy_broker_reply as reply, witchy_broker_send as send,
     };
-    use core::ptr::{null, null_mut};
+    use core::ptr::null_mut;
     unsafe extern "C" {
         fn read(fd: c_int, bytes: *mut c_void, len: usize) -> isize;
     }
     let (files, kinds, listings) = unsafe { (&mut *files, &mut *kinds, &mut *listings) };
+    // SAFETY: the relay lends its 16 KiB scratch exclusively for this call.
+    let bytes = unsafe { core::slice::from_raw_parts_mut(bytes, 16384) };
     let bad = || {
         reply(channel, 2, 0);
         false
@@ -1600,10 +1600,10 @@ pub(super) unsafe fn witchy_broker_file_request(
     let mut payload = 0;
     let (ok, failure) = match op {
         15 if kind == 0 && count == 1 => {
-            if !unsafe { transfer(channel, bytes, null(), count) } {
+            if !receive(channel, &mut bytes[..count]) {
                 return false;
             }
-            let source = usize::from(unsafe { bytes.read() });
+            let source = usize::from(bytes[0]);
             let base = if source == 16 {
                 root
             } else if kinds.get(source).is_some_and(|k| matches!(k, 2 | 6)) {
@@ -1625,7 +1625,7 @@ pub(super) unsafe fn witchy_broker_file_request(
                 unsafe {
                     core::ptr::copy_nonoverlapping(
                         listing.bytes.add(listing.cursor),
-                        bytes,
+                        bytes.as_mut_ptr(),
                         payload,
                     )
                 };
@@ -1644,10 +1644,10 @@ pub(super) unsafe fn witchy_broker_file_request(
             (true, 0)
         }
         10 | 13 | 14 | 24 | 26 => {
-            if count == 0 || !unsafe { transfer(channel, bytes, null(), count) } {
+            if count == 0 || !receive(channel, &mut bytes[..count]) {
                 return false;
             }
-            let source = usize::from(unsafe { bytes.read() });
+            let source = usize::from(bytes[0]);
             let full = op == 26;
             let write = full || op == 24;
             let requested = if write { 4 } else { 2 };
@@ -1672,17 +1672,14 @@ pub(super) unsafe fn witchy_broker_file_request(
             }
             let mut opened_kind = 0;
             let mut code = 5;
-            let path = unsafe { bytes.add(1) };
             let opened = if count < 16384
-                && super::broker_path::relative_path(
-                    unsafe { core::slice::from_raw_parts(path, count - 1) },
-                    mode,
-                ) {
+                && super::broker_path::relative_path(&bytes[1..count], mode)
+            {
+                bytes[count] = 0;
                 unsafe {
-                    bytes.add(count).write(0);
                     witchy_broker_open_rooted(
                         base,
-                        path.cast(),
+                        bytes[1..].as_mut_ptr().cast(),
                         &mut opened_kind,
                         &mut code,
                         mode != 0,
@@ -1696,7 +1693,7 @@ pub(super) unsafe fn witchy_broker_file_request(
                 if opened >= 0 {
                     close(opened);
                 }
-                unsafe { bytes.write(opened_kind as u8) };
+                bytes[0] = opened_kind as u8;
                 payload = 1;
                 (true, 0)
             } else if opened >= 0 && opened_kind == if op == 10 { 1 } else { 2 } {
@@ -1717,7 +1714,7 @@ pub(super) unsafe fn witchy_broker_file_request(
             }
         }
         11 if fd >= 0 && kind == 1 => loop {
-            let got = unsafe { read(fd, bytes.cast(), count) };
+            let got = unsafe { read(fd, bytes.as_mut_ptr().cast(), count) };
             if got < 0 && super::errno::get() == 4 {
                 continue;
             }
@@ -1737,7 +1734,10 @@ pub(super) unsafe fn witchy_broker_file_request(
         channel,
         u8::from(!ok),
         if ok { payload } else { usize::from(failure) },
-    ) && (payload == 0 || unsafe { transfer(channel, null_mut(), bytes, payload) })
+    ) && (payload == 0
+        || bytes
+            .get(..payload)
+            .is_some_and(|bytes| send(channel, bytes)))
 }
 
 #[cfg(test)]
