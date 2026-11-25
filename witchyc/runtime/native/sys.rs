@@ -304,3 +304,141 @@ pub fn duplicate_close_on_exec(fd: c_int, least: c_int) -> c_int {
     // SAFETY: this command takes a number, not a pointer.
     unsafe { exec_c::fcntl(fd, DUP_CLOEXEC, least) }
 }
+
+// Sockets, descriptor flags and signal dispositions.
+
+#[cfg(target_os = "macos")]
+type PollCount = u32;
+#[cfg(target_os = "linux")]
+type PollCount = usize;
+
+mod net {
+    use super::{PollCount, PollFd, c_char, c_int, c_void};
+
+    unsafe extern "C" {
+        pub fn poll(fds: *mut PollFd, count: PollCount, timeout: c_int) -> c_int;
+        pub fn setsockopt(
+            fd: c_int,
+            level: c_int,
+            option: c_int,
+            value: *const c_void,
+            len: u32,
+        ) -> c_int;
+        pub fn getsockopt(
+            fd: c_int,
+            level: c_int,
+            option: c_int,
+            value: *mut c_void,
+            len: *mut u32,
+        ) -> c_int;
+        pub fn accept(fd: c_int, address: *mut c_void, length: *mut u32) -> c_int;
+        pub fn bind(fd: c_int, address: *const c_void, len: u32) -> c_int;
+        pub fn connect(fd: c_int, address: *const c_void, length: u32) -> c_int;
+        pub fn getsockname(fd: c_int, address: *mut c_void, len: *mut u32) -> c_int;
+        pub fn send(fd: c_int, bytes: *const c_void, len: usize, flags: c_int) -> isize;
+        pub fn recv(fd: c_int, bytes: *mut u8, len: usize, flags: c_int) -> isize;
+        pub fn inet_pton(family: c_int, text: *const c_char, address: *mut c_void) -> c_int;
+        pub fn fcntl(fd: c_int, op: c_int, ...) -> c_int;
+        pub fn signal(signal: c_int, handler: usize) -> usize;
+        pub fn atexit(callback: extern "C" fn()) -> c_int;
+    }
+}
+
+/// Sets a socket option whose value is all of `value`.
+pub fn setsockopt<T>(fd: c_int, level: c_int, option: c_int, value: &T) -> c_int {
+    let len = size_of::<T>() as u32;
+    // SAFETY: the call reads `len` bytes of `value` and keeps nothing of it.
+    unsafe { net::setsockopt(fd, level, option, core::ptr::from_ref(value).cast(), len) }
+}
+
+/// Reads a socket option whose value is one `c_int`.
+pub fn getsockopt_int(fd: c_int, level: c_int, option: c_int, value: &mut c_int) -> c_int {
+    let mut len = size_of::<c_int>() as u32;
+    // SAFETY: the call writes at most `len` bytes, the size of `value`.
+    unsafe { net::getsockopt(fd, level, option, core::ptr::from_mut(value).cast(), &mut len) }
+}
+
+/// Accepts a connection, without asking who the peer is.
+pub fn accept(fd: c_int) -> c_int {
+    // SAFETY: a null address and length ask the call to write neither.
+    unsafe { net::accept(fd, core::ptr::null_mut(), core::ptr::null_mut()) }
+}
+
+/// Binds to the socket address that is all of `address`.
+pub fn bind(fd: c_int, address: &[u8]) -> c_int {
+    // SAFETY: the call copies `address.len()` bytes in and checks them itself.
+    unsafe { net::bind(fd, address.as_ptr().cast(), address.len() as u32) }
+}
+
+/// Connects to the socket address that is all of `address`.
+pub fn connect(fd: c_int, address: &[u8]) -> c_int {
+    // SAFETY: as `bind`.
+    unsafe { net::connect(fd, address.as_ptr().cast(), address.len() as u32) }
+}
+
+/// Writes the socket's own address to `address`, and its length to `length`.
+/// An address longer than `address` is cut short there.
+pub fn getsockname(fd: c_int, address: &mut [u8], length: &mut u32) -> c_int {
+    *length = address.len() as u32;
+    // SAFETY: the call writes at most `*length` bytes, which `address` has.
+    unsafe { net::getsockname(fd, address.as_mut_ptr().cast(), length) }
+}
+
+/// Receives at most `out.len()` bytes. The count, or a negative value with `errno` set.
+pub fn recv(fd: c_int, out: &mut [u8], flags: c_int) -> isize {
+    // SAFETY: `out` is writable for its length.
+    unsafe { net::recv(fd, out.as_mut_ptr(), out.len(), flags) }
+}
+
+/// Parses a dotted IPv4 address. 1 when `text` is one.
+pub fn inet_pton_v4(text: &CStr, out: &mut [u8; 4]) -> c_int {
+    const AF_INET: c_int = 2;
+    // SAFETY: `text` is a C string, and the call writes the four bytes of an IPv4 address.
+    unsafe { net::inet_pton(AF_INET, text.as_ptr(), out.as_mut_ptr().cast()) }
+}
+
+/// Parses an IPv6 address. 1 when `text` is one.
+pub fn inet_pton_v6(text: &CStr, out: &mut [u8; 16]) -> c_int {
+    #[cfg(target_os = "macos")]
+    const AF_INET6: c_int = 30;
+    #[cfg(target_os = "linux")]
+    const AF_INET6: c_int = 10;
+    // SAFETY: `text` is a C string, and the call writes the sixteen bytes of an IPv6 address.
+    unsafe { net::inet_pton(AF_INET6, text.as_ptr(), out.as_mut_ptr().cast()) }
+}
+
+/// The descriptor's status flags (`F_GETFL`), or a negative value.
+pub fn status_flags(fd: c_int) -> c_int {
+    const F_GETFL: c_int = 3;
+    // SAFETY: this operation takes no further argument.
+    unsafe { net::fcntl(fd, F_GETFL) }
+}
+
+/// Replaces the descriptor's own flags (`F_SETFD`); 1 is close-on-exec.
+pub fn set_descriptor_flags(fd: c_int, flags: c_int) -> c_int {
+    const F_SETFD: c_int = 2;
+    // SAFETY: this operation reads one integer.
+    unsafe { net::fcntl(fd, F_SETFD, flags) }
+}
+
+/// Has the process ignore `signal`. False when the C library refuses.
+pub fn ignore_signal(signal: c_int) -> bool {
+    const SIG_IGN: usize = 1;
+    const SIG_ERR: usize = usize::MAX;
+    // SAFETY: no handler is installed, so no code is made to run.
+    unsafe { net::signal(signal, SIG_IGN) != SIG_ERR }
+}
+
+/// Gives `signal` its default action. False when the C library refuses.
+pub fn default_signal(signal: c_int) -> bool {
+    const SIG_DFL: usize = 0;
+    const SIG_ERR: usize = usize::MAX;
+    // SAFETY: as `ignore_signal`.
+    unsafe { net::signal(signal, SIG_DFL) != SIG_ERR }
+}
+
+/// Runs `callback` when the process exits normally. 0 when it was registered.
+pub fn atexit(callback: extern "C" fn()) -> c_int {
+    // SAFETY: `callback` is a safe function with the signature the call expects.
+    unsafe { net::atexit(callback) }
+}

@@ -2,3 +2,5 @@
 mod errno;
 #[path = "../../../runtime/native/socket_primitives.rs"]
 mod socket_primitives;
+#[path = "../../../runtime/native/sys.rs"]
+mod sys;

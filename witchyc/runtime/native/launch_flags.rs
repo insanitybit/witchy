@@ -519,7 +519,6 @@ impl NativeLaunch {
         #[cfg(witchy_native_aws_lc)]
         use super::signer_binding::witchy_bind_store_secret;
         unsafe extern "C" {
-            fn witchy_bind_endpoints(text: *mut c_char) -> bool;
             #[cfg(witchy_native_aws_lc)]
             fn witchy_bind_signer(text: *const c_char) -> bool;
         }
@@ -663,7 +662,7 @@ impl NativeLaunch {
             }
             42 if required & NET != 0 && *grants & NET == 0 => (
                 NET,
-                unsafe { witchy_bind_endpoints(arg.add(6)) },
+                unsafe { super::broker_socket::witchy_bind_endpoints(arg.add(6)) },
                 c"invalid native --net endpoint list\n",
             ),
             43 if required & (LISTENER | ENTRY_SOCKET) != 0 && self.listener.is_null() => {
@@ -694,14 +693,6 @@ impl NativeLaunch {
         #[cfg(witchy_native_aws_lc)]
         use super::launch_env::witchy_validate_secret_grants;
         unsafe extern "C" {
-            fn witchy_validate_connection_launch(
-                required: u64,
-                grants: u64,
-                enabled: bool,
-                listener: bool,
-                options: bool,
-                err: *mut c_void,
-            ) -> bool;
             safe fn witchy_exec_granted();
             safe fn witchy_exec_sweep(pid: c_int);
             safe fn witchy_broker_exec_budget(bytes: u64);
@@ -714,7 +705,7 @@ impl NativeLaunch {
             if !witchy_validate_secret_grants(required, grants, err) {
                 return 2;
             }
-            if !witchy_validate_connection_launch(
+            if !super::connection_queue::witchy_validate_connection_launch(
                 required,
                 grants,
                 self.connection.enabled,

@@ -1,7 +1,8 @@
 //! FIFO for accepted sockets waiting for the active worker.
 
 use super::global::Global;
-use core::ffi::c_int;
+use super::sys;
+use core::ffi::{CStr, c_int};
 use core::sync::atomic::{AtomicI32, Ordering};
 
 const SOCKET_SLOTS: usize = 16;
@@ -29,7 +30,8 @@ fn root_identity(fd: c_int) -> Option<(u64, u64)> {
     }
 }
 
-fn stop_signal_set() -> Option<super::deadline::SignalSet> {
+/// The signals that stop the supervisor: 15, 1 and 2.
+pub(super) fn stop_signal_set() -> Option<super::deadline::SignalSet> {
     unsafe extern "C" {
         fn sigemptyset(set: *mut super::deadline::SignalSet) -> c_int;
         fn sigaddset(set: *mut super::deadline::SignalSet, signal: c_int) -> c_int;
@@ -42,7 +44,8 @@ fn stop_signal_set() -> Option<super::deadline::SignalSet> {
     valid.then_some(set)
 }
 
-fn stop_signals(how: c_int) -> bool {
+/// Blocks (`how` 1) or unblocks (`how` 2) the signals of `signals`.
+fn mask_signals(how: c_int, signals: &super::deadline::SignalSet) -> bool {
     unsafe extern "C" {
         fn sigprocmask(
             how: c_int,
@@ -50,10 +53,19 @@ fn stop_signals(how: c_int) -> bool {
             old: *mut super::deadline::SignalSet,
         ) -> c_int;
     }
-    let Some(signals) = stop_signal_set() else { return false };
     #[cfg(target_os = "linux")]
     let how = if how == 1 { 0 } else { 1 };
-    unsafe { sigprocmask(how, &signals, core::ptr::null_mut()) == 0 }
+    // SAFETY: the call reads `signals`, and a null old set asks for none to be written.
+    unsafe { sigprocmask(how, signals, core::ptr::null_mut()) == 0 }
+}
+
+pub(super) fn unblock_signals(signals: &super::deadline::SignalSet) -> bool {
+    mask_signals(2, signals)
+}
+
+fn stop_signals(how: c_int) -> bool {
+    let Some(signals) = stop_signal_set() else { return false };
+    mask_signals(how, &signals)
 }
 
 extern "C" fn stop_serving(signal: c_int) {
@@ -64,7 +76,6 @@ extern "C" fn stop_serving(signal: c_int) {
     }
     unsafe extern "C" {
         safe fn kill(pid: c_int, signal: c_int) -> c_int;
-        fn waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
         fn nanosleep(duration: *const Timespec, remaining: *mut Timespec) -> c_int;
         safe fn _exit(code: c_int) -> !;
     }
@@ -82,10 +93,11 @@ extern "C" fn stop_serving(signal: c_int) {
         };
         let mut done = 0;
         for _ in 0..200 {
-            done = unsafe { waitpid(broker, &mut status, 1) };
+            done = sys::waitpid(broker, Some(&mut status), 1);
             if done > 0 || (done < 0 && super::errno::get() != 4) {
                 break;
             }
+            // SAFETY: the call reads `delay`, and a null remainder asks for none to be written.
             unsafe {
                 nanosleep(&delay, core::ptr::null_mut());
             }
@@ -200,23 +212,15 @@ impl Queue {
 
 /// Wait for the active worker, accepting pending sockets while queue space
 /// and the remaining connection budget permit it.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_wait_worker(
+fn witchy_wait_worker(
     worker: c_int,
     listener: c_int,
-    queue: *mut Queue,
+    queue: &mut Queue,
     remaining: u64,
     setup_failed: c_int,
 ) -> c_int {
-    use super::broker_socket::witchy_net_accept_connection;
+    use super::broker_socket::{wait_process, witchy_net_accept_connection};
     unsafe extern "C" {
-        fn waitpid(pid: c_int, status: *mut c_int, flags: c_int) -> c_int;
-        fn waitid(
-            kind: c_int,
-            id: u32,
-            info: *mut super::exec_capture::SignalInfo,
-            options: c_int,
-        ) -> c_int;
         safe fn close(fd: c_int) -> c_int;
     }
     const EINTR: c_int = 4;
@@ -229,17 +233,15 @@ unsafe extern "C" fn witchy_wait_worker(
     if worker <= 0 {
         return -1;
     }
-    let queue = unsafe { &mut *queue };
     let mut status = 0;
     loop {
         let mode = if queue.room(remaining) { WNOHANG } else { 0 };
-        let mut seen: super::exec_capture::SignalInfo = unsafe { core::mem::zeroed() };
-        let result = unsafe { waitid(1, worker as u32, &mut seen, 4 | WNOWAIT | mode) };
-        let waited = if result == 0 && seen.pid == worker {
+        let (result, seen) = wait_process(worker, 4 | WNOWAIT | mode);
+        let waited = if result == 0 && seen == worker {
             stop_signals(1);
             let mut reaped;
             loop {
-                reaped = unsafe { waitpid(worker, &mut status, 0) };
+                reaped = sys::waitpid(worker, Some(&mut status), 0);
                 if reaped >= 0 || super::errno::get() != EINTR {
                     break;
                 }
@@ -274,12 +276,9 @@ unsafe extern "C" fn witchy_wait_worker(
             }
         } else if fd != TIMED_OUT {
             // Reap the active worker before the caller tears down its broker.
-            let mut seen: super::exec_capture::SignalInfo = unsafe { core::mem::zeroed() };
-            while unsafe { waitid(1, worker as u32, &mut seen, 4 | WNOWAIT) } < 0
-                && super::errno::get() == EINTR
-            {}
+            while wait_process(worker, 4 | WNOWAIT).0 < 0 && super::errno::get() == EINTR {}
             stop_signals(1);
-            while unsafe { waitpid(worker, &mut status, 0) } < 0 && super::errno::get() == EINTR {
+            while sys::waitpid(worker, Some(&mut status), 0) < 0 && super::errno::get() == EINTR {
             }
             SERVING_WORKER.store(0, Ordering::Relaxed);
             stop_signals(2);
@@ -294,7 +293,8 @@ unsafe extern "C" fn witchy_wait_worker(
 const SETUP_LIMIT_MS: u64 = 10_000;
 
 /// Forks the guest worker after its private broker is ready. The launcher
-/// supplies the live stdout stream.
+/// supplies the live stdout stream, and `exec_shared` is null or a mapping of
+/// one `u64`.
 unsafe fn start_worker(
     listener: c_int,
     channel: c_int,
@@ -304,7 +304,7 @@ unsafe fn start_worker(
     setup_failed: c_int,
     stdout: *mut core::ffi::c_void,
     slot: usize,
-    queue: *const Queue,
+    queue: &Queue,
     root: c_int,
     write_root: c_int,
     exec_shared: *mut u64,
@@ -313,7 +313,6 @@ unsafe fn start_worker(
         fn fork() -> c_int;
         safe fn close(fd: c_int) -> c_int;
         fn munmap(address: *mut core::ffi::c_void, length: usize) -> c_int;
-        fn signal(signal: c_int, handler: usize) -> usize;
         fn fflush(stream: *mut core::ffi::c_void) -> c_int;
         safe fn _exit(code: c_int) -> !;
         fn witchy_entry(grants: u64);
@@ -334,17 +333,17 @@ unsafe fn start_worker(
     let output = grants & 1 != 0;
     let allocator = grants & 2 != 0;
     close(listener);
-    unsafe {
-        signal(15, 0);
-        signal(1, 0);
-        signal(2, 0);
-    }
+    sys::default_signal(15);
+    sys::default_signal(1);
+    sys::default_signal(2);
     if !stop_signals(2) {
         _exit(setup_failed);
     }
-    unsafe { NETWORK.channel = channel };
+    NETWORK.set(NetworkConfig {
+        channel,
+        ..NETWORK.get()
+    });
     super::file_reader::bind_channel(channel);
-    let queue = unsafe { &*queue };
     for i in 0..queue.len {
         let at = (queue.head + i) % queue.capacity;
         close(queue.slots[at]);
@@ -427,8 +426,8 @@ unsafe fn serve_connections(
     run_ms: u64,
     waiting: u32,
     slot: u32,
-    channel: *mut c_int,
-    relay: *mut c_int,
+    channel: &mut c_int,
+    relay: &mut c_int,
     stdout: *mut core::ffi::c_void,
     stderr: *mut core::ffi::c_void,
     root: c_int,
@@ -438,7 +437,10 @@ unsafe fn serve_connections(
     entries: u64,
     exec_shared: *mut u64,
 ) -> c_int {
-    use super::broker_socket::witchy_net_accept_connection;
+    use super::broker_socket::{
+        witchy_broker_server_roots, witchy_broker_stop_checked, witchy_net_accept_connection,
+        witchy_net_connection_broker,
+    };
     unsafe extern "C" {
         safe fn close(fd: c_int) -> c_int;
         fn fprintf(stream: *mut core::ffi::c_void, format: *const core::ffi::c_char, ...) -> c_int;
@@ -446,9 +448,6 @@ unsafe fn serve_connections(
         safe fn witchy_budget_share() -> bool;
         safe fn witchy_run_deadline_ns(now: u64, ms: u64) -> u64;
         safe fn witchy_run_deadline_left_ms(end: u64, now: u64) -> u64;
-        fn witchy_net_connection_broker(stream: c_int, slot: u32, relay: *mut c_int) -> c_int;
-        fn witchy_broker_stop_checked(channel: *mut c_int, relay: c_int, interrupted: bool)
-        -> bool;
         #[cfg(target_os = "linux")]
         safe fn witchy_exec_sweep_own() -> bool;
         fn mmap(
@@ -459,17 +458,14 @@ unsafe fn serve_connections(
             fd: c_int,
             offset: i64,
         ) -> *mut core::ffi::c_void;
-        fn witchy_broker_server_roots(
-            root: c_int,
-            write_root: c_int,
-            combined: bool,
-            data_only: bool,
-            entries: *mut u64,
-        );
     }
     const SETUP_FAILED: c_int = 125;
-    let fail = |message: &core::ffi::CStr| {
+    let say = |message: &CStr| {
+        // SAFETY: `message` is a C string, and the launcher supplies the live stream.
         unsafe { fputs(message.as_ptr(), stderr) };
+    };
+    let fail = |message: &CStr| {
+        say(message);
         2
     };
     if slot as usize >= SOCKET_SLOTS
@@ -497,10 +493,9 @@ unsafe fn serve_connections(
     if shared_entries.addr() == usize::MAX {
         return fail(c"witchy: could not allocate the shared directory budget\n");
     }
-    unsafe {
-        shared_entries.write(entries);
-        witchy_broker_server_roots(root, write_root, combined, data_only, shared_entries);
-    }
+    // SAFETY: a fresh mapping of one writable `u64`.
+    unsafe { shared_entries.write(entries) };
+    witchy_broker_server_roots(root, write_root, combined, data_only, shared_entries);
     if !install_stop_handler() {
         return fail(c"witchy: could not install connection supervisor signal handlers\n");
     }
@@ -553,13 +548,13 @@ unsafe fn serve_connections(
             close(connection);
             return fail(c"witchy: could not block supervisor stop signals\n");
         }
-        let broker = unsafe { witchy_net_connection_broker(connection, slot, relay) };
-        unsafe { channel.write(broker) };
+        let broker = witchy_net_connection_broker(connection, slot, relay);
+        *channel = broker;
         if broker < 0 {
             stop_signals(2);
             return fail(c"witchy: could not start a connection broker\n");
         }
-        SERVING_BROKER.store(unsafe { relay.read() }, Ordering::Relaxed);
+        SERVING_BROKER.store(*relay, Ordering::Relaxed);
         accepted += 1;
         let worker = unsafe {
             start_worker(
@@ -579,13 +574,11 @@ unsafe fn serve_connections(
         };
         SERVING_WORKER.store(worker.max(0), Ordering::Relaxed);
         stop_signals(2);
-        let result = unsafe {
-            witchy_wait_worker(worker, listener, &mut queue, limit - accepted, SETUP_FAILED)
-        };
+        let result =
+            witchy_wait_worker(worker, listener, &mut queue, limit - accepted, SETUP_FAILED);
         stop_signals(1);
-        let cleaned = unsafe {
-            witchy_broker_stop_checked(channel, relay.read(), matches!(result, -1 | 1 | 2 | 3 | 4))
-        };
+        let cleaned =
+            witchy_broker_stop_checked(channel, *relay, matches!(result, -1 | 1 | 2 | 3 | 4));
         #[cfg(target_os = "linux")]
         let cleaned = {
             let swept = grants & 262144 == 0 || witchy_exec_sweep_own();
@@ -594,10 +587,7 @@ unsafe fn serve_connections(
         SERVING_BROKER.store(0, Ordering::Relaxed);
         stop_signals(2);
         if !cleaned {
-            unsafe {
-                fputs(c"witchy: Exec: what a connection's program left could not be stopped: the service stops\n".as_ptr(), stderr)
-            };
-            return 2;
+            return fail(c"witchy: Exec: what a connection's program left could not be stopped: the service stops\n");
         }
         match result {
             -1 => return fail(c"witchy: could not supervise a connection worker\n"),
@@ -610,23 +600,10 @@ unsafe fn serve_connections(
             // A worker that never reached guest code fails its own connection only: the
             // connection is closed and reported, and queued clients are still served.
             3 => {
-                unsafe {
-                    fputs(
-                        c"witchy: a connection's worker could not install its deadline or sandbox; that connection is closed\n"
-                            .as_ptr(),
-                        stderr,
-                    )
-                };
+                say(c"witchy: a connection's worker could not install its deadline or sandbox; that connection is closed\n");
                 setup_failures += 1;
                 if setup_failures == SETUP_FAILURES_IN_A_ROW {
-                    unsafe {
-                        fputs(
-                            c"witchy: workers failed to install their sandbox three times in a row: the service stops\n"
-                                .as_ptr(),
-                            stderr,
-                        )
-                    };
-                    return 2;
+                    return fail(c"witchy: workers failed to install their sandbox three times in a row: the service stops\n");
                 }
                 continue;
             }
@@ -634,13 +611,7 @@ unsafe fn serve_connections(
                 if remaining_time() == 0 {
                     return expired();
                 }
-                unsafe {
-                    fputs(
-                        c"witchy: a connection's worker did not install its sandbox in time; that connection is closed\n"
-                            .as_ptr(),
-                        stderr,
-                    )
-                };
+                say(c"witchy: a connection's worker did not install its sandbox in time; that connection is closed\n");
             }
             _ => {}
         }
@@ -650,7 +621,9 @@ unsafe fn serve_connections(
 }
 
 // The guest dispatcher owns the live slot for the duration of this call.
-unsafe fn socket_close(channel: c_int, slot: u32) -> c_int {
+fn socket_close(channel: c_int, slot: u32) -> c_int {
+    // SAFETY: calls are serialized on the guest thread, and no other reference
+    // to the table is used while this one is.
     let Some(socket) = (unsafe { (&mut *core::ptr::addr_of_mut!(SOCKETS)).get_mut(slot as usize) })
     else {
         return SOCKET_IO_ERROR;
@@ -683,14 +656,14 @@ unsafe fn socket_transfer(channel: c_int, slot: u32, op: u64, operand: u64, coun
 
     let Some(socket) = (unsafe { (&mut *core::ptr::addr_of_mut!(SOCKETS)).get_mut(slot as usize) })
     else {
-        unsafe { core::arch::asm!("brk #0", options(noreturn, nostack)) }
+        socket_trap()
     };
     let remaining = || witchy_network_remaining();
     let charge = |size| witchy_network_charge(size);
     let transfer_error = |status| (if status == -4 { WOULD_BLOCK } else { IO }) << 32;
     if op == 4 {
         let Ok(byte) = u8::try_from(operand) else {
-            unsafe { core::arch::asm!("brk #0", options(noreturn, nostack)) }
+            socket_trap()
         };
         if remaining() == 0 {
             return TOO_LARGE;
@@ -772,7 +745,7 @@ unsafe fn socket_transfer(channel: c_int, slot: u32, op: u64, operand: u64, coun
             13 => {
                 witchy_net_try_receive(channel, slot, core::slice::from_raw_parts_mut(bytes, len))
             }
-            _ => core::arch::asm!("brk #0", options(noreturn, nostack)),
+            _ => socket_trap(),
         }
     };
     if size < 0 {
@@ -882,7 +855,7 @@ fn socket_close_group(channel: c_int, handle: u64) -> bool {
             if unsafe { (*core::ptr::addr_of!(SOCKETS))[slot].handle } != token {
                 socket_trap();
             }
-            unsafe { socket_close(channel, slot as u32) };
+            socket_close(channel, slot as u32);
         }
     }
     group.handle = 0;
@@ -911,7 +884,7 @@ unsafe fn socket_poll(
     const CLOCK: u64 = 16;
 
     if count > 4097 {
-        unsafe { core::arch::asm!("brk #0", options(noreturn, nostack)) }
+        socket_trap();
     }
     let group = if group == 0 {
         None
@@ -928,7 +901,7 @@ unsafe fn socket_poll(
         let handle = if let Some(group) = group {
             if slot == LISTENER_SLOT {
                 if !group.listener {
-                    unsafe { core::arch::asm!("brk #0", options(noreturn, nostack)) }
+                    socket_trap();
                 }
                 LISTENER
             } else {
@@ -977,7 +950,7 @@ unsafe fn socket_poll(
     if (has_socket || soonest.is_some())
         && super::broker_transport::witchy_net_poll(channel, &mut request, timeout) < 0
     {
-        unsafe { core::arch::asm!("brk #0", options(noreturn, nostack)) }
+        socket_trap();
     }
     let now = soonest.map_or(0, |_| witchy_clock_now_ms(CLOCK));
     let mut ready = 0;
@@ -1109,55 +1082,44 @@ fn listener_address(host_port: &core::ffi::CStr, port: u16, output: &mut [u8]) -
 #[derive(Clone, Copy)]
 struct NetworkConfig {
     channel: c_int,
-    endpoints: *const *const core::ffi::c_char,
     endpoint_count: usize,
-    listener: *const core::ffi::c_char,
+    listener: Option<&'static CStr>,
     port: u16,
 }
 
-static mut NETWORK: NetworkConfig = NetworkConfig {
+static NETWORK: Global<NetworkConfig> = Global::new(NetworkConfig {
     channel: -1,
-    endpoints: core::ptr::null(),
     endpoint_count: 0,
-    listener: core::ptr::null(),
+    listener: None,
     port: 0,
-};
+});
 
 // The launcher binds once before entering the guest or forking workers.
-// Endpoint pointers refer to argv strings and the launcher's static table.
+// The endpoints are the first `endpoint_count` of the launcher's table.
 pub(super) fn configure_network(
     channel: c_int,
-    endpoints: *const *const core::ffi::c_char,
-    endpoint_count: u32,
-    listener: *const core::ffi::c_char,
+    endpoint_count: usize,
+    listener: Option<&'static CStr>,
     port: u16,
 ) {
-    unsafe {
-        NETWORK = NetworkConfig {
-            channel,
-            endpoints,
-            endpoint_count: endpoint_count as usize,
-            listener,
-            port,
-        };
-    }
+    NETWORK.set(NetworkConfig {
+        channel,
+        endpoint_count,
+        listener,
+        port,
+    });
 }
 
 #[unsafe(no_mangle)]
 unsafe extern "C" fn witchy_native_net(op: u64, handle: u64, operand: u64, count: u64) -> u64 {
-    unsafe extern "C" {
-        fn witchy_net_same_endpoint(
-            candidate: *const core::ffi::c_char,
-            configured: *const core::ffi::c_char,
-        ) -> bool;
-    }
+    use super::broker_endpoint::witchy_net_same_endpoint;
+    use super::broker_socket::launch_endpoint;
     let NetworkConfig {
         channel,
-        endpoints,
         endpoint_count,
         listener,
         port,
-    } = unsafe { NETWORK };
+    } = NETWORK.get();
     if channel < 0 || endpoint_count > ENDPOINT_LIMIT {
         socket_trap();
     }
@@ -1165,7 +1127,7 @@ unsafe extern "C" fn witchy_native_net(op: u64, handle: u64, operand: u64, count
         .checked_sub(FIRST_NARROWED)
         .filter(|index| *index < endpoint_count as u64);
     let net = (handle == NET && endpoint_count != 0) || narrowed.is_some();
-    let listening = !listener.is_null();
+    let listening = listener.is_some();
     let listener_grant = handle == LISTENER && listening;
     let failed = handle > FAILED_HANDLE && handle <= FAILED_HANDLE + 7;
     match op {
@@ -1188,12 +1150,17 @@ unsafe extern "C" fn witchy_native_net(op: u64, handle: u64, operand: u64, count
                 return FAILED_HANDLE + 1;
             }
             address.bytes[len] = 0;
+            // The checks above leave one NUL, at `len`.
+            let Ok(candidate) = CStr::from_bytes_with_nul(&address.bytes[..=len]) else {
+                return FAILED_HANDLE + 1;
+            };
             let span = narrowed.map_or(0..endpoint_count, |index| {
                 let index = index as usize;
                 index..index + 1
             });
-            let endpoint = span.into_iter().find(|&index| unsafe {
-                witchy_net_same_endpoint(address.bytes.as_ptr().cast(), *endpoints.add(index))
+            let endpoint = span.into_iter().find(|&index| {
+                launch_endpoint(index)
+                    .is_some_and(|configured| witchy_net_same_endpoint(candidate, configured))
             });
             let Some(endpoint) = endpoint else {
                 return FAILED_HANDLE + 1;
@@ -1236,9 +1203,9 @@ unsafe extern "C" fn witchy_native_net(op: u64, handle: u64, operand: u64, count
         4 | 5 | 7 | 8 | 12 | 13 => unsafe {
             socket_transfer(channel, slot as u32, op, operand, count)
         },
-        6 => unsafe { socket_close(channel, slot as u32) as u64 },
-        10 if socket.accepted && listening && count != 0 => {
-            let endpoint = unsafe { core::ffi::CStr::from_ptr(listener) };
+        6 => socket_close(channel, slot as u32) as u64,
+        10 if socket.accepted && count != 0 => {
+            let Some(endpoint) = listener else { return 0 };
             // The guest ABI supplies a writable span. Limit it to the maximum
             // bytes this operation could write before constructing a slice.
             let capacity = count.min(endpoint.to_bytes().len() as u64 + 8) as usize;
@@ -1251,6 +1218,8 @@ unsafe extern "C" fn witchy_native_net(op: u64, handle: u64, operand: u64, count
 }
 
 /// The launcher passes the validated endpoint and its live standard streams.
+/// Each other pointer is null, for a grant that is absent, or launcher-owned
+/// storage that lives as long as the process.
 pub(super) unsafe fn launch_connections(
     endpoint: *const core::ffi::c_char,
     grants: u64,
@@ -1283,15 +1252,15 @@ pub(super) unsafe fn launch_connections(
         maximum: u64,
     }
 
+    use super::broker_socket::{
+        launch_endpoint_count, witchy_broker_server_connection_entries,
+        witchy_broker_server_endpoints, witchy_net_listen,
+    };
     unsafe extern "C" {
-        fn witchy_net_listen(endpoint: *const c_char, port: *mut u16) -> c_int;
         fn getrlimit(resource: c_int, limit: *mut DescriptorLimit) -> c_int;
         safe fn close(fd: c_int) -> c_int;
         fn fprintf(stream: *mut c_void, format: *const c_char, ...) -> c_int;
         fn fputs(text: *const c_char, stream: *mut c_void) -> c_int;
-        #[cfg(target_os = "macos")]
-        fn open(path: *const c_char, flags: c_int, ...) -> c_int;
-        fn fcntl(fd: c_int, command: c_int, ...) -> c_int;
         fn mmap(
             address: *mut c_void,
             length: usize,
@@ -1300,22 +1269,19 @@ pub(super) unsafe fn launch_connections(
             fd: c_int,
             offset: i64,
         ) -> *mut c_void;
-        fn witchy_broker_server_endpoints(names: *const *const c_char, count: u32) -> bool;
-        safe fn witchy_broker_server_connection_entries(entries: u64);
     }
 
+    let fail = |message: &CStr| {
+        // SAFETY: `message` is a C string, and the launcher supplies the live stream.
+        unsafe { fputs(message.as_ptr(), stderr) };
+        2
+    };
     if grants & 8 != 0
         && (!input_budget_set
             || input_budget > 16 * 1024 * 1024
             || !super::input_stream::snapshot_input(input_budget))
     {
-        unsafe {
-            fputs(
-                c"native Socket entry reads its input once, before the first connection: it requires --input-bytes of at most 16 MiB covering all of it\n".as_ptr(),
-                stderr,
-            );
-        }
-        return 2;
+        return fail(c"native Socket entry reads its input once, before the first connection: it requires --input-bytes of at most 16 MiB covering all of it\n");
     }
     let keep = [root_fd, write_fd, exec_fd];
     #[cfg(target_os = "linux")]
@@ -1323,24 +1289,15 @@ pub(super) unsafe fn launch_connections(
     #[cfg(target_os = "macos")]
     use super::seatbelt_fds::witchy_close_inherited_keeping;
     if !witchy_close_inherited_keeping(grants & 1 != 0, false, &keep) {
-        unsafe {
-            fputs(
-                c"native socket server could not close inherited descriptors\n".as_ptr(),
-                stderr,
-            )
-        };
-        return 2;
+        return fail(c"native socket server could not close inherited descriptors\n");
     }
     let mut port = 0;
-    let listener = unsafe { witchy_net_listen(endpoint, &mut port) };
+    // SAFETY: the launcher passes the endpoint as a C string, and it lives as
+    // long as the process.
+    let endpoint_text: &'static CStr = unsafe { CStr::from_ptr(endpoint) };
+    let listener = witchy_net_listen(endpoint_text, &mut port);
     if listener < 0 {
-        unsafe {
-            fputs(
-                c"native socket server could not bind the granted listener\n".as_ptr(),
-                stderr,
-            )
-        };
-        return 2;
+        return fail(c"native socket server could not bind the granted listener\n");
     }
 
     #[cfg(target_os = "macos")]
@@ -1363,14 +1320,12 @@ pub(super) unsafe fn launch_connections(
     const ROOT_FLAGS: c_int = 0x2110_0000;
     #[cfg(target_os = "linux")]
     const ROOT_FLAGS: c_int = 0o40000 | 0o2000000 | 0o100000;
-    #[cfg(target_os = "macos")]
-    const DUP_CLOEXEC: c_int = 67;
-    #[cfg(target_os = "linux")]
-    const DUP_CLOEXEC: c_int = 1030;
-    let open_root = |path| {
+    // SAFETY: called only with a directory argument that is not null, which
+    // the launcher passes as a C string.
+    let open_root = |path: *const c_char| {
         #[cfg(target_os = "macos")]
         {
-            unsafe { open(path, ROOT_FLAGS) }
+            sys::open(unsafe { CStr::from_ptr(path) }, ROOT_FLAGS)
         }
         #[cfg(target_os = "linux")]
         {
@@ -1384,11 +1339,11 @@ pub(super) unsafe fn launch_connections(
         write_root = open_root(write_dir);
     }
     if !write_dir.is_null() && write_dir == read_dir && root >= 0 {
-        write_root = unsafe { fcntl(root, DUP_CLOEXEC, 3 as c_int) };
+        write_root = sys::duplicate_close_on_exec(root, 3);
     }
     for fd in [&mut root, &mut write_root] {
         if (0..=2).contains(fd) {
-            let moved = unsafe { fcntl(*fd, DUP_CLOEXEC, 3 as c_int) };
+            let moved = sys::duplicate_close_on_exec(*fd, 3);
             close(*fd);
             *fd = moved;
         }
@@ -1405,8 +1360,7 @@ pub(super) unsafe fn launch_connections(
         close(listener);
         return 2;
     }
-    let (endpoints, endpoint_count) = super::broker_socket::launch_endpoints();
-    if (grants & 4 != 0 && !unsafe { witchy_broker_server_endpoints(endpoints, endpoint_count) })
+    if (grants & 4 != 0 && !witchy_broker_server_endpoints())
         || (grants & 262144 != 0
             && (exec_fd < 0
                 // SAFETY: the launcher passes exec_guest's table of `program_count` live names.
@@ -1468,7 +1422,6 @@ pub(super) unsafe fn launch_connections(
     } else {
         let room = descriptors.current.saturating_sub(RESERVED_DESCRIPTORS);
         let waiting = waiting.min(room);
-        let endpoint_text = unsafe { core::ffi::CStr::from_ptr(endpoint) };
         if endpoint_text.to_bytes().rsplit(|&byte| byte == b':').next()
             .is_some_and(|number| number.iter().all(|&digit| digit == b'0'))
         {
@@ -1478,7 +1431,7 @@ pub(super) unsafe fn launch_connections(
                 unsafe { fprintf(stderr, c"witchy: listening on %s\n".as_ptr(), address.as_ptr()) };
             }
         }
-        configure_network(-1, endpoints, endpoint_count, endpoint, port);
+        configure_network(-1, launch_endpoint_count(), Some(endpoint_text), port);
         let mut channel = -1;
         let mut relay = 0;
         unsafe {
@@ -1540,9 +1493,9 @@ fn connection_launch_allowed(
     }
 }
 
-/// Check worker grant compatibility before binding the listener.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_validate_connection_launch(
+/// Check worker grant compatibility before binding the listener. The launcher
+/// supplies its live error stream.
+pub(super) unsafe fn witchy_validate_connection_launch(
     required: u64,
     supplied: u64,
     per_connection: bool,

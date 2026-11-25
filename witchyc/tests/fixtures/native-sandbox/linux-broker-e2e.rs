@@ -76,6 +76,8 @@ mod linux_stat;
 mod secret_guard;
 #[path = "../../../runtime/native/socket_primitives.rs"]
 mod socket_primitives;
+#[path = "../../../runtime/native/sys.rs"]
+mod sys;
 
 #[test]
 fn broker_cleanup_failure_is_reported() {
@@ -85,8 +87,6 @@ fn broker_cleanup_failure_is_reported() {
         fn pipe(fds: *mut c_int) -> c_int;
         fn close(fd: c_int) -> c_int;
         fn _exit(status: c_int) -> !;
-        fn witchy_broker_stop_checked(channel: *mut c_int, relay: c_int, interrupted: bool)
-        -> bool;
     }
     for (status, expected) in [(0, true), (4, false)] {
         let mut fds = [-1; 2];
@@ -98,7 +98,7 @@ fn broker_cleanup_failure_is_reported() {
         }
         unsafe { close(fds[1]) };
         assert_eq!(
-            unsafe { witchy_broker_stop_checked(&mut fds[0], child, false) },
+            broker_socket::witchy_broker_stop_checked(&mut fds[0], child, false),
             expected
         );
         assert_eq!(fds[0], -1);
@@ -114,24 +114,6 @@ fn broker_reads_only_the_granted_directory() {
         fn open(path: *const c_char, flags: c_int, ...) -> c_int;
         fn close(fd: c_int) -> c_int;
         fn waitpid(pid: c_int, status: *mut c_int, flags: c_int) -> c_int;
-        fn witchy_net_start(
-            endpoints: *const *const c_char,
-            count: u32,
-            listen: *const c_char,
-            read: *const c_char,
-            write: *const c_char,
-            read_fd: c_int,
-            write_fd: c_int,
-            exec_fd: c_int,
-            programs: *const *const c_char,
-            programs_count: u32,
-            output: *const c_char,
-            identity: *const file_identity::Identity,
-            entries: u64,
-            data_only: bool,
-            port: *mut u16,
-            relay: *mut c_int,
-        ) -> c_int;
         fn witchy_broker_file_close(channel: c_int, slot: u32) -> c_int;
     }
     let root = std::env::temp_dir().join(format!("witchy-linux-broker-e2e-{}", std::process::id()));
@@ -143,10 +125,9 @@ fn broker_reads_only_the_granted_directory() {
     let mut port = 0;
     let mut relay = -1;
     let channel = unsafe {
-        witchy_net_start(
-            ptr::null(),
-            0,
-            ptr::null(),
+        broker_socket::witchy_net_start(
+            &[],
+            None,
             name.as_ptr(),
             ptr::null(),
             fd,
@@ -201,24 +182,6 @@ fn confined_broker_runs_only_the_granted_executable() {
         fn open(path: *const c_char, flags: c_int, ...) -> c_int;
         fn close(fd: c_int) -> c_int;
         fn waitpid(pid: c_int, status: *mut c_int, flags: c_int) -> c_int;
-        fn witchy_net_start(
-            endpoints: *const *const c_char,
-            count: u32,
-            listen: *const c_char,
-            read: *const c_char,
-            write: *const c_char,
-            read_fd: c_int,
-            write_fd: c_int,
-            exec_fd: c_int,
-            programs: *const *const c_char,
-            programs_count: u32,
-            output: *const c_char,
-            identity: *const file_identity::Identity,
-            entries: u64,
-            data_only: bool,
-            port: *mut u16,
-            relay: *mut c_int,
-        ) -> c_int;
     }
     let executable = std::env::current_exe().unwrap();
     let parent = CString::new(executable.parent().unwrap().as_os_str().as_bytes()).unwrap();
@@ -228,10 +191,9 @@ fn confined_broker_runs_only_the_granted_executable() {
     let mut port = 0;
     let mut relay = -1;
     let channel = unsafe {
-        witchy_net_start(
-            ptr::null(),
-            0,
-            ptr::null(),
+        broker_socket::witchy_net_start(
+            &[],
+            None,
             ptr::null(),
             ptr::null(),
             -1,
@@ -304,43 +266,24 @@ fn confined_broker_runs_only_the_granted_executable() {
 
 #[test]
 fn confined_broker_connects_to_the_granted_endpoint() {
-    use std::ffi::{CString, c_char, c_int};
+    use std::ffi::{CString, c_int};
     use std::io::{Read, Write};
     use std::ptr;
     unsafe extern "C" {
         fn close(fd: c_int) -> c_int;
         fn waitpid(pid: c_int, status: *mut c_int, flags: c_int) -> c_int;
-        fn witchy_net_start(
-            endpoints: *const *const c_char,
-            count: u32,
-            listen: *const c_char,
-            read: *const c_char,
-            write: *const c_char,
-            read_fd: c_int,
-            write_fd: c_int,
-            exec_fd: c_int,
-            programs: *const *const c_char,
-            programs_count: u32,
-            output: *const c_char,
-            identity: *const file_identity::Identity,
-            entries: u64,
-            data_only: bool,
-            port: *mut u16,
-            relay: *mut c_int,
-        ) -> c_int;
         fn witchy_net_connect(channel: c_int, slot: u32, endpoint: u32) -> c_int;
         fn witchy_net_close(channel: c_int, slot: u32) -> c_int;
     }
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let endpoint = CString::new(listener.local_addr().unwrap().to_string()).unwrap();
-    let names = [endpoint.as_ptr()];
+    let names = [endpoint.as_c_str()];
     let mut port = 0;
     let mut relay = -1;
     let channel = unsafe {
-        witchy_net_start(
-            names.as_ptr(),
-            1,
-            ptr::null(),
+        broker_socket::witchy_net_start(
+            &names,
+            None,
             ptr::null(),
             ptr::null(),
             -1,

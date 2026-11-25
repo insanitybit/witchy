@@ -13,17 +13,16 @@ use core::{
 unsafe extern "C" {
     safe fn close(fd: c_int) -> c_int;
     fn free(ptr: *mut c_void);
-    fn fcntl(fd: c_int, command: c_int, ...) -> c_int;
 }
 
 const SLOTS: usize = 16;
 const CHUNK: usize = 16384;
 
+/// `entries` is null or one `u64` that nothing else in this process refers to.
 pub(super) unsafe fn relay_connection(
     channel: c_int,
     slot: u32,
-    endpoints: *const Endpoint,
-    endpoint_count: u32,
+    endpoints: &[Endpoint],
     root: c_int,
     write_root: c_int,
     combined: bool,
@@ -32,16 +31,13 @@ pub(super) unsafe fn relay_connection(
     staging: c_int,
 ) {
     let mut unlimited = u64::MAX;
-    let entries = if entries.is_null() {
-        &mut unlimited
-    } else {
-        unsafe { &mut *entries }
-    };
+    // SAFETY: the caller's promise.
+    let entries = unsafe { entries.as_mut() }.unwrap_or(&mut unlimited);
+    // SAFETY: a null name is no output name.
     unsafe {
         relay(
             channel,
             endpoints,
-            endpoint_count,
             -1,
             root,
             write_root,
@@ -64,10 +60,10 @@ pub(super) unsafe fn relay_connection(
     }
 }
 
+/// `output_name` is null or a C string.
 pub(super) unsafe fn relay_shared(
     channel: c_int,
-    endpoints: *const Endpoint,
-    endpoint_count: u32,
+    endpoints: &[Endpoint],
     listener: c_int,
     root: c_int,
     write_root: c_int,
@@ -79,11 +75,11 @@ pub(super) unsafe fn relay_shared(
     mode: u32,
     staging: c_int,
 ) {
+    // SAFETY: the caller's promise.
     unsafe {
         relay(
             channel,
             endpoints,
-            endpoint_count,
             listener,
             root,
             write_root,
@@ -100,10 +96,10 @@ pub(super) unsafe fn relay_shared(
     }
 }
 
+/// `output_name` is null or a C string.
 unsafe fn relay(
     channel: c_int,
-    endpoints: *const Endpoint,
-    endpoint_count: u32,
+    endpoints: &[Endpoint],
     listener: c_int,
     mut root: c_int,
     mut write_root: c_int,
@@ -138,10 +134,7 @@ unsafe fn relay(
         *slot = connection;
     }
     let mut scratch = [0u8; CHUNK];
-    let (mut operation, mut count, mut frame_slot) = (0, 0, 0);
-    while unsafe {
-        witchy_broker_read_request(channel, &mut operation, &mut count, &mut frame_slot)
-    } {
+    while let Some((operation, count, frame_slot)) = witchy_broker_read_request(channel) {
         let slot = frame_slot as usize;
         let ok = match operation {
             32 => {
@@ -156,11 +149,7 @@ unsafe fn relay(
                     -1
                 };
                 let taken = if base >= 0 {
-                    #[cfg(target_os = "macos")]
-                    const DUP_CLOEXEC: c_int = 67;
-                    #[cfg(target_os = "linux")]
-                    const DUP_CLOEXEC: c_int = 1030;
-                    unsafe { fcntl(base, DUP_CLOEXEC, 3 as c_int) }
+                    super::sys::duplicate_close_on_exec(base, 3)
                 } else {
                     -1
                 };
@@ -265,16 +254,12 @@ unsafe fn relay(
                     break;
                 }
                 let timeout = u16::from_be_bytes([scratch[0], scratch[1]]);
-                let bits = &mut scratch[2..19];
+                // The scratch is longer than the 19 bytes of this frame.
+                let Some(bits) = scratch[2..].first_chunk_mut::<17>() else {
+                    break;
+                };
                 if timeout > 5000
-                    || !unsafe {
-                        witchy_broker_readiness(
-                            listener,
-                            &streams,
-                            bits.as_mut_ptr().cast(),
-                            i32::from(timeout),
-                        )
-                    }
+                    || !witchy_broker_readiness(listener, &streams, bits, i32::from(timeout))
                 {
                     witchy_broker_reply(channel, 2, 0);
                     break;
@@ -304,18 +289,15 @@ unsafe fn relay(
                         )
                     }
                 } else {
-                    unsafe {
-                        witchy_broker_stream_request(
-                            channel,
-                            endpoints,
-                            endpoint_count,
-                            listener,
-                            stream,
-                            operation,
-                            count,
-                            scratch.as_mut_ptr(),
-                        )
-                    }
+                    witchy_broker_stream_request(
+                        channel,
+                        endpoints,
+                        listener,
+                        stream,
+                        operation,
+                        count,
+                        &mut scratch,
+                    )
                 }
             }
         };

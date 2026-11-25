@@ -1,6 +1,9 @@
 //! Resolve numeric and DNS endpoints before the broker is confined.
 use super::socket_primitives::witchy_broker_endpoint_address;
-use core::{ffi::c_int, ptr};
+use core::{
+    ffi::{CStr, c_int},
+    ptr,
+};
 
 fn dns_endpoint(text: &[u8]) -> Option<(&[u8], u16)> {
     let colon = text.iter().rposition(|&byte| byte == b':')?;
@@ -42,35 +45,42 @@ fn dns_endpoint(text: &[u8]) -> Option<(&[u8], u16)> {
     (port != 0).then_some((host, port))
 }
 
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_net_same_endpoint(
-    left: *const core::ffi::c_char,
-    right: *const core::ffi::c_char,
-) -> bool {
+pub(super) fn witchy_net_same_endpoint(left: &CStr, right: &CStr) -> bool {
     let mut a = [0u8; 28];
     let mut b = [0u8; 28];
-    let len = unsafe { witchy_broker_endpoint_address(left, a.as_mut_ptr(), false) };
+    let len = witchy_broker_endpoint_address(left, &mut a, false);
     if len == 0 {
-        let left = dns_endpoint(unsafe { core::ffi::CStr::from_ptr(left) }.to_bytes());
-        let right = dns_endpoint(unsafe { core::ffi::CStr::from_ptr(right) }.to_bytes());
+        let left = dns_endpoint(left.to_bytes());
+        let right = dns_endpoint(right.to_bytes());
         return left
             .zip(right)
             .is_some_and(|((name, port), (other, other_port))| {
                 port == other_port && name.eq_ignore_ascii_case(other)
             });
     }
-    (unsafe { witchy_broker_endpoint_address(right, b.as_mut_ptr(), false) == len }) && a == b
+    witchy_broker_endpoint_address(right, &mut b, false) == len && a == b
 }
 
 // sockaddr_storage is 128 bytes with eight-byte alignment on both targets.
+#[derive(Clone, Copy)]
 #[repr(C, align(8))]
 pub(super) struct Address(pub(super) [u8; 128]);
 
+#[derive(Clone, Copy)]
 #[repr(C)]
 pub(super) struct Endpoint {
     pub(super) addresses: [Address; 8],
     pub(super) lengths: [u32; 8],
     pub(super) count: u32,
+}
+
+impl Endpoint {
+    /// No address: dialing it fails.
+    pub(super) const EMPTY: Self = Self {
+        addresses: [Address([0; 128]); 8],
+        lengths: [0; 8],
+        count: 0,
+    };
 }
 
 #[repr(C)]
@@ -88,12 +98,9 @@ struct AddrInfo {
     next: *mut AddrInfo,
 }
 
-/// The launcher supplies a live C string and an aligned endpoint output.
-pub(super) unsafe fn witchy_broker_resolve_endpoint(
-    text: *const core::ffi::c_char,
-    output: *mut Endpoint,
-) -> bool {
-    use core::ffi::{CStr, c_char};
+/// The addresses `text` names, numeric or by DNS, or `None` when it names none.
+pub(super) fn witchy_broker_resolve_endpoint(text: &CStr) -> Option<Endpoint> {
+    use core::ffi::c_char;
     unsafe extern "C" {
         fn getaddrinfo(
             host: *const c_char,
@@ -103,26 +110,15 @@ pub(super) unsafe fn witchy_broker_resolve_endpoint(
         ) -> c_int;
         fn freeaddrinfo(result: *mut AddrInfo);
     }
-    let mut endpoint = Endpoint {
-        addresses: [const { Address([0; 128]) }; 8],
-        lengths: [0; 8],
-        count: 0,
-    };
-    let address = endpoint
-        .addresses
-        .first_mut()
-        .map(|slot| slot.0.as_mut_ptr());
-    let Some(address) = address else { return false };
-    let length = unsafe { witchy_broker_endpoint_address(text, address, false) };
+    let mut endpoint = Endpoint::EMPTY;
+    let first = endpoint.addresses.first_mut()?;
+    let length = witchy_broker_endpoint_address(text, &mut first.0, false);
     if length != 0 {
         endpoint.lengths = [length, 0, 0, 0, 0, 0, 0, 0];
         endpoint.count = 1;
-        unsafe { output.write(endpoint) };
-        return true;
+        return Some(endpoint);
     }
-    let Some((host, mut port)) = dns_endpoint(unsafe { CStr::from_ptr(text) }.to_bytes()) else {
-        return false;
-    };
+    let (host, mut port) = dns_endpoint(text.to_bytes())?;
     let mut hostname = [0u8; 254];
     for (dest, &byte) in hostname.iter_mut().zip(host) {
         *dest = byte;
@@ -139,9 +135,7 @@ pub(super) unsafe fn witchy_broker_resolve_endpoint(
             }
         }
     }
-    let Some(service) = service.get(start..) else {
-        return false;
-    };
+    let service = service.get(start..)?;
     #[cfg(target_os = "macos")]
     const NUMERIC_SERVICE: c_int = 0x1000;
     #[cfg(target_os = "linux")]
@@ -170,7 +164,7 @@ pub(super) unsafe fn witchy_broker_resolve_endpoint(
         )
     } != 0
     {
-        return false;
+        return None;
     }
     let mut answer = answers;
     for (address, length) in endpoint.addresses.iter_mut().zip(&mut endpoint.lengths) {
@@ -198,23 +192,19 @@ pub(super) unsafe fn witchy_broker_resolve_endpoint(
         unsafe { freeaddrinfo(answers) };
     }
     if endpoint.count == 0 {
-        return false;
+        return None;
     }
-    unsafe { output.write(endpoint) };
-    true
+    Some(endpoint)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::mem::MaybeUninit;
 
     #[test]
     fn numeric_and_localhost_dns_resolve_with_correct_abi() {
         for name in [c"127.0.0.1:443", c"localhost:443"] {
-            let mut output = MaybeUninit::<Endpoint>::uninit();
-            assert!(unsafe { witchy_broker_resolve_endpoint(name.as_ptr(), output.as_mut_ptr()) });
-            let endpoint = unsafe { output.assume_init() };
+            let endpoint = witchy_broker_resolve_endpoint(name).unwrap();
             assert!(endpoint.count > 0 && endpoint.count <= 8);
             for (address, &len) in endpoint
                 .addresses
@@ -230,14 +220,8 @@ mod tests {
 
     #[test]
     fn endpoint_identity_normalizes_dns_names_and_ports() {
-        assert!(unsafe {
-            witchy_net_same_endpoint(c"LOCALHOST:80".as_ptr(), c"localhost:080".as_ptr())
-        });
-        assert!(!unsafe {
-            witchy_net_same_endpoint(c"localhost:80".as_ptr(), c"localhost:81".as_ptr())
-        });
-        assert!(!unsafe {
-            witchy_net_same_endpoint(c"bad/name:80".as_ptr(), c"bad/name:80".as_ptr())
-        });
+        assert!(witchy_net_same_endpoint(c"LOCALHOST:80", c"localhost:080"));
+        assert!(!witchy_net_same_endpoint(c"localhost:80", c"localhost:81"));
+        assert!(!witchy_net_same_endpoint(c"bad/name:80", c"bad/name:80"));
     }
 }

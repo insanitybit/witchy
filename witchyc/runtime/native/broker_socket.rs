@@ -1,29 +1,10 @@
 //! Socket operations used by the broker.
 
 use super::global::{Global, Table};
-use core::{
-    ffi::{c_int, c_void},
-    ptr,
-};
-
-#[repr(C)]
-#[cfg(target_os = "macos")]
-struct PollFd {
-    fd: c_int,
-    events: i16,
-    returned: i16,
-}
-#[cfg(target_os = "linux")]
-use super::socket_primitives::PollFd;
+use super::sys::{self, PollFd};
+use core::ffi::{CStr, c_char, c_int};
 
 unsafe extern "C" {
-    #[cfg(target_os = "macos")]
-    fn setsockopt(fd: c_int, level: c_int, option: c_int, value: *const c_void, len: u32) -> c_int;
-    #[cfg(target_os = "macos")]
-    fn poll(fds: *mut PollFd, count: u32, timeout: c_int) -> c_int;
-    #[cfg(target_os = "linux")]
-    fn poll(fds: *mut PollFd, count: usize, timeout: c_int) -> c_int;
-    fn fcntl(fd: c_int, op: c_int, ...) -> c_int;
     safe fn close(fd: c_int) -> c_int;
 }
 
@@ -31,15 +12,7 @@ fn suppress_sigpipe(fd: c_int) -> bool {
     #[cfg(target_os = "macos")]
     {
         let on: c_int = 1;
-        unsafe {
-            setsockopt(
-                fd,
-                0xffff,
-                0x1022,
-                (&raw const on).cast(),
-                size_of::<c_int>() as u32,
-            ) == 0
-        }
+        sys::setsockopt(fd, 0xffff, 0x1022, &on) == 0
     }
     #[cfg(target_os = "linux")]
     {
@@ -57,13 +30,7 @@ fn close_inherited(output: bool, input: bool, keep: &[c_int]) -> bool {
 }
 
 #[cfg(target_os = "linux")]
-unsafe fn confine_linux(
-    root: c_int,
-    write_root: c_int,
-    output: c_int,
-    endpoints: *const Endpoint,
-    count: u32,
-) -> bool {
+fn confine_linux(root: c_int, write_root: c_int, output: c_int, endpoints: &[Endpoint]) -> bool {
     unsafe extern "C" {
         safe fn witchy_exec_start_runner() -> bool;
         safe fn witchy_exec_signal_descriptor() -> c_int;
@@ -78,13 +45,12 @@ unsafe fn confine_linux(
             message: c_int,
         ) -> bool;
     }
-    if count > 16 || (count != 0 && endpoints.is_null()) {
+    if endpoints.len() > 16 {
         return false;
     }
     let mut ports = [0u16; 128];
     let mut used = 0usize;
-    for i in 0..count as usize {
-        let endpoint = unsafe { &*endpoints.add(i) };
+    for endpoint in endpoints {
         if endpoint.count as usize > endpoint.addresses.len() {
             return false;
         }
@@ -93,9 +59,10 @@ unsafe fn confine_linux(
             used += 1;
         }
     }
-    unsafe {
-        witchy_exec_start_runner()
-            && witchy_confine_broker(
+    witchy_exec_start_runner()
+        // SAFETY: the first `used` places of `ports` are filled.
+        && unsafe {
+            witchy_confine_broker(
                 root,
                 write_root,
                 output,
@@ -104,7 +71,7 @@ unsafe fn confine_linux(
                 witchy_exec_signal_descriptor(),
                 witchy_exec_runner_descriptor(),
             )
-    }
+        }
 }
 
 pub(super) use super::socket_primitives::witchy_broker_readiness;
@@ -116,6 +83,7 @@ use super::socket_primitives::{
 use super::broker_endpoint::witchy_broker_resolve_endpoint;
 pub(super) use super::broker_endpoint::{Address, Endpoint};
 
+#[derive(Clone, Copy)]
 struct ServerRoots {
     root: c_int,
     write_root: c_int,
@@ -123,20 +91,27 @@ struct ServerRoots {
     data_only: bool,
     entries: *mut u64,
     connection_entries: u64,
-    outbound: [core::mem::MaybeUninit<Endpoint>; 16],
-    outbound_count: u32,
 }
 
-static mut SERVER_ROOTS: ServerRoots = ServerRoots {
+static SERVER_ROOTS: Global<ServerRoots> = Global::new(ServerRoots {
     root: -1,
     write_root: -1,
     combined: false,
     data_only: false,
-    entries: ptr::null_mut(),
+    entries: core::ptr::null_mut(),
     connection_entries: u64::MAX,
-    outbound: [const { core::mem::MaybeUninit::uninit() }; 16],
-    outbound_count: 0,
-};
+});
+static SERVER_OUTBOUND: Table<Endpoint, ENDPOINT_CAPACITY> = Table::new(Endpoint::EMPTY);
+
+/// The resolved endpoints of connection brokers, copied to `out`, and their count.
+fn server_outbound(out: &mut [Endpoint; ENDPOINT_CAPACITY]) -> usize {
+    let mut count = 0;
+    for (slot, endpoint) in out.iter_mut().zip(SERVER_OUTBOUND.iter()) {
+        *slot = endpoint;
+        count += 1;
+    }
+    count
+}
 
 static OUTPUT_PARENT: Global<c_int> = Global::new(-1);
 static OUTPUT_EXCLUSIVE: Global<bool> = Global::new(false);
@@ -153,58 +128,64 @@ extern "C" fn witchy_broker_exec_budget(budget: u64) {
     EXEC_BUDGET.set(budget);
 }
 
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_broker_server_endpoints(
-    names: *const *const core::ffi::c_char,
-    count: u32,
-) -> bool {
-    if count > 16 || (count != 0 && names.is_null()) {
-        return false;
-    }
-    let roots = unsafe { &mut *(&raw mut SERVER_ROOTS) };
-    for i in 0..count as usize {
-        if !unsafe { witchy_broker_resolve_endpoint(*names.add(i), roots.outbound[i].as_mut_ptr()) }
-        {
+/// Resolves the launch endpoints for the brokers of connections. False, with
+/// the endpoints in use left as they were, when one does not resolve.
+pub(super) fn witchy_broker_server_endpoints() -> bool {
+    let mut resolved = [Endpoint::EMPTY; ENDPOINT_CAPACITY];
+    let mut count = 0;
+    for (slot, name) in resolved.iter_mut().zip(LAUNCH_ENDPOINTS.iter()) {
+        let Some(endpoint) = witchy_broker_resolve_endpoint(name) else {
             return false;
-        }
+        };
+        *slot = endpoint;
+        count += 1;
     }
-    roots.outbound_count = count;
+    SERVER_OUTBOUND.clear();
+    for endpoint in resolved.into_iter().take(count) {
+        SERVER_OUTBOUND.push(endpoint);
+    }
     true
 }
 
-#[unsafe(no_mangle)]
-extern "C" fn witchy_broker_server_connection_entries(entries: u64) {
-    unsafe {
-        (*(&raw mut SERVER_ROOTS)).connection_entries = entries;
-    }
+pub(super) fn witchy_broker_server_connection_entries(entries: u64) {
+    SERVER_ROOTS.set(ServerRoots {
+        connection_entries: entries,
+        ..SERVER_ROOTS.get()
+    });
 }
 
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_broker_server_roots(
+/// `entries` is null or the directory budget that connection brokers share:
+/// one `u64` that stays mapped for the life of the process.
+pub(super) fn witchy_broker_server_roots(
     root: c_int,
     write_root: c_int,
     combined: bool,
     data_only: bool,
     entries: *mut u64,
 ) {
-    let roots = unsafe { &mut *(&raw mut SERVER_ROOTS) };
-    roots.root = root;
-    roots.write_root = write_root;
-    roots.combined = combined;
-    roots.data_only = data_only;
-    roots.entries = entries;
+    SERVER_ROOTS.set(ServerRoots {
+        root,
+        write_root,
+        combined,
+        data_only,
+        entries,
+        ..SERVER_ROOTS.get()
+    });
 }
 
 /// The endpoint was initialized by the Rust resolver before broker startup.
-unsafe fn witchy_broker_dial_endpoint(endpoint: *const Endpoint) -> c_int {
-    let endpoint = unsafe { &*endpoint };
+fn witchy_broker_dial_endpoint(endpoint: &Endpoint) -> c_int {
     for (address, &len) in endpoint
         .addresses
         .iter()
         .zip(&endpoint.lengths)
         .take(endpoint.count as usize)
     {
-        let stream = unsafe { witchy_broker_dial(address.0.as_ptr(), len) };
+        // The resolver stores no length past the end of an address.
+        let Some(address) = address.0.get(..len as usize) else {
+            continue;
+        };
+        let stream = witchy_broker_dial(address);
         if stream >= 0 {
             return stream;
         }
@@ -212,23 +193,19 @@ unsafe fn witchy_broker_dial_endpoint(endpoint: *const Endpoint) -> c_int {
     -1
 }
 
-/// The launcher provides a live C string and writable bound-port output.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_net_listen(address: *const core::ffi::c_char, port: *mut u16) -> c_int {
+/// Binds the listener `address` names and writes the bound port on success.
+pub(super) fn witchy_net_listen(address: &CStr, port: &mut u16) -> c_int {
     let mut bound = Address([0; 128]);
-    let size = unsafe { witchy_broker_endpoint_address(address, bound.0.as_mut_ptr(), true) };
+    let size = witchy_broker_endpoint_address(address, &mut bound.0, true);
     if size == 0 {
         return -1;
     }
-    unsafe { witchy_broker_bind_listener(bound.0.as_mut_ptr(), size, port) }
+    witchy_broker_bind_listener(&mut bound.0, size, port)
 }
 
-#[unsafe(no_mangle)]
-pub(super) extern "C" fn witchy_net_accept_connection(listener: c_int, timeout: u32) -> c_int {
+pub(super) fn witchy_net_accept_connection(listener: c_int, timeout: u32) -> c_int {
     let mut timed_out = false;
-    let stream = unsafe {
-        witchy_broker_accept_stream(listener, timeout.min(5000) as c_int, &mut timed_out)
-    };
+    let stream = witchy_broker_accept_stream(listener, timeout.min(5000) as c_int, &mut timed_out);
     if stream < 0 {
         if timed_out { -3 } else { -1 }
     } else {
@@ -238,34 +215,18 @@ pub(super) extern "C" fn witchy_net_accept_connection(listener: c_int, timeout: 
 
 /// Consumes an accepted stream. On success returns the private channel and
 /// writes the broker PID. Only the single-threaded supervisor calls this.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_net_connection_broker(
-    stream: c_int,
-    slot: u32,
-    relay: *mut c_int,
-) -> c_int {
+pub(super) fn witchy_net_connection_broker(stream: c_int, slot: u32, relay: &mut c_int) -> c_int {
     unsafe extern "C" {
-        fn socketpair(domain: c_int, kind: c_int, protocol: c_int, fds: *mut c_int) -> c_int;
         fn fork() -> c_int;
         safe fn dup2(source: c_int, target: c_int) -> c_int;
-        fn signal(signal: c_int, handler: usize) -> usize;
-        fn sigemptyset(set: *mut super::deadline::SignalSet) -> c_int;
-        fn sigaddset(set: *mut super::deadline::SignalSet, signal: c_int) -> c_int;
-        fn sigprocmask(
-            how: c_int,
-            set: *const super::deadline::SignalSet,
-            old: *mut super::deadline::SignalSet,
-        ) -> c_int;
         safe fn _exit(code: c_int) -> !;
     }
     const AF_UNIX: c_int = 1;
     const SOCK_STREAM: c_int = 1;
     const SIGPIPE: c_int = 13;
-    const SIG_IGN: usize = 1;
-    const SIG_ERR: usize = usize::MAX;
 
     let mut channel = [-1; 2];
-    if unsafe { socketpair(AF_UNIX, SOCK_STREAM, 0, channel.as_mut_ptr()) } != 0 {
+    if sys::socketpair(AF_UNIX, SOCK_STREAM, 0, &mut channel) != 0 {
         close(stream);
         return -1;
     }
@@ -276,62 +237,57 @@ unsafe extern "C" fn witchy_net_connection_broker(
         close(stream);
         return -1;
     }
+    // SAFETY: the supervisor has one thread, so the child may run any code.
     let child = unsafe { fork() };
     if child == 0 {
+        close(parent);
+        let roots = SERVER_ROOTS.get();
+        let mut keep = [-1; 19];
+        keep[0] = worker;
+        keep[1] = roots.root;
+        keep[2] = roots.write_root;
+        let count = super::exec_programs::witchy_exec_descriptors(&mut keep[3..]);
+        if dup2(stream, 0) < 0 || !close_inherited(false, true, &keep[..count + 3]) {
+            _exit(2);
+        }
+        close(2);
+        // The stop signals the supervisor blocked around the fork: 15, 1 and 2.
+        let Some(stops) = super::connection_queue::stop_signal_set() else {
+            _exit(2);
+        };
+        if !sys::ignore_signal(SIGPIPE)
+            || !sys::default_signal(15)
+            || !sys::default_signal(1)
+            || !sys::default_signal(2)
+            || !super::connection_queue::unblock_signals(&stops)
+        {
+            _exit(2);
+        }
+        let staging = if roots.data_only && roots.write_root >= 0 {
+            let fd = super::broker_directory::witchy_broker_open_staging(roots.write_root);
+            if fd < 0 {
+                _exit(2);
+            }
+            fd
+        } else {
+            -1
+        };
+        let mut outbound = [Endpoint::EMPTY; ENDPOINT_CAPACITY];
+        let outbound_count = server_outbound(&mut outbound);
+        let outbound = &outbound[..outbound_count];
+        #[cfg(target_os = "linux")]
+        if !confine_linux(roots.root, roots.write_root, -1, outbound) {
+            _exit(2);
+        }
+        super::entry_budget::set_connection(roots.connection_entries);
+        // SAFETY: `roots.entries` is what `witchy_broker_server_roots` was given: null, or
+        // the shared directory budget, which stays mapped and which this process reaches
+        // through no other reference.
         unsafe {
-            close(parent);
-            let roots = &*(&raw const SERVER_ROOTS);
-            let mut keep = [-1; 19];
-            keep[0] = worker;
-            keep[1] = roots.root;
-            keep[2] = roots.write_root;
-            let count = super::exec_programs::witchy_exec_descriptors(&mut keep[3..]);
-            if dup2(stream, 0) < 0 || !close_inherited(false, true, &keep[..count + 3]) {
-                _exit(2);
-            }
-            close(2);
-            let mut stops = super::deadline::empty_signal_set();
-            #[cfg(target_os = "macos")]
-            const SIG_UNBLOCK: c_int = 2;
-            #[cfg(target_os = "linux")]
-            const SIG_UNBLOCK: c_int = 1;
-            if sigemptyset(&mut stops) != 0
-                || sigaddset(&mut stops, 15) != 0
-                || sigaddset(&mut stops, 1) != 0
-                || sigaddset(&mut stops, 2) != 0
-                || signal(SIGPIPE, SIG_IGN) == SIG_ERR
-                || signal(15, 0) == SIG_ERR
-                || signal(1, 0) == SIG_ERR
-                || signal(2, 0) == SIG_ERR
-                || sigprocmask(SIG_UNBLOCK, &stops, ptr::null_mut()) != 0
-            {
-                _exit(2);
-            }
-            let staging = if roots.data_only && roots.write_root >= 0 {
-                let fd = super::broker_directory::witchy_broker_open_staging(roots.write_root);
-                if fd < 0 {
-                    _exit(2);
-                }
-                fd
-            } else {
-                -1
-            };
-            #[cfg(target_os = "linux")]
-            if !confine_linux(
-                roots.root,
-                roots.write_root,
-                -1,
-                roots.outbound.as_ptr().cast(),
-                roots.outbound_count,
-            ) {
-                _exit(2);
-            }
-            super::entry_budget::set_connection(roots.connection_entries);
             super::broker_loop::relay_connection(
                 worker,
                 slot,
-                roots.outbound.as_ptr().cast(),
-                roots.outbound_count,
+                outbound,
                 roots.root,
                 roots.write_root,
                 roots.combined,
@@ -339,16 +295,16 @@ unsafe extern "C" fn witchy_net_connection_broker(
                 roots.entries,
                 staging,
             );
-            #[cfg(target_os = "linux")]
-            {
-                unsafe extern "C" {
-                    safe fn witchy_exec_finish() -> bool;
-                }
-                _exit(if witchy_exec_finish() { 0 } else { 4 });
-            }
-            #[cfg(target_os = "macos")]
-            _exit(0);
         }
+        #[cfg(target_os = "linux")]
+        {
+            unsafe extern "C" {
+                safe fn witchy_exec_finish() -> bool;
+            }
+            _exit(if witchy_exec_finish() { 0 } else { 4 });
+        }
+        #[cfg(target_os = "macos")]
+        _exit(0);
     }
     close(stream);
     close(worker);
@@ -356,82 +312,75 @@ unsafe extern "C" fn witchy_net_connection_broker(
         close(parent);
         return -1;
     }
-    unsafe { relay.write(child) };
+    *relay = child;
     parent
 }
 
-/// Starts the shared broker before guest entry. All pointer arguments must be
-/// valid launcher-owned storage, with optional C strings represented by null.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_net_start(
-    endpoints: *const *const core::ffi::c_char,
-    endpoint_count: u32,
-    listen_endpoint: *const core::ffi::c_char,
-    dir_path: *const core::ffi::c_char,
-    write_dir: *const core::ffi::c_char,
+/// Starts the shared broker before guest entry and writes its bound port and
+/// PID on success. Each pointer argument is null, for a grant that is absent,
+/// or valid launcher-owned storage: C strings, `program_count` program names,
+/// and one directory identity.
+pub(super) unsafe fn witchy_net_start(
+    endpoints: &[&CStr],
+    listen_endpoint: Option<&CStr>,
+    dir_path: *const c_char,
+    write_dir: *const c_char,
     root_fd: c_int,
     write_root_fd: c_int,
     exec_fd: c_int,
-    programs: *const *const core::ffi::c_char,
+    programs: *const *const c_char,
     program_count: u32,
-    output_path: *const core::ffi::c_char,
+    output_path: *const c_char,
     directory_id: *const super::file_identity::Identity,
     entries: u64,
     data_only: bool,
-    bound_port: *mut u16,
-    relay: *mut c_int,
+    bound_port: &mut u16,
+    relay: &mut c_int,
 ) -> c_int {
     use core::mem::MaybeUninit;
     unsafe extern "C" {
-        fn socketpair(domain: c_int, kind: c_int, protocol: c_int, fds: *mut c_int) -> c_int;
         fn fork() -> c_int;
-        fn waitpid(pid: c_int, status: *mut c_int, flags: c_int) -> c_int;
-        fn signal(signal: c_int, handler: usize) -> usize;
         safe fn _exit(code: c_int) -> !;
     }
 
-    let mut outbound = [const { MaybeUninit::<Endpoint>::uninit() }; 16];
-    if endpoint_count as usize > outbound.len() {
+    let mut outbound = [Endpoint::EMPTY; ENDPOINT_CAPACITY];
+    if endpoints.len() > outbound.len() {
         return -1;
     }
-    for (index, endpoint) in outbound
-        .iter_mut()
-        .take(endpoint_count as usize)
-        .enumerate()
-    {
-        if !unsafe {
-            witchy_broker_resolve_endpoint(endpoints.add(index).read(), endpoint.as_mut_ptr())
-        } {
+    for (endpoint, name) in outbound.iter_mut().zip(endpoints) {
+        let Some(resolved) = witchy_broker_resolve_endpoint(name) else {
             return -1;
-        }
-    }
-    let mut bind_address = Address([0; 128]);
-    let bind_length = if listen_endpoint.is_null() {
-        0
-    } else {
-        let size = unsafe {
-            witchy_broker_endpoint_address(listen_endpoint, bind_address.0.as_mut_ptr(), true)
         };
-        if size == 0 {
-            return -1;
+        *endpoint = resolved;
+    }
+    // The length check above keeps this within the array.
+    let outbound = &outbound[..endpoints.len()];
+    let mut bind_address = Address([0; 128]);
+    let bind_length = match listen_endpoint {
+        None => 0,
+        Some(listen_endpoint) => {
+            let size = witchy_broker_endpoint_address(listen_endpoint, &mut bind_address.0, true);
+            if size == 0 {
+                return -1;
+            }
+            size
         }
-        size
     };
 
     let mut channel = [-1; 2];
-    if unsafe { socketpair(1, 1, 0, channel.as_mut_ptr()) } != 0 {
+    if sys::socketpair(1, 1, 0, &mut channel) != 0 {
         return -1;
     }
     let [parent, worker] = channel;
-    if unsafe {
-        fcntl(parent, 2, 1 as c_int) < 0
-            || fcntl(worker, 2, 1 as c_int) < 0
-            || !suppress_sigpipe(parent)
-    } {
+    if sys::set_descriptor_flags(parent, 1) < 0
+        || sys::set_descriptor_flags(worker, 1) < 0
+        || !suppress_sigpipe(parent)
+    {
         close(parent);
         close(worker);
         return -1;
     }
+    // SAFETY: the launcher has one thread, so the child may run any code.
     let child = unsafe { fork() };
     if child == 0 {
         close(parent);
@@ -461,16 +410,14 @@ unsafe extern "C" fn witchy_net_start(
             _exit(2)
         }
         close(2);
-        if unsafe { signal(13, 1) } == usize::MAX || !witchy_broker_set_timeout(worker) {
+        if !sys::ignore_signal(13) || !witchy_broker_set_timeout(worker) {
             _exit(2)
         }
         let mut port = 0;
         let listener = if bind_length == 0 {
             -1
         } else {
-            let fd = unsafe {
-                witchy_broker_bind_listener(bind_address.0.as_mut_ptr(), bind_length, &mut port)
-            };
+            let fd = witchy_broker_bind_listener(&mut bind_address.0, bind_length, &mut port);
             if fd < 0 {
                 _exit(2)
             }
@@ -494,15 +441,7 @@ unsafe extern "C" fn witchy_net_start(
         }
         let roots = unsafe { roots.assume_init() };
         #[cfg(target_os = "linux")]
-        if !unsafe {
-            confine_linux(
-                roots.read,
-                roots.write,
-                roots.output,
-                outbound.as_ptr().cast(),
-                endpoint_count,
-            )
-        } {
+        if !confine_linux(roots.read, roots.write, roots.output, outbound) {
             _exit(2)
         }
         let [hi, lo] = port.to_be_bytes();
@@ -517,11 +456,11 @@ unsafe extern "C" fn witchy_net_start(
         } else {
             1
         };
+        // SAFETY: `roots.name` is the C string `open_roots` wrote.
         unsafe {
             super::broker_loop::relay_shared(
                 worker,
-                outbound.as_ptr().cast(),
-                endpoint_count,
+                outbound,
                 listener,
                 roots.read,
                 roots.write,
@@ -533,16 +472,16 @@ unsafe extern "C" fn witchy_net_start(
                 mode,
                 roots.staging,
             );
-            #[cfg(target_os = "linux")]
-            {
-                unsafe extern "C" {
-                    safe fn witchy_exec_finish() -> bool;
-                }
-                _exit(if witchy_exec_finish() { 0 } else { 4 });
-            }
-            #[cfg(target_os = "macos")]
-            _exit(0);
         }
+        #[cfg(target_os = "linux")]
+        {
+            unsafe extern "C" {
+                safe fn witchy_exec_finish() -> bool;
+            }
+            _exit(if witchy_exec_finish() { 0 } else { 4 });
+        }
+        #[cfg(target_os = "macos")]
+        _exit(0);
     }
     close(worker);
     if child < 0 {
@@ -561,7 +500,7 @@ unsafe extern "C" fn witchy_net_start(
         returned: 0,
     };
     if parent < 0
-        || unsafe { poll(&mut startup, 1, 5000) } != 1
+        || sys::poll(core::slice::from_mut(&mut startup), 5000) != 1
         || !super::broker_transport::witchy_broker_receive(parent, &mut ready)
         || ready[0] != 0
     {
@@ -569,34 +508,26 @@ unsafe extern "C" fn witchy_net_start(
             close(parent);
         }
         let mut status = 0;
-        while unsafe { waitpid(child, &mut status, 0) < 0 && super::errno::get() == 4 } {}
+        while sys::waitpid(child, Some(&mut status), 0) < 0 && super::errno::get() == 4 {}
         return -1;
     }
-    unsafe {
-        bound_port.write(u16::from_be_bytes([ready[1], ready[2]]));
-        relay.write(child);
-    }
+    *bound_port = u16::from_be_bytes([ready[1], ready[2]]);
+    *relay = child;
     parent
 }
 
-/// Dispatches a stream frame after the C relay verifies the slot index.
-/// The descriptor slot is exclusive, and scratch permits 16 KiB of I/O.
-pub(super) unsafe fn witchy_broker_stream_request(
+/// Dispatches a stream frame after the relay verifies the slot index.
+/// `slot` is that stream's descriptor, and `bytes` the relay's scratch.
+pub(super) fn witchy_broker_stream_request(
     channel: c_int,
-    endpoints: *const Endpoint,
-    endpoint_count: u32,
+    endpoints: &[Endpoint],
     listener: c_int,
-    slot: *mut c_int,
+    slot: &mut c_int,
     operation: u8,
     count: usize,
-    bytes: *mut u8,
+    bytes: &mut [u8; 16384],
 ) -> bool {
     use super::broker_transport::{witchy_broker_receive, witchy_broker_reply, witchy_broker_send};
-    unsafe extern "C" {
-        fn send(fd: c_int, bytes: *const c_void, len: usize, flags: c_int) -> isize;
-        fn recv(fd: c_int, bytes: *mut u8, len: usize, flags: c_int) -> isize;
-        fn read(fd: c_int, bytes: *mut c_void, len: usize) -> isize;
-    }
     const EINTR: c_int = 4;
     #[cfg(target_os = "macos")]
     const EAGAIN: c_int = 35;
@@ -606,9 +537,7 @@ pub(super) unsafe fn witchy_broker_stream_request(
     const DONTWAIT: c_int = 0x80;
     #[cfg(target_os = "linux")]
     const DONTWAIT: c_int = 0x40;
-    let mut stream = unsafe { slot.read() };
-    // SAFETY: the relay lends its 16 KiB scratch exclusively for this call.
-    let bytes = unsafe { core::slice::from_raw_parts_mut(bytes, 16384) };
+    let mut stream = *slot;
     let accepting = matches!(operation, 5 | 6);
     let opening = operation == 1 || accepting;
     if count > 16384
@@ -619,7 +548,7 @@ pub(super) unsafe fn witchy_broker_stream_request(
         } else {
             stream < 0 && operation != 4
         })
-        || (operation == 1 && count >= endpoint_count as usize)
+        || (operation == 1 && count >= endpoints.len())
         || (accepting && listener < 0)
     {
         witchy_broker_reply(channel, 2, 0);
@@ -629,18 +558,17 @@ pub(super) unsafe fn witchy_broker_stream_request(
     let mut payload = 0;
     let (status, size) = match operation {
         1 => {
-            stream = unsafe { witchy_broker_dial_endpoint(endpoints.add(count)) };
+            // The check above keeps `count` within `endpoints`.
+            stream = endpoints.get(count).map_or(-1, witchy_broker_dial_endpoint);
             (u8::from(stream < 0), 0)
         }
         5 | 6 => {
             let mut timed_out = false;
-            stream = unsafe {
-                witchy_broker_accept_stream(
-                    listener,
-                    if operation == 5 { 5000 } else { 0 },
-                    &mut timed_out,
-                )
-            };
+            stream = witchy_broker_accept_stream(
+                listener,
+                if operation == 5 { 5000 } else { 0 },
+                &mut timed_out,
+            );
             (
                 if stream >= 0 {
                     0
@@ -666,13 +594,12 @@ pub(super) unsafe fn witchy_broker_stream_request(
                 (0, 0)
             } else {
                 loop {
-                    let result = unsafe {
-                        match operation {
-                            2 => send(stream, bytes.as_ptr().cast(), count, 0),
-                            7 => send(stream, bytes.as_ptr().cast(), count, DONTWAIT),
-                            8 => recv(stream, bytes.as_mut_ptr(), count, DONTWAIT),
-                            _ => read(stream, bytes.as_mut_ptr().cast(), count),
-                        }
+                    // The first check keeps `count` within the scratch.
+                    let result = match operation {
+                        2 => sys::send(stream, &bytes[..count], 0),
+                        7 => sys::send(stream, &bytes[..count], DONTWAIT),
+                        8 => sys::recv(stream, &mut bytes[..count], DONTWAIT),
+                        _ => sys::read(stream, &mut bytes[..count]),
                     };
                     if result >= 0 && result as usize <= count {
                         let size = result as usize;
@@ -698,71 +625,77 @@ pub(super) unsafe fn witchy_broker_stream_request(
         }
         _ => return false,
     };
-    unsafe { slot.write(stream) };
+    *slot = stream;
     witchy_broker_reply(channel, status, size)
         && (payload == 0 || witchy_broker_send(channel, &bytes[..payload]))
 }
 
+/// The next frame's operation, count and slot, or `None` when the channel ends.
 /// Idle guests can compute indefinitely. Once the header begins, the socket
 /// receive timeout bounds pauses inside the frame.
-pub(super) unsafe fn witchy_broker_read_request(
-    channel: c_int,
-    operation: *mut u8,
-    count: *mut usize,
-    slot: *mut u32,
-) -> bool {
+pub(super) fn witchy_broker_read_request(channel: c_int) -> Option<(u8, usize, u32)> {
     let mut ready = PollFd {
         fd: channel,
         events: 1,
         returned: 0,
     };
     loop {
-        let result = unsafe { poll(&mut ready, 1, -1) };
+        let result = sys::poll(core::slice::from_mut(&mut ready), -1);
         if result == 1 {
             break;
         }
         if result >= 0 || super::errno::get() != 4 {
-            return false;
+            return None;
         }
     }
     let mut header = [0; 4];
     if !super::broker_transport::witchy_broker_receive(channel, &mut header) {
-        return false;
+        return None;
     }
     let [opcode, hi, lo, source] = header;
-    unsafe {
-        operation.write(opcode);
-        count.write(usize::from(u16::from_be_bytes([hi, lo])));
-        slot.write(u32::from(source));
-    }
-    true
+    Some((
+        opcode,
+        usize::from(u16::from_be_bytes([hi, lo])),
+        u32::from(source),
+    ))
 }
 
-/// The launcher owns this channel and is the only process that reaps relay.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_broker_stop(channel: *mut c_int, relay: c_int, interrupted: bool) {
-    unsafe { witchy_broker_stop_checked(channel, relay, interrupted) };
-}
-
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_broker_stop_checked(
-    channel: *mut c_int,
-    relay: c_int,
-    interrupted: bool,
-) -> bool {
+/// `waitid` for the process `pid`: what the call returned, and the PID it reported.
+pub(super) fn wait_process(pid: c_int, options: c_int) -> (c_int, c_int) {
     unsafe extern "C" {
-        safe fn kill(pid: c_int, signal: c_int) -> c_int;
-        fn waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
         fn waitid(
             kind: c_int,
             id: u32,
             info: *mut super::exec_capture::SignalInfo,
             options: c_int,
         ) -> c_int;
+    }
+    // SAFETY: every field is an integer or a pointer, for which all zeroes is a value.
+    let mut info: super::exec_capture::SignalInfo = unsafe { core::mem::zeroed() };
+    // SAFETY: the call writes one `SignalInfo`.
+    let result = unsafe { waitid(1, pid as u32, &mut info, options) };
+    (result, info.pid)
+}
+
+/// The launcher owns this channel and is the only process that reaps relay.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn witchy_broker_stop(channel: *mut c_int, relay: c_int, interrupted: bool) {
+    // SAFETY: the caller passes its own channel, which nothing else refers to.
+    witchy_broker_stop_checked(unsafe { &mut *channel }, relay, interrupted);
+}
+
+/// Closes the channel and reaps `relay`. False when the relay reported that
+/// what it started could not be stopped.
+pub(super) fn witchy_broker_stop_checked(
+    channel: &mut c_int,
+    relay: c_int,
+    interrupted: bool,
+) -> bool {
+    unsafe extern "C" {
+        safe fn kill(pid: c_int, signal: c_int) -> c_int;
         safe fn usleep(microseconds: u32) -> c_int;
         safe fn witchy_exec_sweep(pid: c_int);
     }
-    let channel = unsafe { &mut *channel };
     if *channel < 0 {
         return true;
     }
@@ -774,25 +707,22 @@ unsafe extern "C" fn witchy_broker_stop_checked(
         let mut status = 0;
         if interrupted {
             for _ in 0..200 {
-                let done = unsafe { waitpid(relay, &mut status, 1) };
+                let done = sys::waitpid(relay, Some(&mut status), 1);
                 if done == relay || (done < 0 && super::errno::get() != 4) {
                     return !(done == relay && status & 0x7f == 0 && (status >> 8) & 0xff == 4);
                 }
                 usleep(5000);
             }
             kill(relay, 9);
-            let mut info: super::exec_capture::SignalInfo = unsafe { core::mem::zeroed() };
             #[cfg(target_os = "macos")]
             const WNOWAIT: c_int = 0x20;
             #[cfg(target_os = "linux")]
             const WNOWAIT: c_int = 0x01000000;
-            while unsafe { waitid(1, relay as u32, &mut info, 4 | WNOWAIT) } < 0
-                && super::errno::get() == 4
-            {}
+            while wait_process(relay, 4 | WNOWAIT).0 < 0 && super::errno::get() == 4 {}
             witchy_exec_sweep(relay);
         }
         let done = loop {
-            let done = unsafe { waitpid(relay, &mut status, 0) };
+            let done = sys::waitpid(relay, Some(&mut status), 0);
             if done >= 0 || super::errno::get() != 4 {
                 break done;
             }
@@ -802,36 +732,44 @@ unsafe extern "C" fn witchy_broker_stop_checked(
     true
 }
 
-static mut LAUNCH_CHANNEL: c_int = -1;
-static mut LAUNCH_RELAY: c_int = 0;
+static LAUNCH_CHANNEL: Global<c_int> = Global::new(-1);
+static LAUNCH_RELAY: Global<c_int> = Global::new(0);
 
 extern "C" fn stop_launched_broker() {
-    if !unsafe { witchy_broker_stop_checked(&raw mut LAUNCH_CHANNEL, LAUNCH_RELAY, false) } {
+    let mut channel = LAUNCH_CHANNEL.get();
+    let stopped = witchy_broker_stop_checked(&mut channel, LAUNCH_RELAY.get(), false);
+    LAUNCH_CHANNEL.set(channel);
+    if !stopped {
         unsafe extern "C" {
             fn fflush(stream: *mut core::ffi::c_void) -> c_int;
             safe fn _exit(status: c_int) -> !;
         }
-        unsafe {
-            fflush(core::ptr::null_mut());
-            _exit(2)
-        }
+        // SAFETY: a null stream asks for every open output stream to be flushed.
+        unsafe { fflush(core::ptr::null_mut()) };
+        _exit(2)
     }
 }
 
 const ENDPOINT_CAPACITY: usize = 16;
-static LAUNCH_ENDPOINTS: Table<*const core::ffi::c_char, ENDPOINT_CAPACITY> =
-    Table::new(core::ptr::null());
+// Each is launcher text that lives as long as the process.
+static LAUNCH_ENDPOINTS: Table<&'static CStr, ENDPOINT_CAPACITY> = Table::new(c"");
 
-pub(super) fn launch_endpoints() -> (*const *const core::ffi::c_char, u32) {
-    (LAUNCH_ENDPOINTS.as_ptr(), LAUNCH_ENDPOINTS.len() as u32)
+pub(super) fn launch_endpoint_count() -> usize {
+    LAUNCH_ENDPOINTS.len()
 }
 
-pub(super) unsafe fn append_launch_endpoint(text: *const core::ffi::c_char) -> bool {
-    if text.is_null()
-        || unsafe { core::ffi::CStr::from_ptr(text) }
-            .to_bytes()
-            .is_empty()
-    {
+pub(super) fn launch_endpoint(index: usize) -> Option<&'static CStr> {
+    LAUNCH_ENDPOINTS.iter().nth(index)
+}
+
+/// `text` is null or a C string that lives as long as the process.
+pub(super) unsafe fn append_launch_endpoint(text: *const c_char) -> bool {
+    if text.is_null() {
+        return false;
+    }
+    // SAFETY: the caller's promise.
+    let text: &'static CStr = unsafe { CStr::from_ptr(text) };
+    if text.to_bytes().is_empty() {
         return false;
     }
     LAUNCH_ENDPOINTS.push(text)
@@ -839,12 +777,12 @@ pub(super) unsafe fn append_launch_endpoint(text: *const core::ffi::c_char) -> b
 
 /// The launcher supplies writable, NUL-terminated argv storage. On success
 /// each separator is replaced with a NUL and the table borrows that storage.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_bind_endpoints(text: *mut core::ffi::c_char) -> bool {
+pub(super) unsafe fn witchy_bind_endpoints(text: *mut c_char) -> bool {
     let mut starts = [0usize; ENDPOINT_CAPACITY];
     let mut count = 0;
     let mut offset = 0;
-    let bytes = unsafe { core::ffi::CStr::from_ptr(text) }.to_bytes();
+    // SAFETY: the launcher's promise. Nothing is written while `bytes` is in use.
+    let bytes = unsafe { CStr::from_ptr(text) }.to_bytes();
     for part in bytes.split(|&byte| byte == b',') {
         if part.is_empty() {
             return false;
@@ -857,13 +795,17 @@ unsafe extern "C" fn witchy_bind_endpoints(text: *mut core::ffi::c_char) -> bool
         count += 1;
     }
     LAUNCH_ENDPOINTS.clear();
+    // Every separator is replaced before any part is read as a C string.
     for start in starts.into_iter().take(count) {
-        unsafe {
-            if start != 0 {
-                text.add(start - 1).write(0);
-            }
-            LAUNCH_ENDPOINTS.push(text.add(start));
+        if start != 0 {
+            // SAFETY: `start - 1` is the place of a separator found above.
+            unsafe { text.add(start - 1).write(0) };
         }
+    }
+    for start in starts.into_iter().take(count) {
+        // SAFETY: `start` is where a part begins, each part now ends in a NUL, and the
+        // launcher's storage lives as long as the process.
+        LAUNCH_ENDPOINTS.push(unsafe { CStr::from_ptr(text.add(start)) });
     }
     true
 }
@@ -871,31 +813,38 @@ unsafe extern "C" fn witchy_bind_endpoints(text: *mut core::ffi::c_char) -> bool
 /// Endpoint and directory arguments are live launcher strings, with null
 /// representing an absent grant. The launcher invokes this once before entry.
 pub(super) unsafe fn launch_broker(
-    listener: *const core::ffi::c_char,
-    read_dir: *const core::ffi::c_char,
-    write_dir: *const core::ffi::c_char,
+    listener: *const c_char,
+    read_dir: *const c_char,
+    write_dir: *const c_char,
     root_fd: c_int,
     write_root_fd: c_int,
     exec_fd: c_int,
-    programs: *const *const core::ffi::c_char,
+    programs: *const *const c_char,
     program_count: u32,
-    output: *const core::ffi::c_char,
+    output: *const c_char,
     identity: *const super::file_identity::Identity,
     entries: u64,
     data_only: bool,
     stderr: *mut core::ffi::c_void,
 ) -> c_int {
     unsafe extern "C" {
-        fn atexit(callback: extern "C" fn()) -> c_int;
-        fn fputs(text: *const core::ffi::c_char, stream: *mut core::ffi::c_void) -> c_int;
+        fn fputs(text: *const c_char, stream: *mut core::ffi::c_void) -> c_int;
     }
-    let endpoints = LAUNCH_ENDPOINTS.as_ptr();
-    let endpoint_count = LAUNCH_ENDPOINTS.len() as u32;
+    // SAFETY: the launcher passes null or a C string that lives as long as the process.
+    let listener: Option<&'static CStr> =
+        (!listener.is_null()).then(|| unsafe { CStr::from_ptr(listener) });
+    let mut endpoints = [c""; ENDPOINT_CAPACITY];
+    let mut endpoint_count = 0;
+    for (slot, name) in endpoints.iter_mut().zip(LAUNCH_ENDPOINTS.iter()) {
+        *slot = name;
+        endpoint_count += 1;
+    }
     let mut port = 0;
+    let mut relay = 0;
+    // SAFETY: the launcher's promise about each pointer is the one `witchy_net_start` asks for.
     let channel = unsafe {
         witchy_net_start(
-            endpoints,
-            endpoint_count,
+            &endpoints[..endpoint_count],
             listener,
             read_dir,
             write_dir,
@@ -909,7 +858,7 @@ pub(super) unsafe fn launch_broker(
             entries,
             data_only,
             &mut port,
-            &raw mut LAUNCH_RELAY,
+            &mut relay,
         )
     };
     if exec_fd >= 0 {
@@ -931,12 +880,13 @@ pub(super) unsafe fn launch_broker(
         };
         return -1;
     }
-    unsafe { LAUNCH_CHANNEL = channel };
-    if unsafe { atexit(stop_launched_broker) } != 0 {
+    LAUNCH_RELAY.set(relay);
+    LAUNCH_CHANNEL.set(channel);
+    if sys::atexit(stop_launched_broker) != 0 {
         stop_launched_broker();
         return -1;
     }
     super::file_reader::bind_channel(channel);
-    super::connection_queue::configure_network(channel, endpoints, endpoint_count, listener, port);
+    super::connection_queue::configure_network(channel, endpoint_count, listener, port);
     channel
 }
