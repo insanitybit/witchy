@@ -54,9 +54,8 @@ fn snapshot(value: &[u8]) -> Option<&'static [u8]> {
 }
 
 // The launcher and guest share a single thread and these operations do not suspend.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_bind_env(option: *const c_char) -> bool {
-    let text = unsafe { CStr::from_ptr(option) }.to_bytes();
+pub(super) fn witchy_bind_env(option: &CStr) -> bool {
+    let text = option.to_bytes();
     let (name, inline) = match text.iter().position(|&byte| byte == b'=') {
         Some(index) => {
             let Some((name, tail)) = text.split_at_checked(index) else {
@@ -82,7 +81,7 @@ unsafe extern "C" fn witchy_bind_env(option: *const c_char) -> bool {
     let value = match inline {
         Some(value) => Some(value),
         None => {
-            let raw = unsafe { getenv(option) };
+            let raw = unsafe { getenv(option.as_ptr()) };
             if raw.is_null() {
                 None
             } else {
@@ -154,23 +153,23 @@ extern "C" fn witchy_env_value_byte(grant: u64, index: usize) -> u64 {
 
 /// The callback consumes the name synchronously and does not mutate bindings.
 #[cfg(witchy_native_aws_lc)]
-unsafe fn overlaps_secret(check: unsafe extern "C" fn(*const c_char) -> bool) -> bool {
+fn overlaps_secret(check: fn(&CStr) -> bool) -> bool {
     let env = unsafe { &*(&raw const ENVIRONMENT) };
     env.entries.iter().flatten().any(|entry| {
         // Each stored name has a reserved trailing NUL.
-        unsafe { check(entry.name.as_ptr().cast()) }
+        CStr::from_bytes_until_nul(&entry.name).is_ok_and(check)
     })
 }
 
+/// `stderr` is the launcher's live diagnostic stream.
 #[cfg(witchy_native_aws_lc)]
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_validate_secret_grants(
+pub(super) fn witchy_validate_secret_grants(
     required: u64,
     supplied: u64,
     stderr: *mut core::ffi::c_void,
 ) -> bool {
+    use super::signer_crypto::witchy_secret_uses_env;
     unsafe extern "C" {
-        fn witchy_secret_uses_env(name: *const c_char) -> bool;
         safe fn witchy_signers_bound() -> bool;
         fn fputs(text: *const c_char, stream: *mut core::ffi::c_void) -> core::ffi::c_int;
     }
@@ -179,7 +178,7 @@ unsafe extern "C" fn witchy_validate_secret_grants(
     const EXEC: u64 = 262144;
     const TLS_SIGNER: u64 = super::tls_grant::TLS_SIGNER;
     const WRITES: u64 = 2048 | 4096 | 8192;
-    let error = if unsafe { overlaps_secret(witchy_secret_uses_env) } {
+    let error = if overlaps_secret(witchy_secret_uses_env) {
         c"native secret source is also granted through Env\n"
     } else if (required & TLS_SIGNER != 0) && (required | supplied) & (EXEC | WRITES) != 0 {
         c"TLS signers require a launch without Exec or writable file and directory grants\n"

@@ -287,12 +287,11 @@ fn resolve_roots<T: Copy>(
 }
 
 /// The launcher supplies pointers to its live path and grant variables.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_directory_grants(
+pub(super) fn witchy_directory_grants(
     required: u64,
-    grants: *mut u64,
-    read: *mut *const core::ffi::c_char,
-    write: *mut *const core::ffi::c_char,
+    grants: &mut u64,
+    read: &mut *const core::ffi::c_char,
+    write: &mut *const core::ffi::c_char,
     data_only: bool,
     identity: bool,
     write_only: bool,
@@ -305,19 +304,17 @@ unsafe extern "C" fn witchy_directory_grants(
     let present = |path: *const core::ffi::c_char| (!path.is_null()).then_some(path);
     match resolve_roots(
         required,
-        present(unsafe { read.read() }),
-        present(unsafe { write.read() }),
+        present(*read),
+        present(*write),
         data_only,
         identity,
         write_only,
         combined,
     ) {
         Ok((read_path, write_path, additional)) => {
-            unsafe {
-                read.write(read_path.unwrap_or(core::ptr::null()));
-                write.write(write_path.unwrap_or(core::ptr::null()));
-                *grants |= additional;
-            }
+            *read = read_path.unwrap_or(core::ptr::null());
+            *write = write_path.unwrap_or(core::ptr::null());
+            *grants |= additional;
             true
         }
         Err(message) => {

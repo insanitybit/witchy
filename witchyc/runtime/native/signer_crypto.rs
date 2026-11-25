@@ -252,11 +252,9 @@ pub(super) fn slot_ptr(index: usize) -> *mut SignerSlot {
     unsafe { (&raw mut SIGNER_SLOTS).cast::<SignerSlot>().add(index) }
 }
 
-/// Startup caller provides a NUL-terminated environment name.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_secret_uses_env(name: *const core::ffi::c_char) -> bool {
+pub(super) fn witchy_secret_uses_env(name: &core::ffi::CStr) -> bool {
     use core::ffi::CStr;
-    let requested = unsafe { CStr::from_ptr(name) }.to_bytes();
+    let requested = name.to_bytes();
     for index in 0..128 {
         let stored = unsafe { (*slot_ptr(index)).environment };
         if !stored.is_null() && unsafe { CStr::from_ptr(stored.cast()) }.to_bytes() == requested {
@@ -560,7 +558,7 @@ unsafe fn load_seed(
         .then_some(length);
     }
     let environment = kind == StoreSource::Environment;
-    if environment && unsafe { witchy_secret_uses_env(source) } {
+    if environment && witchy_secret_uses_env(unsafe { CStr::from_ptr(source) }) {
         return None;
     }
     let value = if environment {

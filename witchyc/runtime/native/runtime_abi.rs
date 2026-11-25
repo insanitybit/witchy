@@ -116,21 +116,6 @@ unsafe extern "C" fn rust_eh_personality() -> ! {
     abort()
 }
 
-/// The input must point to a NUL-terminated host argument and the output
-/// must point to writable, aligned storage for one counter.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn witchy_budget_parse(
-    text: *const core::ffi::c_char,
-    out: *mut u64,
-) -> bool {
-    let bytes = unsafe { core::ffi::CStr::from_ptr(text) }.to_bytes();
-    let Some(limit) = budget::parse_limit(bytes) else {
-        return false;
-    };
-    unsafe { out.write(limit) };
-    true
-}
-
 mod timers;
 
 /// The launcher passes admitted grants, the broker channel (or -1), and a
@@ -189,8 +174,7 @@ unsafe extern "C" fn witchy_run_guest(
 
 /// Check the ordinary launch grants in diagnostic order. The caller supplies
 /// a live error stream. File and listener grants are checked during binding.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_validate_grants(
+fn witchy_validate_grants(
     required: u64,
     supplied: u64,
     _max_words: u32,

@@ -28,20 +28,6 @@ pub(super) fn parse(text: &[u8]) -> Option<Identity> {
     })
 }
 
-/// The launcher provides a live NUL-terminated argument and writable output.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_parse_file_identity(
-    text: *const core::ffi::c_char,
-    out: *mut Identity,
-) -> bool {
-    let bytes = unsafe { core::ffi::CStr::from_ptr(text) }.to_bytes();
-    let Some(identity) = parse(bytes) else {
-        return false;
-    };
-    unsafe { out.write(identity) };
-    true
-}
-
 #[cfg(test)]
 #[test]
 fn parses_exact_decimal_pair() {

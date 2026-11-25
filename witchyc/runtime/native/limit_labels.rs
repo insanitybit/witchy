@@ -1,6 +1,6 @@
 //! Operator-facing labels for native runtime limits.
 
-use core::ffi::{CStr, c_char};
+use core::ffi::CStr;
 
 const FLAGS: [&[u8]; 9] = [
     b"--output-bytes",
@@ -39,9 +39,8 @@ fn parse(input: &CStr) -> Option<(usize, &CStr)> {
 // The launcher binds labels before any worker starts. argv lives through exit.
 static mut LABELS: [Option<&'static CStr>; FLAGS.len()] = [None; FLAGS.len()];
 
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_bind_limit_label(input: *const c_char) -> bool {
-    let Some((index, label)) = parse(unsafe { CStr::from_ptr(input) }) else {
+pub(super) fn witchy_bind_limit_label(input: &'static CStr) -> bool {
+    let Some((index, label)) = parse(input) else {
         return false;
     };
     let labels = unsafe { &mut *(&raw mut LABELS) };
@@ -52,11 +51,9 @@ unsafe extern "C" fn witchy_bind_limit_label(input: *const c_char) -> bool {
     true
 }
 
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_limit_label(flag: *const c_char) -> *const c_char {
-    let name = unsafe { CStr::from_ptr(flag) };
+pub(super) fn witchy_limit_label(flag: &'static CStr) -> &'static CStr {
     let labels = unsafe { &*(&raw const LABELS) };
-    index(name.to_bytes())
+    index(flag.to_bytes())
         .and_then(|slot| labels.get(slot).copied().flatten())
-        .map_or(flag, CStr::as_ptr)
+        .unwrap_or(flag)
 }

@@ -442,7 +442,6 @@ unsafe fn serve_connections(
     unsafe extern "C" {
         safe fn close(fd: c_int) -> c_int;
         fn fprintf(stream: *mut core::ffi::c_void, format: *const core::ffi::c_char, ...) -> c_int;
-        fn witchy_limit_label(flag: *const core::ffi::c_char) -> *const core::ffi::c_char;
         fn fputs(text: *const core::ffi::c_char, stream: *mut core::ffi::c_void) -> c_int;
         safe fn witchy_budget_share() -> bool;
         safe fn witchy_run_deadline_ns(now: u64, ms: u64) -> u64;
@@ -512,18 +511,18 @@ unsafe fn serve_connections(
         capacity: waiting as usize,
     };
     let uptime = uptime_ns;
-    let report = |flag| unsafe {
+    let report = |flag: &'static core::ffi::CStr| unsafe {
         fprintf(
             stderr,
             c"witchy: limit reached: %s\n".as_ptr(),
-            witchy_limit_label(flag),
+            super::limit_labels::witchy_limit_label(flag).as_ptr(),
         );
     };
     let end = witchy_run_deadline_ns(if run_ms == 0 { 0 } else { uptime() }, run_ms);
     let remaining_time =
         || witchy_run_deadline_left_ms(end, if end == 0 { 0 } else { uptime() });
     let expired = || {
-        report(c"--deadline-ms".as_ptr());
+        report(c"--deadline-ms");
         2
     };
     // A setup that fails (rather than runs slow) usually fails the same way each time: after
@@ -606,7 +605,7 @@ unsafe fn serve_connections(
                 if remaining_time() == 0 {
                     return expired();
                 }
-                report(c"--connection-deadline-ms".as_ptr());
+                report(c"--connection-deadline-ms");
             }
             // A worker that never reached guest code fails its own connection only: the
             // connection is closed and reported, and queued clients are still served.

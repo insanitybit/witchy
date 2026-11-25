@@ -151,11 +151,11 @@ extern "C" fn witchy_snapshot_close() {
 
 /// Validate path-backed grants in launch diagnostic order and snapshot the
 /// direct read grant. The remaining paths are opened by the broker.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_bind_path_grants(
+/// `stderr` is the launcher's live diagnostic stream.
+pub(super) fn witchy_bind_path_grants(
     required: u64,
     supplied: u64,
-    file_path: *const c_char,
+    file_path: Option<&core::ffi::CStr>,
     file_fd: c_int,
     stderr: *mut core::ffi::c_void,
 ) -> bool {
@@ -169,7 +169,7 @@ unsafe extern "C" fn witchy_bind_path_grants(
                 if file_fd >= 0 {
                     snapshot_opened(file_fd)
                 } else {
-                    snapshot_file(file_path)
+                    snapshot_file(file_path.map_or(core::ptr::null(), core::ffi::CStr::as_ptr))
                 }
             }) {
         Some(c"File<Read> requires a regular file of at most 1 MiB with one link, reached without symlinks, that is no secret's source\n")

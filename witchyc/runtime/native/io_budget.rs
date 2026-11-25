@@ -2,7 +2,6 @@
 //! Each worker gets a private copy of the per-connection budget.
 
 use super::budget;
-use core::ffi::c_char;
 
 #[derive(Clone, Copy)]
 struct Counters {
@@ -68,14 +67,12 @@ extern "C" fn witchy_budget_share() -> bool {
     true
 }
 
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_budget_configure(
-    text: *const c_char,
+pub(super) fn witchy_budget_configure(
+    text: &core::ffi::CStr,
     network: bool,
     per_connection: bool,
 ) -> bool {
-    let input = unsafe { core::ffi::CStr::from_ptr(text) }.to_bytes();
-    let Some(limit) = budget::parse_limit(input) else {
+    let Some(limit) = budget::parse_limit(text.to_bytes()) else {
         return false;
     };
     let counters = if per_connection {
@@ -217,10 +214,8 @@ pub(super) extern "C" fn witchy_filesystem_charge(bytes: u64) {
     }
 }
 
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_filesystem_limit(text: *const c_char) -> bool {
-    let bytes = unsafe { core::ffi::CStr::from_ptr(text) }.to_bytes();
-    let Some(limit) = budget::parse_limit(bytes) else {
+pub(super) fn witchy_filesystem_limit(text: &core::ffi::CStr) -> bool {
+    let Some(limit) = budget::parse_limit(text.to_bytes()) else {
         return false;
     };
     unsafe { *FILESYSTEM_TOTAL = limit };

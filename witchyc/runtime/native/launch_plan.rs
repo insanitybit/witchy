@@ -1,5 +1,5 @@
 //! Launch-plan ABI. The caller owns the returned plan storage and its descriptors.
-use core::ffi::{c_char, c_int, c_uint, c_void};
+use core::ffi::{CStr, c_char, c_int, c_uint, c_void};
 use core::ptr;
 
 const RECORDS: usize = 512;
@@ -48,8 +48,77 @@ pub(super) struct Launch {
     source_count: c_uint,
 }
 
+impl Record {
+    /// A field of the record, or `None` past its last one.
+    pub(super) fn field(&self, index: usize) -> Option<&CStr> {
+        let text = *self.fields.get(index)?;
+        // SAFETY: `witchy_launch_read` fills the fields with pointers into the
+        // plan's own NUL-split text, which the launch keeps.
+        (!text.is_null()).then(|| unsafe { CStr::from_ptr(text) })
+    }
+}
+
+impl Flag {
+    /// The value the argument list gave this flag, if it gave one.
+    pub(super) fn value(&self) -> Option<&CStr> {
+        // SAFETY: `witchy_launch_arguments` stores only argument strings,
+        // which outlive the launch.
+        (!self.value.is_null()).then(|| unsafe { CStr::from_ptr(self.value) })
+    }
+}
+
+impl Launch {
+    /// The words after `--`, in order.
+    pub(super) fn words(&self) -> impl Iterator<Item = &CStr> {
+        // SAFETY: `witchy_launch_arguments` stores only argument strings,
+        // which outlive the launch.
+        self.words[..self.word_count as usize]
+            .iter()
+            .map(|&word| unsafe { CStr::from_ptr(word) })
+    }
+}
+
+/// The process argument list.
+pub(super) struct Argv<'a>(&'a [*mut c_char]);
+
+impl<'a> Argv<'a> {
+    /// `argv` must hold `argc` entries, each null or a NUL-terminated string,
+    /// all live for `'a`. `None` for a null list or a negative count.
+    pub(super) unsafe fn new(argc: c_int, argv: *const *mut c_char) -> Option<Self> {
+        if argv.is_null() || argc < 0 {
+            return None;
+        }
+        // SAFETY: the caller's promise, for a list checked to be there.
+        Some(Self(unsafe { core::slice::from_raw_parts(argv, argc as usize) }))
+    }
+
+    /// No arguments at all, not even the program's name.
+    pub(super) const EMPTY: Self = Self(&[]);
+
+    pub(super) fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// The entry as text; `None` past the end or for a null entry.
+    pub(super) fn get(&self, index: usize) -> Option<&'a CStr> {
+        let text = *self.0.get(index)?;
+        // SAFETY: `new` was promised that each non-null entry is a live string.
+        (!text.is_null()).then(|| unsafe { CStr::from_ptr(text) })
+    }
+
+    /// The entry's own storage, for the options that are split in place.
+    /// A write through it ends every borrow `get` gave of the same entry.
+    pub(super) fn raw(&self, index: usize) -> *mut c_char {
+        self.0.get(index).copied().unwrap_or(ptr::null_mut())
+    }
+}
+
+/// The text from byte `start` on, when `start` is within it.
+pub(super) fn suffix(text: &CStr, start: usize) -> Option<&CStr> {
+    CStr::from_bytes_with_nul(text.to_bytes_with_nul().get(start..)?).ok()
+}
+
 unsafe extern "C" {
-    fn strnlen(s: *const c_char, maximum: usize) -> usize;
     fn strdup(s: *const c_char) -> *mut c_char;
     fn write(fd: c_int, bytes: *const c_void, len: usize) -> isize;
     fn fcntl(fd: c_int, command: c_int, ...) -> c_int;
@@ -84,32 +153,30 @@ fn argument_refuse(name: Option<&[u8]>, message: &[u8]) -> bool {
     false
 }
 
-/// Both pointers must be valid, and `embedded` must be NUL terminated.
-#[unsafe(no_mangle)]
-pub(super) unsafe extern "C" fn witchy_launch_read(
-    embedded: *const c_char,
-    launch: *mut Launch,
-) -> bool {
-    if embedded.is_null() || launch.is_null() {
-        return refuse();
-    }
-    let length = unsafe { strnlen(embedded, 64 * 1024 + 1) };
+/// Split a private copy of the embedded plan into `launch`, replacing what it held.
+pub(super) fn witchy_launch_read(embedded: &CStr, launch: &mut Launch) -> bool {
+    let input = embedded.to_bytes();
+    let length = input.len();
     if length > 64 * 1024 {
         return refuse();
     }
-    let input = unsafe { core::slice::from_raw_parts(embedded.cast::<u8>(), length) };
     if !super::launch_plan_validate::valid(input) {
         return refuse();
     }
-    let text = unsafe { strdup(embedded) };
+    let text = unsafe { strdup(embedded.as_ptr()) };
     if text.is_null() {
         return refuse();
     }
+    // The C ABI uses zero-initialized arrays and a sentinel for the cwd.
+    // SAFETY: every field of a launch is an integer, a flag or a raw pointer,
+    // and zero is a value of each.
+    unsafe { ptr::write_bytes(&raw mut *launch, 0, 1) };
+    launch.cwd = -1;
+    launch.text = text;
+    // SAFETY: `text` is this function's own copy of the plan, `length` bytes
+    // and a NUL. Validation showed that every line ends in a newline and has
+    // the fields its tag needs, so each offset below stays within the copy.
     unsafe {
-        // The C ABI uses zero-initialized arrays and a sentinel for the cwd.
-        ptr::write_bytes(launch, 0, 1);
-        (*launch).cwd = -1;
-        (*launch).text = text;
         let mut offset = 0;
         let mut first = true;
         while offset < length {
@@ -168,11 +235,11 @@ pub(super) unsafe extern "C" fn witchy_launch_read(
                     },
                     kind_object: kind == b"object",
                 };
-                (*launch).flags[(*launch).flag_count as usize] = flag;
-                (*launch).flag_count += 1;
+                launch.flags[launch.flag_count as usize] = flag;
+                launch.flag_count += 1;
             }
-            (*launch).records[(*launch).record_count as usize] = record;
-            (*launch).record_count += 1;
+            launch.records[launch.record_count as usize] = record;
+            launch.record_count += 1;
         }
     }
     true
@@ -209,36 +276,35 @@ unsafe fn bytes<'a>(value: *const c_char) -> &'a [u8] {
     unsafe { core::ffi::CStr::from_ptr(value).to_bytes() }
 }
 
-unsafe fn find_flag(launch: &Launch, name: &[u8]) -> Option<usize> {
+pub(super) fn find_flag(launch: &Launch, name: &[u8]) -> Option<usize> {
+    // SAFETY: only `witchy_launch_read` adds flags, and it names each from
+    // the plan's own text.
     (0..launch.flag_count as usize).find(|&i| unsafe { bytes(launch.flags[i].name) == name })
 }
 
 /// Checks all argument names and values before duplicating inherited descriptors.
-/// `argv` must contain `argc` non-null C strings, live for the launch's lifetime.
-#[unsafe(no_mangle)]
-pub(super) unsafe extern "C" fn witchy_launch_arguments(
-    launch: *mut Launch,
-    argc: c_int,
-    argv: *const *const c_char,
+/// The launch keeps pointers to the arguments, which must outlive it. A
+/// missing list is refused.
+pub(super) fn witchy_launch_arguments(
+    launch: &mut Launch,
+    args: Option<&Argv<'_>>,
     words: bool,
 ) -> bool {
-    if launch.is_null() || argv.is_null() || argc < 0 {
+    let Some(args) = args else {
         return refuse();
-    }
-    let launch = unsafe { &mut *launch };
+    };
     let mut i = 1usize;
     let mut after_words = false;
-    while i < argc as usize {
-        let argument = unsafe { *argv.add(i) };
-        if argument.is_null() {
+    while i < args.len() {
+        let Some(argument) = args.get(i) else {
             return refuse();
-        }
-        let arg = unsafe { bytes(argument) };
+        };
+        let arg = argument.to_bytes();
         if after_words {
             if launch.word_count as usize == WORDS {
                 return refuse();
             }
-            launch.words[launch.word_count as usize] = argument;
+            launch.words[launch.word_count as usize] = argument.as_ptr();
             launch.word_count += 1;
             i += 1;
             continue;
@@ -256,26 +322,28 @@ pub(super) unsafe extern "C" fn witchy_launch_arguments(
         };
         let equal = name_value.iter().position(|&byte| byte == b'=');
         let name = equal.map_or(name_value, |n| &name_value[..n]);
-        let Some(index) = (unsafe { find_flag(launch, name) }) else {
+        let Some(index) = find_flag(launch, name) else {
             return argument_refuse(Some(name), b"is not a declared argument");
         };
         if !launch.flags[index].value.is_null() {
             return argument_refuse(Some(name), b"is given twice");
         }
         let value = if let Some(n) = equal {
-            unsafe { argument.add(2 + n + 1) }
+            let Some(value) = suffix(argument, 2 + n + 1) else {
+                return refuse();
+            };
+            value
         } else {
             i += 1;
-            if i >= argc as usize {
+            let Some(value) = args
+                .get(i)
+                .filter(|value| !value.to_bytes().starts_with(b"--"))
+            else {
                 return argument_refuse(Some(name), b"needs a value");
-            }
-            let value = unsafe { *argv.add(i) };
-            if value.is_null() || unsafe { bytes(value) }.starts_with(b"--") {
-                return argument_refuse(Some(name), b"needs a value");
-            }
+            };
             value
         };
-        let data = unsafe { bytes(value) };
+        let data = value.to_bytes();
         let flag = &mut launch.flags[index];
         let valid = if flag.descriptor {
             descriptor_number(data).is_some()
@@ -296,7 +364,7 @@ pub(super) unsafe extern "C" fn witchy_launch_arguments(
                 },
             );
         }
-        flag.value = value;
+        flag.value = value.as_ptr();
         i += 1;
     }
     if let Some(flag) = launch.flags[..launch.flag_count as usize]
@@ -309,8 +377,7 @@ pub(super) unsafe extern "C" fn witchy_launch_arguments(
     // occupy a descriptor number named by a later source.
     for index in 0..launch.record_count as usize {
         let record = launch.records[index];
-        let tag = unsafe { bytes(record.fields[0]) };
-        let at = match tag {
+        let at = match record.field(0).map_or(&b""[..], CStr::to_bytes) {
             b"dir" | b"secret" => 3,
             b"file" | b"input" | b"exec" => 1,
             _ => continue,
@@ -318,18 +385,18 @@ pub(super) unsafe extern "C" fn witchy_launch_arguments(
         if at + 1 >= record.count as usize {
             continue;
         }
-        let kind = unsafe { bytes(record.fields[at]) };
-        let value = unsafe { bytes(record.fields[at + 1]) };
+        let (Some(kind), Some(value)) = (record.field(at), record.field(at + 1)) else {
+            continue;
+        };
+        let (kind, value) = (kind.to_bytes(), value.to_bytes());
         let number = if kind == b"fd" {
             descriptor_number(value)
         } else if kind == b"arg" {
-            unsafe { find_flag(launch, value) }.and_then(|i| {
+            find_flag(launch, value).and_then(|i| {
                 let flag = &launch.flags[i];
-                if flag.descriptor && !flag.value.is_null() {
-                    descriptor_number(unsafe { bytes(flag.value) })
-                } else {
-                    None
-                }
+                flag.value()
+                    .filter(|_| flag.descriptor)
+                    .and_then(|value| descriptor_number(value.to_bytes()))
             })
         } else {
             None
@@ -369,12 +436,10 @@ pub(super) unsafe extern "C" fn witchy_launch_arguments(
     true
 }
 
-#[unsafe(no_mangle)]
-pub(super) unsafe extern "C" fn witchy_launch_take(launch: *mut Launch, number: c_int) -> c_int {
-    if launch.is_null() || number < 0 {
+pub(super) fn witchy_launch_take(launch: &mut Launch, number: c_int) -> c_int {
+    if number < 0 {
         return -1;
     }
-    let launch = unsafe { &mut *launch };
     for source in &mut launch.sources[..launch.source_count as usize] {
         if source.number == number {
             if source.taken {
@@ -387,23 +452,16 @@ pub(super) unsafe extern "C" fn witchy_launch_take(launch: *mut Launch, number: 
     -1
 }
 
-#[unsafe(no_mangle)]
-pub(super) unsafe extern "C" fn witchy_launch_descriptor(
-    launch: *const Launch,
-    name: *const c_char,
-) -> c_int {
-    if launch.is_null() || name.is_null() {
-        return -1;
-    }
-    let launch = unsafe { &*launch };
-    let Some(index) = (unsafe { find_flag(launch, bytes(name)) }) else {
+#[cfg(any(witchy_native_aws_lc, test))]
+pub(super) fn witchy_launch_descriptor(launch: &Launch, name: &CStr) -> c_int {
+    let Some(index) = find_flag(launch, name.to_bytes()) else {
         return -1;
     };
     let flag = &launch.flags[index];
-    if !flag.descriptor || flag.value.is_null() {
+    let Some(value) = flag.value().filter(|_| flag.descriptor) else {
         return -1;
-    }
-    descriptor_number(unsafe { bytes(flag.value) }).unwrap_or(-1)
+    };
+    descriptor_number(value.to_bytes()).unwrap_or(-1)
 }
 
 pub(super) mod opening {
@@ -533,8 +591,8 @@ pub(super) mod opening {
         }
     }
 
-    unsafe fn inherited(launch: &mut Launch, number: c_int, object: c_int) -> c_int {
-        let copy = unsafe { witchy_launch_take(launch, number) };
+    fn inherited(launch: &mut Launch, number: c_int, object: c_int) -> c_int {
+        let copy = witchy_launch_take(launch, number);
         let flags = if copy >= 0 {
             unsafe { fcntl(copy, 3) }
         } else {
@@ -567,7 +625,7 @@ pub(super) mod opening {
         }
     }
 
-    unsafe fn resolve(
+    fn resolve(
         launch: &mut Launch,
         object: c_int,
         kind: &[u8],
@@ -579,7 +637,7 @@ pub(super) mod opening {
             return -1;
         }
         let flag_index = if kind == b"arg" {
-            unsafe { find_flag(launch, value) }
+            find_flag(launch, value)
         } else {
             None
         };
@@ -590,7 +648,7 @@ pub(super) mod opening {
             if launch.flags[index].descriptor {
                 return -1;
             }
-            let fd = unsafe { resolve(launch, 0, within_kind, within_value, b"-", b"-") };
+            let fd = resolve(launch, 0, within_kind, within_value, b"-", b"-");
             if fd < 0 {
                 return -1;
             }
@@ -611,7 +669,7 @@ pub(super) mod opening {
         };
         let directory = object == 0;
         match kind {
-            b"fd" => unsafe { inherited(launch, descriptor_number(value).unwrap_or(-1), object) },
+            b"fd" => inherited(launch, descriptor_number(value).unwrap_or(-1), object),
             b"literal" => match value.strip_prefix(b"/") {
                 Some(path) => launch_walk::walk(root(), path, directory, boundary, false),
                 None => -1,
@@ -624,25 +682,20 @@ pub(super) mod opening {
                 };
                 let flag = launch.flags[index];
                 if flag.value.is_null() && !flag.default_kind.is_null() && !flag.descriptor {
-                    return unsafe {
-                        resolve(
-                            launch,
-                            object,
-                            bytes(flag.default_kind),
-                            bytes(flag.default_value),
-                            within_kind,
-                            within_value,
-                        )
-                    };
+                    // SAFETY: a flag's default kind and value are set together,
+                    // from the plan's own text.
+                    let (kind, value) =
+                        unsafe { (bytes(flag.default_kind), bytes(flag.default_value)) };
+                    return resolve(launch, object, kind, value, within_kind, within_value);
                 }
                 if flag.kind_object || flag.value.is_null() {
                     return -1;
                 }
+                // SAFETY: a flag's value is an argument string, or the
+                // directory text `parent` lends for the length of its call.
                 let path = unsafe { bytes(flag.value) };
                 if flag.descriptor {
-                    return unsafe {
-                        inherited(launch, descriptor_number(path).unwrap_or(-1), object)
-                    };
+                    return inherited(launch, descriptor_number(path).unwrap_or(-1), object);
                 }
                 if let Some(relative) = path.strip_prefix(b"/") {
                     launch_walk::walk(root(), relative, directory, boundary, true)
@@ -654,45 +707,34 @@ pub(super) mod opening {
         }
     }
 
-    #[unsafe(no_mangle)]
-    pub(crate) unsafe extern "C" fn witchy_launch_open(
-        launch: *mut Launch,
+    pub(crate) fn witchy_launch_open(
+        launch: &mut Launch,
         object: c_int,
-        kind: *const c_char,
-        value: *const c_char,
-        within_kind: *const c_char,
-        within_value: *const c_char,
+        kind: &CStr,
+        value: &CStr,
+        within_kind: &CStr,
+        within_value: &CStr,
     ) -> c_int {
-        if launch.is_null()
-            || kind.is_null()
-            || value.is_null()
-            || within_kind.is_null()
-            || within_value.is_null()
-        {
-            return -1;
-        }
-        unsafe {
-            resolve(
-                &mut *launch,
-                object,
-                bytes(kind),
-                bytes(value),
-                bytes(within_kind),
-                bytes(within_value),
-            )
-        }
+        resolve(
+            launch,
+            object,
+            kind.to_bytes(),
+            value.to_bytes(),
+            within_kind.to_bytes(),
+            within_value.to_bytes(),
+        )
     }
 
-    unsafe fn parent(
+    fn parent(
         launch: &mut Launch,
         kind: &[u8],
         value: &[u8],
         within_kind: &[u8],
         within_value: &[u8],
-        name: *mut c_char,
+        name: &mut [c_char; 256],
     ) -> c_int {
         let flag_index = if kind == b"arg" {
-            unsafe { find_flag(launch, value) }
+            find_flag(launch, value)
         } else {
             None
         };
@@ -705,16 +747,11 @@ pub(super) mod opening {
                 return -1;
             }
             if flag.value.is_null() && !flag.default_kind.is_null() && !flag.descriptor {
-                return unsafe {
-                    parent(
-                        launch,
-                        bytes(flag.default_kind),
-                        bytes(flag.default_value),
-                        within_kind,
-                        within_value,
-                        name,
-                    )
-                };
+                // SAFETY: a flag's default kind and value are set together,
+                // from the plan's own text.
+                let (kind, value) =
+                    unsafe { (bytes(flag.default_kind), bytes(flag.default_value)) };
+                return parent(launch, kind, value, within_kind, within_value, name);
             }
         }
         let path = if let Some(index) = flag_index {
@@ -722,6 +759,7 @@ pub(super) mod opening {
             if flag.descriptor || flag.value.is_null() {
                 return -1;
             }
+            // SAFETY: a flag's value is an argument string.
             unsafe { bytes(flag.value) }
         } else {
             if ![b"literal".as_slice(), b"home", b"cwd"].contains(&kind) {
@@ -745,49 +783,40 @@ pub(super) mod opening {
             return -1;
         }
         directory[..part.len()].copy_from_slice(part);
-        unsafe {
-            ptr::copy_nonoverlapping(leaf.as_ptr(), name.cast(), leaf.len());
-            name.add(leaf.len()).write(0);
+        // The leaf is at most 255 bytes, so it and its NUL fit.
+        for (out, &byte) in name.iter_mut().zip(leaf) {
+            *out = byte as c_char;
         }
+        name[leaf.len()] = 0;
         if let Some(index) = flag_index {
             let old = launch.flags[index].value;
             launch.flags[index].value = directory.as_ptr().cast();
-            let fd = unsafe { resolve(launch, 0, kind, value, within_kind, within_value) };
+            let fd = resolve(launch, 0, kind, value, within_kind, within_value);
             launch.flags[index].value = old;
             fd
         } else {
-            unsafe { resolve(launch, 0, kind, part, within_kind, within_value) }
+            resolve(launch, 0, kind, part, within_kind, within_value)
         }
     }
 
-    #[unsafe(no_mangle)]
-    pub(crate) unsafe extern "C" fn witchy_launch_open_parent(
-        launch: *mut Launch,
-        kind: *const c_char,
-        value: *const c_char,
-        within_kind: *const c_char,
-        within_value: *const c_char,
-        name: *mut c_char,
+    /// Open the directory that holds the named file and write the file's
+    /// name, NUL-terminated, to `name`.
+    pub(crate) fn witchy_launch_open_parent(
+        launch: &mut Launch,
+        kind: &CStr,
+        value: &CStr,
+        within_kind: &CStr,
+        within_value: &CStr,
+        name: &mut [c_char; 256],
     ) -> c_int {
-        if launch.is_null()
-            || kind.is_null()
-            || value.is_null()
-            || within_kind.is_null()
-            || within_value.is_null()
-            || name.is_null()
-        {
-            return -1;
-        }
-        unsafe {
-            parent(
-                &mut *launch,
-                bytes(kind),
-                bytes(value),
-                bytes(within_kind),
-                bytes(within_value),
-                name,
-            )
-        }
+        parent(
+            launch,
+            kind.to_bytes(),
+            value.to_bytes(),
+            within_kind.to_bytes(),
+            within_value.to_bytes(),
+            name,
+        )
     }
 
     #[cfg(test)]
@@ -809,31 +838,21 @@ pub(super) mod opening {
         let program = CString::new("program").unwrap();
         let flag = CString::new("--input").unwrap();
         let argv = [program.as_ptr(), flag.as_ptr(), path_c.as_ptr()];
+        let args = unsafe { Argv::new(3, argv.as_ptr().cast()) };
         let mut launch: Launch = unsafe { core::mem::zeroed() };
-        assert!(unsafe { witchy_launch_read(text.as_ptr(), &mut launch) });
-        assert!(unsafe { witchy_launch_arguments(&mut launch, 3, argv.as_ptr(), false) });
-        let fd = unsafe {
-            witchy_launch_open(
-                &mut launch,
-                1,
-                c"arg".as_ptr(),
-                c"input".as_ptr(),
-                c"literal".as_ptr(),
-                root_c.as_ptr(),
-            )
-        };
+        assert!(witchy_launch_read(&text, &mut launch));
+        assert!(witchy_launch_arguments(&mut launch, args.as_ref(), false));
+        let fd = witchy_launch_open(&mut launch, 1, c"arg", c"input", c"literal", &root_c);
         assert!(fd >= 0);
         let mut leaf = [0 as c_char; 256];
-        let dir = unsafe {
-            witchy_launch_open_parent(
-                &mut launch,
-                c"arg".as_ptr(),
-                c"input".as_ptr(),
-                c"literal".as_ptr(),
-                root_c.as_ptr(),
-                leaf.as_mut_ptr(),
-            )
-        };
+        let dir = witchy_launch_open_parent(
+            &mut launch,
+            c"arg",
+            c"input",
+            c"literal",
+            &root_c,
+            &mut leaf,
+        );
         assert!(dir >= 0);
         assert_eq!(
             unsafe { core::ffi::CStr::from_ptr(leaf.as_ptr()) }.to_bytes(),
@@ -864,7 +883,7 @@ mod tests {
             "flag\tinput\tpath\t1\thome\tfiles\noutput\nend\n"
         )).unwrap();
         let mut launch: Launch = unsafe { core::mem::zeroed() };
-        assert!(unsafe { witchy_launch_read(text.as_ptr(), &mut launch) });
+        assert!(witchy_launch_read(&text, &mut launch));
         assert_eq!(launch.cwd, -1);
         assert_eq!(launch.record_count, 2);
         assert_eq!(launch.flag_count, 1);
@@ -889,7 +908,7 @@ mod tests {
     fn malformed_plan_is_refused() {
         let text = CString::new("witchy-launch-plan\t1\tbad\nend\n").unwrap();
         let mut launch: Launch = unsafe { core::mem::zeroed() };
-        assert!(!unsafe { witchy_launch_read(text.as_ptr(), &mut launch) });
+        assert!(!witchy_launch_read(&text, &mut launch));
     }
 
     #[test]
@@ -909,18 +928,14 @@ mod tests {
         let flag = CString::new("--source").unwrap();
         let value = CString::new(pipe_fds[0].to_string()).unwrap();
         let argv = [program.as_ptr(), flag.as_ptr(), value.as_ptr()];
+        let args = unsafe { Argv::new(argv.len() as c_int, argv.as_ptr().cast()) };
         let mut launch: Launch = unsafe { core::mem::zeroed() };
-        assert!(unsafe { witchy_launch_read(text.as_ptr(), &mut launch) });
-        assert!(unsafe {
-            witchy_launch_arguments(&mut launch, argv.len() as c_int, argv.as_ptr(), false)
-        });
-        assert_eq!(
-            unsafe { witchy_launch_descriptor(&launch, name.as_ptr()) },
-            pipe_fds[0]
-        );
-        let copy = unsafe { witchy_launch_take(&mut launch, pipe_fds[0]) };
+        assert!(witchy_launch_read(&text, &mut launch));
+        assert!(witchy_launch_arguments(&mut launch, args.as_ref(), false));
+        assert_eq!(witchy_launch_descriptor(&launch, &name), pipe_fds[0]);
+        let copy = witchy_launch_take(&mut launch, pipe_fds[0]);
         assert!(copy >= 3 && copy != pipe_fds[0]);
-        assert_eq!(unsafe { witchy_launch_take(&mut launch, pipe_fds[0]) }, -1);
+        assert_eq!(witchy_launch_take(&mut launch, pipe_fds[0]), -1);
         unsafe {
             close(copy);
             close(pipe_fds[0]);
@@ -943,9 +958,10 @@ mod tests {
         ), pipe_fds[0], pipe_fds[0])).unwrap();
         let program = CString::new("program").unwrap();
         let argv = [program.as_ptr()];
+        let args = unsafe { Argv::new(1, argv.as_ptr().cast()) };
         let mut launch: Launch = unsafe { core::mem::zeroed() };
-        assert!(unsafe { witchy_launch_read(text.as_ptr(), &mut launch) });
-        assert!(!unsafe { witchy_launch_arguments(&mut launch, 1, argv.as_ptr(), false) });
+        assert!(witchy_launch_read(&text, &mut launch));
+        assert!(!witchy_launch_arguments(&mut launch, args.as_ref(), false));
         assert_eq!(launch.sources[0].copy, -1);
         unsafe {
             close(pipe_fds[0]);

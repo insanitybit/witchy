@@ -6,11 +6,11 @@ use super::file_identity::Identity;
 use super::linux_stat::stat;
 #[cfg(target_os = "macos")]
 use super::seatbelt::stat;
-use core::ffi::{c_char, c_int, c_void};
+use core::ffi::{c_int, c_void};
 
 unsafe extern "C" {
     #[cfg(target_os = "macos")]
-    fn open(path: *const c_char, flags: c_int, ...) -> c_int;
+    fn open(path: *const core::ffi::c_char, flags: c_int, ...) -> c_int;
     safe fn dup2(from: c_int, to: c_int) -> c_int;
     safe fn close(fd: c_int) -> c_int;
     safe fn getchar() -> c_int;
@@ -77,21 +77,21 @@ fn witchy_input_limit(bytes: u64) {
     LEFT.set(bytes);
 }
 
-unsafe fn witchy_bind_input_file(path: *const c_char, identity: *const Identity) -> bool {
+fn witchy_bind_input_file(path: &core::ffi::CStr, identity: Option<&Identity>) -> bool {
     // O_RDONLY | O_CLOEXEC | O_NOFOLLOW_ANY | O_NONBLOCK.
     #[cfg(target_os = "macos")]
-    let fd = unsafe { open(path, 0x2100_0004) };
+    let fd = unsafe { open(path.as_ptr(), 0x2100_0004) };
     #[cfg(target_os = "linux")]
-    let fd = unsafe { super::linux_stat::open_no_symlinks(path) };
+    let fd = unsafe { super::linux_stat::open_no_symlinks(path.as_ptr()) };
     if fd < 0 {
         return false;
     }
-    unsafe { bind_opened(fd, identity, false) }
+    bind_opened(fd, identity, false)
 }
 
 /// Consume a launch-resolved descriptor and bind it as stdin. Inherited pipes
 /// are allowed only when the trusted resolver opened them as an input source.
-pub(super) unsafe fn bind_opened(fd: c_int, identity: *const Identity, allow_pipe: bool) -> bool {
+pub(super) fn bind_opened(fd: c_int, identity: Option<&Identity>, allow_pipe: bool) -> bool {
     if fd < 0 {
         return false;
     }
@@ -102,10 +102,9 @@ pub(super) unsafe fn bind_opened(fd: c_int, identity: *const Identity, allow_pip
                 && !super::secret_guard::secret(&info)))
             && info.size >= 0
             && info.size as u64 <= LEFT.get()
-            && (identity.is_null()
-                || unsafe {
-                    (*identity).device == info.device as u64 && (*identity).inode == info.inode
-                })
+            && identity.is_none_or(|identity| {
+                identity.device == info.device as u64 && identity.inode == info.inode
+            })
             && dup2(fd, 0) == 0
     });
     if fd != 0 {
@@ -173,11 +172,10 @@ extern "C" fn witchy_read(grant: u64, run: u64) -> u64 {
 
 /// Bind the input snapshot before guest entry. The pathname, optional
 /// identity, and diagnostic stream are borrowed from the launcher.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_launch_input(
-    path: *const core::ffi::c_char,
+pub(super) fn witchy_launch_input(
+    path: Option<&core::ffi::CStr>,
     opened: c_int,
-    identity: *const super::file_identity::Identity,
+    identity: Option<&super::file_identity::Identity>,
     bytes: u64,
     budget_set: bool,
     stderr: *mut core::ffi::c_void,
@@ -190,20 +188,21 @@ unsafe extern "C" fn witchy_launch_input(
     }
     witchy_input_limit(bytes);
     let error = if opened >= 0 {
-        if unsafe { bind_opened(opened, identity, true) } {
+        if bind_opened(opened, identity, true) {
             return true;
         }
         c"--input=PATH requires a regular file without symlinks matching any identity and byte limit\n"
-    } else if !path.is_null() && budget_set && bytes > 16 * 1024 * 1024 {
+    } else if path.is_some() && budget_set && bytes > 16 * 1024 * 1024 {
         c"named input files support --input-bytes up to 16 MiB\n"
-    } else if path.is_null() {
-        if identity.is_null() {
+    } else if let Some(path) = path {
+        if witchy_bind_input_file(path, identity) {
             return true;
         }
         c"--input=PATH requires a regular file without symlinks matching any identity and byte limit\n"
-    } else if unsafe { witchy_bind_input_file(path, identity) } {
-        return true;
     } else {
+        if identity.is_none() {
+            return true;
+        }
         c"--input=PATH requires a regular file without symlinks matching any identity and byte limit\n"
     };
     unsafe { fputs(error.as_ptr(), stderr) };

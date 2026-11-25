@@ -1,6 +1,6 @@
 //! Bounded UTF-8 launch arguments and guest selection.
 
-use core::ffi::{CStr, c_char};
+use core::ffi::CStr;
 
 const MAX_WORDS: usize = 256;
 const MAX_BYTES: usize = 65536;
@@ -106,26 +106,18 @@ pub(super) fn valid_utf8(mut bytes: &[u8]) -> bool {
     true
 }
 
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_args_limits(
-    text: *const c_char,
-    words: *mut u32,
-    bytes: *mut u32,
-) -> bool {
-    let Some((count, len)) = parse_limits(unsafe { CStr::from_ptr(text) }.to_bytes()) else {
+pub(super) fn witchy_args_limits(text: &CStr, words: &mut u32, bytes: &mut u32) -> bool {
+    let Some((count, len)) = parse_limits(text.to_bytes()) else {
         return false;
     };
-    unsafe {
-        words.write(count);
-        bytes.write(len);
-    }
+    *words = count;
+    *bytes = len;
     true
 }
 
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_args_bind(text: *const c_char) -> bool {
-    let bytes = unsafe { CStr::from_ptr(text) }.to_bytes();
-    unsafe { (&mut *(&raw mut ARGUMENTS)).bind(bytes).is_some() }
+pub(super) fn witchy_args_bind(text: &CStr) -> bool {
+    // SAFETY: the launcher binds on one thread before any guest selection.
+    unsafe { (&mut *(&raw mut ARGUMENTS)).bind(text.to_bytes()).is_some() }
 }
 
 #[unsafe(no_mangle)]

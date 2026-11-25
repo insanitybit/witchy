@@ -1,5 +1,6 @@
 //! Byte-oriented flag classification for the native launcher.
 
+use super::launch_plan::Argv;
 use core::ffi::{CStr, c_char};
 
 fn same_identity(fd: core::ffi::c_int, device: u64, inode: u64) -> bool {
@@ -13,6 +14,19 @@ fn same_identity(fd: core::ffi::c_int, device: u64, inode: u64) -> bool {
     }
 }
 
+/// The option's text from byte `prefix` on. The classifier matched the
+/// prefix, so the text is at least that long.
+fn after(arg: &CStr, prefix: usize) -> &CStr {
+    super::launch_plan::suffix(arg, prefix).unwrap_or(c"")
+}
+
+/// Write a diagnostic to one of the launcher's two streams.
+fn say(text: &CStr, stream: *mut c_void) {
+    // SAFETY: `main` takes both streams from the C runtime, which keeps them
+    // open for the life of the process.
+    unsafe { fputs(text.as_ptr(), stream) };
+}
+
 struct CommonFlags {
     streaming: bool,
     plain: bool,
@@ -20,41 +34,30 @@ struct CommonFlags {
 }
 
 /// Return 1 for an applied option, 0 for an unhandled option, or -1 for a
-/// diagnostic already emitted. The launcher supplies live argument storage.
-unsafe fn witchy_apply_common_flag(
+/// diagnostic already emitted. A limit's label is kept for the process.
+fn witchy_apply_common_flag(
     flag: u32,
-    arg: *const c_char,
-    grants: *mut u64,
-    options: *mut CommonFlags,
+    arg: &'static CStr,
+    grants: &mut u64,
+    options: &mut CommonFlags,
     stderr: *mut core::ffi::c_void,
 ) -> core::ffi::c_int {
-    unsafe extern "C" {
-        fn witchy_bind_limit_label(input: *const c_char) -> bool;
-        fn fputs(text: *const c_char, stream: *mut core::ffi::c_void) -> core::ffi::c_int;
-    }
-    let options = unsafe { &mut *options };
+    use super::limit_labels::witchy_bind_limit_label;
     match flag {
-        1 => unsafe { *grants |= 1 },
+        1 => *grants |= 1,
         2 if !options.streaming => options.streaming = true,
         3 if !options.plain => options.plain = true,
-        4 if unsafe { witchy_bind_limit_label(arg.add(c"--limit-name=".count_bytes())) } => {}
+        4 if witchy_bind_limit_label(after(arg, c"--limit-name=".count_bytes())) => {}
         4 => {
-            unsafe {
-                fputs(
-                    c"invalid or duplicate --limit-name=FLAG=TEXT\n".as_ptr(),
-                    stderr,
-                )
-            };
+            say(c"invalid or duplicate --limit-name=FLAG=TEXT\n", stderr);
             return -1;
         }
         5 | 6 => {
-            unsafe {
-                fputs(c"native instruction fuel is unavailable; use the Wasmtime target for a fuel-limited launch\n".as_ptr(), stderr)
-            };
+            say(c"native instruction fuel is unavailable; use the Wasmtime target for a fuel-limited launch\n", stderr);
             return -1;
         }
         7 if !options.unmetered => options.unmetered = true,
-        8 => unsafe { *grants |= 2 },
+        8 => *grants |= 2,
         _ => return 0,
     }
     1
@@ -69,20 +72,13 @@ struct ConnectionFlags {
     fs_entries: u64,
 }
 
-unsafe fn witchy_apply_connection_flag(
+fn witchy_apply_connection_flag(
     flag: u32,
-    arg: *const c_char,
+    arg: &CStr,
     required: u64,
-    options: *mut ConnectionFlags,
+    options: &mut ConnectionFlags,
 ) -> bool {
-    unsafe extern "C" {
-        fn witchy_budget_configure(
-            text: *const c_char,
-            network: bool,
-            per_connection: bool,
-        ) -> bool;
-    }
-    let options = unsafe { &mut *options };
+    use super::io_budget::witchy_budget_configure;
     if flag == 16 {
         return !core::mem::replace(&mut options.enabled, true);
     }
@@ -101,7 +97,7 @@ unsafe fn witchy_apply_connection_flag(
         } else {
             c"--fs-entries-per-connection="
         };
-        let bytes = unsafe { CStr::from_ptr(arg.add(prefix.count_bytes())) }.to_bytes();
+        let bytes = after(arg, prefix.count_bytes()).to_bytes();
         let Some(limit) = super::budget::parse_limit(bytes) else {
             return false;
         };
@@ -130,7 +126,7 @@ unsafe fn witchy_apply_connection_flag(
         } else {
             c"--output-bytes-per-connection="
         };
-        if !unsafe { witchy_budget_configure(arg.add(prefix.count_bytes()), network, true) } {
+        if !witchy_budget_configure(after(arg, prefix.count_bytes()), network, true) {
             return false;
         }
     } else {
@@ -143,7 +139,7 @@ unsafe fn witchy_apply_connection_flag(
                 &mut options.deadline,
             ),
         };
-        let value = unsafe { CStr::from_ptr(arg.add(prefix.count_bytes())) }.to_bytes();
+        let value = after(arg, prefix.count_bytes()).to_bytes();
         let Some(value) = super::budget::parse_limit(value).filter(|&n| n != 0 && n <= maximum)
         else {
             return false;
@@ -161,22 +157,14 @@ struct BudgetFlags {
     seen: u32,
 }
 
-unsafe fn witchy_apply_budget_flag(
+fn witchy_apply_budget_flag(
     flag: u32,
-    arg: *const c_char,
+    arg: &CStr,
     required: u64,
-    options: *mut BudgetFlags,
+    options: &mut BudgetFlags,
     stderr: *mut core::ffi::c_void,
 ) -> core::ffi::c_int {
-    unsafe extern "C" {
-        fn witchy_budget_configure(
-            text: *const c_char,
-            network: bool,
-            per_connection: bool,
-        ) -> bool;
-        fn witchy_filesystem_limit(text: *const c_char) -> bool;
-        fn fputs(text: *const c_char, stream: *mut core::ffi::c_void) -> core::ffi::c_int;
-    }
+    use super::io_budget::{witchy_budget_configure, witchy_filesystem_limit};
     let (bit, grants, prefix, diagnostic) = match flag {
         35 => (
             1,
@@ -206,16 +194,15 @@ unsafe fn witchy_apply_budget_flag(
         ),
         _ => return 0,
     };
-    let options = unsafe { &mut *options };
     if (flag != 35 && required & grants == 0) || options.seen & bit != 0 {
         return 0;
     }
-    let value = unsafe { arg.add(prefix.count_bytes()) };
+    let value = after(arg, prefix.count_bytes());
     let valid = match flag {
-        36 | 41 => unsafe { witchy_budget_configure(value, flag == 41, false) },
-        40 => unsafe { witchy_filesystem_limit(value) },
+        36 | 41 => witchy_budget_configure(value, flag == 41, false),
+        40 => witchy_filesystem_limit(value),
         _ => {
-            let parsed = super::budget::parse_limit(unsafe { CStr::from_ptr(value) }.to_bytes());
+            let parsed = super::budget::parse_limit(value.to_bytes());
             let parsed = parsed.filter(|&n| flag != 35 || (n != 0 && n <= u64::from(u32::MAX)));
             if let Some(value) = parsed {
                 match flag {
@@ -230,7 +217,7 @@ unsafe fn witchy_apply_budget_flag(
         }
     };
     if !valid {
-        unsafe { fputs(diagnostic.as_ptr(), stderr) };
+        say(diagnostic, stderr);
         return -1;
     }
     options.seen |= bit;
@@ -240,9 +227,9 @@ unsafe fn witchy_apply_budget_flag(
 struct PathFlags {
     read_dir: *const c_char,
     write_dir: *const c_char,
-    file: *const c_char,
+    file: Option<&'static CStr>,
     output: *const c_char,
-    input: *const c_char,
+    input: Option<&'static CStr>,
     input_identity: super::file_identity::Identity,
     directory_identity: super::file_identity::Identity,
     data_only: bool,
@@ -252,36 +239,43 @@ struct PathFlags {
     directory_id_set: bool,
 }
 
-unsafe fn witchy_apply_path_flag(
+/// `storage` is the pointer `arg` was read from. The directory and output
+/// paths are kept as pointers into it, since the broker takes them that way.
+fn witchy_apply_path_flag(
     flag: u32,
-    arg: *const c_char,
+    arg: &'static CStr,
+    storage: *const c_char,
     required: u64,
-    grants: *mut u64,
-    paths: *mut PathFlags,
+    grants: &mut u64,
+    paths: &mut PathFlags,
     stderr: *mut core::ffi::c_void,
 ) -> core::ffi::c_int {
-    use super::file_identity::Identity;
-    unsafe extern "C" {
-        fn witchy_parse_file_identity(text: *const c_char, identity: *mut Identity) -> bool;
-        fn fputs(text: *const c_char, stream: *mut core::ffi::c_void) -> core::ffi::c_int;
-    }
     const INPUT: u64 = 8;
     const READ_FILE: u64 = 256;
     const READ_DIR: u64 = 1024;
     const WRITE_FILE: u64 = 2048;
     const WRITE_DIR: u64 = 4096;
     const FULL_DIR: u64 = 8192;
-    let paths = unsafe { &mut *paths };
-    let grants = unsafe { &mut *grants };
     let (path, prefix, grant) = match flag {
         14 if required & WRITE_FILE != 0 => (&mut paths.output, c"--write-file=", WRITE_FILE),
         15 if required & WRITE_DIR != 0 => (&mut paths.write_dir, c"--write-dir=", WRITE_DIR),
         26 if required & (READ_DIR | WRITE_DIR | FULL_DIR) != 0 => {
             (&mut paths.read_dir, c"--dir=", 0)
         }
-        27 if required & READ_FILE != 0 => (&mut paths.file, c"--file=", READ_FILE),
-        44 if required & INPUT != 0 && *grants & INPUT == 0 => {
-            (&mut paths.input, c"--input=", INPUT)
+        27 | 44 => {
+            let (path, prefix, grant) = if flag == 27 && required & READ_FILE != 0 {
+                (&mut paths.file, c"--file=", READ_FILE)
+            } else if flag == 44 && required & INPUT != 0 && *grants & INPUT == 0 {
+                (&mut paths.input, c"--input=", INPUT)
+            } else {
+                return 0;
+            };
+            if path.is_some() {
+                return 0;
+            }
+            *path = Some(after(arg, prefix.count_bytes()));
+            *grants |= grant;
+            return 1;
         }
         22 if !paths.data_only => {
             paths.data_only = true;
@@ -317,10 +311,12 @@ unsafe fn witchy_apply_path_flag(
             if *seen {
                 return 0;
             }
-            if !unsafe { witchy_parse_file_identity(arg.add(prefix.count_bytes()), identity) } {
-                unsafe { fputs(diagnostic.as_ptr(), stderr) };
+            let text = after(arg, prefix.count_bytes()).to_bytes();
+            let Some(parsed) = super::file_identity::parse(text) else {
+                say(diagnostic, stderr);
                 return -1;
-            }
+            };
+            *identity = parsed;
             *seen = true;
             return 1;
         }
@@ -329,7 +325,7 @@ unsafe fn witchy_apply_path_flag(
     if !path.is_null() {
         return 0;
     }
-    *path = unsafe { arg.add(prefix.count_bytes()) };
+    *path = storage.wrapping_add(prefix.count_bytes());
     *grants |= grant;
     1
 }
@@ -384,22 +380,28 @@ unsafe extern "C" fn main(argc: c_int, argv: *mut *mut c_char) -> c_int {
         unmetered: false,
     };
     let mut mac = NativeLaunch::new();
+    // SAFETY: the C runtime passes `argc` NUL-terminated strings and keeps
+    // them for the life of the process.
+    let args: Option<Argv<'static>> = unsafe { Argv::new(argc, argv) };
     if unsafe { witchy_launch_plan } != 0 {
-        return unsafe { launch_manifest(argc, argv, required, out, err) };
+        return unsafe { launch_manifest(args.as_ref(), required, out, err) };
     }
-    for index in 1..argc {
-        let arg = unsafe { *argv.add(index as usize) };
-        let flag = super::launch_option::classify(unsafe { CStr::from_ptr(arg) }.to_bytes());
-        let handled = unsafe { witchy_apply_common_flag(flag, arg, &mut grants, &mut common, err) };
+    let args = args.unwrap_or(Argv::EMPTY);
+    for index in 1..args.len() {
+        let Some(arg) = args.get(index) else {
+            return 2;
+        };
+        let flag = super::launch_option::classify(arg.to_bytes());
+        let handled = witchy_apply_common_flag(flag, arg, &mut grants, &mut common, err);
         let handled = if handled == 0 {
-            unsafe { mac.apply(flag, arg, required, &mut grants, err) }
+            // SAFETY: the entry is this argument's own storage, and `arg` is
+            // not read after an option is split.
+            unsafe { mac.apply(flag, args.raw(index), required, &mut grants, err) }
         } else {
             handled
         };
         if handled == 0 {
-            unsafe {
-                fputs(c"usage: executable [--output] [--allocator] [--input] [--clock] [--rand] [--net=IP:PORT] [--listen=IP:PORT]\n".as_ptr(), err)
-            };
+            say(c"usage: executable [--output] [--allocator] [--input] [--clock] [--rand] [--net=IP:PORT] [--listen=IP:PORT]\n", err);
         }
         if handled <= 0 {
             return 2;
@@ -450,9 +452,9 @@ impl NativeLaunch {
             paths: PathFlags {
                 read_dir: null,
                 write_dir: null,
-                file: null,
+                file: None,
                 output: null,
-                input: null,
+                input: None,
                 input_identity: Identity {
                     device: 0,
                     inode: 0,
@@ -499,6 +501,10 @@ impl NativeLaunch {
         }
     }
 
+    /// `arg` is a writable NUL-terminated option that nothing else borrows.
+    /// It must stay live for the launch unless `flag` names a limit: the
+    /// path, listener, exec and secret-slot options keep pointers into it,
+    /// and the endpoint and exec options are split in place.
     unsafe fn apply(
         &mut self,
         flag: u32,
@@ -507,28 +513,29 @@ impl NativeLaunch {
         grants: &mut u64,
         err: *mut c_void,
     ) -> c_int {
+        use super::launch_args::{witchy_args_bind, witchy_args_limits};
+        use super::launch_env::witchy_bind_env;
+        use super::policy_grants_abi::witchy_bind_policy_grant;
+        #[cfg(witchy_native_aws_lc)]
+        use super::signer_binding::witchy_bind_store_secret;
         unsafe extern "C" {
             fn witchy_bind_endpoints(text: *mut c_char) -> bool;
-            fn witchy_bind_policy_grant(text: *const c_char) -> bool;
-            fn witchy_bind_env(text: *const c_char) -> bool;
-            fn witchy_args_limits(text: *const c_char, words: *mut u32, bytes: *mut u32) -> bool;
-            fn witchy_args_bind(text: *const c_char) -> bool;
-            #[cfg(witchy_native_aws_lc)]
-            fn witchy_bind_store_secret(text: *const c_char, reveal: bool) -> bool;
             #[cfg(witchy_native_aws_lc)]
             fn witchy_bind_signer(text: *const c_char) -> bool;
         }
-        let handled =
-            unsafe { witchy_apply_budget_flag(flag, arg, required, &mut self.budget, err) };
+        // SAFETY: the caller's promise. No arm reads `text` after it has
+        // written through `arg`.
+        let text: &'static CStr = unsafe { CStr::from_ptr(arg) };
+        let handled = witchy_apply_budget_flag(flag, text, required, &mut self.budget, err);
         if handled != 0 {
             return handled;
         }
         let handled =
-            unsafe { witchy_apply_path_flag(flag, arg, required, grants, &mut self.paths, err) };
+            witchy_apply_path_flag(flag, text, arg, required, grants, &mut self.paths, err);
         if handled != 0 {
             return handled;
         }
-        if unsafe { witchy_apply_connection_flag(flag, arg, required, &mut self.connection) } {
+        if witchy_apply_connection_flag(flag, text, required, &mut self.connection) {
             return 1;
         }
         let (grant, bound, diagnostic) = match flag {
@@ -567,7 +574,7 @@ impl NativeLaunch {
                 return 1;
             }
             47 if required & 262144 != 0 && !self.exec_processes_seen => {
-                let value = unsafe { CStr::from_ptr(arg.add(17)) }.to_bytes();
+                let value = after(text, 17).to_bytes();
                 let Some(value) =
                     super::budget::parse_limit(value).filter(|&n| n != 0 && n <= 65536)
                 else {
@@ -589,7 +596,7 @@ impl NativeLaunch {
                 return 1;
             }
             48 if required & 262144 != 0 && !self.exec_budget_seen => {
-                let value = unsafe { CStr::from_ptr(arg.add(13)) }.to_bytes();
+                let value = after(text, 13).to_bytes();
                 let Some(value) = super::budget::parse_limit(value).filter(|&n| n <= 268435456)
                 else {
                     unsafe {
@@ -607,42 +614,39 @@ impl NativeLaunch {
                 let reveal = flag == 10;
                 (
                     65536,
-                    unsafe {
-                        witchy_bind_store_secret(arg.add(if reveal { 9 } else { 14 }), reveal)
-                    },
+                    witchy_bind_store_secret(after(text, if reveal { 9 } else { 14 }), reveal),
                     c"invalid or duplicate native secret store binding\n",
                 )
             }
             #[cfg(witchy_native_aws_lc)]
             12 if required & (32768 | super::tls_grant::TLS_SIGNER) != 0 => {
-                let text = unsafe { arg.add(14) };
-                let binding = super::signer_binding::parse(unsafe { CStr::from_ptr(text) }.to_bytes());
+                let binding = super::signer_binding::parse(after(text, 14).to_bytes());
                 let grant = if binding.is_some_and(|slot| slot.kind == 4) {
                     super::tls_grant::TLS_SIGNER
                 } else {
                     32768
                 };
-                (grant, required & grant != 0 && unsafe { witchy_bind_signer(text) },
+                (grant, required & grant != 0 && unsafe { witchy_bind_signer(arg.add(14)) },
                     c"invalid or duplicate native secret slot binding\n")
             }
             13 if required & POLICY != 0 => (
                 POLICY,
-                unsafe { witchy_bind_policy_grant(arg.add(8)) },
+                witchy_bind_policy_grant(after(text, 8)),
                 c"invalid or duplicate --grant=Type.field=VALUE binding\n",
             ),
             28 if required & ENV != 0 => (
                 ENV,
-                unsafe { witchy_bind_env(arg.add(6)) },
+                witchy_bind_env(after(text, 6)),
                 c"invalid --env=NAME[=VALUE] binding\n",
             ),
             29 if required & ARGS != 0 && *grants & ARGS == 0 => (
                 ARGS,
-                unsafe { witchy_args_limits(arg.add(7), &mut self.words, &mut self.arg_bytes) },
+                witchy_args_limits(after(text, 7), &mut self.words, &mut self.arg_bytes),
                 c"invalid --args=COUNT:BYTES grant\n",
             ),
             30 if required & ARGS != 0 => (
                 0,
-                unsafe { witchy_args_bind(arg.add(6)) },
+                witchy_args_bind(after(text, 6)),
                 c"invalid or oversized UTF-8 argument\n",
             ),
             31 if required & RAND != 0 => {
@@ -663,14 +667,14 @@ impl NativeLaunch {
                 c"invalid native --net endpoint list\n",
             ),
             43 if required & (LISTENER | ENTRY_SOCKET) != 0 && self.listener.is_null() => {
-                self.listener = unsafe { arg.add(9) };
+                self.listener = arg.wrapping_add(9);
                 *grants |= required & (LISTENER | ENTRY_SOCKET);
                 return 1;
             }
             _ => return 0,
         };
         if !bound {
-            unsafe { fputs(diagnostic.as_ptr(), err) };
+            say(diagnostic, err);
             return -1;
         }
         *grants |= grant;
@@ -684,42 +688,18 @@ impl NativeLaunch {
         out: *mut c_void,
         err: *mut c_void,
     ) -> c_int {
-        use super::file_identity::Identity;
+        use super::directory::witchy_directory_grants;
+        use super::file_snapshot::witchy_bind_path_grants;
+        use super::input_stream::witchy_launch_input;
+        #[cfg(witchy_native_aws_lc)]
+        use super::launch_env::witchy_validate_secret_grants;
         unsafe extern "C" {
-            #[cfg(witchy_native_aws_lc)]
-            fn witchy_validate_secret_grants(required: u64, grants: u64, err: *mut c_void) -> bool;
             fn witchy_validate_connection_launch(
                 required: u64,
                 grants: u64,
                 enabled: bool,
                 listener: bool,
                 options: bool,
-                err: *mut c_void,
-            ) -> bool;
-            fn witchy_directory_grants(
-                required: u64,
-                grants: *mut u64,
-                read: *mut *const c_char,
-                write: *mut *const c_char,
-                data: bool,
-                identity: bool,
-                write_only: bool,
-                combined: bool,
-                err: *mut c_void,
-            ) -> bool;
-            fn witchy_bind_path_grants(
-                required: u64,
-                grants: u64,
-                file: *const c_char,
-                file_fd: c_int,
-                err: *mut c_void,
-            ) -> bool;
-            fn witchy_launch_input(
-                path: *const c_char,
-                opened: c_int,
-                identity: *const Identity,
-                bytes: u64,
-                budget_set: bool,
                 err: *mut c_void,
             ) -> bool;
             safe fn witchy_exec_granted();
@@ -765,11 +745,7 @@ impl NativeLaunch {
                 || !witchy_launch_input(
                     paths.input,
                     self.input_fd,
-                    if paths.input_id_set {
-                        &paths.input_identity
-                    } else {
-                        core::ptr::null()
-                    },
+                    paths.input_id_set.then_some(&paths.input_identity),
                     self.budget.input,
                     self.budget.seen & 4 != 0,
                     err,
@@ -874,7 +850,7 @@ impl NativeLaunch {
 }
 
 fn manifest_grant(record: &super::launch_plan::Record) -> Option<u64> {
-    let tag = unsafe { CStr::from_ptr(record.fields[0]) }.to_bytes();
+    let tag = record.field(0)?.to_bytes();
     Some(match tag {
         b"output" => 1,
         b"allocator" => 2,
@@ -888,40 +864,53 @@ fn manifest_grant(record: &super::launch_plan::Record) -> Option<u64> {
         b"listen" => 512,
         b"write-file" => 2048,
         b"grant" => 16384,
-        b"secret" => match unsafe { CStr::from_ptr(record.fields[2]) }.to_bytes() {
-            b"sign/tls13/server-p384" => super::tls_grant::TLS_SIGNER,
+        b"secret" => match record.field(2).map(CStr::to_bytes) {
+            Some(b"sign/tls13/server-p384") => super::tls_grant::TLS_SIGNER,
             _ => 32768,
         },
         b"store" => 65536,
         b"socket" => 131072,
         b"exec" => 262144,
-        b"dir" => match unsafe { CStr::from_ptr(record.fields[1]) }.to_bytes() {
-            b"read" => 1024,
-            b"write" => 4096,
-            b"all" => 8192,
+        b"dir" => match record.field(1).map(CStr::to_bytes) {
+            Some(b"read") => 1024,
+            Some(b"write") => 4096,
+            Some(b"all") => 8192,
             _ => return None,
         },
         _ => 0,
     })
 }
 
+/// Four fields of a record in a row, when it has them all.
+fn four(record: &super::launch_plan::Record, first: usize) -> Option<[&CStr; 4]> {
+    Some([
+        record.field(first)?,
+        record.field(first + 1)?,
+        record.field(first + 2)?,
+        record.field(first + 3)?,
+    ])
+}
+
+/// `args` is the process argument list, and `out` and `err` are the C
+/// runtime's streams. The launcher enters here at most once.
 unsafe fn launch_manifest(
-    argc: c_int,
-    argv: *mut *mut c_char,
+    args: Option<&Argv<'static>>,
     required: u64,
     out: *mut c_void,
     err: *mut c_void,
 ) -> c_int {
+    use super::launch_args::witchy_args_bind;
+    use super::launch_env::witchy_bind_env;
     use super::launch_plan::opening::{witchy_launch_open, witchy_launch_open_parent};
-    use super::launch_plan::{Launch, witchy_launch_arguments, witchy_launch_read};
+    use super::launch_plan::{Launch, find_flag, witchy_launch_arguments, witchy_launch_read};
     #[cfg(witchy_native_aws_lc)]
     use super::launch_plan::{witchy_launch_descriptor, witchy_launch_take};
-    use core::{mem::MaybeUninit, ptr};
+    use super::policy_grants_abi::witchy_bind_policy_grant;
+    #[cfg(witchy_native_aws_lc)]
+    use super::signer_binding::witchy_bind_store_secret;
+    use core::mem::MaybeUninit;
     unsafe extern "C" {
         safe fn close(fd: c_int) -> c_int;
-        fn witchy_bind_env(text: *const c_char) -> bool;
-        fn witchy_bind_policy_grant(text: *const c_char) -> bool;
-        fn witchy_args_bind(text: *const c_char) -> bool;
         fn witchy_launch_console(
             out: *mut c_void,
             err: *mut c_void,
@@ -934,26 +923,25 @@ unsafe fn launch_manifest(
         #[cfg(witchy_native_aws_lc)]
         fn witchy_bind_signer(text: *const c_char) -> bool;
         #[cfg(witchy_native_aws_lc)]
-        fn witchy_bind_store_secret(text: *const c_char, reveal: bool) -> bool;
-        #[cfg(witchy_native_aws_lc)]
         fn snprintf(out: *mut c_char, length: usize, format: *const c_char, ...) -> c_int;
     }
-    static mut PLAN: MaybeUninit<Launch> = MaybeUninit::uninit();
+    static mut PLAN: MaybeUninit<Launch> = MaybeUninit::zeroed();
     static mut OUTPUT_NAME: [c_char; 256] = [0; 256];
-    let launch_ptr = (&raw mut PLAN).cast::<Launch>();
     let fail = || {
-        unsafe {
-            fputs(
-                c"launch refused: invalid or unsupported embedded launch plan\n".as_ptr(),
-                err,
-            );
-        }
+        say(
+            c"launch refused: invalid or unsupported embedded launch plan\n",
+            err,
+        );
         2
     };
-    if !unsafe { witchy_launch_read((&raw const witchy_launch_plan).cast(), launch_ptr) } {
+    // SAFETY: the launcher is one thread and enters here once, so nothing
+    // else borrows the plan; zero is a value of every field of a launch.
+    let launch = unsafe { (*(&raw mut PLAN)).assume_init_mut() };
+    // SAFETY: the compiler emits the plan as NUL-terminated text.
+    let plan = unsafe { CStr::from_ptr((&raw const witchy_launch_plan).cast()) };
+    if !witchy_launch_read(plan, launch) {
         return fail();
     }
-    let launch = unsafe { &mut *launch_ptr };
     let mut planned = 0u64;
     for record in &launch.records[..launch.record_count as usize] {
         let Some(grant) = manifest_grant(record) else {
@@ -965,35 +953,36 @@ unsafe fn launch_manifest(
         }
         planned |= grant;
     }
-    if planned != required
-        || !unsafe { witchy_launch_arguments(launch, argc, argv.cast(), required & 64 != 0) }
-    {
+    if planned != required || !witchy_launch_arguments(launch, args, required & 64 != 0) {
         return fail();
     }
     let mut mac = NativeLaunch::new();
     mac.manifest = true;
     let mut grants = 0u64;
     let mut last_opened = -1;
-    let mut object_names: [*const c_char; 64] = [ptr::null(); 64];
+    // The records whose third field names an identity or object already seen.
+    let mut objects = [0usize; 64];
     let mut object_count = 0;
     let read_marker = c"(launch plan directory)".as_ptr();
     let write_marker = c"(launch plan writable directory)".as_ptr();
-    let file_marker = c"(launch plan file)".as_ptr();
+    let file_marker = c"(launch plan file)";
     for index in 0..launch.record_count as usize {
         let record = launch.records[index];
         let field = record.fields;
-        let tag = unsafe { CStr::from_ptr(field[0]) }.to_bytes();
+        let Some(tag) = record.field(0).map(CStr::to_bytes) else {
+            return fail();
+        };
         let grant = manifest_grant(&record).unwrap_or(0);
         grants |= grant;
         match tag {
             b"env" => {
-                if !unsafe { witchy_bind_env(field[1]) } {
+                if !record.field(1).is_some_and(witchy_bind_env) {
                     return fail();
                 }
             }
             b"args" => {
-                let parse = |value: *const c_char, max: u64| -> Option<u32> {
-                    let bytes = unsafe { CStr::from_ptr(value) }.to_bytes();
+                let parse = |value: Option<&CStr>, max: u64| -> Option<u32> {
+                    let bytes = value?.to_bytes();
                     if !bytes.iter().all(u8::is_ascii_digit) {
                         return None;
                     }
@@ -1001,17 +990,17 @@ unsafe fn launch_manifest(
                         .filter(|&n| n <= max)
                         .map(|n| n as u32)
                 };
-                let Some(words) = parse(field[1], 256) else {
+                let Some(words) = parse(record.field(1), 256) else {
                     return fail();
                 };
-                let Some(bytes) = parse(field[2], 65536) else {
+                let Some(bytes) = parse(record.field(2), 65536) else {
                     return fail();
                 };
                 mac.words = words;
                 mac.arg_bytes = bytes;
                 let mut total = 0usize;
-                for &word in &launch.words[..launch.word_count as usize] {
-                    let value = unsafe { CStr::from_ptr(word) }.to_bytes();
+                for word in launch.words() {
+                    let value = word.to_bytes();
                     total = match total.checked_add(value.len()) {
                         Some(n) => n,
                         None => return fail(),
@@ -1025,13 +1014,13 @@ unsafe fn launch_manifest(
                         }
                         return 2;
                     }
-                    if !unsafe { witchy_args_bind(word) } {
+                    if !witchy_args_bind(word) {
                         return fail();
                     }
                 }
             }
             b"grant" => {
-                if !unsafe { witchy_bind_policy_grant(field[1]) } {
+                if !record.field(1).is_some_and(witchy_bind_policy_grant) {
                     return fail();
                 }
             }
@@ -1046,16 +1035,17 @@ unsafe fn launch_manifest(
                 mac.connection.enabled = true;
             }
             b"dir" => {
-                let fd = unsafe {
-                    witchy_launch_open(launch, 0, field[3], field[4], field[5], field[6])
+                let Some([kind, value, within_kind, within_value]) = four(&record, 3) else {
+                    return fail();
                 };
+                let fd = witchy_launch_open(launch, 0, kind, value, within_kind, within_value);
                 if fd < 0 {
                     return fail();
                 }
                 last_opened = fd;
-                match unsafe { CStr::from_ptr(field[2]) }.to_bytes() {
-                    b"data-only" => mac.paths.data_only = true,
-                    b"any" => {}
+                match record.field(2).map(CStr::to_bytes) {
+                    Some(b"data-only") => mac.paths.data_only = true,
+                    Some(b"any") => {}
                     _ => return fail(),
                 }
                 match grant {
@@ -1081,45 +1071,48 @@ unsafe fn launch_manifest(
                 }
             }
             b"file" | b"input" => {
-                if tag == b"input" && unsafe { CStr::from_ptr(field[1]) }.to_bytes() == b"stdin" {
+                if tag == b"input"
+                    && record.field(1).is_some_and(|source| source.to_bytes() == b"stdin")
+                {
                     continue;
                 }
-                let fd = unsafe {
-                    witchy_launch_open(
-                        launch,
-                        if tag == b"input" { 2 } else { 1 },
-                        field[1],
-                        field[2],
-                        field[3],
-                        field[4],
-                    )
+                let Some([kind, value, within_kind, within_value]) = four(&record, 1) else {
+                    return fail();
                 };
+                let fd = witchy_launch_open(
+                    launch,
+                    if tag == b"input" { 2 } else { 1 },
+                    kind,
+                    value,
+                    within_kind,
+                    within_value,
+                );
                 if fd < 0 {
                     return fail();
                 }
                 last_opened = fd;
                 if tag == b"file" {
                     mac.file_fd = fd;
-                    mac.paths.file = file_marker;
+                    mac.paths.file = Some(file_marker);
                 } else {
                     mac.input_fd = fd;
                 }
             }
             b"write-file" => {
-                let mode = unsafe { CStr::from_ptr(field[1]) }.to_bytes();
+                let Some(mode) = record.field(1).map(CStr::to_bytes) else {
+                    return fail();
+                };
                 if mode != b"replace" && mode != b"create" {
                     return fail();
                 }
-                let fd = unsafe {
-                    witchy_launch_open_parent(
-                        launch,
-                        field[2],
-                        field[3],
-                        field[4],
-                        field[5],
-                        (&raw mut OUTPUT_NAME).cast(),
-                    )
+                let Some([kind, value, within_kind, within_value]) = four(&record, 2) else {
+                    return fail();
                 };
+                // SAFETY: the launcher is one thread and enters here once, so
+                // nothing else borrows the name.
+                let name = unsafe { &mut *(&raw mut OUTPUT_NAME) };
+                let fd =
+                    witchy_launch_open_parent(launch, kind, value, within_kind, within_value, name);
                 if fd < 0 {
                     return fail();
                 }
@@ -1140,8 +1133,11 @@ unsafe fn launch_manifest(
                 mac.exec_env_seen = true;
             }
             b"exec" => {
-                let fd = unsafe {
-                    witchy_launch_open(launch, 0, field[1], field[2], c"-".as_ptr(), c"-".as_ptr())
+                let fd = match (record.field(1), record.field(2)) {
+                    (Some(kind), Some(value)) => {
+                        witchy_launch_open(launch, 0, kind, value, c"-", c"-")
+                    }
+                    _ => -1,
                 };
                 if fd < 0 || !unsafe { super::exec_guest::bind_programs(field[3]) } {
                     return fail();
@@ -1166,8 +1162,10 @@ unsafe fn launch_manifest(
                     b"fs-bytes-per-connection",
                     b"fs-entries-per-connection",
                 ];
-                let name = unsafe { CStr::from_ptr(field[1]) }.to_bytes();
-                let value = unsafe { CStr::from_ptr(field[2]) }.to_bytes();
+                let (Some(name), Some(value)) = (record.field(1), record.field(2)) else {
+                    return fail();
+                };
+                let (name, value) = (name.to_bytes(), value.to_bytes());
                 if !KNOWN.contains(&name)
                     || value.is_empty()
                     || value.len() > 15
@@ -1185,6 +1183,8 @@ unsafe fn launch_manifest(
                 argument[2 + name.len()] = b'=';
                 argument[3 + name.len()..length].copy_from_slice(value);
                 let flag = super::launch_option::classify(&argument[..length]);
+                // SAFETY: the option is NUL-terminated, since it is shorter than
+                // its zeroed buffer, and names a limit, which keeps no pointer.
                 if flag == 0
                     || unsafe {
                         mac.apply(
@@ -1200,29 +1200,31 @@ unsafe fn launch_manifest(
                 }
             }
             b"identity" | b"object" => {
-                let source = unsafe { CStr::from_ptr(field[1]) }.to_bytes();
-                let name = unsafe { CStr::from_ptr(field[2]) }.to_bytes();
+                let (Some(source), Some(name)) = (record.field(1), record.field(2)) else {
+                    return fail();
+                };
+                let (source, name) = (source.to_bytes(), name.to_bytes());
                 if source != b"arg"
-                    || object_count == object_names.len()
-                    || object_names[..object_count]
-                        .iter()
-                        .any(|&used| unsafe { CStr::from_ptr(used) }.to_bytes() == name)
+                    || object_count == objects.len()
+                    || objects[..object_count].iter().any(|&used| {
+                        launch.records[used]
+                            .field(2)
+                            .is_some_and(|used| used.to_bytes() == name)
+                    })
                 {
                     return fail();
                 }
-                object_names[object_count] = field[2];
+                objects[object_count] = index;
                 object_count += 1;
-                let Some(flag) = launch.flags[..launch.flag_count as usize]
-                    .iter()
-                    .find(|flag| unsafe { CStr::from_ptr(flag.name) }.to_bytes() == name)
-                else {
+                let Some(flag) = find_flag(launch, name).map(|at| launch.flags[at]) else {
                     return fail();
                 };
-                if !flag.kind_object || flag.value.is_null() {
+                if !flag.kind_object {
                     return fail();
                 }
-                let Some(expected) =
-                    super::file_identity::parse(unsafe { CStr::from_ptr(flag.value) }.to_bytes())
+                let Some(expected) = flag
+                    .value()
+                    .and_then(|value| super::file_identity::parse(value.to_bytes()))
                 else {
                     return fail();
                 };
@@ -1230,9 +1232,7 @@ unsafe fn launch_manifest(
                     if last_opened < 0
                         || !same_identity(last_opened, expected.device, expected.inode)
                     {
-                        unsafe {
-                            fputs(c"launch refused: the opened object is not the one named DEVICE:INODE\n".as_ptr(), err);
-                        }
+                        say(c"launch refused: the opened object is not the one named DEVICE:INODE\n", err);
                         return 2;
                     }
                     last_opened = -1;
@@ -1251,14 +1251,19 @@ unsafe fn launch_manifest(
                 #[cfg(witchy_native_aws_lc)]
                 {
                     if tag == b"store" {
-                        let mode = unsafe { CStr::from_ptr(field[2]) }.to_bytes();
+                        let (Some(binding), Some(mode)) = (record.field(1), record.field(2)) else {
+                            return fail();
+                        };
+                        let mode = mode.to_bytes();
                         if (mode != b"reveal" && mode != b"seal")
-                            || !unsafe { witchy_bind_store_secret(field[1], mode == b"reveal") }
+                            || !witchy_bind_store_secret(binding, mode == b"reveal")
                         {
                             return fail();
                         }
                     } else {
-                        let kind = unsafe { CStr::from_ptr(field[3]) }.to_bytes();
+                        let Some(kind) = record.field(3).map(CStr::to_bytes) else {
+                            return fail();
+                        };
                         let mut buffer = [0 as c_char; 512];
                         let size = if kind == b"env" {
                             unsafe {
@@ -1273,17 +1278,19 @@ unsafe fn launch_manifest(
                             }
                         } else {
                             let number = if kind == b"arg" {
-                                unsafe { witchy_launch_descriptor(launch, field[4]) }
+                                record
+                                    .field(4)
+                                    .map_or(-1, |name| witchy_launch_descriptor(launch, name))
                             } else if kind == b"fd" {
-                                super::budget::parse_limit(
-                                    unsafe { CStr::from_ptr(field[4]) }.to_bytes(),
-                                )
-                                .and_then(|n| c_int::try_from(n).ok())
-                                .unwrap_or(-1)
+                                record
+                                    .field(4)
+                                    .and_then(|text| super::budget::parse_limit(text.to_bytes()))
+                                    .and_then(|n| c_int::try_from(n).ok())
+                                    .unwrap_or(-1)
                             } else {
                                 -1
                             };
-                            let copy = unsafe { witchy_launch_take(launch, number) };
+                            let copy = witchy_launch_take(launch, number);
                             if copy < 0 {
                                 return fail();
                             }
@@ -1302,9 +1309,7 @@ unsafe fn launch_manifest(
                             || size as usize >= buffer.len()
                             || !unsafe { witchy_bind_signer(buffer.as_ptr()) }
                         {
-                            unsafe {
-                                fputs(c"launch refused: the secret could not be bound from its declared source\n".as_ptr(), err);
-                            }
+                            say(c"launch refused: the secret could not be bound from its declared source\n", err);
                             return 2;
                         }
                     }

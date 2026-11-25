@@ -64,6 +64,8 @@ mod input_stream;
 mod io_budget;
 #[path = "../../../runtime/native/launch_args.rs"]
 mod launch_args;
+#[path = "../../../runtime/native/limit_labels.rs"]
+mod limit_labels;
 #[path = "../../../runtime/native/linux_sandbox.rs"]
 mod linux_sandbox;
 #[path = "../../../runtime/native/linux_stat.rs"]

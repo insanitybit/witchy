@@ -156,14 +156,13 @@ pub(super) fn store_lookup(name: &[u8], reveal: bool) -> core::ffi::c_int {
 
 /// The argument is borrowed through the synchronous OS/provider loading step.
 #[cfg(not(test))]
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_bind_store_secret(
-    input: *const core::ffi::c_char,
-    reveal: bool,
-) -> bool {
-    use core::ffi::CStr;
-    let bytes = unsafe { CStr::from_ptr(input) }.to_bytes();
+pub(super) fn witchy_bind_store_secret(input: &core::ffi::CStr, reveal: bool) -> bool {
+    let bytes = input.to_bytes();
     let Some((len, start, kind)) = store_binding(bytes) else {
+        return false;
+    };
+    // The source starts at or before the terminating NUL.
+    let Some(source) = input.to_bytes_with_nul().get(start..) else {
         return false;
     };
     let Some(name) = bytes.get(..len) else {
@@ -188,7 +187,7 @@ unsafe extern "C" fn witchy_bind_store_secret(
         super::signer_crypto::load_store_secret(
             index,
             grant.name.as_ptr().cast(),
-            input.add(start),
+            source.as_ptr().cast(),
             kind,
         )
     } {
