@@ -71,8 +71,9 @@ impl Record {
     /// kept for the life of the process, so the field may be stored.
     pub(super) fn field(&self, index: usize) -> Option<&'static CStr> {
         // SAFETY: `witchy_launch_read` fills the fields with pointers into its
-        // own NUL-split copy of the plan, which nothing changes afterwards and
-        // nothing but a test frees.
+        // own NUL-split copy of the plan, which nothing but a test frees. The
+        // only later writes are by the callers of `raw` that split a field in
+        // place, and none of them writes to a field while text from it is held.
         unsafe { text(*self.fields.get(index)?) }
     }
 
