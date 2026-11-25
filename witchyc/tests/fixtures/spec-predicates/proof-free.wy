@@ -1,0 +1,5 @@
+predicate unused_false<T>(buffer: &Buffer<T>):
+    false
+
+fn main(console: Console<Write>):
+    console.print_int(5)

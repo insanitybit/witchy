@@ -1,0 +1,108 @@
+// Refused, with the mend: a record without `Discard` in a `using` Vec is told to derive it.
+// An inventory report: lines of "name category count price", totals by category, sorted.
+import console
+import hashmap
+import sort
+import span
+import string
+import vec
+import discard
+
+type Line:
+    count: U64
+    price: U64
+
+type Total:
+    value: U64
+    slot: U64
+
+impl Before for Total:
+    fn before(self: &Total, other: &Total) -> Bool:
+        self.value > other.value
+
+fn parse(fields: Span) -> Result<Line, U64>:
+    var at: U64 = 0
+    var count: U64 = 0
+    var price: U64 = 0
+    for word in fields.words():
+        if at == 2:
+            count = word.parse_u64()?
+        if at == 3:
+            price = word.parse_u64()?
+        at += 1
+    if at != 4:
+        return Err(at)
+    return Ok(Line(count, price))
+
+fn category(fields: Span) -> Result<Span, U64>:
+    // The second field: what follows the first space, up to the next.
+    let after = match fields.trim().split(32):
+        Ok(halves):
+            halves.tail
+        Err(one):
+            return Err(0)
+    match after.trim().split(32):
+        Ok(halves):
+            return Ok(halves.head)
+        Err(one):
+            return Err(1)
+
+fn run(text: &String, allocator: &Allocator, console: &Console<Write>) -> Result<(), U64>:
+    using var totals: HashMap<String, U64> = HashMap.new(allocator, 16)?:
+        var whole = text.span()
+        var more = true
+        while more:
+            let line = match whole.split(10):
+                Ok(halves):
+                    whole = halves.tail
+                    halves.head
+                Err(last):
+                    more = false
+                    last
+            if line.is_empty():
+                continue
+            let item = parse(line)?
+            let name = category(line)?
+            let value = item.count * item.price
+            if let Ok(sum) = totals.get_mut(&name):
+                *sum += value
+            else:
+                let key = name.to_string(allocator)?
+                match totals.insert(move key, value):
+                    Ok:
+                        ()
+                    Err(back):
+                        let Entry(k, v) = move back
+                        k.close()
+        console.print("categories: ${totals.len()}")
+        using var order: Vec<Total> = Vec.new(allocator, 0)?:
+            var cursor: U64 = 0
+            var going = true
+            while going:
+                match totals.next(&mut cursor):
+                    Ok(entry):
+                        match order.push_mut(allocator, Total(entry.value, cursor - 1)):
+                            Ok:
+                                ()
+                            Err(back):
+                                return Err(2)
+                    Err(end):
+                        going = false
+            sort(&mut order)
+            for total in &order:
+                if let Ok(entry) = totals.entry(total.slot):
+                    console.write_string(&entry.key)
+                    console.print(": ${total.value}")
+    return Ok(())
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var text = move made
+    let _ = text.push_text(&allocator, "bolt hardware 100 3\nnut hardware 250 1\nglue supplies 10 12\ntape supplies 4 5\nsaw tools 2 40\n")
+    match run(&text, &allocator, &console):
+        Ok:
+            ()
+        Err(code):
+            console.print("bad input ${code}")
+    text.close()

@@ -1,0 +1,10 @@
+import console
+
+fn main(console: Console<Write>):
+    let ascii: [U8; 11] = [48, 49, 50, 51, 52, 53, 54, 55, 56, 195, 169]
+    match str.from_utf8_bytes(ascii.slice().part(1, 11)):
+        Ok(text):
+            console.line(text)
+        Err(code):
+            console.print_int(code)
+    console.line("abcdefghi")

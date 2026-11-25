@@ -1,0 +1,3 @@
+// The greeting package: its file is words.wy, and it is qualified by its package's name.
+pub fn greeting() -> U64:
+    return 7

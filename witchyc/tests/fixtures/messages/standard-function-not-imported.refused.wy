@@ -1,0 +1,11 @@
+// Refused, naming the standard module that offers the function: it said no function of this name
+// is declared or imported.
+import console
+import string
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(e):
+        return
+    var t = move made
+    let ok = push_base64(&mut t, &allocator, t.as_bytes())
+    t.close()

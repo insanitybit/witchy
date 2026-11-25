@@ -1,0 +1,11 @@
+{
+  "name": "coven-web",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Zero-dependency TypeScript client for coven-web. Build tools are vendored separately under ./tools (not runtime deps).",
+  "type": "module",
+  "dependencies": {},
+  "scripts": {
+    "build": "./build.sh"
+  }
+}

@@ -1,0 +1,13 @@
+// `U64.trailing_zeros` and `U64.count_ones`: one instruction each, and neither can trap.
+import console
+
+fn main(console: Console<Write>):
+    console.print_int(U64.trailing_zeros(1))
+    console.print_int(U64.trailing_zeros(8))
+    console.print_int(U64.trailing_zeros(40960))
+    console.print_int(U64.trailing_zeros(9223372036854775808))
+    console.print_int(U64.trailing_zeros(0))
+    console.print_int(U64.count_ones(0))
+    console.print_int(U64.count_ones(255))
+    console.print_int(U64.count_ones(18446744073709551615))
+    console.print_int(U64.count_ones(9223372036854775809))

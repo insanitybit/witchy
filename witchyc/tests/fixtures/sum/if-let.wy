@@ -1,0 +1,32 @@
+// `if let Variant(x) = value:` runs its block for that variant, `else:` for any other; `else if let`
+// chains. It is a `match` of that arm and a `_` arm.
+import console
+import option
+
+fn lookup(n: U64) -> Option<U64>:
+    if n < 3:
+        Some(n * 10)
+    else:
+        None
+
+fn parse(n: U64) -> Result<U64, U64>:
+    if n % 2 == 0:
+        Ok(n / 2)
+    else:
+        Err(n)
+
+fn main(console: Console<Write>):
+    if let Some(v) = lookup(1):
+        console.print_int(v)
+    else:
+        console.print_int(0)
+    if let Some(v) = lookup(7):
+        console.print_int(v)
+    else:
+        console.print_int(999)
+    if let Ok(half) = parse(8):
+        console.print_int(half)
+    if let Ok(half) = parse(9):
+        console.print_int(half)
+    else if let Err(odd) = parse(9):
+        console.print_int(odd + 1000)

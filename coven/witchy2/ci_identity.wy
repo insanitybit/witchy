@@ -1,0 +1,63 @@
+import "ci/challenge.wy"
+import "ci/configuration.wy"
+import "tuf/release_trust.wy"
+import console
+import discard
+import json_tree
+import string
+import text
+import time
+
+fn main(output: Console<Write>, input: Console<Read>, clock: Clock, random: Rand, nonce_key: Secret<Seal>, allocator: Allocator):
+    let now = clock.now_ms() / 1000
+    if let Err(error) = check_input(&input, &output, &nonce_key, &random, now, &allocator):
+        if error == 103:
+            output.line("refused enrollment")
+        else if error == 104:
+            output.line("refused configuration")
+        else if error == 105:
+            output.line("refused key pin")
+        else:
+            output.line("refused")
+
+fn check_input(input: &Console<Read>, output: &Console<Write>, key: &Secret<Seal>, random: &Rand, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let empty = String.new(allocator)?
+    var line = move empty
+    let got = input.read_line(allocator, &mut line)
+    match got:
+        .Line:
+            ()
+        _:
+            line.close()
+            return Err(1)
+    let parsed = parse_release_json(&line, allocator)
+    line.close()
+    let Ok(request): Json = move parsed else Err(code):
+        return Err(code)
+    let result = dispatch(&request, input, output, key, random, now, allocator)
+    request.discard()
+    return result
+
+fn dispatch(request: &Json, input: &Console<Read>, output: &Console<Write>, key: &Secret<Seal>, random: &Rand, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let mode = string_field(request, "mode")?
+    if mode.equals_text("issue-challenge"):
+        if let Ok(extra) = input.read_byte():
+            return Err(1)
+        let audience = string_field(request, "audience")?
+        let nonce = issue_challenge(key, random, audience, now, allocator)?
+        output.write_string(&nonce)
+        output.print_byte(10)
+        nonce.close()
+        return Ok(())
+    if !mode.equals_text("check-configuration") || !count_fields(request, 3):
+        return Err(1)
+    if let Ok(extra) = input.read_byte():
+        return Err(1)
+    let config = string_field(request, "config")?
+    let keys = string_field(request, "keys")?
+    let checked = checked_configuration(config, keys, allocator)?
+    output.line("valid configuration")
+    output.write_string(&checked)
+    output.print_byte(10)
+    checked.close()
+    return Ok(())

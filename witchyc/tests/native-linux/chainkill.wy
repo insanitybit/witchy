@@ -1,0 +1,13 @@
+fn main(socket: Socket, exec: Exec):
+    let c = socket.raw_recv_byte()
+    exec.raw_name_byte(U8.truncate(99))
+    exec.raw_name_byte(U8.truncate(104))
+    exec.raw_name_byte(U8.truncate(97))
+    exec.raw_name_byte(U8.truncate(105))
+    exec.raw_name_byte(U8.truncate(110))
+    exec.raw_name_byte(U8.truncate(107))
+    exec.raw_name_byte(U8.truncate(105))
+    exec.raw_name_byte(U8.truncate(108))
+    exec.raw_name_byte(U8.truncate(108))
+    let run = exec.raw_run()
+    let s = socket.raw_send_byte(U8.truncate(65))

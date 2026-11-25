@@ -1,0 +1,2 @@
+sqlite 0.2.0: vendor/sqlite/sqlite.wy ; requires
+oidc 0.1.0: vendor/oidc/oidc.wy ; requires

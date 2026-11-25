@@ -1,0 +1,2 @@
+build: --heap-pages=8 --slots=1024
+run: --fuel=100000000 --memory-pages=16

@@ -1,0 +1,11 @@
+// A Result left as a statement is refused: whether the call failed would be lost.
+import console
+
+fn risky(n: U64) -> Result<(), U64>:
+    if n > 3:
+        return Err(n)
+    return Ok(())
+
+fn main(console: Console<Write>):
+    risky(9)
+    console.print_int(1)

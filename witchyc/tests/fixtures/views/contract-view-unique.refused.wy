@@ -1,0 +1,13 @@
+// Refused: a record that holds a `&mut` reference is given to no function with a contract.
+type Point:
+    x: U64
+
+type Hand:
+    point: &mut Point
+
+fn reach(hand: Hand, n: U64) -> U64:
+    ensures result == n
+    return n
+
+fn main(console: Console<Write>):
+    console.print_int(1)

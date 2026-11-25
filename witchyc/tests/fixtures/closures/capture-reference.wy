@@ -1,0 +1,25 @@
+// A closure may capture a shared reference (docs/design-references-to-views.md, step 3): it
+// is then a view, keeping what it borrows lent; here used in a loop and passed to a library.
+import console
+import vec
+import query
+
+fn count_over(items: &[U64], limit: &U64) -> U64:
+    var found: U64 = 0
+    let over = fn(n: U64) -> Bool: n > *limit
+    for item in items:
+        if over(*item):
+            found += 1
+    return found
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let numbers: [U64; 5] = [1, 5, 9, 3, 7]
+    let limit: U64 = 4
+    console.print_int(count_over(numbers.slice(), &limit))
+    let Ok(made): Vec<U64> = Vec.filled(&allocator, 3, 6) else Err(code):
+        return
+    var v = move made
+    let threshold: U64 = 5
+    let t: &U64 = &threshold
+    console.print_int(v.count_where(fn(n: U64) -> Bool: n > *t))
+    v.close()

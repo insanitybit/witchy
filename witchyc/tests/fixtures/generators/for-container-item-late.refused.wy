@@ -1,0 +1,11 @@
+// Refused: the element is a reference the generator does not keep past a `yield`; copy it
+// into a typed local first.
+gen fn twice(items: &[U64]) -> U64:
+    for item in items:
+        yield 1
+        yield *item
+
+fn main():
+    let numbers: [U64; 2] = [1, 2]
+    for n in twice(numbers.slice()):
+        let m = n

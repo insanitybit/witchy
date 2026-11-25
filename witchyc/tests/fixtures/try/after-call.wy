@@ -1,0 +1,19 @@
+// A `?` after a call in the same statement: the call is bound first, then the `?` runs, as
+// written.
+fn half(value: U64) -> Result<U64, U64>:
+    if value % 2 == 1:
+        return Err(value)
+    return Ok(value / 2)
+
+fn add(left: U64, right: U64) -> U64:
+    return left + right
+
+fn sum(value: U64) -> Result<U64, U64>:
+    return Ok(add(add(value, 1), half(value)?))
+
+fn main(console: Console<Write>):
+    match sum(4):
+        Ok(value):
+            console.print_int(value)
+        Err(code):
+            console.print_int(code)

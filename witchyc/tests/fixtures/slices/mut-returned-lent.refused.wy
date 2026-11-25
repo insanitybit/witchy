@@ -1,0 +1,9 @@
+// Refused: a slice returned from its argument keeps the array lent.
+import console
+fn keep(s: &mut [U64]) -> &mut [U64]:
+    return s
+fn main(console: Console<Write>):
+    var numbers: [U64; 2] = [1, 2]
+    let k = keep(numbers.slice_mut())
+    numbers[0] = 4
+    let c = k.len()

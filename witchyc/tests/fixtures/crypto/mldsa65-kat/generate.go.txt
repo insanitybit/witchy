@@ -1,0 +1,32 @@
+// How public-key.bin, message.bin and signature.bin were made (2026-11-20), with Go 1.27.3's
+// crypto/mldsa: an implementation independent of AWS-LC. The seed is NIST's published ACVP
+// ML-DSA-65 KeyGen vector (draft-celi-acvp-ml-dsa, Table 1, Path/ML-DSA-65/1), whose
+// SHA-256(pk || sk) the host's tests check AWS-LC against (tools/wasmtime-host/src/sha.rs).
+// The signature is deterministic ML-DSA.Sign (empty context) of message.bin, a witchy-2
+// targets object. Synthetic material only. Run: go run generate.go (as main.go in a module).
+package main
+
+import (
+	"crypto/mldsa"
+	"crypto/sha256"
+	"fmt"
+	"encoding/hex"
+	"os"
+)
+
+func main() {
+	// NIST ACVP draft-celi-acvp-ml-dsa Table 1, Path/ML-DSA-65/1.
+	seed, _ := hex.DecodeString("464756A985E5DF03739D95DD309C1ED9C5B04254CC294E7E7EB9B9365EE15117")
+	sk, err := mldsa.NewPrivateKey(mldsa.MLDSA65(), seed)
+	if err != nil { panic(err) }
+	msg := []byte("witchy/v2/targets\x00example targets 1\n")
+	sig, err := sk.SignDeterministic(msg, &mldsa.Options{})
+	if err != nil { panic(err) }
+	pk := sk.PublicKey().Bytes()
+	if err := mldsa.Verify(sk.PublicKey(), msg, sig, &mldsa.Options{}); err != nil { panic(err) }
+	h := sha256.Sum256(append(append([]byte{}, pk...), sk.Bytes()...))
+	fmt.Fprintf(os.Stderr, "pk %d sig %d skbytes %d h(pk||seed) %x\n", len(pk), len(sig), len(sk.Bytes()), h)
+	os.WriteFile("public-key.bin", pk, 0o644)
+	os.WriteFile("signature.bin", sig, 0o644)
+	os.WriteFile("message.bin", msg, 0o644)
+}

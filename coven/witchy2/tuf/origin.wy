@@ -1,0 +1,11 @@
+import span
+import url
+
+// Release ceremonies admit HTTPS and the explicit localhost HTTP development origin.
+pub fn relying_party(input: Span) -> Result<Span, U64>:
+    let Ok(origin): HttpOrigin = url.parse_origin(input) else Err(reason):
+        return Err(1)
+    let host = origin.hostname()
+    if origin.is_https() || host.equals_text("localhost"):
+        return Ok(host)
+    return Err(1)

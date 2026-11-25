@@ -1,0 +1,9 @@
+// Truncation keeps the low bits and never traps.
+fn main(console: Console<Write>):
+    console.print_int(U8.to_u64(U8.truncate(255)))
+    console.print_int(U8.to_u64(U8.truncate(256)))
+    console.print_int(U8.to_u64(U8.truncate(1000)))
+    console.print_int(U16.to_u64(U16.truncate(65537)))
+    console.print_int(U32.to_u64(U32.truncate(18446744073709551615)))
+    let byte: U8 = U8.truncate(300)
+    console.print_int(U8.to_u64(byte + 1))

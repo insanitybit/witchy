@@ -1,0 +1,79 @@
+// `?` takes the value out of an Ok and hands an Err back to the caller as it is.
+// A refutable `let ... else` names what happens to the other arm instead.
+import "../../../library/wasm-string.wy"
+import "../../../library/wasm-vec.wy"
+
+fn half(value: U64) -> Result<U64, U64>:
+    if value % 2 == 0:
+        return Ok(value / 2)
+    return Err(value)
+
+fn quarter(value: U64) -> Result<U64, U64>:
+    let once = half(value)?
+    let twice = half(once)?
+    return Ok(twice)
+
+fn quarter_or(value: U64, otherwise: U64) -> U64:
+    let Ok(part) = quarter(value) else Err(code):
+        return otherwise + code
+    return part
+
+// Each push gives the String back when it fails, so the caller still owns it.
+fn word(allocator: &Allocator, input: String, first: U64, second: U64, third: U64) -> Result<String, String>:
+    let one = input.push_scalar(allocator, first)?
+    let two = one.push_scalar(allocator, second)?
+    let three = two.push_scalar(allocator, third)?
+    return Ok(move three)
+
+// Proved: two pushes that both succeed leave two more elements.
+fn push_pair<T>(allocator: &Allocator, input: Vec<T>, first: T, second: T) -> Result<Vec<T>, VecPushError<T>>:
+    ensures match result:
+        Ok(output):
+            output.length == old(input.length) + 2
+        Err(failure):
+            true
+    proof:
+        auto
+    let one = input.push(allocator, first)?
+    let two = one.push(allocator, second)?
+    return Ok(move two)
+
+fn show(console: &Console<Write>, made: Result<String, String>):
+    match move made:
+        Ok(text):
+            console.print_int(text.byte_len())
+            text.close()
+        Err(text):
+            console.print_int(900 + text.byte_len())
+            text.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    console.print_int(quarter_or(20, 1000))
+    console.print_int(quarter_or(6, 1000))
+    console.print_int(quarter_or(7, 1000))
+    let made: Result<String, U64> = String.new(&allocator)
+    match move made:
+        Ok(empty):
+            show(&console, word(&allocator, move empty, 104, 233, 128512))
+        Err(code):
+            console.print_int(code)
+    let numbers: Result<Vec<U64>, U64> = Vec.new(&allocator, 0)
+    match move numbers:
+        Ok(empty):
+            match push_pair(&allocator, move empty, 11, 12):
+                Ok(pair):
+                    console.print_int(pair.len())
+                    pair.close()
+                Err(failure):
+                    let VecPushError(vector, item) = move failure
+                    console.print_int(902)
+                    vector.close()
+        Err(code):
+            console.print_int(code)
+    let again: Result<String, U64> = String.new(&allocator)
+    match move again:
+        Ok(empty):
+            // 55296 is a surrogate: the second push fails and the one-byte String comes back.
+            show(&console, word(&allocator, move empty, 104, 55296, 33))
+        Err(code):
+            console.print_int(code)

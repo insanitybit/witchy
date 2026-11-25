@@ -1,0 +1,47 @@
+// Unlock inspection and issue a scoped approval challenge in one transaction.
+import "review/inspect_bindings.wy"
+import "review/inspect_plan.wy"
+import "sqlite_reply.wy"
+import "review/commit_request.wy"
+import console
+import discard
+import json_tree
+import rand
+import "@sqlite"
+import time
+import string
+import text
+
+fn main(db: Sqlite, input: Console<Read>, output: Console<Write>, random: Rand, clock: Clock, allocator: Allocator):
+    if let Err(code) = run(&db, &input, &output, &random, clock.now_ms() / 1000, &allocator):
+        if code == 10:
+            output.line("unavailable")
+        else:
+            output.line("maintainer assertion refused")
+
+fn run(db: &Sqlite, input: &Console<Read>, output: &Console<Write>, random: &Rand, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let request = read_commit_request(input, allocator)?
+    let checked = verify_and_commit(db, &request, output, random, now, allocator)
+    request.discard()
+    return checked
+
+fn verify_and_commit(db: &Sqlite, request: &Json, output: &Console<Write>, random: &Rand, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let empty = String.with_capacity(allocator, 1024)?
+    var bindings = move empty
+    let allocated = String.with_capacity(allocator, 4096)
+    let Ok(wire): String = move allocated else Err(code):
+        bindings.close()
+        return Err(code)
+    var blob = move wire
+    let verified = inspect_bindings(request, &mut bindings, &mut blob, random, now, allocator)
+    let checked = commit(verified, db, &bindings, &blob, output, allocator)
+    blob.close()
+    bindings.close()
+    return checked
+
+fn commit(verified: Result<(), U64>, db: &Sqlite, bindings: &String, blob: &String, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    verified?
+    let plan = inspect_plan(allocator)?
+    let checked = emit_transaction(db, &plan, bindings, blob.as_bytes(), output, 2048, allocator)
+    plan.close()
+    return checked

@@ -1,0 +1,1 @@
+an anonymous record implements no trait: declare it as a record, `type Name derive(Discard):` with its fields one to a line

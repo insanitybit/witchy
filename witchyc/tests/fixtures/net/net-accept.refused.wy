@@ -1,0 +1,4 @@
+// Refused: a Net dials; it cannot accept connections.
+import net
+fn main(net: Net):
+    let socket = net.accept()

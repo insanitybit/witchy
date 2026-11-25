@@ -1,0 +1,23 @@
+// Two arguments that could each hold the result's type both stay lent.
+type Pair:
+    a: U64
+    b: U64
+
+trait Part:
+    fn part(self: &Self) -> &U64
+
+impl Part for Pair:
+    fn part(self: &Pair) -> &U64:
+        return &(*self).a
+
+fn get<T: Part>(x: &T, other: &U64) -> &U64:
+    return other
+
+fn main(console: Console<Write>):
+    var pair = Pair(1, 2)
+    var n: U64 = 7
+    var k: U64 = 8
+    var flag = false
+    let seen = get(&pair, &n)
+    n = 9
+    console.print_int(*seen)

@@ -1,0 +1,22 @@
+type Item:
+    value: U64
+
+fn bad(a: &Allocator) -> U64:
+    ensures result == 0
+    proof:
+        auto
+    let made: Result<Boxed<Item>, Item> = memory.try_box(a, Item(0))
+    match move made:
+        Ok(box):
+            var owner = move box
+            let writing = memory.lend_box_mut(&mut owner)
+            (*writing).value = 17
+            let again = memory.lend_box(&owner)
+            let observed = (*again).value
+            let _ = memory.unbox(move owner)
+            return observed
+        Err(original):
+            return 0
+
+fn main():
+    return

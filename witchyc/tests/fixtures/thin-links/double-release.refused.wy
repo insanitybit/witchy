@@ -1,0 +1,6 @@
+fn bad(owner: Boxed<U64>):
+    let _ = memory.unbox(move owner)
+    memory.unbox(move owner)
+
+fn main():
+    return

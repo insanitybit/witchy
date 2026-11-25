@@ -1,0 +1,9 @@
+// Refused, naming the call that ends the value: it said only "close or discard it first".
+import console
+import string
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(e):
+        return
+    var text = move made
+    console.print_int(text.byte_len())

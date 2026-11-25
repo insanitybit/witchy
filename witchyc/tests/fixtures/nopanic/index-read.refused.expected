@@ -1,0 +1,1 @@
+`f` is `nopanic`, but it can trap: index out of range in its own body

@@ -1,0 +1,1 @@
+`Account` feeds the field `display` to the hash, and its `eq` does not test it: two equal keys could hash apart

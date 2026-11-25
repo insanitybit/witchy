@@ -1,0 +1,23 @@
+// Refused: a contract on a function a proof model checks, with a call that model does not read; the refusal says which model and points at the call.
+import console
+import option
+import string
+import text
+import discard
+
+type Job:
+    id: U64
+    payload: String
+
+fn job(allocator: &Allocator, id: U64) -> Result<Job, U64>:
+    ensures true
+    var text = String.new(allocator)?
+    let _ = text.push_repeated(allocator, 112, 3)
+    return Ok(Job(id, move text))
+
+fn main(out: Console<Write>, allocator: Allocator):
+    match job(&allocator, 1):
+        Ok(made):
+            made.payload.close()
+        Err(code):
+            ()

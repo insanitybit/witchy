@@ -1,0 +1,115 @@
+import "attestations.wy"
+import "delegated_input.wy"
+import "publication_files.wy"
+import "release_trust.wy"
+import fs
+import span
+import string
+import text
+import vec
+
+pub fn collect_offers(source: &Dir<Read>, trust: &ReleaseTrust, offers: &mut Vec<String>, count: U64, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let manifest = read_delegated_input(source, "bundles.txt", 2097152, allocator)?
+    let result = collect_manifest(source, trust, offers, manifest.span(), count, now, allocator)
+    manifest.close()
+    return result
+
+fn collect_manifest(source: &Dir<Read>, trust: &ReleaseTrust, offers: &mut Vec<String>, manifest: Span, count: U64, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    if manifest.len() % 97 != 0 || manifest.len() / 97 != count:
+        return Err(4)
+    let empty = String.new(allocator)?
+    let collected = collect(source, trust, offers, &empty, manifest, now, allocator)
+    empty.close()
+    return collected
+
+fn collect(source: &Dir<Read>, trust: &ReleaseTrust, offers: &mut Vec<String>, empty: &String, manifest: Span, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    for index in 0..manifest.len() / 97:
+        let start = index * 97
+        if manifest.byte_or_end(start + 96) != 10:
+            return Err(4)
+        let pin = manifest.part(start, start + 96)
+        let bundle = read_bundle(source, pin, allocator)?
+        let made = make_offer(&bundle, pin, trust, empty, now, allocator)
+        bundle.close()
+        let Ok(offer): String = move made else Err(code):
+            return Err(code)
+        if let Err(unused) = offers.push_mut(allocator, move offer):
+            unused.close()
+            return Err(1)
+    return Ok(())
+
+fn read_bundle(source: &Dir<Read>, pin: Span, allocator: &Allocator) -> Result<String, U64>:
+    for byte in pin.as_bytes():
+        if !(*byte >= '0' && *byte <= '9') && !(*byte >= 'a' && *byte <= 'f'):
+            return Err(4)
+    let empty = String.with_capacity(allocator, 103)?
+    var path = move empty
+    let named = name_bundle(&mut path, pin, allocator)
+    let read = read_named(source, &path, named, allocator)
+    path.close()
+    return move read
+
+fn name_bundle(path: &mut String, pin: Span, allocator: &Allocator) -> Result<(), U64>:
+    path.push_text(allocator, "target-")?
+    return path.push_utf8_slice(allocator, pin.as_bytes())
+
+fn read_named(source: &Dir<Read>, path: &String, named: Result<(), U64>, allocator: &Allocator) -> Result<String, U64>:
+    named?
+    let Ok(bundle): String = read_text_object(source, path, 2097152, allocator) else Err(error):
+        return Err(4)
+    return Ok(move bundle)
+
+fn make_offer(bundle: &String, pin: Span, trust: &ReleaseTrust, empty: &String, now: U64, allocator: &Allocator) -> Result<String, U64>:
+    let Ok(package): VerifiedPackage = verify_release_package(bundle, trust, empty, empty, now, allocator) else Err(error):
+        return Err(4)
+    let result = offer_for(bundle, pin, &package, allocator)
+    package.close()
+    return move result
+
+fn offer_for(bundle: &String, pin: Span, package: &VerifiedPackage, allocator: &Allocator) -> Result<String, U64>:
+    let digest = digest_text(bundle.as_bytes(), allocator)?
+    if !digest.span().part(7, digest.byte_len()).same(pin):
+        digest.close()
+        return Err(4)
+    let result = make_entry(package, &digest, bundle.byte_len(), allocator)
+    digest.close()
+    return move result
+
+fn make_entry(package: &VerifiedPackage, digest: &String, size: U64, allocator: &Allocator) -> Result<String, U64>:
+    let empty = String.with_capacity(allocator, 256)?
+    var entry = move empty
+    if let Err(code) = write_entry(&mut entry, package, digest, size, allocator):
+        entry.close()
+        return Err(code)
+    return Ok(move entry)
+
+fn write_entry(entry: &mut String, package: &VerifiedPackage, digest: &String, size: U64, allocator: &Allocator) -> Result<(), U64>:
+    let name = package.name()
+    let version = package.version()
+    entry.push_text(allocator, "\"")?
+    entry.push_part(allocator, name, 0, name.byte_len())?
+    entry.push_text(allocator, "/")?
+    entry.push_part(allocator, version, 0, version.byte_len())?
+    entry.push_text(allocator, ".coven\":{\"hashes\":{\"sha384\":\"")?
+    entry.push_part(allocator, digest, 7, digest.byte_len())?
+    entry.push_text(allocator, "\"},\"length\":")?
+    entry.push_u64(allocator, size)?
+    return entry.push_text(allocator, "}")
+
+pub fn append_offers(out: &mut String, offers: &Vec<String>, allocator: &Allocator) -> Result<(), U64>:
+    for index in 0..offers.len():
+        let Ok(offer): &String = offers.at(index) else Err(code):
+            return Err(1)
+        if index != 0:
+            let Ok(previous): &String = offers.at(index - 1) else Err(code):
+                return Err(1)
+            if same_coordinate(offer.span(), previous.span())?:
+                return Err(5)
+            out.push_text(allocator, ",")?
+        out.push_part(allocator, offer, 0, offer.byte_len())?
+    return Ok(())
+
+fn same_coordinate(current: Span, previous: Span) -> Result<Bool, U64>:
+    let end = current.find_text("\"", 1)?
+    let before_end = previous.find_text("\"", 1)?
+    return Ok(current.part(1, end).same(previous.part(1, before_end)))

@@ -1,0 +1,35 @@
+type Parcel:
+    item: Boxed<U64>
+
+fn read_parcel(a: &Allocator) -> U64:
+    ensures true
+    proof:
+        auto
+    let inner: Result<Boxed<U64>, U64> = memory.try_box(a, 71)
+    match move inner:
+        Err(original):
+            return original
+        Ok(child):
+            let saved: Weak<U64> = memory.weaken_box(&child)
+            let outer: Result<Boxed<Parcel>, Parcel> = memory.try_box(a, Parcel(move child))
+            match move outer:
+                Err(back):
+                    let Parcel(returned) = move back
+                    match memory.unbox(move returned):
+                        Ok(value):
+                            return value
+                        Err:
+                            return 0
+                Ok(bundle):
+                    match memory.unbox(move bundle):
+                        Err:
+                            return 0
+                        Ok(back):
+                            let Parcel(again) = move back
+                            let cell = memory.follow_weak(&again, saved)
+                            let observed = *cell
+                            let _ = memory.unbox(move again)
+                            return observed
+
+fn main(out: Console<Write>, a: Allocator):
+    out.print_int(read_parcel(&a))

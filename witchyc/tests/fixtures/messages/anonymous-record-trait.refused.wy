@@ -1,0 +1,11 @@
+// Refused, saying an anonymous record implements no trait and how to declare one that derives
+// it: it said only that it does not implement `Discard`.
+import vec
+import discard
+
+type Edge = .{to: U64, weight: U64}
+
+fn main(allocator: Allocator):
+    let Ok(made): Vec<Edge> = Vec.new(&allocator, 4) else Err(code):
+        return
+    made.discard()

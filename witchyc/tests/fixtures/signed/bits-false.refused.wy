@@ -1,0 +1,9 @@
+// Refused: the bits of an I64 are 5 only when it is 5.
+fn f(x: I64) -> U64:
+    ensures result == 5
+    proof:
+        auto
+    return I64.bits(x)
+
+fn main(console: Console<Write>):
+    console.print_int(f(5))

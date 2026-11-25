@@ -1,0 +1,19 @@
+// Refused by Lean: a slice up to the capacity would include cells that hold nothing, so
+// `memory.slice_unchecked`'s precondition is not proved.
+import console
+
+sealed type Row<T>:
+    data: Buffer<T>
+    length: U64
+    capacity: U64
+    invariant memory.prefix(data, length, capacity)
+
+impl<T: Any> Row<T>:
+    fn all(value: &Row<T>) -> &[T]:
+        ensures value.length == old(value.length)
+        proof:
+            auto
+        return memory.slice_unchecked(&(*value).data, 0, (*value).capacity)
+
+fn main(console: Console<Write>):
+    console.print_int(1)

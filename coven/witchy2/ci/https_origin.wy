@@ -1,0 +1,39 @@
+import "../mirror/identity.wy"
+import "../tuf/origin.wy"
+import fs
+import span
+import string
+import text
+
+pub fn ci_origin(root: &Dir<Read>, allocator: &Allocator, raw: &mut [U8]) -> Result<String, U64>:
+    let Ok(size): U64 = identity.read_file(root, "authority", raw) else Err(reason):
+        return Err(1)
+    return origin_from(raw.part(0, size), allocator)
+
+fn origin_from(bytes: &[U8], allocator: &Allocator) -> Result<String, U64>:
+    let authority = line(Span.of(bytes))
+    let empty = String.with_capacity(allocator, 269)?
+    var origin = move empty
+    if let Err(code) = origin.push_text(allocator, "https://"):
+        origin.close()
+        return Err(code)
+    if let Err(code) = origin.push_utf8_slice(allocator, authority.as_bytes()):
+        origin.close()
+        return Err(code)
+    let valid = valid_origin(&origin)
+    if !valid:
+        origin.close()
+        return Err(1)
+    return Ok(move origin)
+
+fn valid_origin(origin: &String) -> Bool:
+    let Ok(host): Span = relying_party(origin.span()) else Err(code):
+        return false
+    return host.len() <= 253
+
+fn line(raw: Span) -> Span:
+    if raw.ends_with_text("\r\n"):
+        return raw.part(0, raw.len() - 2)
+    if raw.ends_with_text("\n"):
+        return raw.part(0, raw.len() - 1)
+    return raw

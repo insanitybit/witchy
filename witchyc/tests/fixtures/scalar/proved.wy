@@ -1,0 +1,135 @@
+// Scalar functions with variables, branches, loops and calls, each proved against its body.
+fn max(a: U64, b: U64) -> U64:
+    ensures result >= a
+    ensures result >= b
+    ensures result == a || result == b
+    proof:
+        auto
+    if a > b:
+        return a
+    return b
+
+fn clamp(x: U64, low: U64, high: U64) -> U64:
+    requires low <= high
+    ensures low <= result
+    ensures result <= high
+    proof:
+        auto
+    var value = x
+    if value < low:
+        value = low
+    if value > high:
+        value = high
+    return value
+
+fn count_to(limit: U64) -> U64:
+    ensures result == limit
+    proof:
+        auto
+    var counter = 0
+    while counter < limit:
+        invariant counter <= limit
+        counter += 1
+    return counter
+
+fn sum_to(limit: U64) -> U64:
+    requires limit <= 1000
+    ensures result <= 1000 * limit
+    proof:
+        auto
+    var index = 0
+    var total = 0
+    while index < limit:
+        invariant index <= limit
+        invariant total <= 1000 * index
+        total += index
+        index += 1
+    return total
+
+fn is_small(x: U64) -> Bool:
+    ensures result == (x < 10)
+    proof:
+        auto
+    return x < 10
+
+fn half(x: U64) -> U64:
+    ensures result <= x
+    ensures result * 2 <= x
+    proof:
+        auto
+    return x / 2
+
+
+fn gcd(a: U64, b: U64) -> U64:
+    requires a > 0
+    ensures result > 0
+    proof:
+        auto
+    var x = a
+    var y = b
+    while y != 0:
+        invariant x > 0
+        let r = x % y
+        x = y
+        y = r
+    return x
+
+fn pick(flag: Bool, a: U64, b: U64) -> U64:
+    ensures flag || result == b
+    ensures !flag || result == a
+    proof:
+        auto
+    if flag:
+        return a
+    return b
+
+fn next(x: U8) -> U8:
+    requires x < 200
+    ensures result == x + 1
+    proof:
+        auto
+    return x + 1
+
+fn safe_ratio(a: U64, b: U64) -> Bool:
+    ensures true
+    proof:
+        auto
+    return b > 0 && a / b > 1
+
+fn square_steps(n: U64) -> U64:
+    requires n <= 100
+    ensures result <= 2 * n
+    proof:
+        auto
+    var i = 0
+    var total = 0
+    while i < n:
+        invariant i <= n
+        invariant total <= 2 * i
+        var j = 0
+        while j < 2:
+            invariant j <= 2
+            invariant total <= 2 * i + j
+            total += 1
+            j += 1
+        i += 1
+    return total
+
+fn main(console: Console<Write>):
+    console.print_int(max(3, 9))
+    console.print_int(clamp(50, 1, 20))
+    console.print_int(count_to(7))
+    console.print_int(sum_to(10))
+    if is_small(4):
+        console.print_int(half(9))
+    console.print_int(gcd(12, 18))
+    console.print_int(pick(false, 4, 5))
+    console.print_int(U8.to_u64(next(41)))
+    if safe_ratio(9, 2):
+        console.print_int(square_steps(5))
+    // A call inside a loop and a branch: its `requires` follows from the conditions on the way.
+    var n: U8 = 195
+    while n < 210:
+        if n < 200:
+            console.print_int(U8.to_u64(next(n)))
+        n += 5

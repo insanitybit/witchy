@@ -1,0 +1,1 @@
+`write_span` is a function, not a method: call it as `write_span(...)`

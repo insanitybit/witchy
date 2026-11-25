@@ -1,0 +1,20 @@
+// A brand inside a tuple, given to `keep<T>` from two openings (review, evidence/tuple.wy): one
+// instance of `keep` (asserted in src/compiler/brand_tests.rs), the same output.
+import console
+
+type Row<G>:
+    n: U64
+
+fn issue<G: Fresh>() -> Row<G>:
+    return Row(2)
+
+fn keep<T>(v: T) -> T:
+    return v
+
+fn main(console: Console<Write>):
+    brand issue() as a:
+        let v = keep((a, true))
+        console.print_int((v.0).n)
+    brand issue() as b:
+        let v = keep((b, true))
+        console.print_int((v.0).n)

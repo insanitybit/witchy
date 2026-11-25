@@ -1,0 +1,12 @@
+fn small(x: U64) -> U64:
+    requires x < 10
+    ensures result == x + 1
+    proof:
+        auto
+    return x + 1
+fn main(console: Console<Write>):
+    var n = 0
+    while n < 20:
+        if n > 5:
+            console.print_int(small(n))
+        n += 1

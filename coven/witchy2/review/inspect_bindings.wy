@@ -1,0 +1,60 @@
+import "../tuf/release_trust.wy"
+import "approval_bindings.wy"
+import "challenge_wire.wy"
+import "challenge_bindings.wy"
+import "commit_request.wy"
+import json_tree
+import rand
+import string
+import text
+
+pub fn inspect_bindings(request: &Json, bindings: &mut String, blob: &mut String, random: &Rand, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    if !count_fields(request, 7):
+        return Err(1)
+    let policy = request.field("policy")?
+    let envelope = request.field("envelope")?
+    let token = string_field(request, "token")?
+    let intent = envelope.field("intent")?
+    let operation = string_field(intent, "operation")?
+    if !count_fields(intent, 3) || !operation.equals_text("inspect") || !matches_envelope(envelope, token, allocator):
+        return Err(1)
+    let name = string_field(request, "name")?
+    let version = string_field(request, "version")?
+    let digest = string_field(intent, "digest")?
+    let registry = string_field(policy, "registry")?
+    if !valid_coordinates(name, version, digest) || !registry_id(registry.as_bytes()):
+        return Err(1)
+    verify_enrolled_counter(request, name, bindings, allocator)?
+    let expires = declared_integer(intent, "expires")?
+    let Ok(pin): String = digest_json(policy, allocator) else Err(reason):
+        return Err(1)
+    let coordinate = ReviewCoordinate(name, version, digest, registry)
+    let checked = prepare_review(coordinate, policy, envelope, token, &pin, expires, now + 300, bindings, blob, random, allocator)
+    pin.close()
+    return checked
+
+fn prepare_review(coordinate: ReviewCoordinate, policy: &Json, envelope: &Json, token: &String, pin: &String, expires: U64, next_expiry: U64, bindings: &mut String, blob: &mut String, random: &Rand, allocator: &Allocator) -> Result<(), U64>:
+    text_binding(bindings, "token", token, allocator)?
+    text_binding(bindings, "policy_pin", pin, allocator)?
+    text_binding(bindings, "name", coordinate.name, allocator)?
+    text_binding(bindings, "version", coordinate.version, allocator)?
+    text_binding(bindings, "digest", coordinate.digest, allocator)?
+    integer_binding(bindings, "expires", expires, allocator)?
+    integer_binding(bindings, "next_expiry", next_expiry, allocator)?
+    let empty = String.with_capacity(allocator, 512)?
+    var next = move empty
+    let built = approval_envelope(coordinate, pin, next_expiry, &mut next, random, allocator)
+    let checked = bind_snapshot(built, policy, envelope, &next, bindings, blob, allocator)
+    next.close()
+    return checked
+
+fn bind_snapshot(built: Result<(), U64>, policy: &Json, envelope: &Json, next: &String, bindings: &mut String, blob: &mut String, allocator: &Allocator) -> Result<(), U64>:
+    built?
+    bind_challenge_token(bindings, "next_token", next, allocator)?
+    blob.push_text(allocator, "{\"policy\":")?
+    append_json(blob, policy, allocator)?
+    blob.push_text(allocator, ",\"envelope\":")?
+    append_json(blob, envelope, allocator)?
+    blob.push_text(allocator, ",\"next\":")?
+    blob.push_part(allocator, next, 0, next.byte_len())?
+    return blob.push_text(allocator, "}")

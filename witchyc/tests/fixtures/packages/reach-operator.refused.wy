@@ -1,0 +1,6 @@
+// Refused: an operator whose impl is in alpha's inner file.
+import "@alpha"
+
+fn main():
+    let h = alpha.hidden(3) + alpha.hidden(4)
+    let _ = alpha.read(&h)

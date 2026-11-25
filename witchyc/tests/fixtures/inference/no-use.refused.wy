@@ -1,0 +1,4 @@
+// Refused: nothing later says what the element type is.
+import vec
+fn main(allocator: Allocator):
+    let numbers = Vec.new(&allocator, 2)

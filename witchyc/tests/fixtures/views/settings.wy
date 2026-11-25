@@ -1,0 +1,77 @@
+// Settings read out of one String without copying a byte of it: every piece is a
+// Span, a record that holds a reference to the String and two positions.
+import "../../../library/wasm-span.wy"
+import "../../../library/wasm-string.wy"
+
+// One `key = value` setting.
+type Setting:
+    key: Span
+    value: Span
+
+// The setting a piece holds. Err: it has no `=`, and comes back trimmed.
+fn setting(piece: Span) -> Result<Setting, Span>:
+    match piece.split(61):
+        Ok(halves):
+            return Ok(Setting(halves.head.trim(), halves.tail.trim()))
+        Err(whole):
+            return Err(whole.trim())
+
+// Print what a piece says. The number it sets, or 0.
+fn report(console: &Console<Write>, piece: Span) -> U64:
+    match setting(piece):
+        Ok(found):
+            write_span(console, found.key)
+            match found.value.parse_u64():
+                Ok(number):
+                    console.write(" is the number ")
+                    console.print_int(number)
+                    return number
+                Err(code):
+                    console.write(" is the text '")
+                    write_span(console, found.value)
+                    console.line("'")
+                    return 0
+        Err(bare):
+            if !bare.is_empty():
+                write_span(console, bare)
+                console.line(" has no value")
+            return 0
+
+// Whether a piece sets this key.
+fn sets(piece: Span, key: Text) -> Bool:
+    match setting(piece):
+        Ok(found):
+            return found.key.equals_text(key)
+        Err(bare):
+            return false
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var text = match String.new(&allocator):
+        Ok(empty):
+            move empty
+        Err(code):
+            return
+    if let Err(_) = text.push_text(&allocator, "name = witchy; width=80 ;height = 24;;verbose; depth =  x7 ;width=120"):
+        text.close()
+        return
+    // `rest` is given narrower Spans of the same String as the loop goes on.
+    var rest = text.span()
+    var total: U64 = 0
+    var widths: U64 = 0
+    while !rest.is_empty():
+        match rest.split(59):
+            Ok(halves):
+                total += report(&console, halves.head)
+                if sets(halves.head, "width"):
+                    widths += 1
+                rest = halves.tail
+            Err(whole):
+                total += report(&console, whole)
+                if sets(whole, "width"):
+                    widths += 1
+                rest = whole.part(whole.len(), whole.len())
+    console.print_int(total)
+    console.print_int(widths)
+    // The Spans are no longer in use, so the String can change again.
+    text.clear()
+    text.close()

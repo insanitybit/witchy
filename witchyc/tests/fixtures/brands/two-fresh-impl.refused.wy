@@ -1,0 +1,19 @@
+// Refused: the impl's `Fresh` parameter counts with the method's.
+import console
+
+type Row<G>:
+    n: U64
+
+type Pair<A, B>:
+    a: Row<A>
+    b: Row<B>
+
+type Maker<A>:
+    seed: U64
+
+impl<A: Fresh> Maker<A>:
+    fn issue<B: Fresh>(self: &Maker<A>) -> Pair<A, B>:
+        return Pair(Row(1), Row(2))
+
+fn main(console: Console<Write>):
+    console.print_int(1)

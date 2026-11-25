@@ -1,0 +1,19 @@
+[Unit]
+Description=Forward Coven TCP connections into the mirror network namespace
+BindsTo=coven-mirror.service
+Requires=coven-public.socket
+After=coven-mirror.service coven-public.socket
+JoinsNamespaceOf=coven-mirror.service
+
+[Service]
+Type=notify
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd --connections-max=20 127.0.0.1:8419
+DynamicUser=yes
+PrivateNetwork=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+InaccessiblePaths=/etc/coven/keys /srv/coven
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX

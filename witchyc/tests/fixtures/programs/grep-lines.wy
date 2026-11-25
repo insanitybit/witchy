@@ -1,0 +1,44 @@
+// grep: the lines of the input holding a word, with their numbers and how many times it appears
+// in each; then a count. Reads with `read_line`, finds with `find_text`, writes with
+// `write_format`.
+import console
+import string
+import text
+
+fn count_in(line: &String, word: &str) -> U64:
+    var found: U64 = 0
+    var from: U64 = 0
+    while true:
+        match line.find_text(word, from):
+            Ok(at):
+                found += 1
+                from = at + word.len()
+            Err(e):
+                return found
+    return found
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(e):
+        return
+    var line = move made
+    var number: U64 = 0
+    var matched: U64 = 0
+    while true:
+        line.clear()
+        match input.read_line(&allocator, &mut line):
+            .Line:
+                number += 1
+                let times = count_in(&line, "error")
+                if times > 0:
+                    matched += 1
+                    console.write_format("${number}: ")
+                    console.write_string(&line)
+                    console.print(" (${times})")
+            .End:
+                break
+            .NotText:
+                break
+            .NoRoom:
+                break
+    console.print("${matched} of ${number} lines")
+    line.close()

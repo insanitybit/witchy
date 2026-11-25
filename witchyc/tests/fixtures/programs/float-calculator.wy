@@ -1,0 +1,107 @@
+// A float calculator: + - * / and parentheses over decimal numbers with exponents, by recursive
+// descent over the bytes of each line, no tree; `parse_f64` reads, `${x}` writes, a mistake is
+// reported with its byte position.
+import console
+import string
+import span
+import float
+
+type Cursor = .{at: U64}
+
+fn skip_blanks(bytes: &[U8], cursor: &mut Cursor):
+    while cursor.at < bytes.len() && bytes[cursor.at] == ' ':
+        cursor.at += 1
+
+fn peek(bytes: &[U8], cursor: &mut Cursor) -> U64:
+    skip_blanks(bytes, cursor)
+    if cursor.at < bytes.len():
+        return U8.to_u64(bytes[cursor.at])
+    return 0
+
+fn number(bytes: &[U8], cursor: &mut Cursor) -> Result<F64, U64>:
+    let start = cursor.at
+    while cursor.at < bytes.len() && ((bytes[cursor.at] >= '0' && bytes[cursor.at] <= '9') || bytes[cursor.at] == '.'):
+        cursor.at += 1
+    if cursor.at == start:
+        return Err(start)
+    // An exponent: `e`, a sign, digits.
+    if cursor.at < bytes.len() && (bytes[cursor.at] == 'e' || bytes[cursor.at] == 'E'):
+        cursor.at += 1
+        if cursor.at < bytes.len() && (bytes[cursor.at] == '+' || bytes[cursor.at] == '-'):
+            cursor.at += 1
+        while cursor.at < bytes.len() && bytes[cursor.at] >= '0' && bytes[cursor.at] <= '9':
+            cursor.at += 1
+    match parse_f64(bytes.part(start, cursor.at)):
+        Ok(value):
+            return Ok(value)
+        Err(code):
+            return Err(start)
+
+fn primary(bytes: &[U8], cursor: &mut Cursor) -> Result<F64, U64>:
+    let next = peek(bytes, cursor)
+    if next == '(':
+        cursor.at += 1
+        let inside = sum(bytes, cursor)?
+        if peek(bytes, cursor) != ')':
+            return Err(cursor.at)
+        cursor.at += 1
+        return Ok(inside)
+    if next == '-':
+        cursor.at += 1
+        let value = primary(bytes, cursor)?
+        return Ok(0.0 - value)
+    return number(bytes, cursor)
+
+fn product(bytes: &[U8], cursor: &mut Cursor) -> Result<F64, U64>:
+    var value = primary(bytes, cursor)?
+    while true:
+        let next = peek(bytes, cursor)
+        if next == '*':
+            cursor.at += 1
+            value = value * primary(bytes, cursor)?
+        else if next == '/':
+            cursor.at += 1
+            value = value / primary(bytes, cursor)?
+        else:
+            return Ok(value)
+    return Ok(value)
+
+fn sum(bytes: &[U8], cursor: &mut Cursor) -> Result<F64, U64>:
+    var value = product(bytes, cursor)?
+    while true:
+        let next = peek(bytes, cursor)
+        if next == '+':
+            cursor.at += 1
+            value = value + product(bytes, cursor)?
+        else if next == '-':
+            cursor.at += 1
+            value = value - product(bytes, cursor)?
+        else:
+            return Ok(value)
+    return Ok(value)
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(e):
+        return
+    var line = move made
+    while true:
+        line.clear()
+        match input.read_line(&allocator, &mut line):
+            .Line:
+                let bytes = line.as_bytes()
+                var cursor: Cursor = .{at: 0}
+                match sum(bytes, &mut cursor):
+                    Ok(value):
+                        if peek(bytes, &mut cursor) == 0:
+                            console.print("${value}")
+                        else:
+                            console.print("error at ${cursor.at}")
+                    Err(at):
+                        console.print("error at ${at}")
+            .End:
+                break
+            .NotText:
+                break
+            .NoRoom:
+                break
+    line.close()

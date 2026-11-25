@@ -1,0 +1,20 @@
+// A name matched again later still holds every loan, so neither input is free in the first match.
+import console
+import "../modules/parts/choose.wy"
+
+fn main(console: Console<Write>):
+    var a: U64 = 1
+    var b: U64 = 2
+    let got = choose(&a, &b, a < b)
+    match got:
+        Ok(item):
+            b = 3
+            console.print_int(*item)
+        Err(item):
+            a = 3
+            console.print_int(*item)
+    match got:
+        Ok(item):
+            console.print_int(*item)
+        Err(item):
+            console.print_int(*item)

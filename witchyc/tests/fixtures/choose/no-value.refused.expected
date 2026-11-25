@@ -1,0 +1,1 @@
+each path of a `match` or `if` used as a value ends with the value, or leaves with `return`, `break`, `continue` or `unreachable`

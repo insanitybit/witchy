@@ -1,0 +1,32 @@
+// Refused (review): words of a Span over a view local's own array are this frame's storage.
+import console
+import span
+import string
+
+type Mixed:
+    data: [U8; 4]
+    text: &String
+
+fn leak(text: &String, b: U8) -> Span:
+    let m = Mixed([b, b, b, b], text)
+    let s = Span.of(m.data.slice())
+    let w = s.words()
+    var c: U64 = 0
+    match w.next(&mut c):
+        Ok(word):
+            return word
+        Err(e):
+            return text.span()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    let first = leak(&made, 65)
+    write_span(&console, first)
+    console.line("")
+    let second = leak(&made, 90)
+    write_span(&console, first)
+    console.line("")
+    write_span(&console, second)
+    console.line("")
+    made.close()

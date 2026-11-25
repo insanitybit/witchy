@@ -1,0 +1,15 @@
+// `for c in "...".chars()` over a text literal runs `Text.chars` in place (its receiver is the
+// literal itself), with `continue` and multi-byte scalars.
+import console
+
+fn main(console: Console<Write>):
+    var all: U64 = 0
+    var wide: U64 = 0
+    for c in "héllo wörld, ünïcode ✓ ok".chars():
+        all += 1
+        if c == 10003:
+            console.print("check at ${all}")
+            continue
+        if c > 127:
+            wide += c
+    console.print("${all} ${wide}")

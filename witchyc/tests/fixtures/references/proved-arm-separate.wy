@@ -1,0 +1,29 @@
+// Two names in one arm are separate places: a write through one keeps what is known of the other.
+import console
+
+type Shape:
+    Rect(U64, U64)
+    Dot
+
+type P:
+    x: U64
+    y: U64
+
+fn f(s: &mut Shape) -> U64:
+    ensures result == 5 || result == 0
+    proof:
+        auto
+    match s:
+        Rect(w, h):
+            *w = 5
+            *h = 7
+            return *w
+        Dot:
+            return 0
+
+fn g() -> U64:
+    var s = Rect(1, 1)
+    return f(&mut s)
+
+fn main(console: Console<Write>):
+    console.print_int(g())

@@ -1,0 +1,38 @@
+// A closure's argument may be a shared reference: `fn(&String) -> Bool` reads each owned
+// element of a `Vec<String>` where it is, through `count_ref` and `any_ref`.
+import console
+import string
+import text
+import query
+import vec
+
+fn word(allocator: &Allocator, text: Text) -> String:
+    let Ok(made): String = String.new(allocator) else Err(code):
+        unreachable
+    var built = move made
+    if let Err(_) = built.push_text(allocator, text):
+        unreachable
+    return move built
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<String> = Vec.new(&allocator, 4) else Err(code):
+        return
+    var words = move made
+    for text in ["apple", "kiwi", "banana", "fig"]:
+        match words.push_mut(&allocator, word(&allocator, *text)):
+            Ok:
+                continue
+            Err(back):
+                back.close()
+    let longer: U64 = 3
+    let long = fn(w: &String) -> Bool: w.byte_len() > longer
+    console.print_int(words.count_ref(&long))
+    let starts_b = fn(w: &String) -> Bool: w.starts_with_text("b")
+    console.print_int(if words.any_ref(&starts_b): 1 else: 0)
+    while words.len() > 0:
+        match words.take_last_mut():
+            Ok(w):
+                w.close()
+            Err(code):
+                unreachable
+    words.release_empty()

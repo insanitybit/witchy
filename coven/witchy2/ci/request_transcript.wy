@@ -1,0 +1,72 @@
+import "../tuf/origin.wy"
+import "../tuf/coordinate.wy"
+import "../tuf/release_trust.wy"
+import "identifiers.wy"
+import json_tree
+import span
+import string
+import text
+
+pub fn validate_request_coordinates(request: &Json) -> Result<(), U64>:
+    let origin = string_field(request, "origin")?
+    let route = string_field(request, "route")?
+    let stage = route.equals_text("/v1/ci/stage")
+    let receipt = route.equals_text("/v1/ci/receipt")
+    if (!stage && !receipt) || !origin.span().starts_with_text("https://"):
+        return Err(101)
+    let party = relying_party(origin.span())?
+    if party.len() > 253:
+        return Err(101)
+    let release = string_field(request, "digest")?
+    let package = string_field(request, "package")?
+    let nonce = string_field(request, "nonce")?
+    if !digest_spelling(release.span()) || !package_name(package.span()) || !identifier(nonce.span()):
+        return Err(101)
+    return Ok(())
+
+fn digest_spelling(value: Span) -> Bool:
+    if value.len() != 103 || !value.starts_with_text("sha384:"):
+        return false
+    for byte in value.part(7, value.len()).as_bytes():
+        if !(*byte >= '0' && *byte <= '9') && !(*byte >= 'a' && *byte <= 'f'):
+            return false
+    return true
+
+pub fn request_message(request: &Json, token: &String, body_digest: &String, allocator: &Allocator) -> Result<String, U64>:
+    let identity = digest_text(token.as_bytes(), allocator)?
+    let result = with_identity(request, &identity, body_digest, allocator)
+    identity.close()
+    return move result
+
+fn with_identity(request: &Json, identity: &String, body_digest: &String, allocator: &Allocator) -> Result<String, U64>:
+    let empty = String.with_capacity(allocator, 1024)?
+    var message = move empty
+    if let Err(code) = encode_request(&mut message, request, identity, body_digest, allocator):
+        message.close()
+        return Err(code)
+    return Ok(move message)
+
+// All variable values have already been restricted to unescaped ASCII.
+// Emit the established wire format, including its member order and domain.
+fn encode_request(out: &mut String, request: &Json, identity: &String, body: &String, allocator: &Allocator) -> Result<(), U64>:
+    let nonce = string_field(request, "nonce")?
+    let package = string_field(request, "package")?
+    let release = string_field(request, "digest")?
+    let origin = string_field(request, "origin")?
+    let route = string_field(request, "route")?
+    out.push_text(allocator, "coven-ci-request-1-ml-dsa-87")?
+    out.push_ascii(allocator, 0, 1)?
+    out.push_text(allocator, "{\"body\":\"")?
+    out.push_part(allocator, body, 0, body.byte_len())?
+    out.push_text(allocator, "\",\"identity\":\"")?
+    out.push_part(allocator, identity, 0, identity.byte_len())?
+    out.push_text(allocator, "\",\"method\":\"POST\",\"nonce\":\"")?
+    out.push_part(allocator, nonce, 0, nonce.byte_len())?
+    out.push_text(allocator, "\",\"package\":\"")?
+    out.push_part(allocator, package, 0, package.byte_len())?
+    out.push_text(allocator, "\",\"release\":\"")?
+    out.push_part(allocator, release, 0, release.byte_len())?
+    out.push_text(allocator, "\",\"uri\":\"")?
+    out.push_part(allocator, origin, 0, origin.byte_len())?
+    out.push_part(allocator, route, 0, route.byte_len())?
+    return out.push_text(allocator, "\"}")

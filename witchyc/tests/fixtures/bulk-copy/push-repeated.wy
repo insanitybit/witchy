@@ -1,0 +1,56 @@
+// `push_repeated` at every count around the word, the block's threshold (64) and the block
+// (4096), after a prefix of each length 0 to 9 so the run starts at every place in a bitmap
+// word: the length, and every byte, are right. Then a scalar that is not ASCII, and one that
+// is not a scalar.
+import console
+import string
+import text
+
+fn run(console: &Console<Write>, allocator: &Allocator, prefix: U64, count: U64) -> U64:
+    let Ok(made): String = String.new(allocator) else Err(code):
+        return 1000000
+    var text = move made
+    for i in 0..prefix:
+        let _ = text.push(allocator, 48 + i)
+    if let Err(_) = text.push_repeated(allocator, 122, count):
+        text.close()
+        return 1000000
+    let _ = text.push(allocator, 33)
+    var wrong: U64 = 0
+    if text.byte_len() != prefix + count + 1:
+        wrong += 1
+    let bytes = text.as_bytes()
+    for i in 0..bytes.len():
+        var want: U64 = 122
+        if i < prefix:
+            want = 48 + i
+        if i == prefix + count:
+            want = 33
+        if U8.to_u64(bytes[i]) != want:
+            wrong += 1
+    text.close()
+    return wrong
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let counts: [U64; 20] = [0, 1, 7, 8, 9, 15, 16, 17, 63, 64, 65, 127, 128, 129, 200, 4095, 4096, 4097, 8192, 9000]
+    var wrong: U64 = 0
+    var runs: U64 = 0
+    for prefix in 0..10:
+        for which in 0..20:
+            wrong += run(&console, &allocator, prefix, counts[which])
+            runs += 1
+    console.print_int(runs)
+    console.print_int(wrong)
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var text = move made
+    let _ = text.push_repeated(&allocator, 233, 100)
+    console.print_int(text.byte_len())
+    console.print_int(text.scalar_count())
+    match text.push_repeated(&allocator, 55296, 3):
+        Ok:
+            console.line("accepted")
+        Err(code):
+            console.print_int(code)
+    console.print_int(text.byte_len())
+    text.close()

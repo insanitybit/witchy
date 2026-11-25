@@ -1,0 +1,27 @@
+// Recipes over variants that are refused where they are applied.
+import hash
+
+pub trait First:
+    fn first(self: &Self) -> U64
+
+// Reads `mine0` in every variant's arm: a variant that holds nothing binds no `mine0`, and no
+// other variant's value can be named there.
+pub derive Inactive:
+    impl First for Self:
+        fn first(self: &Self) -> U64:
+            match self:
+                static for v in variants:
+                    v(..mine):
+                        let value = mine0
+                        return *value
+
+// Repeats over values bound by no pattern.
+pub derive Unbound:
+    impl First for Self:
+        fn first(self: &Self) -> U64:
+            match self:
+                static for v in variants:
+                    v(..mine):
+                        static for a in theirs:
+                            return *a
+                        return 0

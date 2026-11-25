@@ -1,0 +1,10 @@
+// Refused, with what to do (adversarial review round 23): a reference field is lent shared.
+import console
+type Win:
+    items: &[U64]
+    pos: U64
+impl Win:
+    fn retarget(self: Self { &mut items, &pos }, other: &[U64]):
+        self.items = other
+fn main(console: Console<Write>):
+    console.print_int(1)

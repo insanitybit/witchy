@@ -1,0 +1,16 @@
+// The same value appended to a String, with the allocator given where memory is used.
+import console
+import string
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var text = move made
+    let count: U64 = 7
+    if let Err(_) = text.push_format(&allocator, "${count} items, ${count * 2} halves; done ${count > 5}"):
+        text.close()
+        return
+    console.write_string(&text)
+    console.print("")
+    console.print("length ${text.byte_len()}")
+    text.close()

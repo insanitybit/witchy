@@ -1,0 +1,39 @@
+import console
+import span
+import string
+import time
+
+fn roundtrip(allocator: &Allocator, seconds: U64, expected: Text) -> Bool:
+    let Ok(initial): String = String.new(allocator) else Err(_):
+        return false
+    var text = move initial
+    if let Err(_) = time.append_utc_seconds(&mut text, seconds, allocator):
+        text.close()
+        return false
+    let parsed = time.parse_utc_seconds(text.as_bytes())
+    let canonical = text.span().equals_text(expected)
+    text.close()
+    match parsed:
+        Ok(timestamp):
+            return canonical && timestamp == seconds
+        Err(_):
+            return false
+
+fn refuses_out_of_range(allocator: &Allocator) -> Bool:
+    let Ok(initial): String = String.new(allocator) else Err(_):
+        return false
+    var text = move initial
+    let result = time.append_utc_seconds(&mut text, 253402300800, allocator)
+    let empty = text.byte_len() == 0
+    text.close()
+    match result:
+        Ok:
+            return false
+        Err(_):
+            return empty
+
+fn main(out: Console<Write>, allocator: Allocator):
+    if roundtrip(&allocator, 0, "1970-01-01T00:00:00Z") && roundtrip(&allocator, 951782401, "2000-02-29T00:00:01Z"):
+        out.line("epoch and leap day")
+    if roundtrip(&allocator, 253402300799, "9999-12-31T23:59:59Z") && refuses_out_of_range(&allocator):
+        out.line("four-digit year boundary")

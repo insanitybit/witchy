@@ -1,0 +1,11 @@
+// The same with the module's `bump` private: the loop steps the generator in its own file
+// (eighth review: it was run in place and called the program's `bump`).
+import console
+import "parts/walk_private.wy"
+
+fn bump(x: U64) -> U64:
+    return x + 100
+
+fn main(console: Console<Write>):
+    for v in walk(2):
+        console.print_int(v)

@@ -1,0 +1,30 @@
+// A trait method may state a contract over its numbers and its result: every implementation
+// proves it (the clauses are its own), and generic code calling the method through a bound
+// shows its `requires` and relies on its `ensures`. Here `total` proves its sum in range
+// knowing only that `T: Score`.
+import console
+
+trait Score:
+    fn score(self: &Self, cap: U64) -> U64:
+        requires cap <= 1000
+        ensures result <= cap
+
+type Small:
+    n: U64
+
+impl Score for Small:
+    fn score(self: &Small, cap: U64) -> U64:
+        if self.n < cap:
+            return self.n
+        return cap
+
+fn total<T: Score>(a: &T, b: &T) -> U64:
+    ensures result <= 2000
+    proof:
+        auto
+    return a.score(1000) + b.score(1000)
+
+fn main(console: Console<Write>):
+    let little = Small(5)
+    let big = Small(5000)
+    console.print_int(total(&little, &big))

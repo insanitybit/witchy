@@ -1,0 +1,4 @@
+proof failed: function `stuff`
+  not proved: ensures when Full = *slot: false
+  not proved: ensures result == item + 1
+this function's proof did not go through: `ensures when Full = *slot: false` (proof-points-at-claim.refused.wy:10) is not shown at this `return`

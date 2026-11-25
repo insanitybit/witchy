@@ -1,0 +1,2 @@
+# The packages httpd-app.wy imports by name (`import "@httpd"`), and where each is.
+httpd 1.0: httpd/httpd.wy

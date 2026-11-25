@@ -1,0 +1,11 @@
+// Refused (the handoff's first false law): Account equal by id, hashed with its display too, so
+// two equal accounts could hash apart.
+import "../derive/parts/keys.wy"
+import hash
+
+type Account derive(keys.Key(by: id), keys.Fed):
+    id: U64
+    display: U64
+
+fn main():
+    return

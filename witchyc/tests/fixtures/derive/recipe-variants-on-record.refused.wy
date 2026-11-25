@@ -1,0 +1,9 @@
+// Refused: a recipe over variants applied to a record.
+import "parts/variant_keys.wy"
+import console
+
+type Pair derive(variant_keys.VariantKey):
+    a: U64
+
+fn main(console: Console<Write>):
+    console.print("${Pair(a: 1) == Pair(a: 1)}")

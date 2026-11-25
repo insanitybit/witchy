@@ -1,0 +1,46 @@
+// Refused by the proof, at the assignment: this helper drains on one branch only, so its body
+// is not a plain rearrangement and the caller knows nothing of the slot after it.
+type Slot<T>:
+    Vacant
+    Full(T)
+
+impl<T: Any> Slot<T>:
+    // Empty the slot and hand back what was in it.
+    pub nopanic fn drain(slot: &mut Slot<T>) -> Slot<T>:
+        var previous: Slot<T> = Vacant
+        memory.exchange(&mut *slot, &mut previous)
+        return move previous
+
+// A vacant shelf counts nothing: the two fields are linked.
+sealed type Shelf<T>:
+    count: U64
+    slot: Slot<T>
+    invariant when Vacant = slot:
+        count == 0
+
+nopanic fn drain_if<T: Any>(slot: &mut Slot<T>, really: Bool) -> Slot<T>:
+    var previous: Slot<T> = Vacant
+    if really:
+        memory.exchange(&mut *slot, &mut previous)
+    return move previous
+
+impl<T: Any> Shelf<T>:
+    // Relies on the invariant: on a vacant shelf a count other than 0 cannot be.
+    nopanic fn audit(shelf: &Shelf<T>) -> U64:
+        match &(*shelf).slot:
+            Vacant:
+                if (*shelf).count != 0:
+                    unreachable
+                return 0
+            Full(_):
+                return (*shelf).count
+
+    nopanic fn swap_in(shelf: &mut Shelf<T>, item: T) -> Slot<T>:
+        let held = drain_if(&mut (*shelf).slot, true)
+        (*shelf).count = 1
+        (*shelf).slot = Full(move item)
+        return move held
+
+fn main(out: Console<Write>):
+    out.print_int(1)
+

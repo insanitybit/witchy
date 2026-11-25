@@ -1,0 +1,11 @@
+// Storing past the end stops the run with a trap.
+import "../../../library/wasm-vec.wy"
+
+fn main(allocator: Allocator):
+    var items: Vec<U64> = match Vec.filled(&allocator, 2, 0):
+        Ok(made):
+            move made
+        Err(code):
+            return
+    items[2] = 1
+    items.close()

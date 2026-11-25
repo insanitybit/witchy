@@ -1,0 +1,12 @@
+// Refused, naming each operation that may overflow.
+import console
+
+fn grow(x: U64, y: U64) -> U64:
+    requires x < 4294967296
+    ensures true
+    proof:
+        auto
+    return x * y + 1
+
+fn main(console: Console<Write>):
+    console.print_int(grow(3, 4))

@@ -1,0 +1,318 @@
+// Running native programs through `Exec` (book: capabilities-narrowing.md, "Exec").
+// The sharpest authority: a program it starts runs outside the sandbox. An `Exec` may run
+// only the names the run grants (`--exec=DIR:name,name`), each the file of that name in
+// that one directory, opened there without following links. There is no shell: a program
+// gets the arguments given one by one, an empty environment, and no input unless given.
+// `only` narrows an `Exec` to one name, so a helper given it can start nothing else.
+//
+// `exec.command("git")` configures one run: `.arg(text)`, `.input(bytes)`,
+// `.deadline_ms(n)`, `.output_limit(n)`, `.cwd(dir)`, `.env(name, value)`, then `.run()`. Every setting only narrows what the
+// grant allows (a longer time or a larger output than the run grants fails the run with
+// `Wider`); the environment stays empty. A `Command` holds only an `Exec` narrowed to its one
+// program, and is sealed: it can run nothing else and nothing can widen it.
+import "wasm-string.wy"
+import "wasm-vec.wy"
+
+pub type ExecError:
+    // The name is not one this `Exec` may run.
+    NotGranted
+    // Not a plain name, or an argument holds a NUL byte.
+    InvalidName
+    // Past the bytes the run may read back from programs.
+    TooLarge
+    // No program of that name could be started from the granted directory.
+    NotFound
+    // The program could not be run, or its output read.
+    Failed
+    // The program ran past the run's time limit and was stopped.
+    TimedOut
+    // What the program wrote is not UTF-8 text.
+    NotText
+    // The allocator had no room (the code it gave): what `?` makes of an allocation's error in a
+    // function whose errors are ExecError.
+    NoRoom(U64)
+    // No memory for what the program wrote.
+    OutOfMemory
+    // A setting asked for more than the grant allows: a longer time limit than a program's
+    // (two seconds), or a larger output limit than the run gives all programs.
+    Wider
+
+impl ExecError:
+    // An allocator's error code as a ExecError, for `?` (docs/wasm-results.md).
+    pub fn from(code: U64) -> ExecError:
+        return NoRoom(code)
+
+fn exec_error(code: U64) -> ExecError:
+    if code == 1:
+        return NotGranted
+    if code == 2:
+        return InvalidName
+    if code == 3:
+        return TooLarge
+    if code == 4:
+        return NotFound
+    if code == 6:
+        return TimedOut
+    if code == 7:
+        return Wider
+    return Failed
+
+impl Exec:
+    fn send_name(exec: &Exec, name: &str):
+        let count = name.byte_len()
+        var index: U64 = 0
+        while index < count:
+            match name.byte_at(index):
+                Ok(byte):
+                    exec.raw_name_byte(byte)
+                Err(code):
+                    return
+            index += 1
+
+    // An `Exec` that may run `name` alone, if this one may.
+    pub fn only(exec: &Exec, name: &str) -> Result<Exec, ExecError>:
+        exec.send_name(name)
+        let narrowed = exec.raw_only()
+        let code = narrowed.raw_status()
+        if code != 0:
+            return Err(exec_error(code))
+        return Ok(move narrowed)
+
+    // Add one argument for the next `run`, whole: no shell splits or expands it.
+    pub fn arg(exec: &Exec, text: &str):
+        let count = text.byte_len()
+        var index: U64 = 0
+        while index < count:
+            match text.byte_at(index):
+                Ok(byte):
+                    exec.raw_arg_byte(byte)
+                Err(code):
+                    index = count
+            index += 1
+        exec.raw_arg_end()
+
+    // Add one argument held in a String.
+    pub fn arg_string(exec: &Exec, text: &String):
+        let count = text.byte_len()
+        var index: U64 = 0
+        while index < count:
+            match text.byte_at(index):
+                Ok(byte):
+                    exec.raw_arg_byte(byte)
+                Err(code):
+                    index = count
+            index += 1
+        exec.raw_arg_end()
+
+    // Run `name` with the arguments added since the last run, and wait for it to finish.
+    pub fn run(exec: &Exec, name: &str) -> Result<Run, ExecError>:
+        exec.send_name(name)
+        let done = exec.raw_run()
+        let code = done.raw_status()
+        if code != 0:
+            return Err(exec_error(code))
+        return Ok(move done)
+
+// A program that has finished: its exit code and what it wrote to its standard output.
+impl Run:
+    // The exit code, 0 to 255, or 256 when a signal ended the program.
+    pub fn code(run: &Run) -> U64:
+        return run.raw_code()
+
+    // The next byte the program wrote, or Err(()) after the last.
+    pub fn next_byte(run: &Run) -> Result<U8, ()>:
+        let next = run.raw_out_byte()
+        if next > 255:
+            return Err(())
+        return Ok(U8.truncate(next))
+
+    // The next byte the program wrote to its standard error, or Err(()) after the last.
+    pub fn next_error_byte(run: &Run) -> Result<U8, ()>:
+        let next = run.raw_err_byte()
+        if next > 255:
+            return Err(())
+        return Ok(U8.truncate(next))
+
+    // Everything the program wrote to its standard error, as text.
+    pub fn read_error_text(run: &Run, allocator: &Allocator) -> Result<String, ExecError>:
+        let Ok(made): Vec<U8> = Vec.new(allocator, 64) else Err(code):
+            return Err(OutOfMemory)
+        var bytes = move made
+        var next = run.raw_err_byte()
+        while next < 256:
+            match bytes.push_mut(allocator, U8.truncate(next)):
+                Ok:
+                    next = run.raw_err_byte()
+                Err(byte):
+                    bytes.close()
+                    return Err(OutOfMemory)
+        match String.from_utf8(move bytes):
+            Ok(text):
+                return Ok(move text)
+            Err(raw):
+                raw.close()
+                return Err(NotText)
+
+    // Everything the program wrote, as text.
+    pub fn read_text(run: &Run, allocator: &Allocator) -> Result<String, ExecError>:
+        let Ok(made): Vec<U8> = Vec.new(allocator, 64) else Err(code):
+            return Err(OutOfMemory)
+        var bytes = move made
+        var next = run.raw_out_byte()
+        while next < 256:
+            match bytes.push_mut(allocator, U8.truncate(next)):
+                Ok:
+                    next = run.raw_out_byte()
+                Err(byte):
+                    bytes.close()
+                    return Err(OutOfMemory)
+        match String.from_utf8(move bytes):
+            Ok(text):
+                return Ok(move text)
+            Err(raw):
+                raw.close()
+                return Err(NotText)
+
+// One run being configured. It owns an `Exec` narrowed to its one program, exactly what
+// `exec.only(name)` would give, so it carries no more authority than that: it can run only
+// that program, with settings that only narrow. It is sealed: no other file can build one, put
+// another `Exec` or refusal in it, or take its `Exec` out. Like any value holding a
+// capability, it is not copied and is not stored in a Vec.
+pub sealed type Command:
+    narrowed: Exec
+    // 0, or why the program cannot be run by this `Exec` (an `ExecError` code).
+    refused: U64
+
+impl Exec:
+    // A run of `name`, to configure and then `run`. A name this `Exec` may not run is refused
+    // by `run`.
+    pub fn command(exec: &Exec, name: &str) -> Command:
+        exec.send_name(name)
+        let narrowed = exec.raw_only()
+        let refused = narrowed.raw_status()
+        // The name again, on the narrowed `Exec`: what its run will run.
+        if refused == 0:
+            narrowed.send_name(name)
+        return Command(move narrowed, refused)
+
+impl Command:
+    // Add one argument, whole: no shell splits or expands it.
+    pub fn arg(command: Command, text: &str) -> Command:
+        let refused = command.refused
+        let narrowed = move command.narrowed
+        if refused == 0:
+            narrowed.arg(text)
+        return Command(move narrowed, refused)
+
+    // Add one argument held in a String.
+    pub fn arg_string(command: Command, text: &String) -> Command:
+        let refused = command.refused
+        let narrowed = move command.narrowed
+        if refused == 0:
+            narrowed.arg_string(text)
+        return Command(move narrowed, refused)
+
+    // What the program reads on its standard input (none by default), counted with the
+    // arguments against what may wait to be run (1 MiB).
+    pub fn input(command: Command, bytes: &[U8]) -> Command:
+        let refused = command.refused
+        let narrowed = move command.narrowed
+        if refused == 0:
+            for index in 0..bytes.len():
+                narrowed.raw_input_byte(bytes[index])
+        return Command(move narrowed, refused)
+
+    // Text for the program's standard input.
+    pub fn input_text(command: Command, text: &str) -> Command:
+        let refused = command.refused
+        let narrowed = move command.narrowed
+        if refused == 0:
+            let count = text.byte_len()
+            var index: U64 = 0
+            while index < count:
+                match text.byte_at(index):
+                    Ok(byte):
+                        narrowed.raw_input_byte(byte)
+                    Err(code):
+                        index = count
+                index += 1
+        return Command(move narrowed, refused)
+
+    // Stop the program after `ms` milliseconds: at most a program's own limit (two seconds),
+    // never more (`Wider`), and never 0 (`InvalidName`).
+    pub fn deadline_ms(command: Command, ms: U64) -> Command:
+        let refused = command.refused
+        let narrowed = move command.narrowed
+        if refused == 0:
+            narrowed.raw_deadline_ms(ms)
+        return Command(move narrowed, refused)
+
+    // Hand back at most `bytes` of standard output and error together: at most what the run
+    // grants all programs (`Wider` past it); what is left of that budget still applies.
+    pub fn output_limit(command: Command, bytes: U64) -> Command:
+        let refused = command.refused
+        let narrowed = move command.narrowed
+        if refused == 0:
+            narrowed.raw_output_limit(bytes)
+        return Command(move narrowed, refused)
+
+    // Run the program in a granted directory, which it is given up to: the program starts there
+    // (the directory as the run's grant opened it, never a path). `cwd_writable` for a
+    // `Dir<Write>`; a full `Dir` may be given to either.
+    pub fn cwd(command: Command, dir: Dir<Read>) -> Command:
+        let refused = command.refused
+        let narrowed = move command.narrowed
+        if refused == 0:
+            narrowed.raw_cwd(move dir)
+        else:
+            let closed = dir.raw_close()
+        return Command(move narrowed, refused)
+
+    pub fn cwd_writable(command: Command, dir: Dir<Write>) -> Command:
+        let refused = command.refused
+        let narrowed = move command.narrowed
+        if refused == 0:
+            narrowed.raw_cwd_write(move dir)
+        else:
+            let closed = dir.raw_close()
+        return Command(move narrowed, refused)
+
+    // Give the program the variable `name` with `value`: only a name the Exec grant declares
+    // (`env = ["LANG"]`; any other fails the run with `NotGranted`), a value without NUL of at
+    // most 4096 bytes, at most 16 variables. Nothing else of any environment reaches it.
+    pub fn env(command: Command, name: &str, value: &str) -> Command:
+        let refused = command.refused
+        let narrowed = move command.narrowed
+        if refused == 0:
+            let count = name.byte_len()
+            var index: U64 = 0
+            while index < count:
+                match name.byte_at(index):
+                    Ok(byte):
+                        narrowed.raw_env_name_byte(byte)
+                    Err(code):
+                        index = count
+                index += 1
+            let length = value.byte_len()
+            index = 0
+            while index < length:
+                match value.byte_at(index):
+                    Ok(byte):
+                        narrowed.raw_env_value_byte(byte)
+                    Err(code):
+                        index = length
+                index += 1
+            narrowed.raw_env_end()
+        return Command(move narrowed, refused)
+
+    // Run it and wait for it: its exit code, standard output and standard error.
+    pub fn run(command: Command) -> Result<Run, ExecError>:
+        let refused = command.refused
+        let narrowed = move command.narrowed
+        if refused != 0:
+            return Err(exec_error(refused))
+        let done = narrowed.raw_run()
+        let code = done.raw_status()
+        if code != 0:
+            return Err(exec_error(code))
+        return Ok(move done)

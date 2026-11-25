@@ -1,0 +1,23 @@
+// An interpolation inside a `${...}` value, in a recipe: its record is its own (review: it took
+// the outer literal's name and printed the outer text).
+import console
+
+fn echo<F: Format>(m: F, console: &Console<Write>) -> U64:
+    console.print(m)
+    return 7
+
+trait Shown:
+    fn show(self: &Self, console: &Console<Write>)
+
+derive Show:
+    impl Shown for Self:
+        fn show(self: &Self, console: &Console<Write>):
+            static for f in fields:
+                console.print("a ${echo("b ${(*self).f}", console)} c")
+
+type T derive(Show):
+    id: U64
+
+fn main(console: Console<Write>):
+    let v = T(id: 5)
+    v.show(&console)

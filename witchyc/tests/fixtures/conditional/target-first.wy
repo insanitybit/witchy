@@ -1,0 +1,13 @@
+// An assignment's position runs before its value, also when the value holds an `if` or `?` (red-team review).
+fn noisy(console: &Console<Write>, n: U64) -> U64:
+    console.print_int(n)
+    return n
+
+fn main(console: Console<Write>):
+    var a = [0, 0, 0, 0, 0]
+    a[noisy(&console, 1)] = noisy(&console, 2)
+    console.print_int(100)
+    a[noisy(&console, 3)] = if noisy(&console, 4) > 0: 5 else: 6
+    console.print_int(100)
+    a[noisy(&console, 1)] = noisy(&console, 2) + (if true: 0 else: 1)
+    console.print_int(a[3])

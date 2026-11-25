@@ -1,0 +1,47 @@
+// The words the operator gave this launch after `--`, through the `Args` capability. The
+// executable's own document grants them (`[args] args = true`), with how many and how many
+// bytes; a program whose `main` takes no `Args` is given none, and a package sees a word only
+// as a value it is passed. A word is text the operator typed: never a flag to the engine, and
+// never a path the engine opens (a file named there is reached only through a `Dir` or `File`).
+import "wasm-string.wy"
+import "wasm-result.wy"
+import "wasm-vec.wy"
+
+pub type ArgError:
+    // No word at that index.
+    Missing
+    // No memory for the word.
+    OutOfMemory
+
+impl ArgError:
+    // An allocator's error as an ArgError, for `?` (docs/wasm-results.md).
+    pub fn from(code: U64) -> ArgError:
+        return OutOfMemory
+
+impl Args:
+    // How many words the launch gave.
+    pub fn count(args: &Args) -> U64:
+        return args.raw_count()
+
+    // The word at `index` (the first is 0). Every word is UTF-8: the launch is refused otherwise.
+    pub fn get(args: &Args, allocator: &Allocator, index: U64) -> Result<String, ArgError>:
+        let length = args.raw_select(index)
+        if length == 18446744073709551615:
+            return Err(Missing)
+        let Ok(made): Vec<U8> = Vec.new(allocator, length + 1) else Err(code):
+            return Err(OutOfMemory)
+        var bytes = move made
+        for at in 0..length:
+            let byte = args.raw_byte(at)
+            match bytes.push_mut(allocator, U8.truncate(byte)):
+                Ok:
+                    continue
+                Err(lost):
+                    bytes.close()
+                    return Err(OutOfMemory)
+        match String.from_utf8(move bytes):
+            Ok(text):
+                return Ok(move text)
+            Err(raw):
+                raw.close()
+                return Err(Missing)

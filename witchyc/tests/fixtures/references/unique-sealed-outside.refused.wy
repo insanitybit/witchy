@@ -1,0 +1,9 @@
+// Outside the sealed type's file its fields are not lent for writing.
+import "../../../library/wasm-heap.wy"
+import "../../../library/wasm-vec.wy"
+
+fn inner(heap: &mut Heap<U64>) -> &mut Vec<U64>:
+    return &mut (*heap).items
+
+fn main(console: Console<Write>):
+    console.print_int(1)

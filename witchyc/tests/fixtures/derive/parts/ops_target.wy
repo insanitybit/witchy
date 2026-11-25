@@ -1,0 +1,29 @@
+import console
+
+type Unit:
+    v: U64
+
+impl Unit:
+    pub fn zero() -> Unit:
+        return Unit(v: 77)
+
+pub trait Ops:
+    fn copy(self: &Self) -> Self
+    fn bump(self: &mut Self)
+    fn helped(self: &Self) -> U64
+    fn statik(self: &Self) -> U64
+    fn told(self: &Self, console: &Console<Write>)
+
+pub derive Copying:
+    impl Ops for Self:
+        fn copy(self: &Self) -> Self:
+            return Self(v: (*self).v)
+        fn bump(self: &mut Self):
+            static for f in fields:
+                (*self).f = (*self).f + 1
+        fn helped(self: &Self) -> U64:
+            return (*self).helper()
+        fn statik(self: &Self) -> U64:
+            return Self.zero().v
+        fn told(self: &Self, console: &Console<Write>):
+            console.print("${Self.zero().v}")

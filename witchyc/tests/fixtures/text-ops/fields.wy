@@ -1,0 +1,36 @@
+// `String.field` takes a text apart at a separator, one field per call.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-text.wy"
+import "../../../library/wasm-string.wy"
+
+fn show(console: &Console<Write>, allocator: &Allocator, text: Text, separator: U8):
+    var line = match String.new(allocator):
+        Ok(empty):
+            move empty
+        Err(reason):
+            return
+    let _ = line.push_text(allocator, text)
+    var cursor: U64 = 0
+    var count: U64 = 0
+    while true:
+        match line.field(allocator, separator, &mut cursor):
+            Ok(part):
+                console.write("[")
+                console.write_string(&part)
+                console.write("]")
+                part.close()
+                count += 1
+            Err(code):
+                break
+    console.write(" ")
+    console.write_u64(count)
+    console.line("")
+    line.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    show(&console, &allocator, "alpha,beta,gamma", ',')
+    show(&console, &allocator, "a,b,", ',')
+    show(&console, &allocator, ",,", ',')
+    show(&console, &allocator, "", ',')
+    show(&console, &allocator, "one two  three", ' ')
+    show(&console, &allocator, "café 世界", ' ')

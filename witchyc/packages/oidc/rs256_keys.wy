@@ -1,0 +1,69 @@
+import "jwk_fields.wy"
+import crypto
+import json_tree
+import span
+import string
+import text
+import vec
+
+fn decode_jwk_field(object: &Json, name: Text, allocator: &Allocator, limit: U64) -> Result<Vec<U8>, U64>:
+    let encoded = jwt_string(object, name)?
+    return jwt_decode(encoded.as_bytes(), allocator, limit)
+
+pub fn validate_rs256_keys(document: &Json, allocator: &Allocator) -> Result<(), U64>:
+    let keys = document.field("keys")?
+    let count = keys.len()?
+    if count == 0 || count > 32:
+        return Err(1)
+    for i in 0..count:
+        let key = keys.item(i)?
+        let kid = jwt_string(key, "kid")?
+        if !jwt_key_id(kid.span()) || !jwt_string_is(key, "kty", "RSA") || !jwt_string_is(key, "alg", "RS256") || !jwt_string_is(key, "use", "sig"):
+            return Err(1)
+        for j in 0..i:
+            let earlier = keys.item(j)?
+            let previous = jwt_string(earlier, "kid")?
+            if kid.eq(previous):
+                return Err(1)
+        check_components(key, allocator)?
+    return Ok(())
+
+fn check_components(key: &Json, allocator: &Allocator) -> Result<(), U64>:
+    let modulus = decode_jwk_field(key, "n", allocator, 1024)?
+    let valid = modulus.as_slice().len() >= 256 && !weak_modulus(modulus.as_slice())
+    modulus.close()
+    if !valid:
+        return Err(1)
+    let exponent = decode_jwk_field(key, "e", allocator, 4)?
+    let power = Span.of(exponent.as_slice())
+    let usable = power.byte_or_end(0) != 0 && power.byte_or_end(power.len() - 1) % 2 == 1 && !(power.len() == 1 && power.byte_or_end(0) == 1)
+    exponent.close()
+    if !usable:
+        return Err(1)
+    return Ok(())
+
+fn weak_modulus(bytes: &[U8]) -> Bool:
+    let view = Span.of(bytes)
+    return view.byte_or_end(0) == 0 || (view.len() == 256 && view.byte_or_end(0) < 128) || view.byte_or_end(view.len() - 1) % 2 == 0
+
+pub fn verify_jwk_signature(document: &Json, kid: &String, message: &[U8], signature: &[U8], allocator: &Allocator) -> Result<(), U64>:
+    let keys = document.field("keys")?
+    for i in 0..keys.len()?:
+        let key = keys.item(i)?
+        let id = jwt_string(key, "kid")?
+        if kid.eq(id):
+            return verify_key(key, message, signature, allocator)
+    return Err(1)
+
+fn verify_key(key: &Json, message: &[U8], signature: &[U8], allocator: &Allocator) -> Result<(), U64>:
+    let modulus = decode_jwk_field(key, "n", allocator, 1024)?
+    let decoded = decode_jwk_field(key, "e", allocator, 4)
+    let Ok(exponent): Vec<U8> = move decoded else Err(code):
+        modulus.close()
+        return Err(code)
+    let valid = crypto.rsa_pkcs1_sha256_verify(modulus.as_slice(), exponent.as_slice(), message, signature)
+    exponent.close()
+    modulus.close()
+    if !valid:
+        return Err(1)
+    return Ok(())

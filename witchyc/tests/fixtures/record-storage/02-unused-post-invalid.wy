@@ -1,0 +1,14 @@
+type Entry:
+    byte: U8
+    word: U64
+
+fn unused_bounce(input: Entry) -> Entry:
+    ensures result.byte == old(input.byte)
+    ensures result.word == old(input.word)
+    let saved: U8 = input.byte
+    let observed: U64 = 0
+    discard(move input)
+    return Entry(saved, observed)
+
+fn main(console: Console<Write>):
+    console.print_int(42)

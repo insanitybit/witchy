@@ -1,0 +1,24 @@
+// A contract over arithmetic with large literals proves: fasta's generator kept below its modulus.
+// The closing tactic tried `assumption` first at default transparency, which unfolded the literal
+// arithmetic to Lean's recursion limit (an error `first` does not catch) before `omega` could run.
+import console
+
+fn step(seed: &mut U64):
+    requires *seed < 139968
+    ensures *seed < 139968
+    proof:
+        auto
+    *seed = (*seed * 3877 + 29573) % 139968
+
+fn draw(x: U64) -> U64:
+    requires x < 139968
+    ensures result < 139968
+    proof:
+        auto
+    return (x * 3877 + 29573) % 139968
+
+fn main(console: Console<Write>):
+    var s: U64 = 42
+    step(&mut s)
+    console.print_int(s)
+    console.print_int(draw(s))

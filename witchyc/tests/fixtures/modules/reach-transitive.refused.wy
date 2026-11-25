@@ -1,0 +1,8 @@
+// Refused: a function of a file this one imports only through another (`spend.wy` imports
+// `mint.wy`; this file does not): a file sees what the files it imports itself offer.
+import console
+import "reach/spend.wy"
+
+fn main(console: Console<Write>):
+    let c = mint(2)
+    console.print_int(c.worth())

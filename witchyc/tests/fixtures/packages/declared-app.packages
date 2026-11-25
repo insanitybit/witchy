@@ -1,0 +1,2 @@
+chain 1.0.0: chain/chain.wy ; requires hello-world
+hello-world 1.0.0: greeting/words.wy ; requires

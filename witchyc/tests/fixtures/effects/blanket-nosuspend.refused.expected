@@ -1,0 +1,1 @@
+`quiet` needs a type whose methods never pause (`nosuspend`), and this one's `Tick.tick` may

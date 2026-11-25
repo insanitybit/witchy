@@ -1,0 +1,12 @@
+// Refused: a claim past what is known (a false variant of variable-divisor.wy's `wrap`).
+import console
+
+fn wrap(i: U64, n: U64) -> U64:
+    requires n > 0
+    ensures result + 1 < n
+    proof:
+        auto
+    return i % n
+
+fn main(console: Console<Write>):
+    console.line("ok")

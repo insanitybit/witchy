@@ -1,0 +1,35 @@
+// A derive recipe in an ordinary module (docs/plan-derive-laws.md, slice 1): `Self` is the type
+// it is applied to, and a `static for` block is written once per selected field.
+import hash
+
+pub derive Key:
+    impl Eq for Self:
+        fn eq(self: &Self, other: &Self) -> Bool:
+            static for f in fields:
+                if !((*self).f == (*other).f):
+                    return false
+            return true
+
+    impl Hash for Self:
+        fn hash(self: &Self) -> U64:
+            var folded: U64 = 0
+            static for f in fields:
+                folded = folded.fold_hash((*self).f.hash())
+            return folded
+
+// The whole key fed to the map's policy, field by field in declaration order (slice 2).
+pub derive Fed:
+    impl HashKey for Self:
+        fn feed(self: &Self, state: &mut HashState):
+            static for f in fields:
+                (*self).f.feed(state)
+
+// A borrowed query for the key `For` (`derive(keys.Query(for: NameKey))`): equivalent when each
+// field is equivalent to the key's field of the same name (a Span to a String: the same bytes).
+pub derive Query:
+    impl Equivalent<For> for Self:
+        fn equivalent(self: &Self, key: &For) -> Bool:
+            static for f in fields:
+                if !((*self).f.equivalent(&(*key).f)):
+                    return false
+            return true

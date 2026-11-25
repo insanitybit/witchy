@@ -1,0 +1,11 @@
+    requires storage(input)
+    ensures match result:
+        Ok(output):
+            storage(output)
+            contents(output) == old(contents(input))
+            output.capacity >= old(capacity)
+            old(input.capacity) < old(capacity) || output == old(input)
+        Err(failed):
+            failed.vector == old(input)
+            old(input.capacity) < old(capacity)
+            failed.reason == AllocError.quota || failed.reason == AllocError.metadata

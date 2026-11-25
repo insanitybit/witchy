@@ -1,0 +1,69 @@
+// Canonical filenames admitted by the Coven TUF publisher.
+import span
+
+fn digit(byte: U8) -> Bool:
+    return byte >= 48 && byte <= 57
+
+fn letter(byte: U8) -> Bool:
+    return byte >= 97 && byte <= 122
+
+fn natural(word: Span, max: U64, zero: Bool) -> Bool:
+    if word.is_empty() || word.len() > max:
+        return false
+    if word.byte_or_end(0) == 48:
+        return zero && word.len() == 1
+    for byte in word.as_bytes():
+        if !digit(*byte):
+            return false
+    return true
+
+fn name(word: Span) -> Bool:
+    if word.is_empty() || word.len() > 64 || !letter(U8.truncate(word.byte_or_end(0))):
+        return false
+    for byte in word.as_bytes():
+        if !letter(*byte) && !digit(*byte) && *byte != 45:
+            return false
+    return true
+
+pub fn digest_name(word: Span) -> Bool:
+    if word.len() != 96:
+        return false
+    for byte in word.as_bytes():
+        if !digit(*byte) && (*byte < 97 || *byte > 102):
+            return false
+    return true
+
+fn version(word: Span) -> Bool:
+    let Ok(major): Halves = word.split(46) else Err(rest):
+        return false
+    let Ok(minor): Halves = major.tail.split(46) else Err(rest):
+        return false
+    let Ok(patch): Halves = minor.tail.split(46) else Err(rest):
+        return false
+    return natural(major.head, 9, true) && natural(minor.head, 9, true) && natural(patch.head, 9, true) && patch.tail.equals_text("coven")
+
+pub fn target_path(path: Span) -> Bool:
+    let Ok(package): Halves = path.split(47) else Err(rest):
+        return false
+    let Ok(digest): Halves = package.tail.split(46) else Err(rest):
+        return false
+    return name(package.head) && digest_name(digest.head) && version(digest.tail)
+
+pub fn metadata_path(path: Span) -> Bool:
+    let Ok(sequence): Halves = path.split(46) else Err(rest):
+        return false
+    let Ok(role): Halves = sequence.tail.split(46) else Err(rest):
+        return false
+    return natural(sequence.head, 16, false) && name(role.head) && !role.head.equals_text("timestamp") && role.tail.equals_text("json")
+
+pub fn package_page(path: Span) -> Bool:
+    let Ok(parts): Halves = path.split('/') else Err(rest):
+        return false
+    if !name(parts.head) || !parts.tail.ends_with_text("/"):
+        return false
+    let number = parts.tail.part(0, parts.tail.len() - 1)
+    let Ok(major): Halves = number.split('.') else Err(rest):
+        return false
+    let Ok(minor): Halves = major.tail.split('.') else Err(rest):
+        return false
+    return natural(major.head, 9, true) && natural(minor.head, 9, true) && natural(minor.tail, 9, true)

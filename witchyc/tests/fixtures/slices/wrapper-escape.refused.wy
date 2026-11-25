@@ -1,0 +1,18 @@
+// Refused (adversarial review round 18): a slice returned by a concrete wrapper of
+// `as_slice` once dropped the Vec's loan, and was read after `v.close()`.
+import console
+import vec
+fn keep(v: &Vec<U64>) -> &[U64]:
+    return v.as_slice()
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.new(&allocator, 2) else Err(c):
+        return
+    var v = move made
+    match v.push_mut(&allocator, 77):
+        Ok:
+            console.print_int(1)
+        Err(x):
+            console.print_int(0)
+    let s = keep(&v)
+    v.close()
+    console.print_int(s.len())

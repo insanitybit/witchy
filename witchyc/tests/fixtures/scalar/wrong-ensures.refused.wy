@@ -1,0 +1,10 @@
+fn larger(a: U64, b: U64) -> U64:
+    ensures result >= a
+    ensures result > b
+    proof:
+        auto
+    if a > b:
+        return a
+    return b
+fn main(console: Console<Write>):
+    console.print_int(larger(1, 2))

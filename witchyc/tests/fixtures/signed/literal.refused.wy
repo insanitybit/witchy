@@ -1,0 +1,8 @@
+// A literal fits its type.
+import "../../../library/wasm-int.wy"
+
+fn f() -> I64:
+    return 9223372036854775808
+
+fn main(console: Console<Write>):
+    console.print_i64(f())

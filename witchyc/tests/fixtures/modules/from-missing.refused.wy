@@ -1,0 +1,6 @@
+// Refused: `from` names what the module offers.
+import "parts/shapes.wy"
+from shapes import Circle
+
+fn main():
+    return

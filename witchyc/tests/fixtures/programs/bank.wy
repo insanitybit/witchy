@@ -1,0 +1,112 @@
+// Accounts and commands read from the input, with a typed error for each way
+// a command can fail.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-hashmap.wy"
+import "../../../library/wasm-text.wy"
+import "../../../library/wasm-string.wy"
+
+type WordError = .[NoWord | NoRoom]
+type AmountError = .[NoWord | NoRoom | NotANumber]
+type CommandError = .[NoWord | NoRoom | NotANumber | UnknownCommand | UnknownAccount | Insufficient(U64)]
+
+// The word that starts at byte `cursor`, which moves past it and the space after.
+fn word(allocator: &Allocator, line: &String, cursor: &mut U64) -> Result<String, WordError>:
+    if *cursor >= line.byte_len():
+        return Err(.NoWord)
+    match line.field(allocator, ' ', cursor):
+        Ok(text):
+            return Ok(move text)
+        Err(code):
+            return Err(.NoRoom)
+
+fn amount(allocator: &Allocator, line: &String, cursor: &mut U64) -> Result<U64, AmountError>:
+    let text = word(allocator, line, cursor)?
+    let parsed = text.parse_u64()
+    text.close()
+    match parsed:
+        Ok(number):
+            return Ok(number)
+        Err(code):
+            return Err(.NotANumber)
+
+fn run(accounts: &mut HashMap<String, U64>, allocator: &Allocator, line: &String) -> Result<U64, CommandError>:
+    var cursor: U64 = 0
+    let command = word(allocator, line, &mut cursor)?
+    let opens = command.equals_text("open")
+    let adds = command.equals_text("deposit")
+    let takes = command.equals_text("withdraw")
+    command.close()
+    if !opens && !adds && !takes:
+        return Err(.UnknownCommand)
+    let name = word(allocator, line, &mut cursor)?
+    if opens:
+        match accounts.put(allocator, move name, 0):
+            Ok(done):
+                return Ok(0)
+            Err(entry):
+                entry.discard()
+                return Err(.NoRoom)
+    let sum = match amount(allocator, line, &mut cursor):
+        Ok(number):
+            number
+        Err(error):
+            name.close()
+            return Err(error)
+    match accounts.get_mut(&name):
+        Ok(balance):
+            name.close()
+            if takes:
+                if *balance < sum:
+                    return Err(.Insufficient(*balance))
+                *balance -= sum
+            else:
+                *balance += sum
+            return Ok(*balance)
+        Err(missing):
+            name.close()
+            return Err(.UnknownAccount)
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    let made: Result<HashMap<String, U64>, U64> = HashMap.new(&allocator, 8)
+    var accounts = match move made:
+        Ok(empty):
+            move empty
+        Err(reason):
+            return
+    var line = match String.new(&allocator):
+        Ok(empty):
+            move empty
+        Err(reason):
+            accounts.discard()
+            return
+    while true:
+        line.clear()
+        match input.read_line(&allocator, &mut line):
+            .Line:
+                ()
+            _:
+                break
+        console.write_string(&line)
+        console.write(" -> ")
+        match run(&mut accounts, &allocator, &line):
+            Ok(balance):
+                console.write_u64(balance)
+                console.line("")
+            Err(error):
+                match error:
+                    .NoWord:
+                        console.line("missing word")
+                    .NoRoom:
+                        console.line("no room")
+                    .NotANumber:
+                        console.line("not a number")
+                    .UnknownCommand:
+                        console.line("unknown command")
+                    .UnknownAccount:
+                        console.line("unknown account")
+                    .Insufficient(balance):
+                        console.write("only ")
+                        console.write_u64(balance)
+                        console.line("")
+    line.close()
+    accounts.discard()

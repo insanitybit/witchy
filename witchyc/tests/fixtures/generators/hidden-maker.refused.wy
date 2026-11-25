@@ -1,0 +1,20 @@
+// Refused (review of nested generators): a parameter hides the generator function a local starts from.
+import console
+
+gen fn count(limit: U64) -> U64:
+    var i: U64 = 0
+    while i < limit:
+        yield i
+        i += 1
+
+fn make(n: U64) -> Count:
+    return count(n)
+
+gen fn g(count: U64) -> U64:
+    var c: Count = make(count)
+    for x in c:
+        yield x
+
+fn main(console: Console<Write>):
+    for n in g(3):
+        console.print_int(n)

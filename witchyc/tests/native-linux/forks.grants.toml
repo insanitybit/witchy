@@ -1,0 +1,6 @@
+[launch]
+version = 1
+[exec]
+exec = { dir = "/w/bin", programs = ["forks"] }
+[limits]
+exec-processes = 20

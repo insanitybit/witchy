@@ -1,0 +1,20 @@
+import console
+
+sealed type Account:
+    balance: U64
+    limit: U64
+    invariant balance <= limit
+
+impl Account:
+    pub fn balance(account: &Account) -> U64:
+        return (*account).balance
+    // Built and kept in a local: no clause covers it, so it is refused.
+    pub fn twice(limit: U64) -> U64:
+        ensures true
+        proof:
+            auto
+        let made = Account(0, limit)
+        return made.balance
+
+fn main(console: Console<Write>):
+    console.line("ran")

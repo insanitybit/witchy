@@ -1,0 +1,48 @@
+// Two types may each have a variant of one name; where one is built, the type expected
+// there says which, or the type is named: `Right.Io(5)`. A match reads its arms against
+// the matched value's own type.
+import console
+
+type Left:
+    Io
+    Other
+
+type Right:
+    Io(U64)
+    Done
+
+fn left() -> Left:
+    return Io
+
+fn right(n: U64) -> Right:
+    return Io(n)
+
+fn main(console: Console<Write>):
+    match left():
+        Io:
+            console.print_int(1)
+        Other:
+            console.print_int(2)
+    let r: Right = Io(7)
+    match r:
+        Io(n):
+            console.print_int(n)
+        Done:
+            console.print_int(0)
+    match right(9):
+        Io(n):
+            console.print_int(n)
+        Done:
+            console.print_int(0)
+    let named = Right.Io(5)
+    match named:
+        Io(n):
+            console.print_int(n)
+        Done:
+            console.print_int(0)
+    let plain = Left.Other
+    match plain:
+        Io:
+            console.print_int(1)
+        Other:
+            console.print_int(2)

@@ -1,0 +1,19 @@
+// Map shared HTTPS stream failures to the private endpoints' HTTP statuses.
+import https
+import http_framing
+import span
+import tls
+
+pub fn receive_ci_head(stream: &mut SecureSession, request: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]) -> Result<U64, U64>:
+    match https.read_request_prefix(stream, request, 32768, plaintext, wire):
+        Ok(prefix):
+            return Ok(prefix.received)
+        Err(PrefixFramingError(HeaderLimit)):
+            return Err(431)
+        Err(_):
+            return Err(400)
+
+pub fn receive_ci_body(stream: &mut SecureSession, initial: Span, body: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]) -> Result<(), U64>:
+    if let Err(reason) = https.read_fixed_request_body(stream, initial.as_bytes(), body, plaintext, wire):
+        return Err(400)
+    return Ok(())

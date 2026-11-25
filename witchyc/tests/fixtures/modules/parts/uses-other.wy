@@ -1,0 +1,4 @@
+import "other.wy"
+
+pub fn twice_area(width: U64) -> U64:
+    return 2 * other.area(width)

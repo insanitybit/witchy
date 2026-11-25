@@ -1,0 +1,10 @@
+// Refused: a function with a contract has no proof model for a task.
+import tasks
+
+fn run_one(task: &mut Task) -> U64:
+    ensures result == 0
+    let stepped = memory.step(task)
+    return 0
+
+fn main():
+    return

@@ -1,0 +1,81 @@
+// A `for` over a generator runs its body in place: every way out of the loop's body and of the
+// generator's (break, continue, return, two yields, yields in loops and arms, nested loops), with
+// the results of stepping it.
+import console
+
+fn check(n: U64) -> Result<U64, U64>:
+    if n % 5 == 4:
+        return Err(n)
+    return Ok(n)
+
+gen fn twice(limit: U64) -> U64:
+    var i: U64 = 0
+    while i < limit:
+        yield i
+        yield i * 100
+        i += 1
+    yield 7777
+
+gen fn grid(rows: U64, cols: U64) -> U64:
+    for r in 0..rows:
+        for c in 0..cols:
+            if c == r:
+                continue
+            yield r * 10 + c
+        if r == 2:
+            return
+    yield 9999
+
+gen fn checked(limit: U64) -> U64:
+    var n: U64 = 0
+    while n < limit:
+        n += 1
+        match check(n):
+            Ok(v):
+                yield v
+            Err(e):
+                yield 1000 + e
+
+gen fn flags(limit: U64, start: Bool) -> U64:
+    var on = start
+    for k in 0..limit:
+        if on:
+            yield k
+        on = !on
+
+fn first_big(limit: U64) -> U64:
+    for v in twice(limit):
+        if v > 150:
+            return v
+    return 0
+
+fn main(console: Console<Write>):
+    for v in twice(3):
+        if v == 100:
+            continue
+        console.print_int(v)
+    for v in twice(5):
+        if v == 200:
+            break
+        console.print_int(v)
+    for v in grid(4, 3):
+        console.print_int(v)
+    var total: U64 = 0
+    for v in checked(12):
+        for j in 0..3:
+            if j == 1:
+                continue
+            if j == 2:
+                break
+            total += v
+        if v > 1005:
+            break
+    console.print("total ${total}")
+    for v in flags(7, true):
+        console.print_int(v)
+    console.print("first big ${first_big(9)}")
+    var count: U64 = 0
+    for a in twice(2):
+        for b in twice(2):
+            count += a + b
+    console.print("count ${count}")

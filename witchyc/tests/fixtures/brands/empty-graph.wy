@@ -1,0 +1,30 @@
+// An empty graph: its opening has no first node and no node 0, and its table is empty.
+import console
+import graph
+
+fn report(roads: &Graph, allocator: &Allocator, console: &Console<Write>) -> Result<(), U64>:
+    brand roads.nodes() as nodes:
+        var distance = nodes.distances(allocator, 7)?
+        match nodes.first():
+            Some(home):
+                console.print_int(distance.get(home))
+            None:
+                console.line("no nodes")
+        match nodes.node(0):
+            Some(any):
+                console.line("a node")
+            None:
+                console.line("none at 0")
+        distance.close()
+    return Ok(())
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Graph = Graph.new(&allocator, 0) else Err(code):
+        return
+    var empty = move made
+    match report(&empty, &allocator, &console):
+        Ok:
+            ()
+        Err(code):
+            console.line("no room")
+    empty.close()

@@ -1,0 +1,10 @@
+pub type Operands:
+    left: U64
+    right: U64
+
+type Example:
+    pair: Operands
+    expected: U64
+
+fn example() -> Example:
+    return Example(Operands(19, 23), 42)

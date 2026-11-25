@@ -1,0 +1,23 @@
+// A method's result type does not lend itself to a bare call of the same name in a generator (review:
+// a method `id -> U8` made `var y = id(200) + 100` a U8).
+import console
+
+type M:
+    c: U8
+
+impl M:
+    fn id(self: &M) -> U8:
+        self.c
+
+fn id<T>(x: T) -> T:
+    x
+
+gen fn gg() -> U8:
+    var y = id(200) + 50
+    yield y
+
+fn main(console: Console<Write>):
+    let p = id(200) + 50
+    console.print_int(p)
+    for v in gg():
+        console.print_int(U8.to_u64(v))

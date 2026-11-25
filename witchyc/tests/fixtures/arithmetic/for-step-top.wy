@@ -1,0 +1,11 @@
+// A counting `for`'s step is emitted without an overflow check, since it runs only after
+// `counter < end` held: a range ending at the largest U64 steps up to it and stops.
+import console
+
+fn main(console: Console<Write>):
+    for i in 18446744073709551613..18446744073709551615:
+        console.print_int(i)
+    var empty: U64 = 0
+    for i in 5..3:
+        empty += 1
+    console.print_int(empty)

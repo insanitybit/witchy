@@ -1,0 +1,91 @@
+import "attestations.wy"
+import "publication_files.wy"
+import "release_trust.wy"
+import "../review/policy_document.wy"
+import discard
+import fs
+import json_tree
+import string
+import text
+import vec
+
+pub fn existing_archive(trust: &ReleaseTrust, pins: &mut Vec<String>, allocator: &Allocator) -> Result<(), U64>:
+    let Ok(history): &Json = trust.fields().field("policy_history") else Err(code):
+        return Ok(())
+    match history:
+        Array(entries):
+            for entry in entries:
+                let policy = entry.field("policy")?
+                let targets = entry.field("targets")?
+                validate_policy(policy, allocator)?
+                add_old_targets(targets, pins, allocator)?
+            return Ok(())
+        _:
+            return Err(1)
+
+fn add_old_targets(targets: &Json, pins: &mut Vec<String>, allocator: &Allocator) -> Result<(), U64>:
+    match targets:
+        Array(items):
+            for item in items:
+                let pin = item.text()?
+                if !contains_pin(pins, pin):
+                    let copy = String.from_utf8_bytes(allocator, pin.as_bytes())?
+                    store_pin(pins, move copy, allocator)?
+            return Ok(())
+        _:
+            return Err(1)
+
+fn contains_pin(pins: &Vec<String>, expected: &String) -> Bool:
+    for pin in pins:
+        if pin.eq(expected):
+            return true
+    return false
+
+fn store_pin(pins: &mut Vec<String>, pin: String, allocator: &Allocator) -> Result<(), U64>:
+    if let Err(unused) = pins.push_mut(allocator, move pin):
+        unused.close()
+        return Err(1)
+    return Ok(())
+
+pub fn retain_targets(source: &Dir<Read>, trust: &ReleaseTrust, archived: &Vec<String>, fresh: &mut Vec<String>, count: U64, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let empty = String.new(allocator)?
+    let result = retain(source, trust, archived, fresh, count, now, &empty, allocator)
+    empty.close()
+    return result
+
+fn retain(source: &Dir<Read>, trust: &ReleaseTrust, archived: &Vec<String>, fresh: &mut Vec<String>, count: U64, now: U64, empty: &String, allocator: &Allocator) -> Result<(), U64>:
+    for index in 0..count:
+        let bundle = read_target(source, index, allocator)?
+        let retained = retain_target(&bundle, trust, archived, fresh, empty, now, allocator)
+        bundle.close()
+        retained?
+    return Ok(())
+
+fn read_target(source: &Dir<Read>, index: U64, allocator: &Allocator) -> Result<String, U64>:
+    let empty = String.with_capacity(allocator, 32)?
+    var path = move empty
+    if let Err(code) = path.push_text(allocator, "target-"):
+        path.close()
+        return Err(code)
+    if let Err(code) = path.push_u64(allocator, index):
+        path.close()
+        return Err(code)
+    let read = read_text_object(source, &path, 2097152, allocator)
+    path.close()
+    let Ok(bundle): String = move read else Err(reason):
+        return Err(22)
+    return Ok(move bundle)
+
+fn retain_target(bundle: &String, trust: &ReleaseTrust, archived: &Vec<String>, fresh: &mut Vec<String>, empty: &String, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let pin = digest_text(bundle.as_bytes(), allocator)?
+    if contains_pin(archived, &pin) || contains_pin(fresh, &pin):
+        pin.close()
+        return Ok(())
+    if fresh.len() == 2048:
+        pin.close()
+        return Err(24)
+    let Ok(package): VerifiedPackage = verify_release_package(bundle, trust, empty, empty, now, allocator) else Err(reason):
+        pin.close()
+        return Err(22)
+    package.close()
+    return store_pin(fresh, move pin, allocator)

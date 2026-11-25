@@ -1,0 +1,1 @@
+the invariant `items.len() == room` of a sealed type this function changes or returns

@@ -1,0 +1,7 @@
+// Refused: nor may another file's constant be built from it.
+import "parts/limits.wy"
+
+let MORE = SECRET + 1
+
+fn main():
+    return

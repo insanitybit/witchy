@@ -1,0 +1,16 @@
+// What a program may use of a package: what its entry offers with `pub`, the methods and
+// operators written beside a type the entry declares, and a value of the package's inner type
+// held and handed back (2026-11-22, docs/wasm-modules.md "What a file sees").
+import console
+import "@alpha"
+import "@beta"
+
+fn main(console: Console<Write>):
+    console.print_int(alpha.shown())
+    console.print_int(beta.reach())
+    let a = alpha.make(2)
+    let b = alpha.make(3)
+    let c = a + b
+    console.print_int(c.value())
+    let h = alpha.hidden(9)
+    console.print_int(alpha.read(&h))

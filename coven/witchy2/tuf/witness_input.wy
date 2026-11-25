@@ -1,0 +1,54 @@
+import "release_trust.wy"
+import json_tree
+import span
+import string
+
+pub type WitnessLayout:
+    package_end: U64
+    policy_end: U64
+    approval_end: U64
+    trust_end: U64
+    size: U64
+
+pub type WitnessSnapshot:
+    package: Span
+    policy: Span
+    approval: Span
+    trust: Span
+    publisher: Span
+
+pub fn witness_layout(request: &Json) -> Result<WitnessLayout, U64>:
+    if !count_fields(request, 8):
+        return Err(1)
+    let package = declared_integer(request, "package_size")?
+    let policy = declared_integer(request, "policy_size")?
+    let approval = declared_integer(request, "approval_size")?
+    let trust = declared_integer(request, "trust_size")?
+    let size = declared_integer(request, "body_size")?
+    if package == 0 || package > 1048576 || policy == 0 || policy > 262144 || approval == 0 || approval > 262144 || trust == 0 || trust > 262144:
+        return Err(1)
+    let policy_end = package + policy
+    let approval_end = policy_end + approval
+    let trust_end = approval_end + trust
+    if size != trust_end + 4627:
+        return Err(1)
+    return Ok(WitnessLayout(package, policy_end, approval_end, trust_end, size))
+
+pub fn witness_snapshot(layout: WitnessLayout, body: Span) -> WitnessSnapshot:
+    return WitnessSnapshot(body.part(0, layout.package_end), body.part(layout.package_end, layout.policy_end),
+                           body.part(layout.policy_end, layout.approval_end), body.part(layout.approval_end, layout.trust_end),
+                           body.part(layout.trust_end, layout.size))
+
+pub fn read_witness_approval(wire: Span, allocator: &Allocator) -> Result<Json, U64>:
+    let text = wire.to_string(allocator)?
+    let parsed = parse_release_json(&text, allocator)
+    text.close()
+    return move parsed
+
+pub fn read_witness_trust(wire: Span, allocator: &Allocator) -> Result<ReleaseTrust, U64>:
+    let text = wire.to_string(allocator)?
+    let parsed = parse_release_trust(&text, allocator)
+    text.close()
+    let Ok(trust): ReleaseTrust = move parsed else Err(error):
+        return Err(1)
+    return Ok(move trust)

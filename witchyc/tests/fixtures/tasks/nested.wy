@@ -1,0 +1,36 @@
+// A task that steps another: each pause of the inner task becomes one of the outer, and
+// every step saves and restores which task and stack were running.
+import console
+import tasks
+
+fn inner(n: U64) suspends:
+    pause(n)
+    pause(n + 1)
+
+// A task that runs another: each pause of the inner one becomes a pause of the outer.
+fn outer(allocator: Allocator) suspends:
+    let Ok(made): Task = Task.spawn(&allocator, 1024, inner, 50) else Err(given):
+        return
+    var task = move made
+    var going = true
+    while going:
+        match task.step():
+            Ok:
+                going = false
+            Err(token):
+                pause(token * 10)
+    task.close()
+    pause(7)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Task = Task.spawn(&allocator, 4096, outer, move allocator) else Err(given):
+        return
+    var task = move made
+    var going = true
+    while going:
+        match task.step():
+            Ok:
+                going = false
+            Err(token):
+                console.print_int(token)
+    task.close()

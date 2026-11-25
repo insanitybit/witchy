@@ -1,0 +1,2 @@
+proof failed: function `drained`
+  not proved: ensures result == 7777

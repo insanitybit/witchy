@@ -1,0 +1,15 @@
+// An inline `if` may follow arithmetic in the same statement: neither has an effect, so taking
+// the `if` out first changes at most which trap would stop the run.
+import console
+
+type S:
+    a: U64
+    b: U64
+
+fn main(console: Console<Write>):
+    var s = S(a: 1, b: 2)
+    let r: U64 = 5
+    s = S(a: s.a + 1, b: if r > s.b: r else: s.b)
+    console.print_int(s.a * 10 + s.b)
+    let t = S(a: 1, b: if r > 3: r else: 3)
+    console.print_int(t.b)

@@ -1,0 +1,119 @@
+// A maze solved breadth first: the grid read from input (`#` wall, `S` start, `E` end), a Deque
+// of cells to visit, each cell's predecessor; the shortest path drawn with `.` and its length.
+import console
+import string
+import vec
+import deque
+import discard
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    let Ok(g): Vec<U8> = Vec.new(&allocator, 256) else Err(code):
+        return
+    var grid = move g
+    var width: U64 = 0
+    var height: U64 = 0
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        grid.close()
+        return
+    var line = move made
+    while true:
+        line.clear()
+        match input.read_line(&allocator, &mut line):
+            .Line:
+                let bytes = line.as_bytes()
+                if height == 0:
+                    width = bytes.len()
+                if bytes.len() == width:
+                    for index in 0..bytes.len():
+                        match grid.push_mut(&allocator, bytes[index]):
+                            Ok:
+                                ()
+                            Err(back):
+                                console.line("no room")
+                    height += 1
+            .End:
+                break
+            .NotText:
+                break
+            .NoRoom:
+                break
+    line.close()
+    let cells = width * height
+    var start = cells
+    var end = cells
+    for at in 0..cells:
+        if grid[at] == 'S':
+            start = at
+        if grid[at] == 'E':
+            end = at
+    if start == cells || end == cells:
+        console.line("no start or end")
+        grid.close()
+        return
+    let none: U64 = 18446744073709551615
+    let Ok(p): Vec<U64> = Vec.new(&allocator, cells) else Err(code):
+        grid.close()
+        return
+    var previous = move p
+    for at in 0..cells:
+        match previous.push_mut(&allocator, none):
+            Ok:
+                ()
+            Err(back):
+                ()
+    let Ok(q): Deque<U64> = Deque.new(&allocator, 16) else Err(code):
+        previous.close()
+        grid.close()
+        return
+    var queue = move q
+    previous[start] = start
+    match queue.push_back(&allocator, start):
+        Ok:
+            ()
+        Err(back):
+            ()
+    while true:
+        match queue.pop_front_mut():
+            Ok(at):
+                if at == end:
+                    break
+                let row = at / width
+                let column = at % width
+                // Up, down, left, right, where the grid goes on and there is no wall.
+                var next: [U64; 4] = [none, none, none, none]
+                if row > 0:
+                    next[0] = at - width
+                if row + 1 < height:
+                    next[1] = at + width
+                if column > 0:
+                    next[2] = at - 1
+                if column + 1 < width:
+                    next[3] = at + 1
+                for k in 0..4:
+                    let cell = next[k]
+                    if cell != none && grid[cell] != '#' && previous[cell] == none:
+                        previous[cell] = at
+                        match queue.push_back(&allocator, cell):
+                            Ok:
+                                ()
+                            Err(back):
+                                console.line("no room")
+            Err(code):
+                break
+    if previous[end] == none:
+        console.line("no path")
+    else:
+        var steps: U64 = 0
+        var at = previous[end]
+        while at != start:
+            grid[at] = '.'
+            steps += 1
+            at = previous[at]
+        for row in 0..height:
+            for column in 0..width:
+                console.write_part(U8.to_u64(grid[row * width + column]), 1)
+            console.line("")
+        console.print("${steps + 1} steps")
+    queue.close()
+    previous.close()
+    grid.close()

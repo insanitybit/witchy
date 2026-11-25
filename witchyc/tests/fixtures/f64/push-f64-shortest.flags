@@ -1,0 +1,1 @@
+run: --input={dir}/push-f64-shortest.txt --input-bytes=1000000 --fuel=100000000

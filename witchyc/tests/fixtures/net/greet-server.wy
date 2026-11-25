@@ -1,0 +1,35 @@
+// A server whose only network authority is one listening address. It answers one
+// client and prints the length of the line it sent. As a fixture no client connects, so
+// `accept` gives up after the host's wait; scripts in docs/wasm-net.md drive it with one. `wasm-caps` lists
+// `Listener` for main and `serve`, and nothing else touches the network.
+import console
+import net
+
+fn serve(listener: &Listener) -> Result<U64, NetError>:
+    let socket = listener.accept()?
+    var count: U64 = 0
+    var done = false
+    while !done:
+        match socket.next_byte():
+            Ok(byte):
+                if byte == 10:
+                    done = true
+                else:
+                    count += 1
+            Err:
+                done = true
+    match socket.send("hello, client; you sent "):
+        Ok:
+            discard(count)
+        Err(e):
+            socket.close()
+            return Err(e)
+    socket.close()
+    return Ok(count)
+
+fn main(console: Console<Write>, listener: Listener):
+    match serve(&listener):
+        Ok(count):
+            console.print_int(count)
+        Err(e):
+            console.line("no client")

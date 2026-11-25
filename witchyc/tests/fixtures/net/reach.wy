@@ -1,0 +1,32 @@
+// A `Net` dials only the endpoints the run grants, written exactly as granted, and `only`
+// narrows it to one. Nothing listens on the granted port here, so the dial is refused; a
+// grant for an address that is not in the set fails before any connection is tried.
+import net
+import console
+
+fn report(console: &Console<Write>, result: Result<Socket, NetError>):
+    match move result:
+        Ok(socket):
+            console.line("connected")
+            socket.close()
+        Err(error):
+            match error:
+                NotGranted:
+                    console.line("not granted")
+                Refused:
+                    console.line("refused")
+                _:
+                    console.line("other")
+
+fn main(console: Console<Write>, net: Net):
+    report(&console, net.connect("127.0.0.1:1"))
+    report(&console, net.connect("example.com:80"))
+    let Ok(local): Net = net.only("127.0.0.1:1") else Err(error):
+        return
+    report(&console, local.connect("127.0.0.1:1"))
+    match net.only("10.0.0.1:80"):
+        Ok(other):
+            console.line("widened")
+            let closed = other.raw_close()
+        Err(error):
+            console.line("only narrows")

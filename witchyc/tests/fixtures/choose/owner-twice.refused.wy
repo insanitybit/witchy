@@ -1,0 +1,11 @@
+// The chosen owner is one value: it cannot be closed twice.
+import "../../../library/wasm-string.wy"
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let text = match String.new(&allocator):
+        Ok(empty):
+            move empty
+        Err(code):
+            return
+    text.close()
+    text.close()

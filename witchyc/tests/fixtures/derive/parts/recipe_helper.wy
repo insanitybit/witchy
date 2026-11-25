@@ -1,0 +1,10 @@
+fn pick(a: U64, b: U64) -> U64:
+    return a
+
+pub trait Pick:
+    fn picked(self: &Self) -> U64
+
+pub derive First:
+    impl Pick for Self:
+        fn picked(self: &Self) -> U64:
+            return pick((*self).a, (*self).b)

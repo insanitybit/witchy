@@ -1,0 +1,47 @@
+// `Vec<U8>.extend_from_slice_mut`: every length from 0 to 70 appended to a vector that already
+// holds three bytes, through growth; the bytes in order, the source unchanged. The short path
+// (under 16 bytes) and the block path give the same vector. Then no room: Err, vector as it was.
+import console
+import vec
+
+fn sum(bytes: &[U8]) -> U64:
+    var total: U64 = 0
+    for index in 0..bytes.len():
+        total = (total * 31 + U8.to_u64(bytes[index])) % 1000000007
+    return total
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var source: [U8; 70] = [0; 70]
+    for i in 0..70:
+        source[i] = U8.truncate(i * 3 + 1)
+    var wrong: U64 = 0
+    var check: U64 = 0
+    for count in 0..71:
+        let Ok(made): Vec<U8> = Vec.new(&allocator, 3) else Err(code):
+            return
+        var target = move made
+        let _ = target.push_mut(&allocator, 250)
+        let _ = target.push_mut(&allocator, 251)
+        let _ = target.push_mut(&allocator, 252)
+        if let Err(_) = target.extend_from_slice_mut(&allocator, source.slice().part(0, count)):
+            wrong += 1000
+        if target.len() != count + 3:
+            wrong += 1
+        if target[0] != 250 || target[2] != 252:
+            wrong += 1
+        for i in 0..count:
+            if target[i + 3] != source[i]:
+                wrong += 1
+        check = (check + sum(target.as_slice())) % 1000000007
+        target.close()
+    console.print_int(wrong)
+    console.print_int(check)
+    // Twice into one vector, the second through reserved room.
+    let Ok(made): Vec<U8> = Vec.new(&allocator, 200) else Err(code):
+        return
+    var twice = move made
+    let _ = twice.extend_from_slice_mut(&allocator, source.slice())
+    let _ = twice.extend_from_slice_mut(&allocator, source.slice().part(60, 70))
+    console.print_int(twice.len())
+    console.print_int(sum(twice.as_slice()))
+    twice.close()

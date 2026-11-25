@@ -1,0 +1,20 @@
+// At the default layout, adjacent generations of the same slot and first
+// quantum differ by 2^18. Even exact evidence of that reuse cannot authorize
+// the retired pointer against the replacement's live permission.
+fn bad<T: Any>(owner: &Buffer<T>, saved: U64) -> Result<&T, U64>:
+    ensures match result:
+        Ok(value):
+            memory.cell(owner, 0, value)
+        Err(code):
+            true
+    proof:
+        auto
+    let current = memory.allocation_key(owner)
+    if current == 262145:
+        if saved == 1:
+            if memory.initialized(owner, 0):
+                return Ok(memory.ref_link(owner, saved))
+    return Err(1)
+
+fn main():
+    return

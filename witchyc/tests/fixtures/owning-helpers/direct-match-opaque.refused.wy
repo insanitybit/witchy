@@ -1,0 +1,32 @@
+// Refused by the proof: this helper has a branch, so it has no summary, and a match on its call
+// knows no more of the variant than a `let` of it would: the `unreachable` may be reached.
+type Slot<T>:
+    Vacant
+    Full(T)
+
+nopanic fn drain<T: Any>(slot: &mut Slot<T>) -> Slot<T>:
+    var previous: Slot<T> = Vacant
+    if true:
+        memory.exchange(&mut *slot, &mut previous)
+    return move previous
+
+// Puts `next` in the slot and hands back what was there, wrapped.
+nopanic fn wrap(slot: &mut Slot<U64>, next: Slot<U64>) -> Slot<Slot<U64>>:
+    var previous: Slot<U64> = next
+    memory.exchange(&mut *slot, &mut previous)
+    var wrapped: Slot<Slot<U64>> = Full(previous)
+    return wrapped
+
+nopanic fn swap_out<T: Any>(slot: &mut Slot<T>, item: T) -> T:
+    let emptied = drain(&mut *slot)
+    *slot = Full(move item)
+    match drain(&mut *slot):
+        Full(back):
+            *slot = move emptied
+            return move back
+        Vacant:
+            unreachable
+
+fn main(out: Console<Write>):
+    var slot: Slot<U64> = Full(8)
+    out.print_int(swap_out(&mut slot, 9))

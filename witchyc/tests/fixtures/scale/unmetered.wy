@@ -1,0 +1,28 @@
+// Run without the instruction count (`unmetered.flags`): bounded by the deadline
+// and the memory grant. Far more instructions than the default budget allows.
+import "../../../library/wasm-vec.wy"
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<Vec<U64>, U64> = Vec.new(&allocator, 0)
+    match move made:
+        Ok(empty):
+            var items = move empty
+            for index in 0..3000:
+                match items.push_mut(&allocator, index):
+                    Ok:
+                        continue
+                    Err(back):
+                        break
+            var total: U64 = 0
+            for round in 0..20:
+                for at in 0..items.len():
+                    total += match items.get(at):
+                        Ok(item):
+                            item % 7
+                        Err(code):
+                            0
+            console.print_int(items.len())
+            console.print_int(total)
+            items.close()
+        Err(code):
+            console.print_int(code)

@@ -1,0 +1,16 @@
+// Refused: nothing is written through a shared borrow, taken on the spot or not.
+import console
+import vec
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.new(&allocator, 4) else Err(code):
+        return
+    var v = move made
+    let p = v.push_mut(&allocator, 1)
+    let q = v.push_mut(&allocator, 2)
+    *(&mut v[1]) = 20
+    *(&mut v[0]) += 5
+    var n: U64 = 3
+    *(&n) = 4
+    console.print("${v[0]} ${v[1]} ${n}")
+    v.close()

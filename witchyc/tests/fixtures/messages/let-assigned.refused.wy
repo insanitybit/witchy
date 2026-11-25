@@ -1,0 +1,7 @@
+// Changing a `let` says to declare it with `var`.
+import console
+
+fn main(console: Console<Write>):
+    let x = 5
+    x = 6
+    console.print_int(x)

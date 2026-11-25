@@ -1,0 +1,6 @@
+// Refused: naming the module does not reach what it keeps.
+import console
+import "parts/area.wy"
+
+fn main(console: Console<Write>):
+    console.print_int(area.product(3, 4))

@@ -1,0 +1,19 @@
+// Stage application fields. The standard HTTP writer owns the framing.
+import http
+import span
+import string
+
+pub fn add_common_fields(headers: &mut ResponseHeaders, field: &mut String, allocator: &Allocator) -> Result<(), U64>:
+    add_literal(headers, field, "Cache-Control", "no-store", allocator)?
+    return add_literal(headers, field, "X-Content-Type-Options", "nosniff", allocator)
+
+pub fn add_literal(headers: &mut ResponseHeaders, field: &mut String, name: Text, value: Text, allocator: &Allocator) -> Result<(), U64>:
+    field.cut(0)
+    field.push_text(allocator, name)?
+    field.push_text(allocator, value)?
+    return add_field(headers, field.span(), name.byte_len(), allocator)
+
+pub fn add_field(headers: &mut ResponseHeaders, field: Span, split: U64, allocator: &Allocator) -> Result<(), U64>:
+    if let Err(reason) = headers.add(allocator, field.part(0, split), field.part(split, field.len())):
+        return Err(503)
+    return Ok(())

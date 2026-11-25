@@ -1,0 +1,36 @@
+// Refused: in a recursive helper the outer opening's row and the inner opening's rows are apart, though both come from one place in the source.
+import console
+
+type Graph:
+    count: U64
+
+type Node<G>:
+    offset: U64
+
+type Nodes<G>:
+    count: U64
+
+impl Graph:
+    fn nodes<D: Fresh>(self: &Graph) -> Nodes<D>:
+        return Nodes(count: (*self).count)
+
+fn first<G: Brand>(nodes: &Nodes<G>) -> Node<G>:
+    return Node(offset: 0)
+
+fn last<G: Brand>(nodes: &Nodes<G>) -> Node<G>:
+    return Node(offset: (*nodes).count - 1)
+
+fn apart<G: Brand>(a: Node<G>, b: Node<G>) -> U64:
+    return b.offset - a.offset
+
+fn walk<G: Brand>(outer: Node<G>, roads: &Graph, depth: U64) -> U64:
+    if depth == 0:
+        return 0
+    brand roads.nodes() as r:
+        let inner = last(&r)
+        return apart(outer, inner) + walk(first(&r), roads, depth - 1)
+
+fn main(console: Console<Write>):
+    let roads = Graph(count: 80)
+    brand roads.nodes() as r:
+        console.print_int(walk(first(&r), &roads, 2))

@@ -1,0 +1,6 @@
+// A program that takes `Args` does not start in a run that grants none.
+import args
+import console
+
+fn main(console: Console<Write>, args: Args):
+    console.print_int(args.count())

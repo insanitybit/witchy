@@ -1,0 +1,121 @@
+// Two invariants over the elements of one container: each write shows both, and an element
+// read satisfies both, so a read through either pair of offsets needs no range test.
+import console
+import vec
+
+type Entry:
+    key: U64
+    key_len: U64
+    value: U64
+    value_len: U64
+
+sealed type Table:
+    bytes: Vec<U8>
+    entries: Vec<Entry>
+    invariant forall i in (0, entries.len()): entries[i].key + entries[i].key_len <= bytes.len()
+    invariant forall i in (0, entries.len()): entries[i].value + entries[i].value_len <= bytes.len()
+
+impl Table:
+    pub fn new(allocator: &Allocator) -> Result<Table, U64>:
+        ensures true
+        proof:
+            auto
+        let bytes: Vec<U8> = Vec.new(allocator, 0)?
+        let made: Result<Vec<Entry>, U64> = Vec.new(allocator, 0)
+        match move made:
+            Ok(entries):
+                return Ok(Table(move bytes, move entries))
+            Err(code):
+                bytes.release_empty()
+                return Err(code)
+
+    pub fn append(table: &mut Table, allocator: &Allocator, byte: U8) -> Bool:
+        ensures true
+        proof:
+            auto
+        match table.bytes.push_mut(allocator, byte):
+            Ok:
+                return true
+            Err(back):
+                return false
+
+    pub fn add(table: &mut Table, allocator: &Allocator, key: U64, key_len: U64, value: U64, value_len: U64) -> Bool:
+        ensures true
+        proof:
+            auto
+        let limit = table.bytes.len()
+        if key > limit || value > limit:
+            return false
+        if key_len > limit - key || value_len > limit - value:
+            return false
+        let entry = Entry(key, key_len, value, value_len)
+        match table.entries.push_mut(allocator, entry):
+            Ok:
+                return true
+            Err(back):
+                return false
+
+    // The entry is read, changed and written back: what the read says of it shows both.
+    pub fn shorten(table: &mut Table, at: U64) -> Bool:
+        ensures true
+        proof:
+            auto
+        match table.entries.get(at):
+            Ok(entry):
+                let shorter = Entry(entry.key, 0, entry.value, entry.value_len)
+                match table.entries.set(at, shorter):
+                    Ok:
+                        return true
+                    Err(back):
+                        return false
+            Err(code):
+                return false
+
+    pub nopanic fn last_of_key(table: &Table, at: U64) -> U64:
+        ensures true
+        proof:
+            auto
+        match table.entries.at(at):
+            Ok(entry):
+                if entry.key_len == 0:
+                    return 256
+                let bytes = table.bytes.as_slice()
+                return U8.to_u64(bytes[entry.key + entry.key_len - 1])
+            Err(code):
+                return 257
+
+    pub nopanic fn first_of_value(table: &Table, at: U64) -> U64:
+        ensures true
+        proof:
+            auto
+        match table.entries.at(at):
+            Ok(entry):
+                if entry.value_len == 0:
+                    return 256
+                let bytes = table.bytes.as_slice()
+                return U8.to_u64(bytes[entry.value])
+            Err(code):
+                return 257
+
+    pub fn close(table: Table):
+        let Table(bytes, entries) = move table
+        bytes.close()
+        entries.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    match Table.new(&allocator):
+        Ok(made):
+            var table = move made
+            for byte in [107, 101, 121, 61, 118, 97, 108]:
+                let added = table.append(&allocator, U8.truncate(*byte))
+            let ok = table.add(&allocator, 0, 3, 4, 3)
+            let no = table.add(&allocator, 0, 3, 4, 4)
+            console.print_int(table.last_of_key(0))
+            console.print_int(table.first_of_value(0))
+            let cut = table.shorten(0)
+            console.print_int(table.last_of_key(0))
+            console.print_int(table.first_of_value(0))
+            console.print_int(table.first_of_value(1))
+            table.close()
+        Err(code):
+            console.print_int(code)

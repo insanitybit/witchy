@@ -1,0 +1,70 @@
+fn append(input: Vec<U64>, item: U64) -> Vec<U64>:
+    match vec_push(move input, item):
+        Ok(grown):
+            return move grown
+        Err(failed):
+            return move failed.vector
+
+fn lookup(input: Vec<U64>, index: USize, console: Console<Write>) -> Vec<U64>:
+    match vec_get(move input, index):
+        Ok(found):
+            match found.item:
+                Some(item):
+                    console.print_int(item)
+                None:
+                    console.print_int(999)
+            return move found.vector
+        Err(unchanged):
+            return move unchanged
+
+fn main(console: Console<Write>):
+    let created: Result<Vec<U64>, AllocError> = vec_new(0)
+    match created:
+        Ok(empty):
+            var vector = move empty
+            var i: USize = 0
+            while i < 100:
+                vector = append(move vector, i)
+                i += 1
+            let measured = vec_len(move vector)
+            vector = move measured.vector
+            console.print_int(measured.length)
+            // Console is affine, so perform reads here without transferring it.
+            match vec_get(move vector, 17):
+                Ok(found):
+                    vector = move found.vector
+                    match found.item:
+                        Some(item):
+                            console.print_int(item)
+                        None:
+                            console.print_int(999)
+                Err(unchanged):
+                    vector = move unchanged
+            match vec_get(move vector, 100):
+                Ok(found):
+                    vector = move found.vector
+                    match found.item:
+                        Some(item):
+                            console.print_int(item)
+                        None:
+                            console.print_int(999)
+                Err(unchanged):
+                    vector = move unchanged
+            var draining: Bool = true
+            var total: U64 = 0
+            while draining:
+                match vec_pop(move vector):
+                    Ok(popped):
+                        vector = move popped.vector
+                        match popped.item:
+                            Some(item):
+                                total += item
+                            None:
+                                draining = false
+                    Err(unchanged):
+                        vector = move unchanged
+                        draining = false
+            console.print_int(total)
+            discard(vec_release(move vector))
+        Err(reason):
+            console.print_int(0)

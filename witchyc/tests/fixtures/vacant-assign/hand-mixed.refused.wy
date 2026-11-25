@@ -1,0 +1,38 @@
+// Refused by the proof (review of 2026-11-21): a hand-written exchange and match whose arms both
+// trap, beside a real owner assignment that asks for the function's proof. The proof covers every
+// `unreachable` in the function, so the lookalike is not left unproved beside a proved store.
+type Slot<T>:
+    Vacant
+    Full(T)
+
+type Shelf<T>:
+    count: U64
+    slot: Slot<T>
+
+fn show(out: &Console<Write>, slot: Slot<U64>):
+    match move slot:
+        Vacant:
+            out.print_int(0)
+        Full(n):
+            out.print_int(n)
+
+fn attack<T: Any>(shelf: &mut Shelf<T>, a: T) -> Slot<T>:
+    var inc: Slot<T> = Full(move a)
+    memory.exchange(&mut (*shelf).slot, &mut inc)
+    match move inc:
+        Vacant:
+            unreachable
+        Full(x):
+            unreachable
+    var held: Slot<T> = Vacant
+    memory.exchange(&mut (*shelf).slot, &mut held)
+    (*shelf).slot = move held
+    return Vacant
+
+fn main(out: Console<Write>):
+    var shelf: Shelf<U64> = Shelf(0, Full(7))
+    show(&out, attack(&mut shelf, 9))
+    out.print_int(shelf.count)
+    let Shelf(count, slot) = move shelf
+    show(&out, move slot)
+

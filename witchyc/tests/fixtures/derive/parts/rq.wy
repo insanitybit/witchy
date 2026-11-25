@@ -1,0 +1,15 @@
+import console
+
+pub trait Peek:
+    fn peek(self: &Self, console: &Console<Write>)
+
+pub derive I:
+    impl Peek for Self:
+        fn peek(self: &Self, console: &Console<Write>):
+            console.print("${For(v: (*self).a).v}")
+
+pub derive P:
+    impl Peek for Self:
+        fn peek(self: &Self, console: &Console<Write>):
+            let n = For(v: (*self).a).v
+            console.print("${n}")

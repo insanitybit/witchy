@@ -1,0 +1,218 @@
+// Admit one bounded request from the accepted loopback connection.
+import args
+import console
+import console_bytes
+import fs
+import http
+import span
+import string
+import text
+import vec
+
+type Admission:
+    mode: U8
+    minor: U8
+    target: Span
+    length: U64
+
+fn main(input: Console<Read>, output: Console<Write>, arguments: Args, upload: File<Write>, allocator: Allocator):
+    let received = inspect(&input, &output, &arguments, &upload, &allocator)
+    match received:
+        Ok(publication):
+            if publication:
+                if let Err(reason) = upload.finish():
+                    return
+            else:
+                upload.abandon()
+            output.line("complete")
+        Err(status):
+            upload.abandon()
+            if status != 0:
+                output.write("refused ")
+                output.write_u64(status)
+                output.print_byte(10)
+
+fn inspect(input: &Console<Read>, output: &Console<Write>, arguments: &Args, upload: &File<Write>, allocator: &Allocator) -> Result<Bool, U64>:
+    if arguments.count() != 2:
+        return Err(400)
+    let Ok(mode): String = arguments.get(allocator, 1) else Err(reason):
+        return Err(400)
+    let web = mode.equals_text("web")
+    let known = web || mode.equals_text("registry")
+    mode.close()
+    if !known:
+        return Err(400)
+    let Ok(authority): String = arguments.get(allocator, 0) else Err(reason):
+        return Err(400)
+    let result = read_head(input, output, authority.span(), web, upload, allocator)
+    authority.close()
+    return result
+
+fn read_head(input: &Console<Read>, output: &Console<Write>, authority: Span, web: Bool, upload: &File<Write>, allocator: &Allocator) -> Result<Bool, U64>:
+    let Ok(empty): Vec<U8> = Vec.filled(allocator, 16384, 0) else Err(reason):
+        return Err(503)
+    var head = move empty
+    let result = read_request(input, output, authority, web, upload, allocator, head.as_mut_slice())
+    head.close()
+    return result
+
+fn head_size(input: &Console<Read>, buffer: &mut [U8]) -> Result<U64, U64>:
+    var count: U64 = 0
+    while count < buffer.len():
+        let byte = input.next_byte()
+        if byte > 255:
+            return Err(0)
+        buffer[count] = U8.truncate(byte)
+        count += 1
+        if byte == 10 && count >= 4 && Span.of(buffer.part(count - 4, count)).equals_text("\r\n\r\n"):
+            return Ok(count)
+    return Err(431)
+
+fn read_request(input: &Console<Read>, output: &Console<Write>, authority: Span, web: Bool, upload: &File<Write>, allocator: &Allocator, buffer: &mut [U8]) -> Result<Bool, U64>:
+    let count = head_size(input, buffer)?
+    let admitted = admit(Span.of(buffer.part(0, count)), authority, web)?
+    if admitted.length != 0:
+        output.line("body")
+        read_publication(input, upload, admitted.length, allocator)?
+    tell_admission(output, admitted)
+    return Ok(admitted.mode == 'P')
+
+fn tell_admission(output: &Console<Write>, admitted: Admission):
+    output.print_byte(admitted.mode)
+    output.print_byte(10)
+    output.print_byte(admitted.minor)
+    output.print_byte(10)
+    output.write_u64(admitted.length)
+    output.print_byte(10)
+    var writer = WordWriter.new()
+    for byte in admitted.target.as_bytes():
+        writer.put(output, *byte)
+    writer.flush(output)
+    output.print_byte(10)
+
+fn read_publication(input: &Console<Read>, upload: &File<Write>, length: U64, allocator: &Allocator) -> Result<(), U64>:
+    let Ok(empty): Vec<U8> = Vec.filled(allocator, 8192, 0) else Err(reason):
+        return Err(503)
+    var bytes = move empty
+    let result = stage_body(input, upload, length, bytes.as_mut_slice())
+    bytes.close()
+    return result
+
+fn stage_body(input: &Console<Read>, upload: &File<Write>, length: U64, bytes: &mut [U8]) -> Result<(), U64>:
+    var remaining = length
+    while remaining > 0:
+        let size = if remaining < bytes.len(): remaining else: bytes.len()
+        if let Err(reason) = input.read_exact(bytes.part(0, size)):
+            return Err(400)
+        if let Err(reason) = upload.write_bytes(bytes.part(0, size)):
+            return Err(503)
+        remaining -= size
+    return Ok(())
+
+fn admit(raw: Span, authority: Span, web: Bool) -> Result<Admission, U64>:
+    let Ok(head): RequestHead = http.request(raw) else Err(reason):
+        return Err(400)
+    let Ok(line): Halves = raw.split(13) else Err(remainder):
+        return Err(400)
+    if !head.body.is_empty() || !(line.head.ends_with_text(" HTTP/1.0") || line.head.ends_with_text(" HTTP/1.1")):
+        return Err(400)
+    let get = head.method.equals_text("GET")
+    if !get && !head.method.equals_text("POST"):
+        return Err(501)
+    let api = head.target.starts_with_text("/v1/")
+    let page = web && get && !api
+    if !page && !api:
+        return Err(404)
+    if api && (has_byte(head.target, '?') || has_byte(head.target, '#')):
+        return Err(400)
+    let length = body_length(head.headers, authority, get, page)?
+    let mode: U8 = if page:
+        'W'
+    else if get:
+        'G'
+    else:
+        'P'
+    return Ok(Admission(mode, U8.truncate(line.head.byte_or_end(line.head.len() - 1)), head.target, length))
+
+fn has_byte(bytes: Span, wanted: U8) -> Bool:
+    for byte in bytes.as_bytes():
+        if *byte == wanted:
+            return true
+    return false
+
+fn json_type(value: Span) -> Bool:
+    if let Ok(parts) = value.split(';'):
+        return parts.head.trim().equals_text_ignore_ascii_case("application/json")
+    return value.equals_text_ignore_ascii_case("application/json")
+
+fn origin_matches(origin: Span, authority: Span) -> Bool:
+    if !origin.starts_with_text("http://"):
+        return false
+    return origin.part(7, origin.len()).eq_ignore_ascii_case(authority)
+
+fn header_field(raw: Span) -> Result<Halves, U64>:
+    if raw.is_empty() || !raw.ends_with_text("\r"):
+        return Err(400)
+    let Ok(field): Halves = raw.part(0, raw.len() - 1).split(':') else Err(remainder):
+        return Err(400)
+    if field.head.is_empty():
+        return Err(400)
+    for byte in field.head.as_bytes():
+        if !http.field_name_byte(*byte):
+            return Err(400)
+    for byte in field.tail.as_bytes():
+        if (*byte < 32 && *byte != 9) || *byte == 127:
+            return Err(400)
+    return Ok(field)
+
+fn body_length(fields: Span, authority: Span, get: Bool, page: Bool) -> Result<U64, U64>:
+    var rest = fields
+    var has_length = false
+    var length: U64 = 0
+    var has_type = false
+    var json = false
+    var has_origin = false
+    var has_host = false
+    while !rest.is_empty():
+        let Ok(line): Halves = rest.split(10) else Err(remainder):
+            return Err(400)
+        rest = line.tail
+        let field = header_field(line.head)?
+        let name = field.head
+        let value = field.tail.trim()
+        if name.equals_text_ignore_ascii_case("transfer-encoding") || name.equals_text_ignore_ascii_case("expect"):
+            return Err(400)
+        if name.equals_text_ignore_ascii_case("host"):
+            if has_host || value.is_empty() || !value.eq_ignore_ascii_case(authority):
+                return Err(421)
+            has_host = true
+        else if name.equals_text_ignore_ascii_case("origin"):
+            if has_origin || !page || !origin_matches(value, authority):
+                return Err(421)
+            has_origin = true
+        else if name.equals_text_ignore_ascii_case("content-length"):
+            if has_length || value.is_empty() || value.len() > 9:
+                return Err(400)
+            for byte in value.as_bytes():
+                if *byte < '0' || *byte > '9':
+                    return Err(400)
+            let Ok(size): U64 = value.parse_u64() else Err(reason):
+                return Err(400)
+            if size > 16777216:
+                return Err(413)
+            length = size
+            has_length = true
+        else if name.equals_text_ignore_ascii_case("content-type"):
+            if has_type:
+                return Err(400)
+            has_type = true
+            json = json_type(value)
+    if !has_host:
+        return Err(421)
+    if get:
+        if length != 0:
+            return Err(400)
+        return Ok(0)
+    if !has_length || !json:
+        return Err(400)
+    return Ok(length)

@@ -1,0 +1,56 @@
+// Generic constructors in a typed `let` convert too: `Vec.new` and `HashMap.new` fail with a
+// U64, read from their signatures, made an AppError by `AppError.from` (review).
+import console
+import vec
+import hashmap
+
+type ParseError = .[Empty | TooBig(U64)]
+type AnyError = .[Empty | Missing | TooBig(U64) | Refused]
+
+type AppError:
+    NoRoom(U64)
+    Parse(ParseError)
+
+impl AppError:
+    pub fn from(code: U64) -> AppError:
+        return NoRoom(code + 1000)
+
+fn parse(value: U64) -> Result<U64, ParseError>:
+    if value == 0:
+        return Err(.Empty)
+    return Ok(value)
+
+fn wide(value: U64) -> Result<U64, AnyError>:
+    let x: U64 = parse(value)?
+    return Ok(x)
+
+fn same(allocator: &Allocator) -> Result<U64, U64>:
+    let v: Vec<U64> = Vec.new(allocator, 0)?
+    let n = v.len()
+    v.close()
+    return Ok(n)
+
+fn conv(allocator: &Allocator) -> Result<U64, AppError>:
+    let v: Vec<U64> = Vec.new(allocator, 4)?
+    let n = v.len()
+    v.close()
+    let m: HashMap<U64, U64> = HashMap.new(allocator, 4)?
+    m.release()
+    return Ok(n)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    match wide(0):
+        Ok(n):
+            console.print_int(n)
+        Err(e):
+            console.line("wide err")
+    match same(&allocator):
+        Ok(n):
+            console.print_int(n)
+        Err(e):
+            console.line("same err")
+    match conv(&allocator):
+        Ok(n):
+            console.print_int(n)
+        Err(e):
+            console.line("conv err")

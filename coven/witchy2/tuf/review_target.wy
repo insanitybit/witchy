@@ -1,0 +1,78 @@
+import "attestations.wy"
+import "delegations.wy"
+import "generation.wy"
+import "metadata.wy"
+import "publication_files.wy"
+import "release_trust.wy"
+import "review_choice.wy"
+import "target_path.wy"
+import console
+import fs
+import span
+import string
+import text
+
+pub fn read_comparison(source: &Dir<Read>, generation: &VerifiedTopLevel, trust: &ReleaseTrust, name: &String, version: &String, output: &Console<Write>, destination: &File<Write>, allocator: &Allocator) -> Result<Bool, U64>:
+    let Ok(role): &String = role_for_package(generation.targets(), name.span()) else Err(code):
+        return Ok(false)
+    let Ok(reference): MetadataReference = generation.reference(role, allocator) else Err(error):
+        return Err(1)
+    let Ok(path): String = delegated_path(allocator, reference.version(), role) else Err(error):
+        return Err(1)
+    let read = read_text_object(source, &path, 2097152, allocator)
+    path.close()
+    let Ok(wire): String = move read else Err(error):
+        return Err(1)
+    let opened = generation.open_role(role, &wire, allocator)
+    wire.close()
+    let Ok(verified): VerifiedRole = move opened else Err(error):
+        return Err(1)
+    let result = select_comparison(source, &verified, trust, name, version, output, destination, generation.checked_at(), allocator)
+    verified.close()
+    return result
+
+fn select_comparison(source: &Dir<Read>, role: &VerifiedRole, trust: &ReleaseTrust, name: &String, version: &String, output: &Console<Write>, destination: &File<Write>, now: U64, allocator: &Allocator) -> Result<Bool, U64>:
+    let coordinate = previous_coordinate(role, name.span(), version.span(), allocator)?
+    let result: Result<Bool, U64> = if coordinate.byte_len() == 0:
+        Ok(false)
+    else:
+        read_target(source, role, trust, name, &coordinate, output, destination, now, allocator)
+    coordinate.close()
+    return result
+
+fn read_target(source: &Dir<Read>, role: &VerifiedRole, trust: &ReleaseTrust, name: &String, coordinate: &String, output: &Console<Write>, destination: &File<Write>, now: U64, allocator: &Allocator) -> Result<Bool, U64>:
+    let Ok(reference): ContentReference = role.reference(coordinate, allocator) else Err(error):
+        return Err(1)
+    let Ok(parts): Halves = coordinate.span().split('/') else Err(rest):
+        return Err(1)
+    let path = target_storage_path(parts, &reference, allocator)?
+    let read = read_text_object(source, &path, reference.length(), allocator)
+    path.close()
+    let Ok(bundle): String = move read else Err(error):
+        return Err(1)
+    let verified = check_bundle(&bundle, &reference, trust, name, parts.tail.part(0, parts.tail.len() - 6), now, allocator)
+    bundle.close()
+    let Ok(package): VerifiedPackage = move verified else Err(code):
+        return Err(code)
+    let result = emit(&package, output, destination)
+    package.close()
+    return result
+
+fn check_bundle(bundle: &String, reference: &ContentReference, trust: &ReleaseTrust, name: &String, version: Span, now: U64, allocator: &Allocator) -> Result<VerifiedPackage, U64>:
+    if let Err(error) = reference.verify(bundle.as_bytes()):
+        return Err(1)
+    let text = version.to_string(allocator)?
+    let checked = verify_release_package(bundle, trust, name, &text, now, allocator)
+    text.close()
+    let Ok(package): VerifiedPackage = move checked else Err(error):
+        return Err(1)
+    return Ok(move package)
+
+fn emit(package: &VerifiedPackage, output: &Console<Write>, destination: &File<Write>) -> Result<Bool, U64>:
+    if let Err(error) = destination.write_bytes(package.bytes()):
+        return Err(1)
+    output.write_string(package.version())
+    output.print_byte(10)
+    output.write_string(package.digest())
+    output.print_byte(10)
+    return Ok(true)

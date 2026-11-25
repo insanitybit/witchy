@@ -1,0 +1,37 @@
+// A trait with a type parameter: `Celsius` can be compared with a `Kelvin`. A
+// bound names the argument, and a call through it must use exactly that type.
+import "../../../library/wasm-console.wy"
+
+trait Comparable<K>:
+    fn compare(self: &Self, key: &K) -> Bool
+
+type Celsius:
+    degrees: U64
+
+type Kelvin:
+    value: U64
+
+impl Comparable<Kelvin> for Celsius:
+    fn compare(self: &Celsius, key: &Kelvin) -> Bool:
+        return (*self).degrees + 273 == (*key).value
+
+impl Comparable<Kelvin> for Kelvin:
+    fn compare(self: &Kelvin, key: &Kelvin) -> Bool:
+        return (*self).value == (*key).value
+
+fn matches<Q: Comparable<K>, K>(probe: &Q, key: &K) -> Bool:
+    return probe.compare(key)
+
+fn flag(console: &Console<Write>, value: Bool):
+    if value:
+        console.print_int(1)
+    else:
+        console.print_int(0)
+
+fn main(console: Console<Write>):
+    let warm = Celsius(10)
+    let same = Kelvin(283)
+    let other = Kelvin(300)
+    flag(&console, matches(&warm, &same))
+    flag(&console, matches(&warm, &other))
+    flag(&console, matches(&same, &same))

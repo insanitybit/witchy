@@ -1,0 +1,5 @@
+// A package imported by name must be in the program's package list (`unlisted.refused.packages`).
+import "@nowhere"
+
+fn main():
+    return

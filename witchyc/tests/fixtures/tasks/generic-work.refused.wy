@@ -1,0 +1,12 @@
+// Refused: a task runs a function named where it is spawned, one that is not generic.
+import tasks
+
+fn hold<T>(value: T) suspends:
+    pause(1)
+    discard(value)
+
+fn main(allocator: Allocator):
+    let n: U64 = 3
+    let Ok(task): Task = Task.spawn(&allocator, 1024, hold, n) else Err(given):
+        return
+    task.close()

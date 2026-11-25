@@ -1,0 +1,51 @@
+fn drain_capabilities(input: Vec<Console<Write>>):
+    var vector = move input
+    while true:
+        match vec_pop(move vector):
+            Ok(popped):
+                vector = move popped.vector
+                match popped.item:
+                    Some(recovered):
+                        recovered.print_int(74)
+                    None:
+                        match vec_release(move vector):
+                            Ok(done):
+                                return
+                            Err(remaining):
+                                vector = move remaining
+            Err(unchanged):
+                vector = move unchanged
+
+fn relocate_capabilities(input: Vec<Console<Write>>) -> Vec<Console<Write>>:
+    match vec_reserve(move input, 8):
+        Ok(grown):
+            return move grown
+        Err(failed):
+            return move failed.vector
+
+fn main(first: Console<Write>, second: Console<Write>):
+    let created: Result<Vec<Console<Write>>, AllocError> = vec_new(0)
+    match created:
+        Ok(empty):
+            match vec_push(move empty, move first):
+                Ok(occupied):
+                    let relocated = relocate_capabilities(move occupied)
+                    match vec_replace(move relocated, 0, move second):
+                        Ok(changed):
+                            let previous = move changed.previous
+                            previous.print_int(73)
+                            drain_capabilities(move changed.vector)
+                            return
+                        Err(failed):
+                            let replacement = move failed.replacement
+                            replacement.print_int(0)
+                            drain_capabilities(move failed.vector)
+                            return
+                Err(failed):
+                    let item = move failed.item
+                    item.print_int(0)
+                    drain_capabilities(move failed.vector)
+                    return
+        Err(reason):
+            first.print_int(0)
+            return

@@ -1,0 +1,6 @@
+// Checked arithmetic is written in place; it still traps. A product past the largest U64, one small operand.
+fn work(left: U64, right: U64) -> U64:
+    return left * right
+
+fn main(console: Console<Write>):
+    console.print_int(work(18446744073709551615, 2))

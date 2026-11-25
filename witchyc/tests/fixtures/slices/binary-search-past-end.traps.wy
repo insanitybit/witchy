@@ -1,0 +1,24 @@
+// With `hi` allowed one past the end (`hi <= s.len() + 1`), the midpoint may be past the end: the read
+// is not taken as below the length, keeps its test, and here traps.
+import console
+
+fn lower_bound(s: &[U64], want: U64) -> U64:
+    requires s.len() < 1000000
+    ensures true
+    proof:
+        auto
+    var lo: U64 = 0
+    var hi = s.len() + 1
+    while lo < hi:
+        invariant lo <= hi && hi <= s.len() + 1
+        let mid = lo + (hi - lo) / 2
+        if s[mid] < want:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
+
+fn main(console: Console<Write>):
+    let a: [U64; 8] = [1, 3, 3, 5, 8, 13, 21, 34]
+    let s = a.slice()
+    console.print("${lower_bound(s, 5)} ${lower_bound(s, 4)} ${lower_bound(s, 100)} ${lower_bound(s, 0)}")

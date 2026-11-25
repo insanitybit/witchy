@@ -1,0 +1,223 @@
+// A movable list with its cursor between two nodes. Each side owns its nearest
+// node. From there, the "outward" permissions lead away from the cursor.
+// The two directional links in each node always name the actual neighbors.
+import "wasm-cell.wy"
+import "wasm-link.wy"
+import "wasm-option.wy"
+
+type Neighbors<T>:
+    prev: Link<T>
+    next: Link<T>
+
+impl<T: Any> Neighbors<T>:
+    fn previous_id(edges: &Neighbors<T>) -> U64:
+        return (*edges).prev.identity()
+
+    fn next_id(edges: &Neighbors<T>) -> U64:
+        return (*edges).next.identity()
+
+type ListNode<T>:
+    edges: Neighbors<ListNode<T>>
+    outward: Option<OccupiedCell<ListNode<T>>>
+    item: T
+
+type Side<T>:
+    top: Link<ListNode<T>>
+    owner: Option<OccupiedCell<ListNode<T>>>
+
+impl<T: Any> Side<T>:
+    fn top_id(side: &Side<T>) -> U64:
+        return (*side).top.identity()
+
+impl<T: Any> ListNode<T>:
+    fn previous_id(node: &ListNode<T>) -> U64:
+        return (*node).edges.previous_id()
+
+    fn next_id(node: &ListNode<T>) -> U64:
+        return (*node).edges.next_id()
+
+pub sealed type DoublyLinkedList<T>:
+    left: Side<T>
+    right: Side<T>
+    front: Neighbors<ListNode<T>>
+    back: Neighbors<ListNode<T>>
+
+fn empty_side<T: Any>() -> Side<T>:
+    let nil: Link<ListNode<T>> = Link.none()
+    return Side(nil, None)
+
+fn replace_owner<T: Any>(place: &mut T, incoming: T) -> T:
+    var held = move incoming
+    memory.exchange(place, &mut held)
+    return move held
+
+// Select the neighbor named by the removed node (or the end sentinel for a
+// null link). Resolving a nonnull link borrows its own live allocation.
+fn header<T: Any>(owners: &mut Option<OccupiedCell<ListNode<T>>>, target: Link<ListNode<T>>, end: &mut Neighbors<ListNode<T>>) -> &mut Neighbors<ListNode<T>>:
+    match owners:
+        Some(cell):
+            match cell.borrow_mut(target):
+                Ok(node):
+                    return &mut (*node).edges
+                Err(code):
+                    unreachable
+        None:
+            if target.identity() != 0:
+                unreachable
+            return end
+
+// Both neighbor headers are borrowed in place. The two outward-facing edges
+// retain their old values. At an endpoint a sentinel supplies the head or tail.
+fn rewire<T: Any>(left: &mut Neighbors<T>, right: &mut Neighbors<T>, edges: Neighbors<T>):
+    ensures left.next_id() == old(edges.next_id())
+    ensures right.previous_id() == old(edges.previous_id())
+    ensures left.previous_id() == old(left.previous_id())
+    ensures right.next_id() == old(right.next_id())
+    proof:
+        auto
+    (*left).next = edges.next
+    (*right).prev = edges.prev
+
+fn connect<T: Any>(list: &mut DoublyLinkedList<T>, targets: Neighbors<ListNode<T>>, replacements: Neighbors<ListNode<T>>):
+    let left = header(&mut (*list).left.owner, targets.prev, &mut (*list).front)
+    let right = header(&mut (*list).right.owner, targets.next, &mut (*list).back)
+    rewire(left, right, replacements)
+
+// Releasing the victim at this call site requires both neighbor fields to
+// agree with the edges taken from the victim. A missing repair cannot discharge
+// the call, including when the neighbor is the head or tail sentinel.
+fn retire<T: Any>(vacant: VacantCell<ListNode<T>>, left: &Neighbors<ListNode<T>>, right: &Neighbors<ListNode<T>>, removed: Neighbors<ListNode<T>>):
+    requires left.next_id() == removed.next_id()
+    requires right.previous_id() == removed.previous_id()
+    ensures true
+    proof:
+        auto
+    vacant.close()
+
+// Rotate only the permission in the crossed node. The two cursor positions
+// follow its physical links and both its directional fields stay unchanged.
+fn rotate<T: Any>(node: &mut ListNode<T>, source: &mut Side<T>, dest: &mut Side<T>, forward: Bool):
+    ensures dest.top_id() == old(source.top_id())
+    ensures !forward || source.top_id() == old(node.next_id())
+    ensures forward || source.top_id() == old(node.previous_id())
+    ensures node.next_id() == old(node.next_id())
+    ensures node.previous_id() == old(node.previous_id())
+    proof:
+        auto
+    memory.exchange(&mut (*node).outward, &mut (*dest).owner)
+    (*dest).top = (*source).top
+    if forward:
+        (*source).top = (*node).edges.next
+    else:
+        (*source).top = (*node).edges.prev
+
+fn cross<T: Any>(source: &mut Side<T>, dest: &mut Side<T>, forward: Bool) -> Bool:
+    let current = (*source).top
+    match replace_owner(&mut (*source).owner, None):
+        None:
+            return false
+        Some(allocation):
+            var owner = move allocation
+            match owner.borrow_mut(current):
+                Ok(node):
+                    rotate(node, source, dest, forward)
+                Err(code):
+                    unreachable
+            memory.exchange(&mut (*source).owner, &mut (*dest).owner)
+            match replace_owner(&mut (*dest).owner, Some(move owner)):
+                Some(unexpected):
+                    unreachable
+                None:
+                    return true
+
+impl<T: Any> DoublyLinkedList<T>:
+    pub fn new() -> DoublyLinkedList<T>:
+        let nil: Link<ListNode<T>> = Link.none()
+        return DoublyLinkedList(empty_side(), empty_side(), Neighbors(nil, nil), Neighbors(nil, nil))
+
+    pub fn move_next(list: &mut DoublyLinkedList<T>) -> Bool:
+        return cross(&mut (*list).right, &mut (*list).left, true)
+
+    pub fn move_prev(list: &mut DoublyLinkedList<T>) -> Bool:
+        return cross(&mut (*list).left, &mut (*list).right, false)
+
+    // A copyable position for identity comparisons. Its target type is private.
+    // An empty position has identity zero.
+    pub fn position(list: &DoublyLinkedList<T>) -> Link<ListNode<T>>:
+        return (*list).right.top
+
+    pub fn first_position(list: &DoublyLinkedList<T>) -> Link<ListNode<T>>:
+        return (*list).front.next
+
+    pub fn last_position(list: &DoublyLinkedList<T>) -> Link<ListNode<T>>:
+        return (*list).back.prev
+
+    pub fn current(list: &DoublyLinkedList<T>) -> Option<&T>:
+        let link = (*list).right.top
+        match &(*list).right.owner:
+            None:
+                return None
+            Some(owner):
+                match owner.borrow(link):
+                    Ok(node):
+                        return Some(&(*node).item)
+                    Err(code):
+                        unreachable
+
+    // Add just before the cursor. A failed allocation returns the original item
+    // and leaves the list as it was.
+    pub fn insert(list: &mut DoublyLinkedList<T>, a: &Allocator, item: T) -> Result<(), T>:
+        let result: Result<VacantCell<ListNode<T>>, U64> = VacantCell.new(a)
+        match move result:
+            Err(code):
+                return Err(move item)
+            Ok(vacant):
+                let fresh = vacant.link()
+                let edges = Neighbors((*list).left.top, (*list).right.top)
+                connect(list, edges, Neighbors(fresh, fresh))
+                let outward = replace_owner(&mut (*list).left.owner, None)
+                let node = ListNode(edges, move outward, move item)
+                let owner = vacant.fill(move node)
+                match replace_owner(&mut (*list).left.owner, Some(move owner)):
+                    Some(unexpected):
+                        unreachable
+                    None:
+                        (*list).left.top = fresh
+                        return Ok(())
+
+    // Remove the node just beyond the cursor. Its successor becomes current.
+    pub fn remove(list: &mut DoublyLinkedList<T>) -> Option<T>:
+        match replace_owner(&mut (*list).right.owner, None):
+            None:
+                return None
+            Some(owner):
+                if !owner.link().same((*list).right.top):
+                    unreachable
+                let taken = owner.extract()
+                let TakenCell(vacant, node) = move taken
+                let ListNode(edges, outward, item) = move node
+                match replace_owner(&mut (*list).right.owner, move outward):
+                    Some(unexpected):
+                        unreachable
+                    None:
+                        (*list).right.top = edges.next
+                let left = header(&mut (*list).left.owner, edges.prev, &mut (*list).front)
+                let right = header(&mut (*list).right.owner, edges.next, &mut (*list).back)
+                rewire(left, right, edges)
+                retire(move vacant, &*left, &*right, edges)
+                return Some(move item)
+
+    // An empty list owns no allocations. Hand a non-empty one back intact.
+    pub fn close_empty(list: DoublyLinkedList<T>) -> Result<(), DoublyLinkedList<T>>:
+        if list.left.owner.is_some() || list.right.owner.is_some():
+            return Err(move list)
+        let DoublyLinkedList(left, right, front, back) = move list
+        match move left.owner:
+            Some(unexpected):
+                unreachable
+            None:
+                match move right.owner:
+                    Some(unexpected):
+                        unreachable
+                    None:
+                        return Ok(())

@@ -1,0 +1,137 @@
+// Generic composition uses the public relation, not an allocator strategy.
+fn observed_reserve<T>(input: Vec<T>, capacity: USize) -> Result<Vec<T>, ReserveFailure<T>>:
+    ensures match result:
+        Ok(reserved):
+            reserved.length == old(input.length)
+            reserved.capacity >= capacity
+            reserved.capacity >= old(input.capacity)
+            capacity > old(input.capacity) || (reserved.capacity == old(input.capacity) && reserved.data == old(input.data) && memory.unchanged(input.data))
+            forall cell in (0, old(input.length)): memory.cell(reserved.data, cell, old(memory.read(input.data, cell)))
+        Err(failed):
+            capacity > old(input.capacity)
+            failed.vector.data == old(input.data)
+            failed.vector.length == old(input.length)
+            failed.vector.capacity == old(input.capacity)
+            memory.unchanged(input.data)
+    return vec_reserve(move input, capacity)
+
+// Uncalled contracts are checked by the same ordinary admission.
+fn unused_reserve_no_shrink(input: Vec<U64>, capacity: USize) -> Result<Vec<U64>, ReserveFailure<U64>>:
+    ensures match result:
+        Ok(reserved):
+            reserved.capacity >= old(input.capacity)
+        Err(failed):
+            true
+    return vec_reserve(move input, capacity)
+
+fn main(console: Console<Write>):
+    var witness = memory.alloc(1)
+    memory.init(&mut witness, 0, 42)
+    var held = memory.alloc(1)
+    memory.init(&mut held, 0, 37)
+    let created: Result<Vec<U64>, AllocError> = vec_new(3)
+    let Ok(empty) = move created else Err(reason):
+        memory.release(witness)
+        memory.release(held)
+        discard(move console)
+        return
+    let Ok(first) = vec_push_spare(move empty, 73) else Err(rejected):
+        discard(move rejected)
+        memory.release(witness)
+        memory.release(held)
+        discard(move console)
+        return
+    let Ok(vector) = vec_push_spare(move first, 74) else Err(rejected):
+        discard(move rejected)
+        memory.release(witness)
+        memory.release(held)
+        discard(move console)
+        return
+    let one = &witness
+    let two = &held
+    let room: Bool = memory.loan_room(2)
+    assert room == false
+    let Ok(fitting) = observed_reserve(move vector, 1) else Err(rejected):
+        assert false
+        discard(move rejected)
+        memory.end(one)
+        memory.end(two)
+        memory.release(witness)
+        memory.release(held)
+        discard(move console)
+        return
+    assert fitting.capacity == 3
+    assert fitting.length == 2
+    assert memory.cell(fitting.data, 0, 73)
+    assert memory.cell(fitting.data, 1, 74)
+    console.print_int(fitting.capacity)
+    let Err(quota) = observed_reserve(move fitting, 5) else Ok(unexpected):
+        discard(move unexpected)
+        memory.end(one)
+        memory.end(two)
+        memory.release(witness)
+        memory.release(held)
+        discard(move console)
+        return
+    assert quota.vector.capacity == 3
+    assert memory.cell(quota.vector.data, 0, 73)
+    assert memory.cell(quota.vector.data, 1, 74)
+    console.print_int(quota.vector.capacity)
+    let old_capacity = quota.vector.capacity
+    memory.end(two)
+    let Ok(grown) = observed_reserve(move quota.vector, 5) else Err(rejected):
+        discard(move rejected)
+        memory.end(one)
+        memory.release(witness)
+        memory.release(held)
+        discard(move console)
+        return
+    assert grown.capacity >= 5
+    assert grown.capacity >= old_capacity
+    assert grown.length == 2
+    assert memory.cell(grown.data, 0, 73)
+    assert memory.cell(grown.data, 1, 74)
+    console.print_int(grown.length)
+    let Ok(last) = vec_pop(move grown) else Err(rejected):
+        discard(move rejected)
+        memory.end(one)
+        memory.release(witness)
+        memory.release(held)
+        discard(move console)
+        return
+    let Some(last_item) = move last.item else None:
+        discard(move last.vector)
+        memory.end(one)
+        memory.release(witness)
+        memory.release(held)
+        discard(move console)
+        return
+    console.print_int(last_item)
+    let Ok(start) = vec_pop(move last.vector) else Err(rejected):
+        discard(move rejected)
+        memory.end(one)
+        memory.release(witness)
+        memory.release(held)
+        discard(move console)
+        return
+    let Some(first_item) = move start.item else None:
+        discard(move start.vector)
+        memory.end(one)
+        memory.release(witness)
+        memory.release(held)
+        discard(move console)
+        return
+    console.print_int(first_item)
+    let Ok(done) = vec_release(move start.vector) else Err(rejected):
+        discard(move rejected)
+        memory.end(one)
+        memory.release(witness)
+        memory.release(held)
+        discard(move console)
+        return
+    console.print_int(memory.read(&held, 0))
+    console.print_int(memory.read(one, 0))
+    memory.end(one)
+    memory.release(witness)
+    memory.release(held)
+    discard(move console)

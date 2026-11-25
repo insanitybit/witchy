@@ -1,0 +1,49 @@
+// A round-robin scheduler: tasks in a Vec stepped in turn until all finish, with var (a, b),
+// a default argument, an array argument over several lines, and if let on at_mut.
+import console
+import tasks
+import vec
+
+fn worker(steps: U64) suspends:
+    for i in 1..=steps:
+        pause(steps * 10 + i)
+
+fn spawn_all(allocator: &Allocator, lengths: [U64; 3], stack: U64 = 1024) -> Result<Vec<Task>, U64>:
+    let Ok(made): Vec<Task> = Vec.new(allocator, 3) else Err(code):
+        return Err(code)
+    var tasks = move made
+    for n in lengths:
+        let Ok(task): Task = Task.spawn(allocator, stack, worker, *n) else Err(given):
+            tasks.close_all()
+            return Err(1)
+        match tasks.push_mut(allocator, move task):
+            Ok:
+                ()
+            Err(back):
+                back.close()
+    Ok(move tasks)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<Task> = spawn_all(&allocator, [
+        2,
+        1,
+        3,
+    ]) else Err(code):
+        return
+    var tasks = move made
+    var (rounds, done): (U64, U64) = (0, 0)
+    while done < tasks.len():
+        done = 0
+        rounds += 1
+        for i in 0..tasks.len():
+            if let Ok(task) = tasks.at_mut(i):
+                if task.finished():
+                    done += 1
+                else:
+                    match task.step():
+                        Ok:
+                            console.print_int(100 + i)
+                        Err(token):
+                            console.print_int(token)
+    console.print_int(rounds)
+    tasks.close_all()

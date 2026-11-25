@@ -1,0 +1,42 @@
+// Refused by the proof: the field was emptied, then lent to a call that may fill it again, so
+// the assignment could lose an owner.
+import cell
+import option
+
+// The mark points at the cell exactly while one is held: the invariant reads the cell through a
+// method, so it is one over a view of the storage.
+sealed type Holder<T>:
+    mark: Weak<T>
+    held: Option<OccupiedCell<T>>
+    invariant when Some(cell) = held:
+        same_target(mark, cell.pointer())
+    invariant when None = held:
+        !has_address(mark)
+
+fn maybe<T: Any>(slot: &mut Option<T>, item: T) -> Option<T>:
+    var incoming: Option<T> = Some(move item)
+    if true:
+        memory.exchange(&mut *slot, &mut incoming)
+    return move incoming
+
+type Both<T>:
+    first: Option<OccupiedCell<T>>
+    second: Option<OccupiedCell<T>>
+
+impl<T: Any> Holder<T>:
+    nopanic fn peek(holder: &Holder<T>) -> Option<&T>:
+        match &(*holder).held:
+            None:
+                return None
+            Some(cell):
+                return Some(memory.follow_loan(cell.read(), (*holder).mark))
+
+    nopanic fn put(holder: &mut Holder<T>, a: OccupiedCell<T>, b: OccupiedCell<T>) -> Both<T>:
+        let old = (*holder).held.take()
+        let other = maybe(&mut (*holder).held, move a)
+        (*holder).mark = b.pointer()
+        (*holder).held = Some(move b)
+        return Both(move old, move other)
+
+nopanic fn main(a: Allocator, out: Console<Write>):
+    out.print_int(1)

@@ -1,0 +1,55 @@
+type RestoredToken:
+    vector: Vec<Console<Write>>
+    item: Console<Write>
+
+fn restore_token(item: Console<Write>, vector: Vec<Console<Write>>) -> RestoredToken:
+    ensures result.item == old(item)
+    ensures result.vector.data == old(vector.data)
+    ensures memory.unchanged(vector.data)
+    return RestoredToken(move vector, move item)
+
+fn recover_token(input: Vec<Console<Write>>) -> Result<RestoredToken, Vec<Console<Write>>>:
+    match vec_pop(move input):
+        Ok(popped):
+            match popped.item:
+                Some(item):
+                    return Ok(restore_token(move item, move popped.vector))
+                None:
+                    return Err(move popped.vector)
+        Err(kept):
+            return Err(move kept)
+
+fn main(out: Console<Write>, token: Console<Write>):
+    var witness = memory.alloc(1)
+    memory.init(&mut witness, 0, 42)
+    let saved = &witness
+    let allocation: Result<Vec<Console<Write>>, AllocError> = vec_new(1)
+    match allocation:
+        Ok(vector):
+            match vec_push_spare(move vector, move token):
+                Ok(pushed):
+                    match recover_token(move pushed):
+                        Ok(restored):
+                            let returned = move restored.item
+                            returned.print_int(73)
+                            match vec_release(move restored.vector):
+                                Ok(done):
+                                    out.print_int(74)
+                                Err(kept):
+                                    discard(move kept)
+                        Err(kept):
+                            discard(move kept)
+                Err(failed):
+                    let returned = move failed.item
+                    returned.print_int(93)
+                    match vec_release(move failed.vector):
+                        Ok(done):
+                            out.print_int(94)
+                        Err(kept):
+                            discard(move kept)
+        Err(reason):
+            discard(move token)
+            out.print_int(95)
+    out.print_int(memory.read(saved, 0))
+    memory.end(saved)
+    memory.release(witness)

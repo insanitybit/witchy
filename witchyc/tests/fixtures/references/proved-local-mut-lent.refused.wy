@@ -1,0 +1,23 @@
+// Refused: a local lent with `&mut` is unknown afterwards; the store through the reference changed it.
+import console
+
+type Shape:
+    Rect(U64, U64)
+    Dot
+
+type P:
+    x: U64
+    y: U64
+
+fn f(x: U64) -> U64:
+    requires x < 1000
+    ensures result < 1000
+    proof:
+        auto
+    var v = x
+    let r = &mut v
+    *r = 5000
+    return v
+
+fn main(console: Console<Write>):
+    console.print_int(f(3))

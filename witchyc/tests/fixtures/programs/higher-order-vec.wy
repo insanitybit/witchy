@@ -1,0 +1,39 @@
+// Higher-order functions over a Vec: map into a new Vec, filter by a predicate, fold with an
+// accumulator, each taking a closure; one closure captures a value.
+import console
+import vec
+
+fn mapped<F: WitchyFn1<U64, U64>>(allocator: &Allocator, items: &Vec<U64>, f: F) -> Result<Vec<U64>, U64>:
+    var out: Vec<U64> = Vec.new(allocator, items.len())?
+    for x in items:
+        let pushed = out.push_mut(allocator, f(*x))
+    return Ok(move out)
+
+fn count_if<P: WitchyFn1<U64, Bool>>(items: &Vec<U64>, keep: P) -> U64:
+    var n: U64 = 0
+    for x in items:
+        if keep(*x):
+            n += 1
+    return n
+
+fn fold<F: WitchyFn2<U64, U64, U64>>(items: &Vec<U64>, start: U64, f: F) -> U64:
+    var acc = start
+    for x in items:
+        acc = f(acc, *x)
+    return acc
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.new(&allocator, 8) else Err(c):
+        return
+    var v = move made
+    for i in 1..9:
+        let pushed = v.push_mut(&allocator, i)
+    let offset: U64 = 10
+    let Ok(shifted): Vec<U64> = mapped(&allocator, &v, fn(x: U64) -> U64: x * x + offset) else Err(c):
+        v.close()
+        return
+    let evens = count_if(&shifted, fn(x: U64) -> Bool: x % 2 == 0)
+    let sum = fold(&shifted, 0, fn(a: U64, b: U64) -> U64: a + b)
+    console.print("${evens} ${sum} ${shifted[7]}")
+    shifted.close()
+    v.close()

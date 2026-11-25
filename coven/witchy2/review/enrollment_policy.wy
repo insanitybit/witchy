@@ -1,0 +1,201 @@
+import "../tuf/coordinate.wy"
+import "../tuf/release_trust.wy"
+import "../tuf/webauthn.wy"
+import "challenge_bindings.wy"
+import "commit_request.wy"
+import json_tree
+import span
+import string
+import text
+import vec
+
+type Enrollment:
+    credentials: &Vec<Member>
+    origin: &String
+    registry: &String
+    revision: U64
+    ident: &String
+    key: &String
+    retired: &String
+    packages: &Json
+
+pub fn enroll(request: &Json, parameters: &mut String, next: &mut String, allocator: &Allocator) -> Result<(), U64>:
+    if !count_fields(request, 5):
+        return Err(1)
+    let policy = request.field("policy")?
+    let envelope = request.field("envelope")?
+    let assertion = request.field("assertion")?
+    let token = string_field(request, "token")?
+    let key = string_field(request, "public_key")?
+    let intent = envelope.field("intent")?
+    let origin = string_field(policy, "origin")?
+    let registry = string_field(policy, "registry")?
+    let revision = declared_integer(policy, "revision")?
+    if revision == 0 || revision >= 9223372036854775807 || !origin.span().starts_with_text("https://"):
+        return Err(1)
+    check_enrollment_intent(intent, registry, origin)?
+    if !matches_envelope(envelope, token, allocator):
+        return Err(1)
+    let credentials = policy.field("credentials")?
+    let ident = string_field(assertion, "rawId")?
+    let retired = string_field(intent, "replace")?
+    let packages = intent.field("packages")?
+    let expires = declared_integer(intent, "expires")?
+    match credentials:
+        Object(entries):
+            let change = Enrollment(entries, origin, registry, revision, ident, key, retired, packages)
+            check_possession(envelope, assertion, &change, request, parameters, allocator)?
+            let Ok(pin): String = digest_json(policy, allocator) else Err(reason):
+                return Err(1)
+            let finished = finish(&change, token, &pin, expires, parameters, next, allocator)
+            pin.close()
+            return finished
+        _:
+            return Err(1)
+
+fn check_enrollment_intent(intent: &Json, registry: &String, origin: &String) -> Result<(), U64>:
+    let operation = string_field(intent, "operation")?
+    let intended_origin = string_field(intent, "origin")?
+    let intended_registry = string_field(intent, "registry")?
+    if !count_fields(intent, 6) || !operation.equals_text("enroll-maintainer") || !origin.eq(intended_origin) || !registry.eq(intended_registry):
+        return Err(1)
+    return Ok(())
+
+fn check_possession(envelope: &Json, assertion: &Json, change: &Enrollment, request: &Json, out: &mut String, allocator: &Allocator) -> Result<(), U64>:
+    if !valid_packages((*change).packages) || (*change).credentials.len() > 256:
+        return Err(1)
+    if (*change).retired.byte_len() == 0 && (*change).credentials.len() >= 256:
+        return Err(1)
+    for member in (*change).credentials:
+        let installed = string_field(&member.value, "public_key")?
+        if installed.eq((*change).key) || member.key.eq((*change).ident):
+            return Err(3)
+    // The request has the same public_key field shape as an enrolled credential.
+    let Ok(count): U64 = verify_count(envelope, assertion, request, (*change).origin, 0, allocator) else Err(code):
+        return Err(1)
+    return integer_binding(out, "count", count, allocator)
+
+pub fn valid_packages(value: &Json) -> Bool:
+    match value:
+        Array(items):
+            if items.len() == 0:
+                return false
+            for i in 0..items.len():
+                let Ok(item): &Json = items.at(i) else Err(code):
+                    return false
+                let Ok(name): &String = item.text() else Err(code):
+                    return false
+                if !package_name(name.span()):
+                    return false
+                if i > 0:
+                    let Ok(prior): &Json = items.at(i - 1) else Err(code):
+                        return false
+                    let Ok(previous): &String = prior.text() else Err(code):
+                        return false
+                    if !previous.less(name):
+                        return false
+            return true
+        _:
+            return false
+
+fn retired_key(change: &Enrollment, out: &mut String, allocator: &Allocator) -> Result<(), U64>:
+    if (*change).retired.byte_len() == 0:
+        return out.push_text(allocator, "retired_key\ttext\t\n")
+    for entry in (*change).credentials:
+        if entry.key.eq((*change).retired):
+            let scope = entry.value.field("packages")?
+            if !same_scope(scope, (*change).packages):
+                return Err(1)
+            let key = string_field(&entry.value, "public_key")?
+            return text_binding(out, "retired_key", key, allocator)
+    return Err(1)
+
+pub fn same_scope(installed: &Json, proposed: &Json) -> Bool:
+    match installed:
+        Array(items):
+            let Ok(count): U64 = proposed.len() else Err(code):
+                return false
+            if items.len() != count:
+                return false
+            for item in items:
+                let Ok(name): &String = item.text() else Err(code):
+                    return false
+                if !has_package(proposed, name, count):
+                    return false
+            return true
+        _:
+            return false
+
+fn has_package(scope: &Json, name: &String, count: U64) -> Bool:
+    var first: U64 = 0
+    var end = count
+    while first < end:
+        let middle = first + (end - first) / 2
+        let Ok(item): &Json = scope.item(middle) else Err(code):
+            return false
+        let Ok(candidate): &String = item.text() else Err(code):
+            return false
+        if name.eq(candidate):
+            return true
+        if candidate.less(name):
+            first = middle + 1
+        else:
+            end = middle
+    return false
+
+fn finish(change: &Enrollment, token: &String, pin: &String, expires: U64, out: &mut String, next: &mut String, allocator: &Allocator) -> Result<(), U64>:
+    retired_key(change, out, allocator)?
+    text_binding(out, "retired", (*change).retired, allocator)?
+    text_binding(out, "credential", (*change).ident, allocator)?
+    text_binding(out, "public_key", (*change).key, allocator)?
+    text_binding(out, "token", token, allocator)?
+    text_binding(out, "policy_pin", pin, allocator)?
+    integer_binding(out, "expires", expires, allocator)?
+    return encode_policy(change, next, allocator)
+
+fn encode_policy(change: &Enrollment, out: &mut String, allocator: &Allocator) -> Result<(), U64>:
+    out.push_text(allocator, "{\"credentials\":{")?
+    var first = true
+    var added = false
+    for entry in (*change).credentials:
+        if !added && (*change).ident.less(&entry.key):
+            append_new(change, out, &mut first, allocator)?
+            added = true
+        if !entry.key.eq((*change).retired):
+            append_name(out, &entry.key, &mut first, allocator)?
+            append_json(out, &entry.value, allocator)?
+    if !added:
+        append_new(change, out, &mut first, allocator)?
+    out.push_text(allocator, "},\"origin\":")?
+    quoted(out, (*change).origin, allocator)?
+    out.push_text(allocator, ",\"registry\":")?
+    quoted(out, (*change).registry, allocator)?
+    out.push_text(allocator, ",\"revision\":")?
+    out.push_u64(allocator, (*change).revision + 1)?
+    out.push_text(allocator, "}")?
+    if out.byte_len() > 65536:
+        return Err(4)
+    return Ok(())
+
+fn append_new(change: &Enrollment, out: &mut String, first: &mut Bool, allocator: &Allocator) -> Result<(), U64>:
+    append_name(out, (*change).ident, first, allocator)?
+    out.push_text(allocator, "{\"packages\":")?
+    append_json(out, (*change).packages, allocator)?
+    out.push_text(allocator, ",\"public_key\":")?
+    quoted(out, (*change).key, allocator)?
+    return out.push_text(allocator, "}")
+
+fn append_name(out: &mut String, name: &String, first: &mut Bool, allocator: &Allocator) -> Result<(), U64>:
+    if !*first:
+        out.push_text(allocator, ",")?
+    *first = false
+    quoted(out, name, allocator)?
+    return out.push_text(allocator, ":")
+
+fn quoted(out: &mut String, value: &String, allocator: &Allocator) -> Result<(), U64>:
+    for byte in value.as_bytes():
+        if *byte < 32 || *byte >= 127 || *byte == 34 || *byte == 92:
+            return Err(1)
+    out.push_text(allocator, "\"")?
+    out.push_part(allocator, value, 0, value.byte_len())?
+    return out.push_text(allocator, "\"")

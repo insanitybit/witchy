@@ -1,0 +1,21 @@
+// Refused: two Spans of one String are, to the proof, two values it knows nothing of; that
+// they are the same bytes is not something it may use.
+import console
+import span
+import string
+
+fn apart(a: Span, b: Span) -> U64:
+    ensures result == 0
+    let x = a.len()
+    let y = b.len()
+    if x == y:
+        return 0
+    return 1
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var s = move made
+    let _ = s.push_text(&allocator, "hello")
+    console.print_int(apart(s.span(), s.span()))
+    s.close()

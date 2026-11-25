@@ -1,0 +1,17 @@
+// The wall clock is a capability: `main` is given it, and only what it hands the clock to
+// can read the time. The output is a property, so the fixture does not depend on when it runs.
+import console
+
+fn elapsed(clock: &Clock, since: U64) -> U64:
+    let now = clock.now_ms()
+    if now < since:
+        return 0
+    return now - since
+
+fn main(console: Console<Write>, clock: Clock):
+    let start = clock.now_ms()
+    // After 2026-01-01 by this clock.
+    if start > 1767225600000:
+        console.line("the clock is ticking")
+    if elapsed(&clock, start) < 60000:
+        console.line("less than a minute passed")

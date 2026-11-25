@@ -1,0 +1,9 @@
+// A call names the module: two imported files may both offer `area`. A module is named by
+// its file (`parts/other.wy` is `other`); a local of that name would come first.
+import console
+import "parts/area.wy"
+import "parts/other.wy"
+
+fn main(console: Console<Write>):
+    console.print_int(area.area(&Box(3, 4)))
+    console.print_int(other.area(5))

@@ -1,0 +1,1 @@
+run: --listen=127.0.0.1:0 --clock --deadline-ms=6000 --fuel=100000000

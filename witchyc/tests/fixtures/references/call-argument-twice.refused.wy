@@ -1,0 +1,14 @@
+// Two unique references into one place at once: refused.
+import console
+import vec
+
+fn both(a: &mut U64, b: &mut U64):
+    *a += *b
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.filled(&allocator, 3, 5) else Err(code):
+        return
+    var v = move made
+    let s = v.as_mut_slice()
+    both(s.cell(0), s.cell(0))
+    v.close()

@@ -1,0 +1,37 @@
+// Refused (review): a copy taken while broken, returned in a Result.
+import console
+
+sealed type Account:
+    balance: U64
+    limit: U64
+    invariant balance <= limit
+
+impl Account:
+    pub fn open(limit: U64) -> Account:
+        ensures result.balance == 0
+        proof:
+            auto
+        return Account(0, limit)
+
+    pub fn room(account: &Account) -> U64:
+        ensures true
+        proof:
+            auto
+        return (*account).limit - (*account).balance
+
+    pub fn trick(account: &mut Account) -> Result<Account, U64>:
+        ensures true
+        proof:
+            auto
+        (*account).balance = 7
+        let copy = *account
+        (*account).balance = 0
+        return Ok(copy)
+
+fn main(console: Console<Write>):
+    var a = Account.open(5)
+    match a.trick():
+        Ok(b):
+            console.print_int(b.room())
+        Err(e):
+            console.line("err")

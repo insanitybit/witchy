@@ -1,0 +1,20 @@
+import console
+
+type Unit:
+    v: U64
+
+pub trait Scale:
+    fn scaled(self: &Self) -> U64
+
+impl Scale for Unit:
+    fn scaled(self: &Unit) -> U64:
+        return self.v * 10
+
+pub derive Scaled:
+    impl Scale for Self:
+        fn scaled(self: &Self) -> U64:
+            let u: &Unit = &(*self).b
+            return u.scaled() + 1
+
+type Own derive(Scaled):
+    b: Unit

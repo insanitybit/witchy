@@ -1,0 +1,53 @@
+// A chosen value inside functions with contracts: the proof follows each path.
+type Shape:
+    Dot
+    Circle(U64)
+    Box(U64, U64)
+
+fn larger(left: U64, right: U64) -> U64:
+    ensures result >= left
+    ensures result >= right
+    ensures result == left || result == right
+    proof:
+        auto
+    let value = if left > right:
+        left
+    else:
+        right
+    return value
+
+fn clamp(value: U64, low: U64, high: U64) -> U64:
+    requires low <= high
+    ensures result >= low
+    ensures result <= high
+    proof:
+        auto
+    var out = if value < low:
+        low
+    else if value > high:
+        high
+    else:
+        value
+    return out
+
+fn sides(shape: Shape) -> U64:
+    ensures result <= 4
+    proof:
+        auto
+    let count = match shape:
+        Dot:
+            0
+        Circle(radius):
+            1
+        Box(width, height):
+            if width == height:
+                return 4
+            else:
+                2
+    return count * 2
+
+fn main(console: Console<Write>):
+    console.print_int(larger(3, 9))
+    console.print_int(clamp(50, 1, 10))
+    console.print_int(sides(Box(2, 3)))
+    console.print_int(sides(Box(2, 2)))

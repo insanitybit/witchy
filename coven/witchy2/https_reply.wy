@@ -1,0 +1,16 @@
+import https
+import http
+import span
+import tls
+
+// Keep the listener's TLS errors while the standard writer owns the response and close alert.
+pub fn send_reply_with_fields(stream: &mut SecureSession, status: U64, media_type: Text, fields: &ResponseHeaders, body: Span, plaintext: &mut [U8], wire: &mut [U8], allocator: &Allocator) -> Result<(), SessionError>:
+    match https.write_response_with_headers(stream, allocator, status, media_type, fields, body.as_bytes(), plaintext, wire):
+        Ok:
+            return Ok(())
+        Err(ResponseHeadError(OutOfMemory)):
+            return Err(SessionNoRoom)
+        Err(ResponseHeadError(_)):
+            return Err(SessionWriteFailed)
+        Err(ResponseTransportError(reason)):
+            return Err(reason)

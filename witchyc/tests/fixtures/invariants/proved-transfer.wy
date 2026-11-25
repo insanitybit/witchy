@@ -1,0 +1,87 @@
+// A proved `transfer` that changes accounts only through their proved methods: each callee's
+// contract shows the invariant of the `&mut` account it was given, so transfer's own does too.
+// Accounts whose balance never passes their limit: the invariant is the type's, and each
+// operation is proved to keep it, so no deposit can make a balance the type forbids, and
+// the arithmetic in them needs no overflow checks.
+import console
+
+pub type Refusal:
+    OverLimit(U64)
+    Short(U64)
+
+sealed type Account:
+    balance: U64
+    limit: U64
+    invariant balance <= limit
+
+impl Account:
+    pub fn open(limit: U64) -> Account:
+        ensures result.balance == 0
+        proof:
+            auto
+        return Account(0, limit)
+
+    pub fn balance(account: &Account) -> U64:
+        return (*account).balance
+
+    pub fn deposit(account: &mut Account, amount: U64) -> Result<(), Refusal>:
+        ensures match result:
+            Ok:
+                account.balance == old(account.balance) + amount
+            Err(why):
+                account.balance == old(account.balance)
+        proof:
+            auto
+        let room = (*account).limit - (*account).balance
+        if amount > room:
+            return Err(OverLimit(room))
+        (*account).balance = (*account).balance + amount
+        return Ok(())
+
+    pub fn withdraw(account: &mut Account, amount: U64) -> Result<(), Refusal>:
+        ensures match result:
+            Ok:
+                account.balance + amount == old(account.balance)
+            Err(why):
+                account.balance == old(account.balance)
+        proof:
+            auto
+        if amount > (*account).balance:
+            return Err(Short((*account).balance))
+        (*account).balance = (*account).balance - amount
+        return Ok(())
+
+// Money moves whole or not at all.
+fn transfer(from: &mut Account, to: &mut Account, amount: U64) -> Result<(), Refusal>:
+    ensures true
+    proof:
+        auto
+    from.withdraw(amount)?
+    match to.deposit(amount):
+        Ok:
+            return Ok(())
+        Err(why):
+            match from.deposit(amount):
+                Ok:
+                    return Err(why)
+                Err(again):
+                    return Err(again)
+
+fn say(console: &Console<Write>, done: Result<(), Refusal>):
+    match done:
+        Ok:
+            console.line("ok")
+        Err(OverLimit(room)):
+            console.print("over the limit, room for ${room}")
+        Err(Short(have)):
+            console.print("short, have ${have}")
+
+fn main(console: Console<Write>):
+    var a = Account.open(100)
+    var b = Account.open(50)
+    say(&console, a.deposit(80))
+    say(&console, a.deposit(30))
+    say(&console, transfer(&mut a, &mut b, 40))
+    say(&console, transfer(&mut a, &mut b, 20))
+    say(&console, transfer(&mut b, &mut a, 60))
+    console.print("${a.balance()} ${b.balance()}")

@@ -1,0 +1,5 @@
+// Refused: two imported modules offer an `Item`, and a bare one names neither.
+import "parts/orders.wy"
+import "parts/stock.wy"
+fn main():
+    let item: Item = orders.order(1)

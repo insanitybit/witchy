@@ -1,0 +1,64 @@
+type Packet:
+    flags: U8
+    code: U16
+    bytes: [U8; 3]
+    stamp: U32
+
+type Entry:
+    Data(Packet)
+    Stamp(U64)
+
+fn set_middle(bytes: &mut [U8]):
+    bytes[1] = 255
+
+fn packet(stamp: U32) -> Packet:
+    return Packet(7, 65530, [10, 20, 30], stamp)
+
+fn entry(p: Packet) -> Entry:
+    return Data(p)
+
+fn total(p: &Packet) -> U64:
+    return U8.to_u64((*p).flags) + U16.to_u64((*p).code) + U8.to_u64((*p).bytes[0]) + U8.to_u64((*p).bytes[1]) + U8.to_u64((*p).bytes[2]) + U32.to_u64((*p).stamp)
+
+fn by_ref(e: &Entry) -> U64:
+    match e:
+        Data(p):
+            return total(p)
+        Stamp(n):
+            return *n
+
+fn by_value(e: Entry) -> U64:
+    match e:
+        Data(p):
+            return total(&p)
+        Stamp(n):
+            return n
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var p = packet(100000)
+    set_middle(p.bytes.slice_mut())
+    let e = entry(p)
+    console.print_int(by_ref(&e))
+    console.print_int(by_value(e))
+    let allocation: Result<Buffer<Packet>, U64> = memory.try_alloc(&allocator, 2)
+    let Ok(raw): Buffer<Packet> = move allocation else Err(code):
+        return
+    var buffer = move raw
+    let _ = memory.init(&mut buffer, 0, packet(10))
+    let _ = memory.init(&mut buffer, 1, p)
+    match memory.ref(&buffer, 1):
+        Ok(stored):
+            console.print_int(total(stored))
+        Err(code):
+            console.print_int(code)
+    let _ = memory.take(&mut buffer, 1)
+    match memory.take(&mut buffer, 0):
+        Ok(first):
+            console.print_int(total(&first))
+        Err(code):
+            console.print_int(code)
+    match memory.try_release(move buffer):
+        Ok:
+            return
+        Err(stuck):
+            unreachable

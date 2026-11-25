@@ -1,0 +1,10 @@
+// Refused, naming the two types one type parameter is given.
+import console
+
+fn both<T: Any>(a: &T, b: &T) -> U64:
+    return 0
+
+fn main(console: Console<Write>):
+    let x: U64 = 3
+    let y: Bool = true
+    console.print_int(both(&x, &y))

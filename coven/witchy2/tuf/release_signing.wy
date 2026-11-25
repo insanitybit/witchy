@@ -1,0 +1,73 @@
+import "attestations.wy"
+import "../review/policy_document.wy"
+import "release_trust.wy"
+import "webauthn.wy"
+import json_tree
+import mldsa_signer
+import span
+import string
+import vec
+
+fn sign_message(message: &String, prepared: Result<(), U64>, signer: &Mldsa87Signer, output: &mut [U8]) -> Result<(), U64>:
+    prepared?
+    return signer.sign(message.as_bytes(), output)
+
+pub type WitnessProof:
+    approval: &Json
+    installed_policy: Span
+    publisher: Span
+
+pub fn sign_witness(claim: ReleaseClaim, proof: WitnessProof, trust: &ReleaseTrust, now: U64, signer: &Mldsa87Signer, output: &mut [U8], allocator: &Allocator) -> Result<(), U64>:
+    let policy = trust.policy()?
+    let active = digest_text(proof.installed_policy.as_bytes(), allocator)?
+    let checked = check_installed(policy, &active, proof.approval, allocator)
+    active.close()
+    checked?
+    if let Err(error) = check_approval(proof.approval, policy, claim, now, now, allocator):
+        return Err(1)
+    if let Err(error) = verify_assertion(proof.approval, policy, allocator):
+        return Err(1)
+    return witness_assertion(trust, claim, proof.publisher.as_bytes(), proof.approval, now, signer, output, allocator)
+
+fn check_installed(policy: &Json, active: &String, approval: &Json, allocator: &Allocator) -> Result<(), U64>:
+    let expected = claimed_policy(approval)?
+    let Ok(matches): Bool = matches_policy(policy, active, allocator) else Err(error):
+        return Err(1)
+    if !matches:
+        return Err(3)
+    if !expected.eq(active):
+        return Err(1)
+    return validate_policy(policy, allocator)
+
+fn witness_assertion(trust: &ReleaseTrust, claim: ReleaseClaim, publisher: &[U8], approval: &Json, attested_at: U64, signer: &Mldsa87Signer, output: &mut [U8], allocator: &Allocator) -> Result<(), U64>:
+    if let Err(error) = check_publisher(trust, claim, publisher, allocator):
+        return Err(1)
+    let key: Vec<U8> = trust.witness(allocator)?
+    let matches = witness_key_matches(signer, key.as_slice(), allocator)
+    key.close()
+    if !matches?:
+        return Err(2)
+    let empty: String = String.with_capacity(allocator, 768)?
+    var message = move empty
+    let prepared = witness_message(&mut message, claim, publisher, approval, attested_at, allocator)
+    let signed = sign_message(&message, prepared, signer, output)
+    message.close()
+    return signed
+
+fn witness_key_matches(signer: &Mldsa87Signer, expected: &[U8], allocator: &Allocator) -> Result<Bool, U64>:
+    let empty: Vec<U8> = Vec.filled(allocator, 2592, 0)?
+    var public = move empty
+    if let Err(code) = signer.public_key(public.as_mut_slice()):
+        public.close()
+        return Err(code)
+    let matches = same_bytes(public.as_slice(), expected)
+    public.close()
+    return Ok(matches)
+
+fn same_bytes(actual: &[U8], expected: &[U8]) -> Bool:
+    if actual.len() != expected.len():
+        return false
+    for i in 0..actual.len():
+        if actual[i] != expected[i]:
+            return false
+    return true

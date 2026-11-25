@@ -1,0 +1,38 @@
+// A container of its own over a Vec: `bag[i]` is its view's element, and the view's `ensures`
+// says the view is as long as `bag.len()`. So `for i in 0..bag.len(): bag[i]` reads the view made
+// once before the loop, with no test (check/methods.rs `counted_container`).
+import console
+import vec
+
+sealed type Bag:
+    items: Vec<U64>
+
+impl Bag:
+    fn len(bag: &Bag) -> U64:
+        return (*bag).items.len()
+
+    fn view(bag: &Bag) -> &[U64]:
+        ensures result.len() == bag.items.len()
+        proof:
+            auto
+        return (*bag).items.as_slice()
+
+    fn index(bag: &Bag, at: U64) -> U64:
+        return bag.view()[at]
+
+fn total(bag: &Bag, from: U64) -> U64:
+    var n: U64 = 0
+    for i in from..bag.len():
+        n += bag[i] * (i + 1)
+    return n
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.new(&allocator, 4) else Err(code):
+        return
+    var items = move made
+    for x in [3, 1, 4, 1, 5]:
+        let _ = items.push_mut(&allocator, *x)
+    let bag = Bag(move items)
+    console.print("${total(&bag, 0)} ${total(&bag, 2)} ${total(&bag, 9)}")
+    let Bag(owned) = move bag
+    owned.close()

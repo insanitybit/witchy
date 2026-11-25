@@ -1,0 +1,144 @@
+// Graphs whose nodes are numbered per opening (docs/design-brands.md).
+//
+//     brand roads.nodes() as nodes:
+//         var distance = nodes.distances(&allocator, infinity)?
+//         if let Some(home) = nodes.first():
+//             distance.set(home, 0)
+//
+// A `Node<G>` is a row of the opening whose brand is `G`: only this file makes one, and only
+// below the node count of the graph that opening lent. A `Distances<G>` has one value per row of
+// that opening. A helper says what it needs with `G: Brand`, and a row of another opening, even
+// of a graph of the same size, does not fit.
+import discard
+import option
+import vec
+import "wasm-discard-core.wy"
+
+// A directed graph: `count` nodes and the edges between them, by number. It is built with
+// numbers, then opened to work with its nodes.
+pub sealed type Graph:
+    count: U64
+    sources: Vec<U64>
+    targets: Vec<U64>
+
+// A node of the opening whose brand is `G`.
+pub sealed type Node<G>:
+    offset: U64
+
+// An opening of a graph: it lends the graph, which stays as it is while the opening is used.
+pub sealed type Nodes<G>:
+    graph: &Graph
+
+// The nodes the edges from one node lead to, one at a time (a `for` steps it by `next_mut`).
+pub sealed type Neighbors<G>:
+    graph: &Graph
+    from: U64
+    at: U64
+
+// One U64 for each node of the opening whose brand is `G`.
+pub sealed type Distances<G>:
+    values: Vec<U64>
+
+impl Graph:
+    // A graph of `count` nodes and no edges.
+    pub fn new(allocator: &Allocator, count: U64) -> Result<Graph, U64>:
+        let Ok(made_sources): Vec<U64> = Vec.new(allocator, 0) else Err(code):
+            return Err(code)
+        var sources = move made_sources
+        let Ok(made_targets): Vec<U64> = Vec.new(allocator, 0) else Err(code):
+            sources.close()
+            return Err(code)
+        var targets = move made_targets
+        return Ok(Graph(count, move sources, move targets))
+
+    // An edge from node `from` to node `to`, by number. Err(1): no room. Err(2): one is not a
+    // node of this graph. The graph is then as it was.
+    pub fn connect(self: &mut Graph, allocator: &Allocator, from: U64, to: U64) -> Result<(), U64>:
+        if from >= (*self).count || to >= (*self).count:
+            return Err(2)
+        match (*self).sources.push_mut(allocator, from):
+            Ok:
+                let pushed = true
+            Err(back):
+                return Err(1)
+        match (*self).targets.push_mut(allocator, to):
+            Ok:
+                return Ok(())
+            Err(back):
+                match (*self).sources.take_last_mut():
+                    Ok(undone):
+                        return Err(1)
+                    Err(code):
+                        return Err(1)
+
+    pub fn close(self: Graph):
+        let Graph(count, sources, targets) = move self
+        sources.close()
+        targets.close()
+
+    // The nodes of this graph, numbered for this opening alone: `brand graph.nodes() as nodes:`.
+    pub fn nodes<D: Fresh>(self: &Graph) -> Nodes<D>:
+        return Nodes(self)
+
+impl<G: Brand> Nodes<G>:
+    // How many nodes the graph has.
+    pub fn count(self: &Nodes<G>) -> U64:
+        let graph = (*self).graph
+        return (*graph).count
+
+    // The first node, when the graph has any.
+    pub fn first(self: &Nodes<G>) -> Option<Node<G>>:
+        let graph = (*self).graph
+        if (*graph).count == 0:
+            return None
+        return Some(Node(0))
+
+    // The node numbered `offset`, when there is one: how a number from outside becomes a row.
+    pub fn node(self: &Nodes<G>, offset: U64) -> Option<Node<G>>:
+        let graph = (*self).graph
+        if offset >= (*graph).count:
+            return None
+        return Some(Node(offset))
+
+    // The number of a node, for printing.
+    pub fn number(self: &Nodes<G>, node: Node<G>) -> U64:
+        return node.offset
+
+    // The nodes an edge leads to from `from`, in the order the edges were made:
+    // `for next in nodes.neighbors(home):`.
+    pub fn neighbors(self: &Nodes<G>, from: Node<G>) -> Neighbors<G>:
+        return Neighbors((*self).graph, from.offset, 0)
+
+    // A table of one value per node, each `fill`.
+    pub fn distances(self: &Nodes<G>, allocator: &Allocator, fill: U64) -> Result<Distances<G>, U64>:
+        let graph = (*self).graph
+        let Ok(made): Vec<U64> = Vec.filled(allocator, (*graph).count, fill) else Err(code):
+            return Err(code)
+        return Ok(Distances(move made))
+
+impl<G: Brand> Neighbors<G>:
+    pub fn next_mut(self: &mut Neighbors<G>, cursor: &mut U64) -> Result<Node<G>, ()>:
+        let graph = (*self).graph
+        while (*self).at < (*graph).sources.len():
+            let at = (*self).at
+            (*self).at = at + 1
+            if (*graph).sources[at] == (*self).from:
+                return Ok(Node((*graph).targets[at]))
+        return Err(())
+
+impl<G: Brand> Distances<G>:
+    // The value of a node of this opening. The table has one per node, so this is always there.
+    pub fn get(self: &Distances<G>, node: Node<G>) -> U64:
+        return (*self).values[node.offset]
+
+    pub fn set(self: &mut Distances<G>, node: Node<G>, value: U64):
+        (*self).values[node.offset] = value
+
+    pub fn close(self: Distances<G>):
+        let Distances(values) = move self
+        values.close()
+
+// So that `using var roads: Graph = ...:` closes it on every way out.
+impl Discard for Graph:
+    fn discard(self: Graph):
+        self.close()

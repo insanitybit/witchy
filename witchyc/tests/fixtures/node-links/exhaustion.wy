@@ -1,0 +1,65 @@
+import list
+import string
+
+fn fill(list: &mut DoublyLinkedList<U64>, a: &Allocator) -> U64:
+    var count: U64 = 0
+    while true:
+        match list.insert(a, count):
+            Ok:
+                count += 1
+            Err(original):
+                return original
+    return count
+
+fn exercise(a: &Allocator, out: &Console<Write>, strings: &mut DoublyLinkedList<String>, numbers: &mut DoublyLinkedList<U64>):
+    var saved = match String.with_capacity(a, 4):
+        Ok(s):
+            move s
+        Err(code):
+            return
+    if let Err(_) = saved.push_text(a, "kept"):
+        saved.close()
+        return
+    out.print_int(fill(numbers, a))
+    match strings.insert(a, move saved):
+        Ok:
+            unreachable
+        Err(original):
+            out.print_int(original.byte_len())
+            numbers.move_prev()
+            match numbers.remove():
+                Some(n):
+                    out.print_int(n)
+                None:
+                    unreachable
+            // One released slot suffices; the original String did not need rebuilding.
+            match strings.insert(a, move original):
+                Ok:
+                    strings.move_prev()
+                Err(back):
+                    back.close()
+                    unreachable
+    match strings.remove():
+        Some(value):
+            for byte in value.as_bytes():
+                out.print_byte(*byte)
+            out.print_byte(10)
+            value.close()
+        None:
+            unreachable
+
+fn main(out: Console<Write>, a: Allocator):
+    var numbers: DoublyLinkedList<U64> = DoublyLinkedList.new()
+    var strings: DoublyLinkedList<String> = DoublyLinkedList.new()
+    exercise(&a, &out, &mut strings, &mut numbers)
+    while numbers.move_prev():
+        numbers.remove()
+    match numbers.close_empty():
+        Err(back):
+            unreachable
+        Ok:
+            match strings.close_empty():
+                Err(back):
+                    unreachable
+                Ok:
+                    out.print_int(0)

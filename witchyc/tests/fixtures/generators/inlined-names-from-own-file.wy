@@ -1,0 +1,11 @@
+// Another file's generator run in place calls the functions its own file means: the program's
+// private `bump` does not replace the module's public one (eighth review: printed 100 101).
+import console
+import "parts/walk_public.wy"
+
+fn bump(x: U64) -> U64:
+    return x + 100
+
+fn main(console: Console<Write>):
+    for v in walk(2):
+        console.print_int(v)

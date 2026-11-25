@@ -1,0 +1,30 @@
+// `x: impl Before` is a type parameter of its own bound by the trait, one for each parameter.
+import console
+import hash
+import sort
+
+type Point derive(Hash, Before):
+    x: U64
+    y: U64
+
+fn smaller(a: impl Before, b: U64) -> U64:
+    b
+
+fn least(a: impl Before, b: impl Hash) -> U64:
+    b.hash() % 10
+
+fn pick<T: Before>(a: T, b: T) -> T:
+    if b.before(&a):
+        return b
+    a
+
+fn first(a: impl Before, other: impl Before) -> Bool:
+    a.before(&a)
+
+fn main(console: Console<Write>):
+    let p = pick(Point(x: 3, y: 1), Point(x: 2, y: 9))
+    console.print_int(p.x)
+    console.print_int(least(p, 5))
+    console.print_int(smaller(7, 4))
+    if !first(p, 3):
+        console.print_int(1)

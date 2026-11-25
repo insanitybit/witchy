@@ -1,0 +1,5 @@
+fn helper(x: U64) -> U64:
+    return x * 10
+
+pub fn second(x: U64) -> U64:
+    return helper(x)

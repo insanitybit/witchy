@@ -1,0 +1,6 @@
+// One name in parentheses is not a pattern: `for item in`.
+import console
+
+fn main(console: Console<Write>):
+    for (a) in [1]:
+        console.print_int(a)

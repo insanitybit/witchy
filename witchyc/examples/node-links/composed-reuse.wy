@@ -1,0 +1,22 @@
+import cell_list
+
+fn main(out: Console<Write>, a: Allocator):
+    var list: DoublyLinkedList<U64> = DoublyLinkedList.new()
+    let first_failure = list.push_back(&a, 11)
+    if first_failure.is_some():
+        list.close()
+        return
+    let second_failure = list.push_back(&a, 22)
+    if second_failure.is_some():
+        list.close()
+        return
+    let old = list.tail_address()
+    out.print_int(list.pop_back().unwrap_or(0))
+    let third_failure = list.push_back(&a, 33)
+    if third_failure.is_some():
+        list.close()
+        return
+    out.print_int(U32.to_u64(old))
+    out.print_int(U32.to_u64(list.tail_address()))
+    out.print_int(list.pop_back().unwrap_or(0))
+    list.close()

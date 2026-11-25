@@ -1,0 +1,4 @@
+pub type Entry:
+    n: U64
+pub fn mk() -> Entry:
+    return Entry(77)

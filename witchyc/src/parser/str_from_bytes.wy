@@ -1,0 +1,62 @@
+// How many bytes the scalar that starts at `index` takes (1 to 4), or 0 when the bytes there
+// are not one. The four cases match the scalar encodings in Witchy.Utf8.scan.
+nopanic fn str_from_bytes_step(bytes: &[U8], index: U64) -> U64:
+    requires index < bytes.len()
+    ensures result <= bytes.len() - index
+    proof:
+        auto
+    let left = bytes.len() - index
+    let lead = bytes[index]
+    if lead < 128:
+        return 1
+    if lead >= 194 && lead <= 223:
+        if left < 2:
+            return 0
+        let second = bytes[index + 1]
+        if second < 128 || second > 191:
+            return 0
+        return 2
+    if lead >= 224 && lead <= 239:
+        if left < 3:
+            return 0
+        let second = bytes[index + 1]
+        let third = bytes[index + 2]
+        if second < 128 || second > 191 || third < 128 || third > 191:
+            return 0
+        if (lead == 224 && second < 160) || (lead == 237 && second > 159):
+            return 0
+        return 3
+    if lead >= 240 && lead <= 244:
+        if left < 4:
+            return 0
+        let second = bytes[index + 1]
+        let third = bytes[index + 2]
+        let fourth = bytes[index + 3]
+        if second < 128 || second > 191 || third < 128 || third > 191 || fourth < 128 || fourth > 191:
+            return 0
+        if (lead == 240 && second < 144) || (lead == 244 && second > 143):
+            return 0
+        return 4
+    return 0
+
+
+// Both are proved: every read is inside the slice and no step overflows, so none is tested and
+// a `nopanic fn` may validate text. The scalar's step is its own function because one proof of
+// the whole loop took 2.5 s of every program's first build, and the two take none to speak of.
+nopanic fn str_from_bytes(bytes: &[U8]) -> Result<&str, U64>:
+    ensures true
+    proof:
+        auto
+    let length = bytes.len()
+    var index: U64 = 0
+    while index < length:
+        invariant index <= length
+        if length - index >= 8:
+            if bytes.read_le64(index) & 9259542123273814144 == 0:
+                index += 8
+                continue
+        let used = str_from_bytes_step(bytes, index)
+        if used == 0:
+            return Err(1)
+        index += used
+    return Ok(validated_utf8_view(bytes))

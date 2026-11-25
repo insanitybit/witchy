@@ -1,0 +1,48 @@
+import "identity.wy"
+import "web_routes.wy"
+import fs
+import span
+import string
+import text
+
+pub fn require_web_timestamp(root: &Dir<Read>, expected: Span, output: &mut [U8]) -> Result<(), U64>:
+    let Ok(size): U64 = identity.read_file(root, "metadata/timestamp.json", output.part(0, 16384)) else Err(reason):
+        return Err(503)
+    if !matches_sha384(output.part(0, size), expected):
+        return Err(503)
+    return Ok(())
+
+pub fn read_web_asset(root: &Dir<Read>, expected: Span, route: WebRoute, output: &mut [U8], allocator: &Allocator) -> Result<U64, U64>:
+    if !shipped_script(route, expected):
+        return Err(503)
+    let empty = String.with_capacity(allocator, 107)?
+    var path = move empty
+    let named = asset_path(&mut path, expected, allocator)
+    let read = load_body(named, root, &path, output.part(0, asset_limit(route)))
+    path.close()
+    let length = read?
+    if !matches_sha384(output.part(0, length), expected):
+        return Err(503)
+    return Ok(length)
+
+// Match the browser code shipped by Grimoire, independently of the route table.
+fn shipped_script(route: WebRoute, digest: Span) -> Bool:
+    match route:
+        Bootstrap:
+            return digest.equals_text("f0b355c6c76d69b565c8cde73739635bd0e14f25af043be57ea1ad755a227ca93e4c0eda01fe96148d480a2a5fef933d")
+        Worker:
+            return digest.equals_text("c0eb76dbda49864a0911b661fcc69925903f6980f23a1204c483580aa949065d6bd10bccbd19762e8a3e167be68b6a7a")
+        Frame:
+            return digest.equals_text("30cba3fb89b2722bd403f238858acc683c8930bf9a8b219dc4f9f01f3fe5d00040403a8340f1f349d294d6ff63ea3e33")
+        _:
+            return true
+
+fn asset_path(path: &mut String, hash: Span, allocator: &Allocator) -> Result<(), U64>:
+    path.push_text(allocator, "web/assets/")?
+    return path.push_utf8_slice(allocator, hash.as_bytes())
+
+fn load_body(named: Result<(), U64>, root: &Dir<Read>, path: &String, output: &mut [U8]) -> Result<U64, U64>:
+    named?
+    let Ok(size): U64 = identity.read_file_path(root, path, output) else Err(reason):
+        return Err(503)
+    return Ok(size)

@@ -1,0 +1,8 @@
+// Refused, naming the nearest function in reach.
+import console
+
+fn total_of(a: U64, b: U64) -> U64:
+    return a + b
+
+fn main(console: Console<Write>):
+    console.print_int(totl_of(1, 2))

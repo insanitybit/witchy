@@ -1,0 +1,42 @@
+import "../tuf/base64url.wy"
+import "../tuf/release_trust.wy"
+import "../tuf/webauthn.wy"
+import json_tree
+import span
+import string
+import text
+import vec
+
+pub fn matches_envelope(envelope: &Json, token: &String, allocator: &Allocator) -> Bool:
+    if !count_fields(envelope, 2):
+        return false
+    let Ok(nonce): Vec<U8> = decode_field(envelope, "nonce", allocator, 32) else Err(code):
+        return false
+    let length = nonce.len()
+    nonce.close()
+    return length == 32 && matches_token(envelope, token, allocator)
+
+fn matches_token(envelope: &Json, token: &String, allocator: &Allocator) -> Bool:
+    var expected: [U8; 48] = [0; 48]
+    if let Err(reason) = challenge(envelope, &mut expected, allocator):
+        return false
+    let Ok(encoded): Vec<U8> = unpadded_base64url(token.as_bytes(), allocator, 48) else Err(code):
+        return false
+    let matches = Span.of(encoded.as_slice()).same(Span.of(expected.slice()))
+    encoded.close()
+    return matches
+
+pub fn text_binding(out: &mut String, name: Text, value: &String, allocator: &Allocator) -> Result<(), U64>:
+    for byte in value.as_bytes():
+        if *byte < 32 || *byte >= 127:
+            return Err(1)
+    out.push_text(allocator, name)?
+    out.push_text(allocator, "\ttext\t")?
+    out.push_part(allocator, value, 0, value.byte_len())?
+    return out.push_text(allocator, "\n")
+
+pub fn integer_binding(out: &mut String, name: Text, value: U64, allocator: &Allocator) -> Result<(), U64>:
+    out.push_text(allocator, name)?
+    out.push_text(allocator, "\tint\t")?
+    out.push_u64(allocator, value)?
+    return out.push_text(allocator, "\n")

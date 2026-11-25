@@ -1,0 +1,10 @@
+// A method on the result of an F64 built-in: `F64.to_i64(x).magnitude()` was refused, as a
+// method on a value of unknown type; `F64.bits(x)` gives a U64 a method can be called on too.
+import console
+import int
+
+fn main(console: Console<Write>):
+    let x = -1234.75
+    console.print_int(F64.to_i64(F64.floor(x)).magnitude())
+    console.print_int(F64.bits(x) / 4503599627370496 % 2048)
+    console.print("${F64.to_i64(2.5e3).magnitude()}")

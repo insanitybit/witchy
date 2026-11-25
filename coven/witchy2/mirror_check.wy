@@ -1,0 +1,133 @@
+// Check the headers for a public mirror route on an authenticated TLS session.
+import "tls13/http_client.wy"
+import "tuf/download_request.wy"
+import "tuf/release_trust.wy"
+import console
+import discard
+import fs
+import http
+import https
+import json_tree
+import net
+import span
+import string
+import text
+import time
+import tls
+import tls_trust_pem
+import url
+import vec
+
+fn main(output: Console<Write>, input: Console<Read>, net: Net, ca: File<Read>, rng: Rand, clock: Clock, allocator: Allocator):
+    let Ok(request): Json = read_download_request(&input, &allocator) else Err(reason):
+        ca.close()
+        output.line("refused 1")
+        return
+    let result = query(&request, &net, move ca, &rng, &clock, &allocator)
+    request.discard()
+    match result:
+        Ok(length):
+            output.write("{\"content_length\":")
+            output.write_u64(length)
+            output.line(",\"status\":200}")
+        Err(code):
+            output.write("refused ")
+            output.write_u64(code)
+            output.print_byte(10)
+
+fn query(request: &Json, net: &Net, ca: File<Read>, rng: &Rand, clock: &Clock, allocator: &Allocator) -> Result<U64, U64>:
+    let pem = read_trust_pem(move ca, allocator)?
+    let parsed = pinned_roots(request, &pem, allocator)
+    pem.close()
+    let Ok(roots): Vec<U8> = move parsed else Err(code):
+        return Err(code)
+    let result = check_route(request, net, roots.as_slice(), rng, clock, allocator)
+    roots.close()
+    return result
+
+fn pinned_roots(request: &Json, pem: &String, allocator: &Allocator) -> Result<Vec<U8>, U64>:
+    if !count_fields(request, 3):
+        return Err(1)
+    let expected = string_field(request, "ca_pin")?
+    let actual = digest_text(pem.as_bytes(), allocator)?
+    let matches = actual.eq(expected)
+    actual.close()
+    if !matches:
+        return Err(7)
+    return trust_bundle(pem.span(), allocator)
+
+fn check_route(request: &Json, net: &Net, roots: &[U8], rng: &Rand, clock: &Clock, allocator: &Allocator) -> Result<U64, U64>:
+    let origin = string_field(request, "origin")?
+    let endpoint = https_origin(origin.span())?
+    let route = string_field(request, "route")?
+    let catalog = route.span().equals_text("catalog")
+    if !catalog && !route.span().equals_text("timestamp"):
+        return Err(1)
+    return with_buffers(net, endpoint, catalog, roots, rng, clock, allocator)
+
+fn with_buffers(net: &Net, endpoint: HttpOrigin, catalog: Bool, roots: &[U8], rng: &Rand, clock: &Clock, allocator: &Allocator) -> Result<U64, U64>:
+    let buffer: Vec<U8> = Vec.filled(allocator, 72704, 0)?
+    var transcript = move buffer
+    let Ok(clear): Vec<U8> = Vec.filled(allocator, 16385, 0) else Err(code):
+        transcript.close()
+        return Err(code)
+    var plaintext = move clear
+    let Ok(ciphertext): Vec<U8> = Vec.filled(allocator, 16406, 0) else Err(code):
+        plaintext.close()
+        transcript.close()
+        return Err(code)
+    var wire = move ciphertext
+    let result = connect(net, endpoint, catalog, roots, rng, clock, allocator, transcript.as_mut_slice(), plaintext.as_mut_slice(), wire.as_mut_slice())
+    wire.close()
+    plaintext.close()
+    transcript.close()
+    return result
+
+fn connect(net: &Net, endpoint: HttpOrigin, catalog: Bool, roots: &[U8], rng: &Rand, clock: &Clock, allocator: &Allocator, transcript: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]) -> Result<U64, U64>:
+    let connected = connect_https(net, endpoint, roots, rng, clock, allocator, transcript, plaintext, wire)
+    let Ok(session): SecureSession = move connected else Err(reason):
+        return Err(3)
+    var secure = move session
+    let result = inspect(&mut secure, allocator, endpoint.authority(), catalog, plaintext, wire)
+    secure.close()
+    return result
+
+fn inspect(session: &mut SecureSession, allocator: &Allocator, authority: Span, catalog: Bool, plaintext: &mut [U8], wire: &mut [U8]) -> Result<U64, U64>:
+    let catalog_path: Text = "/"
+    let timestamp_path: Text = "/metadata/timestamp.json"
+    let path = if catalog: catalog_path else: timestamp_path
+    let storage: Vec<U8> = Vec.filled(allocator, 4096, 0)?
+    var head = move storage
+    let received = https.head(session, allocator, authority, Span.of(path.as_str().as_bytes()), head.as_mut_slice(), plaintext, wire)
+    let result = read_length(received, head.as_slice(), catalog)
+    head.close()
+    return result
+
+fn read_length(received: Result<Reply, HttpsError>, head: &[U8], catalog: Bool) -> Result<U64, U64>:
+    let Ok(reply): Reply = received else Err(reason):
+        return Err(5)
+    if reply.status != 200 || reply.body_len != 0:
+        return Err(6)
+    let Ok(parsed): http.Head = http.head(Span.of(head.part(0, reply.head_len))) else Err(reason):
+        return Err(6)
+    let html: Text = "text/html; charset=utf-8"
+    let json: Text = "application/json"
+    let media = if catalog: html else: json
+    if !exact_field(parsed.headers, "Content-Type", media) || !exact_field(parsed.headers, "Cache-Control", "no-store"):
+        return Err(6)
+    let length = http.header(parsed.headers, "Content-Length")?
+    let size = length.parse_u64()?
+    if size == 0:
+        return Err(6)
+    return Ok(size)
+
+fn exact_field(headers: Span, name: Text, expected: Text) -> Bool:
+    var found = false
+    for line in headers.lines():
+        let Ok(field): Halves = line.split(':') else Err(rest):
+            return false
+        if field.head.equals_text_ignore_ascii_case(name):
+            if found || !field.tail.trim().equals_text(expected):
+                return false
+            found = true
+    return found

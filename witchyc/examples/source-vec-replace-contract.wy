@@ -1,0 +1,164 @@
+// Ordinary generic composition: every fact comes from the public summary.
+fn observed_replace<T>(input: Vec<T>, index: USize, replacement: T) -> Result<Replaced<T>, ReplaceFailure<T>>:
+    ensures match result:
+        Ok(changed):
+            index < old(input.length)
+            changed.previous == old(memory.read(input.data, index))
+            changed.vector.data == old(input.data)
+            changed.vector.length == old(input.length)
+            changed.vector.capacity == old(input.capacity)
+            memory.cell(input.data, index, replacement)
+            memory.unchanged_except(input.data, index)
+        Err(failed):
+            failed.vector.data == old(input.data)
+            failed.vector.length == old(input.length)
+            failed.vector.capacity == old(input.capacity)
+            failed.replacement == old(replacement)
+            (failed.out_of_bounds == true && index >= old(input.length)) || (failed.out_of_bounds == false && index < old(input.length) && !memory.loan_room(1))
+            memory.unchanged(input.data)
+    return vec_replace(move input, index, move replacement)
+
+// This uncalled definition remains part of ordinary admission.
+fn unused_replace_bound(input: Vec<U64>, index: USize, replacement: U64) -> Result<Replaced<U64>, ReplaceFailure<U64>>:
+    ensures match result:
+        Ok(changed):
+            index < old(input.length)
+        Err(failed):
+            true
+    return vec_replace(move input, index, replacement)
+
+fn main(console: Console<Write>):
+    var witness = memory.alloc(1)
+    memory.init(&mut witness, 0, 42)
+    var held = memory.alloc(1)
+    memory.init(&mut held, 0, 37)
+    var third = memory.alloc(1)
+    memory.init(&mut third, 0, 41)
+    let created: Result<Vec<U64>, AllocError> = vec_new(2)
+    let Ok(empty) = move created else Err(reason):
+        memory.release(witness)
+        memory.release(held)
+        memory.release(third)
+        discard(move console)
+        return
+    let Ok(first) = vec_push_spare(move empty, 73) else Err(rejected):
+        discard(move rejected)
+        memory.release(witness)
+        memory.release(held)
+        memory.release(third)
+        discard(move console)
+        return
+    let Ok(vector) = vec_push_spare(move first, 74) else Err(rejected):
+        discard(move rejected)
+        memory.release(witness)
+        memory.release(held)
+        memory.release(third)
+        discard(move console)
+        return
+    let one = &witness
+    let two = &held
+    let three = &third
+    let Err(bounds) = observed_replace(move vector, 2, 99) else Ok(unexpected):
+        discard(move unexpected)
+        memory.end(one)
+        memory.end(two)
+        memory.end(three)
+        memory.release(witness)
+        memory.release(held)
+        memory.release(third)
+        discard(move console)
+        return
+    let bounds_flag = bounds.out_of_bounds
+    assert bounds_flag == true
+    assert bounds.vector.length == 2
+    assert bounds.replacement == 99
+    console.print_int(80)
+    let Err(exhausted) = observed_replace(move bounds.vector, 0, bounds.replacement) else Ok(unexpected):
+        discard(move unexpected)
+        memory.end(one)
+        memory.end(two)
+        memory.end(three)
+        memory.release(witness)
+        memory.release(held)
+        memory.release(third)
+        discard(move console)
+        return
+    let exhausted_flag = exhausted.out_of_bounds
+    assert exhausted_flag == false
+    let room: Bool = memory.loan_room(1)
+    assert room == false
+    assert exhausted.replacement == 99
+    console.print_int(81)
+    memory.end(one)
+    let Ok(changed) = observed_replace(move exhausted.vector, 0, exhausted.replacement) else Err(rejected):
+        discard(move rejected)
+        memory.end(two)
+        memory.end(three)
+        memory.release(witness)
+        memory.release(held)
+        memory.release(third)
+        discard(move console)
+        return
+    assert changed.previous == 73
+    assert 0 < changed.vector.length
+    assert memory.cell(changed.vector.data, 0, 99)
+    assert memory.cell(changed.vector.data, 1, 74)
+    console.print_int(changed.previous)
+    let Ok(last) = vec_pop(move changed.vector) else Err(rejected):
+        discard(move rejected)
+        memory.end(two)
+        memory.end(three)
+        memory.release(witness)
+        memory.release(held)
+        memory.release(third)
+        discard(move console)
+        return
+    let Some(last_item) = move last.item else None:
+        discard(move last.vector)
+        memory.end(two)
+        memory.end(three)
+        memory.release(witness)
+        memory.release(held)
+        memory.release(third)
+        discard(move console)
+        return
+    assert last_item == 74
+    console.print_int(last_item)
+    let Ok(start) = vec_pop(move last.vector) else Err(rejected):
+        discard(move rejected)
+        memory.end(two)
+        memory.end(three)
+        memory.release(witness)
+        memory.release(held)
+        memory.release(third)
+        discard(move console)
+        return
+    let Some(first_item) = move start.item else None:
+        discard(move start.vector)
+        memory.end(two)
+        memory.end(three)
+        memory.release(witness)
+        memory.release(held)
+        memory.release(third)
+        discard(move console)
+        return
+    assert first_item == 99
+    console.print_int(first_item)
+    let Ok(done) = vec_release(move start.vector) else Err(rejected):
+        discard(move rejected)
+        memory.end(two)
+        memory.end(three)
+        memory.release(witness)
+        memory.release(held)
+        memory.release(third)
+        discard(move console)
+        return
+    console.print_int(memory.read(two, 0))
+    console.print_int(memory.read(three, 0))
+    memory.end(two)
+    memory.end(three)
+    console.print_int(memory.read(&witness, 0))
+    memory.release(witness)
+    memory.release(held)
+    memory.release(third)
+    discard(move console)

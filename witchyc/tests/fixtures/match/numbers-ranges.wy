@@ -1,0 +1,22 @@
+// Ranges of numbers as arms: `lo..hi` stops before `hi`, `lo..=hi` includes it.
+fn class(byte: U64) -> U64:
+    match byte:
+        '0'..='9':
+            return 1
+        'a'..='z' | 'A'..='Z' | '_':
+            return 2
+        0..32 | 127:
+            return 3
+        _:
+            return 4
+
+fn main(console: Console<Write>):
+    console.print_int(class('5'))
+    console.print_int(class('9'))
+    console.print_int(class('q'))
+    console.print_int(class('Z'))
+    console.print_int(class('_'))
+    console.print_int(class(31))
+    console.print_int(class(32))
+    console.print_int(class(127))
+    console.print_int(class(0))

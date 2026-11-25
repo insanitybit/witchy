@@ -1,0 +1,21 @@
+// `while at < s.len() && s[at] == 32`: the right of `&&` runs only once the left held, and an
+// expression assigns nothing, so on a shared slice of Copy elements `s[at]` there has no test.
+import console
+
+fn spaces(s: &[U8], from: U64) -> U64:
+    var at = from
+    while at < s.len() && s[at] == 32:
+        at += 1
+    return at
+
+fn last_nonzero(s: &[U64]) -> U64:
+    var at = s.len()
+    while at > 0 && s.len() > at - 1 && s[at - 1] == 0:
+        at -= 1
+    return at
+
+fn main(console: Console<Write>):
+    let a: [U8; 6] = [32, 32, 65, 32, 32, 32]
+    let s = a.slice()
+    let b: [U64; 4] = [4, 0, 0, 0]
+    console.print("${spaces(s, 0)} ${spaces(s, 3)} ${spaces(s, 6)} ${spaces(s, 9)} ${last_nonzero(b.slice())}")

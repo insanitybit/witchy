@@ -1,0 +1,38 @@
+// `sort` on F64s with NaNs, infinities and both zeros: IEEE totalOrder, -0.0 before 0.0, every
+// NaN last. A NaN with its sign bit set is written too: `F64.bits` gives every NaN the canonical
+// bits, so it is a NaN like the others and last as well. With `<` the NaNs' places, and the
+// rest's, were unspecified.
+// Then a median and the least and greatest numbers, skipping the NaNs at the ends.
+import console
+import float
+import vec
+import sort
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<F64> = Vec.new(&allocator, 16) else Err(e):
+        return
+    var values = move made
+    let zero = 0.0
+    let nan = zero / zero
+    let negative_nan = F64.from_bits(F64.bits(nan) + 9223372036854775808)
+    let inf = 1.0 / zero
+    for value in [3.5, nan, -1.0, 0.0, -0.0, inf, 2.0, negative_nan, 0.0 - inf, 1.0e-300, -2.5, nan, 7.25]:
+        match values.push_mut(&allocator, *value):
+            Ok:
+                ()
+            Err(v):
+                ()
+    sort(&mut values)
+    for value in &values:
+        console.show(*value)
+        console.write(" ")
+    console.line("")
+    // The numbers lie between the NaNs.
+    var first: U64 = 0
+    while first < values.len() && values[first] != values[first]:
+        first += 1
+    var end = values.len()
+    while end > first && values[end - 1] != values[end - 1]:
+        end -= 1
+    console.print("numbers ${end - first}, least ${values[first]}, greatest ${values[end - 1]}, median ${values[first + (end - first) / 2]}")
+    values.close()

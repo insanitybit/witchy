@@ -1,0 +1,8 @@
+// Refused: a method without `pub` is private to its file.
+import "../../../library/wasm-console.wy"
+import "parts/area.wy"
+
+fn main(console: Console<Write>):
+    let shape = Box(3, 4)
+    console.print_int(area(&shape))
+    console.print_int(shape.half_width())

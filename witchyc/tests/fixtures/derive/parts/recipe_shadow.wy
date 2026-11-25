@@ -1,0 +1,11 @@
+pub type Unit:
+    v: U64
+
+pub trait Scale:
+    fn scaled(self: &Self) -> U64
+
+pub derive Scaled:
+    impl Scale for Self:
+        fn scaled(self: &Self) -> U64:
+            let u = Unit(v: 10)
+            return (*self).a * u.v

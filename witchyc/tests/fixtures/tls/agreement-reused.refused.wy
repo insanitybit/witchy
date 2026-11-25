@@ -1,0 +1,8 @@
+import key_agreement
+
+fn main(rand: Rand):
+    var share: [U8; 97] = [0; 97]
+    let Ok(key): P384Key = rand.p384_key(share.slice_mut()) else Err(_):
+        return
+    key.close()
+    key.close()

@@ -1,0 +1,58 @@
+// Formatting numbers, booleans, literals and strings onto one String.
+import "../../../library/wasm-format.wy"
+import "../../../library/wasm-string.wy"
+
+fn add<T: Any + Render>(console: &Console<Write>, allocator: &Allocator, out: String, value: &T) -> String:
+    match value.show(move out, allocator):
+        Ok(grown):
+            return move grown
+        Err(back):
+            console.print_int(900)
+            return move back
+
+fn dump(console: &Console<Write>, text: &String):
+    console.print_int(text.byte_len())
+    var index: U64 = 0
+    while index < text.byte_len():
+        match text.byte_at(index):
+            Ok(byte):
+                console.print_int(U8.to_u64(byte))
+            Err(code):
+                console.print_int(901)
+        index += 1
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<String, U64> = String.new(&allocator)
+    match move made:
+        Ok(empty):
+            var text = move empty
+            let count: U64 = 1205
+            let zero: U64 = 0
+            let yes = true
+            let label: Text = "n="
+            text = add(&console, &allocator, move text, &label)
+            text = add(&console, &allocator, move text, &count)
+            let comma: Text = ", é "
+            text = add(&console, &allocator, move text, &comma)
+            text = add(&console, &allocator, move text, &zero)
+            text = add(&console, &allocator, move text, &yes)
+            dump(&console, &text)
+            // A String shows itself too; the copy doubles the length.
+            let copied: Result<String, U64> = String.new(&allocator)
+            match move copied:
+                Ok(start):
+                    var copy = add(&console, &allocator, move start, &text)
+                    copy = add(&console, &allocator, move copy, &text)
+                    console.print_int(copy.byte_len())
+                    // Cutting inside the two-byte scalar is refused; at its start it is not.
+                    copy = copy.truncate(9)
+                    console.print_int(copy.byte_len())
+                    copy = copy.truncate(8)
+                    console.print_int(copy.byte_len())
+                    copy.close()
+                Err(code):
+                    console.print_int(code)
+            text.close()
+            console.print_int(1)
+        Err(code):
+            console.print_int(code)

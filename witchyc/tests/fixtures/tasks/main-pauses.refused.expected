@@ -1,0 +1,1 @@
+`main` may pause here (`wait_once` may), but nothing would resume it: run pausing code in a task, `Task.spawn`

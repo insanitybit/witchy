@@ -1,0 +1,142 @@
+// The edges of cell storage that checked mode compares (scripts/native-checked.py): an empty
+// vector and a zero-length range, the first and the last cell, a full vector, owners moved
+// between cells, and a sparse buffer filled and emptied away from its first cells.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-vec.wy"
+import "../../../library/wasm-deque.wy"
+import "../../../library/wasm-string.wy"
+import "../../../library/wasm-discard.wy"
+
+fn word(allocator: &Allocator, text: Text) -> String:
+    let Ok(made): String = String.new(allocator) else Err(code):
+        unreachable
+    var owned = move made
+    if let Err(_) = owned.push_text(allocator, text):
+        unreachable
+    return move owned
+
+fn numbers(console: &Console<Write>, allocator: &Allocator):
+    // No room at all: no element, an empty slice, nothing to take.
+    let Ok(none): Vec<U64> = Vec.new(allocator, 0) else Err(code):
+        unreachable
+    var empty = move none
+    console.print_int(empty.as_slice().len())
+    match empty.get(0):
+        Ok(value):
+            console.print_int(900)
+        Err(code):
+            console.print_int(code)
+    match empty.take_last_mut():
+        Ok(value):
+            console.print_int(901)
+        Err(code):
+            console.print_int(code)
+    match empty.push_spare_mut(5):
+        Ok:
+            console.print_int(902)
+        Err(back):
+            console.print_int(back)
+    empty.close()
+    // Filled to the last cell: the first, the last, one past it, and back down to empty.
+    let Ok(three): Vec<U64> = Vec.new(allocator, 3) else Err(code):
+        unreachable
+    var full = move three
+    for value in 10..13:
+        if let Err(_) = full.push_spare_mut(value):
+            unreachable
+    match full.push_spare_mut(13):
+        Ok:
+            console.print_int(903)
+        Err(back):
+            console.print_int(back)
+    console.print_int(full[0] + full[2])
+    full[2] = 40
+    match full.get(3):
+        Ok(value):
+            console.print_int(904)
+        Err(code):
+            console.print_int(code)
+    var total: U64 = 0
+    for value in &full:
+        total = total + *value
+    console.print_int(total)
+    while full.len() > 0:
+        match full.take_last_mut():
+            Ok(value):
+                total = total - value
+            Err(code):
+                unreachable
+    console.print_int(total)
+    full.close()
+
+fn owners(console: &Console<Write>, allocator: &Allocator):
+    // Owners moved between cells: taken from the front, put in the middle, turned around.
+    let Ok(made): Vec<String> = Vec.new(allocator, 2) else Err(code):
+        unreachable
+    var words = move made
+    for text in ["ash", "birch", "cedar"]:
+        if let Err(back) = words.push_mut(allocator, word(allocator, *text)):
+            back.discard()
+    match words.remove_at(0):
+        Ok(first):
+            console.write_string(&first)
+            if let Err(back) = words.insert_at(allocator, 1, move first):
+                back.discard()
+        Err(code):
+            console.print_int(905)
+    words.reverse()
+    for text in &words:
+        console.write_string(text)
+    while words.len() > 0:
+        match words.take_last_mut():
+            Ok(last):
+                last.discard()
+            Err(code):
+                unreachable
+    words.discard()
+
+fn ends(console: &Console<Write>, allocator: &Allocator):
+    // A sparse buffer: cells filled from the far end first, emptied from both.
+    let Ok(made): Deque<String> = Deque.new(allocator, 4) else Err(code):
+        unreachable
+    var line = move made
+    for text in ["one", "two"]:
+        if let Err(back) = line.push_front_mut(word(allocator, *text)):
+            back.discard()
+    if let Err(back) = line.push_back_mut(word(allocator, "three")):
+        back.discard()
+    console.print_int(line.len())
+    match line.pop_back_mut():
+        Ok(last):
+            console.write_string(&last)
+            last.discard()
+        Err(code):
+            console.print_int(906)
+    match line.pop_front_mut():
+        Ok(first):
+            console.write_string(&first)
+            first.discard()
+        Err(code):
+            console.print_int(907)
+    match line.at(0):
+        Ok(left):
+            console.write_string(left)
+        Err(code):
+            console.print_int(908)
+    match line.at(1):
+        Ok(left):
+            console.print_int(909)
+        Err(code):
+            console.print_int(code)
+    line.discard()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    numbers(&console, &allocator)
+    owners(&console, &allocator)
+    ends(&console, &allocator)
+    // An empty text appended: a range of no cells.
+    var text = word(&allocator, "")
+    if let Err(_) = text.push_text(&allocator, ""):
+        unreachable
+    console.print_int(text.byte_len())
+    text.discard()

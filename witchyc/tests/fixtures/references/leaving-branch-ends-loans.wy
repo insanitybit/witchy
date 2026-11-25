@@ -1,0 +1,22 @@
+import console
+import span
+import string
+
+// Accepted: the leaving branch closes the String the span reads; the other path reads the
+// span before closing it.
+fn good(allocator: &Allocator, n: U64) -> Result<U64, U64>:
+    let Ok(made): String = String.new(allocator) else Err(code):
+        return Err(code)
+    var text = move made
+    let _ = text.push_text(allocator, "a b")
+    let words = text.span()
+    if n == 0:
+        text.close()
+        return Err(n)
+    let length = words.len()
+    text.close()
+    return Ok(length)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    if let Ok(n) = good(&allocator, 1):
+        console.print_int(n)

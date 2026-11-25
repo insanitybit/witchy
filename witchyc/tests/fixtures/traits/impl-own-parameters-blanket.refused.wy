@@ -1,0 +1,16 @@
+// Refused: whether the library's impl for every type covers an instance of this one is not
+// compared yet, so an impl with parameters of its own is refused beside it.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-hash.wy"
+
+type Pair<T> derive(Eq, Hash):
+    first: T
+    second: T
+
+impl<T: Any + Eq> Equivalent<Pair<T>> for Pair<T>:
+    fn equivalent(self: &Pair<T>, key: &Pair<T>) -> Bool:
+        return true
+
+fn main(console: Console<Write>):
+    let pair: Pair<U64> = Pair(3, 4)
+    console.print_int(1)

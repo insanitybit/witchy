@@ -1,0 +1,18 @@
+// Refused (review of nested generators): a `let` local of a gen fn assigned.
+import console
+
+gen fn count(limit: U64) -> U64:
+    var i: U64 = 0
+    while i < limit:
+        yield i
+        i += 1
+
+gen fn g(n: U64) -> U64:
+    let k: U64 = n
+    yield k
+    k = 5
+    yield k
+
+fn main(console: Console<Write>):
+    for n in g(3):
+        console.print_int(n)

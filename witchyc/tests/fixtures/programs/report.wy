@@ -1,0 +1,144 @@
+// A report by department from lines of `name,department,salary`: how many people,
+// the total, the average and the highest salary, departments in order.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-hashmap.wy"
+import "../../../library/wasm-span.wy"
+import "../../../library/wasm-sort.wy"
+import "../../../library/wasm-vec.wy"
+import "../../../library/wasm-discard.wy"
+import "../../../library/wasm-string.wy"
+import "../../../library/wasm-discard-core.wy"
+
+type Stats:
+    people: U64
+    total: U64
+    highest: U64
+
+impl Discard for Stats:
+    fn discard(self: Stats):
+        return
+
+type Row = .{department: Span, salary: U64}
+
+type Fault = .[Shape | Number | NoRoom]
+
+// The second and third of three fields.
+fn row(line: Span) -> Result<Row, Fault>:
+    let first = match line.split(44):
+        Ok(halves):
+            halves
+        Err(whole):
+            return Err(.Shape)
+    let second = match first.tail.split(44):
+        Ok(halves):
+            halves
+        Err(whole):
+            return Err(.Shape)
+    match second.tail.trim().parse_u64():
+        Ok(salary):
+            return Ok(.{department: second.head.trim(), salary: salary})
+        Err(code):
+            return Err(.Number)
+
+fn count(totals: &mut HashMap<String, Stats>, allocator: &Allocator, row: Row) -> Result<(), Fault>:
+    let key = match row.department.to_string(allocator):
+        Ok(made):
+            move made
+        Err(code):
+            return Err(.NoRoom)
+    match totals.get_mut(&key):
+        Ok(stats):
+            stats.people += 1
+            stats.total += row.salary
+            if row.salary > stats.highest:
+                stats.highest = row.salary
+            key.close()
+            return Ok(())
+        Err(code):
+            match totals.put(allocator, move key, Stats(1, row.salary, row.salary)):
+                Ok(done):
+                    return Ok(())
+                Err(entry):
+                    entry.discard()
+                    return Err(.NoRoom)
+
+fn names(totals: &HashMap<String, Stats>, allocator: &Allocator) -> Result<Vec<String>, Fault>:
+    var out: Vec<String> = match Vec.new(allocator, totals.len()):
+        Ok(made):
+            move made
+        Err(code):
+            return Err(.NoRoom)
+    for slot in 0..totals.capacity():
+        match totals.entry(slot):
+            Ok(entry):
+                match entry.key.span().to_string(allocator):
+                    Ok(name):
+                        out.put_back(move name)
+                    Err(code):
+                        out.discard()
+                        return Err(.NoRoom)
+            Err(code):
+                continue
+    sort(&mut out)
+    return Ok(move out)
+
+fn report(console: &Console<Write>, totals: &HashMap<String, Stats>, allocator: &Allocator) -> Result<(), Fault>:
+    let order = names(totals, allocator)?
+    for name in &order:
+        match totals.get(name):
+            Ok(stats):
+                console.write_string_left(name, 14)
+                console.write_u64_right(stats.people, 3)
+                console.write_u64_right(stats.total, 7)
+                console.write_u64_right(stats.total / stats.people, 6)
+                console.write_u64_right(stats.highest, 6)
+                console.line("")
+            Err(code):
+                continue
+    order.discard()
+    return Ok(())
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    let made: Result<HashMap<String, Stats>, U64> = HashMap.new(&allocator, 0)
+    var totals = match move made:
+        Ok(empty):
+            move empty
+        Err(code):
+            return
+    var text = match String.new(&allocator):
+        Ok(empty):
+            move empty
+        Err(code):
+            totals.discard()
+            return
+    var number: U64 = 0
+    var skipped: U64 = 0
+    while true:
+        text.clear()
+        match input.read_line(&allocator, &mut text):
+            .Line:
+                number += 1
+                if number == 1:
+                    continue
+                match row(text.span()):
+                    Ok(row):
+                        match count(&mut totals, &allocator, row):
+                            Ok(done):
+                                continue
+                            Err(fault):
+                                console.line("no room")
+                                break
+                    Err(.Shape) | Err(.Number):
+                        skipped += 1
+                    Err(.NoRoom):
+                        break
+            .End | .NotText | .NoRoom:
+                break
+    match report(&console, &totals, &allocator):
+        Ok(done):
+            console.write("skipped ")
+            console.print_int(skipped)
+        Err(fault):
+            console.line("no room")
+    text.close()
+    totals.discard()

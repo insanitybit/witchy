@@ -1,0 +1,14 @@
+// A generic type of a standard module, named through it.
+import console
+import vec
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<vec.Vec<U64>, U64> = vec.Vec.new(&allocator, 4)
+    match move made:
+        Ok(start):
+            var items: vec.Vec<U64> = move start
+            let pushed = items.push_spare_mut(9)
+            console.print_int(items.len())
+            items.close()
+        Err(code):
+            console.print_int(code)

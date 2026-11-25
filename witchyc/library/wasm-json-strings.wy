@@ -1,0 +1,70 @@
+// Quoted JSON strings for standard UTF-8 and ASCII-only output.
+import "wasm-string.wy"
+import "wasm-text.wy"
+
+pub type JsonStringEncoding:
+    JsonUtf8
+    JsonAscii
+
+// Append a quoted string. Restore the original bytes of output on failure.
+pub fn append_json_string(output: &mut String, allocator: &Allocator, source: &String, encoding: JsonStringEncoding) -> Result<(), U64>:
+    let keep = output.byte_len()
+    let ascii = match encoding:
+        JsonUtf8:
+            false
+        JsonAscii:
+            true
+    let appended = append_quoted(output, allocator, source, ascii)
+    if let Err(reason) = appended:
+        output.cut(keep)
+    return appended
+
+fn append_quoted(output: &mut String, allocator: &Allocator, text: &String, ascii: Bool) -> Result<(), U64>:
+    output.push_text(allocator, "\"")?
+    let bytes = text.as_bytes()
+    var start: U64 = 0
+    var at: U64 = 0
+    while at < bytes.len():
+        let byte = bytes[at]
+        if byte == 34 || byte == 92 || byte < 32 || (ascii && byte >= 127):
+            output.push_part(allocator, text, start, at)?
+            let scalar = text.scalar_at(at)?
+            escape_scalar(output, allocator, scalar.value)?
+            at += scalar.width
+            start = at
+        else:
+            at += 1
+    output.push_part(allocator, text, start, bytes.len())?
+    return output.push_text(allocator, "\"")
+
+fn escape_scalar(output: &mut String, allocator: &Allocator, scalar: U64) -> Result<(), U64>:
+    if scalar == 34 || scalar == 92:
+        return output.push_ascii(allocator, 92 | (scalar << 8), 2)
+    match scalar:
+        8:
+            return output.push_text(allocator, "\\b")
+        9:
+            return output.push_text(allocator, "\\t")
+        10:
+            return output.push_text(allocator, "\\n")
+        12:
+            return output.push_text(allocator, "\\f")
+        13:
+            return output.push_text(allocator, "\\r")
+        _:
+            if scalar <= 65535:
+                return escape_unit(output, allocator, scalar)
+            let rest = scalar - 65536
+            escape_unit(output, allocator, 55296 + rest / 1024)?
+            return escape_unit(output, allocator, 56320 + rest % 1024)
+
+fn escape_unit(output: &mut String, allocator: &Allocator, scalar: U64) -> Result<(), U64>:
+    var word: U64 = 30044
+    for i in 0..4:
+        let digit = (scalar >> ((3 - i) * 4)) % 16
+        let encoded = if digit < 10:
+            48 + digit
+        else:
+            87 + digit
+        word = word | (encoded << ((i + 2) * 8))
+    return output.push_ascii(allocator, word, 6)

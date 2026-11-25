@@ -1,0 +1,26 @@
+// `span.words()` walks the words of a Span, split at runs of spaces, newlines and tabs, each a
+// Span of the same String: no copy.
+import console
+import span
+import string
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var text = move made
+    let _ = text.push_text(&allocator, "  one two\tthree\n\nfour  ")
+    var count: U64 = 0
+    for word in text.span().words():
+        count += 1
+        write_span(&console, word)
+        console.write(";")
+    console.line("")
+    console.print_int(count)
+    let Ok(blank_made): String = String.new(&allocator) else Err(code):
+        text.close()
+        return
+    var blank = move blank_made
+    for word in blank.span().words():
+        console.line("never")
+    blank.close()
+    text.close()

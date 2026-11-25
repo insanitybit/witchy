@@ -1,0 +1,7 @@
+fn gap(a: U64, b: U64) -> U64:
+    ensures result <= a
+    proof:
+        auto
+    return a - b
+fn main(console: Console<Write>):
+    console.print_int(gap(2, 1))

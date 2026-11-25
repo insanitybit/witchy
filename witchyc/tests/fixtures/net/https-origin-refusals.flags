@@ -1,0 +1,2 @@
+build: --heap-pages=9 --slots=64 --stack-bytes=16384
+run: --net=localhost:1 --clock --rand --memory-pages=20 --fuel=200000000 --deadline-ms=3000

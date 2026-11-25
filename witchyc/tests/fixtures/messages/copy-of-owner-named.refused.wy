@@ -1,0 +1,27 @@
+// Refused, naming the type and what to do: `get` copies an element out, and a String is not copied.
+import console
+import string
+import vec
+import discard
+
+fn show(s: &String) -> U64:
+    return s.byte_len()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(k): Vec<String> = Vec.new(&allocator, 2) else Err(c):
+        return
+    var keys = move k
+    let Ok(made): String = String.new(&allocator) else Err(c):
+        keys.discard()
+        return
+    match keys.push_mut(&allocator, move made):
+        Ok:
+            ()
+        Err(back):
+            back.close()
+    match keys.get(0):
+        Ok(x):
+            x.close()
+        Err(c):
+            ()
+    keys.discard()

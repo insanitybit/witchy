@@ -1,0 +1,6 @@
+pub type Entry:
+    flag: Bool
+pub fn read(e: &Entry) -> U64:
+    if e.flag:
+        return 1
+    return 0

@@ -1,0 +1,51 @@
+// Explicit failure dispositions retain their ordinary checked release obligations.
+fn main(out: Console<Write>, token: Console<Write>):
+    var witness: Buffer<U64> = memory.alloc(1)
+    memory.init(&mut witness, 0, 42)
+    let saved = &witness
+    let allocation: Result<Vec<Console<Write>>, AllocError> = vec_new(0)
+    let Ok(vector) = move allocation else Err(reason):
+        discard(move token)
+        memory.end(saved)
+        memory.release(witness)
+        discard(move out)
+        return
+    let Ok(pushed) = vec_push(move vector, move token) else Err(failed):
+        discard(move failed.item)
+        discard(move failed.vector)
+        memory.end(saved)
+        memory.release(witness)
+        discard(move out)
+        return
+    let Ok(grown) = vec_reserve(move pushed, 3) else Err(failed):
+        discard(move failed.vector)
+        memory.end(saved)
+        memory.release(witness)
+        discard(move out)
+        return
+    let Ok(popped) = vec_pop(move grown) else Err(kept):
+        discard(move kept)
+        memory.end(saved)
+        memory.release(witness)
+        discard(move out)
+        return
+    let Some(recovered) = move popped.item else None:
+        discard(move popped.vector)
+        memory.end(saved)
+        memory.release(witness)
+        discard(move out)
+        return
+    let restored = move recovered
+    restored.print_int(73)
+    discard(move restored)
+    let Ok(done) = vec_release(move popped.vector) else Err(kept):
+        discard(move kept)
+        memory.end(saved)
+        memory.release(witness)
+        discard(move out)
+        return
+    out.print_int(74)
+    out.print_int(memory.read(saved, 0))
+    memory.end(saved)
+    memory.release(witness)
+    discard(move out)

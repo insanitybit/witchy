@@ -1,0 +1,60 @@
+// Methods are functions declared in an `impl` block and called on a value. The receiver
+// is lent, moved or copied as the method's first parameter asks.
+type Counter:
+    count: U64
+    step: U64
+
+type Option<T>:
+    Some(T)
+    None
+
+type Pair<T>:
+    first: T
+    second: T
+
+impl Counter:
+    fn new(step: U64) -> Counter:
+        return Counter(0, step)
+
+    fn value(self: &Counter) -> U64:
+        return (*self).count
+
+    fn bump(self: &mut Counter):
+        (*self).count = (*self).count + (*self).step
+
+    fn bump_twice(self: &mut Counter):
+        self.bump()
+        self.bump()
+
+    fn finish(self: Counter) -> U64:
+        return self.count * 10
+
+impl<T> Pair<T>:
+    fn swap(self: Pair<T>) -> Pair<T>:
+        return Pair(self.second, self.first)
+
+    fn head(self: &Pair<T>) -> T:
+        return (*self).first
+
+impl<T> Option<T>:
+    fn or(self: Option<T>, otherwise: T) -> T:
+        match self:
+            Some(value):
+                return value
+            None:
+                return otherwise
+
+fn main(console: Console<Write>):
+    var counter = Counter.new(3)
+    counter.bump()
+    console.print_int(counter.value())
+    counter.bump_twice()
+    console.print_int(counter.value())
+    console.print_int(counter.finish())
+    let pair: Pair<U64> = Pair(1, 2)
+    let swapped = pair.swap()
+    console.print_int(swapped.head())
+    let found: Option<U64> = Some(7)
+    console.print_int(found.or(0))
+    let missing: Option<U64> = None
+    console.print_int(missing.or(5))

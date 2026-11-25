@@ -1,0 +1,24 @@
+// Refused (adversarial review of the key law, n_root_Span): accepted before, with two equal keys hashing apart.
+import console
+import hash
+
+type Span:
+    a: U64
+    b: U64
+
+impl Eq for Span:
+    fn eq(self: &Span, other: &Span) -> Bool:
+        return (*self).a == (*other).a
+
+impl HashKey for Span:
+    fn feed(self: &Span, state: &mut HashState):
+        (*self).a.feed(state)
+        (*self).b.feed(state)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let x = Span(a: 1, b: 2)
+    let y = Span(a: 1, b: 3)
+    if x == y:
+        console.print_int(1)
+    console.print_int(hash_key(&x, Reference(1)))
+    console.print_int(hash_key(&y, Reference(1)))

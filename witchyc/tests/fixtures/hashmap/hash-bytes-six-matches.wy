@@ -1,0 +1,33 @@
+// `hash_bytes` reduces once per six bytes (proved not to overflow); every hash must be the one
+// the byte-at-a-time definition gives, at every length 0..199 and for random bytes, and a String
+// must hash as the Text of the same bytes and as its Span.
+import console
+import string
+import span
+import hash
+
+fn per_byte(bytes: &[U8]) -> U64:
+    var hash: U64 = 5381
+    for index in 0..bytes.len():
+        hash = (hash * 33 + U8.to_u64(bytes[index])) % 4294967291
+    return hash
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var buf: [U8; 200] = [0; 200]
+    var seed: U64 = 5
+    var wrong: U64 = 0
+    for len in 0..200:
+        for i in 0..200:
+            seed = seed * 48271 % 2147483647
+            buf[i] = U8.truncate(seed % 256)
+        if per_byte(buf.slice().part(0, len)) != hash_bytes(buf.slice().part(0, len)):
+            wrong += 1
+    let Ok(made): String = String.new(&allocator) else Err(c):
+        return
+    var s = move made
+    let _ = s.push_text(&allocator, "a key of twenty-three b")
+    let t: Text = "a key of twenty-three b"
+    if s.hash() != t.hash() || s.hash() != s.span().hash() || s.hash() != per_byte(s.as_bytes()):
+        wrong += 1
+    console.print("${wrong} wrong")
+    s.close()

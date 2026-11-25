@@ -1,0 +1,1 @@
+run: --args=3:64 --arg=sum --arg=--fuel=1 --arg=

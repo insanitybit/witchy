@@ -1,0 +1,18 @@
+// `&a` and `&mut a` of a fixed array where a slice is expected are its whole slice.
+import console
+
+fn total(values: &[U64]) -> U64:
+    var sum: U64 = 0
+    for v in values:
+        sum += *v
+    return sum
+
+fn double(values: &mut [U64]):
+    for i in 0..values.len():
+        values[i] = values[i] * 2
+
+fn main(console: Console<Write>):
+    var a: [U64; 3] = [1, 2, 3]
+    double(&mut a)
+    console.print_int(total(&a))
+    console.print_int(a[2])

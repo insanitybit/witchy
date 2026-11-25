@@ -1,0 +1,9 @@
+open alice
+deposit alice 50
+withdraw alice 20
+withdraw alice 100
+deposit bob 5
+deposit alice lots
+close alice
+withdraw alice
+open

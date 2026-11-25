@@ -1,0 +1,111 @@
+// Reads input.toml from the granted directory and prints what it holds, one line a value,
+// for scripts/toml-test.py to compare with toml-test's tagged JSON. `invalid` when refused.
+import console
+import fs
+import string
+import option
+import "@toml"
+
+fn hex(out: &mut String, allocator: &Allocator, text: &str):
+    let bytes = text.as_bytes()
+    for at in 0..bytes.len():
+        let byte = U8.to_u64(bytes[at])
+        let high = byte / 16
+        let low = byte % 16
+        let a = if high < 10: 48 + high else: 87 + high
+        let b = if low < 10: 48 + low else: 87 + low
+        let one = out.push(allocator, a)
+        let two = out.push(allocator, b)
+
+fn word(out: &mut String, allocator: &Allocator, letter: U64, number: U64):
+    let a = out.push(allocator, letter)
+    let b = out.push(allocator, 32)
+    let c = out.push_decimal(allocator, number)
+    let d = out.push(allocator, 10)
+
+fn show<G: Brand>(doc: &Doc<G>, out: &mut String, allocator: &Allocator, item: Item<G>):
+    if let Some(table) = doc.table(item):
+        let open = out.push_text(allocator, "{\n")
+        var entry = doc.first(table)
+        var seen: U64 = 0
+        while let Some(child) = entry:
+            let k = out.push_text(allocator, "k ")
+            hex(out, allocator, doc.key(child))
+            let n = out.push(allocator, 10)
+            // The value is shown as looked up by its key, so a lookup that misses or finds
+            // another value shows (the harness takes neither line below for a value).
+            if let Some(found) = doc.get(table, doc.key(child)):
+                show(doc, out, allocator, found)
+            else:
+                let missed = out.push_text(allocator, "MISSING\n")
+            seen = U64.wrapping_add(seen, 1)
+            entry = doc.next(child)
+        if seen != doc.table_len(table):
+            let wrong = out.push_text(allocator, "LENGTH\n")
+        let close = out.push_text(allocator, "}\n")
+        return
+    if let Some(array) = doc.array(item):
+        let open = out.push_text(allocator, "[\n")
+        var entry = doc.first_element(array)
+        var seen: U64 = 0
+        while let Some(child) = entry:
+            show(doc, out, allocator, child)
+            seen = U64.wrapping_add(seen, 1)
+            entry = doc.next(child)
+        if seen != doc.array_len(array):
+            let wrong = out.push_text(allocator, "LENGTH\n")
+        let close = out.push_text(allocator, "]\n")
+        return
+    if let Some(text) = doc.str(item):
+        let s = out.push_text(allocator, "s ")
+        hex(out, allocator, text)
+        let n = out.push(allocator, 10)
+        return
+    if let Some(number) = doc.i64(item):
+        word(out, allocator, 105, I64.bits(number))
+        return
+    if let Some(number) = doc.f64(item):
+        word(out, allocator, 102, F64.bits(number))
+        return
+    if let Some(truth) = doc.bool(item):
+        word(out, allocator, 98, if truth: 1 else: 0)
+        return
+    if let Some(date) = doc.datetime(item):
+        let d = out.push_text(allocator, "d")
+        for part in [date.kind, date.year, date.month, date.day, date.hour, date.minute, date.second, date.nanosecond, date.offset_minutes, if date.west: 1 else: 0]:
+            let s = out.push(allocator, 32)
+            let p = out.push_decimal(allocator, *part)
+        let n = out.push(allocator, 10)
+
+fn main(console: Console<Write>, dir: Dir<Read>, allocator: Allocator):
+    let Ok(text): String = dir.read_text(&allocator, "input.toml") else Err(error):
+        console.line("invalid encoding")
+        return
+    let old = dir.exists("v1.0")
+    let parsed = if old: Toml.parse_1_0(&allocator, move text) else: Toml.parse(&allocator, move text)
+    match move parsed:
+        Ok(tree):
+            let Ok(made): String = String.new(&allocator) else Err(code):
+                tree.close()
+                return
+            var out = move made
+            brand tree.doc() as doc:
+                let root = doc.root()
+                let open = out.push_text(&allocator, "{\n")
+                var entry = doc.first(root)
+                while let Some(child) = entry:
+                    let k = out.push_text(&allocator, "k ")
+                    hex(&mut out, &allocator, doc.key(child))
+                    let n = out.push(&allocator, 10)
+                    if let Some(found) = doc.get(root, doc.key(child)):
+                        show(&doc, &mut out, &allocator, found)
+                    else:
+                        let missed = out.push_text(&allocator, "MISSING\n")
+                    entry = doc.next(child)
+                let close = out.push_text(&allocator, "}")
+            console.line(out.as_str())
+            out.close()
+            tree.close()
+        Err(error):
+            console.write("invalid ")
+            console.print_int(error.at)

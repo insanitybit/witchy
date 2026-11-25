@@ -1,0 +1,20 @@
+import console
+import hashmap
+import discard
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(table): HashMap<U64, U64> = HashMap.new(&allocator, 0) else Err(code):
+        return
+    var map = move table
+    match map.get_or_insert(&allocator, &7, 41):
+        Ok(value):
+            *value += 1
+        Err(missed):
+            missed.discard()
+            unreachable
+    match map.get(&7):
+        Ok(value):
+            console.print_int(*value)
+        Err(empty):
+            unreachable
+    map.discard()

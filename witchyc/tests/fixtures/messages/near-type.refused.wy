@@ -1,0 +1,11 @@
+// Refused, naming the nearest declared type.
+import console
+
+type Point:
+    x: U64
+
+fn show(p: Piont) -> U64:
+    return p.x
+
+fn main(console: Console<Write>):
+    console.print_int(show(Point(1)))

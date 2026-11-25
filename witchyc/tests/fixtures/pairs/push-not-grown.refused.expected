@@ -1,0 +1,1 @@
+not proved: ensures, Ok arm: output.length == old(input.length) + 1

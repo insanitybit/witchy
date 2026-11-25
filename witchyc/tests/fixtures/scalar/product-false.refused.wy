@@ -1,0 +1,13 @@
+// Refused: a claim the bounds do not give.
+import console
+
+fn f(a: U64, b: U64) -> U64:
+    requires a <= 100
+    requires b <= 100
+    ensures result < 1000
+    proof:
+        auto
+    return a * b
+
+fn main(console: Console<Write>):
+    console.print_int(f(3, 4))

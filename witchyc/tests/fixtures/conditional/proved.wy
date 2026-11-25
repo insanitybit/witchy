@@ -1,0 +1,11 @@
+// The proof follows an inline `if` like any chosen value.
+import console
+
+fn larger(a: U64, b: U64) -> U64:
+    ensures result >= a && result >= b
+    proof:
+        auto
+    return if a > b: a else: b
+
+fn main(console: Console<Write>):
+    console.print_int(larger(4, 9))

@@ -1,0 +1,22 @@
+import vec
+
+type OwnedBytes:
+    bytes: Vec<U8>
+
+fn view_prefix(value: &Vec<U8>) -> &str:
+    requires memory.utf8(value.data, 0, value.length)
+    ensures result.len() == value.length
+    ensures memory.slice_contents(result, value.data, 0)
+    proof:
+        auto
+    let bytes = memory.slice_unchecked(&(*value).data, 0, (*value).length)
+    return memory.utf8_unchecked(bytes)
+
+fn borrow_text(value: &OwnedBytes) -> &str:
+    ensures result.len() == value.bytes.length
+    proof:
+        auto
+    return view_prefix(&(*value).bytes)
+
+fn main():
+    return

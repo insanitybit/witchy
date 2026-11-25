@@ -1,0 +1,84 @@
+// A HashMap from String to U64: keys are owners, looked up by reference and closed on the way out.
+import "../../../library/wasm-string.wy"
+import "../../../library/wasm-hashmap.wy"
+
+fn word(allocator: &Allocator, first: U64, second: U64) -> Result<String, U64>:
+    let empty = String.new(allocator)?
+    match empty.push_scalar(allocator, first):
+        Ok(one):
+            match one.push_scalar(allocator, second):
+                Ok(two):
+                    return Ok(move two)
+                Err(back):
+                    back.close()
+                    return Err(902)
+        Err(back):
+            back.close()
+            return Err(901)
+
+fn put(console: &Console<Write>, allocator: &Allocator, map: &mut HashMap<String, U64>, first: U64, second: U64, value: U64):
+    match word(allocator, first, second):
+        Ok(key):
+            match map.insert(move key, value):
+                Ok:
+                    return
+                Err(back):
+                    // Already present: the key comes back and is closed here.
+                    console.print_int(900)
+                    let Entry(text, number) = move back
+                    text.close()
+        Err(code):
+            console.print_int(code)
+
+fn show(console: &Console<Write>, allocator: &Allocator, map: &HashMap<String, U64>, first: U64, second: U64):
+    match word(allocator, first, second):
+        Ok(key):
+            match map.get(&key):
+                Ok(value):
+                    console.print_int(*value)
+                Err(code):
+                    console.print_int(0)
+            key.close()
+        Err(code):
+            console.print_int(code)
+
+fn empty(map: &mut HashMap<String, U64>):
+    while map.len() > 0:
+        match map.take_any():
+            Ok(entry):
+                let Entry(key, value) = move entry
+                key.close()
+            Err(code):
+                return
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<HashMap<String, U64>, U64> = HashMap.new(&allocator, 4)
+    match move made:
+        Ok(start):
+            var map = move start
+            put(&console, &allocator, &mut map, 104, 105, 1)
+            put(&console, &allocator, &mut map, 233, 10003, 2)
+            put(&console, &allocator, &mut map, 104, 105, 3)
+            put(&console, &allocator, &mut map, 105, 104, 4)
+            console.print_int(map.len())
+            show(&console, &allocator, &map, 104, 105)
+            show(&console, &allocator, &map, 233, 10003)
+            show(&console, &allocator, &map, 105, 104)
+            show(&console, &allocator, &map, 65, 66)
+            match map.resize(&allocator, 16):
+                Ok(grown):
+                    var large = move grown
+                    console.print_int(large.capacity())
+                    show(&console, &allocator, &large, 233, 10003)
+                    show(&console, &allocator, &large, 105, 104)
+                    empty(&mut large)
+                    console.print_int(large.len())
+                    large.release()
+                    console.print_int(1)
+                Err(back):
+                    var same = move back
+                    console.print_int(903)
+                    empty(&mut same)
+                    same.release()
+        Err(code):
+            console.print_int(code)

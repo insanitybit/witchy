@@ -1,0 +1,4 @@
+[package]
+name = "glamour"
+version = "0.3.0"
+source = "glamour.wy"

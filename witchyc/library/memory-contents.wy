@@ -1,0 +1,5 @@
+predicate Initialized(reader, index, value):
+    memory.cell(reader, index, value)
+
+predicate CellAt(reader, index, value):
+    memory.writable(reader) && Initialized(reader, index, value)

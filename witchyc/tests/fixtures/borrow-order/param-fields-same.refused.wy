@@ -1,0 +1,14 @@
+// Refused: one field through a `&mut` parameter, lent twice with one mutable.
+type Pair:
+    left: U64
+    right: U64
+
+fn add(into: &mut U64, from: &U64):
+    *into += *from
+
+fn swap_in(p: &mut Pair):
+    add(&mut p.left, &p.left)
+
+fn main():
+    var p = Pair(1, 2)
+    swap_in(&mut p)

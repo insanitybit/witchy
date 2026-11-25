@@ -1,0 +1,97 @@
+// A single HTTP/1.1 request over TLS, using an explicitly granted signing key.
+import fs
+import http
+import https
+import net
+import span
+import tls
+import tls_certificates
+import tls_server_socket
+import vec
+
+fn main(socket: Socket, certificates: Dir<Read>, allocator: Allocator, random: Rand, issuer: TlsSigner):
+    let Ok(file): File<Read> = certificates.open("chain.bin") else Err(reason):
+        socket.close()
+        return
+    let chain_file = move file
+    let Ok(buffer): Vec<U8> = Vec.filled(&allocator, 4096, 0) else Err(reason):
+        chain_file.close()
+        socket.close()
+        return
+    var certificate_bytes = move buffer
+    let count = read_chain(&chain_file, certificate_bytes.as_mut_slice())
+    chain_file.close()
+    let parsed = tls_certificates.from_der_list(&allocator, certificate_bytes.as_slice().part(0, count))
+    certificate_bytes.close()
+    let Ok(chain): CertificateChain = move parsed else Err(reason):
+        socket.close()
+        return
+    serve(move socket, &allocator, &random, &issuer, &chain)
+    chain.close()
+
+fn read_chain(file: &File<Read>, bytes: &mut [U8]) -> U64:
+    var used: U64 = 0
+    let capacity = bytes.len()
+    while used < capacity:
+        let count = file.read_some(bytes.part(used, capacity))
+        if count == 0:
+            return used
+        used += count
+    var extra: [U8; 1] = [0]
+    if file.read_some(extra.slice_mut()) != 0:
+        return 0
+    return used
+
+fn serve(socket: Socket, allocator: &Allocator, random: &Rand, issuer: &TlsSigner, chain: &CertificateChain):
+    let Ok(buffers): ServerBuffers = tls_server_socket.server_buffers(allocator) else Err(reason):
+        socket.close()
+        return
+    let ServerBuffers(hello_buffer, flight_buffer, plaintext_buffer, wire_buffer) = move buffers
+    var hello = move hello_buffer
+    var flight = move flight_buffer
+    var plaintext = move plaintext_buffer
+    var wire = move wire_buffer
+    let host: [U8; 9] = ['l', 'o', 'c', 'a', 'l', 'h', 'o', 's', 't']
+    let authority = Span.of(host.slice())
+    if let Ok(session) = tls_server_socket.accept_named(move socket, allocator, random, issuer, chain, authority, hello.as_mut_slice(), flight.as_mut_slice(), plaintext.as_mut_slice(), wire.as_mut_slice()):
+        var stream = move session
+        reply(&mut stream, allocator, authority, plaintext.as_mut_slice(), wire.as_mut_slice())
+        stream.close()
+    hello.close()
+    flight.close()
+    plaintext.close()
+    wire.close()
+
+fn reply(stream: &mut SecureSession, allocator: &Allocator, authority: Span, plaintext: &mut [U8], wire: &mut [U8]):
+    var head: [U8; 256] = [0; 256]
+    var body: [U8; 256] = [0; 256]
+    var line: [U8; 128] = [0; 128]
+    let received = https.read_request(stream, authority, head.slice_mut(), body.slice_mut(), line.slice_mut(), plaintext, wire)
+    match received:
+        Ok(accepted):
+            let Ok(parts): RequestHead = http.request(Span.of(head.slice().part(0, accepted.head_len))) else Err(reason):
+                return
+            if parts.method.equals_text("POST") && parts.target.equals_text("/echo"):
+                send(stream, allocator, 200, body.slice().part(0, accepted.body_len), plaintext, wire)
+            else:
+                send(stream, allocator, 404, body.slice().part(0, 0), plaintext, wire)
+        Err(RequestFramingError(WrongAuthority)):
+            send(stream, allocator, 421, body.slice().part(0, 0), plaintext, wire)
+        Err(RequestFramingError(BodyLimit)):
+            send(stream, allocator, 413, body.slice().part(0, 0), plaintext, wire)
+        Err(RequestFramingError(UnsupportedExpectation)):
+            send(stream, allocator, 417, body.slice().part(0, 0), plaintext, wire)
+        Err(RequestFramingError(_)):
+            send(stream, allocator, 400, body.slice().part(0, 0), plaintext, wire)
+        Err(RequestTransportError(_)):
+            return
+
+fn send(stream: &mut SecureSession, allocator: &Allocator, status: U64, payload: &[U8], plaintext: &mut [U8], wire: &mut [U8]):
+    let Ok(initial): ResponseHeaders = http.response_headers(allocator) else Err(reason):
+        return
+    var headers = move initial
+    let name: [U8; 13] = ['C', 'a', 'c', 'h', 'e', '-', 'C', 'o', 'n', 't', 'r', 'o', 'l']
+    let value: [U8; 8] = ['n', 'o', '-', 's', 't', 'o', 'r', 'e']
+    if headers.add(allocator, Span.of(name.slice()), Span.of(value.slice())).is_ok():
+        let sent = https.write_response_with_headers(stream, allocator, status, "application/octet-stream", &headers, payload, plaintext, wire)
+    headers.close()

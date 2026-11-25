@@ -1,0 +1,21 @@
+// A recipe applied to a sealed type of the program keeps the authority over it that it had
+// when its code was read in the type's file: `Self(...)`, writes to its fields, its private
+// `helper`, `Self.zero()`, also inside `${...}`, though the recipe's file declares a private
+// `Unit` (with a `zero`) of its own.
+import "parts/ops_target.wy"
+import console
+
+sealed type Unit derive(ops_target.Copying):
+    v: U64
+
+impl Unit:
+    fn helper(self: &Unit) -> U64:
+        return 5
+    pub fn zero() -> Unit:
+        return Unit(v: 3)
+
+fn main(console: Console<Write>):
+    var u = Unit(v: 10)
+    u.bump()
+    console.print("${u.copy().v} ${u.helped()} ${u.statik()}")
+    u.told(&console)

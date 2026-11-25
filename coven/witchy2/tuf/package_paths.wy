@@ -1,0 +1,44 @@
+import span
+
+pub fn source_path(path: Span) -> Bool:
+    if path.len() > 255 || !path.ends_with_text(".wy"):
+        return false
+    var components: U64 = 1
+    var width: U64 = 0
+    var need_word = true
+    for byte in path.as_bytes():
+        if *byte == '/':
+            if need_word || components == 8:
+                return false
+            components += 1
+            width = 0
+            need_word = true
+        else:
+            width += 1
+            if width > 64:
+                return false
+            if path_word(*byte):
+                need_word = false
+            else if (*byte == '.' || *byte == '-') && !need_word:
+                need_word = true
+            else:
+                return false
+    return !need_word
+
+fn path_word(byte: U8) -> Bool:
+    return (byte >= 'a' && byte <= 'z') || (byte >= '0' && byte <= '9') || byte == '_'
+
+pub fn precedes_bytes(left: Span, right: Span) -> Bool:
+    let a = left.as_bytes()
+    let b = right.as_bytes()
+    let bound = if a.len() < b.len():
+        a.len()
+    else:
+        b.len()
+    for i in 0..bound:
+        if a[i] != b[i]:
+            return a[i] < b[i]
+    return a.len() < b.len()
+
+pub fn directory_prefix(directory: Span, path: Span) -> Bool:
+    return directory.len() < path.len() && path.byte_or_end(directory.len()) == 47 && path.part(0, directory.len()).same(directory)

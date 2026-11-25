@@ -1,0 +1,12 @@
+// memory.try_alloc makes a Buffer, not a PrefixBuffer.
+fn main(out: Console<Write>, allocator: Allocator):
+    let made: Result<PrefixBuffer<U64>, U64> = memory.try_alloc(&allocator, 4)
+    match move made:
+        Ok(buffer):
+            match memory.try_release(move buffer):
+                Ok:
+                    return
+                Err(back):
+                    unreachable
+        Err(code):
+            return

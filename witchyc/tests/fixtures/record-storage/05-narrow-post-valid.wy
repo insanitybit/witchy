@@ -1,0 +1,32 @@
+type Mixed:
+    octet: U8
+    half: U16
+    quarter: U32
+    word: U64
+
+fn narrow_identity(input: U16) -> U16:
+    ensures result == old(input)
+    return input
+
+fn relay(input: Mixed) -> Mixed:
+    ensures result.octet == old(input.octet)
+    ensures result.half == old(input.half)
+    ensures result.quarter == old(input.quarter)
+    ensures result.word == old(input.word)
+    return move input
+
+fn main(console: Console<Write>):
+    let octet: U8 = 255
+    let half: U16 = 65535
+    let quarter: U32 = 4294967295
+    var data: Buffer<Mixed> = memory.alloc(1)
+    memory.init(&mut data, 0, Mixed(octet, half, quarter, 4294967297))
+    let taken: Mixed = memory.take(&mut data, 0)
+    let relayed = relay(move taken)
+    console.print_int(U8.to_u64(relayed.octet))
+    console.print_int(U16.to_u64(relayed.half))
+    console.print_int(U32.to_u64(relayed.quarter))
+    console.print_int(relayed.word)
+    discard(move relayed)
+    memory.release(data)
+    console.print_int(42)

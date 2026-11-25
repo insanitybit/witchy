@@ -1,0 +1,7 @@
+// Two files each with a private `gen fn ticks`.
+import console
+import "parts/ticksa.wy"
+import "parts/ticksb.wy"
+fn main(console: Console<Write>):
+    console.print_int(ticksa.first(5))
+    console.print_int(ticksb.second(5))

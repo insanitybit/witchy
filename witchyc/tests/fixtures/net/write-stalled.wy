@@ -1,0 +1,54 @@
+// A task writing more than the peer will take (it never reads) waits a pause at a time, so a
+// time limit beside it still wins at once. On macOS a "don't wait" send on a blocking socket
+// waited out the host's 2 s write timeout instead, holding every task up (review of the HTTP
+// file server); the host now makes the socket non-blocking for each such send.
+import console
+import net
+import tasks
+import vec
+import discard
+
+fn flood(socket: Socket, made: Vec<U8>) suspends:
+    var bytes = move made
+    match socket.write(bytes.as_slice()):
+        Ok:
+            report(1)
+        Err(failure):
+            report(2)
+    socket.close()
+    bytes.close()
+
+fn nap(clock: Clock) suspends:
+    let slept = clock.sleep(40)
+
+fn limited(socket: Socket, bytes: Vec<U8>, clock: Clock, allocator: Allocator) suspends:
+    match race(&allocator, 4096, fn() -> (): flood(move socket, move bytes), fn() -> (): nap(move clock)):
+        Ok(winner):
+            report(10 * (winner + 1))
+        Err(why):
+            report(99)
+
+fn main(console: Console<Write>, net: Net, listener: Listener, allocator: Allocator, clock: Clock):
+    let Ok(near): Socket = net.connect("127.0.0.1:47627") else Err(error):
+        return
+    let Ok(far): Socket = listener.accept() else Err(error):
+        near.close()
+        return
+    let zero: U8 = 0
+    let Ok(bytes): Vec<U8> = Vec.filled(&allocator, 16777216, zero) else Err(code):
+        near.close()
+        far.close()
+        console.line("no memory")
+        return
+    let started = clock.now_ms()
+    let shared = allocator.share()
+    let timer = clock.share()
+    match run_task_net(&allocator, &net, 8192, fn() -> (): limited(move far, move bytes, move timer, move shared)):
+        Ok(reported):
+            // The sleeper (20) won; the writer was told to stop (2).
+            console.print_int(reported)
+        Err(code):
+            console.line("no memory")
+    if clock.now_ms() - started < 1000:
+        console.line("stopped within a second")
+    near.close()

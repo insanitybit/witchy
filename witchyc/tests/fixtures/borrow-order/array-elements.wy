@@ -1,0 +1,14 @@
+// Two elements of a fixed array named by literal indexes are different places.
+import console
+
+type Grid:
+    cells: [U64; 3]
+    n: U64
+
+fn main(console: Console<Write>):
+    var g = Grid([1, 2, 3], 0)
+    let r = &g.cells[0]
+    g.cells[1] = 9
+    let w = &mut g.cells[2]
+    *w += 10
+    console.print_int(*r + g.cells[1] + g.cells[2])

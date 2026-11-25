@@ -1,0 +1,55 @@
+// `memory.exchange` exchanges two places: numbers, records, owners, and what references point at.
+import "../../../library/wasm-string.wy"
+
+type Pair:
+    left: U64
+    right: U64
+
+// Put `next` where `slot` points and hand back what was there.
+fn exchange<T: Any>(slot: &mut T, next: T) -> T:
+    var held = move next
+    memory.exchange(slot, &mut held)
+    return move held
+
+fn flip(pair: &mut Pair):
+    memory.exchange(&mut (*pair).left, &mut (*pair).right)
+
+fn text(allocator: &Allocator, scalar: U64, count: U64) -> Result<String, U64>:
+    var out = String.new(allocator)?
+    for index in 0..count:
+        match out.push_scalar(allocator, scalar):
+            Ok(grown):
+                out = move grown
+            Err(original):
+                original.close()
+                return Err(900)
+    return Ok(move out)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var a: U64 = 1
+    var b: U64 = 2
+    memory.exchange(&mut a, &mut b)
+    console.print_int(a * 10 + b)
+    var pair = Pair(3, 4)
+    flip(&mut pair)
+    console.print_int(pair.left * 10 + pair.right)
+    var other = Pair(5, 6)
+    memory.exchange(&mut pair, &mut other)
+    console.print_int(pair.left * 10 + pair.right)
+    console.print_int(exchange(&mut a, 9) * 10 + a)
+    match text(&allocator, 97, 1):
+        Ok(short):
+            match text(&allocator, 98, 5):
+                Ok(long):
+                    var first = move short
+                    var second = move long
+                    memory.exchange(&mut first, &mut second)
+                    console.print_int(first.byte_len() * 10 + second.byte_len())
+                    let old = exchange(&mut first, move second)
+                    console.print_int(first.byte_len() * 10 + old.byte_len())
+                    first.close()
+                    old.close()
+                Err(code):
+                    short.close()
+        Err(code):
+            console.print_int(code)

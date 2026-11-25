@@ -1,0 +1,561 @@
+// String owns a vector whose initialized prefix is valid UTF-8. This module
+// lends that prefix directly and preserves the invariant on each mutation.
+import "wasm-vec.wy"
+import "wasm-vec-text.wy"
+import "wasm-hash.wy"
+import "wasm-discard.wy"
+// `is_ok` and `is_err`, for the appends here that answer `Result<(), U64>`.
+import "wasm-result.wy"
+import "wasm-discard-core.wy"
+
+pub sealed type String:
+    bytes: Vec<U8>
+    invariant memory.utf8(bytes.data, 0, bytes.length)
+
+pub type Scalar:
+    value: U64
+    width: U64
+
+impl String:
+    // An empty String. Err: no room.
+    pub fn new(allocator: &Allocator) -> Result<String, U64>:
+        ensures match result:
+            Ok(output):
+                output.bytes.length == 0
+                memory.utf8(output.bytes.data, 0, output.bytes.length)
+            Err(code):
+                true
+        proof:
+            auto
+        let allocation: Result<Vec<U8>, U64> = Vec.new(allocator, 0)
+        match move allocation:
+            Ok(vector):
+                return Ok(String(move vector))
+            Err(allocation_error):
+                return Err(allocation_error)
+
+    // An empty String with room for `capacity` bytes, so text of a known length is one
+    // allocation (`new` then appending reserved again on the first append). Err: no room.
+    pub fn with_capacity(allocator: &Allocator, capacity: U64) -> Result<String, U64>:
+        ensures match result:
+            Ok(output):
+                output.bytes.length == 0
+                memory.utf8(output.bytes.data, 0, output.bytes.length)
+            Err(code):
+                true
+        proof:
+            auto
+        let allocation: Result<Vec<U8>, U64> = Vec.new(allocator, capacity)
+        match move allocation:
+            Ok(vector):
+                return Ok(String(move vector))
+            Err(allocation_error):
+                return Err(allocation_error)
+
+// Accepts exactly the well-formed UTF-8 encodings of U+0000 through U+10FFFF
+// without surrogates; rejects overlong and truncated forms.
+fn input_is_utf8(input: &Vec<U8>) -> Bool:
+    ensures !result || memory.utf8(input.data, 0, input.length)
+    proof:
+        auto
+    match str.from_utf8_bytes(input.bytes_for_utf8()):
+        Ok(text):
+            return true
+        Err(code):
+            return false
+
+impl String:
+    // Own a copy of text whose source already guarantees valid UTF-8.
+    pub fn from_str(allocator: &Allocator, source: &str) -> Result<String, U64>:
+        ensures match result:
+            Ok(text):
+                memory.utf8(text.bytes.data, 0, text.bytes.length)
+            Err(code):
+                true
+        proof:
+            auto
+        let made: Result<Vec<U8>, U64> = Vec.new(allocator, source.len())
+        match move made:
+            Ok(empty):
+                var bytes = move empty
+                match bytes.append_spare_utf8(source):
+                    Ok:
+                        return Ok(String(move bytes))
+                    Err(code):
+                        bytes.close()
+                        return Err(code)
+            Err(code):
+                return Err(code)
+
+    // Own a copy of validated UTF-8. Err(1): no room. Err(2): malformed UTF-8.
+    pub fn from_utf8_bytes(allocator: &Allocator, bytes: &[U8]) -> Result<String, U64>:
+        match str.from_utf8_bytes(bytes):
+            Ok(text):
+                return String.from_str(allocator, text)
+            Err(code):
+                return Err(2)
+
+    // `count` copies of one ASCII byte, made in one fill. Err(1): no room. Err(2): the byte is
+    // 128 or more. Each byte below 128 is a whole scalar, so the text is well-formed.
+    pub fn repeated_ascii(allocator: &Allocator, byte: U8, count: U64) -> Result<String, U64>:
+        ensures match result:
+            Ok(text):
+                memory.utf8(text.bytes.data, 0, text.bytes.length)
+                text.bytes.length == count
+            Err(code):
+                true
+        proof:
+            auto
+        match Vec.filled_ascii(allocator, count, byte):
+            Ok(made):
+                return Ok(String(move made))
+            Err(code):
+                return Err(code)
+
+    // Consume a Vec; return a String owning the same storage, or the unchanged Vec.
+    pub fn from_utf8(input: Vec<U8>) -> Result<String, Vec<U8>>:
+        ensures match result:
+            Ok(output):
+                memory.utf8(output.bytes.data, 0, output.bytes.length)
+                memory.unchanged(output.bytes.data, old(input.data))
+                output.bytes.length == old(input.length)
+                output.bytes.capacity == old(input.capacity)
+            Err(back):
+                memory.unchanged(back.data, old(input.data))
+                back.length == old(input.length)
+                back.capacity == old(input.capacity)
+        proof:
+            auto
+        if input_is_utf8(&input):
+            return Ok(String(move input))
+        return Err(move input)
+
+    // The bytes, as the Vec that held them.
+    pub fn into_bytes(input: String) -> Vec<U8>:
+        ensures memory.unchanged(result.data, old(input.bytes.data))
+        ensures result.length == old(input.bytes.length)
+        ensures result.capacity == old(input.bytes.capacity)
+        proof:
+            auto
+        return move input.bytes
+
+    // Bytes `from..from + count` (at most eight) as one number, lowest byte first; a byte past
+    // `count` or past the end reads as zero.
+    pub fn word_at(text: &String, from: U64, count: U64) -> U64:
+        return (*text).bytes.word_at(from, count)
+
+    // How many bytes the text is (not how many scalars: `scalar_count`).
+    pub fn byte_len(value: &String) -> U64:
+        ensures memory.unchanged(value.bytes.data, old(value.bytes.data))
+        ensures result == value.bytes.length
+        proof:
+            auto
+        return (*value).bytes.length
+
+    // The byte at `index`. Err(1): past the end.
+    pub fn byte_at(value: &String, index: U64) -> Result<U8, U64>:
+        ensures memory.unchanged(value.bytes.data, old(value.bytes.data))
+        ensures value.bytes.length == old(value.bytes.length)
+        ensures match result:
+            Ok(byte):
+                index < value.bytes.length
+                memory.cell(value.bytes.data, index, byte)
+            Err(code):
+                code == 1
+        proof:
+            auto
+        return Vec.get(&(*value).bytes, index)
+
+impl String:
+    // Append the UTF-8 encoding of one Unicode scalar value. Surrogates and values
+    // above U+10FFFF are refused. Err returns the original contents.
+    pub fn push_scalar(input: String, allocator: &Allocator, scalar: U64) -> Result<String, String>:
+        var text = move input
+        match text.push(allocator, scalar):
+            Ok:
+                return Ok(move text)
+            Err(code):
+                return Err(move text)
+
+    // Append a copy of `suffix`. Err returns the original contents.
+    pub fn append(input: String, allocator: &Allocator, suffix: &String) -> Result<String, String>:
+        var text = move input
+        match text.push_string(allocator, suffix):
+            Ok:
+                return Ok(move text)
+            Err(code):
+                return Err(move text)
+
+    // Each Unicode scalar value of the text, in order: `for c in name.chars()`.
+    pub gen fn chars(self: &String) -> U64:
+        var at: U64 = 0
+        while at < String.byte_len(self):
+            // ASCII, one byte, read from the byte slice (a generator keeps only numbers between
+            // steps, so it is taken again each time); the rest decodes through `scalar_at`
+            // (every scalar did, through `byte_at`'s Result).
+            let lead = U8.to_u64(String.as_bytes(self)[at])
+            if lead < 128:
+                at += 1
+                yield lead
+            else:
+                match String.scalar_at(self, at):
+                    Ok(found):
+                        at += found.width
+                        yield found.value
+                    Err(code):
+                        return
+
+    // The scalar whose encoding starts at byte `index`, and how many bytes it takes.
+    pub fn scalar_at(value: &String, index: U64) -> Result<Scalar, U64>:
+        // From the byte slice (each read went through `byte_at`'s Result); past the end is
+        // Err(1), as `byte_at` says.
+        let bytes = String.as_bytes(value)
+        if index >= bytes.len():
+            return Err(1)
+        let lead = U8.to_u64(bytes[index])
+        // ASCII: one byte, itself (most text); the rest decodes below.
+        if lead < 128:
+            return Ok(Scalar(lead, 1))
+        var scalar: U64 = lead
+        var width: U64 = 1
+        if lead >= 240:
+            scalar = lead - 240
+            width = 4
+        else:
+            if lead >= 224:
+                scalar = lead - 224
+                width = 3
+            else:
+                if lead >= 192:
+                    scalar = lead - 192
+                    width = 2
+                else:
+                    if lead >= 128:
+                        return Err(2)
+        // A width that runs past the end is Err(1), as before.
+        if bytes.len() - index < width:
+            return Err(1)
+        var offset: U64 = 1
+        while offset < width:
+            scalar = scalar * 64 + U8.to_u64(bytes[index + offset]) % 64
+            offset += 1
+        return Ok(Scalar(scalar, width))
+
+    // Cut the text back to `length` bytes. Nothing is cut when `length` is not shorter,
+    // or falls inside a scalar's encoding.
+    pub fn truncate(input: String, length: U64) -> String:
+        ensures memory.same_allocation(result.bytes.data, old(input.bytes.data))
+        ensures result.bytes.capacity == old(input.bytes.capacity)
+        ensures memory.equal_prefix(result.bytes.data, old(input.bytes.data), result.bytes.length)
+        ensures result.bytes.length == old(input.bytes.length) || (result.bytes.length == length && result.bytes.length < old(input.bytes.length) && memory.utf8_boundary(old(input.bytes.data), length))
+        proof:
+            auto
+        let bytes = move input.bytes
+        return String(Vec.truncate_utf8(move bytes, length))
+
+    // Release the text and its room.
+    pub fn close(input: String):
+        ensures memory.released(old(input.bytes.data))
+        proof:
+            auto
+        let vector = move input.bytes
+        Vec.close(move vector)
+
+    // Release an empty text. Err: it is not empty, and comes back.
+    pub fn try_release(input: String) -> Result<(), String>:
+        ensures match result:
+            Ok:
+                memory.released(old(input.bytes.data))
+            Err(back):
+                memory.unchanged(back.bytes.data, old(input.bytes.data))
+                back.bytes.length == old(input.bytes.length)
+        proof:
+            auto
+        let vector = move input.bytes
+        match Vec.try_release(move vector):
+            Ok:
+                return Ok(())
+            Err(remainder):
+                return Err(String(move remainder))
+
+impl Hash for String:
+    fn hash(self: &String) -> U64:
+        return hash_bytes(self.as_bytes())
+
+// Its length (eight bytes), then its bytes (docs/plan-derive-laws.md, slice 2): a Span of the same
+// bytes feeds the same input.
+impl HashKey for String:
+    fn feed(self: &String, state: &mut HashState):
+        let bytes = self.as_bytes()
+        state.word(bytes.len(), 8)
+        state.bytes(bytes)
+
+// A Text is its literal's bytes: it hashes, feeds and compares as that `&str` does, so a Text
+// key and a String key of the same bytes find each other.
+impl Hash for Text:
+    fn hash(self: &Text) -> U64:
+        return hash_bytes((*self).as_str().as_bytes())
+
+impl HashKey for Text:
+    fn feed(self: &Text, state: &mut HashState):
+        let bytes = (*self).as_str().as_bytes()
+        state.word(bytes.len(), 8)
+        state.bytes(bytes)
+
+impl Equivalent<String> for Text:
+    fn equivalent(self: &Text, key: &String) -> Bool:
+        return same_bytes((*self).as_str().as_bytes(), key.as_bytes())
+
+impl Eq for Text:
+    fn eq(self: &Text, other: &Text) -> Bool:
+        return same_bytes((*self).as_str().as_bytes(), (*other).as_str().as_bytes())
+
+impl Eq for String:
+    fn eq(self: &String, other: &String) -> Bool:
+        let mine = self.as_bytes()
+        let theirs = other.as_bytes()
+        if mine.len() != theirs.len():
+            return false
+        // Under a word, byte by byte over the two slices: `mine[index]` is counted to its length
+        // and `theirs[index]` comes after `index < theirs.len() &&`, so neither read is tested
+        // (docs/wasm-iteration.md). Longer, whole words first, one load of each (`word_at`),
+        // then the last bytes the same way.
+        if mine.len() < 8:
+            for index in 0..mine.len():
+                if index < theirs.len() && mine[index] != theirs[index]:
+                    return false
+            return true
+        let whole = mine.len() / 8
+        for w in 0..whole:
+            if self.word_at(w * 8, 8) != other.word_at(w * 8, 8):
+                return false
+        for index in whole * 8..mine.len():
+            if index < theirs.len() && mine[index] != theirs[index]:
+                return false
+        return true
+
+// Borrowed UTF-8 hashes, feeds and compares as the String of the same bytes, so `map.get(text)`
+// finds that String key without copying it (`Q = str`: generic code holds it only as `&str`).
+fn same_bytes(mine: &[U8], theirs: &[U8]) -> Bool:
+    if mine.len() != theirs.len():
+        return false
+    // Both reads have no test: `mine[index]` is counted to its length, and `theirs[index]` comes
+    // after `index < theirs.len() &&` (docs/wasm-iteration.md).
+    for index in 0..mine.len():
+        if index < theirs.len() && mine[index] != theirs[index]:
+            return false
+    return true
+
+impl Hash for str:
+    fn hash(self: &str) -> U64:
+        return hash_bytes(self.as_bytes())
+
+impl HashKey for str:
+    fn feed(self: &str, state: &mut HashState):
+        let bytes = self.as_bytes()
+        state.word(bytes.len(), 8)
+        state.bytes(bytes)
+
+impl Eq for str:
+    fn eq(self: &str, other: &str) -> Bool:
+        return same_bytes(self.as_bytes(), other.as_bytes())
+
+impl Equivalent<String> for str:
+    fn equivalent(self: &str, key: &String) -> Bool:
+        return same_bytes(self.as_bytes(), key.as_bytes())
+
+// A borrowed text makes the String of its bytes (`counts.get_or_insert(&allocator, word, 0)`).
+impl KeyFor<String> for str:
+    fn key_for(self: &str, allocator: &Allocator) -> Result<String, U64>:
+        return String.from_str(allocator, self)
+
+impl Discard for String:
+    fn discard(self: String):
+        self.close()
+
+// Reserve additional room while preserving the initialized bytes.
+fn utf8_room(bytes: &mut Vec<U8>, allocator: &Allocator, more: U64) -> Result<(), U64>:
+    ensures bytes.length == old(bytes.length)
+    ensures memory.equal_prefix(bytes.data, old(bytes.data), bytes.length)
+    proof:
+        auto
+    let capacity = (*bytes).capacity
+    if more <= capacity - (*bytes).length:
+        return Ok(())
+    if capacity > 9223372036854775805:
+        return Err(1)
+    let doubled = capacity + capacity
+    if more > 18446744073709551615 - doubled - 4:
+        return Err(1)
+    let requested = doubled + more + 4
+    return bytes.reserve_mut(allocator, requested)
+
+impl String:
+    fn push_ascii_spare(self: &mut String, byte: U8) -> Result<(), U64>:
+        ensures true
+        proof:
+            auto
+        return (*self).bytes.append_ascii_spare(byte)
+
+    // Append one Unicode scalar value in place. Err(1): no room. Err(2): a surrogate or a
+    // value above U+10FFFF. The text is then as it was.
+    pub fn push(self: &mut String, allocator: &Allocator, scalar: U64) -> Result<(), U64>:
+        // The lead and continuation marks are set with `|`: the bits beside them are free for
+        // the range each case has tested, and nothing here can overflow, so a `nopanic fn` may push.
+        if scalar > 1114111 || (scalar >= 55296 && scalar <= 57343):
+            return Err(2)
+        if scalar < 128:
+            let byte = U8.truncate(scalar)
+            match self.push_ascii_spare(byte):
+                Ok:
+                    return Ok(())
+                Err(code):
+                    let bytes: [U8; 1] = [byte]
+                    return self.push_utf8_slice(allocator, bytes.slice())
+        if scalar < 2048:
+            let bytes: [U8; 2] = [U8.truncate(192 | (scalar / 64)), U8.truncate(128 | (scalar % 64))]
+            return self.push_utf8_slice(allocator, bytes.slice())
+        if scalar < 65536:
+            let bytes: [U8; 3] = [U8.truncate(224 | (scalar / 4096)), U8.truncate(128 | (scalar / 64 % 64)), U8.truncate(128 | (scalar % 64))]
+            return self.push_utf8_slice(allocator, bytes.slice())
+        let bytes: [U8; 4] = [U8.truncate(240 | (scalar / 262144)), U8.truncate(128 | (scalar / 4096 % 64)), U8.truncate(128 | (scalar / 64 % 64)), U8.truncate(128 | (scalar % 64))]
+        return self.push_utf8_slice(allocator, bytes.slice())
+
+    // Make room for `more` further bytes, at least doubling when it grows. Err(1): no room; the
+    // text is as it was. After it, appending that many bytes needs no allocation.
+    pub fn reserve(self: &mut String, allocator: &Allocator, more: U64) -> Result<(), U64>:
+        ensures self.bytes.length == old(self.bytes.length)
+        ensures memory.equal_prefix(self.bytes.data, old(self.bytes.data), self.bytes.length)
+        proof:
+            auto
+        return utf8_room(&mut (*self).bytes, allocator, more)
+
+    // Empty the text in place, keeping its room.
+    pub fn clear(self: &mut String):
+        ensures self.bytes.length == 0
+        ensures memory.utf8(self.bytes.data, 0, self.bytes.length)
+        proof:
+            auto
+        // One range step, not a byte at a time (28% of reading a CSV file line by line).
+        (*self).bytes.clear_mut()
+
+    // Cut the text back to `length` bytes in place. Nothing is cut when `length` is not
+    // shorter, or falls inside a scalar's encoding.
+    pub fn cut(self: &mut String, length: U64):
+        ensures memory.same_prefix(self.bytes.data, old(self.bytes.data), self.bytes.length)
+        proof:
+            auto
+        (*self).bytes.truncate_utf8_mut(length)
+
+    // Append the first `count` bytes of `word` (at most eight, lowest first), each ASCII, in one
+    // write. Err(1): no room. Err(2): a byte of them is 128 or more, or `count` is over eight.
+    // The text is then as it was. ASCII bytes are whole scalars, so the text stays well-formed.
+    pub fn push_ascii(self: &mut String, allocator: &Allocator, word: U64, count: U64) -> Result<(), U64>:
+        if count > 8:
+            return Err(2)
+        var bytes: [U8; 8] = [0, 0, 0, 0, 0, 0, 0, 0]
+        var remaining = word
+        for index in 0..count:
+            let byte = U8.truncate(remaining)
+            if byte >= 128:
+                return Err(2)
+            bytes[index] = byte
+            remaining = remaining >> 8
+        return self.push_utf8_slice(allocator, bytes.slice().part(0, count))
+
+    // Append the decimal digits using a bounded stack scratch space.
+    pub fn push_decimal(self: &mut String, allocator: &Allocator, number: U64) -> Result<(), U64>:
+        var digits: [U8; 20] = [0; 20]
+        var remaining = number
+        var start: U64 = 19
+        digits[start] = U8.truncate(48 + remaining % 10)
+        remaining = remaining / 10
+        while remaining > 0:
+            start -= 1
+            digits[start] = U8.truncate(48 + remaining % 10)
+            remaining = remaining / 10
+        return self.push_utf8_slice(allocator, digits.slice().part(start, 20))
+
+    // Append borrowed UTF-8 in one copy. The source already guarantees valid UTF-8.
+    pub fn push_text(self: &mut String, allocator: &Allocator, source: &str) -> Result<(), U64>:
+        ensures true
+        proof:
+            auto
+        return (*self).bytes.extend_utf8_mut(allocator, source)
+
+    // Append bytes `from..to` of `source`, copied as they are: each end must be where a scalar
+    // starts, or the end of the text, so what is copied is whole scalars. Err(1): no room.
+    // Err(2): an end past the text or inside a scalar. The text is then as it was.
+    pub fn push_part(self: &mut String, allocator: &Allocator, source: &String, from: U64, to: U64) -> Result<(), U64>:
+        let text = source.as_str()
+        let length = text.len()
+        if from > to || to > length:
+            return Err(2)
+        if from < length && !(*source).bytes.utf8_boundary(from):
+            return Err(2)
+        if to < length && !(*source).bytes.utf8_boundary(to):
+            return Err(2)
+        return self.push_text(allocator, text.part(from, to))
+
+    // Append a copy of another String. Err(1): no room; the text is as it was.
+    pub fn push_string(self: &mut String, allocator: &Allocator, suffix: &String) -> Result<(), U64>:
+        return self.push_text(allocator, suffix.as_str())
+
+impl String:
+    // Validate borrowed bytes before appending them directly. Err(1): no room.
+    // Err(2): the bytes do not form UTF-8. Either error preserves the text.
+    pub fn push_utf8_slice(self: &mut String, allocator: &Allocator, bytes: &[U8]) -> Result<(), U64>:
+        match str.from_utf8_bytes(bytes):
+            Ok(text):
+                return self.push_text(allocator, text)
+            Err(code):
+                return Err(2)
+
+impl String:
+    // The UTF-8 bytes as a slice (docs/design-slices.md): no copy; the String stays lent while
+    // the slice is in use.
+    pub fn as_bytes(text: &String) -> &[U8]:
+        return (*text).bytes.as_slice()
+
+    // Borrow the proved initialized UTF-8 prefix without scanning or copying.
+    pub fn as_str(text: &String) -> &str:
+        ensures result.len() == text.bytes.length
+        proof:
+            auto
+        return (*text).bytes.as_proved_utf8()
+
+impl str:
+    // Each Unicode scalar value, in order: `for c in "héllo".chars()`. Borrowed UTF-8 is
+    // well-formed: the lead byte gives the scalar's length, and no byte before the end is missing.
+    pub gen fn chars(self: &str) -> U64:
+        var at: U64 = 0
+        while at < self.byte_len():
+            var scalar: U64 = 0
+            var more: U64 = 0
+            match self.byte_at(at):
+                Ok(byte):
+                    let lead = U8.to_u64(byte)
+                    scalar = lead
+                    if lead >= 240:
+                        scalar = lead - 240
+                        more = 3
+                    else:
+                        if lead >= 224:
+                            scalar = lead - 224
+                            more = 2
+                        else:
+                            if lead >= 192:
+                                scalar = lead - 192
+                                more = 1
+                Err(code):
+                    return
+            at += 1
+            while more > 0:
+                match self.byte_at(at):
+                    Ok(next):
+                        scalar = scalar * 64 + U8.to_u64(next) % 64
+                    Err(code):
+                        return
+                at += 1
+                more -= 1
+            yield scalar

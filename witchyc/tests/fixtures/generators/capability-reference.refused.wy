@@ -1,0 +1,9 @@
+// Refused: a generator holds no authority, not even a reference to some: it keeps its
+// arguments between steps and can be handed on.
+import fs
+gen fn probe(dir: &Dir<Read>) -> U64:
+    if dir.exists("x.txt"):
+        yield 1
+
+fn main(dir: Dir<Read>):
+    return

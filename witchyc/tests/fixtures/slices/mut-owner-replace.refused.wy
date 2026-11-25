@@ -1,0 +1,7 @@
+// Refused: overwriting an owned element through a slice would lose the old one.
+import console
+import vec
+fn put<T: Any>(s: &mut [T], value: T):
+    s[0] = move value
+fn main(console: Console<Write>, allocator: Allocator):
+    return

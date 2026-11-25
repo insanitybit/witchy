@@ -1,0 +1,1 @@
+run: --grant=RateLimit.per_minute=3 --grant=RateLimit.strict=true

@@ -1,0 +1,11 @@
+type Option<T>:
+    Some(T)
+    None
+fn f(v: Result<Option<U64>, U64>) -> U64:
+    match v:
+        Ok(Some(n)):
+            return n
+        Err(code):
+            return code
+fn main(console: Console<Write>):
+    console.print_int(f(Ok(None)))

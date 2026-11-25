@@ -1,0 +1,22 @@
+// wc: lines, words (runs between spaces, tabs, newlines) and bytes of a file, as `wc` counts them.
+import console
+import fs
+import string
+import text
+import span
+
+fn main(console: Console<Write>, dir: Dir<Read>, allocator: Allocator):
+    let Ok(input): String = dir.read_text(&allocator, "in.txt") else Err(e):
+        console.line("cannot read in.txt")
+        dir.close()
+        return
+    var lines: U64 = 0
+    for b in input.as_bytes():
+        if *b == 10:
+            lines += 1
+    var words: U64 = 0
+    for w in input.span().words():
+        words += 1
+    console.print("${lines} ${words} ${input.byte_len()}")
+    input.close()
+    dir.close()

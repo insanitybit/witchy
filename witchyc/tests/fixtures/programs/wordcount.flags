@@ -1,0 +1,1 @@
+run: --dir={dir}/../fs/words --write-dir={scratch}

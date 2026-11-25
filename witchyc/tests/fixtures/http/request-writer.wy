@@ -1,0 +1,34 @@
+import console
+import http
+import span
+import string
+import text
+
+fn main(output: Console<Write>, allocator: Allocator):
+    let Ok(made): RequestHeaders = http.request_headers(&allocator) else Err(reason):
+        return
+    var fields = move made
+    let host: &str = "registry.test:8443"
+    let target: &str = "/v1/ci/stage"
+    let value: &str = "application/octet-stream"
+    let broken: &str = "value\r\nHost: another.test"
+    if let Err(Malformed) = fields.add(&allocator, "hOsT", Span.of(host.as_bytes())):
+        output.line("host owned")
+    if let Err(Malformed) = fields.add(&allocator, "Content_Length", Span.of(value.as_bytes())):
+        output.line("framing owned")
+    if let Err(Malformed) = fields.add_str(&allocator, "X-Test", broken):
+        output.line("invalid field")
+    if let Err(Malformed) = fields.add_str(&allocator, "Content-Type", broken):
+        output.line("invalid media field")
+    if let Err(reason) = fields.add_str(&allocator, "Content-Type", value):
+        fields.close()
+        return
+    if let Err(Malformed) = fields.add(&allocator, "cOnTeNt-TyPe", Span.of(value.as_bytes())):
+        output.line("one media field")
+    let result = http.request_head_str(&allocator, PostRequest(3), host, target, &fields)
+    fields.close()
+    let Ok(head): String = move result else Err(reason):
+        return
+    if head.equals_text("POST /v1/ci/stage HTTP/1.1\r\nHost: registry.test:8443\r\nConnection: close\r\nContent-Length: 3\r\nContent-Type: application/octet-stream\r\n\r\n"):
+        output.line("exact request")
+    head.close()

@@ -1,0 +1,16 @@
+// Refused: the whole local is reborrowed beside a loan of one of its fields.
+import console
+
+type P:
+    x: U64
+    y: U64
+
+fn main(console: Console<Write>):
+    var p = P(x: 1, y: 1)
+    let r = &mut p
+    let a = &mut (*r).x
+    let b = &mut (*r).y
+    let moved = &mut *r
+    *a += 1
+    *b += 2
+    console.print_int(p.x * 10 + p.y)

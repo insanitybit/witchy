@@ -1,0 +1,19 @@
+// Review of reading a slice store's value first: `c[5]` on a type with its own `index` is a
+// method call that changes `c`, so it is not read first: the position `c.n` is read before it,
+// as written (it printed 1 51 1).
+type Counter:
+    n: U64
+
+impl Counter:
+    fn index(self: &mut Counter, i: U64) -> U64:
+        (*self).n = (*self).n + 1
+        return i * 10
+
+fn main(console: Console<Write>):
+    var data: [U64; 4] = [1, 2, 3, 4]
+    var c = Counter(0)
+    let s = data.slice_mut()
+    s[c.n] = c[5] + 1
+    console.print_int(s[0])
+    console.print_int(s[1])
+    console.print_int(c.n)

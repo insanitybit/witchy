@@ -1,0 +1,54 @@
+// `Option<T>` and `Result<T, E>` are Discard when what they hold is: a Vec of optional Strings
+// is discarded in one call, and so is a Result that may hold an owner.
+import console
+import option
+import vec
+import string
+import discard
+
+fn word(allocator: &Allocator, text: Text) -> Result<String, U64>:
+    var out = String.new(allocator)?
+    match out.push_text(allocator, text):
+        Ok:
+            return Ok(move out)
+        Err(code):
+            out.close()
+            return Err(code)
+
+fn fill(allocator: &Allocator) -> Result<Vec<Option<String>>, U64>:
+    var slots: Vec<Option<String>> = Vec.new(allocator, 3)?
+    match word(allocator, "kept"):
+        Ok(text):
+            match slots.push_mut(allocator, Some(move text)):
+                Ok:
+                    ()
+                Err(back):
+                    back.discard()
+        Err(code):
+            ()
+    match slots.push_mut(allocator, None):
+        Ok:
+            ()
+        Err(back):
+            back.discard()
+    return Ok(move slots)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    match fill(&allocator):
+        Ok(slots):
+            console.print_int(slots.len())
+            slots.discard()
+        Err(code):
+            console.print_int(code)
+    // A Result that holds an owner when it is Ok.
+    let made: Result<String, U64> = word(&allocator, "x")
+    made.discard()
+    let nothing: Option<String> = None
+    nothing.discard()
+    // Everything went back: the same allocations can be made again.
+    match fill(&allocator):
+        Ok(slots):
+            console.print_int(slots.len())
+            slots.discard()
+        Err(code):
+            console.print_int(code)

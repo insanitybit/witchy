@@ -1,0 +1,29 @@
+// `for j in a..s.len()` over a shared slice of Copy elements reads each `s[j]` with no test:
+// the counter is below the length read once, which a slice cannot change. A parameter, a slice
+// bound earlier in the same block, a start above zero, and a nested loop over another slice.
+import console
+import vec
+
+fn weighted(s: &[U64]) -> U64:
+    var t: U64 = 0
+    for j in 0..s.len():
+        t += s[j] * (j + 1)
+    return t
+
+fn pairs(v: &Vec<U64>) -> U64:
+    let xs = v.elements()
+    var t: U64 = 0
+    for i in 1..xs.len():
+        for j in 0..xs.len():
+            if xs[j] < xs[i]:
+                t += 1
+    return t
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.new(&allocator, 4) else Err(c):
+        return
+    var v = move made
+    for x in [5, 1, 4, 2]:
+        let pushed = v.push_mut(&allocator, *x)
+    console.print("${weighted(v.elements())} ${pairs(&v)}")
+    v.close()

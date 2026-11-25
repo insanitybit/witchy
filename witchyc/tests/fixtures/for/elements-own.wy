@@ -1,0 +1,47 @@
+// A program's own container is walked over `elements(&self) -> &[T]` when it has one; one whose
+// `elements` is shaped otherwise is walked through `at`, as before.
+import console
+import vec
+
+type Shelf:
+    items: Vec<U64>
+
+impl Shelf:
+    pub fn elements(shelf: &Shelf) -> &[U64]:
+        return shelf.items.as_slice()
+
+    pub fn at(shelf: &Shelf, index: U64) -> Result<&U64, U64>:
+        return shelf.items.at(index)
+
+// `elements` here counts something else: it is not the walk.
+type Tally:
+    items: Vec<U64>
+
+impl Tally:
+    pub fn elements(tally: &Tally) -> U64:
+        return tally.items.len()
+
+    pub fn at(tally: &Tally, index: U64) -> Result<&U64, U64>:
+        return tally.items.at(index)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(a): Vec<U64> = Vec.new(&allocator, 3) else Err(code):
+        return
+    let Ok(b): Vec<U64> = Vec.new(&allocator, 3) else Err(code):
+        a.close()
+        return
+    var first = move a
+    var second = move b
+    for i in 1..4:
+        let p = first.push_mut(&allocator, i)
+        let q = second.push_mut(&allocator, i * 100)
+    let shelf = Shelf(move first)
+    let tally = Tally(move second)
+    for x in &shelf:
+        console.print_int(*x)
+    for i, x in &tally:
+        console.print("${i} ${*x} of ${tally.elements()}")
+    let Shelf(left) = move shelf
+    let Tally(right) = move tally
+    left.close()
+    right.close()

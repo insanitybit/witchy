@@ -1,0 +1,4 @@
+proof failed: function `refill`
+  not proved: an owner assigned over a value that may still hold one: `(*shelf).right`
+  not proved: an owner assigned over a value that may still hold one: `(*shelf).left`
+this function's proof did not go through: `(*shelf).right` may still hold an owner when this assigns over it, and that owner would be lost (not proved either: proof-points-at-assignment.refused.wy:17)

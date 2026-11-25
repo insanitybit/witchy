@@ -1,0 +1,41 @@
+// Refused (review): a match arm ending in return that can break first is not leaving; the span is read again after the String was rewritten.
+// The Err arm ends in `return`, so it counts as leaving, but one path `break`s; `words` is read
+// after the loop, after the arm rewrote `text` in place.
+import console
+import span
+import string
+
+fn check(n: U64) -> Result<U64, U64>:
+    if n > 0:
+        return Err(n)
+    return Ok(n)
+
+fn bad(allocator: &Allocator, n: U64) -> Result<U64, U64>:
+    let Ok(made): String = String.new(allocator) else Err(code):
+        return Err(code)
+    var text = move made
+    let _ = text.push_text(allocator, "12")
+    let words = text.span()
+    var i: U64 = 0
+    while i < 3:
+        match check(n):
+            Ok(k):
+                i = i + 1
+            Err(e):
+                text.clear()
+                let again = text.push_text(allocator, "99")
+                if e == 1:
+                    break
+                text.close()
+                return Err(e)
+    let v = words.parse_u64()
+    text.close()
+    match v:
+        Ok(x):
+            return Ok(x)
+        Err(e):
+            return Ok(0)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    if let Ok(n) = bad(&allocator, 1):
+        console.print_int(n)

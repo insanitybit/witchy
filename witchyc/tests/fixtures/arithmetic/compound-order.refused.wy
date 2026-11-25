@@ -1,0 +1,23 @@
+// The proof read `n` after `reset` set it to 0, so it showed `0 + 1` cannot overflow and the
+// check was removed; what ran was `x + 1`, which wrapped to 0 for the largest `x`. The proof now
+// reads `n` first, as the code does, and cannot show `x + 1` in range.
+import console
+
+fn reset(n: &mut U64) -> U64:
+    ensures *n == 0
+    ensures result == 1
+    proof:
+        auto
+    *n = 0
+    return 1
+
+fn over(x: U64) -> U64:
+    ensures true
+    proof:
+        auto
+    var n = x
+    n += reset(&mut n)
+    return n
+
+fn main(console: Console<Write>):
+    console.print_int(over(18446744073709551615))

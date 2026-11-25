@@ -1,0 +1,12 @@
+import list
+
+fn bad(list: &mut DoublyLinkedList<U64>) -> U64:
+    match list.current():
+        Some(value):
+            list.remove()
+            return *value
+        None:
+            return 0
+
+fn main():
+    return

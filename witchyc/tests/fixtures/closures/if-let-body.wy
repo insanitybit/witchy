@@ -1,0 +1,11 @@
+// A closure's body may be a one-line `if let`.
+import console
+
+fn half(n: U64) -> Result<U64, U64>:
+    if n % 2 == 0:
+        return Ok(n / 2)
+    Err(n)
+
+fn main(console: Console<Write>):
+    let f = fn(n: U64) -> U64: if let Ok(h) = half(n): h else: 0
+    console.print_int(f(8) + f(3))

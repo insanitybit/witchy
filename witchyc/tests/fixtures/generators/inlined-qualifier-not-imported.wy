@@ -1,0 +1,9 @@
+// The same where the caller imports no `util`: stepped, so it compiles (ninth review: refused,
+// as the generator's `util.pick` was checked in the caller's file).
+import console
+import "parts/walk_qualified.wy"
+
+fn main(console: Console<Write>):
+    console.print_int(walk_qualified.own_sum())
+    for v in walk(2):
+        console.print_int(v)

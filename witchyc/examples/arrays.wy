@@ -1,0 +1,42 @@
+type ArrayBox:
+    data: [U64; 3]
+
+fn slice_sum(values: &[U64]) -> U64:
+    var total = 0
+    var index = 0
+    while index < values.len():
+        total += values[index]
+        index += 1
+    return total
+
+fn slice_replace(values: &mut [U64]):
+    values[1] = values[0] + 4
+    values[2] += 2
+
+fn array_roundtrip(values: [U64; 3]) -> [U64; 3]:
+    return move values
+
+fn arrays_exercise() -> U64:
+    var boxed = ArrayBox([1, 2, 3])
+    slice_replace(&mut boxed.data)
+    if !(slice_sum(&boxed.data) == 11):
+        return 120
+    var moved = array_roundtrip(move boxed.data)
+    moved[0] = moved[2]
+    if !(slice_sum(&moved) == 15):
+        return 121
+    let empty: [U64; 0] = []
+    if !(slice_sum(&empty) == 0):
+        return 122
+    let repeated = [7; 4]
+    if !(slice_sum(&repeated) == 28):
+        return 123
+    let selected: Option<[U64; 2]> = Some([8, 9])
+    match selected:
+        Some(values):
+            return values[0] + values[1]
+        None:
+            return 124
+
+fn main(console: Console<Write>):
+    console.print_int(arrays_exercise())

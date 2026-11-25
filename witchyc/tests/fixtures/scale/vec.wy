@@ -1,0 +1,25 @@
+// 800 pushes and 800 pops on one Vec: the cost of an access does not grow with the allocation.
+import "../../../library/wasm-vec.wy"
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<Vec<U64>, U64> = Vec.new(&allocator, 800)
+    match move made:
+        Ok(empty):
+            var items = move empty
+            var index: U64 = 0
+            while index < 800:
+                match items.push_spare_mut(index):
+                    Ok:
+                        index += 1
+                    Err(_):
+                        index = 800
+            var total: U64 = 0
+            while items.len() > 0:
+                match items.take_last_mut():
+                    Ok(item):
+                        total += item
+                    Err(_):
+                        break
+            console.print_int(total)
+            items.close()
+        Err(code):
+            console.print_int(code)

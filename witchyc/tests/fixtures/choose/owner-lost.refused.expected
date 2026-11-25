@@ -1,0 +1,1 @@
+`text` still holds an owner when it goes out of scope

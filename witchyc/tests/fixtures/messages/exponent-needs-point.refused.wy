@@ -1,0 +1,3 @@
+// Refused, saying to write a point: it said a number or a duration was expected.
+fn main():
+    let big = 1e300

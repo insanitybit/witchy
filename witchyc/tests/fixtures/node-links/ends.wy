@@ -1,0 +1,73 @@
+import list
+
+fn check(list: &mut DoublyLinkedList<U64>, a: &Allocator, out: &Console<Write>):
+    let nil = list.position()
+    if !nil.same(list.first_position()) || !nil.same(list.last_position()):
+        unreachable
+    match list.remove():
+        Some(unexpected):
+            unreachable
+        None:
+            out.print_int(0)
+    if list.move_next() || list.move_prev():
+        unreachable
+    match list.insert(a, 41):
+        Err(value):
+            return
+        Ok:
+            list.move_prev()
+    let first = list.position()
+    if nil.same(first) || !first.same(list.first_position()) || !first.same(list.last_position()):
+        unreachable
+    match list.remove():
+        Some(value):
+            out.print_int(value)
+        None:
+            unreachable
+    if !nil.same(list.first_position()) || !nil.same(list.last_position()):
+        unreachable
+    for value in 1..4:
+        match list.insert(a, value):
+            Ok:
+                continue
+            Err(back):
+                return
+    list.move_prev()
+    let last = list.position()
+    if !last.same(list.last_position()):
+        unreachable
+    match list.remove():
+        Some(value):
+            out.print_int(value)
+        None:
+            unreachable
+    list.move_prev()
+    if !list.position().same(list.last_position()) || list.position().same(last):
+        unreachable
+    list.move_prev()
+    if !list.position().same(list.first_position()):
+        unreachable
+    match list.remove():
+        Some(value):
+            out.print_int(value)
+        None:
+            unreachable
+    if !list.position().same(list.first_position()) || !list.position().same(list.last_position()):
+        unreachable
+
+fn main(out: Console<Write>, a: Allocator):
+    var list: DoublyLinkedList<U64> = DoublyLinkedList.new()
+    check(&mut list, &a, &out)
+    while list.move_prev():
+        continue
+    while true:
+        match list.remove():
+            None:
+                break
+            Some(value):
+                out.print_int(value)
+    match list.close_empty():
+        Ok:
+            out.print_int(0)
+        Err(back):
+            unreachable

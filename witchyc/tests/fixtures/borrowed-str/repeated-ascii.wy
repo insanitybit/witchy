@@ -1,0 +1,16 @@
+import console
+import string
+
+fn main(console: Console<Write>, allocator: Allocator):
+    match String.repeated_ascii(&allocator, 65, 4):
+        Ok(text):
+            console.line(text.as_str())
+            text.close()
+        Err(code):
+            console.print_int(code)
+    match String.repeated_ascii(&allocator, 255, 4):
+        Ok(text):
+            console.line(text.as_str())
+            text.close()
+        Err(code):
+            console.print_int(code)

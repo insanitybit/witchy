@@ -1,0 +1,80 @@
+// A Vec<String> that starts with no storage and grows as Strings are pushed.
+// Growth moves each String into the new allocation; nothing is copied.
+import "../../../library/wasm-string.wy"
+import "../../../library/wasm-vec.wy"
+
+fn text(allocator: &Allocator, first: U64, second: U64) -> Result<String, U64>:
+    let made: Result<String, U64> = String.new(allocator)
+    match move made:
+        Ok(empty):
+            match empty.push_scalar(allocator, first):
+                Ok(one):
+                    match one.push_scalar(allocator, second):
+                        Ok(two):
+                            return Ok(move two)
+                        Err(back):
+                            back.close()
+                            return Err(902)
+                Err(back):
+                    back.close()
+                    return Err(901)
+        Err(code):
+            return Err(code)
+
+fn add(console: &Console<Write>, allocator: &Allocator, names: Vec<String>, first: U64, second: U64) -> Vec<String>:
+    match text(allocator, first, second):
+        Ok(name):
+            match names.push(allocator, move name):
+                Ok(grown):
+                    return move grown
+                Err(back):
+                    console.print_int(903)
+                    let VecPushError(vector, item) = move back
+                    item.close()
+                    return move vector
+        Err(code):
+            console.print_int(code)
+            return move names
+
+fn drain(console: &Console<Write>, names: &mut Vec<String>):
+    while names.len() > 0:
+        match names.take_last_mut():
+            Ok(name):
+                console.print_int(name.byte_len())
+                match name.byte_at(0):
+                    Ok(byte):
+                        console.print_int(U8.to_u64(byte))
+                    Err(code):
+                        console.print_int(904)
+                name.close()
+            Err(code):
+                console.print_int(905)
+                return
+
+fn finish(console: &Console<Write>, names: Vec<String>):
+    var rest = move names
+    drain(console, &mut rest)
+    match rest.try_release():
+        Ok:
+            console.print_int(1)
+        Err(stuck):
+            console.print_int(907)
+            finish(console, move stuck)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<Vec<String>, U64> = Vec.new(&allocator, 0)
+    match move made:
+        Ok(empty):
+            var names = move empty
+            names = add(&console, &allocator, move names, 104, 105)
+            console.print_int(names.capacity())
+            names = add(&console, &allocator, move names, 233, 10003)
+            console.print_int(names.capacity())
+            names = add(&console, &allocator, move names, 65, 66)
+            names = add(&console, &allocator, move names, 67, 68)
+            names = add(&console, &allocator, move names, 128512, 33)
+            console.print_int(names.len())
+            console.print_int(names.capacity())
+            finish(&console, move names)
+        Err(code):
+            console.print_int(code)

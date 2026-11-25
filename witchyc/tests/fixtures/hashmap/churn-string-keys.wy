@@ -1,0 +1,85 @@
+// Churn with owned String keys: 600 live of 800 possible names in 1024 cells, 6,000 remove /
+// re-insert / miss cycles, each lookup checked against an array; the keys are fresh Strings.
+import console
+import string
+import hashmap
+import discard
+import vec
+
+fn name(allocator: &Allocator, n: U64) -> Result<String, U64>:
+    var s: String = String.new(allocator)?
+    let _ = s.push_text(allocator, "key-")
+    var digits = n
+    while true:
+        let _ = s.push(allocator, 48 + digits % 10)
+        digits = digits / 10
+        if digits == 0:
+            break
+    return Ok(move s)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(m): HashMap<String, U64> = HashMap.new(&allocator, 1024) else Err(c):
+        return
+    var map = move m
+    let Ok(w): Vec<U64> = Vec.filled(&allocator, 800, 0) else Err(c):
+        map.discard()
+        return
+    var want = move w
+    for n in 0..600:
+        let Ok(k): String = name(&allocator, n) else Err(c):
+            break
+        match map.put(&allocator, move k, n):
+            Ok:
+                want[n] = n + 1
+            Err(back):
+                back.discard()
+    var seed: U64 = 7
+    var wrong: U64 = 0
+    for step in 0..6000:
+        seed = seed * 48271 % 2147483647
+        let gone = seed % 800
+        let Ok(probe): String = name(&allocator, gone) else Err(c):
+            break
+        match map.remove(&probe):
+            Ok(entry):
+                if want[gone] != entry.value + 1:
+                    wrong += 1
+                want[gone] = 0
+                entry.discard()
+                // Put back a different name, so the live count stays.
+                var back = (gone + 1 + seed % 199) % 800
+                while want[back] != 0:
+                    back = (back + 1) % 800
+                let Ok(fresh): String = name(&allocator, back) else Err(c):
+                    probe.close()
+                    break
+                match map.put(&allocator, move fresh, step):
+                    Ok:
+                        want[back] = step + 1
+                    Err(lost):
+                        lost.discard()
+            Err(missing):
+                if want[gone] != 0:
+                    wrong += 1
+        match map.get(&probe):
+            Ok(v):
+                wrong += 1
+            Err(missing):
+                ()
+        probe.close()
+    var live: U64 = 0
+    for n in 0..800:
+        let Ok(k): String = name(&allocator, n) else Err(c):
+            break
+        match map.get(&k):
+            Ok(v):
+                if want[n] != *v + 1:
+                    wrong += 1
+                live += 1
+            Err(missing):
+                if want[n] != 0:
+                    wrong += 1
+        k.close()
+    console.print("${wrong} wrong, ${live} live")
+    map.discard()
+    want.close()

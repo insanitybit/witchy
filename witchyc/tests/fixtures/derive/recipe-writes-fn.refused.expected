@@ -1,0 +1,1 @@
+a derive recipe writes impls for the type it is applied to (`impl Trait for Self:`), not `fn injected() -> U64:`

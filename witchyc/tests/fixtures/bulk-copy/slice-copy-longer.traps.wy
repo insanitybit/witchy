@@ -1,0 +1,6 @@
+// A source longer than the target is a mistake in the program: the run stops before a byte
+// is written.
+fn main():
+    var target: [U8; 4] = [0; 4]
+    let source: [U8; 5] = [1; 5]
+    target.slice_mut().copy_from(source.slice())

@@ -1,0 +1,2 @@
+fn main(out: Console<Write>):
+    out.print_int(42)

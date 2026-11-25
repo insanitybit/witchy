@@ -1,0 +1,31 @@
+// Refused: the leaving arm may close the String, but the path that falls through still reads
+// the span after the match, so the close there is refused.
+import console
+import span
+import string
+
+// Soundness control: the Err arm returns and does not read `words`; the Ok arm falls through,
+// and `words` is read after the match, after `text` is closed. Must be refused.
+fn half(n: U64) -> Result<U64, U64>:
+    if n > 0:
+        return Ok(n)
+    return Err(n)
+
+fn bad(allocator: &Allocator, n: U64) -> Result<U64, U64>:
+    let Ok(made): String = String.new(allocator) else Err(code):
+        return Err(code)
+    var text = move made
+    let _ = text.push_text(allocator, "a b")
+    let words = text.span()
+    match half(n):
+        Ok(v):
+            let x = v
+        Err(e):
+            text.close()
+            return Err(e)
+    text.close()
+    return Ok(words.len())
+
+fn main(console: Console<Write>, allocator: Allocator):
+    if let Ok(n) = bad(&allocator, 1):
+        console.print_int(n)

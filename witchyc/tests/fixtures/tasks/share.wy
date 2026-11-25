@@ -1,0 +1,50 @@
+// A task that allocates while the code stepping it allocates too: `allocator.share()` gives
+// the task its own handle to the one heap, adding no authority (lending `&Allocator` already
+// lets a callee allocate). Both sides grow Vecs between steps.
+import console
+import tasks
+import vec
+
+fn grow(allocator: Allocator) suspends:
+    let Ok(made): Vec<U64> = Vec.new(&allocator, 1) else Err(code):
+        return
+    var numbers = move made
+    var n: U64 = 0
+    while n < 5:
+        match numbers.push_mut(&allocator, n * n):
+            Ok:
+                n += 1
+            Err(lost):
+                n = 5
+        pause(numbers.len())
+    var sum: U64 = 0
+    for number in numbers.as_slice():
+        sum += *number
+    numbers.close()
+    report(sum)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Task = Task.spawn(&allocator, 2048, grow, allocator.share()) else Err(given):
+        return
+    var task = move made
+    let Ok(mine): Vec<U64> = Vec.new(&allocator, 1) else Err(code):
+        task.close()
+        return
+    var seen = move mine
+    var going = true
+    while going:
+        match task.step():
+            Ok:
+                going = false
+            Err(token):
+                if token >= REPORTED:
+                    console.print_int(token - REPORTED)
+                else:
+                    match seen.push_mut(&allocator, token):
+                        Ok:
+                            going = true
+                        Err(lost):
+                            going = false
+    task.close()
+    console.print_int(seen.len())
+    seen.close()

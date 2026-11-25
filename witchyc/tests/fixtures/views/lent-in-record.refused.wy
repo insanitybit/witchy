@@ -1,0 +1,20 @@
+// Refused: inside a record the view is not held only behind `&`.
+import console
+import span
+import string
+import hash
+
+type Box<T>:
+    item: T
+
+fn boxed<T: Any>(x: &Box<T>) -> U64:
+    return 1
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var text = move made
+    let _ = text.push_text(&allocator, "alpha beta")
+    let word = text.span().part(0, 5)
+    let b = Box(word)
+    console.print_int(boxed(&b))
+    text.close()

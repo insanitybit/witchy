@@ -1,0 +1,1 @@
+ensures owner.bytes.length == 0

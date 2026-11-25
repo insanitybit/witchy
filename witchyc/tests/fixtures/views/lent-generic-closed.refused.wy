@@ -1,0 +1,23 @@
+// Refused: the String cannot be closed while a Span of it is still used.
+import console
+import span
+import string
+import hash
+
+type Box<T>:
+    item: T
+
+fn digest<T: Any + Hash>(x: &T) -> U64:
+    return x.hash() % 1000
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var text = move made
+    let _ = text.push_text(&allocator, "alpha beta")
+    let word = text.span().part(0, 5)
+    text.close()
+    console.print_int(digest(&word))
+    let Ok(again): String = String.new(&allocator) else Err(code):
+        return
+    var text = move again
+    text.close()

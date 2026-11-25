@@ -1,0 +1,35 @@
+// The entries take the last slot. A long probe must still insert and find every key.
+import console
+import hashmap
+import discard
+
+fn check(allocator: &Allocator, remaining: U64) -> U64:
+    if remaining > 0:
+        let made: Result<Buffer<U8>, U64> = memory.try_alloc(allocator, 1)
+        let Ok(held) = move made else Err(code):
+            return 0
+        let result = check(allocator, remaining - 1)
+        match memory.try_release(move held):
+            Ok:
+                return result
+            Err(back):
+                unreachable
+    let Ok(made): HashMap<U64, U64> = HashMap.new(allocator, 41) else Err(code):
+        return 0
+    var map = move made
+    for i in 0..32:
+        match map.insert(i * 41, i + 1):
+            Ok:
+                continue
+            Err(back):
+                unreachable
+    var checksum: U64 = 0
+    for i in 0..32:
+        let key = i * 41
+        if let Ok(value) = map.get(&key):
+            checksum += *value
+    map.discard()
+    return checksum
+
+fn main(console: Console<Write>, allocator: Allocator):
+    console.print_int(check(&allocator, 63))

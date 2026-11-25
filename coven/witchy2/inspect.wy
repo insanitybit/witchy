@@ -1,0 +1,33 @@
+// Read one packed release. The digest and the metadata come from the same bytes.
+import "witchy2.wy"
+import "raw.wy"
+import crypto
+import vec
+
+fn main(console: Console<Write>, allocator: Allocator, bundle: File<Read>):
+    let Ok(made): Vec<U8> = Vec.filled(&allocator, package_bound() + 1, 0) else Err(code):
+        bundle.close()
+        console.line("refused: out of memory")
+        return
+    var bytes = move made
+    let length = read_into(move bundle, &mut bytes, 0, package_bound() + 1)
+    if length > package_bound():
+        console.line("refused: release exceeds the supported size")
+    else:
+        inspect(&console, bytes.as_slice().part(0, length))
+    bytes.close()
+
+fn inspect(console: &Console<Write>, bytes: &[U8]):
+    let end = release_record_end(bytes)
+    if end == 0:
+        console.line("refused: incomplete package record")
+        return
+    var digest: [U8; 48] = [0; 48]
+    match sha384(bytes, digest.slice_mut()):
+        Err(error):
+            console.line("refused: could not hash release")
+        Ok:
+            say_digest(console, digest.slice())
+            console.print_byte(10)
+            for at in 0..end:
+                console.print_byte(bytes[at])

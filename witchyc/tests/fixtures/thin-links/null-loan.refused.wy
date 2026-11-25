@@ -1,0 +1,8 @@
+fn bad(owner: &Boxed<U64>) -> &U64:
+    ensures true
+    proof:
+        auto
+    return memory.lend_box(owner)
+
+fn main():
+    return

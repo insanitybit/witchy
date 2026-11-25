@@ -1,0 +1,35 @@
+// Only a task's start skips work it was told to stop before: a closure called later inside a
+// task that has been told to stop still runs (an automated review found the check had been in
+// every call, so this cleanup was skipped and its file abandoned).
+import console
+import fs
+import tasks
+import discard
+
+fn keep(file: File<Write>):
+    let wrote = file.write("kept")
+    let done = file.finish()
+
+fn worker(file: File<Write>) suspends:
+    let word = pause_for(0)
+    let cleanup = fn() -> (): keep(move file)
+    cleanup.call_once()
+
+fn main(console: Console<Write>, allocator: Allocator, dir: Dir):
+    let Ok(file): File<Write> = dir.create("kept.txt") else Err(error):
+        return
+    match Task.spawn(&allocator, 4096, worker, move file):
+        Ok(task):
+            var running = move task
+            let first = running.step()
+            let told = running.cancel()
+            running.close()
+        Err(back):
+            back.abandon()
+    match dir.read_text(&allocator, "kept.txt"):
+        Ok(text):
+            console.write_string(&text)
+            console.line("")
+            text.close()
+        Err(error):
+            console.line("not written")

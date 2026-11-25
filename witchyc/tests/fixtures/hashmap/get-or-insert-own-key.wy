@@ -1,0 +1,32 @@
+// A program's own key type makes itself from a query with its own `KeyFor` (the library's guard
+// is for library key types only).
+import console
+import hash
+import hashmap
+import discard
+
+type Point derive(Eq, Hash, Discard):
+    x: U64
+    y: U64
+
+impl KeyFor<Point> for Point:
+    fn key_for(self: &Point, allocator: &Allocator) -> Result<Point, U64>:
+        return Ok(Point(x: (*self).x, y: (*self).y))
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): HashMap<Point, U64> = HashMap.new(&allocator, 4) else Err(e):
+        return
+    var map = move made
+    for i in 0..20:
+        match map.get_or_insert(&allocator, &Point(x: i % 3, y: i % 2), 0):
+            Ok(found):
+                *found += 1
+            Err(missed):
+                missed.discard()
+    console.print_int(map.len())
+    match map.get(&Point(x: 0, y: 0)):
+        Ok(n):
+            console.print_int(*n)
+        Err(e):
+            console.print_int(999)
+    map.discard()

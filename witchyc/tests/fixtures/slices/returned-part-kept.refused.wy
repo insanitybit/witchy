@@ -1,0 +1,9 @@
+// Refused: the part returned from `tail` still borrows `numbers`.
+fn tail(items: &[U64]) -> &[U64]:
+    return items.part(1, items.len())
+
+fn main():
+    var numbers: [U64; 4] = [5, 6, 7, 8]
+    let rest = tail(numbers.slice())
+    numbers[1] = 0
+    let n = rest.len()

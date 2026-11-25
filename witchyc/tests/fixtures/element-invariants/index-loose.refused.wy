@@ -1,0 +1,49 @@
+// Refused: the index of an invariant over elements is used only to read `field[i]`.
+import console
+import vec
+
+type Span:
+    start: U64
+    len: U64
+
+sealed type Index:
+    bytes: Vec<U8>
+    spans: Vec<Span>
+    invariant forall i in (0, spans.len()): spans[i].start + i <= bytes.len()
+
+impl Index:
+    pub fn new(allocator: &Allocator) -> Result<Index, U64>:
+        ensures true
+        proof:
+            auto
+        let bytes: Vec<U8> = Vec.new(allocator, 0)?
+        let made: Result<Vec<Span>, U64> = Vec.new(allocator, 0)
+        match move made:
+            Ok(spans):
+                return Ok(Index(move bytes, move spans))
+            Err(code):
+                bytes.release_empty()
+                return Err(code)
+
+    pub fn spans_len(index: &Index) -> U64:
+        return (*index).spans.len()
+
+    pub fn first(index: &Index) -> U64:
+        ensures true
+        proof:
+            auto
+        return (*index).spans.len()
+
+    pub fn close(index: Index):
+        let Index(bytes, spans) = move index
+        bytes.close()
+        spans.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    match Index.new(&allocator):
+        Ok(made):
+            var index = move made
+            console.print_int(index.spans_len())
+            index.close()
+        Err(code):
+            console.print_int(code)

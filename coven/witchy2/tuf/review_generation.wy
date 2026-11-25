@@ -1,0 +1,106 @@
+import "fetch_history.wy"
+import "generation.wy"
+import "metadata.wy"
+import "publication_files.wy"
+import "root.wy"
+import fs
+import string
+import text
+
+pub type ReviewGeneration:
+    generation: VerifiedTopLevel
+    checkpoint_size: U64
+
+type ReviewCheckpoint:
+    version: U64
+    pin: &String
+    destination: &File<Write>
+
+pub fn review_generation(source: &Dir<Read>, root: &TrustedRoot, timestamp: &String, latest: U64, latest_pin: &String, floor: RootFloor, reserved: &[U8], destination: &File<Write>, now: U64, allocator: &Allocator) -> Result<ReviewGeneration, U64>:
+    let checkpoint = ReviewCheckpoint(latest, latest_pin, destination)
+    if floor.version == 0:
+        return verify_mirror(source, root, timestamp, FirstPublication, reserved, checkpoint, now, allocator)
+    let recorded = parse_fetch_floor(floor.metadata, allocator)?
+    let result = verify_mirror(source, root, timestamp, recorded.history(), reserved, checkpoint, now, allocator)
+    recorded.close()
+    return move result
+
+fn verify_mirror(source: &Dir<Read>, root: &TrustedRoot, timestamp: &String, history: History, reserved: &[U8], checkpoint: ReviewCheckpoint, now: U64, allocator: &Allocator) -> Result<ReviewGeneration, U64>:
+    let Ok(stamp): Metadata = parse_metadata(timestamp, allocator, Timestamp) else Err(error):
+        return Err(1)
+    let referenced = snapshot_link(root, &stamp, now, allocator)
+    stamp.close()
+    let snapshot_ref = referenced?
+    let Ok(path): String = metadata_path(allocator, snapshot_ref.version(), "snapshot") else Err(error):
+        return Err(1)
+    let read = read_text_object(source, &path, 2097152, allocator)
+    path.close()
+    let Ok(snapshot): String = move read else Err(error):
+        return Err(1)
+    let verified = with_snapshot(source, root, timestamp, &snapshot, &snapshot_ref, history, reserved, checkpoint, now, allocator)
+    snapshot.close()
+    return move verified
+
+fn snapshot_link(root: &TrustedRoot, stamp: &Metadata, now: U64, allocator: &Allocator) -> Result<MetadataReference, U64>:
+    if let Err(error) = authenticated(root, stamp, now, allocator):
+        return Err(1)
+    let Ok(reference): MetadataReference = snapshot_reference(stamp, allocator) else Err(error):
+        return Err(1)
+    return Ok(reference)
+
+fn with_snapshot(source: &Dir<Read>, root: &TrustedRoot, timestamp: &String, wire: &String, reference: &MetadataReference, history: History, reserved: &[U8], checkpoint: ReviewCheckpoint, now: U64, allocator: &Allocator) -> Result<ReviewGeneration, U64>:
+    let Ok(snapshot): Metadata = reference.open(Snapshot, wire, allocator) else Err(error):
+        return Err(1)
+    let linked = targets_link(root, &snapshot, now, allocator)
+    snapshot.close()
+    let targets_ref = linked?
+    let Ok(path): String = metadata_path(allocator, targets_ref.version(), "targets") else Err(error):
+        return Err(1)
+    let read = read_text_object(source, &path, 2097152, allocator)
+    path.close()
+    let Ok(targets): String = move read else Err(error):
+        return Err(1)
+    let verified = verify_reserved_generation(root, timestamp, wire, &targets, history, now, reserved, allocator)
+    targets.close()
+    let Ok(generation): VerifiedTopLevel = move verified else Err(error):
+        if let MetadataRollback = error:
+            return Err(2)
+        return Err(1)
+    let saved = write_checkpoint(checkpoint, timestamp, wire, allocator)
+    let Ok(size): U64 = saved else Err(code):
+        generation.close()
+        return Err(code)
+    return Ok(ReviewGeneration(move generation, size))
+
+fn targets_link(root: &TrustedRoot, snapshot: &Metadata, now: U64, allocator: &Allocator) -> Result<MetadataReference, U64>:
+    if let Err(error) = authenticated(root, snapshot, now, allocator):
+        return Err(1)
+    let Ok(reference): MetadataReference = top_targets_reference(snapshot, allocator) else Err(error):
+        return Err(1)
+    return Ok(reference)
+
+fn write_checkpoint(checkpoint: ReviewCheckpoint, timestamp: &String, snapshot: &String, allocator: &Allocator) -> Result<U64, U64>:
+    let empty = String.with_capacity(allocator, 128)?
+    var header = move empty
+    let result = prepare_header(&mut header, checkpoint.version, checkpoint.pin, timestamp.byte_len(), allocator)
+    let written = write_metadata(result, checkpoint.destination, &header, timestamp, snapshot)
+    header.close()
+    return written
+
+fn prepare_header(header: &mut String, version: U64, pin: &String, length: U64, allocator: &Allocator) -> Result<(), U64>:
+    header.push_u64(allocator, version)?
+    header.push_text(allocator, "\n")?
+    header.push_part(allocator, pin, 0, pin.byte_len())?
+    header.push_text(allocator, "\n")?
+    header.push_u64(allocator, length)?
+    return header.push_text(allocator, "\n")
+
+fn write_metadata(prepared: Result<(), U64>, destination: &File<Write>, header: &String, timestamp: &String, snapshot: &String) -> Result<U64, U64>:
+    prepared?
+    if let Err(error) = destination.write_bytes(header.as_bytes()):
+        return Err(1)
+    if let Err(error) = destination.write_bytes(timestamp.as_bytes()):
+        return Err(1)
+    if let Err(error) = destination.write_bytes(snapshot.as_bytes()):
+        return Err(1)
+    return Ok(header.byte_len() + timestamp.byte_len() + snapshot.byte_len())

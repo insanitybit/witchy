@@ -1,0 +1,19 @@
+// A method's receiver used by the `if` or `?` in its arguments is refused: whether it is read first or
+// last depends on the method (red-team review: a by-value receiver was read after `bump` changed it).
+// receiver by value (Copy record), if mutates it: receiver read late?
+type C:
+    n: U64
+
+impl C:
+    fn plus(self: C, k: U64) -> U64:
+        return self.n + k
+
+fn bump(c: &mut C) -> U64:
+    (*c).n = (*c).n + 100
+    return 1
+
+fn main(console: Console<Write>):
+    var c = C(5)
+    let t = true
+    let y = c.plus(if t: bump(&mut c) else: 0)
+    console.print_int(y)

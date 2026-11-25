@@ -1,0 +1,26 @@
+import console
+import hashmap
+import discard
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): HashMap<U64, U64> = HashMap.new(&allocator, 100003) else Err(code):
+        return
+    var map = move made
+    var seed: U64 = 73
+    for i in 0..90000:
+        seed = seed * 48271 % 2147483647
+        let key = seed
+        match map.insert(key, i):
+            Ok:
+                continue
+            Err(back):
+                unreachable
+    var hits: U64 = 0
+    seed = 73
+    for i in 0..180000:
+        seed = seed * 48271 % 2147483647
+        let key = seed
+        if let Ok(hit) = map.get(&key):
+            hits += 1
+    console.print_int(hits)
+    map.discard()

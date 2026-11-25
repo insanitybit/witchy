@@ -1,0 +1,14 @@
+// A `&mut` reference passed on by name is lent, not copied: the first name waits.
+type Pair:
+    a: U64
+    b: U64
+
+fn first(pair: &mut Pair) -> &mut U64:
+    return &mut (*pair).a
+
+fn main(console: Console<Write>):
+    var pair = Pair(1, 2)
+    let r = first(&mut pair)
+    let s = r
+    *r = 1
+    *s = 2

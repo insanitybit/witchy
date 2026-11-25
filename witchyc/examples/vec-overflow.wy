@@ -1,0 +1,27 @@
+fn main(console: Console<Write>):
+    match vec_growth_capacity(0):
+        Ok(capacity):
+            console.print_int(capacity)
+        Err(reason):
+            console.print_int(0)
+    match vec_growth_capacity(9223372036854775807):
+        Ok(capacity):
+            console.print_int(capacity)
+        Err(reason):
+            console.print_int(0)
+    match vec_growth_capacity(9223372036854775808):
+        Ok(capacity):
+            console.print_int(0)
+        Err(reason):
+            if reason == AllocError.overflow:
+                console.print_int(1)
+            else:
+                console.print_int(0)
+    match vec_growth_capacity(18446744073709551615):
+        Ok(capacity):
+            console.print_int(0)
+        Err(reason):
+            if reason == AllocError.overflow:
+                console.print_int(1)
+            else:
+                console.print_int(0)

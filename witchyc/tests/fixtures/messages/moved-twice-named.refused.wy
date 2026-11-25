@@ -1,0 +1,13 @@
+// Refused, naming the value moved a second time.
+import console
+import string
+
+fn eat(s: String):
+    s.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(c):
+        return
+    let s = move made
+    eat(move s)
+    eat(move s)

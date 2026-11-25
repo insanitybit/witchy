@@ -1,0 +1,12 @@
+// "aggregate exceeds 32 scalar slots": a record cannot hold a 256-byte array, so a fixed
+// buffer and its length cannot travel together (and a test, which gets no Allocator, has no
+// other way to carry bytes).
+import console
+
+type Sample:
+    bytes: [U8; 256]
+    length: U64
+
+fn main(console: Console<Write>):
+    let sample = Sample([0; 256], 0)
+    console.print_int(sample.length)

@@ -1,0 +1,6 @@
+import simd
+
+fn main(console: Console<Write>):
+    let short: [U8; 16] = [0; 16]
+    let group = U8x16.load(short.slice(), 1)
+    console.print_int(group.bitmask())

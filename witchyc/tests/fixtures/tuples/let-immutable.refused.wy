@@ -1,0 +1,7 @@
+// Names from `let (a, b)` are not variables.
+import console
+
+fn main(console: Console<Write>):
+    let (a, b) = (1, 2)
+    a += 1
+    console.print_int(a + b)

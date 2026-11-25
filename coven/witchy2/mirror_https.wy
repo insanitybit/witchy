@@ -1,0 +1,159 @@
+// Serve a published TUF tree over TLS on the connection granted to this instance.
+import fs
+import http
+import http_framing
+import https
+import https_fs
+import net
+import span
+import string
+import text
+import vec
+import "mirror/identity.wy"
+import "mirror/routes.wy"
+import "mirror/web_response.wy"
+import "mirror/web_routes.wy"
+import tls_certificates
+import tls_server_socket
+import tls
+import url
+
+fn http_head(input: Span, authority: Span) -> Result<RequestHead, U64>:
+    let Ok(head): RequestHead = http_framing.parse_request_head(input) else Err(reason):
+        return Err(400)
+    let status = http.https_host_status(head.headers, authority)
+    if status != 0:
+        return Err(status)
+    return Ok(head)
+
+fn receive_head(stream: &mut SecureSession, request: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]) -> Result<U64, SessionError>:
+    let capacity = request.len()
+    match https.read_request_prefix(stream, request, capacity, plaintext, wire):
+        Ok(prefix):
+            return Ok(prefix.received)
+        Err(PrefixTransportError(reason)):
+            return Err(reason)
+        Err(PrefixFramingError(_)):
+            return Err(SessionUnexpectedRecord)
+
+fn send_text(stream: &mut SecureSession, value: Text, plaintext: &mut [U8], wire: &mut [U8]) -> Result<(), SessionError>:
+    var bytes: [U8; 160] = [0; 160]
+    let length = value.byte_len()
+    if length > 160:
+        return Err(SessionWriteFailed)
+    for i in 0..length:
+        let Ok(byte): U8 = value.byte_at(i) else Err(reason):
+            return Err(SessionWriteFailed)
+        bytes[i] = byte
+    return stream.write(bytes.slice().part(0, length), plaintext, wire)
+
+fn stream_file(stream: &mut SecureSession, allocator: &Allocator, file: &File<Read>, fresh: Bool, metadata: Bool, send_body: Bool, content: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]) -> Result<(), SessionError>:
+    let length = file.snapshot_remaining()
+    let Ok(head): String = routes.tuf_head(allocator, length, fresh, metadata) else Err(code):
+        return send_text(stream, routes.status_line(503), plaintext, wire)
+    let sent = stream.write(head.as_bytes(), plaintext, wire)
+    head.close()
+    sent?
+    if !send_body:
+        return Ok(())
+    match https_fs.send_file_body(stream, file, length, content, plaintext, wire):
+        Ok:
+            return Ok(())
+        Err(IncompleteFileBody):
+            return Err(SessionWriteFailed)
+        Err(FileBodyTransportError(reason)):
+            return Err(reason)
+
+fn serve(stream: &mut SecureSession, allocator: &Allocator, root: &Dir<Read>, authority: Span, data: &mut [U8], assets: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]) -> Result<(), SessionError>:
+    let length = receive_head(stream, data.part(0, 8192), plaintext, wire)?
+    let parsed = http_head(Span.of(data.part(0, length)), authority)
+    match parsed:
+        Ok(head):
+            if let Ok(page) = web_route(head.target):
+                send_web(stream, allocator, root, head, page, assets, plaintext, wire)?
+            else:
+                send_tuf(stream, allocator, root, head, assets, plaintext, wire)?
+        Err(status):
+            send_text(stream, routes.status_line(status), plaintext, wire)?
+    return stream.shutdown(plaintext, wire)
+
+fn send_web(stream: &mut SecureSession, allocator: &Allocator, root: &Dir<Read>, head: RequestHead, route: WebRoute, assets: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]) -> Result<(), SessionError>:
+    let Ok(send_body): Bool = admitted_read(head) else Err(status):
+        return send_text(stream, routes.status_line(status), plaintext, wire)
+    let result = prepare_web(root, head.target, route, assets, allocator)
+    let Ok(made): WebReply = move result else Err(status):
+        let response = if status == 404: 404 else: 503
+        return send_text(stream, routes.status_line(response), plaintext, wire)
+    let WebReply(headers, length) = move made
+    let sent = stream.write(headers.as_bytes(), plaintext, wire)
+    headers.close()
+    sent?
+    if send_body:
+        return stream.write(assets.part(0, length), plaintext, wire)
+    return Ok(())
+
+fn send_tuf(stream: &mut SecureSession, allocator: &Allocator, root: &Dir<Read>, head: RequestHead, assets: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]) -> Result<(), SessionError>:
+    match routes.select_file(head, allocator, root):
+        Ok(opened):
+            let Opened(file, fresh, metadata, send_body) = move opened
+            let sent = stream_file(stream, allocator, &file, fresh, metadata, send_body, assets.part(0, 16384), plaintext, wire)
+            file.close()
+            sent?
+        Err(status):
+            send_text(stream, routes.status_line(status), plaintext, wire)?
+    return Ok(())
+
+fn connect(socket: Socket, allocator: &Allocator, root: &Dir<Read>, random: &Rand, signer: &TlsSigner, chain: &CertificateChain, authority: Span, endpoint: HttpAuthority, client_bytes: &mut [U8], data: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]):
+    let Ok(accepted): SecureSession = accept_named(move socket, allocator, random, signer, chain, endpoint.hostname(), client_bytes, data, plaintext, wire) else Err(reason):
+        return
+    var stream = move accepted
+    let sent = serve(&mut stream, allocator, root, authority, data, client_bytes, plaintext, wire)
+    stream.close()
+
+fn handle(socket: Socket, allocator: &Allocator, root: &Dir<Read>, random: &Rand, signer: &TlsSigner, client: &mut [U8], data: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]):
+    // 253 bytes of DNS name, a colon, five port digits, and optional CRLF.
+    let Ok(storage): Vec<U8> = Vec.filled(allocator, 261, 0) else Err(reason):
+        socket.close()
+        return
+    var name = move storage
+    let Ok(length): U64 = identity.read_file(root, "tls/authority", name.as_mut_slice()) else Err(reason):
+        name.close()
+        socket.close()
+        return
+    let authority = identity.authority_line(Span.of(name.as_slice().part(0, length)))
+    let Ok(endpoint): HttpAuthority = url.parse_authority(authority) else Err(reason):
+        name.close()
+        socket.close()
+        return
+    if endpoint.explicit_port() == 0:
+        name.close()
+        socket.close()
+        return
+    let Ok(size): U64 = identity.read_file(root, "tls/chain", data) else Err(reason):
+        name.close()
+        socket.close()
+        return
+    let Ok(chain): CertificateChain = tls_certificates.from_der_list(allocator, data.part(0, size)) else Err(reason):
+        name.close()
+        socket.close()
+        return
+    connect(move socket, allocator, root, random, signer, &chain, authority, endpoint, client, data, plaintext, wire)
+    chain.close()
+    name.close()
+
+fn main(connection: Socket, allocator: Allocator, root: Dir<Read>, random: Rand, issuer: TlsSigner):
+    match server_buffers(&allocator):
+        Err(reason):
+            connection.close()
+        Ok(made):
+            let ServerBuffers(client, flight, plaintext, ciphertext) = move made
+            var hello_buffer = move client
+            var data = move flight
+            var scratch = move plaintext
+            var wire = move ciphertext
+            handle(move connection, &allocator, &root, &random, &issuer, hello_buffer.as_mut_slice(), data.as_mut_slice(), scratch.as_mut_slice(), wire.as_mut_slice())
+            wire.close()
+            scratch.close()
+            data.close()
+            hello_buffer.close()
+    root.close()

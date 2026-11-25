@@ -1,0 +1,21 @@
+fn main(console: Console<Write>):
+    var data: Buffer<U16> = memory.alloc(2)
+    let first: U16 = 0
+    let second: U16 = 65535
+    memory.init(&mut data, 0, first)
+    memory.init(&mut data, 1, second)
+    let array = array_from_buffer(move data, 2)
+    let replacement: U16 = 7
+    match array_replace(move array, 1, replacement):
+        Ok(changed):
+            console.print_int(U16.to_u64(changed.previous))
+            var restored = array_into_buffer(move changed.array)
+            let observed: U16 = memory.read(&restored, 0)
+            console.print_int(U16.to_u64(observed))
+            let a: U16 = memory.take(&mut restored, 0)
+            let b: U16 = memory.take(&mut restored, 1)
+            console.print_int(U16.to_u64(a))
+            console.print_int(U16.to_u64(b))
+            memory.release(restored)
+        Err(failed):
+            discard(move failed)

@@ -1,0 +1,9 @@
+// What `/` gives is not followed: it rounds toward zero.
+fn f(a: I64) -> I64:
+    ensures result == 3
+    proof:
+        auto
+    return a / 2
+
+fn main(console: Console<Write>):
+    console.print_int(I64.bits(f(7)))

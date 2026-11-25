@@ -1,0 +1,4 @@
+pub fn try_alloc(a: &Allocator, n: U64) -> U64:
+    return 9
+pub fn capacity(n: U64) -> U64:
+    return n

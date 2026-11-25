@@ -1,0 +1,10 @@
+// Refused: a record that holds a capability carries it into the function.
+type Logger:
+    out: Console<Write>
+
+pure fn lines(logger: &Logger) -> U64:
+    return 0
+
+fn main(console: Console<Write>):
+    let logger = Logger(move console)
+    let count = lines(&logger)

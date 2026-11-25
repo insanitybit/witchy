@@ -1,0 +1,31 @@
+// The TUF mirror delivers raw bytes with a length or a protected TLS close.
+import "../tuf_get_head.wy"
+import "download_request.wy"
+import https
+import https_fs
+import http_framing
+import tls
+import span
+
+pub fn receive_get(stream: &mut SecureSession, file: &File<Write>, bounds: DownloadBounds, buffer: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]) -> Result<(), U64>:
+    let Ok(prefix): IdentityPrefix = https.read_identity_prefix(stream, buffer, plaintext, wire) else Err(reason):
+        if let PrefixTransportError(code) = reason:
+            return Err(2)
+        return Err(3)
+    let head = get_head(Span.of(buffer.part(0, prefix.received)), prefix.fence)?
+    if head.status != 200:
+        return Err(head.status)
+    return read_body(stream, file, head, bounds, buffer.part(head.body_at, prefix.received), plaintext, wire)
+
+fn read_body(stream: &mut SecureSession, file: &File<Write>, head: GetHead, bounds: DownloadBounds, initial: &[U8], plaintext: &mut [U8], wire: &mut [U8]) -> Result<(), U64>:
+    let framing = if head.fixed: FixedLength(head.length) else: CloseDelimited
+    let limit = if bounds.exact: IdentityExactly(bounds.limit) else: IdentityAtMost(bounds.limit)
+    match https_fs.copy_identity_body(stream, file, framing, initial, limit, StopAtIdentityLength, plaintext, wire):
+        Ok:
+            return Ok(())
+        Err(IdentityFileWriteError(reason)):
+            return Err(6)
+        Err(IdentityFileReadError(reason)):
+            if let BodyTransportError(code) = reason:
+                return Err(2)
+            return Err(3)

@@ -1,0 +1,1 @@
+this call gives a `Result`, where a `Bool` is wanted: `match` on it, with an arm for each variant (`Ok:` and `Err(back):`)

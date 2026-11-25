@@ -1,0 +1,19 @@
+// A `let x = match` outside the block takes a value that reads the owner: the
+// owner would be gone before the value is used. Bind the value inside the block first.
+import "../../../library/wasm-text.wy"
+import "../../../library/wasm-string.wy"
+
+fn work(allocator: &Allocator, flag: Bool) -> U64:
+    let length = match String.new(allocator):
+        Ok(made):
+            using text = move made:
+                if flag:
+                    text.byte_len()
+                else:
+                    0
+        Err(code):
+            0
+    return length
+
+fn main(allocator: Allocator):
+    let x = work(&allocator, true)

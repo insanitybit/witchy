@@ -1,0 +1,364 @@
+// Root programs retain concrete entry capabilities and allocation state.
+fn append(input: Vec<U64>, item: U64) -> Vec<U64>:
+    match vec_push(move input, item):
+        Ok(grown):
+            return move grown
+        Err(failed):
+            return move failed.vector
+
+fn main(console: Console<Write>):
+    console.print_int(1001)
+    var og_witness = memory.alloc(1)
+    memory.init(&mut og_witness, 0, 42)
+    let og_saved = &og_witness
+    let og_allocation: Result<Vec<Buffer<USize>>, AllocError> = vec_new(0)
+    let Ok(og_vector) = move og_allocation else Err(og_reason):
+        console.print_int(94)
+        console.print_int(memory.read(og_saved, 0))
+        memory.end(og_saved)
+        memory.release(og_witness)
+        discard(move console)
+        return
+    var og_item = memory.alloc(1)
+    memory.init(&mut og_item, 0, 73)
+    let Ok(og_pushed) = vec_push(move og_vector, move og_item) else Err(og_failed):
+        memory.release(og_failed.item)
+        match vec_release(move og_failed.vector):
+            Ok(og_done):
+                console.print_int(93)
+            Err(og_kept):
+                discard(move og_kept)
+        console.print_int(memory.read(og_saved, 0))
+        memory.end(og_saved)
+        memory.release(og_witness)
+        discard(move console)
+        return
+    let Ok(og_grown) = vec_reserve(move og_pushed, 3) else Err(og_failed):
+        discard(move og_failed)
+        console.print_int(memory.read(og_saved, 0))
+        memory.end(og_saved)
+        memory.release(og_witness)
+        discard(move console)
+        return
+    let Ok(og_popped) = vec_pop(move og_grown) else Err(og_kept):
+        console.print_int(92)
+        discard(move og_kept)
+        console.print_int(memory.read(og_saved, 0))
+        memory.end(og_saved)
+        memory.release(og_witness)
+        discard(move console)
+        return
+    let Some(og_recovered) = move og_popped.item else None:
+        console.print_int(90)
+        match vec_release(move og_popped.vector):
+            Ok(og_done):
+                console.print_int(74)
+            Err(og_kept):
+                console.print_int(91)
+                discard(move og_kept)
+        console.print_int(memory.read(og_saved, 0))
+        memory.end(og_saved)
+        memory.release(og_witness)
+        discard(move console)
+        return
+    console.print_int(memory.read(&og_recovered, 0))
+    memory.release(og_recovered)
+    let Ok(og_done) = vec_release(move og_popped.vector) else Err(og_kept):
+        console.print_int(91)
+        discard(move og_kept)
+        console.print_int(memory.read(og_saved, 0))
+        memory.end(og_saved)
+        memory.release(og_witness)
+        discard(move console)
+        return
+    console.print_int(74)
+    console.print_int(memory.read(og_saved, 0))
+    memory.end(og_saved)
+    memory.release(og_witness)
+    console.print_int(1003)
+    var oi_witness = memory.alloc(1)
+    memory.init(&mut oi_witness, 0, 42)
+    let oi_saved = &oi_witness
+    let oi_created: Result<Vec<Buffer<U64>>, AllocError> = vec_new(0)
+    let Ok(oi_empty) = move oi_created else Err(oi_reason):
+        console.print_int(902)
+        console.print_int(memory.read(oi_saved, 0))
+        memory.end(oi_saved)
+        memory.release(oi_witness)
+        discard(move console)
+        return
+    var oi_first = memory.alloc(1)
+    memory.init(&mut oi_first, 0, 73)
+    let Ok(oi_pushed) = vec_push(move oi_empty, move oi_first) else Err(oi_failed):
+        memory.release(oi_failed.item)
+        discard(move oi_failed.vector)
+        console.print_int(memory.read(oi_saved, 0))
+        memory.end(oi_saved)
+        memory.release(oi_witness)
+        discard(move console)
+        return
+    let Ok(oi_grown) = vec_reserve(move oi_pushed, 3) else Err(oi_failed):
+        discard(move oi_failed)
+        console.print_int(memory.read(oi_saved, 0))
+        memory.end(oi_saved)
+        memory.release(oi_witness)
+        discard(move console)
+        return
+    var oi_replacement = memory.alloc(1)
+    memory.init(&mut oi_replacement, 0, 74)
+    let Ok(oi_changed) = vec_replace(move oi_grown, 0, move oi_replacement) else Err(oi_failed):
+        memory.release(oi_failed.replacement)
+        discard(move oi_failed.vector)
+        console.print_int(memory.read(oi_saved, 0))
+        memory.end(oi_saved)
+        memory.release(oi_witness)
+        discard(move console)
+        return
+    console.print_int(memory.read(&oi_changed.previous, 0))
+    memory.release(oi_changed.previous)
+    let Ok(oi_popped) = vec_pop(move oi_changed.vector) else Err(oi_kept):
+        discard(move oi_kept)
+        console.print_int(memory.read(oi_saved, 0))
+        memory.end(oi_saved)
+        memory.release(oi_witness)
+        discard(move console)
+        return
+    let Some(oi_item) = move oi_popped.item else None:
+        console.print_int(901)
+        match vec_release(move oi_popped.vector):
+            Ok(oi_done):
+                console.print_int(75)
+            Err(oi_kept):
+                discard(move oi_kept)
+        console.print_int(memory.read(oi_saved, 0))
+        memory.end(oi_saved)
+        memory.release(oi_witness)
+        discard(move console)
+        return
+    console.print_int(memory.read(&oi_item, 0))
+    memory.release(oi_item)
+    let Ok(oi_done) = vec_release(move oi_popped.vector) else Err(oi_kept):
+        discard(move oi_kept)
+        console.print_int(memory.read(oi_saved, 0))
+        memory.end(oi_saved)
+        memory.release(oi_witness)
+        discard(move console)
+        return
+    console.print_int(75)
+    console.print_int(memory.read(oi_saved, 0))
+    memory.end(oi_saved)
+    memory.release(oi_witness)
+    console.print_int(1005)
+    let created: Result<Vec<U64>, AllocError> = vec_new(0)
+    match created:
+        Ok(empty):
+            var vector = move empty
+            var i: USize = 0
+            while i < 100:
+                vector = append(move vector, i)
+                i += 1
+            let measured = vec_len(move vector)
+            vector = move measured.vector
+            console.print_int(measured.length)
+            // Console is affine, so perform reads here without transferring it.
+            match vec_get(move vector, 17):
+                Ok(found):
+                    vector = move found.vector
+                    match found.item:
+                        Some(item):
+                            console.print_int(item)
+                        None:
+                            console.print_int(999)
+                Err(unchanged):
+                    vector = move unchanged
+            match vec_get(move vector, 100):
+                Ok(found):
+                    vector = move found.vector
+                    match found.item:
+                        Some(item):
+                            console.print_int(item)
+                        None:
+                            console.print_int(999)
+                Err(unchanged):
+                    vector = move unchanged
+            var draining: Bool = true
+            var total: U64 = 0
+            while draining:
+                match vec_pop(move vector):
+                    Ok(popped):
+                        vector = move popped.vector
+                        match popped.item:
+                            Some(item):
+                                total += item
+                            None:
+                                draining = false
+                    Err(unchanged):
+                        vector = move unchanged
+                        draining = false
+            console.print_int(total)
+            discard(vec_release(move vector))
+        Err(reason):
+            console.print_int(0)
+    discard(move console)
+
+// -- capability root --
+fn main(out: Console<Write>, token: Console<Write>, first: Console<Write>, second: Console<Write>):
+    out.print_int(1002)
+    var cg_witness = memory.alloc(1)
+    memory.init(&mut cg_witness, 0, 42)
+    let cg_saved = &cg_witness
+    let cg_allocation: Result<Vec<Console<Write>>, AllocError> = vec_new(0)
+    let Ok(cg_vector) = move cg_allocation else Err(cg_reason):
+        discard(move token)
+        out.print_int(95)
+        out.print_int(memory.read(cg_saved, 0))
+        memory.end(cg_saved)
+        memory.release(cg_witness)
+        discard(move first)
+        discard(move second)
+        discard(move out)
+        return
+    let Ok(cg_pushed) = vec_push(move cg_vector, move token) else Err(cg_failed):
+        let cg_returned = move cg_failed.item
+        cg_returned.print_int(93)
+        discard(move cg_returned)
+        match vec_release(move cg_failed.vector):
+            Ok(cg_done):
+                out.print_int(94)
+            Err(cg_kept):
+                discard(move cg_kept)
+        out.print_int(memory.read(cg_saved, 0))
+        memory.end(cg_saved)
+        memory.release(cg_witness)
+        discard(move first)
+        discard(move second)
+        discard(move out)
+        return
+    let Ok(cg_grown) = vec_reserve(move cg_pushed, 3) else Err(cg_failed):
+        discard(move cg_failed)
+        out.print_int(memory.read(cg_saved, 0))
+        memory.end(cg_saved)
+        memory.release(cg_witness)
+        discard(move first)
+        discard(move second)
+        discard(move out)
+        return
+    let Ok(cg_popped) = vec_pop(move cg_grown) else Err(cg_kept):
+        out.print_int(92)
+        discard(move cg_kept)
+        out.print_int(memory.read(cg_saved, 0))
+        memory.end(cg_saved)
+        memory.release(cg_witness)
+        discard(move first)
+        discard(move second)
+        discard(move out)
+        return
+    let Some(cg_recovered) = move cg_popped.item else None:
+        out.print_int(90)
+        match vec_release(move cg_popped.vector):
+            Ok(cg_done):
+                out.print_int(74)
+            Err(cg_kept):
+                out.print_int(91)
+                discard(move cg_kept)
+        out.print_int(memory.read(cg_saved, 0))
+        memory.end(cg_saved)
+        memory.release(cg_witness)
+        discard(move first)
+        discard(move second)
+        discard(move out)
+        return
+    let cg_restored = move cg_recovered
+    cg_restored.print_int(73)
+    discard(move cg_restored)
+    let Ok(cg_done) = vec_release(move cg_popped.vector) else Err(cg_kept):
+        out.print_int(91)
+        discard(move cg_kept)
+        out.print_int(memory.read(cg_saved, 0))
+        memory.end(cg_saved)
+        memory.release(cg_witness)
+        discard(move first)
+        discard(move second)
+        discard(move out)
+        return
+    out.print_int(74)
+    out.print_int(memory.read(cg_saved, 0))
+    memory.end(cg_saved)
+    memory.release(cg_witness)
+    out.print_int(1004)
+    var ci_witness = memory.alloc(1)
+    memory.init(&mut ci_witness, 0, 42)
+    let ci_saved = &ci_witness
+    let ci_created: Result<Vec<Console<Write>>, AllocError> = vec_new(0)
+    let Ok(ci_empty) = move ci_created else Err(ci_reason):
+        discard(move first)
+        discard(move second)
+        out.print_int(903)
+        out.print_int(memory.read(ci_saved, 0))
+        memory.end(ci_saved)
+        memory.release(ci_witness)
+        discard(move out)
+        return
+    let Ok(ci_pushed) = vec_push(move ci_empty, move first) else Err(ci_failed):
+        discard(move second)
+        discard(move ci_failed)
+        out.print_int(memory.read(ci_saved, 0))
+        memory.end(ci_saved)
+        memory.release(ci_witness)
+        discard(move out)
+        return
+    let Ok(ci_grown) = vec_reserve(move ci_pushed, 3) else Err(ci_failed):
+        discard(move second)
+        discard(move ci_failed)
+        out.print_int(memory.read(ci_saved, 0))
+        memory.end(ci_saved)
+        memory.release(ci_witness)
+        discard(move out)
+        return
+    let Ok(ci_changed) = vec_replace(move ci_grown, 0, move second) else Err(ci_failed):
+        let ci_replacement = move ci_failed.replacement
+        ci_replacement.print_int(902)
+        discard(move ci_replacement)
+        discard(move ci_failed.vector)
+        out.print_int(memory.read(ci_saved, 0))
+        memory.end(ci_saved)
+        memory.release(ci_witness)
+        discard(move out)
+        return
+    let ci_previous = move ci_changed.previous
+    ci_previous.print_int(73)
+    discard(move ci_previous)
+    let Ok(ci_popped) = vec_pop(move ci_changed.vector) else Err(ci_kept):
+        discard(move ci_kept)
+        out.print_int(memory.read(ci_saved, 0))
+        memory.end(ci_saved)
+        memory.release(ci_witness)
+        discard(move out)
+        return
+    let Some(ci_item) = move ci_popped.item else None:
+        out.print_int(901)
+        match vec_release(move ci_popped.vector):
+            Ok(ci_done):
+                out.print_int(75)
+            Err(ci_kept):
+                discard(move ci_kept)
+        out.print_int(memory.read(ci_saved, 0))
+        memory.end(ci_saved)
+        memory.release(ci_witness)
+        discard(move out)
+        return
+    let ci_recovered = move ci_item
+    ci_recovered.print_int(74)
+    discard(move ci_recovered)
+    let Ok(ci_done) = vec_release(move ci_popped.vector) else Err(ci_kept):
+        discard(move ci_kept)
+        out.print_int(memory.read(ci_saved, 0))
+        memory.end(ci_saved)
+        memory.release(ci_witness)
+        discard(move out)
+        return
+    out.print_int(75)
+    out.print_int(memory.read(ci_saved, 0))
+    memory.end(ci_saved)
+    memory.release(ci_witness)
+    discard(move out)

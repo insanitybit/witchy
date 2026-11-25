@@ -1,0 +1,9 @@
+trait Show:
+    fn show(self: &Self) -> U64
+
+impl Show for Vec<U64>:
+    fn show(self: &Vec<U64>) -> U64:
+        return 1
+
+fn main(console: Console<Write>):
+    console.print_int(1)

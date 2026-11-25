@@ -1,0 +1,22 @@
+{
+  "deque-only.wy": {
+    "selected_goals": 3,
+    "statement_bytes": 17821
+  },
+  "float-only.wy": {
+    "selected_goals": 3,
+    "statement_bytes": 17821
+  },
+  "int-only.wy": {
+    "selected_goals": 3,
+    "statement_bytes": 17821
+  },
+  "text-only.wy": {
+    "selected_goals": 3,
+    "statement_bytes": 17821
+  },
+  "vec-only.wy": {
+    "selected_goals": 12,
+    "statement_bytes": 20448
+  }
+}

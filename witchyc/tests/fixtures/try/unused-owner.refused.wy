@@ -1,0 +1,13 @@
+// The String the success holds would be lost.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-string.wy"
+
+fn make(allocator: &Allocator) -> Result<String, U64>:
+    return String.new(allocator)
+
+fn lose(allocator: &Allocator) -> Result<U64, U64>:
+    make(allocator)?
+    return Ok(1)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    console.print_int(1)

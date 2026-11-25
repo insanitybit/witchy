@@ -1,0 +1,22 @@
+// Refused by the proof: the field is lent inside a loop.
+import console
+
+type Pair:
+    a: U64
+    b: U64
+
+fn poke(slot: &mut U64):
+    *slot = 9
+
+fn f(p: &mut Pair, n: U64) -> U64:
+    ensures result == 5
+    (*p).a = 5
+    var i = 0
+    while i < n:
+        let r = &mut (*p).a
+        *r = 6
+        i = i + 1
+    return (*p).a
+
+fn main(console: Console<Write>):
+    console.print_int(1)

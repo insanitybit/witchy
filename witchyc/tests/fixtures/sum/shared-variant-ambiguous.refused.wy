@@ -1,0 +1,11 @@
+// Refused: nothing says whether this `Io` is a Left or a Right.
+type Left:
+    Io
+    Other
+
+type Right:
+    Io
+    Done
+
+fn main():
+    let which = Io

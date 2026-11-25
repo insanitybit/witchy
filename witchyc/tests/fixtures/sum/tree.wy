@@ -1,0 +1,61 @@
+// A tree: a sum that holds itself inside a Vec, built and then consumed.
+import "../../../library/wasm-vec.wy"
+
+type Json:
+    Null
+    Number(U64)
+    Array(Vec<Json>)
+
+// Add up the numbers and count the nulls as 1000 each, consuming the tree.
+fn total(value: Json) -> U64:
+    match move value:
+        Null:
+            return 1000
+        Number(n):
+            return n
+        Array(items):
+            var rest = move items
+            let sum = drain(&mut rest)
+            match rest.try_release():
+                Ok:
+                    return sum
+                Err(stuck):
+                    return sum + total(Array(move stuck))
+
+fn drain(items: &mut Vec<Json>) -> U64:
+    var sum: U64 = 0
+    while items.len() > 0:
+        match items.take_last_mut():
+            Ok(item):
+                sum += total(move item)
+            Err(code):
+                return sum
+    return sum
+
+fn pair(allocator: &Allocator, left: Json, right: Json) -> Json:
+    let made: Result<Vec<Json>, U64> = Vec.new(allocator, 2)
+    match move made:
+        Ok(empty):
+            match empty.push(allocator, move left):
+                Ok(one):
+                    match one.push(allocator, move right):
+                        Ok(two):
+                            return Array(move two)
+                        Err(back):
+                            let VecPushError(vector, item) = move back
+                            let lost = total(move item)
+                            return Array(move vector)
+                Err(back):
+                    let VecPushError(vector, item) = move back
+                    let lost = total(move item)
+                    let also = total(move right)
+                    return Array(move vector)
+        Err(code):
+            let lost = total(move left) + total(move right)
+            return Null
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let inner = pair(&allocator, Number(3), Null)
+    let outer = pair(&allocator, move inner, Number(40))
+    let tree = pair(&allocator, Number(500), move outer)
+    console.print_int(total(move tree))

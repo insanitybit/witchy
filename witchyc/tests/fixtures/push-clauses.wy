@@ -1,0 +1,9 @@
+    requires storage(input)
+    ensures match result:
+        Ok(output):
+            storage(output)
+            contents(output) == append(old(contents(input)), old(value))
+        Err(failed):
+            failed.vector == old(input)
+            failed.value == old(value)
+            failed.reason == AllocError.metadata || old(input.length) == old(input.capacity) && (failed.reason == AllocError.overflow && old(input.capacity) > 9223372036854775807 || failed.reason == AllocError.quota && old(input.capacity) <= 9223372036854775807)

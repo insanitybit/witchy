@@ -1,0 +1,53 @@
+// A sealed type whose invariant links two fields is taken apart and repaired by assignment
+// inside one function: the slot is emptied while the count still says 1, then refilled. The
+// invariant is assumed on entry and shown at the return, and nothing sees the shelf between.
+type Slot<T>:
+    Vacant
+    Full(T)
+
+// A vacant shelf counts nothing: the two fields are linked.
+sealed type Shelf<T>:
+    count: U64
+    slot: Slot<T>
+    invariant when Vacant = slot:
+        count == 0
+
+impl<T: Any> Shelf<T>:
+    fn stocked(item: T) -> Shelf<T>:
+        ensures result.count == 1
+        return Shelf(1, Full(move item))
+
+    // Relies on the invariant: on a vacant shelf a count other than 0 cannot be.
+    nopanic fn audit(shelf: &Shelf<T>) -> U64:
+        match &(*shelf).slot:
+            Vacant:
+                if (*shelf).count != 0:
+                    unreachable
+                return 0
+            Full(_):
+                return (*shelf).count
+
+    nopanic fn swap_in(shelf: &mut Shelf<T>, item: T) -> Slot<T>:
+        var held: Slot<T> = Vacant
+        memory.exchange(&mut (*shelf).slot, &mut held)
+        (*shelf).count = 1
+        (*shelf).slot = Full(move item)
+        return move held
+
+    fn take(shelf: Shelf<T>) -> Slot<T>:
+        ensures true
+        let Shelf(count, slot) = move shelf
+        return move slot
+
+fn show(out: &Console<Write>, slot: Slot<U64>):
+    match move slot:
+        Vacant:
+            out.print_int(0)
+        Full(n):
+            out.print_int(n)
+
+fn main(out: Console<Write>):
+    var shelf: Shelf<U64> = Shelf.stocked(7)
+    show(&out, shelf.swap_in(9))
+    out.print_int(shelf.audit())
+    show(&out, shelf.take())

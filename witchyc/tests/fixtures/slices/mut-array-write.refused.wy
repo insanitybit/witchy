@@ -1,0 +1,15 @@
+// Refused: the array written directly while a unique slice of it is in use.
+import console
+fn fill(s: &mut [U64], value: U64):
+    for i in 0..s.len():
+        match s.at(i):
+            Ok(cell):
+                *cell = value + i
+            Err(code):
+                return
+
+fn main(console: Console<Write>):
+    var numbers: [U64; 4] = [0, 0, 0, 0]
+    let s = numbers.slice_mut()
+    numbers[0] = 5
+    fill(s, 10)

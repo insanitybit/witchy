@@ -1,0 +1,9 @@
+// Refused: a computed index before the return is not an alias of a parameter.
+fn place_one<T>(buffer: &mut Buffer<T>, index: U64, item: T) -> Result<(), U64>:
+    ensures true
+    proof:
+        auto
+    let pos = index + 1
+    return memory.init(buffer, pos, item)
+fn main():
+    return

@@ -1,0 +1,34 @@
+// `&&` and `||` keep their short circuit when the right side pauses (adversarial review round
+// 26: the right side ran whatever the left was, here indexing past the end).
+import console
+import tasks
+fn small(n: U64) -> Bool  suspends:
+    pause(n)
+    return n < 10
+
+fn run(console: &Console<Write>, allocator: &Allocator)  suspends:
+    let arr: [U64; 3] = [4, 5, 6]
+    var i: U64 = 0
+    while i < 3 && small(arr[i]):
+        i += 1
+    console.print_int(i)
+
+type TaskEnvZ:
+    console: Console<Write>
+    allocator: Allocator
+
+fn work(env: TaskEnvZ) suspends:
+    run(&env.console, &env.allocator)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Task = Task.spawn(&allocator, 4096, work, TaskEnvZ(move console, move allocator)) else Err(back):
+        return
+    var task = move made
+    var going = true
+    while going:
+        match task.step():
+            Ok:
+                going = false
+            Err(token):
+                going = true
+    task.close()

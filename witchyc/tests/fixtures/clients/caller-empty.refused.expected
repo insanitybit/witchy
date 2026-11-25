@@ -1,0 +1,1 @@
+proof failed: in function `main`, a call to `last_index` does not establish the callee's `requires`

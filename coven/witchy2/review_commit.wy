@@ -1,0 +1,75 @@
+// Verify an assertion before writing its receipt and consuming the challenge.
+import "review/approval_bindings.wy"
+import "review/approval_plan.wy"
+import "review/snapshot.wy"
+import "review/snapshot_record.wy"
+import "sqlite_reply.wy"
+import "review/commit_request.wy"
+import "review/challenge_read.wy"
+import "tuf/canonical.wy"
+import "tuf/release_trust.wy"
+import console
+import discard
+import json_tree
+import "@sqlite"
+import string
+import text
+
+fn main(db: Sqlite, input: Console<Read>, output: Console<Write>, allocator: Allocator):
+    if let Err(code) = run(&db, &input, &output, &allocator):
+        if code == 10:
+            output.line("unavailable")
+        else:
+            output.line("maintainer assertion refused")
+
+fn run(db: &Sqlite, input: &Console<Read>, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let request = read_commit_request(input, allocator)?
+    let checked = dispatch(db, &request, output, allocator)
+    request.discard()
+    return checked
+
+fn dispatch(db: &Sqlite, request: &Json, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    if count_fields(request, 1):
+        let mode = string_field(request, "mode")?
+        if mode.equals_text("challenge-policy"):
+            return read_challenge_policy(db, output, allocator)
+        return Err(1)
+    if count_fields(request, 2):
+        let mode = string_field(request, "mode")?
+        if mode.equals_text("staged-release"):
+            let digest = string_field(request, "digest")?
+            return read_staged_release(db, output, digest, allocator)
+        return Err(1)
+    if count_fields(request, 3):
+        let mode = string_field(request, "mode")?
+        if mode.equals_text("snapshot"):
+            return read_snapshot(request, ApprovalSnapshot, db, output, allocator)
+        if mode.equals_text("inspection-snapshot"):
+            return read_snapshot(request, InspectionSnapshot, db, output, allocator)
+        if mode.equals_text("legacy-inspection-snapshot"):
+            return read_snapshot(request, LegacyInspectionSnapshot, db, output, allocator)
+        return Err(1)
+    return verify_and_commit(db, request, output, allocator)
+
+fn verify_and_commit(db: &Sqlite, request: &Json, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let bindings = approval_bindings(request, allocator)?
+    let wire = release_json(request, allocator)
+    let Ok(blob): String = move wire else Err(code):
+        bindings.close()
+        return Err(1)
+    let checked = commit(db, &bindings, &blob, output, allocator)
+    blob.close()
+    bindings.close()
+    return checked
+
+fn commit(db: &Sqlite, bindings: &String, blob: &String, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let plan = approval_plan(allocator)?
+    // The receipt reuses the assertion and envelope from this request.
+    let needed = blob.byte_len() + 128
+    let capacity = if needed < 262145:
+        needed
+    else:
+        262145
+    let checked = emit_transaction(db, &plan, bindings, blob.as_bytes(), output, capacity, allocator)
+    plan.close()
+    return checked

@@ -1,0 +1,22 @@
+// `pair` belongs to the arm that names it.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-span.wy"
+
+type Pair:
+    low: U64
+    high: U64
+
+fn make(v: U64) -> Result<Pair, U64>:
+    return Ok(Pair(v, v + 1))
+
+fn pick(v: U64) -> U64:
+    var spare: U64 = 0
+    let r = match make(v):
+        Ok(pair):
+            &pair.high
+        Err(code):
+            &spare
+    return *r
+
+fn main(console: Console<Write>):
+    console.print_int(pick(4))

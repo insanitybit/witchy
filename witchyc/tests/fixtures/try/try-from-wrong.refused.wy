@@ -1,0 +1,40 @@
+// Refused: a `from` that does not make the function's error type is not a conversion.
+import console
+import string
+
+type AppError:
+    NoRoom(U64)
+    Empty
+
+impl AppError:
+    pub fn from(code: U64) -> U64:
+        return code
+
+fn greet(allocator: &Allocator, name: Text) -> Result<U64, AppError>:
+    using var text: String = String.new(allocator)?:
+        if !text.push_text(allocator, name):
+            return Err(Empty)
+        return Ok(text.byte_len())
+
+fn fail(code: U64) -> Result<U64, U64>:
+    return Err(code)
+
+fn passes(code: U64) -> Result<U64, AppError>:
+    let n = fail(code)?
+    return Ok(n)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    match greet(&allocator, "witchy"):
+        Ok(n):
+            console.print_int(n)
+        Err(e):
+            console.line("error")
+    match passes(42):
+        Ok(n):
+            console.line("ok?")
+        Err(e):
+            match e:
+                NoRoom(code):
+                    console.print_int(code)
+                Empty:
+                    console.line("empty")

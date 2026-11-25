@@ -1,0 +1,47 @@
+// Writing needs `Dir<Write>`, reading `Dir<Read>`: here the run grants both rights on
+// one empty directory. A file reaches the disk at `finish`, whole; one abandoned is
+// never written.
+import fs
+import console
+import string
+
+fn main(console: Console<Write>, read: Dir<Read>, write: Dir<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var text = move made
+    if let Err(_) = text.push_text(&allocator, "saved line\n"):
+        text.close()
+        return
+    match write.make_dir("logs"):
+        Ok:
+            console.line("made logs")
+        Err(error):
+            console.line("no logs")
+    let Ok(logs): Dir<Write> = write.dir("logs") else Err(error):
+        text.close()
+        return
+    match logs.write_text("run.txt", &text):
+        Ok:
+            console.line("wrote")
+        Err(error):
+            console.line("write failed")
+    text.close()
+    let Ok(draft): File<Write> = logs.create("draft.txt") else Err(error):
+        return
+    match draft.write("never saved"):
+        Ok:
+            draft.abandon()
+        Err(error):
+            draft.abandon()
+    match read.read_text(&allocator, "logs/run.txt"):
+        Ok(back):
+            console.write_string(&back)
+            back.close()
+        Err(error):
+            console.line("read failed")
+    match read.open("logs/draft.txt"):
+        Ok(file):
+            console.line("draft exists")
+            file.close()
+        Err(error):
+            console.line("draft was never written")

@@ -1,0 +1,15 @@
+// Another module's generator type, named qualified (once refused: its record lacked the
+// per-file name).
+import console
+import "parts/gen1.wy"
+import "parts/typ1.wy"
+fn main(console: Console<Write>):
+    let e: typ1.Entry = typ1.mk()
+    console.print_int(e.n)
+    var g: gen1.Entry = gen1.entry()
+    var cur: U64 = 0
+    match g.next_mut(&mut cur):
+        Ok(v):
+            console.print_int(v)
+        Err:
+            console.print_int(0)

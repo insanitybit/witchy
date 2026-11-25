@@ -1,0 +1,5 @@
+// A program that asks for a file the run does not grant does not run.
+import fs
+
+fn main(config: File<Read>):
+    config.close()

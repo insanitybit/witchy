@@ -1,0 +1,38 @@
+// The loop proves the index method's precondition. Inside that method the type invariant
+// bounds the logical length by the length of the slice actually read.
+sealed type Tape:
+    cells: [U64; 4]
+    used: U64
+    invariant used <= 4
+
+impl Tape:
+    fn new(values: [U64; 4], used: U64) -> Tape:
+        requires used <= 4
+        ensures result.used == used
+        proof:
+            auto
+        return Tape(values, used)
+
+    fn len(tape: &Tape) -> U64:
+        return tape.used
+
+    nopanic fn index(tape: &Tape, i: U64) -> U64:
+        requires i < tape.len()
+        ensures true
+        proof:
+            auto
+        let cells = tape.cells.slice()
+        return cells[i]
+
+nopanic fn fold(tape: &Tape) -> U64:
+    ensures true
+    proof:
+        auto
+    var value: U64 = 0
+    for i in 0..tape.len():
+        value = value ^ tape[i]
+    return value
+
+fn main(console: Console<Write>):
+    let t = Tape.new([1, 2, 4, 8], 3)
+    console.print_int(fold(&t))

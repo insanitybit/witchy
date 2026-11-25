@@ -1,0 +1,60 @@
+// SHA-2 digests need no capability. Check known inputs and undersized destinations.
+import console
+import crypto
+
+fn hex(console: &Console<Write>, bytes: &[U8]):
+    let digits: [U8; 16] = [48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 97, 98, 99, 100, 101, 102]
+    for index in 0..bytes.len():
+        let byte = U8.to_u64(bytes[index])
+        console.print_byte(digits[byte / 16])
+        console.print_byte(digits[byte % 16])
+    console.line("")
+
+pure fn digest_of(data: &[U8], digest: &mut [U8]) -> Bool:
+    match sha256(data, digest):
+        Ok:
+            return true
+        Err(e):
+            return false
+
+fn main(console: Console<Write>):
+    let abc: [U8; 3] = [97, 98, 99]
+    var digest: [U8; 32] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    if digest_of(abc.slice(), digest.slice_mut()):
+        hex(&console, digest.slice())
+    if digest_of(abc.slice().part(0, 0), digest.slice_mut()):
+        hex(&console, digest.slice())
+    var short: [U8; 31] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    match sha256(abc.slice(), short.slice_mut()):
+        Ok:
+            console.line("accepted a 31-byte digest")
+        Err(WrongLength):
+            console.line("wrong length")
+        Err(_):
+            console.line("other error")
+    var wide: [U8; 48] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    match sha384(abc.slice(), wide.slice_mut()):
+        Ok:
+            hex(&console, wide.slice())
+        Err(_):
+            console.line("no SHA-384 digest")
+    match sha384(abc.slice(), digest.slice_mut()):
+        Ok:
+            console.line("accepted a 32-byte SHA-384 digest")
+        Err(WrongLength):
+            console.line("wrong length")
+        Err(_):
+            console.line("other error")
+    var widest: [U8; 64] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+    match sha512(abc.slice(), widest.slice_mut()):
+        Ok:
+            hex(&console, widest.slice())
+        Err(_):
+            console.line("no SHA-512 digest")
+    match sha512(abc.slice(), wide.slice_mut()):
+        Ok:
+            console.line("accepted a 48-byte SHA-512 digest")
+        Err(WrongLength):
+            console.line("wrong length")
+        Err(_):
+            console.line("other error")

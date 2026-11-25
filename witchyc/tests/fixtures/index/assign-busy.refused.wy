@@ -1,0 +1,15 @@
+// `+=` reads the element before it writes it, so the position must be a name,
+// a field or a literal: a call would run twice.
+import "../../../library/wasm-vec.wy"
+
+fn at(n: U64) -> U64:
+    return n
+
+fn main(allocator: Allocator):
+    var items: Vec<U64> = match Vec.filled(&allocator, 2, 0):
+        Ok(made):
+            move made
+        Err(code):
+            return
+    items[at(1)] += 1
+    items.close()

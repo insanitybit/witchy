@@ -1,0 +1,66 @@
+// A comparison returns public observations to its caller. Propagate the first failure with ?.
+// `reason` says which check failed: 1 `eq_u64`, 2 `eq_bool`, 3 `ok`, 4 `eq_i64`, 5 and 6
+// `eq_bytes` (a byte, the lengths), 7 `set_up`. `site` is where the check was written, and
+// `actual` and `expected` are the two values (for reasons 5 to 7, what each check says).
+pub type Failure:
+    reason: U64
+    site: U64
+    actual: U64
+    expected: U64
+
+pub fn eq_u64(actual: U64, expected: U64, site: U64 = source_site()) -> Result<(), Failure>:
+    if actual == expected:
+        return Ok(())
+    return Err(Failure(1, site, actual, expected))
+
+pub fn eq_bool(actual: Bool, expected: Bool, site: U64 = source_site()) -> Result<(), Failure>:
+    if actual == expected:
+        return Ok(())
+    if actual:
+        return Err(Failure(2, site, 1, 0))
+    return Err(Failure(2, site, 0, 1))
+
+pub fn ok(condition: Bool, site: U64 = source_site()) -> Result<(), Failure>:
+    if condition:
+        return Ok(())
+    return Err(Failure(3, site, 0, 1))
+
+// Two signed numbers: the failure holds each as its 64 bits (`I64.from_bits` gives it back).
+pub fn eq_i64(actual: I64, expected: I64, site: U64 = source_site()) -> Result<(), Failure>:
+    if actual == expected:
+        return Ok(())
+    return Err(Failure(4, site, I64.bits(actual), I64.bits(expected)))
+
+// Two runs of bytes (`text.as_slice()`, `array.slice()`). Where a byte differs, the failure
+// holds the index in `actual` and the byte that was expected in `expected`; where one run is
+// the start of the other, reason 6 and the two lengths.
+pub fn eq_bytes(actual: &[U8], expected: &[U8], site: U64 = source_site()) -> Result<(), Failure>:
+    var index = 0
+    while index < actual.len() && index < expected.len():
+        if actual[index] != expected[index]:
+            return Err(Failure(5, site, index, U8.to_u64(expected[index])))
+        index += 1
+    if actual.len() != expected.len():
+        return Err(Failure(6, site, actual.len(), expected.len()))
+    return Ok(())
+
+// A step a case needs before it checks anything, as most of the library answers it:
+// `let items = testing.set_up(Vec.new(allocator, 4))?`. A failure holds the code in `actual`.
+pub fn set_up<T: Any>(made: Result<T, U64>, site: U64 = source_site()) -> Result<T, Failure>:
+    match move made:
+        Ok(value):
+            return Ok(move value)
+        Err(code):
+            return Err(Failure(7, site, code, 0))
+
+// Checked adapter interface. The ordinary call checks the nominal Failure type, and
+// the testing library owns the public result encoding.
+pub fn report_result(result: Result<(), Failure>, output: &Console<Write>):
+    match result:
+        Ok:
+            output.print_word(0)
+        Err(failure):
+            output.print_word(failure.reason)
+            output.print_word(failure.site)
+            output.print_word(failure.actual)
+            output.print_word(failure.expected)

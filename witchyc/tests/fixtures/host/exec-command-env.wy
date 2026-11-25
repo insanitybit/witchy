@@ -1,0 +1,30 @@
+// `Command.env`: only the names the Exec grant declares, values from the program; nothing else
+// of any environment reaches it.
+import console
+import exec
+
+fn show(console: &Console<Write>, allocator: &Allocator, ran: Result<Run, ExecError>):
+    match move ran:
+        Ok(run):
+            match run.read_text(allocator):
+                Ok(text):
+                    console.write_string(&text)
+                    text.close()
+                Err(e):
+                    console.line("unreadable")
+        Err(NotGranted):
+            console.line("not granted")
+        Err(InvalidName):
+            console.line("invalid")
+        Err(_):
+            console.line("failed")
+
+fn main(console: Console<Write>, allocator: Allocator, exec: Exec):
+    show(&console, &allocator, exec.command("showenv").env("LANG", "C.UTF-8").env("TZ", "UTC").run())
+    // None given: none at all.
+    show(&console, &allocator, exec.command("showenv").run())
+    // A name the grant does not declare, or one that is not a plain name.
+    show(&console, &allocator, exec.command("showenv").env("HOME", "/tmp").run())
+    show(&console, &allocator, exec.command("showenv").env("LANG=X", "y").run())
+    // A name given twice.
+    show(&console, &allocator, exec.command("showenv").env("TZ", "UTC").env("TZ", "GMT").run())

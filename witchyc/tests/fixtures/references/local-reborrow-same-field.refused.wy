@@ -1,0 +1,15 @@
+// Refused: one field reborrowed twice uniquely through a `&mut` local.
+import console
+
+type P:
+    x: U64
+    y: U64
+
+fn main(console: Console<Write>):
+    var p = P(x: 1, y: 1)
+    let r = &mut p
+    let a = &mut (*r).x
+    let b = &mut (*r).x
+    *a += 1
+    *b += 2
+    console.print_int(p.x * 10 + p.y)

@@ -1,0 +1,2 @@
+proof failed: function `bad`
+not proved: ensures result == 0

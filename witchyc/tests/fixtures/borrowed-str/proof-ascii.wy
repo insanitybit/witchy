@@ -1,0 +1,11 @@
+fn seed(target: &mut Buffer<U8>):
+    requires 0 < memory.capacity(target)
+    requires memory.empty(target, 0)
+    ensures memory.utf8(target, 0, 1)
+    proof:
+        auto
+    let byte: U8 = 65
+    memory.init_unchecked(target, 0, byte)
+
+fn main():
+    return

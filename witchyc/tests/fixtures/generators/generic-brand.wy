@@ -1,0 +1,32 @@
+// A generic `gen fn` over a brand yields rows (`Node<G>`) of one opening.
+import console
+
+type Node<G>:
+    offset: U64
+
+type Nodes<G>:
+    count: U64
+
+type Graph:
+    count: U64
+
+impl Graph:
+    fn nodes<D: Fresh>(self: &Graph) -> Nodes<D>:
+        return Nodes((*self).count)
+
+gen fn all<G: Brand>(nodes: &Nodes<G>) -> Node<G>:
+    var i: U64 = 0
+    while i < (*nodes).count:
+        yield Node(i)
+        i += 1
+
+fn sum<G: Brand>(nodes: &Nodes<G>) -> U64:
+    var total: U64 = 0
+    for n in all(nodes):
+        total += n.offset
+    return total
+
+fn main(console: Console<Write>):
+    let g = Graph(5)
+    brand g.nodes() as nodes:
+        console.print_int(sum(&nodes))

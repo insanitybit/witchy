@@ -1,0 +1,12 @@
+// Another private `Entry`, with other fields and methods: each file's is its own.
+type Entry:
+    debit: U64
+    credit: U64
+
+impl Entry:
+    fn balance(entry: &Entry) -> U64:
+        return entry.credit - entry.debit
+
+pub fn ledger(debit: U64, credit: U64) -> U64:
+    let entry = Entry(debit, credit)
+    return entry.balance()

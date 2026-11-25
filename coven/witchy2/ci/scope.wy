@@ -1,0 +1,32 @@
+import span
+import string
+import text
+
+pub fn build_ci_audience(origin: &String, registry: Span, allocator: &Allocator) -> Result<String, U64>:
+    if !valid_registry(registry):
+        return Err(1)
+    let empty = String.with_capacity(allocator, origin.byte_len() + 7 + registry.len())?
+    var audience = move empty
+    if let Err(code) = write_audience(&mut audience, origin, registry, allocator):
+        audience.close()
+        return Err(code)
+    return Ok(move audience)
+
+fn write_audience(audience: &mut String, origin: &String, registry: Span, allocator: &Allocator) -> Result<(), U64>:
+    audience.push_part(allocator, origin, 0, origin.byte_len())?
+    audience.push_text(allocator, "/v1/ci/")?
+    return audience.push_utf8_slice(allocator, registry.as_bytes())
+
+fn valid_registry(registry: Span) -> Bool:
+    if registry.is_empty() || registry.len() > 64:
+        return false
+    let first = registry.byte_or_end(0)
+    if first == 45 || first == 46:
+        return false
+    for byte in registry.as_bytes():
+        if !(*byte >= 'a' && *byte <= 'z') && !(*byte >= '0' && *byte <= '9') && *byte != '-' && *byte != '.':
+            return false
+    return true
+
+pub fn github_oidc_issuer() -> Text:
+    return "https://token.actions.githubusercontent.com"

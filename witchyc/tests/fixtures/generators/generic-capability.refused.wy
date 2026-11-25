@@ -1,0 +1,16 @@
+// Refused: a generic `gen fn` holds no reference to a capability either.
+import console
+import vec
+
+gen fn noisy<T>(console: &Console<Write>, items: &Vec<T>) -> U64:
+    for i in 0..items.len():
+        console.print_int(i)
+        yield i
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.filled(&allocator, 2, 9) else Err(code):
+        return
+    var v = move made
+    for i in noisy(&console, &v):
+        console.print_int(i)
+    v.close()

@@ -1,0 +1,11 @@
+fn double(x: U64) -> U64:
+    return x * 2
+
+pub trait Twice:
+    fn twice(self: &Self) -> U64
+
+pub derive Twiced:
+    impl Twice for Self:
+        fn twice(self: &Self) -> U64:
+            let f = double
+            return (*self).a

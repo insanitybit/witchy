@@ -1,0 +1,30 @@
+type Pair:
+    byte: U8
+    word: U64
+
+fn main(console: Console<Write>):
+    let zero: U8 = 0
+    let full: U8 = 255
+    let seven: U8 = 7
+    var data: Buffer<Pair> = memory.alloc(2)
+    memory.init(&mut data, 0, Pair(zero, 4294967297))
+    memory.init(&mut data, 1, Pair(full, 8589934595))
+    let array = array_from_buffer(move data, 2)
+    match array_replace(move array, 1, Pair(seven, 12884901889)):
+        Ok(changed):
+            console.print_int(U8.to_u64(changed.previous.byte))
+            console.print_int(changed.previous.word)
+            discard(move changed.previous)
+            var restored = array_into_buffer(move changed.array)
+            let first: Pair = memory.take(&mut restored, 0)
+            console.print_int(U8.to_u64(first.byte))
+            console.print_int(first.word)
+            discard(move first)
+            let second: Pair = memory.take(&mut restored, 1)
+            console.print_int(U8.to_u64(second.byte))
+            console.print_int(second.word)
+            discard(move second)
+            memory.release(restored)
+            console.print_int(42)
+        Err(failed):
+            discard(move failed)

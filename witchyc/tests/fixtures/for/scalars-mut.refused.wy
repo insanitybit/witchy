@@ -1,0 +1,15 @@
+// A cursor walk gives values, so there is nothing to change in place.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-text.wy"
+import "../../../library/wasm-string.wy"
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var text = match String.new(&allocator):
+        Ok(made):
+            move made
+        Err(reason):
+            return
+    let _ = text.push_text(&allocator, "héllo 世界")
+    for scalar in &mut text:
+        console.print_int(scalar)
+    text.close()

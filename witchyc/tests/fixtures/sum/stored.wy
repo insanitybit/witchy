@@ -1,0 +1,74 @@
+// Sums stored in Buffer cells, in a record field and in a Vec.
+import "../../../library/wasm-vec.wy"
+import "../../../library/wasm-buffer.wy"
+
+type Shape:
+    Circle(U64)
+    Square(U64)
+    Empty
+
+type Tagged:
+    shape: Shape
+    weight: U64
+
+fn area(shape: Shape) -> U64:
+    match shape:
+        Circle(radius):
+            return 3 * radius * radius
+        Square(side):
+            return side * side
+        Empty:
+            return 0
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<Buffer<Shape>, U64> = memory.try_alloc(&allocator, 2)
+    match move made:
+        Ok(buffer):
+            var cells = move buffer
+            match memory.try_init(&mut cells, 0, Square(5)):
+                Ok:
+                    console.print_int(1)
+                Err(back):
+                    console.print_int(2)
+            match memory.try_init(&mut cells, 1, Empty):
+                Ok:
+                    console.print_int(1)
+                Err(back):
+                    console.print_int(2)
+            match memory.take(&mut cells, 0):
+                Ok(shape):
+                    console.print_int(area(shape))
+                Err(code):
+                    console.print_int(4)
+            match memory.take(&mut cells, 1):
+                Ok(shape):
+                    console.print_int(area(shape))
+                Err(code):
+                    console.print_int(4)
+            match memory.try_release(move cells):
+                Ok:
+                    console.print_int(5)
+                Err(stuck):
+                    console.print_int(6)
+                    vec_buffer_close(move stuck)
+        Err(code):
+            console.print_int(code)
+    let tagged = Tagged(Circle(2), 7)
+    console.print_int(area(tagged.shape) + tagged.weight)
+    let shapes: Result<Vec<Shape>, U64> = Vec.new(&allocator, 2)
+    match move shapes:
+        Ok(empty):
+            match empty.push(&allocator, Circle(1)):
+                Ok(one):
+                    match one.get(0):
+                        Ok(shape):
+                            console.print_int(area(shape))
+                        Err(code):
+                            console.print_int(7)
+                    one.close()
+                Err(back):
+                    console.print_int(8)
+                    let VecPushError(vector, item) = move back
+                    vector.close()
+        Err(code):
+            console.print_int(code)

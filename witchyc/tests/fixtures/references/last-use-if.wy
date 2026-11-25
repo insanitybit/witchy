@@ -1,0 +1,17 @@
+// A reference last used in an `if` condition is in use in neither branch, so a branch may
+// change what it borrowed.
+type Pair:
+    a: U64
+    b: U64
+
+fn first(pair: &Pair) -> &U64:
+    return &(*pair).a
+
+fn main(console: Console<Write>):
+    var pair = Pair(4, 5)
+    let seen = first(&pair)
+    if *seen == 4:
+        pair.a = 9
+        console.print_int(pair.a)
+        return
+    console.print_int(0)

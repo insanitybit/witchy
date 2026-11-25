@@ -1,0 +1,10 @@
+// Refused, counting the fields and the values given.
+import console
+
+type P:
+    x: U64
+    y: U64
+
+fn main(console: Console<Write>):
+    let p = P(1)
+    console.print_int(p.x)

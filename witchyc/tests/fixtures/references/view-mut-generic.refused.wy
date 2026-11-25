@@ -1,0 +1,13 @@
+// Refused: generic code given a view behind `&mut` could replace it whole.
+type Point:
+    x: U64
+type Seen:
+    point: &Point
+    n: U64
+fn put<T>(slot: &mut T, value: T):
+    *slot = value
+fn main():
+    let p = Point(1)
+    var s = Seen(&p, 1)
+    let q = Point(2)
+    put(&mut s, Seen(&q, 2))

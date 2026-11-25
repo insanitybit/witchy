@@ -1,0 +1,2 @@
+proof failed: function `bad`
+not proved: ending a box that may own a value

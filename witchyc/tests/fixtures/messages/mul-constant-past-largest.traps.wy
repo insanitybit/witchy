@@ -1,0 +1,6 @@
+// x * 31 one past the largest x it fits, the constant on either side: an overflow in `*`.
+import console
+
+fn main(console: Console<Write>):
+    var x: U64 = 595056260442243601
+    console.print_int(31 * x)

@@ -1,0 +1,14 @@
+trait Named:
+    fn size(self: &Self) -> U64
+trait Sized:
+    fn size(self: &Self) -> U64
+type Box:
+    side: U64
+impl Named for Box:
+    fn size(self: &Box) -> U64:
+        return 1
+impl Sized for Box:
+    fn size(self: &Box) -> U64:
+        return 2
+fn main(console: Console<Write>):
+    console.print_int(1)

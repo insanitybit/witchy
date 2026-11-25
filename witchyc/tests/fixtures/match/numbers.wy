@@ -1,0 +1,52 @@
+// `match` on a number: arms are numbers or quoted scalars, and `_` is the rest.
+import "../../../library/wasm-console.wy"
+
+type Token:
+    kind: U64
+    count: U64
+
+fn class(byte: U64) -> U64:
+    match byte:
+        ' ' | '\t' | '\n':
+            return 0
+        '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9':
+            return 1
+        '\'':
+            return 2
+        _:
+            return 3
+
+fn main(console: Console<Write>):
+    console.print_int(class(' '))
+    console.print_int(class('7'))
+    console.print_int(class(39))
+    console.print_int(class('z'))
+    console.print_int('a')
+    console.print_int('\\')
+    let token = Token(2, 5)
+    var total: U64 = 0
+    match token.kind:
+        1:
+            total = 10
+        2:
+            total = token.count * 2
+        _:
+            ()
+    console.print_int(total)
+    // As a value.
+    let name: Text = match total:
+        10:
+            "ten"
+        20:
+            "twenty"
+        _:
+            "other"
+    console.line(name)
+    console.print_int(weight('x'))
+
+fn weight(byte: U64) -> U64:
+    return match byte:
+        'x' | 'y':
+            7
+        _:
+            1

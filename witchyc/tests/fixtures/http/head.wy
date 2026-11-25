@@ -1,0 +1,47 @@
+// A response read in place: the status, a header found by name in any case, and the body are
+// parts of the response's text; nothing is copied, and the text stays lent while they are used.
+import console
+import string
+import span
+import http
+
+fn show(console: &Console<Write>, text: &str):
+    match http.head(Span.of(text.as_bytes())):
+        Ok(parts):
+            console.print_int(parts.status)
+            match http.header(parts.headers, "content-type"):
+                Ok(kind):
+                    write_span(console, kind)
+                    console.line("")
+                Err(code):
+                    console.line("no type")
+            write_span(console, parts.body)
+            console.line("|")
+        Err(Malformed):
+            console.line("malformed")
+        Err(_):
+            console.line("other")
+
+fn check_fragmented_head(console: &Console<Write>, allocator: &Allocator):
+    let Ok(wire): String = String.new(allocator) else Err(code):
+        return
+    var message = move wire
+    let added = message.push_text(allocator, "HTTP/1.1 200 OK\r\nHost: x\r\n\r\nbody\r\n\r\n")
+    let bytes = message.span()
+    let end = http.head_end(bytes, 0)
+    var valid = end == 28
+    for split in 0..end:
+        if http.head_end(bytes.part(0, split), 0) != 0 || http.head_end(bytes, split) != end:
+            valid = false
+    if http.head_end(bytes, bytes.len() + 1) != 0:
+        valid = false
+    if valid:
+        console.line("fragmented head")
+    message.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    show(&console, "HTTP/1.1 200 OK\r\nServer: x\r\nContent-Type:  text/plain \r\nContent-Length: 5\r\n\r\nhello")
+    show(&console, "HTTP/1.0 404 Not Found\r\n\r\n")
+    show(&console, "HTTP/1.1 204 No Content\r\nX: y\r\n\r\n")
+    show(&console, "SSH-2.0-OpenSSH\r\n\r\n")
+    check_fragmented_head(&console, &allocator)

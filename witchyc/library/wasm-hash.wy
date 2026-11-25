@@ -1,0 +1,306 @@
+// What a key must offer to be looked up: a hash, and a test for being the same key.
+// Keys that are equal must hash the same; nothing checks that yet.
+pub trait Hash:
+    fn hash(self: &Self) -> U64
+
+// Equality. `a == b` on a value that is not a number or a Bool is `a.eq(&b)`.
+pub trait Eq:
+    fn eq(self: &Self, other: &Self) -> Bool
+
+// A value that can be compared with a key of type `K`, as hashbrown's `Equivalent`:
+// a lookup may take one without making a `K`, such as a Text literal for a String
+// key. It must hash as the key it is equivalent to; nothing checks that yet.
+pub trait Equivalent<K>:
+    fn equivalent(self: &Self, key: &K) -> Bool
+
+// A borrowed key that can make the owned key it stands for (`HashMap.get_or_insert` makes one
+// only when the key is not there): the key made is equivalent to the borrowed one and hashes as
+// it does, as for `Equivalent`.
+pub trait KeyFor<K>:
+    fn key_for(self: &Self, allocator: &Allocator) -> Result<K, U64>
+
+impl KeyFor<U64> for U64:
+    fn key_for(self: &U64, allocator: &Allocator) -> Result<U64, U64>:
+        return Ok(*self)
+
+impl KeyFor<U32> for U32:
+    fn key_for(self: &U32, allocator: &Allocator) -> Result<U32, U64>:
+        return Ok(*self)
+
+impl KeyFor<U16> for U16:
+    fn key_for(self: &U16, allocator: &Allocator) -> Result<U16, U64>:
+        return Ok(*self)
+
+impl KeyFor<U8> for U8:
+    fn key_for(self: &U8, allocator: &Allocator) -> Result<U8, U64>:
+        return Ok(*self)
+
+impl KeyFor<Bool> for Bool:
+    fn key_for(self: &Bool, allocator: &Allocator) -> Result<Bool, U64>:
+        return Ok(*self)
+
+// Every key is equivalent to keys of its own type when they are equal.
+impl<K: Any + Eq> Equivalent<K> for K:
+    fn equivalent(self: &K, key: &K) -> Bool:
+        return self.eq(key)
+
+// One more hash folded into what is folded so far: a rotation and an exclusive or, which cannot
+// overflow. What `derive(Hash)` calls for each field.
+pub fn hash_fold(folded: U64, next: U64) -> U64:
+    return ((folded << 7) | (folded >> 57)) ^ next
+
+// The hash of a run of bytes, what String, Span and Text keys hash to: h = 5381, then
+// h = (33 h + byte) mod 4294967291 for each byte. Reduced once per six bytes: below the prime,
+// h times 33^6 plus what six bytes add stays under 2^63, so no step overflows (proved: no check
+// is emitted), and reducing later gives the same remainder, so every hash is the one it was
+// (Astra's second hashbrown pass, 2026-11-18).
+pub fn hash_bytes(bytes: &[U8]) -> U64:
+    ensures result < 4294967291
+    proof:
+        auto
+    let n = bytes.len()
+    var hash: U64 = 5381
+    var index: U64 = 0
+    while n - index >= 6:
+        invariant index <= n
+        invariant hash < 4294967291
+        // One step a statement, not one nested expression (the checker recurses on nesting).
+        var wide = hash * 33 + U8.to_u64(bytes[index])
+        wide = wide * 33 + U8.to_u64(bytes[index + 1])
+        wide = wide * 33 + U8.to_u64(bytes[index + 2])
+        wide = wide * 33 + U8.to_u64(bytes[index + 3])
+        wide = wide * 33 + U8.to_u64(bytes[index + 4])
+        wide = wide * 33 + U8.to_u64(bytes[index + 5])
+        hash = wide % 4294967291
+        index += 6
+    // At most five bytes remain. The same six-byte bound lets this tail
+    // accumulate into one word before reducing it.
+    if index == n:
+        return hash
+    var tail = hash * 33 + U8.to_u64(bytes[index])
+    if n - index > 1:
+        tail = tail * 33 + U8.to_u64(bytes[index + 1])
+    if n - index > 2:
+        tail = tail * 33 + U8.to_u64(bytes[index + 2])
+    if n - index > 3:
+        tail = tail * 33 + U8.to_u64(bytes[index + 3])
+    if n - index > 4:
+        tail = tail * 33 + U8.to_u64(bytes[index + 4])
+    return tail % 4294967291
+
+impl U64:
+    // `folded.fold_hash(next)`: `hash_fold` as a method, which derived impls call, so a program's
+    // own free `hash_fold` cannot stand in for this one (review).
+    pub fn fold_hash(self: U64, next: U64) -> U64:
+        return hash_fold(self, next)
+
+impl Hash for U64:
+    fn hash(self: &U64) -> U64:
+        // Both factors are below 2^32, so the product cannot overflow: that is proved.
+        ensures true
+        proof:
+            auto
+        return (*self % 4294967291) * 2654435761
+
+impl Eq for U64:
+    fn eq(self: &U64, other: &U64) -> Bool:
+        return *self == *other
+
+
+// A narrow number hashes as the U64 it widens to, so equal values hash the same.
+impl Hash for U8:
+    fn hash(self: &U8) -> U64:
+        let wide = U8.to_u64(*self)
+        return wide.hash()
+
+impl Eq for U8:
+    fn eq(self: &U8, other: &U8) -> Bool:
+        return *self == *other
+
+// A narrow number hashes as the U64 it widens to, so equal values hash the same.
+impl Hash for U16:
+    fn hash(self: &U16) -> U64:
+        let wide = U16.to_u64(*self)
+        return wide.hash()
+
+impl Eq for U16:
+    fn eq(self: &U16, other: &U16) -> Bool:
+        return *self == *other
+
+// A narrow number hashes as the U64 it widens to, so equal values hash the same.
+impl Hash for U32:
+    fn hash(self: &U32) -> U64:
+        let wide = U32.to_u64(*self)
+        return wide.hash()
+
+impl Eq for U32:
+    fn eq(self: &U32, other: &U32) -> Bool:
+        return *self == *other
+
+impl Hash for Bool:
+    fn hash(self: &Bool) -> U64:
+        if *self:
+            return 1
+        return 0
+
+impl Eq for Bool:
+    fn eq(self: &Bool, other: &Bool) -> Bool:
+        return *self == *other
+
+// Hashing chosen by the map (docs/plan-derive-laws.md, slice 2): a key feeds its whole logical
+// input, framed, into a `HashState`, and the map's `Policy` decides what that input hashes to.
+// A policy is total and deterministic for its seed, and feeding a run of bytes as words or as
+// bytes gives the same state. `HashMap` and `Hash` are unchanged.
+pub type Policy:
+    // `seed % 4294967291`, then `(33 h + byte) % 4294967291` for each byte in order (the
+    // handoff's order-sensitive reference: two swapped lanes hash differently).
+    Reference(U64)
+    // Always 0: consistent, a poor map hash, and every key collides.
+    Constant
+    // Fast: the bytes gathered eight at a time into a word, each word mixed into the value once
+    // (multiplies of 32-bit halves, which cannot overflow), so a run fed as words or as bytes
+    // gives the same value. Its distribution is measured, not proved.
+    Fast(U64)
+
+pub type HashState:
+    policy: Policy
+    value: U64
+    // Fast: bytes not yet mixed, lowest first, and how many (0 to 7).
+    pending: U64
+    filled: U64
+
+// One word into a Fast value: each 32-bit half times a 32-bit odd constant, so no product
+// overflows, then the high bits folded down.
+fn fast_mix(value: U64, word: U64) -> U64:
+    let x = value ^ word
+    let mixed = (x & 4294967295) * 2654435761 ^ (x >> 32) * 2246822519
+    return mixed ^ (mixed >> 29)
+
+// The low `count` bytes of `word` (count 0 to 8).
+fn low_bytes(word: U64, count: U64) -> U64:
+    if count >= 8:
+        return word
+    return word & ((1 << (count * 8)) - 1)
+
+impl HashState:
+    // A fresh state for one key under `policy`.
+    pub fn start(policy: Policy) -> HashState:
+        match policy:
+            Reference(seed):
+                return HashState(policy, seed % 4294967291, 0, 0)
+            Constant:
+                return HashState(policy, 0, 0, 0)
+            Fast(seed):
+                return HashState(policy, seed, 0, 0)
+
+    // The low `count` bytes of `word` (at most eight), lowest first.
+    pub fn word(self: &mut HashState, word: U64, count: U64):
+        match (*self).policy:
+            Reference(seed):
+                var h = (*self).value % 4294967291
+                var rest = word
+                var left = count
+                if left > 8:
+                    left = 8
+                while left > 0:
+                    h = (h * 33 + (rest & 255)) % 4294967291
+                    rest = rest >> 8
+                    left -= 1
+                (*self).value = h
+            Constant:
+                return
+            Fast(seed):
+                var left = count
+                if left > 8:
+                    left = 8
+                let filled = (*self).filled
+                // A whole word with nothing pending: mixed at once.
+                if filled == 0 && left == 8:
+                    (*self).value = fast_mix((*self).value, word)
+                    return
+                // Bytes that fit beside what is pending: gathered, and mixed when the word is full.
+                if filled + left <= 8:
+                    (*self).pending = (*self).pending | (low_bytes(word, left) << (filled * 8))
+                    if filled + left == 8:
+                        (*self).value = fast_mix((*self).value, (*self).pending)
+                        (*self).pending = 0
+                        (*self).filled = 0
+                    else:
+                        (*self).filled = filled + left
+                    return
+                var rest = low_bytes(word, left)
+                while left > 0:
+                    var take = 8 - (*self).filled
+                    if take > left:
+                        take = left
+                    (*self).pending = (*self).pending | (low_bytes(rest, take) << ((*self).filled * 8))
+                    (*self).filled += take
+                    left -= take
+                    if take < 8:
+                        rest = rest >> (take * 8)
+                    else:
+                        rest = 0
+                    if (*self).filled == 8:
+                        (*self).value = fast_mix((*self).value, (*self).pending)
+                        (*self).pending = 0
+                        (*self).filled = 0
+
+    // Every byte of `bytes`, in order.
+    pub fn bytes(self: &mut HashState, bytes: &[U8]):
+        match (*self).policy:
+            Reference(seed):
+                var h = (*self).value % 4294967291
+                for index in 0..bytes.len():
+                    h = (h * 33 + U8.to_u64(bytes[index])) % 4294967291
+                (*self).value = h
+            Constant:
+                return
+            Fast(seed):
+                for index in 0..bytes.len():
+                    self.word(U8.to_u64(bytes[index]), 1)
+
+    // What the key hashes to.
+    pub fn finish(self: &HashState) -> U64:
+        match (*self).policy:
+            Fast(seed):
+                // The bytes left over, with how many there are, so "a" and "a\0" differ.
+                let last = fast_mix((*self).value, (*self).pending ^ ((*self).filled << 56))
+                return last ^ (last >> 33)
+            Reference(seed):
+                return (*self).value
+            Constant:
+                return (*self).value
+
+// A key's whole logical input: fixed-width numbers as their bytes, little endian; a byte string
+// as its length (eight bytes) and then its bytes. Keys equal by `Eq` feed equal input.
+pub trait HashKey:
+    fn feed(self: &Self, state: &mut HashState)
+
+impl HashKey for U8:
+    fn feed(self: &U8, state: &mut HashState):
+        state.word(U8.to_u64(*self), 1)
+
+impl HashKey for U16:
+    fn feed(self: &U16, state: &mut HashState):
+        state.word(U16.to_u64(*self), 2)
+
+impl HashKey for U32:
+    fn feed(self: &U32, state: &mut HashState):
+        state.word(U32.to_u64(*self), 4)
+
+impl HashKey for U64:
+    fn feed(self: &U64, state: &mut HashState):
+        state.word(*self, 8)
+
+impl HashKey for Bool:
+    fn feed(self: &Bool, state: &mut HashState):
+        if *self:
+            state.word(1, 1)
+        else:
+            state.word(0, 1)
+
+// One key under `policy`.
+pub fn hash_key<K: Any + HashKey>(key: &K, policy: Policy) -> U64:
+    var state = HashState.start(policy)
+    key.feed(&mut state)
+    return state.finish()

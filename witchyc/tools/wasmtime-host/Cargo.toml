@@ -1,0 +1,33 @@
+[package]
+name = "witchy-wasmtime-host"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+# Separate runtime build for Wasm execution.
+[dependencies]
+wasmtime = { version = "=49.0.3", default-features = false, features = ["anyhow", "cranelift", "runtime", "std", "reexport-wasmparser", "parallel-compilation"] }
+# Native crypto (docs/decisions.md, 2026-11-20): HMAC-SHA-256, SHA-256, SHA-384, ML-DSA-65 and the
+# randomness behind `Rand`, through AWS-LC's FIPS module (aws-lc-fips-sys). No FIPS claim is
+# made by building with it: see decisions.md.
+aws-lc-rs = { version = "=1.18.2", default-features = false, features = ["fips"] }
+# Named directly to pin the module's build (AWS-LC 4.2.0 in its FIPS 4.x line) and so that
+# build.rs learns where a dynamic build of it is (macOS builds the FIPS module as a dylib).
+aws-lc-fips-sys = "=0.14.4"
+# Files (docs/decisions.md, 2026-11-20): every granted directory is a cap-std `Dir`, and every
+# path a program uses is resolved through one. The versions Wasmtime's own WASI build uses.
+cap-std = "=4.0.2"
+cap-fs-ext = { version = "=4.0.2", default-features = false, features = ["std"] }
+# `statat` following a link, only to refuse a link to a secret's source (`Files::guard`).
+rustix = { version = "=1.1.4", features = ["fs", "net", "process"] }
+
+zeroize = "=1.9.2"
+libsqlite3-sys = { version = "=0.37.0", features = ["bundled"] }
+
+[features]
+# A development build only: WITCHY_GUEST_PROFILE=1 samples the guest's call stack every 100 µs
+# and prints where the run spent its time. The default host has none of it.
+guest-profile = []
+# Test suites only: `--resident=fd:N` runs many runs, each in a process forked from one resident
+# process that keeps compiled modules (src/resident.rs). A default build has none of it.
+resident = []

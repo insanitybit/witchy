@@ -1,0 +1,101 @@
+// A priority queue: the element that comes before all the others is taken first.
+// Safe code on Vec's public methods; elements may be owners.
+import "wasm-sort.wy"
+import "wasm-vec.wy"
+import "wasm-discard.wy"
+import "wasm-discard-core.wy"
+
+// `items` is a heap: no element comes before the one at half its index.
+pub sealed type Heap<T>:
+    items: Vec<T>
+
+impl<T: Any + Before> Heap<T>:
+    // An empty heap. Err: no room.
+    pub fn new(allocator: &Allocator) -> Result<Heap<T>, U64>:
+        let items: Vec<T> = Vec.new(allocator, 0)?
+        return Ok(Heap(move items))
+
+    // How many elements it holds.
+    pub fn len(self: &Heap<T>) -> U64:
+        return self.items.len()
+
+    // Whether it holds none.
+    pub fn is_empty(self: &Heap<T>) -> Bool:
+        return self.items.len() == 0
+
+    // The element that `pop` would take. Err(1): there is none.
+    pub fn first(self: &Heap<T>) -> Result<&T, U64>:
+        return self.items.at(0)
+
+    // Add an item. Err: no room; the item comes back and the heap is as it was. The item's place is found
+    // first by comparing it with the ancestors of the new last cell; the ancestors from there
+    // down each move one level down by a trade in place, and only the one displaced from the
+    // bottom is pushed, so one call reaches the allocator however far the item rises.
+    pub fn push(self: &mut Heap<T>, allocator: &Allocator, item: T) -> Result<(), T>:
+        let count = self.items.len()
+        // Room first, growing as `push_mut` does, so nothing has moved when there is none.
+        let capacity = self.items.capacity()
+        if count == capacity:
+            if capacity > 4611686018427387903:
+                return Err(move item)
+            if let Err(_) = self.items.reserve_mut(allocator, capacity * 2 + 4):
+                return Err(move item)
+        // The ancestors of cell `count`, nearest first, while the item comes before them.
+        var path: [U64; 64] = [0; 64]
+        var rises: U64 = 0
+        var at = count
+        while at > 0:
+            let parent = (at - 1) / 2
+            var earlier = false
+            match self.items.at(parent):
+                Ok(other):
+                    earlier = item.before(other)
+                Err(code):
+                    earlier = false
+            if !earlier:
+                break
+            path[rises] = parent
+            rises += 1
+            at = parent
+        // From the highest cell the item reaches down to the parent of the new cell, each takes
+        // the value above it; what the lowest held goes into the new cell.
+        var hand = move item
+        while rises > 0:
+            rises -= 1
+            self.items.trade(path[rises], &mut hand)
+        self.items.put_back(move hand)
+        return Ok(())
+
+    // Take the element that comes before all the others. Err(2): there is none. The last
+    // element is taken out once and put at the root in exchange for it, then sinks by exchanges
+    // through the taken element, in place.
+    pub fn pop(self: &mut Heap<T>) -> Result<T, U64>:
+        var taken = match self.items.take_last_mut():
+            Ok(item):
+                move item
+            Err(code):
+                return Err(2)
+        let end = self.items.len()
+        if end == 0:
+            return Ok(move taken)
+        self.items.trade(0, &mut taken)
+        var at: U64 = 0
+        while at * 2 + 1 < end:
+            var child = at * 2 + 1
+            if child + 1 < end && precedes(&self.items, child + 1, child):
+                child += 1
+            if !precedes(&self.items, child, at):
+                break
+            self.items.swap_through(&mut taken, at, child)
+            at = child
+        return Ok(move taken)
+
+    // The elements as a Vec, in no particular order.
+    pub fn into_vec(self: Heap<T>) -> Vec<T>:
+        let Heap(items) = move self
+        return move items
+
+impl<T: Any + Before + Discard> Discard for Heap<T>:
+    fn discard(self: Heap<T>):
+        let Heap(items) = move self
+        items.discard()

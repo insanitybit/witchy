@@ -1,0 +1,63 @@
+// Many Strings stay alive while others are made and closed. Each short-lived
+// String takes three allocation slots at once on its first growth; the slots
+// come from the allocator's list of released slots, whatever else is alive.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-text.wy"
+import "../../../library/wasm-vec.wy"
+import "../../../library/wasm-string.wy"
+import "../../../library/wasm-discard.wy"
+
+fn run(console: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    var items: Vec<String> = Vec.new(allocator, 0)?
+    for number in 0..600:
+        var made = match String.new(allocator):
+            Ok(empty):
+                move empty
+            Err(code):
+                items.discard()
+                return Err(code)
+        if let Err(_) = made.push_u64(allocator, number):
+            made.close()
+            items.discard()
+            return Err(7)
+        match items.push_mut(allocator, move made):
+            Ok:
+                continue
+            Err(back):
+                back.close()
+                items.discard()
+                return Err(8)
+    var total: U64 = 0
+    for round in 0..5000:
+        var made = match String.new(allocator):
+            Ok(empty):
+                move empty
+            Err(code):
+                items.discard()
+                return Err(code)
+        if let Ok(_) = made.push_u64(allocator, round):
+            match made.parse_u64():
+                Ok(value):
+                    total += value
+                Err(code):
+                    total += 1000000000
+        made.close()
+    console.print_int(total)
+    // The Strings that stayed alive still hold what was written.
+    var kept: U64 = 0
+    for item in &items:
+        match item.parse_u64():
+            Ok(value):
+                kept += value
+            Err(code):
+                kept += 1000000000
+    console.print_int(kept)
+    items.discard()
+    return Ok(())
+
+fn main(console: Console<Write>, allocator: Allocator):
+    match run(&console, &allocator):
+        Ok:
+            console.print_int(1)
+        Err(code):
+            console.print_int(code)

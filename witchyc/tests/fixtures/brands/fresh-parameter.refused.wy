@@ -1,0 +1,30 @@
+// Refused: no parameter's type may name a `Fresh` type parameter.
+import console
+
+type Graph:
+    count: U64
+
+type Node<G>:
+    offset: U64
+
+type Nodes<G>:
+    count: U64
+
+impl Graph:
+    fn nodes<D: Fresh>(self: &Graph) -> Nodes<D>:
+        return Nodes(count: (*self).count)
+
+fn first<G: Brand>(nodes: &Nodes<G>) -> Node<G>:
+    return Node(offset: 0)
+
+fn last<G: Brand>(nodes: &Nodes<G>) -> Node<G>:
+    return Node(offset: (*nodes).count - 1)
+
+fn apart<G: Brand>(a: Node<G>, b: Node<G>) -> U64:
+    return b.offset - a.offset
+
+fn bad<D: Fresh>(n: Node<D>) -> Nodes<D>:
+    return Nodes(count: 1)
+
+fn main(console: Console<Write>):
+    console.print_int(1)

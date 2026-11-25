@@ -1,0 +1,37 @@
+// `cancel` steps a task with CANCELLED until it finishes: its pause returns CANCELLED and it
+// winds down through its own code. A task not yet started is run to its first pause and then
+// told. What it reports on the way comes back.
+import console
+import tasks
+
+fn polite(entry: U64) suspends:
+    var going = true
+    while going:
+        if pause_for(entry) == CANCELLED:
+            report(7)
+            going = false
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Task = Task.spawn(&allocator, 1024, polite, 5) else Err(given):
+        return
+    var task = move made
+    match task.step():
+        Ok:
+            console.line("finished early")
+        Err(token):
+            console.print_int(token)
+    match task.cancel():
+        Ok(reported):
+            console.print_int(reported)
+        Err(token):
+            console.line("still waiting")
+    task.close()
+    let Ok(fresh): Task = Task.spawn(&allocator, 1024, polite, 6) else Err(given):
+        return
+    var other = move fresh
+    match other.cancel():
+        Ok(reported):
+            console.print_int(reported)
+        Err(token):
+            console.line("still waiting")
+    other.close()

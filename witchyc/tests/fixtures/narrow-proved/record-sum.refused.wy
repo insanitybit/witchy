@@ -1,0 +1,68 @@
+// Refused: 200 + 100 fits a U64 and not the U8 it is written at; a sum the proof shows is
+// emitted with no test, so the proof must show it at its own width.
+import console
+
+sealed type Box8:
+    data: Buffer<U8>
+    length: U64
+    capacity: U64
+    invariant memory.prefix(data, length, capacity)
+
+fn take_prefix(buffer: &mut Buffer<U8>, count: U64):
+    requires count <= memory.capacity(buffer)
+    requires memory.initialized_range(buffer, 0, count)
+    ensures memory.empty_range(buffer, 0, count)
+    ensures memory.unchanged_from(buffer, old(buffer), count)
+    proof:
+        auto
+    memory.take_prefix_unchecked(buffer, count)
+    return
+
+fn release_empty(input: Buffer<U8>):
+    requires memory.empty_all(input)
+    ensures memory.released(old(input))
+    proof:
+        auto
+    match memory.try_release(move input):
+        Ok:
+            return
+        Err(remainder):
+            release_empty(move remainder)
+
+impl Box8:
+    fn new(allocator: &Allocator) -> Result<Box8, U64>:
+        ensures match result:
+            Ok(output):
+                output.length == 0
+            Err(code):
+                true
+        proof:
+            auto
+        let allocation: Result<Buffer<U8>, U64> = memory.try_alloc(allocator, 4)
+        match move allocation:
+            Ok(buffer):
+                return Ok(Box8(move buffer, 0, 4))
+            Err(e):
+                return Err(e)
+    fn close(input: Box8):
+        ensures memory.released(old(input.data))
+        proof:
+            auto
+        let length = input.length
+        var buffer = move input.data
+        take_prefix(&mut buffer, length)
+        release_empty(move buffer)
+    nopanic fn bump(value: &Box8, a: U8, b: U8) -> U8:
+        ensures value.length == old(value.length)
+        ensures memory.unchanged(value.data, old(value.data))
+        proof:
+            auto
+        if a < 201 && b < 101:
+            return a + b
+        return 0
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Box8 = Box8.new(&allocator) else Err(code):
+        return
+    console.print_int(U8.to_u64(Box8.bump(&made, 200, 100)))
+    made.close()

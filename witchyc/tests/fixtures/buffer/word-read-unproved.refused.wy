@@ -1,0 +1,43 @@
+// Refused (review): a word read with no proof (it read another allocation's byte).
+// No contract, no proof: memory.read_word_unchecked compiles and reads another allocation's bytes.
+fn peek(cells: &Buffer<U8>, at: U64) -> U64:
+    return memory.read_word_unchecked(cells, at, 8)
+
+fn finish(cells: Buffer<U8>):
+    match memory.try_release(move cells):
+        Ok:
+            return
+        Err(stuck):
+            finish(move stuck)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let a: Result<Buffer<U8>, U64> = memory.try_alloc(&allocator, 1)
+    let b: Result<Buffer<U8>, U64> = memory.try_alloc(&allocator, 8)
+    match move a:
+        Ok(first):
+            match move b:
+                Ok(second):
+                    var mine = move first
+                    var secret = move second
+                    match memory.try_init(&mut secret, 0, U8.truncate(65)):
+                        Ok:
+                            console.print_int(1)
+                        Err(back):
+                            console.print_int(0)
+                    for at in 0..9:
+                        console.print_int(peek(&mine, at * 8))
+                    match memory.take(&mut secret, 0):
+                        Ok(x):
+                            console.print_int(U8.to_u64(x))
+                        Err(c):
+                            console.print_int(c)
+                    finish(move mine)
+                    finish(move secret)
+                Err(code):
+                    finish(move first)
+        Err(code):
+            match move b:
+                Ok(second):
+                    finish(move second)
+                Err(c):
+                    console.print_int(c)

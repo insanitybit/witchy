@@ -1,0 +1,9 @@
+// Refused, naming the field declared twice.
+import console
+
+type P:
+    x: U64
+    x: U64
+
+fn main(console: Console<Write>):
+    console.print_int(1)

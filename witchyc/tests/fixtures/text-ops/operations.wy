@@ -1,0 +1,129 @@
+// String operations from library/wasm-text.wy: compare with a literal, order, find,
+// slice on scalar boundaries, parse and print numbers.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-text.wy"
+import "../../../library/wasm-string.wy"
+
+fn text(allocator: &Allocator, value: Text) -> Result<String, U64>:
+    var made = String.new(allocator)?
+    if let Err(_) = made.push_text(allocator, value):
+        made.close()
+        return Err(1)
+    return Ok(move made)
+
+fn yes(console: &Console<Write>, label: Text, value: Bool):
+    console.write(label)
+    if value:
+        console.line(": yes")
+    else:
+        console.line(": no")
+
+fn run(console: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    var words = text(allocator, "key=värde 42")?
+    yes(console, "equals", words.equals_text("key=värde 42"))
+    yes(console, "equals shorter", words.equals_text("key=värde 4"))
+    yes(console, "starts", words.starts_with_text("key="))
+    yes(console, "starts other", words.starts_with_text("kez"))
+    // `=` is byte 61, a space is 32.
+    let equals = match words.find_byte(61, 0):
+        Ok(at):
+            at
+        Err(code):
+            words.close()
+            return Err(code)
+    console.print_int(equals)
+    let space = match words.find_byte(32, equals):
+        Ok(at):
+            at
+        Err(code):
+            words.close()
+            return Err(code)
+    console.print_int(space)
+    match words.find_byte(33, 0):
+        Ok(at):
+            console.print_int(at)
+        Err(code):
+            console.line("no !")
+    var value = match words.slice(allocator, equals + 1, space):
+        Ok(part):
+            move part
+        Err(code):
+            words.close()
+            return Err(code)
+    console.write_string(&value)
+    console.line("")
+    // Byte 6 is inside the two-byte `ä`.
+    match words.slice(allocator, equals + 1, 6):
+        Ok(part):
+            part.close()
+            console.line("a slice ended inside a scalar")
+        Err(code):
+            console.print_int(code)
+    match words.slice(allocator, 3, 99):
+        Ok(part):
+            part.close()
+            console.line("a slice ended past the text")
+        Err(code):
+            console.print_int(code)
+    var number = match words.slice(allocator, space + 1, words.byte_len()):
+        Ok(part):
+            move part
+        Err(code):
+            words.close()
+            value.close()
+            return Err(code)
+    match number.parse_u64():
+        Ok(parsed):
+            console.print_int(parsed + 1)
+        Err(code):
+            console.print_int(code)
+    match value.parse_u64():
+        Ok(parsed):
+            console.print_int(parsed)
+        Err(code):
+            console.line("not a number")
+    number.clear()
+    if let Ok(_) = number.push_text(allocator, "18446744073709551615"):
+        match number.parse_u64():
+            Ok(parsed):
+                console.print_int(parsed)
+            Err(code):
+                console.print_int(code)
+    number.clear()
+    if let Ok(_) = number.push_text(allocator, "18446744073709551616"):
+        match number.parse_u64():
+            Ok(parsed):
+                console.print_int(parsed)
+            Err(code):
+                console.line("too large")
+    number.clear()
+    if number.push_text(allocator, "n=").is_ok() && number.push_u64(allocator, 0).is_ok() && number.push_text(allocator, ",").is_ok() && number.push_u64(allocator, 18446744073709551615).is_ok():
+        console.write_string(&number)
+        console.line("")
+    yes(console, "key < value", words.less(&value))
+    yes(console, "value < key", value.less(&words))
+    yes(console, "key < key", words.less(&words))
+    number.clear()
+    if let Ok(_) = number.push_text(allocator, "key"):
+        yes(console, "prefix first", number.less(&words))
+    match words.compare(&words):
+        Less:
+            console.line("less")
+        Equal:
+            console.line("equal")
+        Greater:
+            console.line("greater")
+    words.cut(3)
+    console.write_string(&words)
+    console.line("")
+    words.close()
+    value.close()
+    number.close()
+    return Ok(())
+
+fn main(console: Console<Write>, allocator: Allocator):
+    match run(&console, &allocator):
+        Ok:
+            console.line("done")
+        Err(code):
+            console.print_int(code)

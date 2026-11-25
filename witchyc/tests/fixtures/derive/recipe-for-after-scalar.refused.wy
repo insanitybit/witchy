@@ -1,0 +1,39 @@
+// Refused: a recipe writing `For` after a `'"'` scalar, used without `for:` (review: the scanner
+// lost `For` after the scalar, and the impl named the program's own type `For`).
+import console
+
+trait Kind:
+    fn kind(self: &Self) -> U64
+
+type For:
+    v: U64
+
+type Other:
+    v: U64
+
+impl Kind for For:
+    fn kind(self: &For) -> U64:
+        return 1
+
+impl Kind for Other:
+    fn kind(self: &Other) -> U64:
+        return 2
+
+trait Which:
+    fn which(self: &Self) -> U64
+
+derive W:
+    impl Which for Self:
+        fn which(self: &Self) -> U64:
+            return '"' - 34 + For(v: 0).kind()
+
+type T derive(W(for: Other)):
+    id: U64
+
+type U derive(W):
+    id: U64
+
+fn main(console: Console<Write>):
+    let t = T(id: 5)
+    let u = U(id: 5)
+    console.print("${t.which()} ${u.which()}")

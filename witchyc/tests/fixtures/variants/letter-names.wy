@@ -1,0 +1,25 @@
+// Variants named `E`, `T` and `K`, the library's type parameter names (`Result<T, E>`), do not
+// stop the library's generic functions: a variant is written where values are.
+import console
+
+type Grade:
+    E
+    T(U64)
+    K
+
+fn score(grade: Grade) -> U64:
+    match grade:
+        E:
+            return 1
+        T(n):
+            return n
+        K:
+            return 3
+
+fn main(console: Console<Write>):
+    let result: Result<U64, U64> = Ok(5)
+    match result:
+        Ok(v):
+            console.print_int(v + score(T(10)) + score(E) + score(K))
+        Err(e):
+            console.line("never")

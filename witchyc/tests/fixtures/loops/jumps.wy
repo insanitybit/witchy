@@ -1,0 +1,84 @@
+// `break` leaves the innermost loop; `continue` goes on to its next step.
+import "../../../library/wasm-vec.wy"
+
+fn first_multiple(of: U64, from: U64) -> U64:
+    var candidate = from
+    while true:
+        if candidate % of == 0:
+            break
+        candidate += 1
+    return candidate
+
+fn odd_sum(limit: U64) -> U64:
+    var sum: U64 = 0
+    for value in 0..limit:
+        if value % 2 == 0:
+            continue
+        sum += value
+    return sum
+
+// The inner loop's `break` leaves only the inner loop.
+fn pairs(limit: U64) -> U64:
+    var count: U64 = 0
+    for left in 0..limit:
+        for right in 0..limit:
+            if right > left:
+                break
+            if right == 1:
+                continue
+            count += 1
+    return count
+
+// Stop at the first zero, skipping odd values, without taking anything out.
+fn even_prefix(values: &Vec<U64>) -> U64:
+    var sum: U64 = 0
+    for value in values:
+        if *value == 0:
+            break
+        if *value % 2 == 1:
+            continue
+        sum += *value
+    return sum
+
+fn drain(values: &mut Vec<U64>) -> U64:
+    var taken: U64 = 0
+    while true:
+        match values.take_last_mut():
+            Ok(value):
+                taken += 1
+            Err(code):
+                break
+    return taken
+
+fn fill(console: &Console<Write>, allocator: &Allocator, input: Vec<U64>) -> Vec<U64>:
+    var values = move input
+    for value in 0..7:
+        // 2, 4, 5, 8, 0, 12, 14
+        var item = 2 * value + 2
+        if value == 2:
+            item = 5
+        if value == 4:
+            item = 0
+        match values.push(allocator, item):
+            Ok(grown):
+                values = move grown
+            Err(back):
+                console.print_int(900)
+                let VecPushError(vector, lost) = move back
+                values = move vector
+                break
+    return move values
+
+fn main(console: Console<Write>, allocator: Allocator):
+    console.print_int(first_multiple(7, 30))
+    console.print_int(odd_sum(10))
+    console.print_int(pairs(4))
+    let made: Result<Vec<U64>, U64> = Vec.new(&allocator, 0)
+    match move made:
+        Ok(empty):
+            var values = fill(&console, &allocator, move empty)
+            console.print_int(even_prefix(&values))
+            console.print_int(drain(&mut values))
+            values.close()
+        Err(code):
+            console.print_int(code)

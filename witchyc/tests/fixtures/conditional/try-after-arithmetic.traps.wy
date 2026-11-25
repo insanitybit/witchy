@@ -1,0 +1,14 @@
+// `10 / d` is written before the `if` holding a `?`: it runs first, so a zero divisor traps
+// rather than the `?` returning (red-team review: the `?` once ran first).
+import console
+
+fn f(d: U64, c: Bool, res: Result<U64, U64>) -> Result<U64, U64>:
+    let r = 10 / d + (if c: res? else: 0)
+    Ok(r)
+
+fn main(console: Console<Write>):
+    match f(0, true, Err(5)):
+        Ok(v):
+            console.print_int(v)
+        Err(e):
+            console.print_int(1000 + e)

@@ -1,0 +1,14 @@
+// Spreading a record that holds an owner would copy the owner: refused.
+import console
+import string
+
+type Named:
+    name: String
+    id: U64
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    let a = Named(name: move made, id: 1)
+    let b = Named(..a, id: 2)
+    console.print_int(b.id)

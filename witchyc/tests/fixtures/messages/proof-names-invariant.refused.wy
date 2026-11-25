@@ -1,0 +1,18 @@
+// Refused, saying which part of the body did not prove: the invariant after a pass.
+import console
+
+fn count_up(n: U64) -> U64:
+    requires n < 1000
+    ensures true
+    proof:
+        auto
+    var i: U64 = 0
+    var total: U64 = 0
+    while i < n:
+        invariant total <= i
+        total += 2
+        i += 1
+    return total
+
+fn main(console: Console<Write>):
+    console.print_int(count_up(10))

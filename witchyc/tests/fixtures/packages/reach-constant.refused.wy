@@ -1,0 +1,6 @@
+// Refused: a `pub let` of alpha's inner file, named.
+import console
+import "@alpha"
+
+fn main(console: Console<Write>):
+    console.print_int(LIMIT)

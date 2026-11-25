@@ -1,0 +1,315 @@
+import string
+import text
+import "filter.wy"
+import "route.wy"
+
+let HTML_LIMIT = 32768
+
+pub sealed type HtmlTable:
+    body: String
+    failed: Bool
+
+pub sealed type HtmlBody:
+    body: String
+
+pub sealed type LocalLink:
+    path: String
+
+pub sealed type HtmlPage:
+    body: String
+    failed: Bool
+
+pub fn matches(name: &[U8], query: &[U8]) -> Bool:
+    return filter.contains(name, query)
+
+fn literal(out: &mut String, allocator: &Allocator, value: Text) -> Result<(), U64>:
+    if value.byte_len() > HTML_LIMIT - out.byte_len():
+        return Err(1)
+    return out.push_text(allocator, value)
+
+fn copy_text(out: &mut String, allocator: &Allocator, value: &String, start: U64, end: U64) -> Result<(), U64>:
+    if end - start > HTML_LIMIT - out.byte_len():
+        return Err(1)
+    return out.push_part(allocator, value, start, end)
+
+fn escaped_entity(byte: U8) -> Text:
+    if byte == 38:
+        return "&amp;"
+    if byte == 60:
+        return "&lt;"
+    if byte == 62:
+        return "&gt;"
+    if byte == 34:
+        return "&quot;"
+    if byte == 39:
+        return "&#39;"
+    return ""
+
+fn escaped(out: &mut String, allocator: &Allocator, value: &String) -> Result<(), U64>:
+    var start: U64 = 0
+    let length = value.byte_len()
+    for index in 0..length:
+        let Ok(byte): U8 = value.byte_at(index) else Err(code):
+            return Err(code)
+        let entity = escaped_entity(byte)
+        if entity.byte_len() > 0:
+            copy_text(out, allocator, value, start, index)?
+            literal(out, allocator, entity)?
+            start = index + 1
+    return copy_text(out, allocator, value, start, length)
+
+fn anchor(out: &mut String, allocator: &Allocator, label: &String, link: &LocalLink) -> Result<(), U64>:
+    literal(out, allocator, "<a href=\"")?
+    let path = &(*link).path
+    copy_text(out, allocator, path, 0, path.byte_len())?
+    literal(out, allocator, "\">")?
+    escaped(out, allocator, label)?
+    return literal(out, allocator, "</a>")
+
+fn version_cell(out: &mut String, allocator: &Allocator, version: &String) -> Result<(), U64>:
+    literal(out, allocator, "</td><td>")?
+    escaped(out, allocator, version)?
+    return literal(out, allocator, "</td></tr>")
+
+fn cells(out: &mut String, allocator: &Allocator, name: &String, version: &String) -> Result<(), U64>:
+    literal(out, allocator, "<tr><td>")?
+    escaped(out, allocator, name)?
+    return version_cell(out, allocator, version)
+
+fn linked_cells(out: &mut String, allocator: &Allocator, name: &String, version: &String, link: &LocalLink) -> Result<(), U64>:
+    literal(out, allocator, "<tr><td>")?
+    anchor(out, allocator, name, link)?
+    return version_cell(out, allocator, version)
+
+fn table_start(out: &mut String, allocator: &Allocator, left: &String, right: &String) -> Result<(), U64>:
+    literal(out, allocator, "<table><thead><tr><th scope=\"col\">")?
+    escaped(out, allocator, left)?
+    literal(out, allocator, "</th><th scope=\"col\">")?
+    escaped(out, allocator, right)?
+    return literal(out, allocator, "</th></tr></thead><tbody>")
+
+impl LocalLink:
+    pub fn parse(path: String) -> Result<LocalLink, U64>:
+        if route.valid(&path):
+            return Ok(LocalLink(move path))
+        path.close()
+        return Err(1)
+
+    pub fn close(self: LocalLink):
+        let LocalLink(path) = move self
+        path.close()
+
+impl HtmlTable:
+    pub fn open(allocator: &Allocator, left: &String, right: &String) -> Result<HtmlTable, U64>:
+        let Ok(initial): String = String.new(allocator) else Err(code):
+            return Err(code)
+        var body = move initial
+        match table_start(&mut body, allocator, left, right):
+            Ok:
+                return Ok(HtmlTable(move body, false))
+            Err(code):
+                body.close()
+                return Err(code)
+
+    pub fn row(self: &mut HtmlTable, allocator: &Allocator, name: &String, version: &String) -> Result<(), U64>:
+        if (*self).failed:
+            return Err(1)
+        match cells(&mut (*self).body, allocator, name, version):
+            Ok:
+                return Ok(())
+            Err(code):
+                (*self).failed = true
+                return Err(code)
+
+    pub fn linked_row(self: &mut HtmlTable, allocator: &Allocator, name: &String, version: &String, link: &LocalLink) -> Result<(), U64>:
+        if (*self).failed:
+            return Err(1)
+        match linked_cells(&mut (*self).body, allocator, name, version, link):
+            Ok:
+                return Ok(())
+            Err(code):
+                (*self).failed = true
+                return Err(code)
+
+    pub fn close(self: HtmlTable):
+        let HtmlTable(body, _) = move self
+        body.close()
+
+    pub fn finish(self: HtmlTable, allocator: &Allocator) -> Result<HtmlBody, U64>:
+        let HtmlTable(initial, failed) = move self
+        var body = move initial
+        if failed:
+            body.close()
+            return Err(1)
+        match literal(&mut body, allocator, "</tbody></table>"):
+            Ok:
+                return Ok(HtmlBody(move body))
+            Err(code):
+                body.close()
+                return Err(code)
+
+fn heading(out: &mut String, allocator: &Allocator, value: &String) -> Result<(), U64>:
+    literal(out, allocator, "<h1>")?
+    escaped(out, allocator, value)?
+    return literal(out, allocator, "</h1>")
+
+fn definition(out: &mut String, allocator: &Allocator, title: &String, value: &String) -> Result<(), U64>:
+    literal(out, allocator, "<dl><dt>")?
+    escaped(out, allocator, title)?
+    literal(out, allocator, "</dt><dd>")?
+    escaped(out, allocator, value)?
+    return literal(out, allocator, "</dd></dl>")
+
+impl HtmlPage:
+    pub fn open(allocator: &Allocator) -> Result<HtmlPage, U64>:
+        let value = String.new(allocator)?
+        return Ok(HtmlPage(move value, false))
+
+    pub fn heading(self: &mut HtmlPage, allocator: &Allocator, value: &String) -> Result<(), U64>:
+        if (*self).failed:
+            return Err(1)
+        match heading(&mut (*self).body, allocator, value):
+            Ok:
+                return Ok(())
+            Err(code):
+                (*self).failed = true
+                return Err(code)
+
+    pub fn definition(self: &mut HtmlPage, allocator: &Allocator, title: &String, value: &String) -> Result<(), U64>:
+        if (*self).failed:
+            return Err(1)
+        match definition(&mut (*self).body, allocator, title, value):
+            Ok:
+                return Ok(())
+            Err(code):
+                (*self).failed = true
+                return Err(code)
+
+    pub fn link(self: &mut HtmlPage, allocator: &Allocator, title: &String, destination: &LocalLink) -> Result<(), U64>:
+        if (*self).failed:
+            return Err(1)
+        match anchor(&mut (*self).body, allocator, title, destination):
+            Ok:
+                return Ok(())
+            Err(code):
+                (*self).failed = true
+                return Err(code)
+
+    pub fn close(self: HtmlPage):
+        let HtmlPage(body, _) = move self
+        body.close()
+
+    pub fn finish(self: HtmlPage) -> Result<HtmlBody, U64>:
+        let HtmlPage(body, failed) = move self
+        if failed:
+            body.close()
+            return Err(1)
+        return Ok(HtmlBody(move body))
+
+impl HtmlBody:
+    pub fn text(self: &HtmlBody) -> &String:
+        return &(*self).body
+
+    pub fn close(self: HtmlBody):
+        let HtmlBody(body) = move self
+        body.close()
+
+// Sealed instructions for the framework renderer. The host independently
+// checks the complete stream before converting any of it to HTML.
+pub sealed type Document:
+    data: String
+    failed: Bool
+
+pub sealed type DocumentBytes:
+    data: String
+
+fn field(out: &mut String, allocator: &Allocator, value: &String) -> Result<(), U64>:
+    let size = value.byte_len()
+    if size > 128:
+        return Err(1)
+    out.push_decimal(allocator, size)?
+    out.push_text(allocator, "\n")?
+    return out.push_string(allocator, value)
+
+impl Document:
+    pub fn open(allocator: &Allocator) -> Result<Document, U64>:
+        let initial = String.new(allocator)?
+        var data = move initial
+        match data.push_text(allocator, "GDL1\n"):
+            Ok:
+                return Ok(Document(move data, false))
+            Err(code):
+                data.close()
+                return Err(code)
+
+    fn start(self: &mut Document, allocator: &Allocator, opcode: Text) -> Result<(), U64>:
+        if (*self).failed || (*self).data.byte_len() > HTML_LIMIT - 400:
+            (*self).failed = true
+            return Err(1)
+        (*self).failed = true
+        return (*self).data.push_text(allocator, opcode)
+
+    pub fn heading(self: &mut Document, allocator: &Allocator, text: &String) -> Result<(), U64>:
+        self.start(allocator, "H")?
+        field(&mut (*self).data, allocator, text)?
+        (*self).failed = false
+        return Ok(())
+
+    pub fn definition(self: &mut Document, allocator: &Allocator, title: &String, value: &String) -> Result<(), U64>:
+        self.start(allocator, "D")?
+        field(&mut (*self).data, allocator, title)?
+        field(&mut (*self).data, allocator, value)?
+        (*self).failed = false
+        return Ok(())
+
+    pub fn link(self: &mut Document, allocator: &Allocator, label: &String, link: &LocalLink) -> Result<(), U64>:
+        self.start(allocator, "A")?
+        field(&mut (*self).data, allocator, label)?
+        field(&mut (*self).data, allocator, &(*link).path)?
+        (*self).failed = false
+        return Ok(())
+
+    pub fn begin_table(self: &mut Document, allocator: &Allocator, left: &String, right: &String) -> Result<(), U64>:
+        self.start(allocator, "T")?
+        field(&mut (*self).data, allocator, left)?
+        field(&mut (*self).data, allocator, right)?
+        (*self).failed = false
+        return Ok(())
+
+    pub fn linked_row(self: &mut Document, allocator: &Allocator, name: &String, version: &String, link: &LocalLink) -> Result<(), U64>:
+        self.start(allocator, "L")?
+        field(&mut (*self).data, allocator, name)?
+        field(&mut (*self).data, allocator, version)?
+        field(&mut (*self).data, allocator, &(*link).path)?
+        (*self).failed = false
+        return Ok(())
+
+    pub fn end_table(self: &mut Document, allocator: &Allocator) -> Result<(), U64>:
+        self.start(allocator, "E")?
+        (*self).failed = false
+        return Ok(())
+
+    pub fn close(self: Document):
+        let Document(data, _) = move self
+        data.close()
+
+    pub fn finish(self: Document, allocator: &Allocator) -> Result<DocumentBytes, U64>:
+        let Document(initial, failed) = move self
+        var data = move initial
+        if failed:
+            data.close()
+            return Err(1)
+        match data.push_text(allocator, "Z"):
+            Ok:
+                return Ok(DocumentBytes(move data))
+            Err(code):
+                data.close()
+                return Err(code)
+
+impl DocumentBytes:
+    pub fn bytes(self: &DocumentBytes) -> &String:
+        return &(*self).data
+
+    pub fn close(self: DocumentBytes):
+        let DocumentBytes(data) = move self
+        data.close()

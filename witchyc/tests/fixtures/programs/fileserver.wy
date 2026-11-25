@@ -1,0 +1,63 @@
+// A file server: each client sends `GET name` and a newline, and gets the file `name` from
+// one directory, or `not found`. `serve` holds a `Dir<Read>` and a `Listener` and nothing
+// else, so `wasm-caps` shows it can neither write a file nor dial out, and the host
+// refuses any name that would leave the directory (`..`, absolute paths, links).
+import console
+import fs
+import net
+import string
+
+// Whether the next byte is `expected`.
+fn next_is(socket: &Socket, expected: U64) -> Bool:
+    match socket.next_byte():
+        Ok(byte):
+            return U8.to_u64(byte) == expected
+        Err:
+            return false
+
+// The name in a request line `GET name`; Err(1) when the line is not one.
+fn request(socket: &Socket, allocator: &Allocator) -> Result<String, U64>:
+    if !(next_is(socket, 71) && next_is(socket, 69) && next_is(socket, 84) && next_is(socket, 32)):
+        return Err(1)
+    var name = String.new(allocator)?
+    var reading = true
+    while reading:
+        match socket.next_byte():
+            Ok(byte):
+                if byte == 10 || byte == 13:
+                    reading = false
+                else if let Err(_) = name.push(allocator, U8.to_u64(byte)):
+                    name.close()
+                    return Err(2)
+            Err:
+                reading = false
+    return Ok(move name)
+
+fn answer(dir: &Dir<Read>, socket: &Socket, allocator: &Allocator):
+    match request(socket, allocator):
+        Ok(name):
+            match dir.read_text_path(allocator, &name):
+                Ok(text):
+                    let sent = socket.send_string(&text)
+                    text.close()
+                Err(e):
+                    let sent = socket.send("not found\n")
+            name.close()
+        Err(code):
+            let sent = socket.send("bad request\n")
+
+// Answer up to `count` clients; how many came.
+fn serve(dir: &Dir<Read>, listener: &Listener, allocator: &Allocator, count: U64) -> U64:
+    var served: U64 = 0
+    while served < count:
+        match listener.accept():
+            Ok(socket):
+                answer(dir, &socket, allocator)
+                socket.close()
+                served += 1
+            Err(e):
+                return served
+    return served
+
+fn main(console: Console<Write>, allocator: Allocator, dir: Dir<Read>, listener: Listener):
+    console.print_int(serve(&dir, &listener, &allocator, 3))

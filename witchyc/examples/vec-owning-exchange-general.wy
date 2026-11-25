@@ -1,0 +1,47 @@
+fn main(console: Console<Write>):
+    var witness = memory.alloc(1)
+    memory.init(&mut witness, 0, 42)
+    let saved = &witness
+    let created: Result<Vec<Buffer<U64>>, AllocError> = vec_new(0)
+    match created:
+        Ok(empty):
+            var first = memory.alloc(1)
+            memory.init(&mut first, 0, 73)
+            match vec_push(move empty, move first):
+                Ok(pushed):
+                    match vec_reserve(move pushed, 3):
+                        Ok(grown):
+                            var replacement = memory.alloc(1)
+                            memory.init(&mut replacement, 0, 74)
+                            match vec_replace(move grown, 0, move replacement):
+                                Ok(changed):
+                                    console.print_int(memory.read(&changed.previous, 0))
+                                    memory.release(changed.previous)
+                                    match vec_pop(move changed.vector):
+                                        Ok(popped):
+                                            match popped.item:
+                                                Some(item):
+                                                    console.print_int(memory.read(&item, 0))
+                                                    memory.release(item)
+                                                None:
+                                                    console.print_int(901)
+                                            match vec_release(move popped.vector):
+                                                Ok(done):
+                                                    console.print_int(75)
+                                                Err(kept):
+                                                    discard(move kept)
+                                        Err(kept):
+                                            discard(move kept)
+                                Err(failed):
+                                    memory.release(failed.replacement)
+                                    discard(move failed.vector)
+                        Err(failed):
+                            discard(move failed)
+                Err(failed):
+                    memory.release(failed.item)
+                    discard(move failed.vector)
+        Err(reason):
+            console.print_int(902)
+    console.print_int(memory.read(saved, 0))
+    memory.end(saved)
+    memory.release(witness)

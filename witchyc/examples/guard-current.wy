@@ -1,0 +1,45 @@
+fn choose(flag: Bool) -> Result<U64, U64>:
+    ensures match result:
+        Ok(value):
+            value == 7
+        Err(reason):
+            reason == 9
+    if flag:
+        return Ok(7)
+    return Err(9)
+
+fn recover(data: Buffer<U64>, flag: Bool) -> Result<Buffer<U64>, Buffer<U64>>:
+    ensures match result:
+        Ok(kept):
+            kept == old(data)
+        Err(kept):
+            kept == old(data)
+    if flag:
+        return Ok(move data)
+    return Err(move data)
+
+fn owned_wildcard(input: Buffer<U64>, flag: Bool) -> U64:
+    requires memory.size(input) == 0
+    let Ok(_) = recover(move input, flag) else Err(retained):
+        memory.release(retained)
+        return 9
+    return 7
+
+fn main(console: Console<Write>):
+    let empty_success: Buffer<U64> = memory.alloc(0)
+    let empty_failure: Buffer<U64> = memory.alloc(0)
+    var initial: Buffer<U64> = memory.alloc(1)
+    memory.init(&mut initial, 0, 42)
+    console.print_int(owned_wildcard(move empty_success, true))
+    console.print_int(owned_wildcard(move empty_failure, false))
+    let choice: Result<Buffer<U64>, U64> = Ok(move initial)
+    let Ok(kept) = move choice else Err(reason):
+        discard(move console)
+        return
+    var data = move kept
+    let first = memory.take(&mut data, 0)
+    memory.init(&mut data, 0, first)
+    let again = memory.take(&mut data, 0)
+    console.print_int(again)
+    memory.release(data)
+    discard(move console)

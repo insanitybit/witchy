@@ -1,0 +1,6 @@
+// Refused, at the constant: a built-in type's name would be read as the constant
+// wherever the type is written.
+let U64 = 3
+
+fn main():
+    return

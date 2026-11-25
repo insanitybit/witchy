@@ -1,0 +1,129 @@
+// vec_get_byte copies only U8. Every outcome returns the original Vec owner.
+// This cleanup consumes initialized scalar bytes before releasing their buffer.
+fn drop_bytes(input: Vec<U8>):
+    requires memory.loan_room(1)
+    var vector = move input
+    let writer = &mut vector.data
+    var i: USize = 0
+    while i < vector.length:
+        invariant i <= vector.length
+        invariant memory.size(vector.data) == vector.capacity
+        invariant EmptyBetween(vector.data, 0, i)
+        invariant InitializedBetween(vector.data, i, vector.length)
+        invariant EmptyBetween(vector.data, vector.length, vector.capacity)
+        let item: U8 = memory.take(writer, i)
+        discard(item)
+        i += 1
+    memory.end(writer)
+    memory.release(vector.data)
+
+fn drain_bytes(input: Vec<U8>, console: Console<Write>):
+    requires memory.loan_room(1)
+    let Ok(last) = vec_pop(move input) else Err(kept):
+        drop_bytes(move kept)
+        discard(move console)
+        return
+    let Some(last_byte) = move last.item else None:
+        drop_bytes(move last.vector)
+        discard(move console)
+        return
+    console.print_int(U8.to_u64(last_byte))
+    let Ok(middle) = vec_pop(move last.vector) else Err(kept):
+        drop_bytes(move kept)
+        discard(move console)
+        return
+    let Some(middle_byte) = move middle.item else None:
+        drop_bytes(move middle.vector)
+        discard(move console)
+        return
+    console.print_int(U8.to_u64(middle_byte))
+    let Ok(first) = vec_pop(move middle.vector) else Err(kept):
+        drop_bytes(move kept)
+        discard(move console)
+        return
+    let Some(first_byte) = move first.item else None:
+        drop_bytes(move first.vector)
+        discard(move console)
+        return
+    console.print_int(U8.to_u64(first_byte))
+    let Ok(done) = vec_release(move first.vector) else Err(kept):
+        drop_bytes(move kept)
+        discard(move console)
+        return
+    console.print_int(43)
+    discard(move console)
+
+fn inspect_bytes(input: Vec<U8>, console: Console<Write>):
+    requires memory.loan_room(1)
+    let Ok(first) = vec_get_byte(move input, 0) else Err(kept):
+        drop_bytes(move kept)
+        discard(move console)
+        return
+    let Some(first_byte) = move first.item else None:
+        drop_bytes(move first.vector)
+        discard(move console)
+        return
+    console.print_int(U8.to_u64(first_byte))
+    let Ok(middle) = vec_get_byte(move first.vector, 1) else Err(kept):
+        drop_bytes(move kept)
+        discard(move console)
+        return
+    let Some(middle_byte) = move middle.item else None:
+        drop_bytes(move middle.vector)
+        discard(move console)
+        return
+    console.print_int(U8.to_u64(middle_byte))
+    let Ok(last) = vec_get_byte(move middle.vector, 2) else Err(kept):
+        drop_bytes(move kept)
+        discard(move console)
+        return
+    let Some(last_byte) = move last.item else None:
+        drop_bytes(move last.vector)
+        discard(move console)
+        return
+    console.print_int(U8.to_u64(last_byte))
+    let Ok(again) = vec_get_byte(move last.vector, 1) else Err(kept):
+        drop_bytes(move kept)
+        discard(move console)
+        return
+    let Some(again_byte) = move again.item else None:
+        drop_bytes(move again.vector)
+        discard(move console)
+        return
+    console.print_int(U8.to_u64(again_byte))
+    let Ok(missing) = vec_get_byte(move again.vector, 3) else Err(kept):
+        drop_bytes(move kept)
+        discard(move console)
+        return
+    match missing.item:
+        Some(value):
+            console.print_int(904)
+        None:
+            console.print_int(42)
+    drain_bytes(move missing.vector, move console)
+
+fn main(console: Console<Write>):
+    let allocation: Result<Vec<U8>, AllocError> = vec_new(0)
+    let Ok(empty) = move allocation else Err(reason):
+        console.print_int(906)
+        discard(move console)
+        return
+    let zero: U8 = 0
+    let Ok(one) = vec_push(move empty, zero) else Err(failed):
+        discard(failed.item)
+        drop_bytes(move failed.vector)
+        discard(move console)
+        return
+    let middle: U8 = 128
+    let Ok(two) = vec_push(move one, middle) else Err(failed):
+        discard(failed.item)
+        drop_bytes(move failed.vector)
+        discard(move console)
+        return
+    let full: U8 = 255
+    let Ok(three) = vec_push(move two, full) else Err(failed):
+        discard(failed.item)
+        drop_bytes(move failed.vector)
+        discard(move console)
+        return
+    inspect_bytes(move three, move console)

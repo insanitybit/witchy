@@ -1,0 +1,69 @@
+import "integrity.wy"
+import "request.wy"
+import string
+import text
+
+pub type MaintainerPage:
+    ReviewPage
+    EnrollmentPage
+
+impl MaintainerPage:
+    pub fn route(self: MaintainerPage) -> ReviewRoute:
+        match self:
+            ReviewPage:
+                return Page
+            EnrollmentPage:
+                return Enrollment
+
+    pub fn script_file(self: MaintainerPage) -> Text:
+        match self:
+            ReviewPage:
+                return "review.mjs"
+            EnrollmentPage:
+                return "enroll.mjs"
+
+pub fn render_page(page: MaintainerPage, script: &Integrity, style: &Integrity, allocator: &Allocator) -> Result<String, U64>:
+    let empty = String.with_capacity(allocator, 2048)?
+    var out = move empty
+    if let Err(code) = write_page(&mut out, page, script, style, allocator):
+        out.close()
+        return Err(code)
+    return Ok(move out)
+
+fn write_page(out: &mut String, page: MaintainerPage, script: &Integrity, style: &Integrity, allocator: &Allocator) -> Result<(), U64>:
+    out.push_text(allocator, "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\">")?
+    out.push_text(allocator, "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n")?
+    out.push_text(allocator, "<meta name=\"color-scheme\" content=\"dark\"><title>")?
+    out.push_text(allocator, title(page))?
+    out.push_text(allocator, " · Coven</title>\n<link rel=\"stylesheet\" href=\"/review.css\" integrity=\"")?
+    style.append(out, allocator)?
+    out.push_text(allocator, "\">\n<script type=\"module\" src=\"/")?
+    out.push_text(allocator, page.script_file())?
+    out.push_text(allocator, "\" integrity=\"")?
+    script.append(out, allocator)?
+    out.push_text(allocator, "\"></script></head>\n<body><main><h1>")?
+    out.push_text(allocator, title(page))?
+    out.push_text(allocator, "</h1>\n")?
+    write_controls(out, page, allocator)?
+    return out.push_text(allocator, "\n</main></body></html>")
+
+fn title(page: MaintainerPage) -> Text:
+    match page:
+        ReviewPage:
+            return "Review release"
+        EnrollmentPage:
+            return "Enroll a passkey"
+
+fn write_controls(out: &mut String, page: MaintainerPage, allocator: &Allocator) -> Result<(), U64>:
+    match page:
+        ReviewPage:
+            out.push_text(allocator, "<button id=\"inspect\" disabled>View staged candidate</button>\n")?
+            out.push_text(allocator, "<section id=\"review\" aria-label=\"Staged candidate\" hidden></section>\n")?
+            out.push_text(allocator, "<button id=\"approve\" hidden>Approve this digest</button>\n")?
+            return out.push_text(allocator, "<p id=\"status\" role=\"status\"></p><noscript>Release review requires JavaScript and a passkey.</noscript>")
+        EnrollmentPage:
+            out.push_text(allocator, "<label for=\"request\">Enrollment request from your registry operator</label>\n")?
+            out.push_text(allocator, "<input id=\"request\" type=\"file\" accept=\"application/json,.json\">\n")?
+            out.push_text(allocator, "<p id=\"details\"></p><button id=\"create\" disabled>Create passkey</button>\n")?
+            out.push_text(allocator, "<button id=\"prove\" hidden>Confirm passkey</button>\n<p id=\"status\" role=\"status\"></p>\n")?
+            return out.push_text(allocator, "<textarea id=\"response\" aria-label=\"Enrollment response\" readonly hidden rows=\"8\"></textarea>")

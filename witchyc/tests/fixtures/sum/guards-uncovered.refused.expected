@@ -1,0 +1,1 @@
+when this guard fails, a later arm for the same variant, or `_`, is taken

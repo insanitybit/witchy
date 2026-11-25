@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Glamour filter sandbox</title></head><body><script>
+"use strict";
+(() => {
+    if (window === parent || window.origin !== "null") return;
+    const channel = new MessageChannel();
+    const port = channel.port1;
+    port.onmessage = ({ data }) => {
+        let worker;
+        let timer;
+        function stop() {
+            clearTimeout(timer);
+            worker?.terminate();
+            port.close();
+        }
+        function fail() {
+            port.postMessage({ failed: true });
+            stop();
+        }
+        window.addEventListener("pagehide", stop, { once: true });
+        try {
+            const { source, module } = data;
+            if (!(source instanceof ArrayBuffer) || source.byteLength > 16384 ||
+                !(module instanceof ArrayBuffer) || module.byteLength > 65536)
+                throw new Error("invalid filter initialization");
+            const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+            try {
+                const policy = trustedTypes.createPolicy("glamour-worker", {
+                    createScriptURL(value) {
+                        if (value !== url) throw new TypeError("invalid filter worker URL");
+                        return url;
+                    },
+                });
+                worker = new Worker(policy.createScriptURL(url));
+            } finally {
+                URL.revokeObjectURL(url);
+            }
+            worker.onerror = fail;
+            worker.onmessageerror = fail;
+            worker.onmessage = ({ data }) => {
+                clearTimeout(timer);
+                if (data?.result instanceof Uint8Array) {
+                    port.postMessage(data, [data.result.buffer]);
+                } else if (data?.ready === true) {
+                    port.postMessage({ ready: true });
+                } else {
+                    fail();
+                }
+            };
+            port.onmessageerror = fail;
+            port.onmessage = ({ data }) => {
+                clearTimeout(timer);
+                timer = setTimeout(fail, 1000);
+                if (!(data?.event instanceof Uint8Array) || data.event.length > 4226) {
+                    fail();
+                    return;
+                }
+                worker.postMessage(data, [data.event.buffer]);
+            };
+            timer = setTimeout(fail, 1000);
+            worker.postMessage({ module }, [module]);
+        } catch {
+            fail();
+        }
+    };
+    parent.postMessage("glamour-filter-ready-v1", location.origin, [channel.port2]);
+})();
+</script></body></html>

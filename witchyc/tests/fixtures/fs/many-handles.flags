@@ -1,0 +1,1 @@
+run: --dir={dir}/many-handles-root --dir-rights=read --unmetered --deadline-ms=10000

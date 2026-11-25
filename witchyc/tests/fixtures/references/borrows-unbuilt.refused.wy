@@ -1,0 +1,17 @@
+// A value not built at the `return` could be any variant, so it is held to every clause.
+import console
+
+fn choose(left: &U64, right: &U64, flag: Bool) -> Result<&U64, &U64>:
+    borrows Ok from left
+    borrows Err from right
+    let picked: Result<&U64, &U64> = Ok(left)
+    return picked
+
+fn main(console: Console<Write>):
+    let a: U64 = 1
+    let b: U64 = 2
+    match choose(&a, &b, true):
+        Ok(item):
+            console.print_int(*item)
+        Err(item):
+            console.print_int(*item)

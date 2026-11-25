@@ -1,0 +1,54 @@
+# Reviewed source capabilities for the CI HTTPS listener and its local transaction channel.
+<standard>/wasm-vec.wy: Allocator ; digest sha384:bedaa1adef080670b74f6b45b2d8a1d4cb84c158d298b9fc9ca69a6d1bdc67425998ae44bb7f8658d66821cd3436b417
+<standard>/wasm-vec-text.wy: Allocator ; digest sha384:631624647408dcdf978739698431b6e433b7effc83acd006edcc4e325eb70374135fced80d0a7ede048e811fca528aac
+<standard>/wasm-hash.wy: nothing ; no unchecked ; digest sha384:1cd64a088254b164cbe6656cdd894920f8d4b0d0c12a753c7ea5b8317d4bdb341a732303d7a48ceade360acb410016d1
+<standard>/wasm-discard-core.wy: nothing ; no unchecked ; digest sha384:22e2f3a4849f6b641017566c17a7dd1715953486462e270d1b7f0e0a697fd586e97a8e357580a44c59f6a57029e56ddb
+<standard>/wasm-discard.wy: nothing ; no unchecked ; digest sha384:6d061add8d8385896a93123e6729737ce5e91b563a9e58e28928f5e3ef419bc08fa1ba23b16c38e844f1bbd34319568d
+<standard>/wasm-result.wy: nothing ; no unchecked ; digest sha384:79a4b162a05bfb091520eae8b36710e5cd8053d3c8eb05349980b279f58c229ef4e7d53aadc9f440f45b7b7f75cadbb9
+<standard>/wasm-string.wy: Allocator ; no unchecked ; digest sha384:0fa2a84a8103651b211c214589865a6cd181ac681fc13a2e03765c1fd65f69f70827bc1c9b67bfbd304d0124dcacf4e5
+<standard>/wasm-text.wy: nothing ; no unchecked ; digest sha384:c33227af14e201a7f8b38ba13498a2aa5f715972ce9cfa37a31a6491590e2cdb10bd8bc5e869cb1ca43f0204329135ec
+<standard>/wasm-crypto.wy: Rand, TlsSigner ; no unchecked ; digest sha384:41b93a483331dd8776c3ecf2b0c49c24707fe0173390378e49f47aa6d7f73ff0563923cb6c21e6cc616cb7fda744d3e5
+<standard>/wasm-console.wy: nothing ; no unchecked ; digest sha384:9cf7c1f12a4259890baa0e60380b789af0ce75a7390d092f78068bb5959605e1eeb8ab6e49894aa15e9b081580d1595d
+<standard>/wasm-hashmap.wy: nothing ; no unchecked ; digest sha384:5f01ea1dd0d6c274b83f12f23e107cb5491d52a2c4be02b273e26ab775c8069b96a9dcb95d924d162a474a7c76c0f4fb
+<standard>/wasm-int.wy: nothing ; no unchecked ; digest sha384:d0626adff3485a27c1f6393dfae022195daa50a05beec28066d2ff83a56f30f67ec24e56cc2977d6abe3b3c1fcf928f6
+<standard>/wasm-simd.wy: nothing ; no unchecked ; digest sha384:2ec8e6250d54a0dda7289f497bc58719a7f915878f7e43358bb7c80d8682d4175f27f08ccdbdb7b7d57d7aa53b9146fb
+<standard>/wasm-span.wy: nothing ; no unchecked ; digest sha384:590236a5a9981f147176f40964602e11b14c6c7c246f257ee68f256d6209219bad66f8bd0be7872b9d00fd28cad56f7e
+<standard>/wasm-ops.wy: nothing ; no unchecked ; digest sha384:fdcf769bf5fa7f077ae961cd06f669302da52f8f2a43f57427f6ff6350fc0ff028915d22da51f8f7fbb16dcda912a4a5
+<standard>/wasm-sort.wy: nothing ; no unchecked ; digest sha384:64b458f4c10d1fdc557ca99fcb88d2e1db8eb881d0f76b781e47b010cc1eb56365c95afd8d2804072340dfe3e175dd81
+<standard>/wasm-time.wy: nothing ; no unchecked ; digest sha384:d2b03f9e6c0475c5ee5d3d8a014d3a66916e857a2eb4a97341fb035aff82b82b6c6c226c123dda7381413cc67bb3d717
+<standard>/wasm-tasks.wy: nothing ; no unchecked ; digest sha384:320d8159e4a136762e04a2fbb73cc5a0022fd0cb3207b33e5af9c7cd3e2f9b21f231d7cd3c7666a5f484a7d9239275b8
+<standard>/wasm-net.wy: Socket ; no unchecked ; digest sha384:9692c7bcf615ea09cf0ae90ec3bbf426d73567f262ff5c21ec7ee19fdc75c271417c9838711b49391f1d32156aecaa55
+<standard>/wasm-http-head.wy: nothing ; no unchecked ; digest sha384:46058ec29282f7abac48e299c196edf786e5d75e341a37be3dfdeae9ba3aee6e7c816678b7d4d77234650d9ed1cb2365
+<standard>/wasm-http.wy: Allocator ; no unchecked ; digest sha384:35059a17dc8efc8a72022cc4fefeb75df69449d8245c356037f33bd665774b9d016768dab4f3aebaf50f08a11861b92f
+ci/http_request.wy: nothing ; no unchecked ; digest sha384:aa9a4155f79a02d7cd28f5bbcc02a148a2a859fb7397ff8c514350412500369b28b35b255ce432b78f3e1c968153fdf7
+<standard>/wasm-fs.wy: Dir<Read>, File<Read> ; no unchecked ; digest sha384:00c0f78bd55b37fc4f98480640f7da28a834b6331252d67effb896b61cdd6db59ac4d6dc05903ec1f25130847a4daa2d
+mirror/identity.wy: Dir<Read> ; no unchecked ; digest sha384:830ce10177ae0c6c8715ad25712a72ba9045124237ff0ca6de87f13366287dab1d199d112f18dde071abf0a654a4a1a7
+<standard>/wasm-url.wy: nothing ; no unchecked ; digest sha384:0cb27d44b8061331171d13167ec1070f10406880a526dc8fca4291541e3665d9e4a04bfba5b93207ad1ff77f620f4db2
+tuf/origin.wy: nothing ; no unchecked ; digest sha384:7785a5fcf8283728fd902399175be81de42e5d92886f27864e71021f0ad4cc7af74e66001f24e49dd18c5ab9d451137c
+ci/https_origin.wy: Allocator, Dir<Read> ; no unchecked ; digest sha384:696854b98ffc9e73f507ed6fb7e679a5081f76abe6f750fd80d7d644af912db3590b354327db8554452d810ffbc5f237
+<standard>/wasm-tls-kdf.wy: nothing ; no unchecked ; digest sha384:28909f0e97991b8a30f24c0fafd9e7e4c6cbd9d02b792bcce1b32adaa73072bd5849030d6200322834c4468a6ade1583
+<standard>/wasm-tls-key-schedule.wy: nothing ; no unchecked ; digest sha384:3a55529ab7bebaaca80509e1cbc2461951b9728f790e5972dd8f29f5892fdb2cf95c3bec2823f8c0412b251187ea977e
+<standard>/wasm-tls-record.wy: Allocator ; no unchecked ; digest sha384:7eb5c13851c666d709f36dbc4acc5dd3792c1c993c4fa3a21fff0db28cac6c5acfbd4a2cd3c2d8dbab857e228811e4a7
+<standard>/wasm-tls-transport.wy: Socket ; no unchecked ; digest sha384:85b57735267f8488307b59ee8b252be4eba3f032e3cd0e800d18e733249ab52577ca868bde79b2d868085ee1df2a59f0
+<standard>/wasm-tls-hello.wy: nothing ; no unchecked ; digest sha384:e393b3cd2d081b560d42a8fbd4aa56a959ab242db48c307c2443fb6ca52d1d649a07a295aa41ab440538d4ef84d413b6
+<standard>/wasm-tls-extensions.wy: nothing ; no unchecked ; digest sha384:ee080cb961be6e3fcf2f2cb7f78c1b444fef7d1a53a7cb7654726939a60ea84c289e3e7f5442e35c500875b38a3077d9
+<standard>/wasm-tls-certificates.wy: Allocator ; no unchecked ; digest sha384:e708bfda48d3135d87cdf97c25b1d2bfb3cc2458fdfae4a5249a7871e66a5818dcf84f44526aff58e0f9abf445a589a1
+<standard>/wasm-tls-server-auth.wy: Allocator, Socket, TlsSigner ; no unchecked ; digest sha384:5a4b73cd44aeccee49a37957956800eeb07577b68efe68aa135bf8a06bb8931a5eaa31ace1a9142c39d7bf75aff2e7af
+<standard>/wasm-tls-p384.wy: Allocator, Rand ; no unchecked ; digest sha384:69f0bee043db7da293f5caa58369a7db2387e9ee8593895c8fdbe1f898d45e606868d1b44a6fdf2b94cd4affca9271d1
+<standard>/wasm-tls-client-hello.wy: nothing ; no unchecked ; digest sha384:308b47c5237b07c8d902889a5284e90ead992778d1e09567a2e8e7c3b9146d7808fbe9c5b618d3f37a75aa46ef5cda46
+<standard>/wasm-tls-client-exchange.wy: nothing ; no unchecked ; digest sha384:71b5a2168de4b6861b8d1f164e06895a739a142a40c97e8b6325604d5292bbaa022a7f7e4896fee46a53498e0d3fbc34
+<standard>/wasm-tls-client-flight.wy: nothing ; no unchecked ; digest sha384:16c6c4bdf5511fc7f090f11e2a35d36221cf5aae848edcf38361304b3605eec5d355f61cd0c36d13004b4fb3de239e45
+<standard>/wasm-tls-client-auth.wy: nothing ; no unchecked ; digest sha384:1c3d02940f61bee08690f8b3dfffaca1aebc7bb46b9641d0e000af014f65bdd969d07cdd60d2c3fe687db2417a3beeb6
+<standard>/wasm-key-agreement.wy: nothing ; no unchecked ; digest sha384:18cdf96161c1459f52d5fdddc5c25cea78ce6bfc862df1a98afd8f801abe520c6fd60fc2d3ada53ef2991367fbbacbd3
+<standard>/wasm-certificates.wy: nothing ; no unchecked ; digest sha384:64d117b8c40d38ff0f7f1c2b68c5d59a0faa916332eb0b8bc76a47d46ab29e14319b7b42c95cbbbf1adbba2332f67e40
+<standard>/wasm-tls.wy: Allocator, Rand, Socket, TlsSigner ; no unchecked ; digest sha384:80c835cf9d5438b648be5b366f7adac37f992e5463bd17ebbff51725643cf619c2a1acb1f225a6ca891dab65d2835caa
+ci/https_response.wy: Allocator, Socket ; no unchecked ; digest sha384:9946f7a2199985bb840c83173577db9fac6ccbf1b593bcdec8c2206d94e906c2e65a32f7ea002da41ec9fb108412d1e5
+ci/https_stream.wy: Socket ; no unchecked ; digest sha384:91766e5d4e76cbd56a556c604d56df87e5b2c2fb6576261a5a466f6ce2c7f95b6801699aece209fc7020e221dc663506
+<standard>/wasm-local-service.wy: LocalService ; no unchecked ; digest sha384:5e6effafa0788f682524da2d7da23e256bd6a50cc826fb8cf0a4d06546185bd541823374f1d1208fb3eab353fe87220d
+ci/https_transaction.wy: Allocator, LocalService, Socket ; no unchecked ; digest sha384:e56d765243013d2ff4f0fea7293ff4e36963954cbb6cc211f9afdf6e19bd3c248491667104732bc9fdab8133d3ad50e7
+<standard>/wasm-tls-server-socket.wy: Allocator, Rand, Socket, TlsSigner ; no unchecked ; digest sha384:42216e13c2cfadd813f5decca2cb8c2ea44603158c44efa18020c84ae82490fe50e69ff58ff72979e3d78fee4377531a
+ci_https.wy: Allocator, Dir<Read>, LocalService, Rand, Socket, TlsSigner ; no unchecked ; digest sha384:933929a2a63d5decfeec90def2869d5a2fef229fea1686e5d16e05cdac27c745e445be49c85bc95cccb5b1b5dc15cf90
+<standard>/wasm-http-framing.wy: nothing ; no unchecked ; digest sha384:d37e65e755ae23eb18f50d5af1bf1e124b5b23c8f55f58960fcae1cc50be59a54aa713cabe1ca2188616b11fe5c1782e
+<standard>/wasm-https.wy: Allocator, Socket ; no unchecked ; digest sha384:1386568ee93420f37c1eeadfd7140af16a4068f0e8fb74e90424d20a637554714afb26fd4277308afe9ec5865ffb30b6
+https_reply.wy: Allocator, Socket ; no unchecked ; digest sha384:f3081d76840b6c03760eca7ef30ddeaf167695be55287ac436267f72a1c692fb977725476ab098106cd3e9559c4e4d58
+response_fields.wy: Allocator ; no unchecked ; digest sha384:82f8165c6d6802a41cf9882292912200aabdf63c73038f152b8320ac25a4e627d937d27b58a4327f3aecce93067ca14c

@@ -1,0 +1,29 @@
+// Refused: an arm is given only its own variant's facts.
+import console
+
+fn half(n: U64) -> Result<U64, U64>:
+    ensures match result:
+        Ok(h):
+            h + h == n
+        Err(code):
+            code == n
+    proof:
+        auto
+    if n % 2 == 1:
+        return Err(n)
+    return Ok(n / 2)
+
+// Uses the callee's `Ok` fact: `n - h` cannot go below zero, since `h + h == n`.
+fn rest(n: U64) -> U64:
+    ensures true
+    proof:
+        auto
+    match half(n):
+        Ok(h):
+            return h - n
+        Err(code):
+            return 0
+
+fn main(console: Console<Write>):
+    console.print_int(rest(10))
+    console.print_int(rest(7))

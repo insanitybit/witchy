@@ -1,0 +1,6 @@
+// Refused: the compiler's escape for `@`, spelled out.
+import console
+import "@alpha"
+
+fn main(console: Console<Write>):
+    console.write_format("${alpha_internal__witchy_at__8(1)}\n")

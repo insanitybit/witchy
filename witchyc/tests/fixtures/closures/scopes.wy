@@ -1,0 +1,17 @@
+// What a closure may capture is what is in scope where it is made: a counted loop's
+// counter (a U64), and not a name a finished block bound.
+import console
+
+fn apply(f: fn(U64) -> U64, x: U64) -> U64:
+    return f(x)
+
+fn main(console: Console<Write>):
+    var total: U64 = 0
+    for i in 0..4:
+        total += apply(fn(n: U64) -> U64: n * i, 10)
+    console.print_int(total)
+    if total > 5:
+        let step: U64 = 1000
+        console.print_int(apply(fn(n: U64) -> U64: n + step, 1))
+    let step: U64 = 2
+    console.print_int(apply(fn(n: U64) -> U64: n + step, 1))

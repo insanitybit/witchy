@@ -1,0 +1,10 @@
+import console
+
+fn half(x: U64) -> U64:
+    requires x < 100
+    proof:
+        auto
+    return x / 2
+
+fn main(console: Console<Write>):
+    console.print_int(half(8))

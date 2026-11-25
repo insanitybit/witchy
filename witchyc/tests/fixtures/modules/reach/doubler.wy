@@ -1,0 +1,6 @@
+// Calls `twice` on a Coin without importing the file that implements `Twice` for it.
+import "coin.wy"
+import "twice.wy"
+
+pub fn doubled(c: &Coin) -> U64:
+    return c.twice()

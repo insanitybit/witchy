@@ -1,0 +1,40 @@
+// Check the archived staging schema or clear pending challenges on its private copy.
+import console
+import "@sqlite"
+import string
+
+fn main(db: Sqlite, input: Console<Read>, output: Console<Write>, allocator: Allocator):
+    let mode = input.next_byte()
+    if input.next_byte() != 256 || (mode != U8.to_u64('C') && mode != U8.to_u64('R')):
+        output.line("recovery database refused")
+        return
+    if let Err(code) = recover(&db, mode == U8.to_u64('R'), &allocator):
+        output.line("recovery database refused")
+    else:
+        output.line("recovery database ready")
+
+fn recover(db: &Sqlite, clear: Bool, allocator: &Allocator) -> Result<(), U64>:
+    let empty = String.with_capacity(allocator, 1024)?
+    var plan = move empty
+    let prepared = statements(&mut plan, clear, allocator)
+    let checked = transact(db, &plan, prepared)
+    plan.close()
+    return checked
+
+fn transact(db: &Sqlite, plan: &String, prepared: Result<(), U64>) -> Result<(), U64>:
+    prepared?
+    let bytes = plan.as_bytes()
+    let empty = bytes.part(0, 0)
+    var reply: [U8; 64] = [0; 64]
+    let size = db.transact(bytes, empty, empty, reply.slice_mut())?
+    if size != 3 || reply[0] != 0 || reply[1] != 'o' || reply[2] != 'k':
+        return Err(1)
+    return Ok(())
+
+fn statements(plan: &mut String, clear: Bool, allocator: &Allocator) -> Result<(), U64>:
+    // Resolve the six core tables and their columns without returning any stored data.
+    plan.push_text(allocator, "expect\tstaging schema missing\tSELECT NOT EXISTS(SELECT digest,name,version,payload FROM candidates WHERE 0) AND NOT EXISTS(SELECT singleton,document FROM policy WHERE 0) AND NOT EXISTS(SELECT challenge,policy,expires,envelope FROM challenges WHERE 0) AND NOT EXISTS(SELECT challenge,credential FROM browser_approvals WHERE 0) AND NOT EXISTS(SELECT credential,public_key,count FROM counters WHERE 0) AND NOT EXISTS(SELECT name,version,digest,receipt FROM approvals WHERE 0)\n")?
+    if clear:
+        plan.push_text(allocator, "exec\t\tDELETE FROM browser_approvals\n")?
+        plan.push_text(allocator, "exec\t\tDELETE FROM challenges\n")?
+    return plan.push_text(allocator, "result\tstaging schema missing\tSELECT CAST('ok' AS BLOB)\n")

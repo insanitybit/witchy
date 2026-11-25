@@ -1,0 +1,11 @@
+// Refused: a clause that names the Span. The proof has no value for it to speak of.
+import console
+import span
+import string
+
+fn length(text: Span) -> U64:
+    ensures result == text.len()
+    return text.len()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    console.print_int(1)

@@ -1,0 +1,20 @@
+// Refused: what a returned `&mut` was lent from is unknown after the call, so the proof
+// does not see that `pair.a` is 5 (conservative: the claim is true).
+type Pair:
+    a: U64
+    b: U64
+
+fn first(pair: &mut Pair) -> &mut U64:
+    return &mut (*pair).a
+
+fn fixed(pair: &mut Pair) -> U64:
+    ensures result == 5
+    proof:
+        auto
+    let r = first(pair)
+    *r = 5
+    return (*pair).a
+
+fn main(console: Console<Write>):
+    var pair = Pair(1, 2)
+    console.print_int(fixed(&mut pair))

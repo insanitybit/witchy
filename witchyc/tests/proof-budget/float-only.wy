@@ -1,0 +1,5 @@
+import console
+import float
+
+fn main(console: Console<Write>):
+    console.print_int(1)

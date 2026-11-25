@@ -1,0 +1,52 @@
+// An event log: records holding a derived sum type, sorted by (level, time) with the library's
+// sort, then counted per level with `==`.
+import console
+import vec
+import sort
+import hash
+
+type Level derive(Eq, Hash, Before):
+    Error
+    Warning(U64)
+    Info
+
+type Event derive(Eq, Before):
+    level: Level
+    time: U64
+
+fn level_name(level: &Level) -> U64:
+    match level:
+        Error:
+            return 0
+        Warning(code):
+            return 100 + *code
+        Info:
+            return 2
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<Event> = Vec.new(&allocator, 8) else Err(code):
+        return
+    var log = move made
+    var seed: U64 = 11
+    for i in 0..12:
+        seed = seed * 48271 % 2147483647
+        var level = Info
+        if seed % 3 == 0:
+            level = Error
+        else if seed % 3 == 1:
+            level = Warning(seed % 2)
+        let pushed = log.push_mut(&allocator, Event(level, seed % 1000))
+    sort(&mut log)
+    var previous = Info
+    var first = true
+    var count: U64 = 0
+    for event in &log:
+        if !first && (*event).level != previous:
+            console.print("level ${level_name(&previous)}: ${count}")
+            count = 0
+        previous = (*event).level
+        first = false
+        count += 1
+        console.print("  ${level_name(&(*event).level)} at ${(*event).time}")
+    console.print("level ${level_name(&previous)}: ${count}")
+    log.close()

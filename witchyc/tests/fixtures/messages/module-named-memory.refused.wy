@@ -1,0 +1,7 @@
+// A file named `memory.wy` would be the module `memory`, and `memory.try_alloc` in the
+// library's files would then mean it: refused at the import.
+import console
+import "parts-memory/memory.wy"
+
+fn main(console: Console<Write>):
+    console.print_int(1)

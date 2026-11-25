@@ -1,0 +1,5 @@
+// Refused: a shared slice is not written.
+fn main():
+    let a: [U8; 8] = [1; 8]
+    let b: [U8; 8] = [2; 8]
+    a.slice().copy_from(b.slice())

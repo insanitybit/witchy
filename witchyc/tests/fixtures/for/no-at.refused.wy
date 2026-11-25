@@ -1,0 +1,11 @@
+// A record is not an array and has no `at`.
+import "../../../library/wasm-console.wy"
+
+type Point:
+    x: U64
+    y: U64
+
+fn main(console: Console<Write>):
+    let point = Point(1, 2)
+    for part in point:
+        console.print_int(1)

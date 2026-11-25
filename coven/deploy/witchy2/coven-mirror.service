@@ -1,0 +1,28 @@
+[Unit]
+Description=Coven read-only Witchy HTTPS mirror
+
+[Service]
+Type=notify
+NotifyAccess=main
+TimeoutStartSec=20s
+User=coven-mirror
+Group=coven-mirror
+Environment=WITCHY_WASMTIME_HOST=/opt/coven/bin/witchy-wasmtime-host
+EnvironmentFile=/etc/coven/mirror.env
+ExecStart=/opt/coven/bin/coven tuf serve --mirror /srv/coven/published --tls-key /etc/coven/keys/mirror.der --module /opt/coven/libexec/coven-mirror.wasm --module-pin ${COVEN_MIRROR_MODULE_PIN} --tls-ca-file /etc/coven/mirror-ca.pem --tls-ca-pin=${COVEN_MIRROR_TLS_CA_PIN} --tls-check-module /opt/coven/libexec/coven-mirror-tls-check.wasm --tls-check-pin ${COVEN_MIRROR_TLS_CHECK_PIN}
+Restart=on-failure
+RestartSec=2s
+TimeoutStopSec=5s
+SuccessExitStatus=143
+PrivateNetwork=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

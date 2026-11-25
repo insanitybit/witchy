@@ -1,0 +1,100 @@
+// The same through a library helper, on a type whose invariant reads storage through a method
+// (as the list's does): `Option.take` empties the field, the mark is repaired, and the field is
+// filled again by assignment or by `Option.replace`. Each return shows the invariant.
+import cell
+import option
+
+// The mark points at the cell exactly while one is held: the invariant reads the cell through a
+// method, so it is one over a view of the storage.
+sealed type Holder<T>:
+    mark: Weak<T>
+    held: Option<OccupiedCell<T>>
+    invariant when Some(cell) = held:
+        same_target(mark, cell.pointer())
+    invariant when None = held:
+        !has_address(mark)
+
+
+impl<T: Any> Holder<T>:
+    nopanic fn new() -> Holder<T>:
+        ensures when Some = result.held:
+            false
+        let nil: Weak<T> = memory.null_weak()
+        return Holder(nil, None)
+
+    // Take the cell out; the mark must go with it.
+    nopanic fn pull(holder: &mut Holder<T>) -> Option<OccupiedCell<T>>:
+        let cell = (*holder).held.take()
+        (*holder).mark = memory.null_weak()
+        return move cell
+
+    // Put a cell in and hand back the one that was there, if any.
+    nopanic fn put(holder: &mut Holder<T>, cell: OccupiedCell<T>) -> Option<OccupiedCell<T>>:
+        let old = (*holder).held.take()
+        (*holder).mark = cell.pointer()
+        (*holder).held = Some(move cell)
+        return move old
+
+    // The same with `replace`: nothing is assigned over the field.
+    nopanic fn swap(holder: &mut Holder<T>, cell: OccupiedCell<T>) -> Option<OccupiedCell<T>>:
+        (*holder).mark = cell.pointer()
+        let old = Option.replace(&mut (*holder).held, Some(move cell))
+        return move old
+
+    nopanic fn close(holder: Holder<T>) -> Option<OccupiedCell<T>>:
+        let Holder(mark, held) = move holder
+        return move held
+
+    nopanic fn peek(holder: &Holder<T>) -> Option<&T>:
+        match &(*holder).held:
+            None:
+                return None
+            Some(cell):
+                return Some(memory.follow_loan(cell.read(), (*holder).mark))
+
+nopanic fn finish(out: &Console<Write>, cell: Option<OccupiedCell<U64>>):
+    match move cell:
+        None:
+            out.print_int(0)
+        Some(full):
+            let TakenCell(vacant, value) = full.extract()
+            vacant.close()
+            out.print_int(value)
+
+nopanic fn seen(out: &Console<Write>, holder: &Holder<U64>):
+    match holder.peek():
+        None:
+            out.print_int(0)
+        Some(value):
+            out.print_int(*value)
+
+nopanic fn main(a: Allocator, out: Console<Write>):
+    var holder: Holder<U64> = Holder.new()
+    let first: Result<VacantCell<U64>, U64> = VacantCell.new(&a)
+    match move first:
+        Err(code):
+            finish(&out, holder.pull())
+            finish(&out, holder.close())
+        Ok(one):
+            finish(&out, holder.put(one.fill(11)))
+            seen(&out, &holder)
+            let second: Result<VacantCell<U64>, U64> = VacantCell.new(&a)
+            match move second:
+                Err(code):
+                    finish(&out, holder.pull())
+                    finish(&out, holder.close())
+                Ok(two):
+                    finish(&out, holder.put(two.fill(22)))
+                    seen(&out, &holder)
+                    let third: Result<VacantCell<U64>, U64> = VacantCell.new(&a)
+                    match move third:
+                        Err(code):
+                            finish(&out, holder.pull())
+                            finish(&out, holder.close())
+                        Ok(three):
+                            finish(&out, holder.swap(three.fill(33)))
+                            seen(&out, &holder)
+                            finish(&out, holder.pull())
+                            seen(&out, &holder)
+                            finish(&out, holder.pull())
+                            finish(&out, holder.close())

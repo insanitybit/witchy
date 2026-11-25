@@ -1,0 +1,40 @@
+// At one-eighth load, update every resident, probe disjoint keys, then drain.
+import console
+import hashmap
+import discard
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(table): HashMap<U64, U64> = HashMap.new(&allocator, 262144) else Err(code):
+        return
+    var map = move table
+    for i in 0..32768:
+        let key = i * 48271
+        match map.insert(key, i):
+            Ok:
+                continue
+            Err(back):
+                unreachable
+    for round in 0..16:
+        for i in 0..32768:
+            let key = i * 48271
+            match map.get_mut(&key):
+                Ok(value):
+                    *value += 1
+                Err(missing):
+                    unreachable
+    for round in 0..16:
+        for i in 0..32768:
+            let absent = (i + 32768 + round) * 48271
+            if let Ok(found) = map.get(&absent):
+                unreachable
+    var checksum: U64 = 0
+    for i in 0..32768:
+        let key = i * 48271
+        match map.remove(&key):
+            Ok(entry):
+                checksum += entry.value
+            Err(missing):
+                unreachable
+    console.print_int(checksum)
+    console.print_int(map.len())
+    map.discard()

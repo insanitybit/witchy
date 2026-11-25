@@ -1,0 +1,6 @@
+// Refused: the Exec a Command holds is the library's: no other file takes it out.
+import exec
+
+fn main(exec: Exec):
+    let command = exec.command("answer")
+    let taken = move command.narrowed

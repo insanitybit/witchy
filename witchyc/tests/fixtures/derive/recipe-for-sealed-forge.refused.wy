@@ -1,0 +1,16 @@
+// Refused: a derive's `For` naming the recipe module's sealed `Token`. The recipe writes
+// `For(v: ...)`; `For` is the deriving file's word, so it is judged there, where `Token` is
+// sealed (review of definition-site resolution: the user minted a Token of their choosing).
+import "parts/forge.wy"
+import console
+
+type Mine:
+    v: U64
+
+type T derive(forge.Mk(for: forge.Token)):
+    a: U64
+
+fn main(console: Console<Write>):
+    let t = T(a: 999)
+    let tok: forge.Token = t.made()
+    console.print("${forge.redeem(&tok)}")

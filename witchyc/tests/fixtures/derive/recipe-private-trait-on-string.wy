@@ -1,0 +1,16 @@
+// A recipe calls its own file's private trait method on a library String field: the library
+// guards String, not the recipe's file, so nothing is narrowed (review round 7: refused, 112 before).
+import "parts/rs.wy"
+import console
+import string
+
+type T derive(rs.ByMethod):
+    s: String
+    n: U64
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(e):
+        return
+    var x = T(s: move made, n: 2)
+    console.print("${x.size()}")
+    x.s.close()

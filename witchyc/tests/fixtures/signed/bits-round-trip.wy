@@ -1,0 +1,16 @@
+// `I64.from_bits(I64.bits(x))` is x.
+import console
+import int
+
+fn f(x: I64) -> U64:
+    ensures result == 7
+    proof:
+        auto
+    let y = I64.from_bits(I64.bits(x))
+    if y == x:
+        return 7
+    return 8
+
+fn main(console: Console<Write>):
+    let a: I64 = -1
+    console.print_int(f(a))

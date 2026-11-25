@@ -1,0 +1,36 @@
+import http
+import span
+import string
+
+pub fn get_headers(authority: Span, path: &String, allocator: &Allocator) -> Result<String, U64>:
+    if !valid_path(path.span()):
+        return Err(1)
+    let Ok(empty): RequestHeaders = http.request_headers(allocator) else Err(reason):
+        return Err(1)
+    var headers = move empty
+    let identity: &str = "identity"
+    let added = headers.add(allocator, "Accept-Encoding", Span.of(identity.as_bytes()))
+    if let Err(reason) = added:
+        headers.close()
+        return Err(1)
+    let result = http.request_head(allocator, GetRequest, authority, path.span(), &headers)
+    headers.close()
+    let Ok(head): String = move result else Err(reason):
+        return Err(1)
+    return Ok(move head)
+
+fn valid_path(path: Span) -> Bool:
+    if path.len() > 512 || !(path.starts_with_text("/metadata/") || path.starts_with_text("/targets/")):
+        return false
+    var segment: U64 = 0
+    for byte in path.part(1, path.len()).as_bytes():
+        if *byte == '/':
+            if segment == 0:
+                return false
+            segment = 0
+        else:
+            let name = (*byte >= 'a' && *byte <= 'z') || (*byte >= '0' && *byte <= '9') || *byte == '-'
+            if !name && (*byte != '.' || segment == 0):
+                return false
+            segment += 1
+    return segment > 0

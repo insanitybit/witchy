@@ -1,0 +1,9 @@
+// `\$` is a `$` that starts no `${...}`; `\0` is the byte 0.
+import console
+
+fn main(console: Console<Write>):
+    let price: U64 = 5
+    console.print("costs \${price}")
+    console.print("costs \$${price}")
+    console.print("plain \$")
+    console.print_int("a\0b".byte_len())

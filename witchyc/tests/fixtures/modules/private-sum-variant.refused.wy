@@ -1,0 +1,7 @@
+// Refused: a sum declared without `pub` is built only in its own file, as a private record is.
+import console
+import "parts/quiet.wy"
+
+fn main(console: Console<Write>):
+    let quiet = Loud(3)
+    console.line("never")

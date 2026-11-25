@@ -1,0 +1,9 @@
+// The raw operations are open to any program, and the host checks every handle. Reading
+// from a file whose open failed, without asking its status, stops the run.
+import fs
+
+fn main(dir: Dir<Read>):
+    dir.raw_path_byte(120)
+    let file = dir.raw_open_file()
+    let byte = file.raw_read_byte()
+    file.close()

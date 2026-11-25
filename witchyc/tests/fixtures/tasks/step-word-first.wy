@@ -1,0 +1,43 @@
+// The word a step hands in is worked out before the task to step is read from its place:
+// here working it out swaps the two tasks, and the step runs the one the place holds then
+// (review round 28: it ran the one it held before, which could have been closed).
+import console
+import tasks
+
+fn work(n: U64) suspends:
+    let w = memory.pause(n)
+    report(w)
+
+fn evil(a: &mut Task, b: &mut Task) -> U64:
+    memory.exchange(a, b)
+    return 9
+
+fn run_out(task: Task) -> U64:
+    var t = move task
+    var count: U64 = 0
+    var going = true
+    while going:
+        match t.step():
+            Ok:
+                going = false
+            Err(token):
+                count = count * 1000 + token
+    t.close()
+    return count
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(one): Task = Task.spawn(&allocator, 4096, work, 1) else Err(back):
+        return
+    let Ok(two): Task = Task.spawn(&allocator, 4096, work, 2) else Err(back):
+        console.print_int(run_out(move one))
+        return
+    var t1 = move one
+    var t2 = move two
+    let r = memory.step(&mut t1, evil(&mut t1, &mut t2))
+    match r:
+        Ok:
+            console.line("finished")
+        Err(token):
+            console.print_int(token)
+    console.print_int(run_out(move t1))
+    console.print_int(run_out(move t2))

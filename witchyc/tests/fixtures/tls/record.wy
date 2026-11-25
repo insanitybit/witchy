@@ -1,0 +1,52 @@
+import console
+import tls_key_schedule
+import tls_record
+
+fn exercise(reader: &mut ReadEpoch, writer: &mut WriteEpoch) -> Result<Bool, RecordError>:
+    let content: [U8; 1] = [42]
+    var first: [U8; 23] = [0; 23]
+    var second: [U8; 23] = [0; 23]
+    var scratch: [U8; 2] = [0; 2]
+    let first_len = writer.seal(ApplicationData, content.slice(), scratch.slice_mut(), first.slice_mut())?
+    let second_len = writer.seal(ApplicationData, content.slice(), scratch.slice_mut(), second.slice_mut())?
+    if first_len != 23 || second_len != 23:
+        return Ok(false)
+    var identical = true
+    for i in 0..23:
+        identical = identical && first[i] == second[i]
+    if identical:
+        return Ok(false)
+    let first_info = reader.open(first.slice(), scratch.slice_mut())?
+    if first_info.length != 1 || scratch[0] != 42:
+        return Ok(false)
+    let second_info = reader.open(second.slice(), scratch.slice_mut())?
+    if second_info.length != 1 || scratch[0] != 42:
+        return Ok(false)
+    scratch[0] = 165
+    if let Err(FailedAuthentication) = reader.open(first.slice(), scratch.slice_mut()):
+        if let Err(ClosedEpoch) = reader.open(second.slice(), scratch.slice_mut()):
+            return Ok(scratch[0] == 165)
+    return Ok(false)
+
+fn main(output: Console<Write>, allocator: Allocator):
+    // Synthetic key material for this deterministic record test only.
+    let shared: [U8; 48] = [1; 48]
+    let hash: [U8; 48] = [2; 48]
+    let Ok(handshake) = tls_key_schedule.start384(&shared, &hash) else Err(_):
+        return
+    let Ok(left) = handshake.keys(Client) else Err(_):
+        return
+    let Ok(right) = handshake.keys(Client) else Err(_):
+        return
+    let Ok(reader) = tls_record.reader(&allocator, move left) else Err(_):
+        return
+    var read_epoch = move reader
+    let Ok(writer) = tls_record.writer(&allocator, move right) else Err(_):
+        read_epoch.close()
+        return
+    var write_epoch = move writer
+    if let Ok(checked) = exercise(&mut read_epoch, &mut write_epoch):
+        if checked:
+            output.line("record sequence and replay refusal matched")
+    read_epoch.close()
+    write_epoch.close()

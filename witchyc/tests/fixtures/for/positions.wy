@@ -1,0 +1,36 @@
+// `for index, item in container:` names each element's position as well.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-vec.wy"
+
+fn last_at_least(values: &Vec<U64>, floor: U64) -> U64:
+    var found: U64 = 0
+    for index, value in values:
+        if *value >= floor:
+            found = index
+    return found
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let triple: [U64; 3] = [10, 20, 30]
+    var weighted: U64 = 0
+    for index, item in &triple:
+        weighted += index * *item
+    console.print_int(weighted)
+    var numbers: Vec<U64> = match Vec.new(&allocator, 4):
+        Ok(made):
+            move made
+        Err(reason):
+            return
+    for step in 0..5:
+        let _ = numbers.push_mut(&allocator, step * step)
+    console.print_int(last_at_least(&numbers, 4))
+    for index, slot in &mut numbers:
+        if index == 2:
+            continue
+        *slot = *slot + index
+    for index, value in &numbers:
+        console.write_u64(index)
+        console.write(":")
+        console.write_u64(*value)
+        console.write(" ")
+    console.line("")
+    numbers.close()

@@ -1,0 +1,23 @@
+// Tuples: (a, b) values and types, let (a, b) =, t.0, in arrays and as results.
+import console
+
+fn divide(n: U64, d: U64) -> (U64, U64):
+    (n / d, n % d)
+
+fn swap(pair: (U64, Bool)) -> (Bool, U64):
+    let (n, flag) = pair
+    (flag, n)
+
+fn main(console: Console<Write>):
+    let (q, r) = divide(17, 5)
+    console.print_int(q)
+    console.print_int(r)
+    let t = divide(9, 2)
+    console.print_int(t.0 * 10 + t.1)
+    let s = swap((7, true))
+    if s.0:
+        console.print_int(s.1)
+    var pairs: [(U64, U64); 2] = [(1, 2), (3, 4)]
+    pairs[1] = (5, 6)
+    let (a, _) = pairs[1]
+    console.print_int(a)

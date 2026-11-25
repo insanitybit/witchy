@@ -1,0 +1,21 @@
+type Slot<T>:
+    data: Buffer<T>
+
+nopanic fn finish<T: Any>(slot: Slot<T>):
+    requires memory.prefix(slot.data, 0, 1)
+    ensures memory.released(old(slot.data))
+    proof:
+        auto
+    match memory.try_release(move slot.data):
+        Ok:
+            unreachable
+        Err(back):
+            unreachable
+
+nopanic fn main(a: Allocator):
+    let storage: Result<Buffer<U64>, U64> = memory.try_alloc(&a, 1)
+    match move storage:
+        Ok(buffer):
+            finish(Slot(move buffer))
+        Err(code):
+            return

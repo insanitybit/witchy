@@ -1,0 +1,8 @@
+// A sum past the greatest I64 traps.
+import "../../../library/wasm-int.wy"
+
+fn work(a: I64, b: I64) -> I64:
+    return a + b
+
+fn main(console: Console<Write>):
+    console.print_i64(work(9223372036854775807, 1))

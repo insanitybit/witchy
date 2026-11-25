@@ -1,0 +1,31 @@
+// Refused (review): a range fill with no proof.
+// No contract: fill compiles; the helper still checks the run at run time.
+fn f(cells: &mut Buffer<U64>, n: U64):
+    memory.fill_unchecked(cells, n, 7)
+
+fn finish(cells: Buffer<U64>):
+    match memory.try_release(move cells):
+        Ok:
+            return
+        Err(stuck):
+            finish(move stuck)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<Buffer<U64>, U64> = memory.try_alloc(&allocator, 4)
+    match move made:
+        Ok(buffer):
+            var cells = move buffer
+            f(&mut cells, 2)
+            match memory.take(&mut cells, 1):
+                Ok(x):
+                    console.print_int(x)
+                Err(c):
+                    console.print_int(c)
+            match memory.take(&mut cells, 0):
+                Ok(x):
+                    console.print_int(x)
+                Err(c):
+                    console.print_int(c)
+            finish(move cells)
+        Err(code):
+            console.print_int(code)

@@ -1,0 +1,18 @@
+// 2^64 - 3 read as an I64 is -3.
+import console
+import int
+
+fn f(x: I64) -> U64:
+    requires x == -1
+    ensures result == 3
+    proof:
+        auto
+    let n: U64 = 18446744073709551613
+    let y = I64.from_bits(n)
+    if y == -3:
+        return 3
+    return 4
+
+fn main(console: Console<Write>):
+    let a: I64 = -1
+    console.print_int(f(a))

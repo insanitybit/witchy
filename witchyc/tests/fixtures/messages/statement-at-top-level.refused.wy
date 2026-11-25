@@ -1,0 +1,7 @@
+// Refused, saying the line reads as a statement and belongs indented inside a function: it listed
+// the declaration keywords only (265 of 4,000 mutants: a line that lost its indent).
+import console
+
+fn main(console: Console<Write>):
+    console.line("a")
+console.line("b")

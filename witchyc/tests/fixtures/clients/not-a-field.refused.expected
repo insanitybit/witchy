@@ -1,0 +1,1 @@
+function contracts clause may call only a method that returns a field of its receiver

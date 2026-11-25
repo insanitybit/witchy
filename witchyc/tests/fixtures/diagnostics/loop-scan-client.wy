@@ -1,0 +1,20 @@
+// Calls `scan` on the vector (73, 74) through the public Vec API, then prints
+// its length. Expected output with the checked-read library: one line, `2`.
+fn main(console: Console<Write>):
+    let created: Result<Vec<U64>, AllocError> = vec_new(2)
+    match created:
+        Ok(empty):
+            match vec_push_spare(move empty, 73):
+                Ok(first):
+                    match vec_push_spare(move first, 74):
+                        Ok(second):
+                            let scanned = scan(move second)
+                            let measured = vec_len(move scanned)
+                            console.print_int(measured.length)
+                            discard(move measured.vector)
+                        Err(failed):
+                            discard(move failed)
+                Err(failed):
+                    discard(move failed)
+        Err(reason):
+            console.print_int(902)

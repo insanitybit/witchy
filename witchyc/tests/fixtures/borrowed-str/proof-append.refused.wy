@@ -1,0 +1,11 @@
+fn append(target: &mut Buffer<U8>, used: U64, input: &[U8]):
+    requires used + input.len() <= memory.capacity(target)
+    requires memory.empty_range(target, used, used + input.len())
+    requires memory.utf8(target, 0, used)
+    ensures memory.utf8(target, 0, used + input.len())
+    proof:
+        auto
+    memory.init_slice_unchecked(target, used, input)
+
+fn main():
+    return

@@ -1,0 +1,12 @@
+pub sealed type Token:
+    v: U64
+
+pub fn redeem(t: &Token) -> U64:
+    return t.v
+
+trait Z:
+    fn z(self: &Self) -> Token
+
+impl<T> Z for T:
+    fn z(self: &T) -> Token:
+        return Token(v: 777)

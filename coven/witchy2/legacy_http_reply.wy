@@ -1,0 +1,114 @@
+// Write one compatibility reply to the connection given as standard output.
+import "response_fields.wy"
+import args
+import console
+import fs
+import http
+import span
+import string
+import vec
+
+fn main(output: Console<Write>, arguments: Args, body: File<Read>, allocator: Allocator):
+    if arguments.count() == 4:
+        let sent = reply(&output, &arguments, &body, &allocator)
+    body.close()
+
+fn number(arguments: &Args, index: U64, allocator: &Allocator) -> Result<U64, U64>:
+    let Ok(word): String = arguments.get(allocator, index) else Err(reason):
+        return Err(1)
+    let result = word.span().parse_u64()
+    word.close()
+    return result
+
+fn media_type(media: Span) -> Result<Text, U64>:
+    if media.equals_text("application/json"):
+        return Ok("application/json")
+    if media.equals_text("text/plain"):
+        return Ok("text/plain")
+    if media.equals_text("text/html; charset=utf-8"):
+        return Ok("text/html; charset=utf-8")
+    if media.equals_text("text/css; charset=utf-8"):
+        return Ok("text/css; charset=utf-8")
+    if media.equals_text("text/javascript; charset=utf-8"):
+        return Ok("text/javascript; charset=utf-8")
+    if media.equals_text("application/wasm"):
+        return Ok("application/wasm")
+    return Err(1)
+
+fn content_type(arguments: &Args, allocator: &Allocator) -> Result<Text, U64>:
+    let Ok(word): String = arguments.get(allocator, 2) else Err(reason):
+        return Err(1)
+    let result = media_type(word.span())
+    word.close()
+    return result
+
+fn reply(output: &Console<Write>, arguments: &Args, body: &File<Read>, allocator: &Allocator) -> Result<(), U64>:
+    let status = number(arguments, 0, allocator)?
+    let length = number(arguments, 1, allocator)?
+    let media = content_type(arguments, allocator)?
+    if length > 16777216:
+        return Err(1)
+    let Ok(policy): String = arguments.get(allocator, 3) else Err(reason):
+        return Err(1)
+    let head = build_head(status, media, length, policy.span(), allocator)
+    policy.close()
+    let Ok(wire): String = move head else Err(reason):
+        return Err(reason)
+    let scratch: Result<Vec<U8>, U64> = Vec.filled(allocator, 4096, 0)
+    let Ok(initial): Vec<U8> = move scratch else Err(reason):
+        wire.close()
+        return Err(reason)
+    var buffer = move initial
+    output.write_string(&wire)
+    wire.close()
+    let sent = send_body(output, body, length, &mut buffer)
+    buffer.close()
+    return sent
+
+fn build_head(status: U64, media: Text, length: U64, policy: Span, allocator: &Allocator) -> Result<String, U64>:
+    let Ok(initial): ResponseHeaders = http.response_headers(allocator) else Err(reason):
+        return Err(1)
+    var fields = move initial
+    let result = response_head(&mut fields, status, media, length, policy, allocator)
+    fields.close()
+    return move result
+
+fn response_head(fields: &mut ResponseHeaders, status: U64, media: Text, length: U64, policy: Span, allocator: &Allocator) -> Result<String, U64>:
+    if !policy.is_empty():
+        let empty = String.with_capacity(allocator, 128)?
+        var scratch = move empty
+        let added = add_web_fields(fields, &mut scratch, policy, allocator)
+        scratch.close()
+        added?
+    let Ok(head): String = http.response_head_for_version(allocator, ResponseHttp10, status, media, length, fields) else Err(reason):
+        return Err(1)
+    return Ok(move head)
+
+fn add_web_fields(fields: &mut ResponseHeaders, scratch: &mut String, policy: Span, allocator: &Allocator) -> Result<(), U64>:
+    add_common_fields(fields, scratch, allocator)?
+    add_literal(fields, scratch, "Referrer-Policy", "no-referrer", allocator)?
+    add_literal(fields, scratch, "Cross-Origin-Resource-Policy", "same-origin", allocator)?
+    scratch.cut(0)
+    scratch.push_text(allocator, "Content-Security-Policy")?
+    if let Err(reason) = fields.add(allocator, scratch.span(), policy):
+        return Err(1)
+    return Ok(())
+
+fn send_body(output: &Console<Write>, body: &File<Read>, length: U64, scratch: &mut Vec<U8>) -> Result<(), U64>:
+    var remaining = length
+    while remaining > 0:
+        let take = if remaining < scratch.len(): remaining else: scratch.len()
+        let count = body.read_some(scratch.as_mut_slice().part(0, take))
+        if count == 0:
+            return Err(1)
+        emit_bytes(output, scratch, count)
+        remaining -= count
+    return Ok(())
+
+fn emit_bytes(output: &Console<Write>, buffer: &Vec<U8>, count: U64):
+    let whole = count / 8
+    for word in 0..whole:
+        output.print_word(buffer.word_at(word * 8, 8))
+    let bytes = buffer.as_slice()
+    for index in whole * 8..count:
+        output.print_byte(bytes[index])

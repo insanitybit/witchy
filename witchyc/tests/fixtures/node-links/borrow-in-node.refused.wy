@@ -1,0 +1,11 @@
+import option
+
+type Node:
+    prev: Option<&Node>
+    item: U64
+
+fn bad(allocator: &Allocator) -> Result<Buffer<Node>, U64>:
+    return memory.try_alloc(allocator, 1)
+
+fn main():
+    return

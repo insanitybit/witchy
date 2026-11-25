@@ -1,0 +1,9 @@
+// Refused: a private type named in another file's type annotation.
+import "../../../library/wasm-console.wy"
+import "parts/area.wy"
+
+fn take(corner: &Corner) -> U64:
+    return 0
+
+fn main(console: Console<Write>):
+    console.print_int(1)

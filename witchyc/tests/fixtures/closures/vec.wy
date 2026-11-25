@@ -1,0 +1,17 @@
+// A container takes a closure: `Vec<T>.count_where`, `any` and `all` take `fn(T) -> Bool`.
+import console
+import vec
+import query
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.filled(&allocator, 6, 0) else Err(code):
+        return
+    var values = move made
+    for i in 0..6:
+        values.index_set(i, i * 3)
+    let limit: U64 = 7
+    console.print_int(values.count_where(fn(n: U64) -> Bool: n > limit))
+    console.print_int(if values.any(fn(n: U64) -> Bool: n == 9): 1 else: 0)
+    console.print_int(if values.all(fn(n: U64) -> Bool: n % 3 == 0): 1 else: 0)
+    console.print_int(if values.all(fn(n: U64) -> Bool: n > 0): 1 else: 0)
+    values.close()

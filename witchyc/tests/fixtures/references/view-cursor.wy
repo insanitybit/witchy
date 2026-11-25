@@ -1,0 +1,28 @@
+// A cursor: a view (a slice and a position) advanced through `&mut` (step 2 of
+// docs/design-references-to-views.md): its position changes, its slice never does.
+import console
+
+type Cursor:
+    items: &[U64]
+    at: U64
+
+fn next(c: &mut Cursor) -> Result<U64, U64>:
+    let items = (*c).items
+    if (*c).at >= items.len():
+        return Err(0)
+    let value = items[(*c).at]
+    (*c).at += 1
+    return Ok(value)
+
+fn main(console: Console<Write>):
+    let numbers: [U64; 3] = [4, 5, 6]
+    var c = Cursor(numbers.slice(), 0)
+    var total: U64 = 0
+    while true:
+        match next(&mut c):
+            Ok(v):
+                total += v
+            Err(code):
+                break
+    console.print_int(total)
+    console.print_int(c.at)

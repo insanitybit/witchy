@@ -1,0 +1,6 @@
+// Refused: a type of alpha's inner file, named.
+import "@alpha"
+
+fn main():
+    let h = Hidden(value: 1)
+    let _ = alpha.read(&h)

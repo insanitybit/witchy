@@ -1,0 +1,15 @@
+// The same inside a `${...}` of the recipe's text: the module's `pick` (the fifth review found
+// the program's called there).
+import "parts/recipe_interp.wy"
+import console
+
+fn pick(a: U64, b: U64) -> U64:
+    return b
+
+type T derive(recipe_interp.Shown):
+    a: U64
+    b: U64
+
+fn main(console: Console<Write>):
+    let t = T(a: 1, b: 2)
+    t.show(&console)

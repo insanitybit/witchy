@@ -1,0 +1,38 @@
+// A sum type derives Eq, Hash, Before (variant order, then the value) and Discard (an owner held
+// is discarded) when each variant holds nothing or one value.
+import console
+import vec
+import string
+import sort
+import discard
+import hash
+
+type Shape derive(Eq, Hash, Before):
+    Dot
+    Square(U64)
+    Circle(U64)
+
+type Owned derive(Discard):
+    Nothing
+    Words(String)
+    Number(U64)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let a = Square(3)
+    let b = Square(3)
+    let c = Circle(1)
+    let d = Dot
+    console.print("${a == b} ${a == c} ${d == Dot}")
+    let small = Square(2)
+    console.print("${a.before(&c)} ${c.before(&a)} ${small.before(&a)} ${a.before(&a)} ${d.before(&a)}")
+    console.print("${a.hash() == b.hash()} ${a.hash() == c.hash()}")
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var s = move made
+    let _ = s.push_text(&allocator, "owned")
+    let held = Words(move s)
+    held.discard()
+    Number(4).discard()
+    let empty = Nothing
+    empty.discard()
+    console.line("discarded")

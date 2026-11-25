@@ -1,0 +1,17 @@
+// Refused: a record of the program's own, though a function makes it, is not kept by a generator.
+import console
+
+type Pair:
+    a: U64
+    b: U64
+
+fn make_pair(n: U64) -> Pair:
+    return Pair(n, n)
+
+gen fn pairs(n: U64) -> U64:
+    var p: Pair = make_pair(n)
+    while p.a < n:
+        yield p.a
+
+fn main(console: Console<Write>):
+    console.line("ran")

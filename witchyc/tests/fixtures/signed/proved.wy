@@ -1,0 +1,190 @@
+// Contracts about I64 values, proved: the results stay in range, the arithmetic in each
+// body cannot trap, and loops keep their invariants. An I64 is an integer to the proof.
+fn abs_abs(x: I64) -> I64:
+    requires x > -9223372036854775808
+    ensures result >= 0
+    ensures result == x || result == -x
+    proof:
+        auto
+    if x < 0:
+        return -x
+    return x
+
+fn clamp_clamp(x: I64, low: I64, high: I64) -> I64:
+    requires low <= high
+    ensures result >= low
+    ensures result <= high
+    proof:
+        auto
+    if x < low:
+        return low
+    if x > high:
+        return high
+    return x
+
+fn sign_sign(x: I64) -> I64:
+    ensures result >= -1
+    ensures result <= 1
+    ensures x > 0 || result <= 0
+    proof:
+        auto
+    if x < 0:
+        return -1
+    if x > 0:
+        return 1
+    return 0
+
+fn add_add(a: I64, b: I64) -> I64:
+    requires a >= -1000
+    requires a <= 1000
+    requires b >= -1000
+    requires b <= 1000
+    ensures result == a + b
+    proof:
+        auto
+    return a + b
+
+fn down_loop(n: I64) -> I64:
+    requires n >= 0
+    requires n <= 1000
+    ensures result == 0 - n
+    proof:
+        auto
+    var left = n
+    var total: I64 = 0
+    while left > 0:
+        invariant left >= 0
+        invariant left <= n
+        invariant total == left - n
+        total = total - 1
+        left = left - 1
+    return total
+
+fn f_const(x: I64) -> U64:
+    ensures result == 1
+    proof:
+        auto
+    if 0 - 1 < x - x:
+        return 1
+    return 2
+
+fn half_div(x: I64) -> I64:
+    ensures result <= 9223372036854775807
+    proof:
+        auto
+    return x / 2
+
+fn abs_call(x: I64) -> I64:
+    requires x > -9223372036854775808
+    ensures result >= 0
+    proof:
+        auto
+    if x < 0:
+        return -x
+    return x
+
+fn twice_call(x: I64) -> I64:
+    requires x >= -100
+    requires x <= 100
+    ensures result >= 0
+    proof:
+        auto
+    return abs_call(x + x)
+
+type PointField:
+    x: I64
+    y: I64
+
+fn shift_field(point: &mut PointField, by: I64):
+    requires point.x >= -1000
+    requires point.x <= 1000
+    requires by >= -1000
+    requires by <= 1000
+    ensures point.x == old(point.x) + by
+    ensures point.y == old(point.y)
+    proof:
+        auto
+    point.x += by
+
+fn run_field() -> U64:
+    var point = PointField(3, -4)
+    shift_field(&mut point, -5)
+    return I64.bits(point.x + 2)
+
+fn f_pluseq(x: I64) -> I64:
+    requires x <= 5
+    ensures result == x + 1
+    proof:
+        auto
+    var y = x
+    y += 1
+    return y
+
+fn f_guard(x: I64) -> U64:
+    ensures result <= 1
+    proof:
+        auto
+    if x != 0 && 10 / x > 0:
+        return 1
+    return 0
+
+fn f_min(x: I64) -> I64:
+    requires x == -9223372036854775808
+    ensures result == x + 1
+    ensures result < 0
+    proof:
+        auto
+    return x + 1
+
+fn sum_sum(n: U64) -> I64:
+    requires n <= 1000
+    ensures result <= 0
+    ensures result >= -1000
+    proof:
+        auto
+    var total: I64 = 0
+    var index: U64 = 0
+    while index < n:
+        invariant index <= n
+        invariant total <= 0
+        invariant total + 1000 >= 1000 - 1000
+        invariant total >= -1000
+        if total > -1000:
+            total -= 1
+        index += 1
+    return total
+
+type BoxMethod:
+    n: I64
+
+impl BoxMethod:
+    fn get(self: &BoxMethod) -> I64:
+        return self.n
+
+fn f_method(box: &BoxMethod) -> I64:
+    requires box.get() < 5
+    requires box.get() > -5
+    ensures result < 6
+    proof:
+        auto
+    return box.get() + 1
+
+fn run_method() -> U64:
+    let box = BoxMethod(-2)
+    return I64.bits(f_method(&box) + 1)
+
+fn main(console: Console<Write>):
+    console.print_int(I64.bits(abs_abs(-7)))
+    console.print_int(I64.bits(clamp_clamp(50, -3, 9)))
+    console.print_int(I64.bits(sign_sign(5)))
+    console.print_int(I64.bits(add_add(3, 4)))
+    console.print_int(I64.bits(down_loop(5) + 5))
+    console.print_int(f_const(3))
+    console.print_int(I64.bits(half_div(9)))
+    console.print_int(I64.bits(twice_call(-9)))
+    console.print_int(run_field())
+    console.print_int(I64.bits(f_pluseq(4)))
+    console.print_int(f_guard(4))
+    console.print_int(I64.bits(f_min(-9223372036854775808) + 9223372036854775807))
+    console.print_int(I64.bits(sum_sum(7) + 7))
+    console.print_int(run_method())

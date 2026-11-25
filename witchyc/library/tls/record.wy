@@ -1,0 +1,217 @@
+// TLSCiphertext and TLSInnerPlaintext for both TLS 1.3 AES-GCM suites.
+import crypto
+import tls_key_schedule
+
+pub type Content:
+    Alert
+    HandshakeMessage
+    ApplicationData
+
+pub type RecordError:
+    BadRecord
+    BadContent
+    BufferTooSmall
+    KeyExhausted
+    FailedAuthentication
+    ProviderFailure
+    ClosedEpoch
+    NoRoom
+
+pub type RecordInfo:
+    kind: Content
+    length: U64
+
+type EpochState:
+    keys: RecordKeys
+    sequence: U64
+    closed: Bool
+
+pub sealed type ReadEpoch:
+    state: Boxed<EpochState>
+
+pub sealed type WriteEpoch:
+    state: Boxed<EpochState>
+
+// Install each directional traffic key once per key epoch. The boxed owner
+// prevents copying active state and restarting its sequence.
+fn allocate(allocator: &Allocator, keys: RecordKeys) -> Result<Boxed<EpochState>, EpochState>:
+    return memory.try_box(allocator, EpochState(move keys, 0, false))
+
+pub fn reader(allocator: &Allocator, keys: RecordKeys) -> Result<ReadEpoch, RecordError>:
+    match allocate(allocator, move keys):
+        Ok(state):
+            return Ok(ReadEpoch(move state))
+        Err(original):
+            return Err(NoRoom)
+
+pub fn writer(allocator: &Allocator, keys: RecordKeys) -> Result<WriteEpoch, RecordError>:
+    match allocate(allocator, move keys):
+        Ok(state):
+            return Ok(WriteEpoch(move state))
+        Err(original):
+            return Err(NoRoom)
+
+pure fn nonce(iv: &[U8; 12], sequence: U64) -> [U8; 12]:
+    var bytes: [U8; 12] = [0; 12]
+    for i in 0..4:
+        bytes[i] = (*iv)[i]
+    for i in 0..8:
+        bytes[4 + i] = (*iv)[4 + i] ^ U8.truncate(sequence >> (56 - 8 * i))
+    return move bytes
+
+pure fn content_byte(kind: Content) -> U8:
+    match kind:
+        Alert:
+            return 21
+        HandshakeMessage:
+            return 22
+        ApplicationData:
+            return 23
+
+pure fn inner_content(plaintext: &[U8]) -> Result<RecordInfo, RecordError>:
+    var end = plaintext.len()
+    while end != 0:
+        end = end - 1
+        let byte = plaintext[end]
+        if byte != 0:
+            if end > 16384:
+                return Err(BadContent)
+            if byte == 23:
+                return Ok(RecordInfo(ApplicationData, end))
+            if byte == 22 && end != 0:
+                return Ok(RecordInfo(HandshakeMessage, end))
+            if byte == 21 && end != 0:
+                return Ok(RecordInfo(Alert, end))
+            return Err(BadContent)
+    return Err(BadContent)
+
+// Parse the five-byte header independently so a transport can size a read.
+pub pure fn ciphertext_length(header: &[U8]) -> Result<U64, RecordError>:
+    if header.len() != 5 || header[0] != 23 || header[1] != 3 || header[2] != 3:
+        return Err(BadRecord)
+    let length = U8.to_u64(header[3]) * 256 + U8.to_u64(header[4])
+    if length < 17 || length > 16401:
+        return Err(BadRecord)
+    return Ok(length)
+
+impl ReadEpoch:
+    pub fn close(self: ReadEpoch):
+        let ReadEpoch(state) = move self
+        let _ = memory.unbox(move state)
+
+    // `frame` holds one complete wire record. Use only the returned content
+    // prefix of the scratch buffer, and only after a successful result.
+    pub fn open(self: &mut ReadEpoch, frame: &[U8], plaintext: &mut [U8]) -> Result<RecordInfo, RecordError>:
+        let Ok(state): &mut EpochState = memory.box_mut(&mut (*self).state) else Err:
+            return Err(ClosedEpoch)
+        if (*state).closed:
+            return Err(ClosedEpoch)
+        if (*state).sequence == 18446744073709551615:
+            return Err(KeyExhausted)
+        if frame.len() < 5:
+            (*state).closed = true
+            return Err(BadRecord)
+        let header = frame.part(0, 5)
+        let Ok(length): U64 = ciphertext_length(header) else Err(reason):
+            (*state).closed = true
+            return Err(reason)
+        if frame.len() != 5 + length:
+            (*state).closed = true
+            return Err(BadRecord)
+        let inner_len = length - 16
+        if plaintext.len() < inner_len:
+            return Err(BufferTooSmall)
+        let iv = (*state).keys.iv_bytes()
+        let record_nonce = nonce(&iv, (*state).sequence)
+        let material = (*state).keys.key_bytes()
+        let key = material.slice().part(0, (*state).keys.key_len())
+        let opened = if key.len() == 32:
+            crypto.tls13_aes256gcm_open(key, record_nonce.slice(), header, frame.part(5, frame.len()), plaintext.part(0, inner_len))
+        else:
+            crypto.tls13_aes128gcm_open(key, record_nonce.slice(), header, frame.part(5, frame.len()), plaintext.part(0, inner_len))
+        match opened:
+            Err(reason):
+                (*state).closed = true
+                return Err(FailedAuthentication)
+            Ok:
+                (*state).sequence = (*state).sequence + 1
+        let info = inner_content(plaintext.part(0, inner_len))
+        match info:
+            Err(reason):
+                (*state).closed = true
+                return Err(reason)
+            Ok(record):
+                return Ok(record)
+
+impl WriteEpoch:
+    pub fn close(self: WriteEpoch):
+        let WriteEpoch(state) = move self
+        let _ = memory.unbox(move state)
+
+    // Seals one unpadded record. The caller holds the encrypted bytes until
+    // the full record is written, including when a socket write is partial.
+    pub fn seal(self: &mut WriteEpoch, kind: Content, content: &[U8], scratch: &mut [U8], frame: &mut [U8]) -> Result<U64, RecordError>:
+        let Ok(state): &mut EpochState = memory.box_mut(&mut (*self).state) else Err:
+            return Err(ClosedEpoch)
+        if (*state).closed:
+            return Err(ClosedEpoch)
+        if (*state).sequence >= 16777216:
+            return Err(KeyExhausted)
+        let count = content.len()
+        let byte = content_byte(kind)
+        if count > 16384 || (count == 0 && byte != 23):
+            return Err(BadContent)
+        let inner_len = count + 1
+        let sealed_len = inner_len + 16
+        let frame_len = sealed_len + 5
+        if scratch.len() < inner_len || frame.len() < frame_len:
+            return Err(BufferTooSmall)
+        scratch.part(0, count).copy_from(content)
+        scratch[count] = byte
+        let header: [U8; 5] = [23, 3, 3, U8.truncate(sealed_len / 256), U8.truncate(sealed_len % 256)]
+        let iv = (*state).keys.iv_bytes()
+        let record_nonce = nonce(&iv, (*state).sequence)
+        let material = (*state).keys.key_bytes()
+        let key = material.slice().part(0, (*state).keys.key_len())
+        let encrypted = if key.len() == 32:
+            crypto.tls13_aes256gcm_seal(key, record_nonce.slice(), header.slice(), scratch.part(0, inner_len), frame.part(5, frame_len))
+        else:
+            crypto.tls13_aes128gcm_seal(key, record_nonce.slice(), header.slice(), scratch.part(0, inner_len), frame.part(5, frame_len))
+        match encrypted:
+            Err(reason):
+                (*state).closed = true
+                return Err(ProviderFailure)
+            Ok:
+                (*state).sequence = (*state).sequence + 1
+        for i in 0..5:
+            frame[i] = header[i]
+        return Ok(frame_len)
+
+fn install(state: &mut EpochState, keys: RecordKeys) -> Result<(), RecordError>:
+    if (*state).closed:
+        return Err(ClosedEpoch)
+    (*state).keys = keys
+    (*state).sequence = 0
+    return Ok(())
+
+impl ReadEpoch:
+    // The caller authenticates the KeyUpdate under the old key before
+    // installing fresh keys and resetting this direction's sequence.
+    pub fn install(self: &mut ReadEpoch, keys: RecordKeys) -> Result<(), RecordError>:
+        let Ok(state): &mut EpochState = memory.box_mut(&mut (*self).state) else Err:
+            return Err(ClosedEpoch)
+        return install(state, keys)
+
+impl WriteEpoch:
+    pub fn install(self: &mut WriteEpoch, keys: RecordKeys) -> Result<(), RecordError>:
+        let Ok(state): &mut EpochState = memory.box_mut(&mut (*self).state) else Err:
+            return Err(ClosedEpoch)
+        return install(state, keys)
+
+    // Reserve the last record under this key for KeyUpdate.
+    pub fn update_due(self: &WriteEpoch) -> Result<Bool, RecordError>:
+        let Ok(state): &EpochState = memory.box_ref(&(*self).state) else Err:
+            return Err(ClosedEpoch)
+        if (*state).closed:
+            return Err(ClosedEpoch)
+        return Ok((*state).sequence >= 16777215)

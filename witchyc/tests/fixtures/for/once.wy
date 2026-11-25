@@ -1,0 +1,25 @@
+// The container of a `for` is evaluated once, before the loop, however it is written.
+type Triple:
+    first: U64
+    second: U64
+    third: U64
+
+impl Triple:
+    fn at(self: &Triple, index: U64) -> Result<U64, U64>:
+        if index == 0:
+            return Ok((*self).first)
+        if index == 1:
+            return Ok((*self).second)
+        if index == 2:
+            return Ok((*self).third)
+        return Err(index)
+
+fn make(console: &Console<Write>, base: U64) -> Triple:
+    console.print_int(100 + base)
+    return Triple(base, base + 1, base + 2)
+
+fn main(console: Console<Write>):
+    for item in make(&console, 1):
+        console.print_int(item)
+    for item in &make(&console, 5):
+        console.print_int(item)

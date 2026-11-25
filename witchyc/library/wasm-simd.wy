@@ -1,0 +1,446 @@
+// Fixed-width unsigned SIMD. Lane zero occupies the low bits of the first word.
+
+pub type U8x16:
+    low: U64
+    high: U64
+
+impl U8x16:
+    pub fn from_lanes(x0: U8, x1: U8, x2: U8, x3: U8, x4: U8, x5: U8, x6: U8, x7: U8, x8: U8, x9: U8, x10: U8, x11: U8, x12: U8, x13: U8, x14: U8, x15: U8) -> U8x16:
+        return U8x16((U8.to_u64(x0)) | (U8.to_u64(x1) << 8) | (U8.to_u64(x2) << 16) | (U8.to_u64(x3) << 24) | (U8.to_u64(x4) << 32) | (U8.to_u64(x5) << 40) | (U8.to_u64(x6) << 48) | (U8.to_u64(x7) << 56), (U8.to_u64(x8)) | (U8.to_u64(x9) << 8) | (U8.to_u64(x10) << 16) | (U8.to_u64(x11) << 24) | (U8.to_u64(x12) << 32) | (U8.to_u64(x13) << 40) | (U8.to_u64(x14) << 48) | (U8.to_u64(x15) << 56))
+
+    pub fn splat(x: U8) -> U8x16:
+        let word = U64.wrapping_mul(U8.to_u64(x), 72340172838076673)
+        return U8x16(word, word)
+
+    pub fn wrapping_add(self: U8x16, b: U8x16) -> U8x16:
+        let lo = U64.packed_add_8_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_add_8_hi(self.low, self.high, b.low, b.high)
+        return U8x16(lo, hi)
+
+    pub fn wrapping_sub(self: U8x16, b: U8x16) -> U8x16:
+        let lo = U64.packed_sub_8_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_sub_8_hi(self.low, self.high, b.low, b.high)
+        return U8x16(lo, hi)
+
+    pub fn wrapping_mul(self: U8x16, b: U8x16) -> U8x16:
+        let lo = U64.packed_mul_8_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_mul_8_hi(self.low, self.high, b.low, b.high)
+        return U8x16(lo, hi)
+
+    pub fn bit_and(self: U8x16, b: U8x16) -> U8x16:
+        let lo = U64.packed_and_8_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_and_8_hi(self.low, self.high, b.low, b.high)
+        return U8x16(lo, hi)
+
+    pub fn bit_or(self: U8x16, b: U8x16) -> U8x16:
+        let lo = U64.packed_or_8_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_or_8_hi(self.low, self.high, b.low, b.high)
+        return U8x16(lo, hi)
+
+    pub fn bit_xor(self: U8x16, b: U8x16) -> U8x16:
+        let lo = U64.packed_xor_8_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_xor_8_hi(self.low, self.high, b.low, b.high)
+        return U8x16(lo, hi)
+
+    pub fn cmp_eq(self: U8x16, b: U8x16) -> U8x16:
+        let lo = U64.packed_eq_8_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_eq_8_hi(self.low, self.high, b.low, b.high)
+        return U8x16(lo, hi)
+
+    pub fn cmp_gt(self: U8x16, b: U8x16) -> U8x16:
+        let lo = U64.packed_gt_8_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_gt_8_hi(self.low, self.high, b.low, b.high)
+        return U8x16(lo, hi)
+
+    pub fn bit_not(self: U8x16) -> U8x16:
+        return U8x16(~self.low, ~self.high)
+
+    pub fn cmp_lt(self: U8x16, b: U8x16) -> U8x16:
+        return b.cmp_gt(self)
+
+    pub fn select(self: U8x16, yes: U8x16, no: U8x16) -> U8x16:
+        return no.bit_xor(self.bit_and(yes.bit_xor(no)))
+
+    pub fn min(self: U8x16, b: U8x16) -> U8x16:
+        return self.cmp_lt(b).select(self, b)
+
+    pub fn max(self: U8x16, b: U8x16) -> U8x16:
+        return self.cmp_gt(b).select(self, b)
+
+    pub fn any(self: U8x16) -> Bool:
+        return (self.low | self.high) != 0
+
+    pub fn all(self: U8x16) -> Bool:
+        return (self.low & self.high) == 18446744073709551615
+
+    pub fn eq_mask(self: U8x16, other: U8x16) -> U64:
+        return U64.byte_eq_mask(self.low, self.high, other.low, other.high)
+
+    pub fn bitmask(self: U8x16) -> U64:
+        return U64.byte_bitmask(self.low, self.high)
+
+    pub fn lane(self: U8x16, i: U64) -> U8:
+        if i < 8:
+            return U8.truncate(self.low >> (i * 8))
+        return U8.truncate(self.high >> ((i - 8) * 8))
+
+    pub fn reduce_sum(self: U8x16) -> U8:
+        var total: U64 = 0
+        for i in 0..16:
+            total = U64.wrapping_add(total, U8.to_u64(self.lane(i)))
+        return U8.truncate(total)
+
+    pub fn reverse_lanes(self: U8x16) -> U8x16:
+        return U8x16.from_lanes(self.lane(15), self.lane(14), self.lane(13), self.lane(12), self.lane(11), self.lane(10), self.lane(9), self.lane(8), self.lane(7), self.lane(6), self.lane(5), self.lane(4), self.lane(3), self.lane(2), self.lane(1), self.lane(0))
+
+    pub fn load(input: &[U8], offset: U64) -> U8x16:
+        return U8x16(input.read_le64(offset), input.read_le64(offset + 8))
+
+    pub fn store(self: U8x16, output: &mut [U8], offset: U64):
+        let part = output.part(offset, offset + 16)
+        for i in 0..16:
+            part[i] = self.lane(i)
+
+    pub fn load_words(input: &[U64], i: U64) -> U8x16:
+        return U8x16(input[i], input[i + 1])
+
+    pub fn store_words(self: U8x16, output: &mut [U64], i: U64):
+        let part = output.part(i, i + 2)
+        part[0] = self.low
+        part[1] = self.high
+
+
+pub type U16x8:
+    low: U64
+    high: U64
+
+impl U16x8:
+    pub fn from_lanes(x0: U16, x1: U16, x2: U16, x3: U16, x4: U16, x5: U16, x6: U16, x7: U16) -> U16x8:
+        return U16x8((U16.to_u64(x0)) | (U16.to_u64(x1) << 16) | (U16.to_u64(x2) << 32) | (U16.to_u64(x3) << 48), (U16.to_u64(x4)) | (U16.to_u64(x5) << 16) | (U16.to_u64(x6) << 32) | (U16.to_u64(x7) << 48))
+
+    pub fn splat(x: U16) -> U16x8:
+        let word = U64.wrapping_mul(U16.to_u64(x), 281479271743489)
+        return U16x8(word, word)
+
+    pub fn wrapping_add(self: U16x8, b: U16x8) -> U16x8:
+        let lo = U64.packed_add_16_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_add_16_hi(self.low, self.high, b.low, b.high)
+        return U16x8(lo, hi)
+
+    pub fn wrapping_sub(self: U16x8, b: U16x8) -> U16x8:
+        let lo = U64.packed_sub_16_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_sub_16_hi(self.low, self.high, b.low, b.high)
+        return U16x8(lo, hi)
+
+    pub fn wrapping_mul(self: U16x8, b: U16x8) -> U16x8:
+        let lo = U64.packed_mul_16_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_mul_16_hi(self.low, self.high, b.low, b.high)
+        return U16x8(lo, hi)
+
+    pub fn bit_and(self: U16x8, b: U16x8) -> U16x8:
+        let lo = U64.packed_and_16_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_and_16_hi(self.low, self.high, b.low, b.high)
+        return U16x8(lo, hi)
+
+    pub fn bit_or(self: U16x8, b: U16x8) -> U16x8:
+        let lo = U64.packed_or_16_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_or_16_hi(self.low, self.high, b.low, b.high)
+        return U16x8(lo, hi)
+
+    pub fn bit_xor(self: U16x8, b: U16x8) -> U16x8:
+        let lo = U64.packed_xor_16_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_xor_16_hi(self.low, self.high, b.low, b.high)
+        return U16x8(lo, hi)
+
+    pub fn cmp_eq(self: U16x8, b: U16x8) -> U16x8:
+        let lo = U64.packed_eq_16_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_eq_16_hi(self.low, self.high, b.low, b.high)
+        return U16x8(lo, hi)
+
+    pub fn cmp_gt(self: U16x8, b: U16x8) -> U16x8:
+        let lo = U64.packed_gt_16_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_gt_16_hi(self.low, self.high, b.low, b.high)
+        return U16x8(lo, hi)
+
+    pub fn bit_not(self: U16x8) -> U16x8:
+        return U16x8(~self.low, ~self.high)
+
+    pub fn cmp_lt(self: U16x8, b: U16x8) -> U16x8:
+        return b.cmp_gt(self)
+
+    pub fn select(self: U16x8, yes: U16x8, no: U16x8) -> U16x8:
+        return no.bit_xor(self.bit_and(yes.bit_xor(no)))
+
+    pub fn min(self: U16x8, b: U16x8) -> U16x8:
+        return self.cmp_lt(b).select(self, b)
+
+    pub fn max(self: U16x8, b: U16x8) -> U16x8:
+        return self.cmp_gt(b).select(self, b)
+
+    pub fn any(self: U16x8) -> Bool:
+        return (self.low | self.high) != 0
+
+    pub fn all(self: U16x8) -> Bool:
+        return (self.low & self.high) == 18446744073709551615
+
+    pub fn lane(self: U16x8, i: U64) -> U16:
+        if i < 4:
+            return U16.truncate(self.low >> (i * 16))
+        return U16.truncate(self.high >> ((i - 4) * 16))
+
+    pub fn reduce_sum(self: U16x8) -> U16:
+        var total: U64 = 0
+        for i in 0..8:
+            total = U64.wrapping_add(total, U16.to_u64(self.lane(i)))
+        return U16.truncate(total)
+
+    pub fn reverse_lanes(self: U16x8) -> U16x8:
+        return U16x8.from_lanes(self.lane(7), self.lane(6), self.lane(5), self.lane(4), self.lane(3), self.lane(2), self.lane(1), self.lane(0))
+
+    pub fn load(input: &[U16], offset: U64) -> U16x8:
+        let part = input.part(offset, offset + 8)
+        return U16x8.from_lanes(part[0], part[1], part[2], part[3], part[4], part[5], part[6], part[7])
+
+    pub fn store(self: U16x8, output: &mut [U16], offset: U64):
+        let part = output.part(offset, offset + 8)
+        for i in 0..8:
+            part[i] = self.lane(i)
+
+    pub fn load_words(input: &[U64], i: U64) -> U16x8:
+        return U16x8(input[i], input[i + 1])
+
+    pub fn store_words(self: U16x8, output: &mut [U64], i: U64):
+        let part = output.part(i, i + 2)
+        part[0] = self.low
+        part[1] = self.high
+
+
+pub type U32x4:
+    low: U64
+    high: U64
+
+impl U32x4:
+    pub fn from_lanes(x0: U32, x1: U32, x2: U32, x3: U32) -> U32x4:
+        return U32x4((U32.to_u64(x0)) | (U32.to_u64(x1) << 32), (U32.to_u64(x2)) | (U32.to_u64(x3) << 32))
+
+    pub fn splat(x: U32) -> U32x4:
+        let word = U64.wrapping_mul(U32.to_u64(x), 4294967297)
+        return U32x4(word, word)
+
+    pub fn wrapping_add(self: U32x4, b: U32x4) -> U32x4:
+        let lo = U64.packed_add_32_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_add_32_hi(self.low, self.high, b.low, b.high)
+        return U32x4(lo, hi)
+
+    pub fn wrapping_sub(self: U32x4, b: U32x4) -> U32x4:
+        let lo = U64.packed_sub_32_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_sub_32_hi(self.low, self.high, b.low, b.high)
+        return U32x4(lo, hi)
+
+    pub fn wrapping_mul(self: U32x4, b: U32x4) -> U32x4:
+        let lo = U64.packed_mul_32_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_mul_32_hi(self.low, self.high, b.low, b.high)
+        return U32x4(lo, hi)
+
+    pub fn bit_and(self: U32x4, b: U32x4) -> U32x4:
+        let lo = U64.packed_and_32_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_and_32_hi(self.low, self.high, b.low, b.high)
+        return U32x4(lo, hi)
+
+    pub fn bit_or(self: U32x4, b: U32x4) -> U32x4:
+        let lo = U64.packed_or_32_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_or_32_hi(self.low, self.high, b.low, b.high)
+        return U32x4(lo, hi)
+
+    pub fn bit_xor(self: U32x4, b: U32x4) -> U32x4:
+        let lo = U64.packed_xor_32_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_xor_32_hi(self.low, self.high, b.low, b.high)
+        return U32x4(lo, hi)
+
+    pub fn cmp_eq(self: U32x4, b: U32x4) -> U32x4:
+        let lo = U64.packed_eq_32_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_eq_32_hi(self.low, self.high, b.low, b.high)
+        return U32x4(lo, hi)
+
+    pub fn cmp_gt(self: U32x4, b: U32x4) -> U32x4:
+        let lo = U64.packed_gt_32_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_gt_32_hi(self.low, self.high, b.low, b.high)
+        return U32x4(lo, hi)
+
+    pub fn bit_not(self: U32x4) -> U32x4:
+        return U32x4(~self.low, ~self.high)
+
+    pub fn cmp_lt(self: U32x4, b: U32x4) -> U32x4:
+        return b.cmp_gt(self)
+
+    pub fn select(self: U32x4, yes: U32x4, no: U32x4) -> U32x4:
+        return no.bit_xor(self.bit_and(yes.bit_xor(no)))
+
+    pub fn min(self: U32x4, b: U32x4) -> U32x4:
+        return self.cmp_lt(b).select(self, b)
+
+    pub fn max(self: U32x4, b: U32x4) -> U32x4:
+        return self.cmp_gt(b).select(self, b)
+
+    pub fn any(self: U32x4) -> Bool:
+        return (self.low | self.high) != 0
+
+    pub fn all(self: U32x4) -> Bool:
+        return (self.low & self.high) == 18446744073709551615
+
+    pub fn lane(self: U32x4, i: U64) -> U32:
+        if i < 2:
+            return U32.truncate(self.low >> (i * 32))
+        return U32.truncate(self.high >> ((i - 2) * 32))
+
+    pub fn reduce_sum(self: U32x4) -> U32:
+        var total: U64 = 0
+        for i in 0..4:
+            total = U64.wrapping_add(total, U32.to_u64(self.lane(i)))
+        return U32.truncate(total)
+
+    pub fn reverse_lanes(self: U32x4) -> U32x4:
+        return U32x4.from_lanes(self.lane(3), self.lane(2), self.lane(1), self.lane(0))
+
+    pub fn load(input: &[U32], offset: U64) -> U32x4:
+        let part = input.part(offset, offset + 4)
+        return U32x4.from_lanes(part[0], part[1], part[2], part[3])
+
+    pub fn store(self: U32x4, output: &mut [U32], offset: U64):
+        let part = output.part(offset, offset + 4)
+        for i in 0..4:
+            part[i] = self.lane(i)
+
+    pub fn load_words(input: &[U64], i: U64) -> U32x4:
+        return U32x4(input[i], input[i + 1])
+
+    pub fn store_words(self: U32x4, output: &mut [U64], i: U64):
+        let part = output.part(i, i + 2)
+        part[0] = self.low
+        part[1] = self.high
+
+
+pub type U64x2:
+    low: U64
+    high: U64
+
+impl U64x2:
+    pub fn from_lanes(x0: U64, x1: U64) -> U64x2:
+        return U64x2((x0), (x1))
+
+    pub fn splat(x: U64) -> U64x2:
+        let word = x * 1
+        return U64x2(word, word)
+
+    pub fn wrapping_add(self: U64x2, b: U64x2) -> U64x2:
+        let lo = U64.packed_add_64_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_add_64_hi(self.low, self.high, b.low, b.high)
+        return U64x2(lo, hi)
+
+    pub fn wrapping_sub(self: U64x2, b: U64x2) -> U64x2:
+        let lo = U64.packed_sub_64_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_sub_64_hi(self.low, self.high, b.low, b.high)
+        return U64x2(lo, hi)
+
+    pub fn wrapping_mul(self: U64x2, b: U64x2) -> U64x2:
+        let lo = U64.packed_mul_64_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_mul_64_hi(self.low, self.high, b.low, b.high)
+        return U64x2(lo, hi)
+
+    pub fn bit_and(self: U64x2, b: U64x2) -> U64x2:
+        let lo = U64.packed_and_64_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_and_64_hi(self.low, self.high, b.low, b.high)
+        return U64x2(lo, hi)
+
+    pub fn bit_or(self: U64x2, b: U64x2) -> U64x2:
+        let lo = U64.packed_or_64_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_or_64_hi(self.low, self.high, b.low, b.high)
+        return U64x2(lo, hi)
+
+    pub fn bit_xor(self: U64x2, b: U64x2) -> U64x2:
+        let lo = U64.packed_xor_64_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_xor_64_hi(self.low, self.high, b.low, b.high)
+        return U64x2(lo, hi)
+
+    pub fn cmp_eq(self: U64x2, b: U64x2) -> U64x2:
+        let lo = U64.packed_eq_64_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_eq_64_hi(self.low, self.high, b.low, b.high)
+        return U64x2(lo, hi)
+
+    pub fn cmp_gt(self: U64x2, b: U64x2) -> U64x2:
+        let lo = U64.packed_gt_64_lo(self.low, self.high, b.low, b.high)
+        let hi = U64.packed_gt_64_hi(self.low, self.high, b.low, b.high)
+        return U64x2(lo, hi)
+
+    pub fn bit_not(self: U64x2) -> U64x2:
+        return U64x2(~self.low, ~self.high)
+
+    pub fn cmp_lt(self: U64x2, b: U64x2) -> U64x2:
+        return b.cmp_gt(self)
+
+    pub fn select(self: U64x2, yes: U64x2, no: U64x2) -> U64x2:
+        return no.bit_xor(self.bit_and(yes.bit_xor(no)))
+
+    pub fn min(self: U64x2, b: U64x2) -> U64x2:
+        return self.cmp_lt(b).select(self, b)
+
+    pub fn max(self: U64x2, b: U64x2) -> U64x2:
+        return self.cmp_gt(b).select(self, b)
+
+    pub fn any(self: U64x2) -> Bool:
+        return (self.low | self.high) != 0
+
+    pub fn all(self: U64x2) -> Bool:
+        return (self.low & self.high) == 18446744073709551615
+
+    pub fn lane(self: U64x2, i: U64) -> U64:
+        if i < 1:
+            return self.low >> (i * 64)
+        return self.high >> ((i - 1) * 64)
+
+    pub fn reduce_sum(self: U64x2) -> U64:
+        var total: U64 = 0
+        for i in 0..2:
+            total = U64.wrapping_add(total, self.lane(i))
+        return total
+
+    pub fn reverse_lanes(self: U64x2) -> U64x2:
+        return U64x2.from_lanes(self.lane(1), self.lane(0))
+
+    pub fn load(input: &[U64], offset: U64) -> U64x2:
+        let part = input.part(offset, offset + 2)
+        return U64x2.from_lanes(part[0], part[1])
+
+    pub fn store(self: U64x2, output: &mut [U64], offset: U64):
+        let part = output.part(offset, offset + 2)
+        for i in 0..2:
+            part[i] = self.lane(i)
+
+    pub fn load_words(input: &[U64], i: U64) -> U64x2:
+        return U64x2(input[i], input[i + 1])
+
+    pub fn store_words(self: U64x2, output: &mut [U64], i: U64):
+        let part = output.part(i, i + 2)
+        part[0] = self.low
+        part[1] = self.high
+
+// Two binary64 lanes. Operations round independently in each lane.
+pub type F64x2:
+    low: F64
+    high: F64
+
+impl F64x2:
+    pub fn splat(value: F64) -> F64x2:
+        return F64x2(value, value)
+
+    pub fn add(self: F64x2, other: F64x2) -> F64x2:
+        let result = U64.packed_fadd_64_pair(self.low, self.high, other.low, other.high)
+        return F64x2(result.first, result.second)
+
+    pub fn mul(self: F64x2, other: F64x2) -> F64x2:
+        let result = U64.packed_fmul_64_pair(self.low, self.high, other.low, other.high)
+        return F64x2(result.first, result.second)
+
+    pub fn div(self: F64x2, other: F64x2) -> F64x2:
+        let result = U64.packed_fdiv_64_pair(self.low, self.high, other.low, other.high)
+        return F64x2(result.first, result.second)

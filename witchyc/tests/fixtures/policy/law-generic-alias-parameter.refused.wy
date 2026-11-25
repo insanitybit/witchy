@@ -1,0 +1,53 @@
+// Refused (adversarial review round 9): a generic alias brought the type parameter T back (b: Id<T>), and an unrelated alias T = U64 then made it read as a trusted U64; an irreflexive Eq put one key in a map three times.
+import console
+import hash
+import hashmap
+import keymap
+import discard
+
+type T = U64
+type Id<X> = X
+
+type Bad derive(Discard):
+    x: U64
+
+impl Eq for Bad:
+    fn eq(self: &Bad, other: &Bad) -> Bool:
+        return false
+
+type Wrap<T>:
+    a: U64
+    b: Id<T>
+
+impl<S: Any> HashKey for Wrap<S>:
+    fn feed(self: &Wrap<S>, state: &mut HashState):
+        (*self).a.feed(state)
+
+impl<S: Any + Eq> Eq for Wrap<S>:
+    fn eq(self: &Wrap<S>, other: &Wrap<S>) -> Bool:
+        return (*self).a == (*other).a && (*self).b == (*other).b
+
+impl<S: Any + Discard> Discard for Wrap<S>:
+    fn discard(self: Wrap<S>):
+        let Wrap(a, b) = move self
+        b.discard()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): KeyMap<Wrap<Bad>, U64> = KeyMap.new(&allocator, 64, Reference(1)) else Err(code):
+        return
+    var map = move made
+    let probe: Wrap<Bad> = Wrap(a: 7, b: Bad(x: 1))
+    if probe.eq(&probe):
+        console.print_int(1)
+    else:
+        console.print_int(0)
+    for i in 0..3:
+        let k: Wrap<Bad> = Wrap(a: 7, b: Bad(x: 1))
+        match map.put(&allocator, k, i):
+            Ok:
+                ()
+            Err(entry):
+                entry.discard()
+    console.print_int(map.len())
+    probe.discard()
+    map.discard()

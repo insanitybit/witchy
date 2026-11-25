@@ -1,0 +1,345 @@
+// Text operations on String, written as safe code on its public methods: no proofs,
+// no unchecked operations, and no access to the sealed type's fields.
+import "wasm-string.wy"
+import "wasm-vec.wy"
+
+// How two texts order, byte by byte.
+pub type Order:
+    Less
+    Equal
+    Greater
+
+// First byte offset at or after from, or Err(1) when no match exists.
+pub fn find_bytes(bytes: &[U8], pattern: &[U8], from: U64) -> Result<U64, U64>:
+    let count = pattern.len()
+    if from > bytes.len() || count > bytes.len() - from:
+        return Err(1)
+    if count == 0:
+        return Ok(from)
+    let first = pattern[0]
+    let last = bytes.len() - count
+    for start in from..last + 1:
+        if bytes[start] == first:
+            var matched: U64 = 1
+            while matched < count && bytes[start + matched] == pattern[matched]:
+                matched += 1
+            if matched == count:
+                return Ok(start)
+    return Err(1)
+
+impl String:
+    // The byte at `index` as a number, or 256 past the end.
+    pub fn byte_or_end(self: &String, index: U64) -> U64:
+        match self.byte_at(index):
+            Ok(byte):
+                return U8.to_u64(byte)
+            Err(code):
+                return 256
+
+    // Whether the text is exactly these bytes.
+    pub fn equals_text(self: &String, text: &str) -> Bool:
+        return self.byte_len() == text.as_bytes().len() && self.starts_with_text(text)
+
+    // Whether the text begins with these bytes.
+    pub fn starts_with_text(self: &String, text: &str) -> Bool:
+        let bytes = self.as_bytes()
+        let prefix = text.as_bytes()
+        let count = prefix.len()
+        if count > bytes.len():
+            return false
+        var index: U64 = 0
+        while count - index >= 8:
+            if bytes.read_le64(index) != prefix.read_le64(index):
+                return false
+            index += 8
+        while index < count:
+            if bytes[index] != prefix[index]:
+                return false
+            index += 1
+        return true
+
+    // For `for scalar in &text:`. The scalar that starts at byte `cursor`, which
+    // moves past it. Err(1): the end of the text.
+    pub fn next(self: &String, cursor: &mut U64) -> Result<U64, U64>:
+        // ASCII from the byte slice, directly; the rest decodes through `scalar_at`.
+        let bytes = self.as_bytes()
+        let at = *cursor
+        if at < bytes.len() && U8.to_u64(bytes[at]) < 128:
+            *cursor = at + 1
+            return Ok(U8.to_u64(bytes[at]))
+        match self.scalar_at(*cursor):
+            Ok(scalar):
+                *cursor += scalar.width
+                return Ok(scalar.value)
+            Err(code):
+                return Err(1)
+
+    // Byte order, which for UTF-8 is the order of the scalars. A text comes
+    // before every longer text that begins with it.
+    pub fn compare(self: &String, other: &String) -> Order:
+        // Over the two byte slices (it read each byte through `byte_at`'s Result, twice):
+        // `mine[index]` is counted to its length, `theirs[index]` follows `index < theirs.len() &&`.
+        let mine = self.as_bytes()
+        let theirs = other.as_bytes()
+        for index in 0..mine.len():
+            if index < theirs.len() && mine[index] != theirs[index]:
+                if index < theirs.len() && mine[index] < theirs[index]:
+                    return Less
+                return Greater
+            if index >= theirs.len():
+                return Greater
+        if mine.len() < theirs.len():
+            return Less
+        return Equal
+
+    // Whether this text comes before the other in byte order.
+    pub fn less(self: &String, other: &String) -> Bool:
+        match self.compare(other):
+            Less:
+                return true
+            Equal:
+                return false
+            Greater:
+                return false
+
+    // Where `byte` first appears at or after `from`. Err(1): it does not.
+    pub fn find_byte(self: &String, byte: U8, from: U64) -> Result<U64, U64>:
+        // Over the byte slice, each read untested (it went through `byte_at`'s Result).
+        let bytes = self.as_bytes()
+        for index in from..bytes.len():
+            if bytes[index] == byte:
+                return Ok(index)
+        return Err(1)
+
+    // Search for borrowed UTF-8 starting at a byte offset. A nonempty match
+    // begins and ends at scalar boundaries because both inputs are UTF-8.
+    pub fn find_text(self: &String, needle: &str, from: U64) -> Result<U64, U64>:
+        return find_bytes(self.as_bytes(), needle.as_bytes(), from)
+
+    // A copy with every `needle` replaced by `with`, left to right, matches not overlapping:
+    // "aaa" with "aa" -> "b" is "ba". An empty needle replaces nothing. Err(1): no room.
+    pub fn replace_text(self: &String, allocator: &Allocator, needle: &str, replacement: &str) -> Result<String, U64>:
+        // A failed allocation is Err(1), as the comment says (`?` passed the allocator's code on).
+        let Ok(room): String = String.with_capacity(allocator, self.byte_len()) else Err(code):
+            return Err(1)
+        var made = move room
+        let count = needle.len()
+        var from: U64 = 0
+        if count > 0:
+            while true:
+                match self.find_text(needle, from):
+                    Ok(at):
+                        if let Err(_) = made.push_part(allocator, self, from, at):
+                            made.close()
+                            return Err(1)
+                        if let Err(_) = made.push_text(allocator, replacement):
+                            made.close()
+                            return Err(1)
+                        from = at + count
+                    Err(none):
+                        break
+        if let Err(_) = made.push_part(allocator, self, from, self.byte_len()):
+            made.close()
+            return Err(1)
+        return Ok(move made)
+
+    // Append the scalars whose encodings lie in bytes `from..to` of `source`.
+    // Err(1): no room. Err(2): an end is past the text or inside a scalar. The text
+    // is then as it was.
+    pub fn push_slice(self: &mut String, allocator: &Allocator, source: &String, from: U64, to: U64) -> Result<(), U64>:
+        // Both ends must be where a scalar starts, or the end of the text; the bytes between are
+        // copied as they are (they were decoded and encoded again a scalar at a time).
+        return self.push_part(allocator, source, from, to)
+
+    // A new String holding bytes `from..to` of this one. Err(1): no room.
+    // Err(2): an end is past the text or inside a scalar.
+    pub fn slice(self: &String, allocator: &Allocator, from: U64, to: U64) -> Result<String, U64>:
+        if from > to || to > self.byte_len():
+            return Err(2)
+        if self.byte_or_end(from) / 64 == 2 || self.byte_or_end(to) / 64 == 2:
+            return Err(2)
+        // Its exact size, one allocation (an empty String reallocated on the first append).
+        // A failed allocation is Err(1), as the comment says (`?` passed the allocator's code on).
+        let Ok(room): String = String.with_capacity(allocator, to - from) else Err(code):
+            return Err(1)
+        var made = move room
+        if let Err(_) = made.push_slice(allocator, self, from, to):
+            made.close()
+            return Err(1)
+        return Ok(move made)
+
+    // The field that starts at byte `cursor`: the text up to the next
+    // `separator`, or to the end, as a new String. The cursor moves past the
+    // separator, so calling again gives the next field; "a,b," has the fields
+    // "a", "b" and "". Err(1): no room. Err(2): there is no further field, or
+    // the separator is not a whole scalar and a field would split one.
+    pub fn field(self: &String, allocator: &Allocator, separator: U8, cursor: &mut U64) -> Result<String, U64>:
+        if *cursor > self.byte_len():
+            return Err(2)
+        let end = match self.find_byte(separator, *cursor):
+            Ok(found):
+                found
+            Err(none):
+                self.byte_len()
+        let made = self.slice(allocator, *cursor, end)?
+        *cursor = end + 1
+        return Ok(move made)
+
+    // The number written in decimal digits. Err(1): empty, or a byte that is
+    // not a digit. Err(2): it does not fit in a U64.
+    pub fn parse_u64(self: &String) -> Result<U64, U64>:
+        // The last step cannot overflow: that is proved.
+        ensures true
+        proof:
+            auto
+        let bytes = self.as_bytes()
+        let count = bytes.len()
+        if count == 0:
+            return Err(1)
+        var value: U64 = 0
+        for index in 0..count:
+            let byte = U8.to_u64(bytes[index])
+            if byte < 48 || byte > 57:
+                return Err(1)
+            let digit = byte - 48
+            // 18446744073709551615 is the largest U64.
+            if value > 1844674407370955161 || (value == 1844674407370955161 && digit > 5):
+                return Err(2)
+            value = value * 10 + digit
+        return Ok(value)
+
+    // Append a number in decimal. Err(1): no room; the text is as it was.
+    pub fn push_u64(self: &mut String, allocator: &Allocator, number: U64) -> Result<(), U64>:
+        return self.push_decimal(allocator, number)
+
+    // A copy with the ASCII letters lower case; every other scalar as it is. Err(1): no room.
+    pub fn to_ascii_lower(self: &String, allocator: &Allocator) -> Result<String, U64>:
+        return self.ascii_case(allocator, true)
+
+    // A copy with the ASCII letters upper case; every other scalar as it is. Err(1): no room.
+    pub fn to_ascii_upper(self: &String, allocator: &Allocator) -> Result<String, U64>:
+        return self.ascii_case(allocator, false)
+
+    // To lower case, or to upper. ASCII runs go eight to a `push_ascii` word; any other scalar
+    // is pushed whole.
+    fn ascii_case(self: &String, allocator: &Allocator, lower: Bool) -> Result<String, U64>:
+        // As many bytes as this text: case changes no length.
+        // A failed allocation is Err(1), as the comment says (`?` passed the allocator's code on).
+        let Ok(room): String = String.with_capacity(allocator, self.byte_len()) else Err(code):
+            return Err(1)
+        var made = move room
+        var word: U64 = 0
+        var filled: U64 = 0
+        for scalar in self:
+            if scalar < 128:
+                var byte = scalar
+                if lower && byte >= 65 && byte <= 90:
+                    byte += 32
+                else if !lower && byte >= 97 && byte <= 122:
+                    byte -= 32
+                word = word + (byte << (filled * 8))
+                filled += 1
+                if filled == 8:
+                    if let Err(_) = made.push_ascii(allocator, word, 8):
+                        made.close()
+                        return Err(1)
+                    word = 0
+                    filled = 0
+            else:
+                if filled > 0:
+                    if let Err(_) = made.push_ascii(allocator, word, filled):
+                        made.close()
+                        return Err(1)
+                word = 0
+                filled = 0
+                if let Err(_) = made.push(allocator, scalar):
+                    made.close()
+                    return Err(1)
+        if filled > 0:
+            if let Err(_) = made.push_ascii(allocator, word, filled):
+                made.close()
+                return Err(1)
+        return Ok(move made)
+
+    // How many scalars (characters) the text holds: the bytes that are not a continuation
+    // (10xxxxxx). A column count for padding.
+    pub fn scalar_count(self: &String) -> U64:
+        let bytes = self.as_bytes()
+        var count: U64 = 0
+        for index in 0..bytes.len():
+            if U8.to_u64(bytes[index]) / 64 != 2:
+                count += 1
+        return count
+
+    // Append `scalar` `count` times; ASCII eight to a word. Err(1): no room (part may be
+    // added). Err(2): not a scalar value.
+    pub fn push_repeated(self: &mut String, allocator: &Allocator, scalar: U64, count: U64) -> Result<(), U64>:
+        if scalar >= 128:
+            for k in 0..count:
+                self.push(allocator, scalar)?
+            return Ok(())
+        var left = count
+        // A long run: a block of the byte made in one fill and appended in one copy, as often
+        // as it goes into the run (a word a call was 78 instructions a byte, 2026-11-22). The
+        // block is at most 4096 bytes, so the run costs that much room besides its own while it
+        // is appended. On Err the text may hold part of the run, as below.
+        if left >= 64:
+            var size = left
+            if size > 4096:
+                size = 4096
+            // No room for the block is not no room for the run: the text may already have it
+            // (review, 2026-11-22), so the run then goes a word at a time, below.
+            match String.repeated_ascii(allocator, U8.truncate(scalar), size):
+                Ok(block):
+                    while left >= size:
+                        if let Err(_) = self.push_string(allocator, &block):
+                            block.close()
+                            return Err(1)
+                        left -= size
+                    block.close()
+                    // What is left is under one block: once more with a block of that size.
+                    if left >= 64:
+                        return self.push_repeated(allocator, scalar, left)
+                Err(code):
+                    ()
+        // Eight copies in a word: the byte times 0x0101010101010101.
+        let word = scalar * 72340172838076673
+        while left >= 8:
+            self.push_ascii(allocator, word, 8)?
+            left -= 8
+        if left > 0:
+            return self.push_ascii(allocator, word, left)
+        return Ok(())
+
+    // Append `scalar` until the text is `width` scalars long (nothing when it is already):
+    // `line.pad_to(&allocator, 12, ' ')` fills to column 12. Err(1): no room. Err(2): not a
+    // scalar value.
+    pub fn pad_to(self: &mut String, allocator: &Allocator, width: U64, scalar: U64) -> Result<(), U64>:
+        let have = self.scalar_count()
+        if have >= width:
+            return Ok(())
+        return self.push_repeated(allocator, scalar, width - have)
+
+// The texts in order with `separator` between each two, as one new String: ["a", "b", "c"] with
+// ", " is "a, b, c"; none is "". Its size is counted first, so it is one allocation. Err(1): no room.
+pub fn join_texts(items: &Vec<String>, allocator: &Allocator, separator: &str) -> Result<String, U64>:
+    var size: U64 = 0
+    for item in items:
+        size += item.byte_len()
+    if items.len() > 1:
+        size += separator.len() * (items.len() - 1)
+    // A failed allocation is Err(1), as the comment says (`?` passed the allocator's code on).
+    let Ok(room): String = String.with_capacity(allocator, size) else Err(code):
+        return Err(1)
+    var made = move room
+    var first = true
+    for item in items:
+        if !first:
+            if let Err(_) = made.push_text(allocator, separator):
+                made.close()
+                return Err(1)
+        first = false
+        if let Err(_) = made.push_string(allocator, item):
+            made.close()
+            return Err(1)
+    return Ok(move made)

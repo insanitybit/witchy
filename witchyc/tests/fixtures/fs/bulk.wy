@@ -1,0 +1,36 @@
+// Bulk file I/O: bytes written from a slice in one host call, and read back into a small
+// buffer a few at a time, each call saying how many it filled (0 at the end).
+import fs
+import console
+
+fn main(console: Console<Write>, dir: Dir):
+    let bytes: [U8; 7] = [72, 101, 108, 108, 111, 33, 10]
+    let Ok(file): File<Write> = dir.create("out.bin") else Err(error):
+        return
+    match file.write_bytes(bytes.slice()):
+        Ok:
+            let done = file.finish()
+        Err(error):
+            file.abandon()
+            return
+    let Ok(back): File<Read> = dir.open("out.bin") else Err(error):
+        return
+    console.print_int(back.snapshot_remaining())
+    let Ok(first): U8 = back.next_byte() else Err(reason):
+        return
+    console.print_int(back.snapshot_remaining())
+    var buffer: [U8; 3] = [0, 0, 0]
+    var total = U8.to_u64(first)
+    var calls: U64 = 0
+    var more = true
+    while more:
+        let count = back.read_some(buffer.slice_mut())
+        calls += 1
+        if count == 0:
+            more = false
+        for index in 0..count:
+            total += U8.to_u64(buffer[index])
+    console.print_int(back.snapshot_remaining())
+    back.close()
+    console.print_int(total)
+    console.print_int(calls)

@@ -1,0 +1,1 @@
+`twice` is `nopanic`, but it can trap: division by zero through what it calls

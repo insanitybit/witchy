@@ -1,0 +1,23 @@
+// Review of `borrows`: `Ok((*y).r)` under `borrows Ok from x` passed (the read carried no loan),
+// and the Ok arm then wrote what the reference pointed at.
+import console
+
+type View:
+    r: &U64
+
+fn choose(x: &View, y: &View, flag: Bool) -> Result<&U64, &U64>:
+    borrows Ok from x
+    borrows Err from y
+    return Ok((*y).r)
+
+fn main(console: Console<Write>):
+    var a: U64 = 1
+    var b: U64 = 2
+    let va = View(&a)
+    let vb = View(&b)
+    match choose(&va, &vb, true):
+        Ok(item):
+            b = 99
+            console.print_int(*item)
+        Err(item):
+            console.print_int(*item)

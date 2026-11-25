@@ -1,0 +1,16 @@
+// Refused by the proof: nothing shows the slot is vacant, so ending it could lose an owner.
+type Slot<T>:
+    Vacant
+    Full(T)
+
+type Shelf<T>:
+    count: U64
+    slot: Slot<T>
+
+nopanic fn unpack<T: Any>(shelf: Shelf<T>) -> U64:
+    let Shelf(count, held) = move shelf
+    memory.vacant(move held)
+    return count
+
+fn main(out: Console<Write>):
+    out.print_int(1)

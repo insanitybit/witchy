@@ -1,0 +1,51 @@
+// Refused (adversarial review of the key law, p_query_eq_map): accepted before, with two equal keys hashing apart.
+import console
+import hash
+import hashmap
+import keymap
+import discard
+
+type Key derive(Discard):
+    id: U64
+
+impl Eq for Key:
+    fn eq(self: &Key, other: &Key) -> Bool:
+        return (*self).id == (*other).id
+
+impl HashKey for Key:
+    fn feed(self: &Key, state: &mut HashState):
+        (*self).id.feed(state)
+
+type Q:
+    id: U64
+
+impl Eq for Q:
+    fn eq(self: &Q, other: &Q) -> Bool:
+        return (*self).id == (*other).id
+
+impl HashKey for Q:
+    fn feed(self: &Q, state: &mut HashState):
+        (*self).id.feed(state)
+
+impl Equivalent<Key> for Q:
+    fn equivalent(self: &Q, key: &Key) -> Bool:
+        return (*self).id + 1 == (*key).id
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): KeyMap<Key, U64> = KeyMap.new(&allocator, 64, Reference(1)) else Err(code):
+        return
+    var map = move made
+    match map.put(&allocator, Key(id: 7), 42):
+        Ok:
+            ()
+        Err(entry):
+            entry.discard()
+    let q = Q(id: 6)
+    if q.equivalent(&Key(id: 7)):
+        console.print_int(1)
+    match map.get(&q):
+        Ok(v):
+            console.print_int(*v)
+        Err(code):
+            console.print_int(0)
+    map.discard()

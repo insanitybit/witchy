@@ -1,0 +1,93 @@
+// `join` runs tasks concurrently inside a task: each round steps every one not finished until
+// it waits, then the running task waits on all of what they wait for (each but the last
+// handed on as ALSO), and reports pass through. A join inside a joined task (`pair`) hands
+// its waits on the same way. Printed: a wait as itself, ALSO e as 1000 + e, a report v as
+// 2000 + v. The program's own `first` is the one a task runs, not the library's.
+import console
+import tasks
+import vec
+
+fn first(n: U64) suspends:
+    pause(n)
+    report(1)
+    pause(n + 1)
+
+fn second(n: U64) suspends:
+    pause(n)
+
+fn third(n: U64) suspends:
+    pause(n)
+    pause(n + 1)
+    pause(n + 2)
+
+// Closes tasks that have all finished.
+fn close_tasks(tasks: Vec<Task>):
+    var left = move tasks
+    while left.len() > 0:
+        match left.take_last_mut():
+            Ok(task):
+                task.close()
+            Err(code):
+                unreachable
+    left.release_empty()
+
+// Keeps `made` in `tasks` (which has room), or closes it.
+fn keep(tasks: &mut Vec<Task>, made: Result<Task, U64>):
+    match move made:
+        Ok(task):
+            match tasks.push_spare_mut(move task):
+                Ok:
+                    return
+                Err(back):
+                    back.close()
+        Err(input):
+            return
+
+// Two tasks joined inside a joined task.
+fn pair(allocator: Allocator) suspends:
+    let Ok(made): Vec<Task> = Vec.new(&allocator, 2) else Err(code):
+        return
+    var tasks = move made
+    keep(&mut tasks, Task.spawn(&allocator, 1024, second, 40))
+    keep(&mut tasks, Task.spawn(&allocator, 1024, third, 50))
+    let joined = join(tasks.as_mut_slice())
+    close_tasks(move tasks)
+
+fn parent(allocator: Allocator) suspends:
+    let Ok(made): Vec<Task> = Vec.new(&allocator, 3) else Err(code):
+        return
+    var tasks = move made
+    keep(&mut tasks, Task.spawn(&allocator, 1024, first, 10))
+    keep(&mut tasks, Task.spawn(&allocator, 1024, second, 20))
+    let Ok(inner): Task = Task.spawn(&allocator, 4096, pair, move allocator) else Err(given):
+        close_tasks(move tasks)
+        return
+    match tasks.push_spare_mut(move inner):
+        Ok:
+            match join(tasks.as_mut_slice()):
+                Ok:
+                    report(tasks.len())
+                Err(count):
+                    report(count)
+        Err(back):
+            back.close()
+    close_tasks(move tasks)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Task = Task.spawn(&allocator, 16384, parent, move allocator) else Err(given):
+        return
+    var task = move made
+    var going = true
+    while going:
+        match task.step():
+            Ok:
+                going = false
+            Err(token):
+                if token >= REPORTED:
+                    console.print_int(2000 + token - REPORTED)
+                else:
+                    if token >= ALSO:
+                        console.print_int(1000 + token - ALSO)
+                    else:
+                        console.print_int(token)
+    task.close()

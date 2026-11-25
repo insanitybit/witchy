@@ -1,0 +1,52 @@
+// Each line: `E <hex>` writes those bytes as base64; `D <base64>` writes the bytes it encodes as
+// hex; a refused input says where.
+import console
+import string
+import span
+import vec
+import encoding
+import text
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(e):
+        return
+    var line = move made
+    let Ok(o): String = String.new(&allocator) else Err(e):
+        line.close()
+        return
+    var out = move o
+    while true:
+        line.clear()
+        match input.read_line(&allocator, &mut line):
+            .Line:
+                out.clear()
+                let whole = line.span()
+                let body = whole.part(2, whole.len())
+                if line.starts_with_text("E"):
+                    match decode_hex(&allocator, body.as_bytes()):
+                        Ok(bytes):
+                            if let Err(_) = push_base64(&mut out, &allocator, bytes.as_slice()):
+                                console.line("no room")
+                            bytes.close()
+                            console.write_string(&out)
+                            console.line("")
+                        Err(at):
+                            console.print("bad hex at ${at}")
+                else:
+                    match decode_base64(&allocator, body.as_bytes()):
+                        Ok(bytes):
+                            if let Err(_) = push_hex(&mut out, &allocator, bytes.as_slice()):
+                                console.line("no room")
+                            bytes.close()
+                            console.write_string(&out)
+                            console.line("")
+                        Err(at):
+                            console.print("bad base64 at ${at}")
+            .End:
+                break
+            .NotText:
+                break
+            .NoRoom:
+                break
+    out.close()
+    line.close()

@@ -1,0 +1,9 @@
+// A function using a capability it was not given says to take it as a parameter.
+import console
+
+fn main(console: Console<Write>):
+    console.print("hi")
+    helper()
+
+fn helper():
+    console.print("x")

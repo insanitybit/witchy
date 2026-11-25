@@ -1,0 +1,13 @@
+// Explicit pointer diagnostics. Release does not inspect the pointer bits.
+import "wasm-console.wy"
+
+pub fn write_weak<T: Any>(console: &Console<Write>, pointer: Weak<T>):
+    static if target.profile == .Debug:
+        console.write("0x")
+        let bits = U32.to_u64(memory.weak_bits(pointer))
+        for i in 0..8:
+            let digit = (bits >> ((7 - i) * 4)) % 16
+            let byte = if digit < 10: digit + 48 else: digit + 87
+            console.print_byte(U8.truncate(byte))
+    else:
+        console.write("0x0000")

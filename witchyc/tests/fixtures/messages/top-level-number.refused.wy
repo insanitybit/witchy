@@ -1,0 +1,7 @@
+// Refused, naming what was found where a declaration goes: a number, not "something else".
+import console
+
+fn main(console: Console<Write>):
+    console.print_int(1)
+
+42

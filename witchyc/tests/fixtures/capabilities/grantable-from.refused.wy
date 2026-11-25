@@ -1,0 +1,5 @@
+// Refused: a grantable capability declares its fields; one made `from` a host capability
+// would wrap authority.
+grantable capability Wrapped from Net
+fn main():
+    return

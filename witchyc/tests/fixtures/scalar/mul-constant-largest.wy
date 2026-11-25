@@ -1,0 +1,6 @@
+// x * 31 at the largest x it fits: the constant multiplier's check (x > MAX / 31) lets it by.
+import console
+
+fn main(console: Console<Write>):
+    var x: U64 = 595056260442243600
+    console.print_int(x * 31)

@@ -1,0 +1,96 @@
+// A helper that calls helpers has a summary when each of them has one: the caller's proof
+// follows the values through both bodies, as it does through one.
+import "../../../library/wasm-string.wy"
+
+type Slot<T>:
+    Vacant
+    Full(T)
+
+type Shelf<T>:
+    count: U64
+    slot: Slot<T>
+
+type Both<T>:
+    first: Slot<T>
+    second: Slot<T>
+
+nopanic fn drain<T: Any>(slot: &mut Slot<T>) -> Slot<T>:
+    var previous: Slot<T> = Vacant
+    memory.exchange(&mut *slot, &mut previous)
+    return move previous
+
+nopanic fn put<T: Any>(slot: &mut T, next: T) -> T:
+    var held = move next
+    memory.exchange(slot, &mut held)
+    return move held
+
+// Helpers of helpers: each body is a call of one that only moves values.
+nopanic fn empty<T: Any>(slot: &mut Slot<T>) -> Slot<T>:
+    return drain(&mut *slot)
+
+nopanic fn stuff<T: Any>(slot: &mut Slot<T>, item: T) -> Slot<T>:
+    let previous = put(&mut *slot, Full(move item))
+    return move previous
+
+// The slot is proved vacant at the assignment through `empty`, which only calls `drain`.
+nopanic fn swap_in<T: Any>(shelf: &mut Shelf<T>, item: T) -> Slot<T>:
+    let held = empty(&mut (*shelf).slot)
+    (*shelf).slot = Full(move item)
+    return move held
+
+// What `stuff` hands back from an emptied slot is vacant; what `empty` then takes is `a`.
+nopanic fn swap_twice<T: Any>(shelf: &mut Shelf<T>, a: T, b: T) -> Both<T>:
+    let first = empty(&mut (*shelf).slot)
+    memory.vacant(stuff(&mut (*shelf).slot, move a))
+    let second = empty(&mut (*shelf).slot)
+    (*shelf).slot = Full(move b)
+    return Both(move first, move second)
+
+fn word(allocator: &Allocator, count: U64) -> Result<String, U64>:
+    var out = String.new(allocator)?
+    for index in 0..count:
+        match out.push_scalar(allocator, 97):
+            Ok(grown):
+                out = move grown
+            Err(original):
+                original.close()
+                return Err(900)
+    return Ok(move out)
+
+fn show(out: &Console<Write>, slot: Slot<String>):
+    match move slot:
+        Vacant:
+            out.print_int(0)
+        Full(text):
+            out.print_int(text.byte_len())
+            text.close()
+
+fn run(out: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    var shelf: Shelf<String> = Shelf(0, Vacant)
+    match word(allocator, 3):
+        Ok(text):
+            show(out, swap_in(&mut shelf, move text))
+        Err(code):
+            out.print_int(code)
+    match word(allocator, 4):
+        Ok(a):
+            match word(allocator, 5):
+                Ok(b):
+                    let Both(first, second) = swap_twice(&mut shelf, move a, move b)
+                    show(out, move first)
+                    show(out, move second)
+                Err(code):
+                    a.close()
+                    out.print_int(code)
+        Err(code):
+            out.print_int(code)
+    let Shelf(count, slot) = move shelf
+    show(out, move slot)
+    return Ok(())
+
+fn main(out: Console<Write>, allocator: Allocator):
+    match run(&out, &allocator):
+        Ok:
+            out.print_int(1)
+        Err(code):
+            out.print_int(code)

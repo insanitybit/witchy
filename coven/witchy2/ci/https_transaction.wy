@@ -1,0 +1,81 @@
+import "http_request.wy"
+import "https_stream.wy"
+import tls
+import local_service
+import span
+import string
+import text
+import vec
+
+pub fn request_challenge(service: &LocalService, reply: &mut [U8]) -> Result<U64, U64>:
+    let request: [U8; 1] = ['C']
+    return transaction_reply(service.exchange(request.slice(), reply), reply)
+
+pub fn transact(service: &LocalService, stream: &mut SecureSession, request: CiRequest, reply: &mut [U8], plaintext: &mut [U8], wire: &mut [U8], allocator: &Allocator) -> Result<U64, U64>:
+    let prefix = transaction_header(request.route, request.headers, allocator)?
+    let prepared = packet(&prefix, request.length, allocator)
+    let prefix_length = prefix.byte_len()
+    prefix.close()
+    let Ok(buffer): Vec<U8> = move prepared else Err(status):
+        return Err(status)
+    var payload = move buffer
+    let read = receive_ci_body(stream, request.initial, payload.as_mut_slice().part(prefix_length, prefix_length + request.length), plaintext, wire)
+    if let Err(status) = read:
+        payload.close()
+        return Err(status)
+    let sent = service.exchange(payload.as_slice(), reply)
+    payload.close()
+    return transaction_reply(sent, reply)
+
+fn transaction_reply(sent: Result<U64, U64>, reply: &[U8]) -> Result<U64, U64>:
+    let Ok(length): U64 = sent else Err(code):
+        return Err(503)
+    let result = reply[0]
+    match result:
+        0:
+            if length <= 1:
+                return Err(503)
+            return Ok(length)
+        1:
+            return Err(403)
+        _:
+            return Err(503)
+
+fn packet(prefix: &String, length: U64, allocator: &Allocator) -> Result<Vec<U8>, U64>:
+    let Ok(empty): Vec<U8> = Vec.filled(allocator, prefix.byte_len() + length, 0) else Err(code):
+        return Err(503)
+    var payload = move empty
+    payload.as_mut_slice().part(0, prefix.byte_len()).copy_from(prefix.as_bytes())
+    return Ok(move payload)
+
+fn transaction_header(route: CiRoute, headers: Span, allocator: &Allocator) -> Result<String, U64>:
+    let Ok(empty): String = String.with_capacity(allocator, 15000) else Err(code):
+        return Err(503)
+    var prefix = move empty
+    if let Err(status) = append_transaction(&mut prefix, route, headers, allocator):
+        prefix.close()
+        return Err(status)
+    return Ok(move prefix)
+
+fn append_transaction(prefix: &mut String, route: CiRoute, headers: Span, allocator: &Allocator) -> Result<(), U64>:
+    match route:
+        Stage:
+            prefix.push_text(allocator, "S\n")?
+        Receipt:
+            prefix.push_text(allocator, "R\n")?
+        _:
+            return Err(404)
+    let authorization = ci_header(headers, "authorization")?
+    if !authorization.starts_with_text("Bearer "):
+        return Err(403)
+    append_field(prefix, authorization.part(7, authorization.len()), 8192, allocator)?
+    append_field(prefix, ci_header(headers, "coven-nonce")?, 121, allocator)?
+    append_field(prefix, ci_header(headers, "coven-package")?, 64, allocator)?
+    append_field(prefix, ci_header(headers, "coven-digest")?, 103, allocator)?
+    return append_field(prefix, ci_header(headers, "coven-proof")?, 6170, allocator)
+
+fn append_field(output: &mut String, value: Span, limit: U64, allocator: &Allocator) -> Result<(), U64>:
+    if value.is_empty() || value.len() > limit:
+        return Err(403)
+    output.push_utf8_slice(allocator, value.as_bytes())?
+    return output.push_text(allocator, "\n")

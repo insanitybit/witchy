@@ -1,0 +1,11 @@
+fn prefix(source: &Buffer<U8>, count: U64, kept: U64):
+    requires kept <= count
+    requires memory.utf8(source, 0, count)
+    requires memory.utf8_boundary(source, kept)
+    ensures memory.utf8(source, 0, kept)
+    proof:
+        auto
+    return
+
+fn main():
+    return

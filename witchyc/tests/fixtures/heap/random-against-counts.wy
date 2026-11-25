@@ -1,0 +1,45 @@
+// Random pushes and pops on the library Heap against a count of each value: every pop must give
+// the least value present.
+import console
+import heap
+import sort
+import discard
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Heap<U64> = Heap.new(&allocator) else Err(c):
+        return
+    var h = move made
+    var count: [U64; 64] = [0; 64]
+    var size: U64 = 0
+    var seed: U64 = 99
+    var wrong: U64 = 0
+    for step in 0..30000:
+        seed = seed * 48271 % 2147483647
+        if seed % 5 < 3 && size < 200:
+            let v = (seed / 5) % 64
+            match h.push(&allocator, v):
+                Ok:
+                    count[v] += 1
+                    size += 1
+                Err(back):
+                    wrong += 1
+        else:
+            match h.pop():
+                Ok(v):
+                    var least: U64 = 64
+                    for k in 0..64:
+                        if least == 64 && count[k] > 0:
+                            least = k
+                    if v != least:
+                        wrong += 1
+                    if v < 64 && count[v] > 0:
+                        count[v] -= 1
+                    size -= 1
+                Err(e):
+                    if size != 0:
+                        wrong += 1
+        if h.len() != size:
+            wrong += 1
+    console.print("${wrong} wrong, ${size} held")
+    let rest = h.into_vec()
+    rest.discard()

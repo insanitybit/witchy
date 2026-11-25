@@ -1,0 +1,17 @@
+// A typed refutable `let`: the written type reaches the generic call, and the failure arm leaves.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-vec.wy"
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(items): Vec<U64> = Vec.new(&allocator, 4) else Err(code):
+        console.print_int(code)
+        return
+    let Ok(more): Vec<U64> = Vec.new(&allocator, 2) else Err(code):
+        items.close()
+        return
+    var list = move items
+    let _ = list.push_mut(&allocator, 3)
+    console.print_int(list.len())
+    console.print_int(more.capacity())
+    list.close()
+    more.close()

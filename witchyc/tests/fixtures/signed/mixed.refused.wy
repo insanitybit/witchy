@@ -1,0 +1,8 @@
+// An I64 and a U64 do not meet in one operation.
+import "../../../library/wasm-int.wy"
+
+fn f(a: I64, b: U64) -> I64:
+    return a + b
+
+fn main(console: Console<Write>):
+    console.print_i64(f(1, 2))

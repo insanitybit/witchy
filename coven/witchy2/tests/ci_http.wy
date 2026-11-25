@@ -1,0 +1,111 @@
+import "../ci/http_request.wy"
+import "../ci/http_response.wy"
+import "../tuf_get_head.wy"
+import span
+import string
+import text
+import testing
+
+fn check(allocator: &Allocator, wire: Text, status: U64, length: U64, initial: U64, site: U64 = source_site()) -> Result<(), Failure>:
+    let made = testing.set_up(String.with_capacity(allocator, wire.byte_len()))?
+    var request = move made
+    if let Err(code) = request.push_text(allocator, wire):
+        request.close()
+        return Err(Failure(7, site, code, 0))
+    let authority: [U8; 9] = [108, 111, 99, 97, 108, 104, 111, 115, 116]
+    let checked = check_request(request.span(), Span.of(authority.slice()), status, length, initial)
+    request.close()
+    return checked
+
+fn check_request(request: Span, authority: Span, status: U64, length: U64, initial: U64) -> Result<(), Failure>:
+    match ci_request(request, authority):
+        Ok(found):
+            testing.eq_u64(status, 200)?
+            testing.eq_u64(found.length, length)?
+            return testing.eq_u64(found.initial.len(), initial)
+        Err(code):
+            return testing.eq_u64(code, status)
+
+test fn ci_http_splits_the_body_from_the_https_headers(allocator: &Allocator) -> Result<(), Failure>:
+    check(allocator, "POST /v1/ci/challenge HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n", 200, 0, 0)?
+    return check(allocator, "POST /v1/ci/stage HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/octet-stream\r\nContent-Length: 5\r\n\r\nabc", 200, 5, 3)
+
+test fn ci_http_rejects_ambiguous_or_unbounded_framing(allocator: &Allocator) -> Result<(), Failure>:
+    check(allocator, "POST /v1/ci/challenge HTTP/1.1\r\nHost: localhost\r\ncontent-length: 0\r\nContent-Length: 0\r\n\r\n", 400, 0, 0)?
+    check(allocator, "POST /v1/ci/challenge HTTP/1.1\r\nHost : localhost\r\nContent-Length: 0\r\n\r\n", 400, 0, 0)?
+    check(allocator, "POST /v1/ci/challenge HTTP/1.1\r\nHost: localhost\r\nTransfer-Encoding: chunked\r\nContent-Length: 0\r\n\r\n", 400, 0, 0)?
+    check(allocator, "POST /v1/ci/challenge HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\nx", 400, 0, 0)?
+    return check(allocator, "POST /v1/ci/stage HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1048577\r\n\r\n", 413, 0, 0)
+
+test fn ci_http_binds_the_origin_and_exact_route(allocator: &Allocator) -> Result<(), Failure>:
+    check(allocator, "POST /v1/ci/challenge HTTP/1.1\r\nHost: other\r\nContent-Length: 0\r\n\r\n", 421, 0, 0)?
+    return check(allocator, "POST /v1/ci/%63hallenge HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\r\n", 404, 0, 0)
+
+test fn ci_client_requires_a_single_fixed_length_json_response(allocator: &Allocator) -> Result<(), Failure>:
+    reply(allocator, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}", 200, 2)?
+    reply(allocator, "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: 0\r\n\r\n", 403, 0)?
+    reply(allocator, "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}", 403, 2)?
+    reply(allocator, "HTTP/1.1 307 Temporary Redirect\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}", 0, 0)?
+    reply(allocator, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\nTransfer-Encoding: chunked\r\n\r\n", 0, 0)?
+    reply(allocator, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\ncontent-length: 2\r\n\r\n{}", 0, 0)?
+    reply(allocator, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: 2\r\n\r\n{}", 0, 0)?
+    reply(allocator, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 02\r\n\r\n{}", 0, 0)?
+    reply(allocator, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length:\t2\r\n\r\n{}", 0, 0)?
+    reply(allocator, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{}", 0, 0)?
+    return reply(allocator, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}x", 0, 0)
+
+fn reply(allocator: &Allocator, wire: Text, status: U64, length: U64) -> Result<(), Failure>:
+    let empty = testing.set_up(String.with_capacity(allocator, wire.byte_len()))?
+    var raw = move empty
+    if let Err(code) = raw.push_text(allocator, wire):
+        raw.close()
+        return testing.ok(false)
+    let checked = check_reply(raw.span(), status, length)
+    raw.close()
+    return checked
+
+fn check_reply(bytes: Span, status: U64, length: U64) -> Result<(), Failure>:
+    let Ok(fence): U64 = bytes.find_text("\r\n\r\n", 0) else Err(reason):
+        return testing.ok(false)
+    match response(bytes, fence):
+        Ok(found):
+            testing.eq_u64(found.status, status)?
+            return testing.eq_u64(found.length, length)
+        Err(reason):
+            return testing.eq_u64(status, 0)
+
+test fn tuf_https_distinguishes_length_and_protected_close_framing(allocator: &Allocator) -> Result<(), Failure>:
+    get_reply(allocator, "HTTP/1.1 200 OK\r\nContent-Length: 3\r\n\r\nabc", 200, true, 3)?
+    get_reply(allocator, "HTTP/1.1 200 OK\r\nConnection: close\r\n\r\nabc", 200, false, 0)?
+    get_reply(allocator, "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n", 404, true, 0)?
+    get_reply(allocator, "HTTP/1.1 302 Found\r\nContent-Length: 0\r\n\r\n", 0, false, 0)?
+    get_reply(allocator, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nContent-Length: 2\r\n\r\n", 0, false, 0)?
+    get_reply(allocator, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n", 0, false, 0)?
+    get_reply(allocator, "HTTP/1.1 200 OK\r\nContent-Length: 2097153\r\n\r\n", 0, false, 0)?
+    get_reply(allocator, "HTTP/1.1 200 OK\r\nContent-Length: 0000002\r\n\r\nab", 200, true, 2)?
+    get_reply(allocator, "HTTP/1.1 200 OK\r\nContent-Length: 00000002\r\n\r\nab", 0, false, 0)?
+    get_reply(allocator, "HTTP/1.1 200 OK\r\nContent-Length: \t\r\n\r\n", 0, false, 0)?
+    get_reply(allocator, "HTTP/1.1 200 OK\r\nContent-Length:\t2\r\n\r\nab", 0, false, 0)?
+    get_reply(allocator, "HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\n\r\n", 0, false, 0)?
+    return get_reply(allocator, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nabc", 0, false, 0)
+
+fn get_reply(allocator: &Allocator, wire: Text, status: U64, fixed: Bool, length: U64) -> Result<(), Failure>:
+    let empty = testing.set_up(String.with_capacity(allocator, wire.byte_len()))?
+    var raw = move empty
+    if let Err(code) = raw.push_text(allocator, wire):
+        raw.close()
+        return testing.ok(false)
+    let checked = check_get_reply(raw.span(), status, fixed, length)
+    raw.close()
+    return checked
+
+fn check_get_reply(bytes: Span, status: U64, fixed: Bool, length: U64) -> Result<(), Failure>:
+    let Ok(fence): U64 = bytes.find_text("\r\n\r\n", 0) else Err(reason):
+        return testing.ok(false)
+    match get_head(bytes, fence):
+        Ok(head):
+            testing.eq_u64(head.status, status)?
+            testing.ok(head.fixed == fixed)?
+            return testing.eq_u64(head.length, length)
+        Err(reason):
+            return testing.eq_u64(status, 0)

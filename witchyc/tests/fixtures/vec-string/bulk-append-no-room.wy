@@ -1,0 +1,32 @@
+// The bulk copy with no room (Astra's proof-budget review): with a small heap, appending a String
+// to itself's copy until an append is refused; the refused append returns false and leaves the
+// target as it was (same length, same last bytes), and the source is unchanged.
+import console
+import string
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var target = move made
+    let Ok(made_piece): String = String.new(&allocator) else Err(code):
+        target.close()
+        return
+    var piece = move made_piece
+    if let Err(_) = piece.push_text(&allocator, "0123456789abcdef"):
+        console.line("no piece")
+    var appended: U64 = 0
+    var refused = false
+    while !refused && appended < 100000:
+        let before = target.byte_len()
+        if let Ok(_) = target.push_string(&allocator, &piece):
+            appended += 1
+        else:
+            refused = true
+            if target.byte_len() == before && before == appended * 16:
+                console.line("unchanged")
+    if refused && appended > 0:
+        console.line("refused after some")
+    console.write_string(&piece)
+    console.line("")
+    target.close()
+    piece.close()

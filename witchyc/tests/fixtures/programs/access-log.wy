@@ -1,0 +1,83 @@
+// A request log written through a Dir<Write> and summarized through a Dir<Read>: each line is
+// `path millis`; the summary counts requests per path and their total time as a Duration.
+import console
+import fs
+import hashmap
+import span
+import string
+import text
+import time
+
+fn write_log(dir: &Dir<Write>, allocator: &Allocator) -> Result<(), FsError>:
+    let lines: [(Text, U64); 5] = [("/home", 120), ("/api", 45), ("/home", 80), ("/api", 15), ("/login", 300)]
+    let Ok(made): String = String.new(allocator) else Err(code):
+        return Ok(())
+    var out = move made
+    for (path, ms) in lines:
+        if let Err(_) = out.push_format(allocator, "${path} ${ms}\n"):
+            out.close()
+            return Ok(())
+    let written = dir.write_text("access.log", &out)
+    out.close()
+    written
+
+type Tally derive(Discard):
+    hits: U64
+    spent: Duration
+
+// One line's path and time into the tallies; the path is kept as a key or closed.
+fn count(tallies: &mut HashMap<String, Tally>, path: String, spent: Duration):
+    match tallies.get_mut(&path):
+        Ok(tally):
+            *tally = Tally(hits: tally.hits + 1, spent: tally.spent + spent)
+            path.close()
+        Err(code):
+            match tallies.insert(move path, Tally(hits: 1, spent: spent)):
+                Ok:
+                    return
+                Err(back):
+                    let Entry(key, value) = move back
+                    key.close()
+
+fn summarize(console: &Console<Write>, dir: &Dir<Read>, allocator: &Allocator) -> Result<(), FsError>:
+    let log = dir.read_text(allocator, "access.log")?
+    let Ok(made): HashMap<String, Tally> = HashMap.new(allocator, 8) else Err(code):
+        log.close()
+        return Ok(())
+    var tallies = move made
+    var total = 0ms
+    var cursor: U64 = 0
+    while cursor < log.byte_len():
+        let Ok(line): String = log.field(allocator, '\n', &mut cursor) else Err(code):
+            break
+        var at: U64 = 0
+        let Ok(path): String = line.field(allocator, ' ', &mut at) else Err(code):
+            line.close()
+            break
+        let Ok(number): String = line.field(allocator, ' ', &mut at) else Err(code):
+            path.close()
+            line.close()
+            break
+        match number.parse_u64():
+            Ok(ms):
+                let spent = Duration.from_ms(ms)
+                total += spent
+                count(&mut tallies, move path, spent)
+            Err(code):
+                path.close()
+        number.close()
+        line.close()
+    var at: U64 = 0
+    while let Ok(entry) = tallies.next(&mut at):
+        console.print("${entry.key.span()}: ${entry.value.hits} in ${entry.value.spent}")
+    console.print("${tallies.len()} paths, ${total} in all")
+    log.close()
+    tallies.discard()
+    Ok(())
+
+fn main(console: Console<Write>, dir: Dir, allocator: Allocator):
+    if write_log(&dir, &allocator).is_err():
+        console.line("could not write the log")
+        return
+    if summarize(&console, &dir, &allocator).is_err():
+        console.line("could not read the log")

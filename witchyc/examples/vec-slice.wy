@@ -1,0 +1,73 @@
+type Sequence<T>:
+    data: Buffer<T>
+    length: USize
+    capacity: USize
+    invariant storage(data, length, capacity)
+
+type Rejected<T>:
+    sequence: Sequence<T>
+    item: T
+
+type Popped<T>:
+    sequence: Sequence<T>
+    item: Option<T>
+
+fn sequence_new<T>(capacity: USize) -> Result<Sequence<T>, AllocError>:
+    let data: Buffer<T> = memory.try_alloc(capacity)?
+    return Ok(Sequence(move data, 0, capacity))
+
+type Measured<T>:
+    sequence: Sequence<T>
+    length: USize
+
+fn sequence_len<T>(input: Sequence<T>) -> Measured<T>:
+    let length = input.length
+    return Measured(move input, length)
+
+fn sequence_push_spare<T>(input: Sequence<T>, item: T) -> Result<Sequence<T>, Rejected<T>>:
+    var sequence = move input
+    if sequence.length < sequence.capacity:
+        if memory.loan_room(1):
+            memory.init(&mut sequence.data, sequence.length, move item)
+            sequence.length += 1
+            return Ok(move sequence)
+    return Err(Rejected(move sequence, move item))
+
+fn sequence_pop<T>(input: Sequence<T>) -> Result<Popped<T>, Sequence<T>>:
+    var sequence = move input
+    if memory.loan_room(1):
+        if sequence.length == 0:
+            return Ok(Popped(move sequence, None))
+        sequence.length -= 1
+        let item: T = memory.take(&mut sequence.data, sequence.length) by take_last_initialized
+        return Ok(Popped(move sequence, Some(move item)))
+    return Err(move sequence)
+
+fn sequence_release<T>(input: Sequence<T>) -> Result<(), Sequence<T>>:
+    if input.length == 0:
+        memory.release(input.data)
+        return Ok(())
+    return Err(move input)
+
+fn main(console: Console<Write>):
+    let created: Result<Sequence<U64>, AllocError> = sequence_new(2)
+    match created:
+        Ok(initial):
+            match sequence_push_spare(move initial, 73):
+                Ok(occupied):
+                    let measured = sequence_len(move occupied)
+                    console.print_int(measured.length)
+                    match sequence_pop(move measured.sequence):
+                        Ok(popped):
+                            match popped.item:
+                                Some(item):
+                                    console.print_int(item)
+                                None:
+                                    console.print_int(0)
+                            discard(sequence_release(move popped.sequence))
+                        Err(unchanged):
+                            discard(sequence_release(move unchanged))
+                Err(rejected):
+                    discard(sequence_release(move rejected.sequence))
+        Err(reason):
+            console.print_int(0)

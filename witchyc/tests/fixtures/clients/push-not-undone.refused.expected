@@ -1,0 +1,2 @@
+proof failed: function `push_two`
+  not proved: ensures result || items.len() == old(items.len())

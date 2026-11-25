@@ -1,0 +1,25 @@
+import "@sqlite"
+import console
+import string
+
+fn main(db: Sqlite, output: Console<Write>, allocator: Allocator):
+    if let Err(code) = read_sample(&db, &output, &allocator):
+        output.line("sample unavailable")
+
+fn read_sample(db: &Sqlite, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let empty = String.new(allocator)?
+    var plan = move empty
+    if let Err(code) = plan.push_text(allocator, "result\tmissing_sample\tSELECT CAST(value AS BLOB) FROM items WHERE name = 'sample'\n"):
+        plan.close()
+        return Err(code)
+    let empty_bytes: [U8; 1] = [0]
+    let no_arguments = empty_bytes.slice().part(0, 0)
+    var reply: [U8; 256] = [0; 256]
+    let checked = db.transact_checked(plan.as_bytes(), no_arguments, no_arguments, reply.slice_mut())
+    plan.close()
+    let Ok(count): U64 = checked else Err(reason):
+        return Err(1)
+    for i in 1..(count + 1):
+        output.print_byte(reply[i])
+    output.print_byte(10)
+    return Ok(())

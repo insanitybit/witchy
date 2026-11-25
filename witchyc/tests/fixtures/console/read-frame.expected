@@ -1,0 +1,10 @@
+optional empty frame
+optional frame
+empty frame
+exact frame left binary body
+valid UTF-8 frame
+invalid UTF-8 frame
+overflow consumed only the first extra byte
+unterminated frame refused
+optional frame ended cleanly
+required frame refused EOF

@@ -1,0 +1,18 @@
+// A branch that still reads `item` cannot close the container first.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-vec.wy"
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var items: Vec<U64> = match Vec.new(&allocator, 4):
+        Ok(made):
+            move made
+        Err(reason):
+            return
+    let _ = items.push_mut(&allocator, 4)
+    let _ = items.push_mut(&allocator, 7)
+    for item in &items:
+        if *item == 7:
+            items.close()
+            console.print_int(*item)
+            return
+    items.close()

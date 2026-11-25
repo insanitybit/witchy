@@ -1,0 +1,26 @@
+// Without asking `len`, nothing shows `index < self.len()`.
+import console
+
+trait Sized:
+    pure fn len(self: &Self) -> U64
+    fn get(self: &Self, index: U64) -> U64:
+        requires index < self.len()
+        ensures result >= index
+
+type Few:
+    count: U64
+    value: U64
+
+impl Sized for Few:
+    pure fn len(self: &Few) -> U64:
+        return self.count
+    fn get(self: &Few, index: U64) -> U64:
+        return index
+
+fn last<T: Sized>(items: &T) -> U64:
+    let n = items.len()
+    return items.get(n)
+
+fn main(console: Console<Write>):
+    let few = Few(3, 10)
+    console.print_int(last(&few))

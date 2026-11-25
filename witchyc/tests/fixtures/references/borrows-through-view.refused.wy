@@ -1,0 +1,42 @@
+// Review of `borrows`: a reference read out of a view passed by reference carried no loan, so
+// the clause check at `return` passed, and a caller trusting `borrows Source from input` closed
+// what the view pointed into while the text was in use. It now carries a loan of `cur`.
+import console
+import string
+
+type View:
+    s: &String
+
+type Piece:
+    Source(&String)
+    Other
+
+fn grab(input: &String, cur: &View) -> Piece:
+    borrows Source from input
+    return Source((*cur).s)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var victim = move made
+    let _ = victim.push_text(&allocator, "victim-text").is_ok()
+    let Ok(other): String = String.new(&allocator) else Err(code):
+        victim.close()
+        return
+    var input = move other
+    let Ok(fresh): String = String.new(&allocator) else Err(code):
+        victim.close()
+        input.close()
+        return
+    var reuse = move fresh
+    var v = View(&victim)
+    match grab(&input, &v):
+        Source(x):
+            victim.close()
+            let _ = reuse.push_text(&allocator, "OVERWRITTEN")
+            console.write_string(x)
+            console.line("")
+        Other:
+            victim.close()
+    input.close()
+    reuse.close()

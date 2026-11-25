@@ -1,0 +1,9 @@
+// Refused, naming the methods the type has that are nearest what was written.
+import console
+import vec
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.new(&allocator, 2) else Err(code):
+        return
+    let m = move made
+    let x = m.lenght()

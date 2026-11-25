@@ -1,0 +1,16 @@
+// A loop's element reference is interpolated as the value it points at (`${x}` of a `&U64`).
+import console
+import vec
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.new(&allocator, 4) else Err(c):
+        return
+    var v = move made
+    let a = v.push_mut(&allocator, 3)
+    let b = v.push_mut(&allocator, 4)
+    for x in &v:
+        console.print("item ${x}")
+    let nums: [U64; 2] = [7, 8]
+    for n in nums:
+        console.print("n=${n}")
+    v.close()

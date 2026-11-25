@@ -1,0 +1,7 @@
+// The other file's `ticks`.
+gen fn ticks(n: U64) -> U64:
+    yield n + 1000
+pub fn second(n: U64) -> U64:
+    for v in ticks(n):
+        return v
+    return 0

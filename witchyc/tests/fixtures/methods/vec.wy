@@ -1,0 +1,37 @@
+// A method added to the library's Vec by its user, beside the library's own (`len`,
+// `push`, `close`). A method can carry a contract and a proof like any function; `self`
+// is an ordinary first parameter.
+import "../../../library/wasm-vec.wy"
+
+impl<T> Vec<T>:
+    fn push_pair(self: Vec<T>, allocator: &Allocator, first: T, second: T) -> Result<Vec<T>, VecPushError<T>>:
+        ensures match result:
+            Ok(output):
+                output.length == old(self.length) + 2
+            Err(failure):
+                true
+        proof:
+            auto
+        let one = Vec.push(move self, allocator, first)?
+        let two = Vec.push(move one, allocator, second)?
+        return Ok(move two)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<Vec<U64>, U64> = Vec.new(&allocator, 0)
+    let Ok(empty) = move made else Err(code):
+        console.print_int(code)
+        return
+    match empty.push_pair(&allocator, 11, 12):
+        Ok(pair):
+            console.print_int(pair.len())
+            match pair.push_pair(&allocator, 13, 14):
+                Ok(four):
+                    console.print_int(four.len())
+                    Vec.close(move four)
+                Err(failure):
+                    let VecPushError(vector, item) = move failure
+                    Vec.close(move vector)
+        Err(failure):
+            let VecPushError(vector, item) = move failure
+            console.print_int(902)
+            Vec.close(move vector)

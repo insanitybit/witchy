@@ -1,0 +1,1 @@
+proof failed: in function `last`, a call to `Sized.get` does not establish the callee's `requires`

@@ -1,0 +1,39 @@
+fn main(console: Console<Write>):
+    let allocation: Result<Vec<U32>, AllocError> = vec_new(0)
+    match allocation:
+        Ok(vector):
+            let last: U32 = 1024
+            match vec_push(move vector, last):
+                Ok(once):
+                    let top: U32 = 4294967295
+                    match vec_push(move once, top):
+                        Ok(grown):
+                            match vec_pop(move grown):
+                                Ok(back):
+                                    match back.item:
+                                        Some(item):
+                                            console.print_int(U32.to_u64(item))
+                                        None:
+                                            console.print_int(90)
+                                    match vec_pop(move back.vector):
+                                        Ok(front):
+                                            match front.item:
+                                                Some(item):
+                                                    console.print_int(U32.to_u64(item))
+                                                None:
+                                                    console.print_int(91)
+                                            match vec_release(move front.vector):
+                                                Ok(done):
+                                                    console.print_int(42)
+                                                Err(kept):
+                                                    discard(move kept)
+                                        Err(kept):
+                                            discard(move kept)
+                                Err(kept):
+                                    discard(move kept)
+                        Err(failed):
+                            discard(move failed)
+                Err(failed):
+                    discard(move failed)
+        Err(reason):
+            console.print_int(92)

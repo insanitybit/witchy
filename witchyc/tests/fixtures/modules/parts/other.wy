@@ -1,0 +1,3 @@
+// A second module that also declares `area`.
+pub fn area(width: U64) -> U64:
+    return width * width

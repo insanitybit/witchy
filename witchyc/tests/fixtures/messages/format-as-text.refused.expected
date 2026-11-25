@@ -1,0 +1,1 @@
+a text with `${...}` is a format, not a `&str`; print it with `console.print(...)`

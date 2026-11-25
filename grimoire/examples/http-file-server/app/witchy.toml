@@ -1,0 +1,10 @@
+[run]
+entry = "main.wy"
+# Limits, not authority: the run stops after five minutes, and is not metered by instruction.
+deadline-ms = 300000
+fuel = "unmetered"
+
+[grants]
+document = "main.grants.toml"
+output = true
+allocator = true

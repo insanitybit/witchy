@@ -1,0 +1,16 @@
+// A program's own `hash_fold` does not stand in for the library's in a derived `Hash` (review):
+// the derived impl folds with `U64.fold_hash`, a method no free function can shadow.
+import console
+import hash
+
+fn hash_fold(a: U64, b: U64) -> U64:
+    return 1
+
+type P derive(Eq, Hash):
+    x: U64
+    y: U64
+
+fn main(console: Console<Write>):
+    let a = P(1, 2)
+    let b = P(3, 4)
+    console.print("${a.hash() == b.hash()} ${hash.hash_fold(1, 2) == 1}")

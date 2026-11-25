@@ -1,0 +1,20 @@
+// Construct every possible set of matching lanes. Use different target bytes in
+// each half so exchanging the two halves also fails the oracle.
+import simd
+import console
+
+fn main(console: Console<Write>):
+    var errors: U64 = 0
+    for mask in 0..65536:
+        var low: U64 = 0
+        var high: U64 = 0
+        for lane in 0..8:
+            if (mask & (1 << lane)) != 0:
+                low = low | (165 << (lane * 8))
+            if (mask & (1 << (lane + 8))) != 0:
+                high = high | (90 << (lane * 8))
+        let input = U8x16(low, high)
+        let target = U8x16(11936128518282651045, 6510615555426900570)
+        if input.eq_mask(target) != mask:
+            errors += 1
+    console.print_int(errors)

@@ -1,0 +1,13 @@
+// Refused: a recipe writing a field of a value of its `For` type, the user having chosen the
+// recipe module's sealed `Token` (review round 2 of definition-site resolution: 999 was minted).
+// Authority in a derived method is decided by the type: the `For` type is the user's choice.
+import "parts/forgew.wy"
+import console
+
+type T derive(forgew.Wr(for: forgew.Token)):
+    a: U64
+
+fn main(console: Console<Write>):
+    let t = T(a: 999)
+    let tok: forgew.Token = t.made(forgew.mint())
+    console.print("${forgew.redeem(&tok)}")

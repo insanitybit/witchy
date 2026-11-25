@@ -1,0 +1,12 @@
+import console
+
+fn self(a: U64) -> U64:
+    return 7
+
+pub trait Telling:
+    fn show(it: &Self, console: &Console<Write>)
+
+pub derive Shown:
+    impl Telling for Self:
+        fn show(it: &Self, console: &Console<Write>):
+            console.print("${self(1)}")

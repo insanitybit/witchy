@@ -1,0 +1,46 @@
+// The library sort against what a sort must do: 400 small inputs and one of 1,000.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-sort.wy"
+import "../../../library/wasm-vec.wy"
+
+// Sorts `count` numbers made from `seed`; answers 1 when the result is in order and
+// has the same sum and the same sum of squares modulo a prime.
+fn trial(allocator: &Allocator, count: U64, seed: U64, spread: U64) -> U64:
+    var numbers: Vec<U64> = match Vec.new(allocator, count):
+        Ok(made):
+            move made
+        Err(code):
+            return 0
+    var state = seed
+    var sum: U64 = 0
+    var squares: U64 = 0
+    for step in 0..count:
+        state = (state * 1103515245 + 12345) % 2147483648
+        let value = state % spread
+        sum += value
+        squares = (squares + value * value) % 1000003
+        numbers.put_back(value)
+    sort(&mut numbers)
+    var after: U64 = 0
+    var after_squares: U64 = 0
+    for value in &numbers:
+        after += *value
+        after_squares = (after_squares + *value * *value) % 1000003
+    let good = is_sorted(&numbers) && after == sum && after_squares == squares && numbers.len() == count
+    numbers.close()
+    if good:
+        return 1
+    return 0
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var passed: U64 = 0
+    var trials: U64 = 0
+    for count in 0..40:
+        for seed in 1..6:
+            trials += 1
+            passed += trial(&allocator, count, seed * 7919, 1000)
+            trials += 1
+            passed += trial(&allocator, count, seed * 104729, 3)
+    console.print_int(trials)
+    console.print_int(passed)
+    console.print_int(trial(&allocator, 1000, 12345, 100000))

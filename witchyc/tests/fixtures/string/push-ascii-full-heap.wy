@@ -1,0 +1,43 @@
+// An ASCII push into a String with spare room succeeds when the heap is otherwise full (it
+// asked for room for four bytes first, so a push with 1-3 bytes of room failed): 7 of 9 fit.
+import console
+import string
+import vec
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.with_capacity(&allocator, 7) else Err(e):
+        return
+    var line = move made
+    let Ok(h): Vec<Vec<U8>> = Vec.new(&allocator, 48) else Err(e):
+        line.close()
+        return
+    var hogs = move h
+    var size: U64 = 1 << 30
+    while size > 0 && hogs.len() < hogs.capacity():
+        let asked: Result<Vec<U8>, U64> = Vec.new(&allocator, size)
+        match move asked:
+            Ok(hog):
+                match hogs.push_spare_mut(move hog):
+                    Ok:
+                        ()
+                    Err(back):
+                        back.close()
+            Err(code):
+                size = size / 2
+    var ok: U64 = 0
+    for i in 0..9:
+        if let Ok(_) = line.push(&allocator, 97):
+            ok += 1
+    console.print_int(ok)
+    // then a two-byte scalar into a full buffer
+    console.print_int(if line.push(&allocator, 233).is_ok(): 1 else: 0)
+    while hogs.len() > 0:
+        match hogs.take_last_mut():
+            Ok(hog):
+                hog.close()
+            Err(code):
+                break
+    hogs.release_empty()
+    console.print_int(if line.push(&allocator, 233).is_ok(): 1 else: 0)
+    console.print_int(line.byte_len())
+    line.close()

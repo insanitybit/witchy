@@ -1,0 +1,10 @@
+fn count(limit: U64) -> U64:
+    ensures result == limit
+    proof:
+        auto
+    var counter = 0
+    while counter < limit:
+        counter += 1
+    return counter
+fn main(console: Console<Write>):
+    console.print_int(count(3))

@@ -1,0 +1,53 @@
+// Review round 32: a task parked by the 1024-report yield, or kept by cancel_all.
+// A task that does not stop when told twice: cancel_all keeps it, but what it now waits for
+// (a 100 ms timer) is not what the set records (a 3 s timer).
+import console
+import net
+import tasks
+
+fn stubborn(clock: Clock) suspends:
+    let start = clock.now_ms()
+    let far = clock.timer(start + 3000)
+    let a = clock.timer(start + 50)
+    let b = clock.timer(start + 100)
+    let w1 = pause_for(far)
+    let w2 = pause_for(a)
+    let w3 = pause_for(b)
+    var w4 = pause_for(b)
+    while clock.now_ms() < start + 100:
+        w4 = pause_for(b)
+    if clock.now_ms() - start < 1000:
+        report(7000000)
+    else:
+        report(9000000)
+    clock.end_timer(far)
+    clock.end_timer(a)
+    clock.end_timer(b)
+
+fn main(console: Console<Write>, listener: Listener, allocator: Allocator, clock: Clock):
+    let Ok(made): Waiting = Waiting.new(&allocator, &listener) else Err(code):
+        return
+    var waiting = move made
+    var reported: U64 = 0
+    var finished: U64 = 0
+    match Task.spawn(&allocator, 4096, stubborn, clock.share()):
+        Ok(task):
+            match waiting.start(&allocator, move task):
+                Ok(started):
+                    reported += started.reported
+                Err(back):
+                    var lost = move back
+                    let cancelled = lost.cancel()
+                    lost.close()
+        Err(input):
+            reported += 0
+    reported += waiting.cancel_all(&allocator)
+    console.print_int(waiting.len())
+    var rounds: U64 = 0
+    while waiting.len() > 0 && rounds < 20:
+        let stepped = waiting.step_ready(&allocator, &listener)
+        reported += stepped.reported
+        rounds += 1
+    console.print_int(reported)
+    console.print_int(rounds)
+    waiting.close()

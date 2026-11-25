@@ -1,0 +1,52 @@
+// Random scalars of every UTF-8 width pushed onto a String, then walked back with `chars()` and
+// compared with what was pushed, and the byte length with the sum of their widths.
+import console
+import string
+import vec
+
+fn width(c: U64) -> U64:
+    if c < 128:
+        return 1
+    if c < 2048:
+        return 2
+    if c < 65536:
+        return 3
+    return 4
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(c):
+        return
+    var s = move made
+    let Ok(w): Vec<U64> = Vec.new(&allocator, 64) else Err(c):
+        s.close()
+        return
+    var want = move w
+    var seed: U64 = 31
+    var bytes: U64 = 0
+    var wrong: U64 = 0
+    for step in 0..2000:
+        seed = seed * 48271 % 2147483647
+        var c = seed % 1114112
+        let kind = seed % 4
+        if kind == 0:
+            c = 32 + seed % 95
+        else if kind == 1:
+            c = 128 + seed % 1920
+        // Not a scalar: the surrogates.
+        if c >= 55296 && c <= 57343:
+            c = 65
+        if let Ok(_) = s.push(&allocator, c):
+            let pushed = want.push_mut(&allocator, c)
+            bytes += width(c)
+        else:
+            wrong += 1
+    var at: U64 = 0
+    for c in s.chars():
+        if at >= want.len() || c != want[at]:
+            wrong += 1
+        at += 1
+    if at != want.len() || s.byte_len() != bytes:
+        wrong += 1
+    console.print("${wrong} wrong, ${at} scalars, ${s.byte_len()} bytes")
+    s.close()
+    want.close()

@@ -1,0 +1,155 @@
+// Immutable descriptions for one selection. Resource bindings stay in the supervisor.
+pub sealed type TestCase:
+    ticket: U64
+    name: Text
+    schema: Text
+
+pub sealed type Tests:
+    names: [U64; 13]
+    schemas: [U64; 13]
+    count: U64
+
+pub sealed type CaseList:
+    tests: &Tests
+
+pub fn empty_tests() -> Tests:
+    return Tests([0; 13], [0; 13], 0)
+
+pub fn add_test(tests: &mut Tests, name: Text, schema: Text):
+    if name.id >= 4096 || schema.id >= 4096:
+        unreachable
+    let at = (*tests).count
+    let shift = (at % 5) * 12
+    (*tests).names[at / 5] = (*tests).names[at / 5] | (name.id << shift)
+    (*tests).schemas[at / 5] = (*tests).schemas[at / 5] | (schema.id << shift)
+    (*tests).count = at + 1
+
+impl Tests:
+    pub fn collect(self: &Tests) -> CaseList:
+        return CaseList(self)
+
+impl CaseList:
+    pub fn next(self: &CaseList, cursor: &mut U64) -> Result<TestCase, ()>:
+        let suite = (*self).tests
+        let at = *cursor
+        if at >= (*suite).count:
+            return Err(())
+        *cursor = at + 1
+        let shift = (at % 5) * 12
+        let name = ((*suite).names[at / 5] >> shift) % 4096
+        let schema = ((*suite).schemas[at / 5] >> shift) % 4096
+        return Ok(TestCase(at, Text(name), Text(schema)))
+
+impl TestCase:
+    pub fn named(self: TestCase, name: &str) -> Bool:
+        let mine = self.name.as_str().as_bytes()
+        let theirs = name.as_bytes()
+        if mine.len() != theirs.len():
+            return false
+        for index in 0..mine.len():
+            if index < theirs.len() && mine[index] != theirs[index]:
+                return false
+        return true
+
+pub sealed type TestGrants:
+    commands: Console<Write>
+    replies: Console<Read>
+
+pub fn grant_service(commands: Console<Write>, replies: Console<Read>) -> TestGrants:
+    return TestGrants(move commands, move replies)
+
+pub sealed type BoundTest:
+    commands: &Console<Write>
+    ticket: U64
+
+pub type TestBinding:
+    Bound(BoundTest)
+    Blocked(U64)
+
+fn text_arg(out: &Console<Write>, value: &str):
+    out.print_word(value.byte_len())
+    for i in 0..value.byte_len():
+        match value.byte_at(i):
+            Ok(byte):
+                out.print_byte(byte)
+            Err(code):
+                unreachable
+
+impl TestGrants:
+    // Inspect the invoker's named root offers without opening a directory.
+    pub fn has_root(self: &TestGrants, root: &str) -> Bool:
+        let out = &(*self).commands
+        out.print_byte(11)
+        text_arg(out, root)
+        let replies = &(*self).replies
+        return replies.next_byte() == 1
+
+    // Default public inputs may be supplied in Witchy. An explicit session input wins.
+    pub fn word(self: &TestGrants, case: TestCase, slot: &str, value: U64):
+        let out = &(*self).commands
+        out.print_byte(1)
+        out.print_word(case.ticket)
+        text_arg(out, slot)
+        out.print_word(value)
+
+    pub fn bytes(self: &TestGrants, case: TestCase, slot: &str, hex: &str):
+        let out = &(*self).commands
+        out.print_byte(2)
+        out.print_word(case.ticket)
+        text_arg(out, slot)
+        text_arg(out, hex)
+
+    pub fn fixture(self: &TestGrants, case: TestCase, slot: &str, file: &str, hex: &str):
+        let out = &(*self).commands
+        out.print_byte(3)
+        out.print_word(case.ticket)
+        text_arg(out, slot)
+        text_arg(out, file)
+        text_arg(out, hex)
+
+    // Apply each offered recipe only to a declared role. The supervisor checks its right.
+    pub fn offer_word(self: &TestGrants, case: TestCase, slot: &str, value: U64):
+        let out = &(*self).commands
+        out.print_byte(7)
+        out.print_word(case.ticket)
+        text_arg(out, slot)
+        out.print_word(value)
+
+    pub fn offer_bytes(self: &TestGrants, case: TestCase, slot: &str, hex: &str):
+        let out = &(*self).commands
+        out.print_byte(8)
+        out.print_word(case.ticket)
+        text_arg(out, slot)
+        text_arg(out, hex)
+
+    pub fn offer_fixture(self: &TestGrants, case: TestCase, slot: &str, file: &str, hex: &str):
+        let out = &(*self).commands
+        out.print_byte(9)
+        out.print_word(case.ticket)
+        text_arg(out, slot)
+        text_arg(out, file)
+        text_arg(out, hex)
+
+    pub fn offer_directory(self: &TestGrants, case: TestCase, slot: &str, root: &str, relative: &str):
+        let out = &(*self).commands
+        out.print_byte(10)
+        out.print_word(case.ticket)
+        text_arg(out, slot)
+        text_arg(out, root)
+        text_arg(out, relative)
+
+    pub fn bind(self: &TestGrants, case: TestCase) -> TestBinding:
+        let out = &(*self).commands
+        out.print_byte(4)
+        out.print_word(case.ticket)
+        let replies = &(*self).replies
+        let answer = replies.next_byte()
+        if answer != 0:
+            return Blocked(answer)
+        return Bound(BoundTest(out, case.ticket))
+
+impl BoundTest:
+    pub fn run(self: BoundTest):
+        let out = self.commands
+        out.print_byte(5)
+        out.print_word(self.ticket)

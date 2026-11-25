@@ -1,0 +1,14 @@
+import encoding
+import vec
+
+// Signed release fields require a nonempty canonical value and a decoded size limit.
+pub fn unpadded_base64url(input: &[U8], allocator: &Allocator, limit: U64) -> Result<Vec<U8>, U64>:
+    if input.len() == 0:
+        return Err(1)
+    match encoding.decode_base64url_bounded(allocator, input, limit):
+        Ok(bytes):
+            return Ok(move bytes)
+        Err(Base64Decode(Base64Allocation(code))):
+            return Err(code)
+        Err(_):
+            return Err(1)

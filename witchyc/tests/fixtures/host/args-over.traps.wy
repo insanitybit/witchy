@@ -1,0 +1,6 @@
+// More words, or more bytes, than the grant: the launch is refused whole, never cut short.
+import args
+import console
+
+fn main(console: Console<Write>, args: Args):
+    console.print_int(args.count())

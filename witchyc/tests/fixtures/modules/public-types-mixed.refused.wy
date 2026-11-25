@@ -1,0 +1,5 @@
+// Refused: one module's `Item` is not the other's.
+import "parts/orders.wy"
+import "parts/stock.wy"
+fn main():
+    let item: stock.Item = orders.order(1)

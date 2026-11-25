@@ -1,0 +1,19 @@
+// Refused by the proof: the kept reference is given to a callee that writes through it.
+import console
+
+type Pair:
+    a: U64
+    b: U64
+
+fn poke(slot: &mut U64):
+    *slot = 9
+
+fn f(p: &mut Pair) -> U64:
+    ensures result == 5
+    (*p).a = 5
+    let r = &mut (*p).a
+    poke(r)
+    return (*p).a
+
+fn main(console: Console<Write>):
+    console.print_int(1)

@@ -1,0 +1,17 @@
+// A callee whose `requires` reads a field of a record built in the call says to bind it first.
+import console
+
+type Flag:
+    on: Bool
+    count: U64
+
+fn bump(f: Flag) -> Flag:
+    requires f.count < 1000
+    ensures result.on
+    proof:
+        auto
+    Flag(on: true, count: f.count + 1)
+
+fn main(console: Console<Write>):
+    let f = bump(Flag(on: false, count: 1))
+    console.print_int(f.count)

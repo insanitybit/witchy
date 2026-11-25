@@ -1,0 +1,2 @@
+proof failed: function `stuff`
+not proved: ensures when Full = *slot: false

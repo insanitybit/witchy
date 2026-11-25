@@ -1,0 +1,8 @@
+impl LocalService:
+    // One bounded request/reply per connection to the operator's private
+    // process. On failure no reply bytes are written.
+    pub fn exchange(service: &LocalService, request: &[U8], reply: &mut [U8]) -> Result<U64, U64>:
+        let count = service.raw_exchange(request, reply)
+        if count == 0 || count > reply.len():
+            return Err(1)
+        return Ok(count)

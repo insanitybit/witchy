@@ -1,0 +1,1 @@
+`quiet_sum` needs a type whose methods never pause (`nosuspend`), and this one's `Read.byte` may

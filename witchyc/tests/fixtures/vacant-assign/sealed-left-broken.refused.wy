@@ -1,0 +1,27 @@
+// Refused by the proof: on the path where the shelf was vacant, the function returns with the
+// count set to 1 and the slot still vacant, which the invariant forbids.
+type Slot<T>:
+    Vacant
+    Full(T)
+
+// A vacant shelf counts nothing: the two fields are linked.
+sealed type Shelf<T>:
+    count: U64
+    slot: Slot<T>
+    invariant when Vacant = slot:
+        count == 0
+
+impl<T: Any> Shelf<T>:
+    nopanic fn swap_in(shelf: &mut Shelf<T>, item: T) -> Slot<T>:
+        var held: Slot<T> = Vacant
+        memory.exchange(&mut (*shelf).slot, &mut held)
+        (*shelf).count = 1
+        match move held:
+            Vacant:
+                return Full(move item)
+            Full(old):
+                (*shelf).slot = Full(move item)
+                return Full(move old)
+
+fn main(out: Console<Write>):
+    out.print_int(1)

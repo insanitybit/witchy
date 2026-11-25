@@ -1,0 +1,16 @@
+// Generic code may lend a view it was given shared (docs/design-references-to-views.md);
+// once refused, before references to views existed.
+type Point:
+    x: U64
+
+type Seen:
+    point: &Point
+    n: U64
+
+fn inner<T>(x: T) -> U64:
+    let r = &x
+    return 1
+
+fn main():
+    let p = Point(1)
+    let n = inner(Seen(&p, 1))

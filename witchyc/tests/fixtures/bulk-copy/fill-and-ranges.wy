@@ -1,0 +1,63 @@
+// `Vec.filled` of bytes at every count from 0 to 200 (a word of the fill at a time, then the
+// bytes left), with the byte 0, 1, 171 and 255: every byte is the item and the length is the
+// count. Then the allocator's cell marks under ranges that start and end at every place in a
+// bitmap word: a String grown by appends of 1 to 8 bytes at every length up to 200, cleared,
+// and grown again by one copy; each vector is closed (a close finds every cell as marked).
+import console
+import vec
+import string
+import text
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let items: [U8; 4] = [0, 1, 171, 255]
+    var wrong: U64 = 0
+    var total: U64 = 0
+    for which in 0..4:
+        for count in 0..201:
+            let Ok(made): Vec<U8> = Vec.filled(&allocator, count, items[which]) else Err(code):
+                return
+            var vector = move made
+            if vector.len() != count:
+                wrong += 1
+            for byte in vector.as_slice():
+                if *byte != items[which]:
+                    wrong += 1
+                total += U8.to_u64(*byte)
+            // A filled vector is full: one more needs room, and a taken one comes back.
+            if count > 0:
+                match vector.take_last_mut():
+                    Ok(byte):
+                        if byte != items[which]:
+                            wrong += 1
+                        if let Err(_) = vector.push_spare_mut(byte):
+                            wrong += 1
+                    Err(code):
+                        wrong += 1
+            vector.close()
+    console.print_int(wrong)
+    console.print_int(total)
+    // Appends of each size at each length.
+    var marks: U64 = 0
+    for size in 1..9:
+        let Ok(made): String = String.new(&allocator) else Err(code):
+            return
+        var text = move made
+        let _ = text.reserve(&allocator, 300)
+        while text.byte_len() < 200:
+            if let Err(_) = text.push_ascii(&allocator, 7523094288207667809, size):
+                marks += 1000
+        marks += text.byte_len()
+        let Ok(other): String = String.new(&allocator) else Err(code):
+            text.close()
+            return
+        var copy = move other
+        let _ = copy.push(&allocator, 65)
+        let _ = copy.push_string(&allocator, &text)
+        let _ = copy.push_string(&allocator, &text)
+        marks += copy.byte_len()
+        text.clear()
+        let _ = text.push_string(&allocator, &copy)
+        marks += text.byte_len()
+        copy.close()
+        text.close()
+    console.print_int(marks)

@@ -1,0 +1,19 @@
+// Types and constructors named through their module, and `from m import T`.
+import console
+import "parts/area.wy"
+import "parts/shapes.wy"
+from shapes import Shape, Square
+
+fn size(shape: &shapes.Shape) -> U64:
+    match shape:
+        Square(side):
+            return *side * *side
+        shapes.Strip(length):
+            return *length
+
+fn main(console: Console<Write>):
+    let box: area.Box = area.Box(3, 4)
+    console.print_int(area.area(&box))
+    console.print_int(box.perimeter())
+    console.print_int(size(&Square(5)))
+    console.print_int(size(&shapes.Strip(7)))

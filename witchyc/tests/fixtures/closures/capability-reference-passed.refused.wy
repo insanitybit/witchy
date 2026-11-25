@@ -1,0 +1,12 @@
+// Refused, with what to do instead (adversarial review round 20): a closure holding a
+// reference to a capability cannot be passed on yet.
+import console
+import fs
+fn run(f: fn(U64) -> U64) -> U64:
+    return f(1)
+fn quiet(n: U64) -> U64:
+    return n
+fn main(console: Console<Write>, dir: Dir<Read>):
+    let d: &Dir<Read> = &dir
+    let f = fn(n: U64) -> U64: if d.exists("x.txt"): n + 1 else: n
+    console.print_int(run(f))

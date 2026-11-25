@@ -1,0 +1,16 @@
+// Refused: a shared slice while a unique one is in use.
+import console
+fn fill(s: &mut [U64], value: U64):
+    for i in 0..s.len():
+        match s.at(i):
+            Ok(cell):
+                *cell = value + i
+            Err(code):
+                return
+
+fn main(console: Console<Write>):
+    var numbers: [U64; 4] = [0, 0, 0, 0]
+    let s = numbers.slice_mut()
+    let r = numbers.slice()
+    fill(s, 10)
+    console.print_int(r.len())

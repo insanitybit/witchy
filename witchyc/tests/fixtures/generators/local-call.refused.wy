@@ -1,0 +1,14 @@
+// A generator local whose value comes from a generic function states its type: the result depends
+// on the call (a plain function's call shows its type).
+import console
+
+fn id<T>(x: T) -> T:
+    x
+
+gen fn g(limit: U64) -> U64:
+    var x = id(limit)
+    yield x
+
+fn main(console: Console<Write>):
+    for v in g(2):
+        console.print_int(v)

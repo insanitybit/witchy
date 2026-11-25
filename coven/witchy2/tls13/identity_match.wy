@@ -1,0 +1,31 @@
+import certificates
+import crypto
+import span
+import text
+
+pub fn matches_key(signer: &TlsSigner, hostname: Span, roots: &[U8], chain: &[U8], now: U64) -> Bool:
+    // A fixed, domain-separated synthetic transcript checks possession. Its
+    // signature stays inside this worker and is never sent to a TLS peer.
+    let label: Text = "Coven TLS identity provisioning v1"
+    let context: Text = "TLS 1.3, server CertificateVerify"
+    var text_bytes: [U8; 48] = [0; 48]
+    var message: [U8; 154] = [0; 154]
+    for i in 0..label.byte_len():
+        let Ok(byte): U8 = label.byte_at(i) else Err(reason):
+            return false
+        text_bytes[i] = byte
+    for i in 0..8:
+        message[i] = U8.truncate(now >> ((7 - i) * 8))
+    for i in 8..72:
+        message[i] = 32
+    for i in 0..context.byte_len():
+        let Ok(byte): U8 = context.byte_at(i) else Err(reason):
+            return false
+        message[72 + i] = byte
+    let hash = message.slice_mut().part(106, 154)
+    if let Err(reason) = crypto.sha384(text_bytes.slice().part(0, label.byte_len()), hash):
+        return false
+    var signature: [U8; 104] = [0; 104]
+    let Ok(length): U64 = signer.certificate_verify(hash, signature.slice_mut()) else Err(reason):
+        return false
+    return certificates.verify_p384(roots, chain, hostname.as_bytes(), message.slice(), signature.slice().part(0, length))

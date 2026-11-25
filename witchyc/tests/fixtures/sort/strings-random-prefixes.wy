@@ -1,0 +1,55 @@
+// Sorting Strings: 3000 random words over a small alphabet (shared prefixes, equal words, words
+// that begin others), sorted by the library sort; the result in order by a byte comparison
+// written here, the same words (a sum of hashes and of lengths), and a count printed.
+import console
+import string
+import vec
+import sort
+import discard
+
+fn bytes_before(a: &String, b: &String) -> Bool:
+    let x = a.as_bytes()
+    let y = b.as_bytes()
+    var i: U64 = 0
+    while i < x.len() && i < y.len():
+        if x[i] != y[i]:
+            return x[i] < y[i]
+        i += 1
+    return x.len() < y.len()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<String> = Vec.new(&allocator, 3000) else Err(c):
+        return
+    var words = move made
+    var seed: U64 = 9
+    var sum: U64 = 0
+    var lengths: U64 = 0
+    for n in 0..3000:
+        let Ok(w): String = String.new(&allocator) else Err(c):
+            break
+        var word = move w
+        seed = seed * 48271 % 2147483647
+        let length = seed % 9
+        for k in 0..length:
+            seed = seed * 48271 % 2147483647
+            let _ = word.push(&allocator, 97 + seed % 3)
+        sum += word.hash()
+        lengths += word.byte_len()
+        match words.push_mut(&allocator, move word):
+            Ok:
+                ()
+            Err(back):
+                back.close()
+    sort(&mut words)
+    var wrong: U64 = 0
+    var after: U64 = 0
+    var after_lengths: U64 = 0
+    for i in 0..words.len():
+        if i > 0 && bytes_before(words.cell(i), words.cell(i - 1)):
+            wrong += 1
+        after += words.cell(i).hash()
+        after_lengths += words.cell(i).byte_len()
+    if after != sum || after_lengths != lengths:
+        wrong += 1
+    console.print("${wrong} wrong, ${words.len()} sorted")
+    words.discard()

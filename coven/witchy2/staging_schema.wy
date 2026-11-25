@@ -1,0 +1,38 @@
+// Provision the private staging tables in one transaction.
+import console
+import "@sqlite"
+import string
+
+fn main(db: Sqlite, output: Console<Write>, allocator: Allocator):
+    if let Err(code) = initialize(&db, &allocator):
+        output.line("staging schema unavailable")
+    else:
+        output.line("staging schema ready")
+
+fn initialize(db: &Sqlite, allocator: &Allocator) -> Result<(), U64>:
+    let empty = String.with_capacity(allocator, 2048)?
+    var plan = move empty
+    let written = statements(&mut plan, allocator)
+    let result = apply(db, &plan, written)
+    plan.close()
+    return result
+
+fn apply(db: &Sqlite, plan: &String, written: Result<(), U64>) -> Result<(), U64>:
+    written?
+    let bytes = plan.as_bytes()
+    let empty = bytes.part(0, 0)
+    var reply: [U8; 3] = [0; 3]
+    let size = db.transact(bytes, empty, empty, reply.slice_mut())?
+    if size != 3 || reply[0] != 0 || reply[1] != 'o' || reply[2] != 'k':
+        return Err(1)
+    return Ok(())
+
+fn statements(plan: &mut String, allocator: &Allocator) -> Result<(), U64>:
+    plan.push_text(allocator, "exec\t\tCREATE TABLE IF NOT EXISTS candidates (digest TEXT PRIMARY KEY, name TEXT NOT NULL, version TEXT NOT NULL, payload BLOB NOT NULL)\n")?
+    plan.push_text(allocator, "exec\t\tCREATE TABLE IF NOT EXISTS policy (singleton INTEGER PRIMARY KEY CHECK (singleton = 1), document BLOB NOT NULL)\n")?
+    plan.push_text(allocator, "exec\t\tCREATE TABLE IF NOT EXISTS challenges (challenge TEXT PRIMARY KEY, policy TEXT NOT NULL, expires INTEGER NOT NULL, envelope BLOB NOT NULL)\n")?
+    plan.push_text(allocator, "exec\t\tCREATE TABLE IF NOT EXISTS browser_approvals (challenge TEXT PRIMARY KEY, credential TEXT NOT NULL)\n")?
+    plan.push_text(allocator, "exec\t\tCREATE TABLE IF NOT EXISTS counters (credential TEXT PRIMARY KEY, public_key TEXT NOT NULL, count INTEGER NOT NULL)\n")?
+    plan.push_text(allocator, "exec\t\tCREATE TABLE IF NOT EXISTS approvals (name TEXT NOT NULL, version TEXT NOT NULL, digest TEXT NOT NULL, receipt BLOB NOT NULL, PRIMARY KEY (name, version))\n")?
+    plan.push_text(allocator, "exec\t\tCREATE TABLE IF NOT EXISTS ci_requests (jti TEXT PRIMARY KEY, token_expires INTEGER NOT NULL, nonce TEXT NOT NULL UNIQUE, nonce_expires INTEGER NOT NULL)\n")?
+    return plan.push_text(allocator, "exec\t\tCREATE TABLE IF NOT EXISTS ci_receipts (digest TEXT NOT NULL REFERENCES candidates(digest), package TEXT NOT NULL, workload TEXT NOT NULL, run TEXT NOT NULL, attempt TEXT NOT NULL, document BLOB NOT NULL, PRIMARY KEY (digest, package, workload, run, attempt))\n")

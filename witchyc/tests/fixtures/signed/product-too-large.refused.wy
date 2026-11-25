@@ -1,0 +1,18 @@
+// Refused: the bounds' product passes the greatest I64.
+import console
+import int
+
+fn f(a: I64, b: I64) -> I64:
+    requires a >= -4000000000
+    requires a <= 4000000000
+    requires b >= -4000000000
+    requires b <= 4000000000
+    ensures true
+    proof:
+        auto
+    return a * b
+
+fn main(console: Console<Write>):
+    let x: I64 = -3
+    let y: I64 = 4
+    console.show(f(x, y))

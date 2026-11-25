@@ -1,0 +1,38 @@
+// The map takes the last allocation slot. Building the index must return that map intact.
+import console
+import hashmap
+import grouped_hashmap
+import discard
+
+fn check(allocator: &Allocator, remaining: U64) -> U64:
+    if remaining > 0:
+        let made: Result<Buffer<U8>, U64> = memory.try_alloc(allocator, 1)
+        let Ok(held) = move made else Err(code):
+            return 0
+        let result = check(allocator, remaining - 1)
+        match memory.try_release(move held):
+            Ok:
+                return result
+            Err(back):
+                unreachable
+    let Ok(made): HashMap<U64, U64> = HashMap.new(allocator, 4) else Err(code):
+        return 0
+    var map = move made
+    match map.insert(9, 42):
+        Ok:
+            ()
+        Err(back):
+            unreachable
+    match map.into_grouped(allocator):
+        Ok(index):
+            index.into_map().discard()
+            return 0
+        Err(original):
+            var result: U64 = 0
+            if let Ok(value) = original.get(&9):
+                result = *value
+            original.discard()
+            return result
+
+fn main(console: Console<Write>, allocator: Allocator):
+    console.print_int(check(&allocator, 63))

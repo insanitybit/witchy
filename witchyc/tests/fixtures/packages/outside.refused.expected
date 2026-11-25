@@ -1,0 +1,1 @@
+package @outside may import only files in its own directory, or packages by name

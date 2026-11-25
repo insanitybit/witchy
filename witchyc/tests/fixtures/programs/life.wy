@@ -1,0 +1,89 @@
+// Conway's Life on a grid that wraps at its edges.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-vec.wy"
+
+type Grid:
+    cells: Vec<Bool>
+    width: U64
+    height: U64
+
+impl Grid:
+    fn new(allocator: &Allocator, width: U64, height: U64) -> Result<Grid, U64>:
+        let cells = Vec.filled(allocator, width * height, false)?
+        return Ok(Grid(move cells, width, height))
+
+    fn alive(self: &Grid, column: U64, row: U64) -> Bool:
+        match self.cells.get(row * self.width + column):
+            Ok(cell):
+                return cell
+            Err(code):
+                return false
+
+    fn set(self: &mut Grid, column: U64, row: U64, alive: Bool):
+        let _ = self.cells.set(row * self.width + column, alive)
+
+    // How many of the eight cells around this one are alive.
+    fn around(self: &Grid, column: U64, row: U64) -> U64:
+        var count: U64 = 0
+        // One less, the same, one more: one less is written as the size less one, so
+        // that it wraps at the edge with the same `%`.
+        for down in [self.height - 1, 0, 1]:
+            for across in [self.width - 1, 0, 1]:
+                if *down == 0 && *across == 0:
+                    continue
+                if self.alive((column + *across) % self.width, (row + *down) % self.height):
+                    count += 1
+        return count
+
+    fn step(self: &Grid, next: &mut Grid):
+        for row in 0..self.height:
+            for column in 0..self.width:
+                let near = self.around(column, row)
+                let lives = near == 3 || (near == 2 && self.alive(column, row))
+                next.set(column, row, lives)
+
+    fn population(self: &Grid) -> U64:
+        var count: U64 = 0
+        for cell in &self.cells:
+            if *cell:
+                count += 1
+        return count
+
+    fn show(self: &Grid, console: &Console<Write>):
+        for row in 0..self.height:
+            for column in 0..self.width:
+                if self.alive(column, row):
+                    console.write("#")
+                else:
+                    console.write(".")
+            console.line("")
+
+    fn close(self: Grid):
+        let Grid(cells, width, height) = move self
+        cells.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var now = match Grid.new(&allocator, 12, 8):
+        Ok(grid):
+            move grid
+        Err(code):
+            return
+    var next = match Grid.new(&allocator, 12, 8):
+        Ok(grid):
+            move grid
+        Err(code):
+            now.close()
+            return
+    // A glider.
+    now.set(1, 0, true)
+    now.set(2, 1, true)
+    now.set(0, 2, true)
+    now.set(1, 2, true)
+    now.set(2, 2, true)
+    for generation in 0..8:
+        now.step(&mut next)
+        memory.exchange(&mut now, &mut next)
+    now.show(&console)
+    console.print_int(now.population())
+    now.close()
+    next.close()

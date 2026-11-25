@@ -1,0 +1,79 @@
+// A Vec that owns Strings: each String is moved in, moved out and closed.
+import "../../../library/wasm-string.wy"
+import "../../../library/wasm-vec.wy"
+
+fn text(console: &Console<Write>, allocator: &Allocator, first: U64, second: U64) -> Result<String, U64>:
+    let made: Result<String, U64> = String.new(allocator)
+    match move made:
+        Ok(empty):
+            match empty.push_scalar(allocator, first):
+                Ok(one):
+                    match one.push_scalar(allocator, second):
+                        Ok(two):
+                            return Ok(move two)
+                        Err(back):
+                            back.close()
+                            return Err(902)
+                Err(back):
+                    back.close()
+                    return Err(901)
+        Err(code):
+            return Err(code)
+
+fn store(console: &Console<Write>, names: &mut Vec<String>, item: Result<String, U64>):
+    match move item:
+        Ok(name):
+            match names.push_spare_mut(move name):
+                Ok:
+                    return
+                Err(rejected):
+                    console.print_int(903)
+                    rejected.close()
+        Err(code):
+            console.print_int(code)
+
+fn drain(console: &Console<Write>, names: &mut Vec<String>):
+    while names.len() > 0:
+        match names.take_last_mut():
+            Ok(name):
+                console.print_int(name.byte_len())
+                match name.byte_at(0):
+                    Ok(byte):
+                        console.print_int(U8.to_u64(byte))
+                    Err(code):
+                        console.print_int(904)
+                name.close()
+            Err(code):
+                console.print_int(905)
+                return
+
+// Close every String, then the vector. Release only fails while a slot is
+// occupied, so a second round means the headers were wrong.
+fn finish(console: &Console<Write>, names: Vec<String>):
+    var rest = move names
+    drain(console, &mut rest)
+    match rest.try_release():
+        Ok:
+            console.print_int(1)
+        Err(stuck):
+            console.print_int(907)
+            finish(console, move stuck)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<Vec<String>, U64> = Vec.new(&allocator, 2)
+    match move made:
+        Ok(empty):
+            var names = move empty
+            store(&console, &mut names, text(&console, &allocator, 104, 105))
+            store(&console, &mut names, text(&console, &allocator, 233, 10003))
+            // No spare slot is left: the third String comes back and is closed.
+            store(&console, &mut names, text(&console, &allocator, 65, 66))
+            console.print_int(names.len())
+            // A vector still holding Strings cannot be released.
+            match names.try_release():
+                Ok:
+                    console.print_int(906)
+                Err(kept):
+                    finish(&console, move kept)
+        Err(code):
+            console.print_int(code)

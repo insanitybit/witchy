@@ -1,0 +1,21 @@
+// After an exchange each record has what the other had, not what it had.
+type Pair:
+    left: U64
+    right: U64
+
+impl Pair:
+    fn first(pair: &Pair) -> U64:
+        return (*pair).left
+
+    fn second(pair: &Pair) -> U64:
+        return (*pair).right
+
+fn trade(here: &mut Pair, there: &mut Pair):
+    ensures here.first() == old(here.first())
+    proof:
+        auto
+    memory.exchange(here, there)
+
+fn main(console: Console<Write>):
+    console.print_int(0)
+

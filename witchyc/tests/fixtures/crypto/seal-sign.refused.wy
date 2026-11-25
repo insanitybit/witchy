@@ -1,0 +1,6 @@
+// Refused: a `Secret<Seal>` MACs; it has no signature operation, by method or by raw import.
+import crypto
+fn main(key: Secret<Seal>, allocator: Allocator):
+    let message: [U8; 1] = [119]
+    var signature: [U8; 1] = [0]
+    let code = key.raw_sign(message.slice(), signature.slice_mut())

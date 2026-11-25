@@ -1,0 +1,32 @@
+// Digests from orlp/foldhash 77d8e3da, fast::FoldHasher::with_seed(u64::MAX, SharedSeed::global_fixed()).
+import foldhash
+
+fn main(console: Console<Write>):
+    var data: [U8; 256] = [0; 256]
+    for i in 0..256:
+        data[i] = U8.truncate(i * 197 + 13)
+    console.print_int(foldhash(data.slice().part(0, 0)))
+    console.print_int(foldhash(data.slice().part(0, 1)))
+    console.print_int(foldhash(data.slice().part(0, 2)))
+    console.print_int(foldhash(data.slice().part(0, 3)))
+    console.print_int(foldhash(data.slice().part(0, 4)))
+    console.print_int(foldhash(data.slice().part(0, 7)))
+    console.print_int(foldhash(data.slice().part(0, 8)))
+    console.print_int(foldhash(data.slice().part(0, 15)))
+    console.print_int(foldhash(data.slice().part(0, 16)))
+    console.print_int(foldhash(data.slice().part(0, 17)))
+    console.print_int(foldhash(data.slice().part(0, 31)))
+    console.print_int(foldhash(data.slice().part(0, 32)))
+    console.print_int(foldhash(data.slice().part(0, 63)))
+    console.print_int(foldhash(data.slice().part(0, 64)))
+    console.print_int(foldhash(data.slice().part(0, 95)))
+    console.print_int(foldhash(data.slice().part(0, 96)))
+    console.print_int(foldhash(data.slice().part(0, 127)))
+    console.print_int(foldhash(data.slice().part(0, 128)))
+    console.print_int(foldhash(data.slice().part(0, 129)))
+    console.print_int(foldhash(data.slice().part(0, 255)))
+    console.print_int(foldhash(data.slice().part(0, 256)))
+    let long: &str = "LSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPWDKRYFMTAHOVCJQXELSZGNUBIPW"
+    console.print_int(foldhash(long.as_bytes().part(0, 257)))
+    console.print_int(foldhash(long.as_bytes().part(0, 353)))
+    console.print_int(foldhash(long.as_bytes().part(0, 1024)))

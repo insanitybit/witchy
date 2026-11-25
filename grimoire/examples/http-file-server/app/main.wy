@@ -1,0 +1,50 @@
+// A static file server: it listens on the one address its grant names and answers each
+// connection with the `@httpd` package, a task per connection cut off after two seconds.
+// The package is given that connection, a buffer, a read-only handle on `site/public`, a clock
+// and memory, and nothing else.
+import console
+import net
+import fs
+import vec
+import string
+import tasks
+import discard
+import "@httpd"
+
+// Serves one accepted connection to its end: the status the package reported (1200, 1404,
+// 1400, 1000 when the client went away, 2000 when the time limit cut it off).
+fn serve(listener: &Listener, allocator: &Allocator, clock: &Clock, site: &Dir<Read>, socket: Socket) -> U64:
+    let zero: U8 = 0
+    let Ok(buffer): Vec<U8> = Vec.filled(allocator, 1024, zero) else Err(code):
+        socket.close()
+        return 1
+    // A fresh handle on the served subtree for each connection: the package closes what it is given.
+    let Ok(root): Dir<Read> = site.dir("public") else Err(error):
+        socket.close()
+        buffer.close()
+        return 2
+    let connection: Connection = Connection(move socket, move buffer, move root)
+    let shared = allocator.share()
+    let timer = clock.share()
+    match run_task(allocator, listener, 16384, fn() -> (): answer_within(move connection, move shared, move timer, 2000)):
+        Ok(reported):
+            return reported
+        Err(code):
+            return 3
+
+// Serves until the run's deadline stops it.
+fn main(console: Console<Write>, listener: Listener, allocator: Allocator, clock: Clock, site: Dir<Read>):
+    // Seen at once: `grimoire run` passes standard output on a line at a time.
+    console.line("serving")
+    var serving = true
+    while serving:
+        match listener.accept():
+            Ok(socket):
+                let status = serve(&listener, &allocator, &clock, &site, move socket)
+            Err(error):
+                match error:
+                    TimedOut:
+                        serving = true
+                    _:
+                        serving = false
+    site.close()

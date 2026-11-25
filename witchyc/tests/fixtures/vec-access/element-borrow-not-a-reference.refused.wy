@@ -1,0 +1,14 @@
+// Refused (Astra audit): a `cell` that returns a number is not an element borrow, so `&shelf[0]`
+// does not call it.
+import console
+
+type Shelf:
+    top: U64
+
+impl Shelf:
+    pub fn cell(self: &Shelf, i: U64) -> U64:
+        return self.top + i
+
+fn main(console: Console<Write>):
+    let shelf = Shelf(43)
+    console.print_int(&shelf[0])

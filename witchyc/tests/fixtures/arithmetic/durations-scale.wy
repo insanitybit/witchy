@@ -1,0 +1,7 @@
+// A Duration times a count, through Scale: `250ms * 4` is 1s.
+import console
+import time
+
+fn main(console: Console<Write>):
+    let n: U64 = 3
+    console.print("${250ms * 4} ${1m30s * n} ${(2s + 500ms) * 2}")

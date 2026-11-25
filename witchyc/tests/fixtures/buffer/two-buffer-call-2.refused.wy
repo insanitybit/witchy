@@ -1,0 +1,29 @@
+// Refused (review): through a two-buffer helper, an owner could be proved still in a cell it had left, and taken twice.
+import console
+fn mv<T: Any>(a: &mut Buffer<T>, z: &mut Buffer<T>, count: U64):
+    requires count <= memory.capacity(a)
+    requires count <= memory.capacity(z)
+    requires memory.initialized_range(a, 0, count)
+    requires memory.empty_range(z, 0, count)
+    ensures memory.empty_range(a, 0, count)
+    proof:
+        auto
+    memory.move_prefix_unchecked(a, z, count)
+    return
+
+// The model keeps a's cells after mv, so a[0] still "holds" the moved value; it is moved again into z[1].
+fn dup<T: Any>(a: &mut Buffer<T>, z: &mut Buffer<T>):
+    requires 2 <= memory.capacity(a)
+    requires 2 <= memory.capacity(z)
+    requires memory.initialized_range(a, 0, 1)
+    requires memory.empty_range(z, 0, 2)
+    ensures memory.initialized_range(z, 0, 2)
+    proof:
+        auto
+    mv(a, z, 1)
+    let x = memory.take_unchecked(a, 0)
+    memory.init_unchecked(z, 1, move x)
+    return
+
+fn main():
+    return

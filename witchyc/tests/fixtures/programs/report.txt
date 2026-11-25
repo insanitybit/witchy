@@ -1,0 +1,12 @@
+name,department,salary
+Ada,Engineering,120
+Grace,Engineering,135
+Linus,Kernel,110
+Margaret,Flight,140
+Dennis,Kernel,105
+Barbara,Engineering,128
+Ken,Kernel,115
+broken line
+Edsger,Theory,abc
+Katherine,Flight,150
+Émilie,Theory,90

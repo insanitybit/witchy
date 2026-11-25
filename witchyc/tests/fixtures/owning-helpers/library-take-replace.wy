@@ -1,0 +1,76 @@
+// The library's helpers on plain places: `Option.take`, `Option.replace` and the general
+// `replace`, with a number and with an owner. In `settle` the proof follows each value through
+// the calls: the `unreachable` arms are shown never to run from what the helpers' bodies do.
+import string
+import option
+import replace
+
+type Pair:
+    left: U64
+    right: U64
+
+// Numbers through the general helper: what comes back is what was there.
+fn turn(pair: &mut Pair) -> U64:
+    ensures result == old(pair.left)
+    ensures pair.left == old(pair.right)
+    ensures pair.right == old(pair.left)
+    proof:
+        auto
+    let first = replace(&mut (*pair).left, (*pair).right)
+    let second = replace(&mut (*pair).right, first)
+    return first
+
+nopanic fn settle(slot: &mut Option<U64>, next: U64) -> Option<U64>:
+    let old = Option.take(&mut *slot)
+    match &*slot:
+        None:
+            *slot = Some(next)
+        Some(_):
+            unreachable
+    let again = slot.replace(None)
+    match move again:
+        None:
+            unreachable
+        Some(value):
+            *slot = Some(value)
+    return move old
+
+fn show(out: &Console<Write>, value: Option<U64>):
+    match value:
+        None:
+            out.print_int(0)
+        Some(n):
+            out.print_int(n)
+
+fn length(out: &Console<Write>, text: Option<String>):
+    match move text:
+        None:
+            out.print_int(0)
+        Some(owned):
+            out.print_int(owned.byte_len())
+            owned.close()
+
+fn main(out: Console<Write>, allocator: Allocator):
+    var pair = Pair(1, 2)
+    out.print_int(turn(&mut pair))
+    out.print_int(pair.left)
+    out.print_int(pair.right)
+    var slot: Option<U64> = Some(5)
+    show(&out, settle(&mut slot, 6))
+    show(&out, slot)
+    show(&out, slot.take())
+    show(&out, slot)
+    match String.new(&allocator):
+        Err(code):
+            out.print_int(code)
+        Ok(empty):
+            match empty.push_scalar(&allocator, 97):
+                Err(original):
+                    original.close()
+                    out.print_int(900)
+                Ok(word):
+                    var held: Option<String> = Some(move word)
+                    let taken = held.take()
+                    length(&out, held.replace(move taken))
+                    length(&out, held.take())
+                    length(&out, move held)

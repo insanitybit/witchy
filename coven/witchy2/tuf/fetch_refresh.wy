@@ -1,0 +1,231 @@
+import "delegations.wy"
+import "fetch_history.wy"
+import "fetch_role_file.wy"
+import "fetch_scope.wy"
+import "generation.wy"
+import "metadata.wy"
+import "publication_files.wy"
+import "release_trust.wy"
+import "root.wy"
+import console
+import fs
+import json_tree
+import span
+import string
+import text
+
+pub type MetadataWindow:
+    floor: RootFloor
+    root_version: U64
+    retired_at: U64
+
+// True means a request was emitted. False hands fully staged inputs to selection.
+pub fn plan_fetch(source: &Dir<Read>, root: &TrustedRoot, reserved: &[U8], scope: FetchScope, window: MetadataWindow, output: &Console<Write>, now: U64, allocator: &Allocator) -> Result<Bool, U64>:
+    if let Err(error) = root.fresh_at(now):
+        return Err(1)
+    let wire = optional_file(source, "timestamp.json", 16384, allocator)?
+    if wire.byte_len() == 0:
+        wire.close()
+        output.line("timestamp")
+        return Ok(true)
+    let parsed = parse_metadata(&wire, allocator, Timestamp)
+    let Ok(timestamp): Metadata = move parsed else Err(error):
+        wire.close()
+        return Err(1)
+    let result = with_timestamp(source, root, reserved, &timestamp, &wire, scope, window, output, now, allocator)
+    timestamp.close()
+    wire.close()
+    return result
+
+pub fn optional_file(source: &Dir<Read>, name: Text, limit: U64, allocator: &Allocator) -> Result<String, U64>:
+    let Ok(path): String = literal_path(allocator, name) else Err(error):
+        return Err(1)
+    let read = read_text_object(source, &path, limit, allocator)
+    path.close()
+    match move read:
+        Ok(wire):
+            if wire.byte_len() == 0:
+                wire.close()
+                return Err(1)
+            return Ok(move wire)
+        Err(MissingObject):
+            return String.new(allocator)
+        Err(_):
+            return Err(1)
+
+fn with_timestamp(source: &Dir<Read>, root: &TrustedRoot, reserved: &[U8], timestamp: &Metadata, raw: &String, scope: FetchScope, window: MetadataWindow, output: &Console<Write>, now: U64, allocator: &Allocator) -> Result<Bool, U64>:
+    if let Err(error) = authenticated(root, timestamp, now, allocator):
+        return Err(1)
+    verify_timestamp_floor(source, timestamp, raw, window, allocator)?
+    let Ok(reference): MetadataReference = snapshot_reference(timestamp, allocator) else Err(error):
+        return Err(1)
+    let wire = optional_file(source, "snapshot.json", 2097152, allocator)?
+    if wire.byte_len() == 0:
+        wire.close()
+        request(output, "snapshot", &reference, allocator)?
+        write_metadata_pin(raw, output, allocator)?
+        return Ok(true)
+    let parsed = reference.open(Snapshot, &wire, allocator)
+    wire.close()
+    let Ok(snapshot): Metadata = move parsed else Err(error):
+        return Err(1)
+    let result = with_snapshot(source, root, reserved, timestamp, raw, &snapshot, &reference, scope, window, output, now, allocator)
+    snapshot.close()
+    return result
+
+fn verify_timestamp_floor(source: &Dir<Read>, timestamp: &Metadata, raw: &String, window: MetadataWindow, allocator: &Allocator) -> Result<(), U64>:
+    let stored = optional_file(source, "coven-fetch-timestamp", 16401, allocator)?
+    let checked = compare_timestamp_floor(timestamp, raw, stored.span(), window, allocator)
+    stored.close()
+    return checked
+
+fn compare_timestamp_floor(timestamp: &Metadata, raw: &String, stored: Span, window: MetadataWindow, allocator: &Allocator) -> Result<(), U64>:
+    let previous = applicable_timestamp(stored, window)?
+    if previous.is_empty():
+        return Ok(())
+    let wire = previous.to_string(allocator)?
+    let checked = check_timestamp_history(timestamp, raw, &wire, allocator)
+    wire.close()
+    if let Err(error) = checked:
+        if let MetadataRollback = error:
+            return Err(2)
+        return Err(1)
+    return Ok(())
+
+fn applicable_timestamp(stored: Span, window: MetadataWindow) -> Result<Span, U64>:
+    let empty = stored.part(0, 0)
+    let floor = window.floor
+    if stored.is_empty():
+        if floor.version < window.retired_at:
+            return Ok(empty)
+        let previous = split_fetch_floor(floor.metadata)?
+        return Ok(previous.timestamp)
+    if let Ok(parts) = stored.split(10):
+        if let Ok(version) = parts.head.parse_u64():
+            if version == 0 || version > window.root_version || parts.tail.is_empty() || parts.tail.len() > 16384:
+                return Err(1)
+            if version < window.retired_at:
+                return Ok(empty)
+            return Ok(parts.tail)
+    // Older timestamp-only files had no root version. Discard one only
+    // if the exact bytes also occur in a superseded snapshot checkpoint.
+    if floor.version != 0 && floor.version < window.retired_at:
+        let previous = split_fetch_floor(floor.metadata)?
+        if stored.same(previous.timestamp):
+            return Ok(empty)
+    return Ok(stored)
+
+fn with_snapshot(source: &Dir<Read>, root: &TrustedRoot, reserved: &[U8], timestamp: &Metadata, raw: &String, snapshot: &Metadata, snapshot_ref: &MetadataReference, scope: FetchScope, window: MetadataWindow, output: &Console<Write>, now: U64, allocator: &Allocator) -> Result<Bool, U64>:
+    if let Err(error) = authenticated(root, snapshot, now, allocator):
+        return Err(1)
+    if window.floor.version >= window.retired_at:
+        let prior = parse_fetch_floor(window.floor.metadata, allocator)?
+        let compared = check_history(timestamp, snapshot, raw, prior.history(), allocator)
+        prior.close()
+        if let Err(error) = compared:
+            if let MetadataRollback = error:
+                return Err(2)
+            return Err(1)
+    let Ok(reference): MetadataReference = top_targets_reference(snapshot, allocator) else Err(error):
+        return Err(1)
+    let wire = optional_file(source, "targets.json", 2097152, allocator)?
+    if wire.byte_len() == 0:
+        wire.close()
+        request(output, "targets", &reference, allocator)?
+        write_metadata_pin(raw, output, allocator)?
+        write_reference_pin(snapshot_ref, output, allocator)?
+        return Ok(true)
+    let parsed = reference.open(Targets, &wire, allocator)
+    wire.close()
+    let Ok(parent): Metadata = move parsed else Err(error):
+        return Err(1)
+    let result = with_parent(source, root, reserved, snapshot, &parent, scope, output, now, allocator)
+    parent.close()
+    return result
+
+fn with_parent(source: &Dir<Read>, root: &TrustedRoot, reserved: &[U8], snapshot: &Metadata, parent: &Metadata, scope: FetchScope, output: &Console<Write>, now: U64, allocator: &Allocator) -> Result<Bool, U64>:
+    if let Err(error) = authenticated(root, parent, now, allocator):
+        return Err(1)
+    if let Err(error) = validate_delegations(root, snapshot, parent, reserved, allocator):
+        return Err(1)
+    match scope:
+        CatalogTargets:
+            return missing_roles(source, snapshot, parent, output, allocator)
+        PackageTarget(coordinate):
+            return missing_target_role(source, snapshot, parent, coordinate.span(), output, allocator)
+
+fn missing_target_role(source: &Dir<Read>, snapshot: &Metadata, parent: &Metadata, coordinate: Span, output: &Console<Write>, allocator: &Allocator) -> Result<Bool, U64>:
+    let Ok(parts): Halves = coordinate.split('/') else Err(rest):
+        return Err(1)
+    let Ok(name): &String = role_for_package(parent, parts.head) else Err(code):
+        return Ok(false)
+    if role_exists(source, name, allocator)?:
+        return Ok(false)
+    output.line("role")
+    emit_role_request(snapshot, name, output, allocator)?
+    return Ok(true)
+
+fn missing_roles(source: &Dir<Read>, snapshot: &Metadata, parent: &Metadata, output: &Console<Write>, allocator: &Allocator) -> Result<Bool, U64>:
+    let roles = delegated_roles(parent)?
+    let count = roles.len()?
+    if count > 64:
+        return Err(1)
+    var planned = false
+    for i in 0..count:
+        let name = delegated_role_name(parent, i)?
+        if !role_exists(source, name, allocator)?:
+            if !planned:
+                output.line("roles")
+                planned = true
+            emit_role_request(snapshot, name, output, allocator)?
+    return Ok(planned)
+
+fn emit_role_request(snapshot: &Metadata, name: &String, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let Ok(reference): MetadataReference = role_reference(snapshot, name, allocator) else Err(error):
+        return Err(1)
+    output.write_string(name)
+    output.print_byte(10)
+    return emit_reference(output, &reference, allocator)
+
+fn role_exists(source: &Dir<Read>, name: &String, allocator: &Allocator) -> Result<Bool, U64>:
+    let path = fetch_role_filename(name, allocator)?
+    let opened = source.open_path(&path)
+    path.close()
+    match move opened:
+        Ok(file):
+            file.close()
+            return Ok(true)
+        Err(NotFound):
+            return Ok(false)
+        Err(_):
+            return Err(1)
+
+fn request(output: &Console<Write>, name: Text, reference: &MetadataReference, allocator: &Allocator) -> Result<(), U64>:
+    output.line(name)
+    return emit_reference(output, reference, allocator)
+
+pub fn write_metadata_pin(wire: &String, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let pin = digest_text(wire.as_bytes(), allocator)?
+    output.write_string(&pin)
+    output.print_byte(10)
+    pin.close()
+    return Ok(())
+
+fn emit_reference(output: &Console<Write>, reference: &MetadataReference, allocator: &Allocator) -> Result<(), U64>:
+    output.write_u64(reference.version())
+    output.print_byte(10)
+    output.write_u64(reference.length())
+    output.print_byte(10)
+    return write_reference_pin(reference, output, allocator)
+
+fn write_reference_pin(reference: &MetadataReference, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let empty = String.with_capacity(allocator, 96)?
+    var digest = move empty
+    if let Err(code) = reference.append_sha384(&mut digest, allocator):
+        digest.close()
+        return Err(code)
+    output.write("sha384:")
+    output.write_string(&digest)
+    output.print_byte(10)
+    digest.close()
+    return Ok(())

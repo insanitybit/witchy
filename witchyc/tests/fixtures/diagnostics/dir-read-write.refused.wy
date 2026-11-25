@@ -1,0 +1,6 @@
+// Refused: a writing method on a directory granted for reading.
+import console
+
+fn main(out: Console<Write>, dir: Dir<Read>):
+    let made = dir.write_text("a.txt", "x")
+    out.print_int(1)

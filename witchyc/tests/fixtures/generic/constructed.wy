@@ -1,0 +1,27 @@
+// A generic record's type comes from the values given for its fields when no
+// type is written: `Pair(7, flag)` is a `Pair<U64, Bool>`, and a record of a
+// record is settled from the inner one.
+import "../../../library/wasm-console.wy"
+
+type Pair<A, B>:
+    left: A
+    right: B
+
+type Nested<T>:
+    inner: Pair<T, T>
+    count: U64
+
+fn swapped<A, B>(pair: Pair<A, B>) -> Pair<B, A>:
+    return Pair(pair.right, pair.left)
+
+fn main(console: Console<Write>):
+    let flag = true
+    let first: U64 = 7
+    let pair = Pair(first, flag)
+    let turned = swapped(Pair(first, flag))
+    if turned.left:
+        console.print_int(turned.right)
+    let same = Pair(first, first + 1)
+    let boxed = Nested(same, 2)
+    console.print_int(boxed.inner.right + boxed.count)
+    console.print_int(pair.left)

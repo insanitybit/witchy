@@ -1,0 +1,5 @@
+// Refused: a closure that gives a Bool is not one that gives a U64.
+fn apply(f: fn(U64) -> U64, x: U64) -> U64:
+    return f(x)
+fn main():
+    let n = apply(fn(n: U64) -> Bool: n > 1, 3)

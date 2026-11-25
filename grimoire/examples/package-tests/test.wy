@@ -1,0 +1,7 @@
+import "values.wy"
+import testing
+import "tests/fixtures.wy"
+
+using fixtures.example
+test fn adds(pair: &Operands, expected: U64) -> Result<(), Failure>:
+    return testing.eq_u64(values.sum((*pair).left, (*pair).right), expected)

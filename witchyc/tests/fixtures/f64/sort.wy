@@ -1,0 +1,21 @@
+// `sort` on a Vec<F64>: least first, negatives and a negative zero included.
+import console
+import float
+import vec
+import sort
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<F64> = Vec.new(&allocator, 8) else Err(code):
+        return
+    var v = move made
+    let values: [F64; 8] = [2.5, -1.25, 1000.0, 0.001, -0.0, 3.0, -7.5, 2.25]
+    for i in 0..8:
+        match v.push_mut(&allocator, values[i]):
+            Ok:
+                ()
+            Err(back):
+                ()
+    sort(&mut v)
+    for x in &v:
+        console.print_f64(*x, 3)
+    v.close()

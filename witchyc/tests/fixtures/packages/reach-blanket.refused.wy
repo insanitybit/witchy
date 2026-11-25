@@ -1,0 +1,7 @@
+// Refused: a blanket impl's method from alpha's inner file, on a plain number.
+import console
+import "@alpha"
+
+fn main(console: Console<Write>):
+    let n: U64 = 5
+    console.print_int(n.probe())

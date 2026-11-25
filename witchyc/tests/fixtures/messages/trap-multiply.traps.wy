@@ -1,0 +1,8 @@
+// An overflow in an inlined function's `*` is still named as one.
+import console
+
+fn grow(n: U64) -> U64:
+    n * 4000000000
+
+fn main(console: Console<Write>):
+    console.print_int(grow(5000000000))

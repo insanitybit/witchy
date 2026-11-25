@@ -1,0 +1,114 @@
+// Validate the current and proposed policy, then compare the canonical snapshot
+// under the write lock before installing a new revision.
+import "challenge_bindings.wy"
+import "policy_document.wy"
+import "policy_plan.wy"
+import "../sqlite_reply.wy"
+import "../tuf/canonical.wy"
+import "../tuf/release_trust.wy"
+import console
+import discard
+import json_tree
+import "@sqlite"
+import string
+import text
+
+pub fn install_policy(saved: &[U8], next: &Json, db: &Sqlite, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    validate_policy(next, allocator)?
+    let encoded = release_json(next, allocator)?
+    let checked = install_encoded(saved, next, &encoded, db, output, allocator)
+    encoded.close()
+    return checked
+
+fn install_encoded(saved: &[U8], next: &Json, encoded: &String, db: &Sqlite, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    if encoded.byte_len() > 65536 || saved.len() == 0:
+        return Err(1)
+    if saved[0] == 'N' && saved.len() == 1:
+        let absent = String.new(allocator)?
+        let checked = install_comparing(encoded, &absent, true, true, db, output, allocator)
+        absent.close()
+        return checked
+    if saved[0] != 'P' || saved.len() == 1:
+        return Err(1)
+    let raw = String.from_utf8_bytes(allocator, saved.part(1, saved.len()))?
+    let checked = check_snapshot(&raw, next, encoded, db, output, allocator)
+    raw.close()
+    return checked
+
+fn check_snapshot(raw: &String, next: &Json, encoded: &String, db: &Sqlite, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let previous = parse_release_json(raw, allocator)?
+    let changed = compare_policy(&previous, raw, next, encoded, allocator)
+    previous.discard()
+    let replacing = changed?
+    return install_comparing(encoded, raw, false, replacing, db, output, allocator)
+
+fn compare_policy(previous: &Json, raw: &String, next: &Json, encoded: &String, allocator: &Allocator) -> Result<Bool, U64>:
+    validate_policy(previous, allocator)?
+    let old = release_json(previous, allocator)?
+    let canonical = old.eq(raw)
+    let changed = !old.eq(encoded)
+    old.close()
+    if !canonical:
+        return Err(1)
+    let origin = string_field(previous, "origin")?
+    let registry = string_field(previous, "registry")?
+    let next_origin = string_field(next, "origin")?
+    let next_registry = string_field(next, "registry")?
+    if !origin.eq(next_origin) || !registry.eq(next_registry):
+        return Err(3)
+    if changed:
+        let prior = declared_integer(previous, "revision")?
+        let after = declared_integer(next, "revision")?
+        if after <= prior:
+            return Err(4)
+    return Ok(changed)
+
+fn install_comparing(encoded: &String, previous: &String, initial: Bool, changed: Bool, db: &Sqlite, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let digest = digest_text(encoded.as_bytes(), allocator)?
+    let checked = prepare_commit(encoded, previous, &digest, initial, changed, db, output, allocator)
+    digest.close()
+    return checked
+
+fn prepare_commit(encoded: &String, previous: &String, digest: &String, initial: Bool, changed: Bool, db: &Sqlite, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let empty = String.with_capacity(allocator, 192)?
+    var bindings = move empty
+    let made = write_bindings(&mut bindings, digest, initial, allocator)
+    let checked = commit(made, encoded, previous, &bindings, initial, changed, db, output, allocator)
+    bindings.close()
+    return checked
+
+fn write_bindings(bindings: &mut String, digest: &String, initial: Bool, allocator: &Allocator) -> Result<(), U64>:
+    text_binding(bindings, "digest", digest, allocator)?
+    let flag = if initial:
+        1
+    else:
+        0
+    return integer_binding(bindings, "initial", flag, allocator)
+
+fn commit(made: Result<(), U64>, encoded: &String, previous: &String, bindings: &String, initial: Bool, changed: Bool, db: &Sqlite, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    made?
+    // Both documents travel in the blob. The host's text bindings are capped
+    // below the size of a single policy.
+    let empty = String.with_capacity(allocator, encoded.byte_len() + previous.byte_len() + 22)?
+    var blob = move empty
+    let framed = encode_commit(&mut blob, encoded, previous, initial, allocator)
+    let checked = execute(framed, db, bindings, &blob, changed, output, allocator)
+    blob.close()
+    return checked
+
+fn encode_commit(blob: &mut String, encoded: &String, previous: &String, initial: Bool, allocator: &Allocator) -> Result<(), U64>:
+    blob.push_text(allocator, "{\"previous\":")?
+    if initial:
+        blob.push_text(allocator, "null")?
+    else:
+        blob.push_part(allocator, previous, 0, previous.byte_len())?
+    blob.push_text(allocator, ",\"next\":")?
+    blob.push_part(allocator, encoded, 0, encoded.byte_len())?
+    return blob.push_text(allocator, "}")
+
+fn execute(framed: Result<(), U64>, db: &Sqlite, bindings: &String, blob: &String, changed: Bool, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    framed?
+    let plan = policy_plan(changed, allocator)?
+    let checked = emit_transaction(db, &plan, bindings, blob.as_bytes(), output, 256, allocator)
+    plan.close()
+    return checked

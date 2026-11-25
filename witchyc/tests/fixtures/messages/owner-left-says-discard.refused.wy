@@ -1,0 +1,11 @@
+// Refused, naming discard for a Vec of owners: `close` would be refused (it copies no String).
+import console
+import vec
+import string
+import discard
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<String> = Vec.new(&allocator, 4) else Err(e):
+        return
+    var v = move made
+    console.print_int(v.len())

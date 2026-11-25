@@ -1,0 +1,21 @@
+// A `?` inside a `using`, after spans into its String: the failure arm leaves the function and
+// reads no span, so the String is discarded there; the spans keep it lent on the success path.
+import console
+import span
+import string
+
+fn first(allocator: &Allocator) -> Result<U64, U64>:
+    using var request: String = String.new(allocator)?:
+        let _ = request.push_text(allocator, "12 34")
+        let words = request.span()
+        match words.split(32):
+            Ok(pair):
+                let value = pair.head.parse_u64()?
+                let more = pair.tail.parse_u64()?
+                return Ok(value + more)
+            Err(one):
+                return Ok(0)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    if let Ok(n) = first(&allocator):
+        console.print_int(n)

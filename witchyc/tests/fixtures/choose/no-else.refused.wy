@@ -1,0 +1,5 @@
+// An `if` bound as a value has an `else`.
+fn main(console: Console<Write>):
+    let value = if true:
+        1
+    console.print_int(value)

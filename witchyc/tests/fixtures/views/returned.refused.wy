@@ -1,0 +1,14 @@
+// A Span of a String the function owns cannot be returned.
+import "../../../library/wasm-span.wy"
+import "../../../library/wasm-string.wy"
+
+fn bad(text: String) -> Span:
+    return text.span()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var text = match String.new(&allocator):
+        Ok(empty):
+            move empty
+        Err(code):
+            return
+    console.print_int(bad(move text).len())

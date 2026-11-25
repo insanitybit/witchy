@@ -1,0 +1,2 @@
+proof failed: function `attack`
+  not proved: an `unreachable` that some path reaches (2 places)

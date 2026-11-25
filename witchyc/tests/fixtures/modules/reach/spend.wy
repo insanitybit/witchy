@@ -1,0 +1,7 @@
+// Imports `mint` only: a Coin's own methods are found by its type, its file being of this
+// program, though this file never names it.
+import "mint.wy"
+
+pub fn spend() -> U64:
+    let c = mint(5)
+    return c.worth()

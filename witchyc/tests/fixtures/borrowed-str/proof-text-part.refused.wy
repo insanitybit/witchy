@@ -1,0 +1,11 @@
+fn checked_part(buffer: &Buffer<U8>, source: &str, lo: U64, hi: U64, count: U64) -> &str:
+    requires lo + count == hi
+    requires hi <= source.len()
+    ensures result.len() == 0
+    ensures memory.utf8(result, 0, result.len())
+    proof:
+        auto
+    return source.part(lo, hi)
+
+fn main():
+    return

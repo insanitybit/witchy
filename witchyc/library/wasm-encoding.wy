@@ -1,0 +1,256 @@
+// Bytes as text and back: padded base64, unpadded base64url, and hex.
+// Safe code on String's and Vec's public methods: no proofs, nothing unchecked. Writing packs
+// the characters eight to a `push_ascii` word; reading writes each byte through the slice of
+// a Vec made full at the exact size first.
+import "wasm-string.wy"
+import "wasm-vec.wy"
+
+// The base64 character for a six-bit value.
+fn base64_char(value: U64, url: Bool) -> U64:
+    if value < 26:
+        return 65 + value
+    if value < 52:
+        return 97 + value - 26
+    if value < 62:
+        return 48 + value - 52
+    if url:
+        if value == 62:
+            return 45
+        return 95
+    if value == 62:
+        return 43
+    return 47
+
+// The six-bit value of a base64 character; 64 for one that is not.
+fn base64_value(byte: U64, url: Bool) -> U64:
+    if byte >= 65 && byte <= 90:
+        return byte - 65
+    if byte >= 97 && byte <= 122:
+        return byte - 97 + 26
+    if byte >= 48 && byte <= 57:
+        return byte - 48 + 52
+    if (url && byte == 45) || (!url && byte == 43):
+        return 62
+    if (url && byte == 95) || (!url && byte == 47):
+        return 63
+    return 64
+
+// The four characters of one group of three bytes, first in the low byte.
+fn base64_group(group: U64, url: Bool) -> U64:
+    return base64_char(group >> 18, url) | (base64_char((group >> 12) % 64, url) << 8) | (base64_char((group >> 6) % 64, url) << 16) | (base64_char(group % 64, url) << 24)
+
+// Append `bytes` in base64. Err(1): no room (part may have been added). Six bytes are eight
+// characters: one word built in place and one write (each character went through a call and
+// a record in the frame: 500 instructions a byte, 2026-11-22).
+pub fn push_base64(text: &mut String, allocator: &Allocator, bytes: &[U8]) -> Result<(), U64>:
+    return push_base64_form(text, allocator, bytes, false)
+
+// Append bytes as unpadded base64url. Err(1): no room (part may have been added).
+pub fn push_base64url(text: &mut String, allocator: &Allocator, bytes: &[U8]) -> Result<(), U64>:
+    return push_base64_form(text, allocator, bytes, true)
+
+fn push_base64_form(text: &mut String, allocator: &Allocator, bytes: &[U8], url: Bool) -> Result<(), U64>:
+    let length = bytes.len()
+    var at: U64 = 0
+    while length - at >= 6:
+        let first = (U8.to_u64(bytes[at]) << 16) + (U8.to_u64(bytes[at + 1]) << 8) + U8.to_u64(bytes[at + 2])
+        let second = (U8.to_u64(bytes[at + 3]) << 16) + (U8.to_u64(bytes[at + 4]) << 8) + U8.to_u64(bytes[at + 5])
+        text.push_ascii(allocator, base64_group(first, url) | (base64_group(second, url) << 32), 8)?
+        at += 6
+    if length - at >= 3:
+        let group = (U8.to_u64(bytes[at]) << 16) + (U8.to_u64(bytes[at + 1]) << 8) + U8.to_u64(bytes[at + 2])
+        text.push_ascii(allocator, base64_group(group, url), 4)?
+        at += 3
+    let left = length - at
+    if left > 0:
+        var group = U8.to_u64(bytes[at]) << 16
+        if left == 2:
+            group += U8.to_u64(bytes[at + 1]) << 8
+        var third: U64 = 61
+        if left == 2:
+            third = base64_char((group >> 6) % 64, url)
+        let word = base64_char(group >> 18, url) | (base64_char((group >> 12) % 64, url) << 8) | (third << 16) | (61 << 24)
+        let count = if url:
+            left + 1
+        else:
+            4
+        return text.push_ascii(allocator, word, count)
+    return Ok(())
+
+// The bytes base64 `text` encodes. Err(position): a character that is not of the alphabet,
+// `=` other than one or two at the very end, or a length that is not a multiple of four (its
+// position is the length). With no room, the allocator's own code (2 or 3).
+pub fn decode_base64(allocator: &Allocator, text: &[U8]) -> Result<Vec<U8>, U64>:
+    match decode_base64_without_limit(allocator, text, false):
+        Ok(bytes):
+            return Ok(move bytes)
+        Err(InvalidBase64(position)):
+            return Err(position)
+        Err(Base64Allocation(code)):
+            return Err(code)
+
+pub type Base64Error:
+    InvalidBase64(U64)
+    Base64Allocation(U64)
+
+pub type BoundedBase64Error:
+    Base64Decode(Base64Error)
+    Base64Limit(U64)
+
+// Decode canonical unpadded base64url into owned bytes.
+pub fn decode_base64url(allocator: &Allocator, text: &[U8]) -> Result<Vec<U8>, Base64Error>:
+    return decode_base64_without_limit(allocator, text, true)
+
+fn decode_base64_without_limit(allocator: &Allocator, text: &[U8], url: Bool) -> Result<Vec<U8>, Base64Error>:
+    match decode_base64_form(allocator, text, url, 18446744073709551615):
+        Ok(bytes):
+            return Ok(move bytes)
+        Err(Base64Decode(error)):
+            return Err(error)
+        Err(Base64Limit(size)):
+            return Err(InvalidBase64(size))
+
+// Refuse an output above max_bytes before allocating. Base64Limit carries the size
+// implied by the encoded length.
+pub fn decode_base64url_bounded(allocator: &Allocator, text: &[U8], max_bytes: U64) -> Result<Vec<U8>, BoundedBase64Error>:
+    return decode_base64_form(allocator, text, true, max_bytes)
+
+fn decode_base64_form(allocator: &Allocator, text: &[U8], url: Bool, max_bytes: U64) -> Result<Vec<U8>, BoundedBase64Error>:
+    let length = text.len()
+    let tail = length % 4
+    if tail == 1 || (!url && tail != 0):
+        return Err(Base64Decode(InvalidBase64(length)))
+    var padding: U64 = 0
+    if !url && length > 0 && text[length - 1] == '=':
+        padding = 1
+        if text[length - 2] == '=':
+            padding = 2
+    var size = length / 4 * 3 - padding
+    if tail != 0:
+        size += tail - 1
+    if size > max_bytes:
+        return Err(Base64Limit(size))
+    let Ok(room): Vec<U8> = Vec.filled(allocator, size, 0) else Err(code):
+        return Err(Base64Decode(Base64Allocation(code)))
+    var made = move room
+    match base64_into(made.as_mut_slice(), text, padding, url):
+        Ok:
+            return Ok(move made)
+        Err(position):
+            made.close()
+            return Err(Base64Decode(InvalidBase64(position)))
+
+// `text`'s groups of four characters as three bytes each into `out`, which has exactly the
+// room for them (the last group gives `padding` fewer).
+fn base64_into(out: &mut [U8], text: &[U8], padding: U64, url: Bool) -> Result<(), U64>:
+    let length = text.len()
+    let size = out.len()
+    var at: U64 = 0
+    var to: U64 = 0
+    while length - at >= 4:
+        var group: U64 = 0
+        for k in 0..4:
+            let byte = U8.to_u64(text[at + k])
+            var value = base64_value(byte, url)
+            // `=` only as the padding counted above.
+            if byte == 61 && at + k >= length - padding:
+                value = 0
+            if value == 64:
+                return Err(at + k)
+            group = group * 64 + value
+        if to < size:
+            out[to] = U8.truncate(group >> 16)
+        if to + 1 < size:
+            out[to + 1] = U8.truncate((group >> 8) % 256)
+        if to + 2 < size:
+            out[to + 2] = U8.truncate(group % 256)
+        to += 3
+        at += 4
+    if at < length:
+        return base64url_tail(out, to, text, at)
+    return Ok(())
+
+fn base64url_tail(out: &mut [U8], to: U64, text: &[U8], at: U64) -> Result<(), U64>:
+    let first = base64_value(U8.to_u64(text[at]), true)
+    let second = base64_value(U8.to_u64(text[at + 1]), true)
+    if first == 64:
+        return Err(at)
+    if second == 64:
+        return Err(at + 1)
+    if text.len() - at == 2:
+        if second % 16 != 0:
+            return Err(at + 1)
+    else:
+        let third = base64_value(U8.to_u64(text[at + 2]), true)
+        if third == 64 || third % 4 != 0:
+            return Err(at + 2)
+        out[to + 1] = U8.truncate((second % 16) * 16 + third / 4)
+    out[to] = U8.truncate(first * 4 + second / 16)
+    return Ok(())
+
+// Append `bytes` as hex, two lowercase digits each. Err(1): no room (part may have been added).
+pub fn push_hex(text: &mut String, allocator: &Allocator, bytes: &[U8]) -> Result<(), U64>:
+    let length = bytes.len()
+    var at: U64 = 0
+    // Four bytes are eight digits: one word, one write.
+    while length - at >= 4:
+        var word: U64 = 0
+        for k in 0..4:
+            let byte = U8.to_u64(bytes[at + k])
+            word = word | (hex_digit(byte / 16) << (k * 16)) | (hex_digit(byte % 16) << (k * 16 + 8))
+        text.push_ascii(allocator, word, 8)?
+        at += 4
+    var rest: U64 = 0
+    var digits: U64 = 0
+    while at < length:
+        let byte = U8.to_u64(bytes[at])
+        rest = rest | (hex_digit(byte / 16) << (digits * 8)) | (hex_digit(byte % 16) << (digits * 8 + 8))
+        digits += 2
+        at += 1
+    if digits > 0:
+        return text.push_ascii(allocator, rest, digits)
+    return Ok(())
+
+fn hex_digit(value: U64) -> U64:
+    if value < 10:
+        return 48 + value
+    return 87 + value
+
+// 16 for a byte that is not a hex digit (either case).
+fn hex_value(byte: U64) -> U64:
+    if byte >= 48 && byte <= 57:
+        return byte - 48
+    if byte >= 97 && byte <= 102:
+        return byte - 87
+    if byte >= 65 && byte <= 70:
+        return byte - 55
+    return 16
+
+// The bytes hex `text` writes, two digits a byte, either case. Err(position): a byte that is
+// not a hex digit, or an odd length (its position is the length). With no room, the allocator's code (2 or 3).
+pub fn decode_hex(allocator: &Allocator, text: &[U8]) -> Result<Vec<U8>, U64>:
+    let length = text.len()
+    if length % 2 != 0:
+        return Err(length)
+    let Ok(room): Vec<U8> = Vec.filled(allocator, length / 2, 0) else Err(code):
+        return Err(code)
+    var made = move room
+    match hex_into(made.as_mut_slice(), text):
+        Ok:
+            return Ok(move made)
+        Err(position):
+            made.close()
+            return Err(position)
+
+// `text`'s pairs of digits as a byte each into `out`, which has exactly the room for them.
+fn hex_into(out: &mut [U8], text: &[U8]) -> Result<(), U64>:
+    let size = out.len()
+    for to in 0..size:
+        let high = hex_value(U8.to_u64(text[to * 2]))
+        let low = hex_value(U8.to_u64(text[to * 2 + 1]))
+        if high == 16:
+            return Err(to * 2)
+        if low == 16:
+            return Err(to * 2 + 1)
+        out[to] = U8.truncate(high * 16 + low)
+    return Ok(())

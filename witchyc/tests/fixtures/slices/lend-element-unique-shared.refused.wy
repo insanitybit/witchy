@@ -1,0 +1,10 @@
+// Refused, saying what to write: a unique slice's element is lent uniquely.
+import console
+
+fn peek(s: &mut [U64]) -> U64:
+    let r = &s[0]
+    return *r
+
+fn main(console: Console<Write>):
+    var a: [U64; 3] = [1, 2, 3]
+    console.print_int(peek(a.slice_mut()))

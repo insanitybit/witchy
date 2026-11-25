@@ -1,0 +1,6 @@
+// A PrefixBuffer issues no weak reference.
+fn weak<T>(buffer: &PrefixBuffer<T>) -> Weak<T>:
+    return memory.buffer_pointer(buffer)
+
+fn main(out: Console<Write>):
+    out.print_int(0)

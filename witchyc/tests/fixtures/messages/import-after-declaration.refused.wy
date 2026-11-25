@@ -1,0 +1,10 @@
+// Refused, saying where an import goes: it said only "an import names a module".
+import console
+
+fn helper() -> U64:
+    return 1
+
+import string
+
+fn main(console: Console<Write>):
+    console.print_int(helper())

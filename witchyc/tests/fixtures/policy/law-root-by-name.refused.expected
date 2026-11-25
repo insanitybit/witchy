@@ -1,0 +1,1 @@
+`impl Eq for Span` is trusted as the library's by the key law, and this one is written in a file of the program

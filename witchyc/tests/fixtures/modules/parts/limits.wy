@@ -1,0 +1,4 @@
+// One constant offered to other files, one kept.
+pub let LIMIT = 10
+let SECRET = 7
+pub let DOUBLE = LIMIT * 2 + SECRET

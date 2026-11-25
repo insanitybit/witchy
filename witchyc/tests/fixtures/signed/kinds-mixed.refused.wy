@@ -1,0 +1,10 @@
+// An I64 is compared only with an I64.
+fn f(x: I64, n: U64) -> U64:
+    requires x < n
+    ensures result == 1
+    proof:
+        auto
+    return 1
+
+fn main(console: Console<Write>):
+    console.print_int(f(1, 2))

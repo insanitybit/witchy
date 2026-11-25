@@ -1,0 +1,10 @@
+// Refused: a recipe over fields (keys.Key) applied to a sum; a sum takes a recipe over variants.
+import "parts/keys.wy"
+import hash
+
+type S derive(keys.Key):
+    One
+    Two
+
+fn main():
+    return

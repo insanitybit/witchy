@@ -1,0 +1,12 @@
+// A recipe file's private `hash_fold`, a name the library declares too, is the one its recipe
+// calls wherever it is applied (the sixth review found the library's, 130).
+import "parts/recipe_libname.wy"
+import console
+import hash
+
+type T derive(recipe_libname.Shown):
+    a: U64
+
+fn main(console: Console<Write>):
+    let t = T(a: 1)
+    t.show(&console)

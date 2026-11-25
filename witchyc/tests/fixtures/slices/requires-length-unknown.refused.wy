@@ -1,0 +1,16 @@
+// Refused: a slice of unknown length passed on does not meet `requires xs.len() > 0`.
+import console
+
+fn first(xs: &[U64]) -> U64:
+    requires xs.len() > 0
+    ensures true
+    proof:
+        auto
+    return xs[0]
+
+fn relay(ys: &[U64]) -> U64:
+    return first(ys)
+
+fn main(console: Console<Write>):
+    let a: [U64; 3] = [7, 8, 9]
+    console.print_int(relay(a.slice().part(0, 0)))

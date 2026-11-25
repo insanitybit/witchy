@@ -1,0 +1,13 @@
+// A guarded match reads its value again when a guard fails, so a value holding an owner is refused.
+import console
+import string
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<String, U64> = String.new(&allocator)
+    match made:
+        Ok(text) if text.byte_len() > 3:
+            text.close()
+        Ok(text):
+            text.close()
+        Err(code):
+            console.print_int(code)

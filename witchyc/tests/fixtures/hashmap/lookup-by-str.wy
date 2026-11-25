@@ -1,0 +1,25 @@
+// A String-keyed map looked up by a literal, `&str`, with no `&` and no String made: `get`
+// takes `&Q`, and `Q = str` (docs/design-slices.md).
+import console
+import string
+import hashmap
+import discard
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(m): HashMap<String, U64> = HashMap.new(&allocator, 8) else Err(c):
+        return
+    var map = move m
+    let Ok(pen): String = String.from_str(&allocator, "pen") else Err(c):
+        map.discard()
+        return
+    match map.put(&allocator, move pen, 7):
+        Ok:
+            ()
+        Err(back):
+            back.discard()
+    match map.get("pen"):
+        Ok(v):
+            console.print_int(*v)
+        Err(e):
+            console.print_int(0)
+    map.discard()

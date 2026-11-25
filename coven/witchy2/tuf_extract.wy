@@ -1,0 +1,134 @@
+// Release evidence check and extraction after trusted TUF metadata selection.
+import "tuf/attestations.wy"
+import "tuf/release_trust.wy"
+import "tuf/signing_input.wy"
+import console
+import discard
+import encoding
+import fs
+import json_tree
+import span
+import string
+import text
+import time
+import vec
+
+fn main(input: Console<Read>, output: Console<Write>, target: File<Read>, destination: File<Write>, clock: Clock, allocator: Allocator):
+    let result = verify(&input, move target, &destination, &output, clock.now_ms(), &allocator)
+    if let Err(reason) = result:
+        destination.abandon()
+        if reason == 2:
+            output.line("refused lock")
+        else if reason == 3:
+            output.line("refused registry")
+        else:
+            output.line("refused")
+        return
+    if let Err(reason) = destination.finish():
+        output.line("refused")
+        return
+    output.line("verified")
+
+fn verify(input: &Console<Read>, target: File<Read>, destination: &File<Write>, output: &Console<Write>, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let read = read_signing_request(input, allocator)
+    let Ok(request): Json = move read else Err(code):
+        target.close()
+        return Err(code)
+    let result = verify_request(&request, input, move target, destination, output, now, allocator)
+    request.discard()
+    return result
+
+fn verify_request(request: &Json, input: &Console<Read>, target: File<Read>, destination: &File<Write>, output: &Console<Write>, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let parsed = verify_trust(request, input, allocator)
+    let Ok(trust): ReleaseTrust = move parsed else Err(code):
+        target.close()
+        return Err(code)
+    let checked = with_trust(request, &trust, move target, destination, output, now, allocator)
+    trust.close()
+    return checked
+
+fn verify_trust(request: &Json, input: &Console<Read>, allocator: &Allocator) -> Result<ReleaseTrust, U64>:
+    var pin: [U8; 48] = [0; 48]
+    let expected = string_field(request, "trust")?
+    if !read_pin(expected, &mut pin, allocator):
+        return Err(1)
+    let size = declared_integer(request, "trust_size")?
+    if size == 0 || size > 262144:
+        return Err(1)
+    let bytes = read_signing_bytes(size, input, allocator)?
+    let checked = String.from_utf8(move bytes)
+    let Ok(wire): String = move checked else Err(invalid):
+        invalid.close()
+        return Err(1)
+    let parsed = read_release_trust(&wire, &pin, allocator)
+    wire.close()
+    let Ok(trust): ReleaseTrust = move parsed else Err(reason):
+        return Err(1)
+    return Ok(move trust)
+
+fn read_pin(text: &String, pin: &mut [U8; 48], allocator: &Allocator) -> Bool:
+    if text.byte_len() != 103 || !text.span().starts_with_text("sha384:"):
+        return false
+    let Ok(raw): Vec<U8> = decode_hex(allocator, text.as_bytes().part(7, 103)) else Err(code):
+        return false
+    (*pin).slice_mut().copy_from(raw.as_slice())
+    raw.close()
+    return true
+
+fn require_registry(request: &Json, trust: &ReleaseTrust) -> Result<(), U64>:
+    let policy = trust.policy()?
+    let registry = string_field(policy, "registry")?
+    let required = string_field(request, "registry")?
+    if !registry.eq(required):
+        return Err(3)
+    return Ok(())
+
+fn with_trust(request: &Json, trust: &ReleaseTrust, target: File<Read>, destination: &File<Write>, output: &Console<Write>, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    if let Err(code) = require_registry(request, trust):
+        target.close()
+        return Err(code)
+    let read = target.read_text_bounded(allocator, 2097152)
+    let Ok(bundle): String = move read else Err(reason):
+        return Err(1)
+    let checked = with_bundle(request, trust, &bundle, destination, output, now, allocator)
+    bundle.close()
+    return checked
+
+fn with_bundle(request: &Json, trust: &ReleaseTrust, bundle: &String, destination: &File<Write>, output: &Console<Write>, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let expected = string_field(request, "target")?
+    let pinned = digest_text(bundle.as_bytes(), allocator)?
+    let matches = pinned.eq(expected)
+    pinned.close()
+    if !matches:
+        return Err(1)
+    let name = string_field(request, "name")?
+    let version = string_field(request, "version")?
+    let verified = verify_release_package(bundle, trust, name, version, now, allocator)
+    let Ok(package): VerifiedPackage = move verified else Err(reason):
+        return Err(1)
+    let result = emit_package(&package, request, trust, destination, output, allocator)
+    package.close()
+    return result
+
+fn emit_package(package: &VerifiedPackage, request: &Json, trust: &ReleaseTrust, destination: &File<Write>, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let expected = string_field(request, "source")?
+    if expected.byte_len() != 0 && !package.digest().eq(expected):
+        return Err(2)
+    let key = trust.publisher(package.name(), allocator)?
+    let result = digest_text(key.as_slice(), allocator)
+    key.close()
+    let Ok(publisher): String = move result else Err(code):
+        return Err(code)
+    if let Err(reason) = destination.write_bytes(package.bytes()):
+        publisher.close()
+        return Err(1)
+    output.write_string(package.digest())
+    output.print_byte(10)
+    output.write_string(&publisher)
+    output.print_byte(10)
+    output.write_string(package.name())
+    output.print_byte('/')
+    output.write_string(package.version())
+    output.print_byte(10)
+    publisher.close()
+    return Ok(())

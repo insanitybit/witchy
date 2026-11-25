@@ -1,0 +1,51 @@
+// Tasks in a Vec, stepped round robin until each finishes: a task holds what its input held,
+// and nothing generic can run one, so a Vec may hold them (docs/decisions.md).
+import console
+import tasks
+import vec
+
+fn countdown(from: U64) suspends:
+    var n = from
+    while n > 0:
+        pause(n)
+        n -= 1
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<Task> = Vec.new(&allocator, 4) else Err(code):
+        return
+    var running = move made
+    var start: U64 = 1
+    while start <= 3:
+        let Ok(task): Task = Task.spawn(&allocator, 1024, countdown, start * 10) else Err(input):
+            running.release_empty()
+            return
+        match running.push_mut(&allocator, move task):
+            Ok:
+                start += 1
+            Err(back):
+                back.close()
+                running.release_empty()
+                return
+    var steps: U64 = 0
+    var tokens: U64 = 0
+    while running.len() > 0:
+        var i: U64 = 0
+        while i < running.len():
+            let tasks = running.as_mut_slice()
+            let task = tasks.cell(i)
+            match task.step():
+                Ok:
+                    let last = running.len() - 1
+                    let moved = running.exchange(i, last)
+                    match running.take_last_mut():
+                        Ok(done):
+                            done.close()
+                        Err(code):
+                            unreachable
+                Err(token):
+                    tokens += token
+                    i += 1
+            steps += 1
+    console.print_int(steps)
+    console.print_int(tokens)
+    running.release_empty()

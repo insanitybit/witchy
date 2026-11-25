@@ -1,0 +1,25 @@
+// The three-word result is materialized in a stack slot in the native ABI.
+type State:
+    a: U64
+    b: U64
+    c: U64
+
+fn step(state: State, index: U64) -> State:
+    let a = U64.wrapping_add(state.a, index)
+    let b = U64.wrapping_mul(state.b ^ a, 17)
+    let c = U64.wrapping_add(state.c ^ b, a)
+    return State(a: a, b: b, c: c)
+
+// The recursive call observes the caller's stack slot through its borrow.
+fn observe(state: &mut State, remaining: U64) -> U64:
+    if remaining == 0:
+        return (*state).c
+    (*state).c = U64.wrapping_add((*state).c, 1)
+    return observe(state, remaining - 1)
+
+fn main(console: Console<Write>):
+    var state = State(a: 1, b: 2, c: 3)
+    for i in 0..100:
+        state = step(state, i)
+    console.print_int(observe(&mut state, 3))
+    console.print_int(state.c)

@@ -1,0 +1,6 @@
+import string
+import text
+
+pub fn add_candidate_write(plan: &mut String, allocator: &Allocator) -> Result<(), U64>:
+    plan.push_text(allocator, "exec\t\tINSERT INTO candidates (digest, name, version, payload) VALUES (:digest, :name, :version, :blob) ON CONFLICT(digest) DO NOTHING\n")?
+    return plan.push_text(allocator, "expect\tstaged bytes or coordinate do not match the verified candidate\tSELECT EXISTS(SELECT 1 FROM candidates WHERE digest=:digest AND name=:name AND version=:version AND payload=:blob)\n")

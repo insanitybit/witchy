@@ -1,0 +1,8 @@
+// A path that neither gives a value nor leaves.
+fn main(console: Console<Write>):
+    var count: U64 = 0
+    let value = if true:
+        1
+    else:
+        count = 2
+    console.print_int(value)

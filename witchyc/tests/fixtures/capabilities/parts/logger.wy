@@ -1,0 +1,16 @@
+// A capability of the program's own: the console's authority, narrowed to writing
+// numbered lines. Sealed, so only this file can make one or reach the console in it.
+pub sealed type Logger:
+    out: Console<Write>
+    lines: U64
+
+pub fn logger(console: Console<Write>) -> Logger:
+    return Logger(move console, 0)
+
+impl Logger:
+    pub fn log(logger: &mut Logger, value: U64):
+        logger.lines += 1
+        logger.out.print_int(logger.lines * 1000 + value)
+
+    pub fn lines(logger: &Logger) -> U64:
+        return logger.lines

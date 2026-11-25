@@ -1,0 +1,86 @@
+import net
+import string
+
+pub capability Redis:
+    socket: Socket
+
+pub type RedisError:
+    Connection(NetError)
+    NoMemory
+    InvalidReply
+    Rejected
+
+pub fn connect(net: &Net, endpoint: Text) -> Result<Redis, RedisError>:
+    let connected = net.connect(endpoint)
+    match move connected:
+        Ok(socket):
+            return Ok(Redis(move socket))
+        Err(error):
+            return Err(Connection(error))
+
+fn byte(socket: &Socket) -> Result<U8, RedisError>:
+    match socket.next_byte():
+        Ok(value):
+            return Ok(value)
+        Err(_):
+            return Err(InvalidReply)
+
+fn expect(socket: &Socket, expected: &[U8]) -> Result<(), RedisError>:
+    for i in 0..expected.len():
+        if byte(socket)? != expected[i]:
+            return Err(InvalidReply)
+    return Ok(())
+
+fn push(out: &mut String, allocator: &Allocator, text: Text) -> Result<(), RedisError>:
+    match out.push_text(allocator, text):
+        Ok:
+            return Ok(())
+        Err(_):
+            return Err(NoMemory)
+
+fn argument(out: &mut String, allocator: &Allocator, text: Text) -> Result<(), RedisError>:
+    push(out, allocator, "$")?
+    if let Err(_) = out.push_decimal(allocator, text.byte_len()):
+        return Err(NoMemory)
+    push(out, allocator, "\r\n")?
+    push(out, allocator, text)?
+    return push(out, allocator, "\r\n")
+
+fn request(socket: &Socket, command: &String) -> Result<(), RedisError>:
+    match socket.send_string(command):
+        Ok:
+            return Ok(())
+        Err(error):
+            return Err(Connection(error))
+
+fn status(socket: &Socket, expected: &[U8]) -> Result<(), RedisError>:
+    let prefix = byte(socket)?
+    if prefix == 45:
+        return Err(Rejected)
+    if prefix != 43:
+        return Err(InvalidReply)
+    return expect(socket, expected)
+
+impl Redis:
+    pub fn ping(redis: &Redis) -> Result<(), RedisError>:
+        let socket = &(*redis).socket
+        if let Err(error) = socket.send("*1\r\n$4\r\nPING\r\n"):
+            return Err(Connection(error))
+        let pong: [U8; 6] = [80, 79, 78, 71, 13, 10]
+        return status(socket, pong.slice())
+
+    pub fn set(redis: &Redis, allocator: &Allocator, key: Text, value: Text) -> Result<(), RedisError>:
+        let Ok(made): String = String.new(allocator) else Err(_):
+            return Err(NoMemory)
+        using var command = move made:
+            push(&mut command, allocator, "*3\r\n$3\r\nSET\r\n")?
+            argument(&mut command, allocator, key)?
+            argument(&mut command, allocator, value)?
+            let socket = &(*redis).socket
+            request(socket, &command)?
+            let ok: [U8; 4] = [79, 75, 13, 10]
+            return status(socket, ok.slice())
+
+    pub fn close(redis: Redis):
+        let Redis(socket) = move redis
+        socket.close()

@@ -1,0 +1,13 @@
+// One number too many in the range and the bound is no longer true.
+fn digit(byte: U64) -> U64:
+    ensures result <= 9
+    proof:
+        auto
+    match byte:
+        '0'..=':':
+            return byte - '0'
+        _:
+            return 0
+
+fn main(console: Console<Write>):
+    console.print_int(digit('7'))

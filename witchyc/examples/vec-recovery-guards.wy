@@ -1,0 +1,52 @@
+fn main(console: Console<Write>):
+    let occupied: Buffer<U64> = memory.alloc(65533)
+    var witness: Buffer<U64> = memory.alloc(1)
+    memory.init(&mut witness, 0, 42)
+    var held: Buffer<U64> = memory.alloc(1)
+    memory.init(&mut held, 0, 37)
+    var offered: Buffer<U64> = memory.alloc(1)
+    memory.init(&mut offered, 0, 73)
+    let saved = &witness
+    let allocation: Result<Vec<Buffer<U64>>, AllocError> = vec_new(0)
+    let Ok(vector) = move allocation else Err(reason):
+        memory.release(offered)
+        memory.end(saved)
+        memory.release(held)
+        memory.release(witness)
+        memory.release(occupied)
+        discard(move console)
+        return
+    let Err(failed) = vec_push(move vector, move offered) else Ok(unexpected):
+        discard(move unexpected)
+        memory.end(saved)
+        memory.release(held)
+        memory.release(witness)
+        memory.release(occupied)
+        discard(move console)
+        return
+    if failed.reason == AllocError.quota:
+        console.print_int(76)
+    else:
+        if failed.reason == AllocError.metadata:
+            console.print_int(77)
+    let recovered = move failed.item
+    console.print_int(memory.read(&recovered, 0))
+    memory.release(recovered)
+    let measured = vec_len(move failed.vector)
+    console.print_int(measured.length)
+    let Ok(done) = vec_release(move measured.vector) else Err(kept):
+        discard(move kept)
+        memory.end(saved)
+        memory.release(held)
+        memory.release(witness)
+        memory.release(occupied)
+        discard(move console)
+        return
+    console.print_int(74)
+    console.print_int(memory.read(&held, 0))
+    memory.release(held)
+    console.print_int(memory.read(saved, 0))
+    memory.end(saved)
+    memory.release(witness)
+    memory.release(occupied)
+    discard(move console)

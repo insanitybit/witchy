@@ -1,0 +1,60 @@
+// A generic view: part of a Vec, by reference. The Vec stays lent while a Slice of it
+// is in use, and can change again afterwards.
+import "../../../library/wasm-vec.wy"
+
+type Slice<T>:
+    items: &Vec<T>
+    from: U64
+    to: U64
+
+fn first<T>(slice: Slice<T>) -> Result<&T, U64>:
+    if slice.from >= slice.to:
+        return Err(1)
+    return slice.items.at(slice.from)
+
+fn rest<T>(slice: Slice<T>) -> Slice<T>:
+    if slice.from >= slice.to:
+        return slice
+    return Slice(slice.items, slice.from + 1, slice.to)
+
+fn total(slice: Slice<U64>) -> U64:
+    var left = slice
+    var sum: U64 = 0
+    while left.from < left.to:
+        match first(left):
+            Ok(item):
+                sum += *item
+            Err(code):
+                return sum
+        left = rest(left)
+    return sum
+
+// The halves of a slice, as two more views of the same Vec.
+fn halves<T>(slice: Slice<T>) -> .{high: Slice<T>, low: Slice<T>}:
+    let middle = slice.from + (slice.to - slice.from) / 2
+    return .{high: Slice(slice.items, middle, slice.to), low: Slice(slice.items, slice.from, middle)}
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var items: Vec<U64> = match Vec.new(&allocator, 0):
+        Ok(empty):
+            move empty
+        Err(code):
+            return
+    for index in 0..10:
+        match items.push_mut(&allocator, index * index):
+            Ok:
+                continue
+            Err(back):
+                break
+    let whole: Slice<U64> = Slice(&items, 0, items.len())
+    let parts = halves(whole)
+    console.print_int(total(whole))
+    console.print_int(total(parts.low))
+    console.print_int(total(parts.high))
+    // No view is in use any more.
+    match items.push_mut(&allocator, 100):
+        Ok:
+            console.print_int(total(Slice(&items, 9, items.len())))
+        Err(back):
+            console.print_int(0)
+    items.close()

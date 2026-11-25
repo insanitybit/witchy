@@ -1,0 +1,9 @@
+// A private generator, like a private type, is its file's own: each file's `ticks` makes
+// its own `Ticks`, with an annotation naming it.
+gen fn ticks(n: U64) -> U64:
+    yield n
+pub fn first(n: U64) -> U64:
+    var t: Ticks = ticks(n)
+    for v in t:
+        return v
+    return 0

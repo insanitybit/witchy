@@ -1,0 +1,3 @@
+// The output grant cannot be read from.
+fn main(console: Console<Write>):
+    console.print_int(console.next_byte())

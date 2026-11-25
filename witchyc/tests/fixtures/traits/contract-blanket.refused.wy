@@ -1,0 +1,26 @@
+// A blanket implementation proves its trait method's contract too: this one can return more
+// than `cap`, and is refused.
+import "../../../library/wasm-console.wy"
+
+trait Coded:
+    fn code(self: &Self) -> U64
+
+trait Bounded:
+    fn bounded(self: &Self, cap: U64) -> U64:
+        requires cap <= 1000
+        ensures result <= cap
+
+impl<T: Coded> Bounded for T:
+    fn bounded(self: &T, cap: U64) -> U64:
+        return self.code()
+
+type Part:
+    id: U64
+
+impl Coded for Part:
+    fn code(self: &Part) -> U64:
+        return (*self).id
+
+fn main(console: Console<Write>):
+    let part = Part(20)
+    console.print_int(part.bounded(10))

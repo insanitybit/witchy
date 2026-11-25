@@ -1,0 +1,94 @@
+# Fixtures the native target does not run as the Wasm host does (scripts/native-checked.py).
+# PATH KIND TEXT: each is checked to fail as its line says, in both builds, and never counts as passed
+# (`skipped` is not built or run at all).
+arithmetic/array-index-order.wy differs `a[bump(&mut a)]` reads the array after the index has changed it on native (line 3 is 70, not 41): a difference between the targets to be decided, not checked mode's
+arithmetic/array-large-frame.refused.wy accepted the 1024-byte stack is the Wasm build's
+arithmetic/unused-locals.refused.wy accepted the 256 scalar locals are the Wasm emitter's limit
+arithmetic/unused-parameters.refused.wy accepted the 32 scalar parameters are the Wasm emitter's limit
+bulk-copy/extend-from-slice-no-room.wy differs the heap that is full is the Wasm build's; on native there is room
+bulk-copy/full-heap-room.wy killed SIGSEGV (the program fills the heap; on native that ends in a fault in both builds, where the Wasm heap is full and says so: to be looked at)
+capabilities/policy.wy launch-refused native I/O requires valid resolvable endpoint or directory grants
+console/read-exact.wy launch-refused --input=PATH requires a regular file
+console/read-frame.wy launch-refused --input=PATH requires a regular file
+crypto/mldsa65-verify.wy build-refused macos-arm64 native target: native ML-DSA-65 verification requires
+crypto/mldsa87-verify.wy build-refused macos-arm64 native target: native ML-DSA-87 verification requires
+crypto/p384-agreement.wy build-refused macos-arm64 native target: native P-384 agreement requires
+crypto/seal-signer-slot.traps.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+crypto/sign.wy build-refused macos-arm64 native target: Signer has no native launch grant
+crypto/signer-env.traps.wy build-refused macos-arm64 native target: Signer has no native launch grant
+crypto/signer-role.traps.wy build-refused macos-arm64 native target: Signer has no native launch grant
+crypto/signer-seal-slot.traps.wy build-refused macos-arm64 native target: Signer has no native launch grant
+crypto/signer-short-seed.traps.wy build-refused macos-arm64 native target: Signer has no native launch grant
+crypto/signer-witchy1.traps.wy build-refused macos-arm64 native target: Signer has no native launch grant
+crypto/tls-aead.wy build-refused macos-arm64 native target: native TLS record cryptography requires
+fs/bulk.wy build-refused macos-arm64 native target: host operation fs_snapshot_remaining has no native lowering
+fs/file-ungranted.traps.wy launch-refused usage: executable
+fs/full-needs-both.traps.wy launch-refused usage: executable
+fs/load-config.wy launch-refused usage: executable
+fs/many-handles.wy launch-refused usage: executable
+fs/more.wy launch-refused usage: executable
+fs/swap-during-run.wy launch-refused native I/O requires valid resolvable endpoint or directory grants
+fs/ungranted.traps.wy launch-refused usage: executable
+fs/write-read.wy launch-refused usage: executable
+hashmap/grouped-no-slot.wy differs the Wasm build is given --slots=64; the native runtime has 262,144 slots, so the map's index finds one
+host/args-over.traps.wy launch-refused Args requires --args=COUNT:BYTES
+host/args-ungranted.traps.wy launch-refused usage: executable
+host/args-unimported.traps.wy launch-refused Args requires --args=COUNT:BYTES
+host/secret-object-env.traps.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+host/secret-object-file.traps.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+host/secret-object-no-slot.traps.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+host/secret-object-no-widen.traps.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+host/secret-object-other-slot.traps.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+host/secret-object-twice.traps.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+host/secret-object-write.traps.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+host/secret-slot-canary.traps.wy build-refused macos-arm64 native target: Secret<Reveal> has no native launch grant
+host/secret-slot-dir-read.traps.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+host/secret-slot-duplicate.traps.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+host/secret-slot-env-overlap.traps.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+host/secret-slot-exec-child.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+host/secret-slot-extra.traps.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+host/secret-slot-fd-held.traps.wy build-refused macos-arm64 native target: Secret<Reveal> has no native launch grant
+host/secret-slot-fd-plus.traps.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+host/secret-slot-fd-unreadable.traps.wy build-refused macos-arm64 native target: Secret<Reveal> has no native launch grant
+host/secret-slot-file-alias.traps.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+host/secret-slot-file-link.traps.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+host/secret-slot-input-alias.traps.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+host/secret-slot-missing.traps.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+host/secret-slot-remove.traps.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+host/secret-slot-rename-dir-symlink.traps.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+host/secret-slot-rename-dir.traps.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+host/secret-slot-rename-from.traps.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+host/secret-slot-rename-onto-symlink.traps.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+host/secret-slot-rename-onto.traps.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+host/secret-slot-reopen.traps.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+host/secret-slot-unbound.traps.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+host/secret-slot-write-beside.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+host/secret-slot-write-file-alias.traps.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+host/secret-slot-write-link.traps.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+host/secret-slot-write-replace.traps.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+host/secret-slot-wrong-use.traps.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+host/secret-slots.wy build-refused macos-arm64 native target: Secret<Seal> has no native launch grant
+host/secret-store-env-overlap.traps.wy build-refused macos-arm64 native target: SecretStore has no native launch grant
+host/secret-store-fd-env-overlap.traps.wy build-refused macos-arm64 native target: SecretStore has no native launch grant
+host/secret-store-fd-file-alias.traps.wy build-refused macos-arm64 native target: SecretStore has no native launch grant
+host/secret-store-fd-held.traps.wy build-refused macos-arm64 native target: SecretStore has no native launch grant
+host/secret-store-fd-input-alias.traps.wy build-refused macos-arm64 native target: SecretStore has no native launch grant
+host/secret-store-fd-object.traps.wy build-refused macos-arm64 native target: SecretStore has no native launch grant
+host/secret-store-fd-reopen.traps.wy build-refused macos-arm64 native target: SecretStore has no native launch grant
+host/secret-store-fd-twice.traps.wy build-refused macos-arm64 native target: SecretStore has no native launch grant
+host/secret-store-fd-unreadable.traps.wy build-refused macos-arm64 native target: SecretStore has no native launch grant
+host/secret-store-fd.wy build-refused macos-arm64 native target: SecretStore has no native launch grant
+host/secret-store-inline-at.wy build-refused macos-arm64 native target: SecretStore has no native launch grant
+host/secret.wy build-refused macos-arm64 native target: SecretStore has no native launch grant
+host/ungranted-clock.traps.wy launch-refused Clock requires --clock
+net/greet-server.wy skipped no client connects: whether `accept` gives up before the native launcher's deadline ends the run varies from run to run
+net/https-origin-refusals.wy build-refused macos-arm64 native target: native P-384 agreement requires
+net/write-stalled.wy killed SIGALRM (the peer never reads; the native launcher's deadline ends the run)
+node-links/exhaustion.wy skipped fills the runtime's 262,144 slots and prints how many it got: a PrefixBuffer takes a slot only in a checked or observed build, so the count is one apart (and the Wasm build is given --slots=64)
+packages/config-app.wy launch-refused usage: executable
+packages/httpd-app.wy launch-refused usage: executable
+programs/fileserver.wy killed SIGALRM (no client connects, and the native launcher's deadline ends the wait)
+programs/ledger.wy launch-refused usage: executable
+thin-links/box.wy differs prints a box address, which is the target's
+tls/record.wy build-refused macos-arm64 native target: native TLS record cryptography requires
+vec-string/bulk-append-no-room.wy differs the heap that is full is the Wasm build's; on native there is room

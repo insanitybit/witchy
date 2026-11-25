@@ -1,0 +1,7 @@
+// A `pub` sum's variants are built in any file that imports it.
+import console
+import "parts/quiet.wy"
+
+fn main(console: Console<Write>):
+    console.print_int(level(Level(7)))
+    console.print_int(level(Soft))

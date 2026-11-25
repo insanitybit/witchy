@@ -1,0 +1,138 @@
+// Ordinary generic library code over checked storage primitives.
+type Vector<T>:
+    data: Buffer<T>
+    length: USize
+    capacity: USize
+    // Bound to Lean's VectorRegisterRepresentation: data owns the block, the
+    // first `length` cells are initialized and `capacity` counts all cells.
+    invariant storage(data, length, capacity)
+
+type ReserveFailure<T>:
+    vector: Vector<T>
+    reason: AllocError
+
+type PushFailure<T>:
+    vector: Vector<T>
+    value: T
+    reason: AllocError
+
+type Popped<T>:
+    vector: Vector<T>
+    item: Option<T>
+
+fn vector_new<T>(capacity: USize) -> Result<Vector<T>, AllocError>:
+    let data: Buffer<T> = memory.try_alloc(capacity)?
+    return Ok(Vector(move data, 0, capacity))
+
+fn vector_reserve<T>(input: Vector<T>, capacity: USize) -> Result<Vector<T>, ReserveFailure<T>>:
+    var vector = move input
+    if capacity > vector.capacity:
+        if memory.loan_room(2):
+            let allocation: Result<Buffer<T>, AllocError> = memory.try_alloc(capacity)
+            match allocation:
+                Ok(allocated):
+                    var replacement = move allocated
+                    let reader = &mut vector.data
+                    let writer = &mut replacement
+                    var i: USize = 0
+                    while i < vector.length:
+                        let item: T = memory.take(reader, i) by migrate_initialized_prefix
+                        memory.init(writer, i, move item)
+                        i += 1
+                    memory.end(reader)
+                    memory.end(writer)
+                    vector.data = move replacement
+                    vector.capacity = capacity
+                    return Ok(move vector)
+                Err(reason):
+                    return Err(ReserveFailure(move vector, reason))
+        return Err(ReserveFailure(move vector, AllocError.metadata))
+    return Ok(move vector)
+
+// Requires spare capacity and an initialized prefix; guards remain dynamic.
+fn vector_push_spare<T>(input: Vector<T>, value: T) -> Vector<T>:
+    var vector = move input
+    memory.init(&mut vector.data, vector.length, move value)
+    vector.length += 1
+    return move vector
+
+fn vector_push<T>(input: Vector<T>, value: T) -> Result<Vector<T>, PushFailure<T>>:
+    var vector = move input
+    if memory.loan_room(1):
+        if vector.length == vector.capacity:
+            var capacity: USize = 1
+            if vector.capacity > 0:
+                if vector.capacity > 9223372036854775807:
+                    return Err(PushFailure(move vector, move value, AllocError.overflow))
+                capacity = vector.capacity * 2
+            match vector_reserve(move vector, capacity):
+                Ok(grown):
+                    vector = move grown
+                Err(failed):
+                    return Err(PushFailure(move failed.vector, move value, failed.reason))
+        return Ok(vector_push_spare(move vector, move value))
+    return Err(PushFailure(move vector, move value, AllocError.metadata))
+
+fn vector_pop<T>(input: Vector<T>) -> Popped<T>:
+    var vector = move input
+    if vector.length == 0:
+        return Popped(move vector, None)
+    vector.length -= 1
+    // Checked: the emitted decrement/take region restores the representation.
+    let value: T = memory.take(&mut vector.data, vector.length) by take_last_initialized
+    return Popped(move vector, Some(move value))
+
+fn vector_release_empty<T>(input: Vector<T>) -> Result<(), Vector<T>>:
+    if input.length > 0:
+        return Err(move input)
+    memory.release(input.data)
+    return Ok(())
+
+// Acceptance helpers handle failure without silently dropping an arbitrary T.
+fn append_owner(input: Vector<Buffer<U64>>, value: Buffer<U64>) -> Vector<Buffer<U64>>:
+    match vector_push(move input, move value):
+        Ok(vector):
+            return move vector
+        Err(failed):
+            memory.release(failed.value)
+            return move failed.vector
+
+fn main(console: Console<Write>):
+    let initial: Result<Vector<Buffer<U64>>, AllocError> = vector_new(0)
+    match initial:
+        Ok(allocated):
+            var vector = move allocated
+            var i: USize = 0
+            while i < 2:
+                var child = memory.alloc(1)
+                memory.init(&mut child, 0, 36 + i)
+                vector = append_owner(move vector, move child)
+                i += 1
+            // Allocation must refuse without changing either nested owner.
+            match vector_reserve(move vector, 65537):
+                Ok(unexpected):
+                    return
+                Err(failed):
+                    vector = move failed.vector
+            var total: U64 = 0
+            var draining: Bool = true
+            while draining:
+                let popped = vector_pop(move vector)
+                vector = move popped.vector
+                match popped.item:
+                    Some(child):
+                        total += memory.read(&child, 0)
+                    None:
+                        draining = false
+            discard(vector_release_empty(move vector))
+            let caps: Vector<Console<Write>> = Vector(memory.alloc(1), 0, 1)
+            let occupied = vector_push_spare(move caps, move console)
+            let popped = vector_pop(move occupied)
+            match popped.item:
+                Some(recovered):
+                    recovered.print_int(total)
+                None:
+                    return
+            discard(vector_release_empty(move popped.vector))
+        Err(reason):
+            return

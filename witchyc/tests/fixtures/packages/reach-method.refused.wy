@@ -1,0 +1,7 @@
+// Refused: a method of a type alpha's inner file declares, on a value the entry handed over.
+import console
+import "@alpha"
+
+fn main(console: Console<Write>):
+    let h = alpha.hidden(3)
+    console.print_int(h.peek())

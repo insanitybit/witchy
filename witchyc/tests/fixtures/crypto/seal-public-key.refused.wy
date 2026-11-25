@@ -1,0 +1,9 @@
+// Refused: a `Secret<Seal>` is not a `Signer`: it has no public key and signs nothing.
+import crypto
+fn main(key: Secret<Seal>, allocator: Allocator):
+    var public: [U8; 1] = [0]
+    match key.public_key(public.slice_mut()):
+        Ok:
+            return
+        Err(e):
+            return

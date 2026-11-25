@@ -1,0 +1,2 @@
+proof failed: function `exactly`
+  not proved: ensures, Ok arm: pair.first() == old(pair.first()) + by

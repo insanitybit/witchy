@@ -1,0 +1,97 @@
+import "tuf/metadata.wy"
+import "tuf/publication.wy"
+import "tuf/publication_files.wy"
+import "tuf/release_trust.wy"
+import console
+import fs
+import string
+import time
+
+// The caller holds the publication lock. The two trusted SHA-384 pins
+// are supplied on the input console, separately from the repository.
+fn main(console: Console<Write>, pins: Console<Read>, source: Dir<Read>, spool: Dir<Write>, clock: Clock, allocator: Allocator):
+    let now = clock.now_ms()
+    var root_pin: [U8; 48] = [0; 48]
+    var release_pin: [U8; 48] = [0; 48]
+    if !read_pin(&pins, root_pin.slice_mut()) || !read_pin(&pins, release_pin.slice_mut()):
+        console.line("refused: invalid pin input")
+        return
+    if let Ok(extra) = pins.read_byte():
+        console.line("refused: invalid pin input")
+        return
+    let result = with_release_trust(&source, &root_pin, &release_pin, &spool, now, &allocator)
+    match result:
+        Ok(verified):
+            console.write("verified ")
+            console.write_u64(verified.snapshot)
+            console.write(" ")
+            console.write_u64(verified.timestamp)
+            console.write(" ")
+            console.write_u64(verified.targets)
+            console.line("")
+        Err(reason):
+            console.write("refused: ")
+            console.line(publication_error(reason))
+
+fn read_pin(input: &Console<Read>, output: &mut [U8]) -> Bool:
+    for i in 0..output.len():
+        let Ok(byte): U8 = input.read_byte() else Err(code):
+            return false
+        output[i] = byte
+    return true
+
+fn with_release_trust(source: &Dir<Read>, root_pin: &[U8; 48], release_pin: &[U8; 48], spool: &Dir<Write>, now: U64, allocator: &Allocator) -> Result<PublicationResult, PublicationError>:
+    let path = literal_path(allocator, "release-trust.json")?
+    let read = read_text_object(source, &path, 262144, allocator)
+    path.close()
+    let Ok(wire): String = move read else Err(error):
+        return Err(error)
+    let parsed = read_release_trust(&wire, release_pin, allocator)
+    wire.close()
+    let Ok(trust): ReleaseTrust = move parsed else Err(error):
+        return Err(AuthorityConflict)
+    let verified = with_initial(source, root_pin, &trust, spool, now, allocator)
+    trust.close()
+    return verified
+
+fn with_initial(source: &Dir<Read>, root_pin: &[U8; 48], trust: &ReleaseTrust, spool: &Dir<Write>, now: U64, allocator: &Allocator) -> Result<PublicationResult, PublicationError>:
+    let path = literal_path(allocator, "initial-root.json")?
+    let read = read_text_object(source, &path, metadata_limit(Root), allocator)
+    path.close()
+    let Ok(root): String = move read else Err(error):
+        return Err(error)
+    let result = with_repositories(source, &root, root_pin, trust, spool, now, allocator)
+    root.close()
+    return result
+
+fn with_repositories(source: &Dir<Read>, root: &String, root_pin: &[U8; 48], trust: &ReleaseTrust, spool: &Dir<Write>, now: U64, allocator: &Allocator) -> Result<PublicationResult, PublicationError>:
+    let Ok(incoming): Dir<Read> = source.dir("incoming") else Err(error):
+        return Err(InvalidObject)
+    let Ok(published): Dir<Read> = source.dir("published") else Err(error):
+        incoming.close()
+        return Err(InvalidObject)
+    let result = prepare_repository(Repository(&incoming, &published, spool), root, root_pin, trust, now, allocator)
+    published.close()
+    incoming.close()
+    return result
+
+fn publication_error(error: PublicationError) -> Text:
+    match error:
+        MissingObject:
+            return "missing repository object"
+        InvalidObject:
+            return "invalid repository object"
+        ImmutableConflict:
+            return "immutable object conflicts"
+        InvalidRootChain:
+            return "invalid root chain"
+        AuthorityConflict:
+            return "invalid or conflicting authority"
+        PriorGenerationInvalid:
+            return "invalid prior generation"
+        CandidateGenerationInvalid:
+            return "invalid candidate generation"
+        ReleaseRejected:
+            return "release evidence rejected"
+        StagingFailed:
+            return "private staging failed"

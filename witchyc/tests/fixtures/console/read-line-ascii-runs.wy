@@ -1,0 +1,27 @@
+// Lines read with ASCII runs kept a word at a time: 0 to 17 bytes, non-ASCII scalars inside
+// and at the edges of a run, an empty line, a last line with no newline. Each line's byte
+// length and text.
+import console
+import string
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(e):
+        return
+    var line = move made
+    while true:
+        line.clear()
+        match input.read_line(&allocator, &mut line):
+            .Line:
+                console.write_u64(line.byte_len())
+                console.write(" [")
+                console.write_string(&line)
+                console.line("]")
+            .End:
+                break
+            .NotText:
+                console.line("not text")
+                break
+            .NoRoom:
+                console.line("no room")
+                break
+    line.close()

@@ -1,0 +1,21 @@
+// Comparisons on records evaluate their operands as written: `f() > g()` runs `f` first (review: it ran `g`).
+import console
+import ops
+import sort
+
+type M derive(Before):
+    c: U64
+
+fn f(console: &Console<Write>) -> M:
+    console.print_int(1)
+    M(c: 5)
+
+fn g(console: &Console<Write>) -> M:
+    console.print_int(2)
+    M(c: 3)
+
+fn main(console: Console<Write>):
+    if f(&console) > g(&console):
+        console.print_int(100)
+    if f(&console) <= g(&console):
+        console.print_int(200)

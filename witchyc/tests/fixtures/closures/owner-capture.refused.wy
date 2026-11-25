@@ -1,0 +1,8 @@
+// Refused: a closure holds numbers and Bools only in this first version, never an owner.
+import string
+fn main(allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    let text: String = move made
+    let size = fn() -> U64: text.byte_len()
+    text.close()

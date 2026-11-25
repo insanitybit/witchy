@@ -1,0 +1,20 @@
+// Refused by the proof: a record field is lent whole, and a part of it written through the
+// reference.
+import console
+
+type Pair:
+    a: U64
+    b: U64
+
+type Outer:
+    inner: Pair
+    n: U64
+
+fn f(o: &mut Outer) -> U64:
+    ensures o.inner.b == old(o.inner.b)
+    let r = &mut (*o).inner
+    (*r).b = 9
+    return 1
+
+fn main(console: Console<Write>):
+    console.print_int(1)

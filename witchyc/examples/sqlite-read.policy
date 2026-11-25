@@ -1,0 +1,11 @@
+# The sample can read only through its explicitly granted SQLite transaction.
+@sqlite: Sqlite ; no unchecked ; digest sha384:9163e5c382011b4807298892fb2569c55b14eb9e124b6ccae5a09b45f73ecca547f89a5eab9f42788465f6f8ed0ebc33
+<standard>/wasm-vec.wy: Allocator ; digest sha384:aef46a228f22f37ebe3eed70c2af905f66ab14e17ae6d522fa67d0044a5f46cec60220ea05f7f91a58b379d0926b74f3
+<standard>/wasm-vec-text.wy: Allocator ; no unchecked ; digest sha384:631624647408dcdf978739698431b6e433b7effc83acd006edcc4e325eb70374135fced80d0a7ede048e811fca528aac
+<standard>/wasm-hash.wy: nothing ; no unchecked ; digest sha384:1cd64a088254b164cbe6656cdd894920f8d4b0d0c12a753c7ea5b8317d4bdb341a732303d7a48ceade360acb410016d1
+<standard>/wasm-discard-core.wy: nothing ; no unchecked ; digest sha384:22e2f3a4849f6b641017566c17a7dd1715953486462e270d1b7f0e0a697fd586e97a8e357580a44c59f6a57029e56ddb
+<standard>/wasm-discard.wy: nothing ; no unchecked ; digest sha384:6d061add8d8385896a93123e6729737ce5e91b563a9e58e28928f5e3ef419bc08fa1ba23b16c38e844f1bbd34319568d
+<standard>/wasm-result.wy: nothing ; no unchecked ; digest sha384:79a4b162a05bfb091520eae8b36710e5cd8053d3c8eb05349980b279f58c229ef4e7d53aadc9f440f45b7b7f75cadbb9
+<standard>/wasm-string.wy: Allocator ; no unchecked ; digest sha384:d4b90aa7a70aea7fda234314954794165c9f1a8698169cad5de976e8610abfb1a635f92ccf5825dc5c009aff8d086af1
+<standard>/wasm-console.wy: Console<Write> ; no unchecked ; digest sha384:9cf7c1f12a4259890baa0e60380b789af0ce75a7390d092f78068bb5959605e1eeb8ab6e49894aa15e9b081580d1595d
+sqlite-read.wy: Allocator, Console<Write>, Sqlite ; no unchecked ; digest sha384:40e278db8c5a889a6e495c9e635bbeee5179c098b6e4956847e639a7c0c15dff7226659b63844bffd15722bef6f46b7b

@@ -1,0 +1,9 @@
+// Refused: heap cells hold data, never authority. A file being written is linear,
+// so storable as an owner would be, but it is a capability.
+import fs
+
+fn keep(files: Buffer<File<Write>>) -> Buffer<File<Write>>:
+    return move files
+
+fn main(dir: Dir<Write>):
+    return

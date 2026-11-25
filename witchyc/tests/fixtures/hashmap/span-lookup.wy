@@ -1,0 +1,44 @@
+// A HashMap<String, V> looked up with a Span (part of another String) without copying it:
+// contains_span, get_by_span, get_mut_by_span (library/wasm-span.wy).
+import console
+import hashmap
+import span
+import string
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): HashMap<String, U64> = HashMap.new(&allocator, 8) else Err(code):
+        return
+    var counts = move made
+    let Ok(key_made): String = String.new(&allocator) else Err(code):
+        counts.discard()
+        return
+    var key = move key_made
+    let _ = key.push_text(&allocator, "beta")
+    match counts.insert(move key, 1):
+        Ok:
+            console.line("inserted")
+        Err(back):
+            let Entry(k, v) = move back
+            k.close()
+    let Ok(text_made): String = String.new(&allocator) else Err(code):
+        counts.discard()
+        return
+    var text = move text_made
+    let _ = text.push_text(&allocator, "alpha beta gamma")
+    let whole = text.span()
+    let word = whole.part(6, 10)
+    console.print("${word}: ${if contains_span(&counts, word): 1 else: 0}")
+    if let Ok(n) = get_mut_by_span(&mut counts, word):
+        *n += 41
+    match get_by_span(&counts, whole.part(0, 5)):
+        Ok(n):
+            console.print_int(*n)
+        Err(code):
+            console.line("alpha absent")
+    match get_by_span(&counts, word):
+        Ok(n):
+            console.print_int(*n)
+        Err(code):
+            console.line("beta absent")
+    text.close()
+    counts.discard()

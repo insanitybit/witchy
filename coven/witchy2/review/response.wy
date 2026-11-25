@@ -1,0 +1,19 @@
+import "../https_reply.wy"
+import "request.wy"
+import "response_head.wy"
+import http
+import span
+import tls
+
+pub fn review_response(stream: &mut SecureSession, status: U64, route: ReviewRoute, body: Span, policy: PagePolicy, plaintext: &mut [U8], wire: &mut [U8], allocator: &Allocator) -> Result<(), SessionError>:
+    let code = review_status(status)
+    let Ok(empty): ResponseHeaders = http.response_headers(allocator) else Err(reason):
+        return Err(SessionNoRoom)
+    var fields = move empty
+    let added = make_fields(&mut fields, code, route, policy, allocator)
+    if let Err(reason) = added:
+        fields.close()
+        return Err(SessionWriteFailed)
+    let sent = send_reply_with_fields(stream, code, content_type(code, route), &fields, body, plaintext, wire, allocator)
+    fields.close()
+    return sent

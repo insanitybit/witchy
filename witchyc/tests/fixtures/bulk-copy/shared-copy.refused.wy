@@ -1,0 +1,14 @@
+fn copy_twice(left: &mut Buffer<U8>, right: &mut Buffer<U8>, source: &[U8], other: &[U8]):
+    requires source.len() == other.len()
+    requires source.len() <= memory.capacity(left)
+    requires source.len() <= memory.capacity(right)
+    requires memory.empty_range(left, 0, source.len())
+    requires memory.empty_range(right, 0, source.len())
+    ensures memory.same_prefix(left, right, source.len())
+    proof:
+        auto
+    memory.init_slice_unchecked(left, 0, source)
+    memory.init_slice_unchecked(right, 0, other)
+
+fn main():
+    return

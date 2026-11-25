@@ -1,0 +1,188 @@
+// Make the TLS 1.3 server authentication messages for the P-384 profile.
+// The transport seals these bytes under server handshake keys.
+import crypto
+import vec
+import span
+import tls_hello
+import tls_extensions
+import tls_certificates
+import tls_key_schedule
+import tls_kdf
+import tls_record
+import tls_transport
+
+pub type AuthenticationError:
+    AuthenticationNoRoom
+    AuthenticationOutputTooShort
+    AuthenticationCertificateMissing
+    AuthenticationSignatureUnavailable
+    AuthenticationCryptoFailed
+    AuthenticationPeerFinishedFailed
+    AuthenticationPeerFinishedMismatch
+    AuthenticationUnexpectedPeerMessage
+
+type FlightState:
+    handshake: Handshake
+    through_finished: Digest
+
+pub sealed type PendingFlight:
+    length: U64
+    state: Boxed<FlightState>
+
+pub sealed type AuthenticatedKeys:
+    material: Application
+
+impl PendingFlight:
+    pub fn len(self: &PendingFlight) -> U64:
+        return (*self).length
+
+    pub fn server_keys(self: &PendingFlight) -> Result<RecordKeys, CryptoError>:
+        match memory.box_ref(&(*self).state):
+            Ok(state):
+                return (*state).handshake.keys(Server)
+            Err:
+                return Err(Failed)
+
+    pub fn close(self: PendingFlight):
+        let PendingFlight(length, state) = move self
+        let _ = memory.unbox(move state)
+
+impl AuthenticatedKeys:
+    pub fn application(self: AuthenticatedKeys) -> Application:
+        let AuthenticatedKeys(material) = move self
+        return material
+
+// The caller supplies the exact ServerHello paired with this ClientHello.
+// The returned prefix is EncryptedExtensions through server Finished.
+pub fn encode(allocator: &Allocator, signer: &TlsSigner, chain: &CertificateChain, client: ClientHello, acknowledge_name: Bool, retry_prefix: &[U8], server_hello: &[U8], handshake: &Handshake, output: &mut [U8]) -> Result<PendingFlight, AuthenticationError>:
+    if !client.offered_ecdsa_p384_sha384():
+        return Err(AuthenticationSignatureUnavailable)
+    if server_hello.len() != 155 + client.session_id().len():
+        return Err(AuthenticationCryptoFailed)
+    let Ok(extensions_length): U64 = tls_extensions.encode(client, acknowledge_name, output) else Err(reason):
+        return Err(AuthenticationOutputTooShort)
+    let capacity = output.len()
+    let encoded = chain.encode(output.part(extensions_length, capacity))
+    let Ok(certificate_length): U64 = encoded else Err(reason):
+        match reason:
+            EmptyChain:
+                return Err(AuthenticationCertificateMissing)
+            _:
+                return Err(AuthenticationOutputTooShort)
+    let prefix = extensions_length + certificate_length
+    // 8 bytes of CertificateVerify framing, up to 104 DER signature bytes,
+    // and a 52-byte Finished fit before any signing operation starts.
+    if output.len() - prefix < 164:
+        return Err(AuthenticationOutputTooShort)
+    let client_hello = client.transcript_bytes().as_bytes()
+    let through_client = retry_prefix.len() + client_hello.len()
+    let hellos = through_client + server_hello.len()
+    let through_certificate = hellos + prefix
+    let Ok(bytes): Vec<U8> = Vec.filled(allocator, through_certificate + 164, 0) else Err(reason):
+        return Err(AuthenticationNoRoom)
+    var transcript = move bytes
+    let data = transcript.as_mut_slice()
+    data.part(0, retry_prefix.len()).copy_from(retry_prefix)
+    data.part(retry_prefix.len(), through_client).copy_from(client_hello)
+    data.part(through_client, hellos).copy_from(server_hello)
+    copy_bytes(data.part(hellos, through_certificate), output.part(0, prefix))
+    let ended = sign_and_finish(signer, handshake, data, through_certificate, output.part(prefix, capacity))
+    let Ok(count): U64 = ended else Err(reason):
+        transcript.close()
+        return Err(reason)
+    let through_finished = through_certificate + count
+    copy_bytes(data.part(through_certificate, through_finished), output.part(prefix, prefix + count))
+    let hashed = tls_kdf.hash(48, transcript.as_slice().part(0, through_finished))
+    transcript.close()
+    match hashed:
+        Ok(digest):
+            let allocated: Result<Boxed<FlightState>, FlightState> = memory.try_box(allocator, FlightState(*handshake, digest))
+            match move allocated:
+                Ok(state):
+                    return Ok(PendingFlight(prefix + count, move state))
+                Err(value):
+                    return Err(AuthenticationNoRoom)
+        Err(reason):
+            return Err(AuthenticationCryptoFailed)
+
+fn sign_and_finish(signer: &TlsSigner, handshake: &Handshake, transcript: &mut [U8], through_certificate: U64, output: &mut [U8]) -> Result<U64, AuthenticationError>:
+    var digest: [U8; 48] = [0; 48]
+    if let Err(reason) = crypto.sha384(transcript.part(0, through_certificate), digest.slice_mut()):
+        return Err(AuthenticationCryptoFailed)
+    let Ok(count): U64 = signer.certificate_verify(digest.slice(), output.part(8, 112)) else Err(reason):
+        return Err(AuthenticationCryptoFailed)
+    let body = count + 4
+    let length = count + 8
+    output[0] = 15
+    output[1] = 0
+    output[2] = 0
+    output[3] = U8.truncate(body)
+    output[4] = 5
+    output[5] = 3
+    output[6] = 0
+    output[7] = U8.truncate(count)
+    let through_verify = through_certificate + length
+    copy_bytes(transcript.part(through_certificate, through_verify), output.part(0, length))
+    if let Err(reason) = crypto.sha384(transcript.part(0, through_verify), digest.slice_mut()):
+        return Err(AuthenticationCryptoFailed)
+    let Ok(finished): Digest = handshake.finished(Server, digest.slice()) else Err(reason):
+        return Err(AuthenticationCryptoFailed)
+    if finished.len() != 48:
+        return Err(AuthenticationCryptoFailed)
+    finished.write_bytes(&mut digest)
+    output[length] = 20
+    output[length + 1] = 0
+    output[length + 2] = 0
+    output[length + 3] = 48
+    output.part(length + 4, length + 52).copy_from(digest.slice())
+    return Ok(length + 52)
+
+fn copy_bytes(target: &mut [U8], source: &[U8]):
+    target.copy_from(source)
+
+// Consume the pending flight and release application key material only
+// after reading an authenticated, transcript-bound client Finished.
+pub fn confirm(pending: PendingFlight, socket: &Socket, allocator: &Allocator, plaintext: &mut [U8], frame: &mut [U8]) -> Result<AuthenticatedKeys, AuthenticationError>:
+    let PendingFlight(length, owner) = move pending
+    let unpacked = memory.unbox(move owner)
+    let Ok(state): FlightState = unpacked else Err:
+        return Err(AuthenticationCryptoFailed)
+    let Ok(key): RecordKeys = state.handshake.keys(Client) else Err(reason):
+        return Err(AuthenticationCryptoFailed)
+    let Ok(made): ReadEpoch = tls_record.reader(allocator, key) else Err(reason):
+        return Err(AuthenticationNoRoom)
+    var reader = move made
+    var message: [U8; 52] = [0; 52]
+    let received = receive_finished(socket, &mut reader, plaintext, frame, message.slice_mut())
+    reader.close()
+    received?
+    var digest: [U8; 48] = [0; 48]
+    state.through_finished.write_bytes(&mut digest)
+    let Ok(expected): Digest = state.handshake.finished(Client, digest.slice()) else Err(reason):
+        return Err(AuthenticationCryptoFailed)
+    var tag: [U8; 48] = [0; 48]
+    expected.write_bytes(&mut tag)
+    if !crypto.verify_tag48(tag.slice(), message.slice().part(4, 52)):
+        return Err(AuthenticationPeerFinishedMismatch)
+    match state.handshake.application(digest.slice()):
+        Ok(material):
+            return Ok(AuthenticatedKeys(material))
+        Err(reason):
+            return Err(AuthenticationCryptoFailed)
+
+fn receive_finished(socket: &Socket, reader: &mut ReadEpoch, plaintext: &mut [U8], frame: &mut [U8], message: &mut [U8]) -> Result<(), AuthenticationError>:
+    var length: U64 = 0
+    while length < 52:
+        let Ok(info): RecordInfo = tls_transport.read_protected(socket, reader, frame, plaintext, true) else Err(reason):
+            return Err(AuthenticationPeerFinishedFailed)
+        match info.kind:
+            HandshakeMessage:
+                if info.length > 52 - length:
+                    return Err(AuthenticationUnexpectedPeerMessage)
+                copy_bytes(message.part(length, length + info.length), plaintext.part(0, info.length))
+                length += info.length
+            _:
+                return Err(AuthenticationUnexpectedPeerMessage)
+    if message[0] != 20 || message[1] != 0 || message[2] != 0 || message[3] != 48:
+        return Err(AuthenticationUnexpectedPeerMessage)
+    return Ok(())

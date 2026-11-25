@@ -1,0 +1,30 @@
+// This caller consumes reserve's checked relation, retaining an unpassed owner.
+type ReservedBeside<T>:
+    vector: Vec<T>
+    held: Buffer<USize>
+
+type ReserveFailedBeside<T>:
+    vector: Vec<T>
+    held: Buffer<USize>
+    reason: AllocError
+
+fn reserve_beside<T>(input: Vec<T>, capacity: USize, held: Buffer<USize>) -> Result<ReservedBeside<T>, ReserveFailedBeside<T>>:
+    ensures match result:
+        Ok(done):
+            done.vector.length == old(input.length)
+            done.vector.capacity >= capacity
+            done.held == old(held)
+            memory.unchanged(held)
+            forall cell in (0, old(input.length)): memory.cell(done.vector.data, cell, old(memory.read(input.data, cell)))
+        Err(failed):
+            failed.vector.data == old(input.data)
+            failed.vector.length == old(input.length)
+            failed.vector.capacity == old(input.capacity)
+            failed.held == old(held)
+            memory.unchanged(input.data)
+            memory.unchanged(held)
+    match vec_reserve(move input, capacity):
+        Ok(reserved):
+            return Ok(ReservedBeside(move reserved, move held))
+        Err(failed):
+            return Err(ReserveFailedBeside(move failed.vector, move held, failed.reason))

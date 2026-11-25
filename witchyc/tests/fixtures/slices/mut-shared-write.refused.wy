@@ -1,0 +1,6 @@
+// Refused: writing through a shared slice.
+import console
+fn main(console: Console<Write>):
+    var numbers: [U64; 2] = [1, 2]
+    let s = numbers.slice()
+    s[0] = 5

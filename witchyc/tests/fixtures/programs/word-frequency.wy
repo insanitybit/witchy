@@ -1,0 +1,68 @@
+// Word frequencies: each word of a text is counted in a HashMap<String, U64>, found by its span
+// so that a word seen before costs no allocation; the words seen more than once are printed,
+// most frequent first (ties in table order).
+import console
+import hashmap
+import sort
+import span
+import string
+import vec
+import discard
+
+type Count derive(Discard):
+    slot: U64
+    times: U64
+
+fn count_words(allocator: &Allocator, text: Span, map: &mut HashMap<String, U64>) -> Result<U64, U64>:
+    var total: U64 = 0
+    for word in text.words():
+        total += 1
+        if let Ok(times) = get_mut_by_span(map, word):
+            *times += 1
+            continue
+        let key = word.to_string(allocator)?
+        match map.put(allocator, move key, 1):
+            Ok:
+                continue
+            Err(back):
+                let Entry(k, v) = move back
+                k.close()
+                return Err(1)
+    return Ok(total)
+
+impl Before for Count:
+    // More frequent first.
+    fn before(self: &Count, other: &Count) -> Bool:
+        return self.times > other.times
+
+fn report(console: &Console<Write>, allocator: &Allocator, text: Span) -> Result<(), U64>:
+    using var map: HashMap<String, U64> = HashMap.new(allocator, 16)?:
+        let total = count_words(allocator, text, &mut map)?
+        using var order: Vec<Count> = Vec.new(allocator, 0)?:
+            for slot in 0..map.capacity():
+                if let Ok(entry) = map.entry(slot):
+                    match order.push_mut(allocator, Count(slot, entry.value)):
+                        Ok:
+                            continue
+                        Err(back):
+                            return Err(1)
+            sort(&mut order)
+            console.print("${total} words, ${map.len()} different")
+            for count in &order:
+                if count.times > 1:
+                    if let Ok(entry) = map.entry(count.slot):
+                        console.write_string(&entry.key)
+                        console.print(" ${count.times}")
+    return Ok(())
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var text = move made
+    let _ = text.push_text(&allocator, "the cat sat on the mat\nthe dog sat on the log\na cat and a dog\n")
+    match report(&console, &allocator, text.span()):
+        Ok:
+            ()
+        Err(code):
+            console.line("failed")
+    text.close()

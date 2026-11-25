@@ -1,0 +1,19 @@
+// Refused: generic code that returns its `&T` would hand back a reference to a view.
+import console
+import span
+import string
+import hash
+
+type Box<T>:
+    item: T
+
+fn keep<T: Any>(x: &T) -> &T:
+    return x
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var text = move made
+    let _ = text.push_text(&allocator, "alpha beta")
+    let word = text.span().part(0, 5)
+    let w = keep(&word)
+    text.close()

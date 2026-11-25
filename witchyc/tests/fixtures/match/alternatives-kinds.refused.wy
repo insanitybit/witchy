@@ -1,0 +1,15 @@
+// `side` is a Bool in one pattern and a number in the other.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-string.wy"
+
+type Shape:
+    Flag(Bool)
+    Circle(U64)
+
+fn size(shape: Shape) -> U64:
+    match shape:
+        Flag(side) | Circle(side):
+            return side
+
+fn main(console: Console<Write>):
+    console.print_int(size(Circle(2)))

@@ -1,0 +1,75 @@
+import encoding
+import "../tuf/base64url.wy"
+import crypto
+import rand
+import secret
+import span
+import string
+import text
+import vec
+
+pub fn issue_challenge(key: &Secret<Seal>, random: &Rand, audience: &String, now: U64, allocator: &Allocator) -> Result<String, U64>:
+    if now > 999999999939:
+        return Err(1)
+    var entropy: [U8; 32] = [0; 32]
+    for index in 0..4:
+        let word = random.next_u64()
+        for offset in 0..8:
+            entropy[index * 8 + offset] = U8.truncate(word >> (offset * 8))
+    let empty = String.with_capacity(allocator, 121)?
+    var nonce = move empty
+    if let Err(code) = write_challenge(key, &mut nonce, entropy.slice(), audience, now + 60, allocator):
+        nonce.close()
+        return Err(code)
+    return Ok(move nonce)
+
+fn write_challenge(key: &Secret<Seal>, nonce: &mut String, entropy: &[U8], audience: &String, expiry: U64, allocator: &Allocator) -> Result<(), U64>:
+    encoding.push_base64url(nonce, allocator, entropy)?
+    nonce.push_text(allocator, ".")?
+    nonce.push_u64(allocator, expiry)?
+    var tag: [U8; 48] = [0; 48]
+    challenge_tag(key, audience, nonce.span(), tag.slice_mut(), allocator)?
+    nonce.push_text(allocator, ".")?
+    return encoding.push_base64url(nonce, allocator, tag.slice())
+
+pub fn challenge_expiry(key: &Secret<Seal>, audience: &String, challenge: &String, now: U64, allocator: &Allocator) -> Result<U64, U64>:
+    let wire = challenge.span()
+    if wire.len() < 110 || wire.len() > 121:
+        return Err(1)
+    let Ok(parts): Halves = wire.split('.') else Err(rest):
+        return Err(1)
+    let Ok(end): Halves = parts.tail.split('.') else Err(rest):
+        return Err(1)
+    if parts.head.len() != 43 || end.head.is_empty() || end.head.len() > 12 || end.head.byte_or_end(0) == 48 || end.tail.len() != 64:
+        return Err(1)
+    let expiry = end.head.parse_u64()?
+    if expiry <= now:
+        return Err(1)
+    let entropy = unpadded_base64url(parts.head.as_bytes(), allocator, 32)?
+    entropy.close()
+    var tag: [U8; 48] = [0; 48]
+    challenge_tag(key, audience, wire.part(0, 44 + end.head.len()), tag.slice_mut(), allocator)?
+    let supplied = unpadded_base64url(end.tail.as_bytes(), allocator, 48)?
+    let matches = crypto.verify_tag48(tag.slice(), supplied.as_slice())
+    supplied.close()
+    if !matches:
+        return Err(1)
+    return Ok(expiry)
+
+fn challenge_tag(key: &Secret<Seal>, audience: &String, prefix: Span, tag: &mut [U8], allocator: &Allocator) -> Result<(), U64>:
+    let empty = String.with_capacity(allocator, audience.byte_len() + prefix.len() + 32)?
+    var message = move empty
+    let encoded = encode_challenge(&mut message, audience, prefix, allocator)
+    if let Err(code) = encoded:
+        message.close()
+        return Err(code)
+    let checked = key.hmac_sha384(message.as_bytes(), tag)
+    message.close()
+    return checked
+
+fn encode_challenge(message: &mut String, audience: &String, prefix: Span, allocator: &Allocator) -> Result<(), U64>:
+    message.push_text(allocator, "coven-ci-challenge-1")?
+    message.push_ascii(allocator, 0, 1)?
+    message.push_part(allocator, audience, 0, audience.byte_len())?
+    message.push_ascii(allocator, 0, 1)?
+    return message.push_utf8_slice(allocator, prefix.as_bytes())

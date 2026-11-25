@@ -1,0 +1,15 @@
+// A loop over `a..=b` takes no invariants (at its head the counter is not the next index once
+// the last pass has begun).
+fn total(n: U64) -> U64:
+    requires n < 100
+    ensures true
+    proof:
+        auto
+    var sum: U64 = 0
+    for i in 0..=n:
+        invariant sum <= 10000
+        sum += 1
+    return sum
+
+fn main():
+    let t = total(3)

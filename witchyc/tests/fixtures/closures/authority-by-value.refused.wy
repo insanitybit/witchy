@@ -1,0 +1,8 @@
+// Refused: a closure holding a capability is lent (`&fn`), never handed over by value, where a
+// generic function could copy it.
+import console
+fn run(each: fn(U64) -> (), n: U64):
+    each(n)
+fn main(console: Console<Write>):
+    let log = fn(n: U64) -> (): console.print_int(n)
+    run(log, 1)

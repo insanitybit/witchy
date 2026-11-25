@@ -1,0 +1,13 @@
+// Refused: a field whose type has Eq but no checked key law; the diagnostic names what is missing.
+import "../derive/parts/keys.wy"
+import hash
+
+type Plain derive(Eq, Hash):
+    x: U64
+
+type Outer derive(keys.Key, keys.Fed):
+    inner: Plain
+    n: U64
+
+fn main():
+    return

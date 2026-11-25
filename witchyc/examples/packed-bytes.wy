@@ -1,0 +1,14 @@
+fn main(console: Console<Write>):
+    var bytes: Buffer<U8> = memory.alloc(3)
+    let zero: U8 = 0
+    let last: U8 = 255
+    memory.init(&mut bytes, 0, zero)
+    memory.init(&mut bytes, 1, last)
+    memory.init(&mut bytes, 2, zero)
+    let a: U8 = memory.take(&mut bytes, 0)
+    let b: U8 = memory.take(&mut bytes, 1)
+    let c: U8 = memory.take(&mut bytes, 2)
+    console.print_int(U8.to_u64(a))
+    console.print_int(U8.to_u64(b))
+    console.print_int(U8.to_u64(c))
+    memory.release(bytes)

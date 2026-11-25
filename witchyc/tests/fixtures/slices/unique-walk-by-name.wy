@@ -1,0 +1,18 @@
+// `for x in s` with `s: &mut [T]` is the unique walk of `s.part(0, s.len())`, its length read
+// first: a reborrow, so `s` serves again after the loop, and no `Err` test per element.
+import console
+
+fn scale(s: &mut [U64], k: U64) -> U64:
+    for x in s:
+        *x = *x * k
+    var t: U64 = 0
+    for y in s:
+        *y += 1
+    for z in s:
+        t += *z
+    return t + s.len()
+
+fn main(console: Console<Write>):
+    var a: [U64; 4] = [1, 2, 3, 4]
+    console.print_int(scale(a.slice_mut(), 10))
+    console.print("${a[0]} ${a[3]}")

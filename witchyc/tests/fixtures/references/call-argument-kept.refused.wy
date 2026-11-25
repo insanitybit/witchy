@@ -1,0 +1,15 @@
+// A reference from a call, kept past the call it was given to: refused.
+import console
+import vec
+
+fn keep(a: &mut U64) -> &mut U64:
+    return a
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.filled(&allocator, 3, 5) else Err(code):
+        return
+    var v = move made
+    let s = v.as_mut_slice()
+    let held = keep(s.cell(0))
+    v.close()
+    *held = 3

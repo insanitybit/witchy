@@ -1,0 +1,8 @@
+// Refused, naming what stands where a name goes.
+import console
+
+fn 5(x: U64) -> U64:
+    return x
+
+fn main(console: Console<Write>):
+    console.print_int(1)

@@ -1,0 +1,38 @@
+// A full `Dir` has both rights and stands in for a `Dir<Read>` or a `Dir<Write>`: the
+// callee gets only the right its parameter names. The host checks the right each open
+// asks for against the handle.
+import fs
+import console
+import string
+
+fn load(dir: &Dir<Read>, allocator: &Allocator) -> Result<String, FsError>:
+    return dir.read_text(allocator, "logs/in.txt")
+
+fn save(dir: &Dir<Write>, text: &String) -> Result<(), FsError>:
+    return dir.write_text("logs/out.txt", text)
+
+fn main(console: Console<Write>, dir: Dir, allocator: Allocator):
+    if dir.make_dir("logs").is_err():
+        return
+    let Ok(logs): Dir = dir.dir("logs") else Err(error):
+        return
+    let Ok(file): File<Write> = logs.create("in.txt") else Err(error):
+        return
+    match file.write("carried over\n"):
+        Ok:
+            let done = file.finish()
+        Err(error):
+            file.abandon()
+    match load(&dir, &allocator):
+        Ok(text):
+            if save(&dir, &text).is_ok():
+                console.line("saved")
+            text.close()
+        Err(error):
+            console.line("no input")
+    match logs.read_text(&allocator, "out.txt"):
+        Ok(back):
+            console.write_string(&back)
+            back.close()
+        Err(error):
+            console.line("no output")

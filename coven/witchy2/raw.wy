@@ -1,0 +1,153 @@
+// Console text, directory paths and content digests over the compiler's raw host operations,
+// `fs`'s block reads and writes, and the engine's SHA-384 (`import crypto`: AWS-LC's module, the
+// witchy-2 profile's digest). A version is hashed whole: its record and source are read into
+// memory once (at most `package_bound()` bytes), hashed, and the same bytes are written.
+import crypto
+import fs
+import vec
+
+// The host's status codes for a path operation (library/wasm-fs.wy `fs_error`).
+pub fn missing(code: U64) -> Bool:
+    return code == 1
+
+pub fn already_exists(code: U64) -> Bool:
+    return code == 6
+
+// The most a version's record and source hold together (the launcher's PACKAGE_BYTES).
+pub fn package_bound() -> U64:
+    return 1048576
+
+pub fn say(console: &Console<Write>, text: Text):
+    for index in 0..text.byte_len():
+        match text.byte_at(index):
+            Ok(byte):
+                console.print_byte(byte)
+            Err(code):
+                return
+
+// The `index`th hex digit (0 to 95) of a 48-byte digest, as an ASCII byte.
+pub fn hex_digit(digest: &[U8], index: U64) -> U64:
+    let byte = U8.to_u64(digest[index / 2])
+    var digit = byte / 16
+    if index % 2 == 1:
+        digit = byte % 16
+    if digit < 10:
+        return digit + 48
+    return digit + 87
+
+pub fn say_digest(console: &Console<Write>, digest: &[U8]):
+    say(console, "sha384:")
+    for index in 0..96:
+        console.print_byte(U8.truncate(hex_digit(digest, index)))
+
+// The SHA-384 of `bytes` up to `length` into `digest` (48 bytes): whether it was computed.
+pub fn digest_of(bytes: &Vec<U8>, length: U64, digest: &mut Vec<U8>) -> Bool:
+    match sha384(bytes.as_slice().part(0, length), digest.as_mut_slice()):
+        Ok:
+            return true
+        Err(error):
+            return false
+
+// `from` read into `buffer` from `at`, up to `end`, then given back to the host: how many bytes.
+pub fn read_into(from: File<Read>, buffer: &mut Vec<U8>, at: U64, end: U64) -> U64:
+    var next = at
+    var more = true
+    while more && next < end:
+        let count = from.read_some(buffer.as_mut_slice().part(next, end))
+        next += count
+        more = count > 0
+    let closed = from.raw_close()
+    return next - at
+
+// `bytes` from `start` to `end` into `to`: 0, or 1 when the write failed.
+pub fn write_part(to: &File<Write>, bytes: &Vec<U8>, start: U64, end: U64) -> U64:
+    match to.write_bytes(bytes.as_slice().part(start, end)):
+        Ok:
+            return 0
+        Err(error):
+            return 1
+
+// The file at `path` in `dir`, for reading. Err: the host's status code.
+pub fn open_read(dir: &Dir<Read>, path: Text) -> Result<File<Read>, U64>:
+    for index in 0..path.byte_len():
+        match path.byte_at(index):
+            Ok(byte):
+                dir.raw_path_byte(byte)
+            Err(code):
+                return Err(2)
+    let file = dir.raw_open_file()
+    let code = file.raw_status()
+    if code != 0:
+        let closed = file.raw_close()
+        return Err(code)
+    return Ok(move file)
+
+fn send(dir: &Dir<Write>, path: Text):
+    for index in 0..path.byte_len():
+        match path.byte_at(index):
+            Ok(byte):
+                dir.raw_path_byte(byte)
+            Err(code):
+                return
+
+// A file at `path` replacing any there when finished (`raw_close`); nothing is on the disk
+// before that, and an abandoned file is never written.
+pub fn create(dir: &Dir<Write>, path: Text) -> Result<File<Write>, U64>:
+    send(dir, path)
+    return opened(dir.raw_open_file())
+
+// `create` for a path that must not exist: finishing fails with code 6 if something is there,
+// so of two writers racing for one name exactly one wins.
+pub fn create_new(dir: &Dir<Write>, path: Text) -> Result<File<Write>, U64>:
+    send(dir, path)
+    return opened(dir.raw_open_new())
+
+fn opened(file: File<Write>) -> Result<File<Write>, U64>:
+    let code = file.raw_status()
+    if code != 0:
+        file.raw_abandon()
+        return Err(code)
+    return Ok(move file)
+
+// The digest as `sha384:<hex>` into `file`. Err: the host's status code.
+pub fn write_digest(file: &File<Write>, digest: &[U8]) -> Result<(), U64>:
+    let prefix: Text = "sha384:"
+    for index in 0..prefix.byte_len():
+        match prefix.byte_at(index):
+            Ok(byte):
+                let code = file.raw_write_byte(byte)
+                if code != 0:
+                    return Err(code)
+            Err(code):
+                return Err(2)
+    for index in 0..96:
+        let code = file.raw_write_byte(U8.truncate(hex_digit(digest, index)))
+        if code != 0:
+            return Err(code)
+    return Ok(())
+
+// Whether `file` holds exactly this digest as `sha384:<hex>`, with an optional final newline.
+// The file is given back to the host.
+pub fn holds_digest(file: File<Read>, digest: &[U8]) -> Bool:
+    let first = file.raw_read_byte()
+    let prefix: Text = "sha384:"
+    var same = true
+    var next = first
+    for index in 0..prefix.byte_len():
+        match prefix.byte_at(index):
+            Ok(byte):
+                if next != U8.to_u64(byte):
+                    same = false
+            Err(code):
+                same = false
+        next = file.raw_read_byte()
+    for index in 0..96:
+        if next != hex_digit(digest, index):
+            same = false
+        next = file.raw_read_byte()
+    if next == 10:
+        next = file.raw_read_byte()
+    if next != 256:
+        same = false
+    let closed = file.raw_close()
+    return same

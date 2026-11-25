@@ -1,0 +1,216 @@
+// A stack machine: a program is a Vec of instructions, the stack a Vec of I64.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-vec.wy"
+import "../../../library/wasm-int.wy"
+
+type Op:
+    Push(I64)
+    Add
+    Sub
+    Mul
+    Dup
+    Swap
+    Drop
+    // The third value from the top comes to the top.
+    Rot
+    // Copy the value this many places below the top.
+    Pick(U64)
+    Jump(U64)
+    // Pop; jump when it was zero.
+    JumpIfZero(U64)
+    Print
+    Halt
+
+type Fault = .[Underflow(U64) | Overflow(U64) | BadJump(U64, U64) | NoRoom | TooLong]
+
+type Machine:
+    stack: Vec<I64>
+    at: U64
+    steps: U64
+
+impl Machine:
+    fn pop(self: &mut Machine) -> Result<I64, Fault>:
+        match self.stack.take_last_mut():
+            Ok(value):
+                return Ok(value)
+            Err(code):
+                // `at` has moved on to the next instruction.
+                return Err(.Underflow(self.at - 1))
+
+    fn push(self: &mut Machine, allocator: &Allocator, value: I64) -> Result<(), Fault>:
+        match self.stack.push_mut(allocator, value):
+            Ok(done):
+                return Ok(())
+            Err(item):
+                return Err(.NoRoom)
+
+    fn jump(self: &mut Machine, target: U64, length: U64) -> Result<(), Fault>:
+        if target > length:
+            return Err(.BadJump(self.at, target))
+        self.at = target
+        return Ok(())
+
+    // One instruction. False: the machine halted.
+    fn step(self: &mut Machine, console: &Console<Write>, allocator: &Allocator, program: &Vec<Op>) -> Result<Bool, Fault>:
+        let op = match program.get(self.at):
+            Ok(op):
+                op
+            Err(code):
+                return Ok(false)
+        self.steps += 1
+        if self.steps > 500:
+            return Err(.TooLong)
+        let here = self.at
+        self.at += 1
+        match op:
+            Push(value):
+                self.push(allocator, value)?
+            Add | Sub | Mul:
+                let right = self.pop()?
+                let left = self.pop()?
+                let made = match op:
+                    Add:
+                        left.checked_add(right)
+                    Sub:
+                        left.checked_sub(right)
+                    _:
+                        left.checked_mul(right)
+                match made:
+                    Ok(value):
+                        self.push(allocator, value)?
+                    Err(code):
+                        return Err(.Overflow(here))
+            Dup:
+                let top = self.pop()?
+                self.push(allocator, top)?
+                self.push(allocator, top)?
+            Swap:
+                let top = self.pop()?
+                let under = self.pop()?
+                self.push(allocator, top)?
+                self.push(allocator, under)?
+            Drop:
+                self.pop()?
+            Rot:
+                let top = self.pop()?
+                let middle = self.pop()?
+                let under = self.pop()?
+                self.push(allocator, middle)?
+                self.push(allocator, top)?
+                self.push(allocator, under)?
+            Pick(depth):
+                let count = self.stack.len()
+                if depth >= count:
+                    return Err(.Underflow(here))
+                match self.stack.get(count - 1 - depth):
+                    Ok(value):
+                        self.push(allocator, value)?
+                    Err(code):
+                        return Err(.Underflow(here))
+            Jump(target):
+                self.jump(target, program.len())?
+            JumpIfZero(target):
+                if self.pop()? == 0:
+                    self.jump(target, program.len())?
+            Print:
+                console.print_i64(self.pop()?)
+            Halt:
+                return Ok(false)
+        return Ok(true)
+
+fn run(console: &Console<Write>, allocator: &Allocator, program: &Vec<Op>) -> Result<U64, Fault>:
+    let stack: Vec<I64> = match Vec.new(allocator, 8):
+        Ok(made):
+            move made
+        Err(code):
+            return Err(.NoRoom)
+    var machine = Machine(move stack, 0, 0)
+    var running = true
+    while running:
+        match machine.step(console, allocator, program):
+            Ok(more):
+                running = more
+            Err(fault):
+                machine.stack.close()
+                return Err(move fault)
+    let steps = machine.steps
+    machine.stack.close()
+    return Ok(steps)
+
+fn add(program: &mut Vec<Op>, allocator: &Allocator, op: Op) -> Result<(), U64>:
+    match program.push_mut(allocator, op):
+        Ok(done):
+            return Ok(())
+        Err(item):
+            return Err(1)
+
+// Prints 10 factorial. The stack holds the product so far and what is left to count.
+fn factorial(program: &mut Vec<Op>, allocator: &Allocator) -> Result<(), U64>:
+    add(program, allocator, Push(1))?
+    add(program, allocator, Push(10))?
+    // 2: product, count
+    add(program, allocator, Dup)?
+    add(program, allocator, JumpIfZero(13))?
+    add(program, allocator, Dup)?
+    add(program, allocator, Pick(2))?
+    add(program, allocator, Mul)?
+    add(program, allocator, Swap)?
+    add(program, allocator, Push(1))?
+    add(program, allocator, Sub)?
+    // old product, new product, new count
+    add(program, allocator, Rot)?
+    add(program, allocator, Drop)?
+    add(program, allocator, Jump(2))?
+    // 13: product, 0
+    add(program, allocator, Drop)?
+    add(program, allocator, Print)?
+    return add(program, allocator, Halt)
+
+// Each of these stops with a fault.
+fn broken(program: &mut Vec<Op>, allocator: &Allocator, which: U64) -> Result<(), U64>:
+    if which == 0:
+        add(program, allocator, Push(1))?
+        return add(program, allocator, Add)
+    if which == 1:
+        add(program, allocator, Push(9223372036854775807))?
+        add(program, allocator, Dup)?
+        return add(program, allocator, Mul)
+    if which == 2:
+        add(program, allocator, Push(0))?
+        return add(program, allocator, JumpIfZero(40))
+    return add(program, allocator, Jump(0))
+
+fn load(allocator: &Allocator, which: U64) -> Result<Vec<Op>, U64>:
+    var program: Vec<Op> = Vec.new(allocator, 16)?
+    let made = if which == 4:
+        factorial(&mut program, allocator)
+    else:
+        broken(&mut program, allocator, which)
+    match made:
+        Ok(done):
+            return Ok(move program)
+        Err(code):
+            program.close()
+            return Err(code)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    for which in 0..5:
+        let program = match load(&allocator, which):
+            Ok(program):
+                move program
+            Err(code):
+                return
+        match run(&console, &allocator, &program):
+            Ok(steps):
+                console.print_int(steps)
+            Err(.Underflow(at)):
+                console.print_int(1000 + at)
+            Err(.Overflow(at)):
+                console.print_int(2000 + at)
+            Err(.BadJump(at, target)):
+                console.print_int(3000 + target)
+            Err(.NoRoom):
+                console.print_int(4000)
+            Err(.TooLong):
+                console.print_int(5000)
+        program.close()

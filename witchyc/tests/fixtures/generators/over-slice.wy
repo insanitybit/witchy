@@ -1,0 +1,18 @@
+// A generator over a slice: the generator is a view that keeps the array lent while it
+// is walked (docs/design-references-to-views.md, step 2: `next_mut` takes `&mut` to it).
+import console
+
+gen fn evens(items: &[U64]) -> U64:
+    var index: U64 = 0
+    while index < items.len():
+        let item: U64 = items[index]
+        if item % 2 == 0:
+            yield item
+        index += 1
+
+fn main(console: Console<Write>):
+    let numbers: [U64; 6] = [1, 2, 3, 4, 5, 6]
+    var total: U64 = 0
+    for n in evens(numbers.slice()):
+        total += n
+    console.print_int(total)

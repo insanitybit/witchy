@@ -1,0 +1,3 @@
+// A program that asks for the clock does not start when the run does not grant it.
+fn main(clock: Clock):
+    return

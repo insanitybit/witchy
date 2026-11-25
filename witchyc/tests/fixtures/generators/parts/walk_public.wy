@@ -1,0 +1,6 @@
+pub fn bump(x: U64) -> U64:
+    return x + 1
+
+pub gen fn walk(n: U64) -> U64:
+    for i in 0..n:
+        yield bump(i)

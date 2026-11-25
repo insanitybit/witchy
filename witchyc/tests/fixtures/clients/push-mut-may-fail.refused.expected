@@ -1,0 +1,2 @@
+proof failed: function `one_more`
+  not proved: ensures items.len() == old(items.len()) + 1

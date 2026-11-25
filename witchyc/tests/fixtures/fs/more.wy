@@ -1,0 +1,64 @@
+// The rest of a Dir: exists, is_dir, list, remove, append, and create_new, which
+// lets exactly one of two writers create a name.
+import fs
+import console
+
+fn put(dir: &Dir<Write>, path: Text, text: Text) -> Result<(), FsError>:
+    let file = dir.create(path)?
+    match file.write(text):
+        Ok:
+            return file.finish()
+        Err(error):
+            file.abandon()
+            return Err(error)
+
+fn yes(console: &Console<Write>, truth: Bool):
+    if truth:
+        console.line("yes")
+    else:
+        console.line("no")
+
+fn main(console: Console<Write>, read: Dir<Read>, write: Dir<Write>, allocator: Allocator):
+    if put(&write, "a.txt", "one\n").is_err():
+        return
+    if write.make_dir("sub").is_err():
+        return
+    yes(&console, read.exists("a.txt"))
+    yes(&console, read.exists("sub"))
+    yes(&console, read.is_dir("sub"))
+    // Append keeps what was there.
+    match write.append("a.txt"):
+        Ok(file):
+            match file.write("two\n"):
+                Ok:
+                    let done = file.finish()
+                Err(error):
+                    file.abandon()
+        Err(error):
+            return
+    match read.read_text(&allocator, "a.txt"):
+        Ok(text):
+            console.write_string(&text)
+            text.close()
+        Err(error):
+            return
+    // The first create_new of a name wins; the second finds it there.
+    match write.create_new("token"):
+        Ok(file):
+            yes(&console, file.finish().is_ok())
+        Err(error):
+            console.line("first refused")
+    match write.create_new("token"):
+        Ok(file):
+            yes(&console, file.finish().is_ok())
+        Err(error):
+            console.line("second refused")
+    match read.list(&allocator):
+        Ok(names):
+            console.write_string(&names)
+            names.close()
+        Err(error):
+            return
+    yes(&console, write.remove("a.txt").is_ok())
+    yes(&console, read.exists("a.txt"))
+    yes(&console, write.remove("sub").is_ok())

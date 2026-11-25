@@ -1,0 +1,45 @@
+// A helper given an `Exec` narrowed to `greet` alone runs it once per name, keeps each
+// greeting, and the greetings are printed sorted. It can start nothing else: `lister` is
+// refused to it. Exec and allocation errors meet in one `?`.
+import console
+import exec
+import sort
+import string
+import vec
+import discard
+
+fn greetings(greet: &Exec, allocator: &Allocator, names: &[Text]) -> Result<Vec<String>, ExecError>:
+    using var kept: Vec<String> = Vec.new(allocator, 0)?:
+        for name in names:
+            greet.arg(*name)
+            let run = greet.run("greet")?
+            let text = run.read_text(allocator)?
+            match kept.push_mut(allocator, move text):
+                Ok:
+                    ()
+                Err(back):
+                    back.close()
+                    return Err(TooLarge)
+        return Ok(move kept)
+
+fn main(console: Console<Write>, allocator: Allocator, exec: Exec):
+    let Ok(greet): Exec = exec.only("greet") else Err(e):
+        console.line("no narrowing")
+        return
+    match greet.run("lister"):
+        Ok(run):
+            console.line("lister ran")
+        Err(NotGranted):
+            console.line("lister refused")
+        Err(_):
+            console.line("lister failed")
+    let names: [Text; 3] = ["zoe", "adam", "mia"]
+    match greetings(&greet, &allocator, &names):
+        Ok(made):
+            var all = move made
+            sort(&mut all)
+            for text in &all:
+                console.write_string(text)
+            all.discard()
+        Err(e):
+            console.line("failed")

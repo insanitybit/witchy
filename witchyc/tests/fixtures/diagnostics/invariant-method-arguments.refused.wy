@@ -1,0 +1,25 @@
+// An invariant outside the clauses' vocabulary is refused once, at its own line, saying what the construct is.
+import console
+import vec
+
+sealed type Shelf:
+    items: Vec<U64>
+    room: U64
+    invariant room <= 32
+    invariant items.get(0) == room
+
+impl Shelf:
+    fn bound(s: &Shelf) -> U64:
+        ensures result <= 32
+        proof:
+            auto
+        return s.room
+
+    fn other(s: &Shelf) -> U64:
+        ensures result <= 32
+        proof:
+            auto
+        return s.room
+
+fn main():
+    return

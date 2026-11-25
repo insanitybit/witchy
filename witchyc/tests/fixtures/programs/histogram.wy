@@ -1,0 +1,31 @@
+// A table of 256 counts: a Vec filled with zeros, where a fixed array would be too large.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-vec.wy"
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var counts: Vec<U64> = match Vec.filled(&allocator, 256, 0):
+        Ok(made):
+            move made
+        Err(code):
+            return
+    for step in 0..1000:
+        let slot = step * 37 % 256
+        match counts.get(slot):
+            Ok(seen):
+                let _ = counts.set(slot, seen + 1)
+            Err(code):
+                break
+    var most: U64 = 0
+    for count in &counts:
+        if *count > most:
+            most = *count
+    console.print_int(counts.len())
+    console.print_int(most)
+    counts.close()
+    let none: Vec<Bool> = match Vec.filled(&allocator, 0, true):
+        Ok(made):
+            move made
+        Err(code):
+            return
+    console.print_int(none.len())
+    none.close()

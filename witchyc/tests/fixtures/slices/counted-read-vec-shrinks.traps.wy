@@ -1,0 +1,18 @@
+// A Vec is not a slice: its length can change in the body, so `v[j]` in `for j in 0..v.len()`
+// keeps its test, and reading past what is left traps.
+import console
+import vec
+
+fn shrink(v: &mut Vec<U64>) -> U64:
+    var t: U64 = 0
+    for j in 0..v.len():
+        t += v[j]
+        let gone = v.take_last_mut()
+    return t
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.filled(&allocator, 4, 1) else Err(c):
+        return
+    var v = move made
+    console.print_int(shrink(&mut v))
+    v.close()

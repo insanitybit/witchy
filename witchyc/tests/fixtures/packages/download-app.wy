@@ -1,0 +1,167 @@
+// An application using the download package (packages/download/download.wy) with a time
+// limit: `race` runs the download against a sleeper. The application plays the server too. Sent
+// a whole response, the download wins and the file holds the body. Sent half and then nothing,
+// the time limit wins: the download is cancelled, closes its socket and buffer, and abandons the
+// file, which is never written. The package can reach only the socket, buffer and file it is
+// given (`download-app.policy`).
+import console
+import net
+import fs
+import vec
+import tasks
+import discard
+import string
+import "download/download.wy"
+
+fn nap(clock: Clock) suspends:
+    let slept = clock.sleep(40)
+
+type Job:
+    download: Download
+    clock: Clock
+    allocator: Allocator
+
+// The download or the time limit, whichever comes first.
+fn limited(job: Job) suspends:
+    let Job(download, clock, allocator) = move job
+    match race(&allocator, 4096, fn() -> (): fetch(move download, "example", "/file"), fn() -> (): nap(move clock)):
+        Ok(winner):
+            report(10 * (winner + 1))
+        Err(why):
+            report(99)
+
+// Reads the request head the download sent (up to its blank line), as a server would before it
+// answers or hangs up: one closed with a request unread may reset the connection.
+fn take_request(server: &Socket):
+    var last: U64 = 0
+    var ends: U64 = 0
+    while ends < 2:
+        match server.next_byte():
+            Ok(byte):
+                if byte == 10:
+                    if last == 13 || last == 10:
+                        ends += 1
+                else if byte != 13:
+                    ends = 0
+                last = U8.to_u64(byte)
+            Err:
+                return
+
+// Steps the set until its task has finished (or 40 rounds): what was reported meanwhile.
+fn until_done(waiting: &mut Waiting, allocator: &Allocator, listener: &Listener, already: U64) -> U64:
+    var reported: U64 = 0
+    var finished = already
+    var rounds: U64 = 0
+    while finished == 0 && rounds < 40:
+        let stepped = waiting.step_ready(allocator, listener)
+        reported += stepped.reported
+        finished += stepped.finished
+        rounds += 1
+    return reported
+
+// Runs one download to its end through a set of waiting tasks: what was reported, summed. The
+// server's end reads the request; `hang_up` closes it then (the whole response is sent), and
+// otherwise it stays open until the download ends (a stalled server).
+fn run(listener: &Listener, allocator: &Allocator, clock: &Clock, download: Download, server: Socket, hang_up: Bool) -> U64:
+    let Ok(made): Waiting = Waiting.new(allocator, listener) else Err(code):
+        download.discard()
+        server.close()
+        return 0
+    var waiting = move made
+    var reported: U64 = 0
+    var finished: U64 = 0
+    let job = Job(move download, clock.share(), allocator.share())
+    match Task.spawn(allocator, 16384, limited, move job):
+        Ok(task):
+            match waiting.start(allocator, move task):
+                Ok(stepped):
+                    reported += stepped.reported
+                    finished += stepped.finished
+                Err(back):
+                    var lost = move back
+                    let cancelled = lost.cancel()
+                    lost.close()
+        Err(back):
+            let Job(given, shared, memory) = move back
+            given.discard()
+    take_request(&server)
+    if hang_up:
+        server.close()
+        reported += until_done(&mut waiting, allocator, listener, finished)
+    else:
+        reported += until_done(&mut waiting, allocator, listener, finished)
+        server.close()
+    waiting.close()
+    return reported
+
+fn prepared(dir: &Dir, allocator: &Allocator, near: Socket, path: Text) -> Result<Download, U64>:
+    let zero: U8 = 0
+    let Ok(buffer): Vec<U8> = Vec.filled(allocator, 8, zero) else Err(code):
+        near.close()
+        return Err(1)
+    let Ok(file): File<Write> = dir.create(path) else Err(error):
+        near.close()
+        buffer.close()
+        return Err(2)
+    return Ok(Download(move near, move buffer, move file))
+
+fn show(console: &Console<Write>, dir: &Dir, allocator: &Allocator, path: Text):
+    match dir.read_text(allocator, path):
+        Ok(text):
+            console.write_string(&text)
+            console.line("")
+            text.close()
+        Err(error):
+            console.line("not written")
+
+// One download against a server that sends `reply` and then hangs up: what was reported, and the file.
+fn exchange(console: &Console<Write>, net: &Net, listener: &Listener, allocator: &Allocator, clock: &Clock, dir: &Dir, reply: Text, path: Text):
+    let Ok(near): Socket = net.connect("127.0.0.1:47623") else Err(error):
+        return
+    let Ok(far): Socket = listener.accept() else Err(error):
+        near.close()
+        return
+    let sent = far.send(reply)
+    match prepared(dir, allocator, move near, path):
+        Ok(download):
+            console.print_int(run(listener, allocator, clock, move download, move far, true))
+        Err(code):
+            far.close()
+            console.print_int(code)
+    show(console, dir, allocator, path)
+
+fn main(console: Console<Write>, net: Net, listener: Listener, allocator: Allocator, clock: Clock, dir: Dir):
+    // A whole response, and the connection closed: the download finishes first (10 + 1005).
+    let Ok(near): Socket = net.connect("127.0.0.1:47623") else Err(error):
+        return
+    let Ok(far): Socket = listener.accept() else Err(error):
+        near.close()
+        return
+    let sent = far.send("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello")
+    match prepared(&dir, &allocator, move near, "whole.txt"):
+        Ok(download):
+            console.print_int(run(&listener, &allocator, &clock, move download, move far, true))
+        Err(code):
+            far.close()
+            console.print_int(code)
+    show(&console, &dir, &allocator, "whole.txt")
+    // Half a response, and then nothing: the time limit wins (20 + 1, cancelled).
+    let Ok(second): Socket = net.connect("127.0.0.1:47623") else Err(error):
+        return
+    let Ok(stalled): Socket = listener.accept() else Err(error):
+        second.close()
+        return
+    let half = stalled.send("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhe")
+    match prepared(&dir, &allocator, move second, "half.txt"):
+        Ok(download):
+            console.print_int(run(&listener, &allocator, &clock, move download, move stalled, false))
+        Err(code):
+            stalled.close()
+            console.print_int(code)
+    show(&console, &dir, &allocator, "half.txt")
+    // A chunked body, in two chunks: 10 + 1012.
+    exchange(&console, &net, &listener, &allocator, &clock, &dir, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n7\r\n, world\r\n0\r\n\r\n", "chunked.txt")
+    // A body cut short of its length by the server closing: 10 + 2, and nothing written.
+    exchange(&console, &net, &listener, &allocator, &clock, &dir, "HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\nhello", "short.txt")
+    // Not a success: 10 + 4404, and nothing written.
+    exchange(&console, &net, &listener, &allocator, &clock, &dir, "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nnot found", "missing.txt")

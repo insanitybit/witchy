@@ -1,0 +1,22 @@
+// `nopanic fn`: what is emitted for it, and for what it calls, cannot trap. Its arithmetic is
+// shown in range by its contract's proof, which removes the overflow checks; `scale` divides
+// by a number written as such, which has an answer.
+import console
+
+nopanic fn mix(a: U64, b: U64) -> U64:
+    requires a < 1000000
+    requires b < 1000000
+    ensures result < 2000001000000
+    proof:
+        auto
+    return a * 2 + b + scale(b)
+
+nopanic fn scale(x: U64) -> U64:
+    requires x < 1000000
+    ensures result < 1000000
+    proof:
+        auto
+    return x / 1000
+
+fn main(console: Console<Write>):
+    console.print_int(mix(21, 5000))

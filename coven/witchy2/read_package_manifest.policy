@@ -1,0 +1,20 @@
+# Drafted from what each file uses now: review it, narrow it, keep it beside the program.
+<standard>/wasm-vec.wy: Allocator ; digest sha384:bedaa1adef080670b74f6b45b2d8a1d4cb84c158d298b9fc9ca69a6d1bdc67425998ae44bb7f8658d66821cd3436b417
+<standard>/wasm-vec-text.wy: Allocator ; digest sha384:631624647408dcdf978739698431b6e433b7effc83acd006edcc4e325eb70374135fced80d0a7ede048e811fca528aac
+<standard>/wasm-hash.wy: nothing ; no unchecked ; digest sha384:1cd64a088254b164cbe6656cdd894920f8d4b0d0c12a753c7ea5b8317d4bdb341a732303d7a48ceade360acb410016d1
+<standard>/wasm-discard-core.wy: nothing ; no unchecked ; digest sha384:22e2f3a4849f6b641017566c17a7dd1715953486462e270d1b7f0e0a697fd586e97a8e357580a44c59f6a57029e56ddb
+<standard>/wasm-discard.wy: nothing ; no unchecked ; digest sha384:6d061add8d8385896a93123e6729737ce5e91b563a9e58e28928f5e3ef419bc08fa1ba23b16c38e844f1bbd34319568d
+<standard>/wasm-result.wy: nothing ; no unchecked ; digest sha384:79a4b162a05bfb091520eae8b36710e5cd8053d3c8eb05349980b279f58c229ef4e7d53aadc9f440f45b7b7f75cadbb9
+<standard>/wasm-string.wy: Allocator ; no unchecked ; digest sha384:98aaa21eb03950de5c6111e45c284be3ee4915008e60501c032ee666e28e3007846cbbc3c8a155148934185129dbdd82
+<standard>/wasm-console.wy: Console<Write> ; no unchecked ; digest sha384:dc4bf38c27711c491145cdbba99b356d30239943c18cc1b4c958fc723ff5e7a60c072c206f451005b3adb4e08033edf3
+<standard>/wasm-crypto.wy: nothing ; no unchecked ; digest sha384:7e8c3843a829efecbc029bd8ab2830a753eeab0021272f0a075bce78c72e693add4ce27a3f6996d5f614899830fbf271
+<standard>/wasm-fs.wy: Allocator, File<Read> ; no unchecked ; digest sha384:1d9491ad88560902ba620cdd80905727777ce873c595fb45de9168beabf584026ff0bac33c20d8b734e5d9af1e87435c
+<standard>/wasm-text.wy: nothing ; no unchecked ; digest sha384:7fcec919dec7185bab9eb26ee2214af0f0509093c5b60d7bd3ffa9045b5d53c82e4b4df5c46ac8c711d7600579bccf5f
+<standard>/wasm-int.wy: nothing ; no unchecked ; digest sha384:d0626adff3485a27c1f6393dfae022195daa50a05beec28066d2ff83a56f30f67ec24e56cc2977d6abe3b3c1fcf928f6
+<standard>/wasm-option.wy: nothing ; no unchecked ; digest sha384:d4443a8ce337390cdb12574dc6efaea3d7146cd6a1d5a39eee1f8b0e9a041933a59a27a833cfe04f2bc3899206b04621
+@toml: Allocator ; no unchecked ; digest sha384:42a52b15a2aab52745947f12993b6258763f86a8b6f711a69c2b1169f0ca50325e413ddff775d4794d575ed183030024
+read_package_manifest.wy: Allocator, Console<Write>, File<Read> ; no unchecked ; digest sha384:716d55e824126a75ba46ec38b7e0db876fb64cebb6ed2bc9cada95b83163788536ed25011cb6b6053afb041586ccf5f2
+<standard>/wasm-simd.wy: nothing ; no unchecked ; digest sha384:2ec8e6250d54a0dda7289f497bc58719a7f915878f7e43358bb7c80d8682d4175f27f08ccdbdb7b7d57d7aa53b9146fb
+<standard>/wasm-hashmap.wy: nothing ; no unchecked ; digest sha384:5f01ea1dd0d6c274b83f12f23e107cb5491d52a2c4be02b273e26ab775c8069b96a9dcb95d924d162a474a7c76c0f4fb
+<standard>/wasm-span.wy: nothing ; no unchecked ; digest sha384:130cf7f3a55348c1af2f3ffae9e3e58d30e92e49483275e7e045b685b128641b9ec1dd96a421f5192a5b5ff46886b5c3
+tuf/coordinate.wy: nothing ; no unchecked ; digest sha384:f9fc5a5f564c5511338a9e1bce78055c123feda6495377545a31b7a9a0dc1f16246e7e8d5e1f4d4bde4999ef18720b62

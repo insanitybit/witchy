@@ -1,0 +1,8 @@
+// Refused: a trait of alpha's inner file named as a bound.
+import "@alpha"
+
+fn f<T: Any + Secretive>(x: &T) -> U64:
+    return 1
+
+fn main():
+    return

@@ -1,0 +1,22 @@
+// Refused: a query that also feeds where its span starts, so it hashes apart from the key it is
+// equivalent to.
+import "../derive/parts/keys.wy"
+import hash
+import span
+import string
+
+type NameKey derive(keys.Key, keys.Fed):
+    tenant: U32
+    name: String
+
+type NameQuery derive(keys.Fed):
+    tenant: U32
+    name: Span
+    at: U64
+
+impl Equivalent<NameKey> for NameQuery:
+    fn equivalent(self: &NameQuery, key: &NameKey) -> Bool:
+        return (*self).tenant == (*key).tenant && (*self).name.equivalent(&(*key).name)
+
+fn main():
+    return

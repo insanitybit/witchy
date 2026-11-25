@@ -1,0 +1,12 @@
+// Refused: a claim past what is known (a false variant of variable-divisor.wy's `ratio`).
+import console
+
+fn ratio(a: U64, b: U64) -> U64:
+    requires b > 0 && a <= 1000
+    ensures result < a
+    proof:
+        auto
+    return a / b
+
+fn main(console: Console<Write>):
+    console.line("ok")

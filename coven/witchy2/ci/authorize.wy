@@ -1,0 +1,35 @@
+import "challenge.wy"
+import "@oidc"
+import "enrollment.wy"
+import "scope.wy"
+import "workload_claims.wy"
+import "../tuf/release_trust.wy"
+import json_tree
+import span
+import string
+
+pub fn authorize_request(request: &Json, body: &[U8], key: &Secret<Seal>, now: U64, allocator: &Allocator) -> Result<String, U64>:
+    let keyset = string_field(request, "keys")?
+    let keys = read_rs256_jwks(keyset, allocator)?
+    let checked = with_keys(request, &keys, body, key, now, allocator)
+    keys.close()
+    return move checked
+
+fn with_keys(request: &Json, keys: &Rs256Keys, body: &[U8], key: &Secret<Seal>, now: U64, allocator: &Allocator) -> Result<String, U64>:
+    let origin = string_field(request, "origin")?
+    let registry = string_field(request, "registry")?
+    let audience = build_ci_audience(origin, registry.span(), allocator)?
+    let checked = check_identity(request, keys, body, key, &audience, now, allocator)
+    audience.close()
+    return move checked
+
+fn check_identity(request: &Json, keys: &Rs256Keys, body: &[U8], key: &Secret<Seal>, audience: &String, now: U64, allocator: &Allocator) -> Result<String, U64>:
+    let nonce = string_field(request, "nonce")?
+    let Ok(expiry): U64 = challenge_expiry(key, audience, nonce, now, allocator) else Err(code):
+        return Err(102)
+    let token = string_field(request, "token")?
+    let enrollment = select_enrollment(request)?
+    let identity = verify_rs256_id_token(token, keys, github_oidc_issuer(), audience, now, 900, allocator)?
+    let checked = attest_workload(identity.claims(), enrollment, request, body, identity.expires_at(), expiry, allocator)
+    identity.close()
+    return move checked

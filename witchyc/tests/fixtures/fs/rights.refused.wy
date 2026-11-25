@@ -1,0 +1,5 @@
+// Refused: a `Dir<Read>` has no way to write. The right is in the type.
+import fs
+
+fn main(dir: Dir<Read>):
+    let file = dir.create("out.txt")

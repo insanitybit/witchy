@@ -1,0 +1,1 @@
+run: --file={dir}/../fs/root/config.txt --write-file={scratch}/copy.txt

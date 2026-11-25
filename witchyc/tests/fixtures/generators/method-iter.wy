@@ -1,0 +1,19 @@
+// The book's spelling: `-> Iter<U64>` is `-> U64`, what each step yields.
+import console
+import option
+import float
+
+type Counter:
+    n: U64
+
+impl Counter:
+    gen fn upto(self: Counter) -> Iter<U64>:
+        var i: U64 = 0
+        while i < self.n:
+            yield i
+            i = i + 1
+
+fn main(console: Console<Write>):
+    let c = Counter(4)
+    for x in c.upto():
+        console.print_int(x)

@@ -1,0 +1,1 @@
+!memory.same_allocation(output, old(input))

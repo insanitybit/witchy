@@ -1,0 +1,17 @@
+// `for c in text.chars()`: each Unicode scalar value of a String, multi-byte ones whole.
+import console
+import string
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var name = move made
+    if let Err(_) = name.push_text(&allocator, "héllo €"):
+        name.close()
+        return
+    var count: U64 = 0
+    for c in name.chars():
+        console.print_int(c)
+        count += 1
+    console.print_int(count)
+    name.close()

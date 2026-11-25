@@ -1,0 +1,16 @@
+import console
+import vec
+
+// A million pushes into a Vec<U64> that starts empty: each doubling moves every element.
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.new(&allocator, 0) else Err(code):
+        return
+    var items = move made
+    for i in 0..1000000:
+        match items.push_mut(&allocator, i):
+            Ok:
+                continue
+            Err(back):
+                console.line("full")
+    console.print_int(items.len())
+    items.close()

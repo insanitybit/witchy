@@ -1,0 +1,5 @@
+// A package may not import a file outside its own directory: this one reaches for another.
+import "../greeting/words.wy"
+
+pub fn take() -> U64:
+    return greeting()

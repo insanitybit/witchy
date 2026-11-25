@@ -1,0 +1,26 @@
+// Span.find_str: positions within a part of a String, not the whole; a needle that begins
+// inside the part but runs past its end is not found.
+import console
+import string
+import span
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(e):
+        return
+    var text = move made
+    let _ = text.push_text(&allocator, "xx key=value; key=other; tail")
+    let part = text.span().part(2, 23)
+    for needle in ["key", "value", "other", "=", "tail", ""]:
+        match part.find_text((*needle).as_str(), 0):
+            Ok(at):
+                console.write_u64(at)
+            Err(e):
+                console.write("none")
+        console.write(" ")
+    match part.find_text("key", 1):
+        Ok(at):
+            console.write_u64(at)
+        Err(e):
+            console.write("none")
+    console.line("")
+    text.close()

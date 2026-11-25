@@ -1,0 +1,43 @@
+import console
+import console_bytes
+
+fn main(output: Console<Write>, input: Console<Read>):
+    check_words(&input, &output)
+    var first: [U8; 8] = [0; 8]
+    if let Err(reason) = input.read_exact(first.slice_mut().part(0, 0)):
+        output.line("empty read failed")
+        return
+    let expected: [U8; 8] = [0, 255, 10, 128, 65, 66, 67, 68]
+    if let Err(reason) = input.read_exact(first.slice_mut()):
+        output.line("exact read failed")
+        return
+    for i in 0..8:
+        if first[i] != expected[i]:
+            output.line("different body")
+            return
+    output.line("exact binary prefix")
+
+    var final_body: [U8; 2] = [0; 2]
+    if let Err(TrailingConsoleInput) = input.read_exact_to_end(final_body.slice_mut()):
+        if final_body[0] == 18 && final_body[1] == 52:
+            output.line("trailing byte refused")
+
+    var short: [U8; 4] = [238; 4]
+    if let Err(ShortConsoleInput(count)) = input.read_exact(short.slice_mut()):
+        if count == 2 && short[0] == 171 && short[1] == 205 && short[2] == 238 && short[3] == 238:
+            output.line("short prefix preserved")
+    if let Err(ShortConsoleInput(count)) = input.read_u24_be():
+        if count == 0:
+            output.line("unsigned field at EOF")
+    if let Ok(_) = input.read_exact_to_end(short.slice_mut().part(0, 0)):
+        output.line("empty body at EOF")
+
+fn check_words(input: &Console<Read>, output: &Console<Write>):
+    let Ok(empty): U64 = input.read_u24_be() else Err(reason):
+        return
+    let Ok(full): U64 = input.read_u24_be() else Err(reason):
+        return
+    let Ok(word): U64 = input.read_u24_be() else Err(reason):
+        return
+    if empty == 0 && full == 16777215 && word == 66051:
+        output.line("unsigned big-endian fields")

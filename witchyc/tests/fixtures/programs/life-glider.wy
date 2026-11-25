@@ -1,0 +1,56 @@
+// Conway's Game of Life on a 32x32 torus in a flat Vec<U8>: a glider, stepped 128 times (it
+// moves 32 cells diagonally and so comes back where it started), then the live cells counted.
+import console
+import vec
+
+fn at(w: U64, h: U64, x: U64, y: U64) -> U64:
+    return (y % h) * w + (x % w)
+
+fn neighbours(cells: &[U8], w: U64, h: U64, x: U64, y: U64) -> U64:
+    var n: U64 = 0
+    for dy in 0..3:
+        for dx in 0..3:
+            if dx != 1 || dy != 1:
+                let i = at(w, h, x + w + dx - 1, y + h + dy - 1)
+                if i < cells.len() && cells[i] == 1:
+                    n += 1
+    return n
+
+fn step(cells: &[U8], next: &mut Vec<U8>, w: U64, h: U64):
+    for y in 0..h:
+        for x in 0..w:
+            let i = at(w, h, x, y)
+            let n = neighbours(cells, w, h, x, y)
+            var alive: U8 = 0
+            if i < cells.len() && cells[i] == 1:
+                if n == 2 || n == 3:
+                    alive = 1
+            else if n == 3:
+                alive = 1
+            next[i] = alive
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let w: U64 = 32
+    let h: U64 = 32
+    let Ok(a): Vec<U8> = Vec.filled(&allocator, w * h, 0) else Err(c):
+        return
+    let Ok(b): Vec<U8> = Vec.filled(&allocator, w * h, 0) else Err(c):
+        a.close()
+        return
+    var front = move a
+    var back = move b
+    // A glider.
+    front[at(w, h, 1, 0)] = 1
+    front[at(w, h, 2, 1)] = 1
+    front[at(w, h, 0, 2)] = 1
+    front[at(w, h, 1, 2)] = 1
+    front[at(w, h, 2, 2)] = 1
+    for generation in 0..128:
+        step(front.elements(), &mut back, w, h)
+        memory.exchange(&mut front, &mut back)
+    var live: U64 = 0
+    for c in &front:
+        live += U8.to_u64(*c)
+    console.print("${live} live, origin ${front[at(w, h, 1, 0)]}")
+    front.close()
+    back.close()

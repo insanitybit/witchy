@@ -1,0 +1,19 @@
+// Direct Wasm scalar profile: no Lean, heap, loans or proof obligations.
+fn triangular(n: U64) -> U64:
+    var sum: U64 = 0
+    var i: U64 = 0
+    while i < n:
+        i += 1
+        sum += i
+    return sum
+
+fn choose(flag: Bool, a: U64, b: U64) -> U64:
+    if flag:
+        return a
+    else:
+        return b
+
+fn main(console: Console<Write>):
+    let result = triangular(9)
+    console.print_int(choose(result == 45, result, 999))
+    console.print_int(18446744073709551615 / 3)

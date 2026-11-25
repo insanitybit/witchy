@@ -1,0 +1,31 @@
+// `for p in &mut v` walks `v.elements_mut()`: with an index and `break`, records written through
+// the element, and a body naming the Vec (walked through `at_mut` as before). Same output as before.
+import console
+import vec
+import discard
+
+type Point derive(Discard):
+    x: U64
+    y: U64
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<Point> = Vec.new(&allocator, 4) else Err(code):
+        return
+    var v = move made
+    for i in 0..5:
+        let pushed = v.push_mut(&allocator, Point(i, i * 10))
+    for i, p in &mut v:
+        if i == 3:
+            break
+        (*p).y += 1
+    for p in &mut v:
+        (*p).x *= 2
+    var count: U64 = 0
+    for p in &mut v:
+        if (*p).x > 4:
+            let n = v.len()
+            count += n
+    for p in &v:
+        console.print("${(*p).x},${(*p).y}")
+    console.print("count ${count}")
+    v.discard()

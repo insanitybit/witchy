@@ -1,0 +1,12 @@
+// An interpolated literal is a value (docs/design-format.md): `console.print` writes its
+// pieces, each by its `Show`, and allocates nothing; a plain literal is printed the same way.
+import console
+
+fn main(console: Console<Write>):
+    let total: U64 = 42
+    let ready = total > 40
+    let message = "total ${total}, ready ${ready}"
+    console.print(message)
+    console.print("${total + 1} is next")
+    console.print("no values here")
+    console.print(message)

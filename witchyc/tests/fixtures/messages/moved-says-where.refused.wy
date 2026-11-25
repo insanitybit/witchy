@@ -1,0 +1,13 @@
+// Refused, saying where the value was moved: it said only that it was moved away before this use.
+import console
+import string
+
+fn take(s: String):
+    s.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(e):
+        return
+    var text = move made
+    take(move text)
+    console.print_int(text.byte_len())

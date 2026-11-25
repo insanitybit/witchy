@@ -1,0 +1,79 @@
+// An owner is assigned over a field once the proof shows the value there holds none
+// (docs/wasm-exchange.md): the slot is emptied by an exchange, then refilled by `=`.
+type Slot<T>:
+    Vacant
+    Full(T)
+
+type Shelf<T>:
+    count: U64
+    slot: Slot<T>
+
+// Vacant, a number (no owner) or an owner: two variants an assignment may overwrite.
+type Seat<T>:
+    Free
+    Reserved(U64)
+    Taken(T)
+
+type Row<T>:
+    seat: Seat<T>
+
+nopanic fn swap_in<T: Any>(shelf: &mut Shelf<T>, item: T) -> Slot<T>:
+    var held: Slot<T> = Vacant
+    memory.exchange(&mut (*shelf).slot, &mut held)
+    (*shelf).count = 5
+    (*shelf).slot = Full(move item)
+    return move held
+
+// No `nopanic` and no contract written: the assignment still asks for the proof.
+fn swap_plain<T: Any>(shelf: &mut Shelf<T>, item: T) -> Slot<T>:
+    var held: Slot<T> = Vacant
+    memory.exchange(&mut (*shelf).slot, &mut held)
+    (*shelf).slot = Full(move item)
+    return move held
+
+// Through a `&mut` to the sum itself.
+nopanic fn swap_slot<T: Any>(slot: &mut Slot<T>, item: T) -> Slot<T>:
+    var held: Slot<T> = Vacant
+    memory.exchange(slot, &mut held)
+    *slot = Full(move item)
+    return move held
+
+// What a match on the field shows is enough: nothing is exchanged out first.
+nopanic fn seat<T: Any>(row: &mut Row<T>, guest: T) -> Slot<T>:
+    match &(*row).seat:
+        Taken(_):
+            return Full(move guest)
+        Free:
+            (*row).seat = Taken(move guest)
+            return Vacant
+        Reserved(_):
+            (*row).seat = Taken(move guest)
+            return Vacant
+
+// A field of a local the function owns.
+nopanic fn stocked<T: Any>(item: T) -> Shelf<T>:
+    var shelf: Shelf<T> = Shelf(2, Vacant)
+    shelf.slot = Full(move item)
+    return move shelf
+
+fn show(out: &Console<Write>, slot: Slot<U64>):
+    match move slot:
+        Vacant:
+            out.print_int(0)
+        Full(n):
+            out.print_int(n)
+
+fn main(out: Console<Write>):
+    var shelf: Shelf<U64> = Shelf(0, Full(7))
+    show(&out, swap_in(&mut shelf, 9))
+    show(&out, swap_plain(&mut shelf, 11))
+    out.print_int(shelf.count)
+    let Shelf(count, slot) = move shelf
+    var last = move slot
+    show(&out, swap_slot(&mut last, 13))
+    show(&out, move last)
+    var row: Row<U64> = Row(Reserved(4))
+    show(&out, seat(&mut row, 21))
+    show(&out, seat(&mut row, 22))
+    let Shelf(stock, kept) = stocked(31)
+    show(&out, move kept)

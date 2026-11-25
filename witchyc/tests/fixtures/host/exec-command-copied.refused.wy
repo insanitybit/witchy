@@ -1,0 +1,7 @@
+// Refused: a Command holds a capability, so it is not copied: one command runs once.
+import exec
+
+fn main(exec: Exec):
+    let command = exec.command("answer")
+    let first = command.run()
+    let second = command.run()

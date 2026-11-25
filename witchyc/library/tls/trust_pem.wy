@@ -1,0 +1,101 @@
+// Decode the runner's PEM CA file into u24-length-prefixed DER certificates.
+import encoding
+import fs
+import span
+import string
+import text
+import vec
+
+let PEM_BYTES = 524288
+
+// Consume and close the granted file. Keep the exact validated UTF-8 bytes.
+pub fn read_trust_pem(file: File<Read>, allocator: &Allocator) -> Result<String, U64>:
+    let Ok(pem): String = file.read_text_bounded(allocator, PEM_BYTES) else Err(reason):
+        return Err(1)
+    if pem.byte_len() == 0:
+        pem.close()
+        return Err(1)
+    return Ok(move pem)
+
+// Decode the bounded PEM contents of the granted file.
+pub fn read_trust_bundle(file: File<Read>, allocator: &Allocator) -> Result<Vec<U8>, U64>:
+    let pem = read_trust_pem(move file, allocator)?
+    let parsed = trust_bundle(pem.span(), allocator)
+    pem.close()
+    return move parsed
+
+pub fn trust_bundle(source: Span, allocator: &Allocator) -> Result<Vec<U8>, U64>:
+    if source.is_empty() || source.len() > PEM_BYTES:
+        return Err(1)
+    let empty: Vec<U8> = Vec.new(allocator, source.len())?
+    var bundle = move empty
+    if let Err(code) = append_bundle(source, &mut bundle, allocator):
+        bundle.close()
+        return Err(code)
+    return Ok(move bundle)
+
+fn line(source: Span) -> Halves:
+    match source.split(10):
+        Ok(parts):
+            return .{head: clean(parts.head), tail: parts.tail}
+        Err(last):
+            return .{head: clean(last), tail: source.part(source.len(), source.len())}
+
+fn clean(source: Span) -> Span:
+    if source.ends_with_text("\r"):
+        return source.part(0, source.len() - 1).trim()
+    return source.trim()
+
+fn append_bundle(source: Span, bundle: &mut Vec<U8>, allocator: &Allocator) -> Result<(), U64>:
+    var rest = source
+    var count: U64 = 0
+    while !rest.is_empty():
+        let parts = line(rest)
+        rest = parts.tail
+        if parts.head.equals_text("-----BEGIN CERTIFICATE-----"):
+            if count == 256:
+                return Err(1)
+            let consumed = append_certificate(rest, bundle, allocator)?
+            rest = rest.part(consumed, rest.len())
+            count += 1
+        else if parts.head.starts_with_text("-----"):
+            return Err(1)
+    if count == 0:
+        return Err(1)
+    return Ok(())
+
+fn append_certificate(source: Span, bundle: &mut Vec<U8>, allocator: &Allocator) -> Result<U64, U64>:
+    let empty = String.with_capacity(allocator, 2048)?
+    var encoded = move empty
+    let consumed = collect(source, &mut encoded, allocator)
+    let Ok(length): U64 = consumed else Err(code):
+        encoded.close()
+        return Err(code)
+    let decoded = encoding.decode_base64(allocator, encoded.as_bytes())
+    encoded.close()
+    let Ok(der): Vec<U8> = move decoded else Err(code):
+        return Err(code)
+    let packed = append_der(bundle, der.as_slice(), allocator)
+    der.close()
+    packed?
+    return Ok(length)
+
+fn collect(source: Span, encoded: &mut String, allocator: &Allocator) -> Result<U64, U64>:
+    var rest = source
+    while !rest.is_empty():
+        let parts = line(rest)
+        if parts.head.equals_text("-----END CERTIFICATE-----"):
+            return Ok(source.len() - parts.tail.len())
+        if parts.head.is_empty() || parts.head.starts_with_text("-----") || parts.head.len() > 32768 - encoded.byte_len():
+            return Err(1)
+        encoded.push_utf8_slice(allocator, parts.head.as_bytes())?
+        rest = parts.tail
+    return Err(1)
+
+fn append_der(bundle: &mut Vec<U8>, der: &[U8], allocator: &Allocator) -> Result<(), U64>:
+    let count = der.len()
+    if count == 0:
+        return Err(1)
+    let size: [U8; 3] = [U8.truncate(count >> 16), U8.truncate(count >> 8), U8.truncate(count)]
+    bundle.extend_from_slice_mut(allocator, size.slice())?
+    return bundle.extend_from_slice_mut(allocator, der)

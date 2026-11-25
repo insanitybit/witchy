@@ -1,0 +1,2 @@
+pub fn pick(x: U64) -> U64:
+    return x + 1

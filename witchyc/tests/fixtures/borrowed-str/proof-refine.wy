@@ -1,0 +1,8 @@
+fn reborrow(buffer: &Buffer<U8>, text: &str) -> &str:
+    ensures result.len() == text.len()
+    proof:
+        auto
+    return memory.utf8_unchecked(text.as_bytes())
+
+fn main():
+    return

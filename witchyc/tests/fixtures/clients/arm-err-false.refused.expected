@@ -1,0 +1,2 @@
+proof failed: function `raise`
+  not proved: ensures, Err arm: pair.first() == old(pair.first())

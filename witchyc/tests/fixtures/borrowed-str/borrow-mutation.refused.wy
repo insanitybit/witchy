@@ -1,0 +1,9 @@
+import console
+fn main(console: Console<Write>):
+    var bytes: [U8; 1] = [97]
+    match str.from_utf8_bytes(bytes.slice()):
+        Ok(text):
+            bytes[0] = 255
+            console.line(text)
+        Err(code):
+            return

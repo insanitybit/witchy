@@ -1,0 +1,5 @@
+import simd
+
+fn main(console: Console<Write>):
+    let a = U32x4.splat(1)
+    console.print_int(U32.to_u64(a.lane(4)))

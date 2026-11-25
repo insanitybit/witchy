@@ -1,0 +1,17 @@
+// Refused, writing out the arms to add (a binder where the variant carries a value): it listed only the names.
+import console
+import string
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(e):
+        return
+    var line = move made
+    match input.read_line(&allocator, &mut line):
+        .Line:
+            console.line("x")
+        .End:
+            console.line("y")
+    match String.new(&allocator):
+        Ok(other):
+            other.close()
+    line.close()

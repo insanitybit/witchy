@@ -1,0 +1,25 @@
+// Refused: `limit` is read by `invariant count <= limit`, so a kept `&mut` to it could break
+// the invariant after the proof has looked.
+import console
+import vec
+import option
+
+sealed type Bag:
+    items: Vec<U64>
+    held: Option<U64>
+    spare: U64
+    count: U64
+    limit: U64
+    invariant count <= limit
+    invariant when None = held:
+        count == 0
+
+impl Bag:
+    fn set(bag: &mut Bag) -> Bool:
+        ensures bag.count == old(bag.count)
+        let r = &mut (*bag).limit
+        *r = 0
+        return true
+
+fn main(console: Console<Write>):
+    console.print_int(1)

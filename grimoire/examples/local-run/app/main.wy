@@ -1,0 +1,8 @@
+import "@config-reader"
+
+fn main(console: Console<Write>, config: File<Read>):
+    match read_port(&config):
+        Ok(port):
+            console.print_int(port)
+        Err(invalid):
+            console.print_int(3000)

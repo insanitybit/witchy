@@ -1,0 +1,20 @@
+// Private types are each file's own: two imported files and this one all declare `Entry`.
+import console
+import "parts/inventory.wy"
+import "parts/ledger.wy"
+
+type Entry:
+    Present(U64)
+    Absent
+
+fn describe(entry: Entry) -> U64:
+    match entry:
+        Present(n):
+            return n
+        Absent:
+            return 0
+
+fn main(console: Console<Write>):
+    console.print_int(inventory.inventory(21))
+    console.print_int(ledger.ledger(3, 10))
+    console.print_int(describe(Present(5)))

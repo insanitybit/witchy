@@ -1,0 +1,26 @@
+// Appended to library/unchecked-u64.wy by the storage regression tests.
+//
+// A cell is taken, re-initialized with a different value, then read unchecked.
+// The read must observe the CURRENT cell, in the proof and in native storage.
+// The test changes the promise to the value the cell held on entry.
+fn overwrite_then_read(input: Vec<U64>, index: USize, fresh: U64) -> Result<Indexed, Vec<U64>>:
+    requires index < input.length
+    ensures match result:
+        Ok(indexed):
+            match indexed.item:
+                Some(value):
+                    value == fresh
+                None:
+                    false
+        Err(kept):
+            true
+    var vector = move input
+    proof:
+        apply initialized_in_prefix(vector.data, vector.length, index)
+    if memory.loan_room(1):
+        let previous = memory.take(&mut vector.data, index)
+        discard(previous)
+        memory.init(&mut vector.data, index, fresh)
+        let item = memory.read_unchecked(&vector.data, index)
+        return Ok(Indexed(move vector, Some(item)))
+    return Err(move vector)

@@ -1,0 +1,591 @@
+//! Linux subreaper cleanup. Only this process's unreaped children are signalled,
+//! and each signal is sent through a pidfd to prevent PID-reuse mistakes.
+use super::global::Global;
+use core::{
+    ffi::{c_char, c_int, c_long, c_void},
+    ptr,
+};
+
+const HELD: usize = 16384;
+const SWEEP_MS: u64 = 5000;
+static CHILDREN_FD: Global<c_int> = Global::new(-1);
+static OWNER: Global<c_int> = Global::new(0);
+static mut INPUT: [u8; 65536] = [0; 65536];
+static mut PIDS: [c_int; HELD] = [0; HELD];
+static mut HANDLES: [c_int; HELD] = [-1; HELD];
+
+unsafe extern "C" {
+    safe fn getpid() -> c_int;
+    fn prctl(option: c_int, ...) -> c_int;
+    fn open(path: *const c_char, flags: c_int, ...) -> c_int;
+    safe fn close(fd: c_int) -> c_int;
+    fn pread(fd: c_int, bytes: *mut c_void, len: usize, offset: i64) -> isize;
+    fn snprintf(out: *mut c_char, size: usize, format: *const c_char, ...) -> c_int;
+    fn syscall(number: c_long, ...) -> c_long;
+    fn waitpid(pid: c_int, status: *mut c_int, flags: c_int) -> c_int;
+    fn nanosleep(
+        time: *const super::clock_random::Timespec,
+        remaining: *mut super::clock_random::Timespec,
+    ) -> c_int;
+    fn clock_gettime(clock: c_int, out: *mut super::clock_random::Timespec) -> c_int;
+}
+
+fn now_ms() -> Option<u64> {
+    let mut time = core::mem::MaybeUninit::<super::clock_random::Timespec>::uninit();
+    if unsafe { clock_gettime(1, time.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    let time = unsafe { time.assume_init() };
+    if time.seconds < 0 || !(0..1_000_000_000).contains(&time.nanos) {
+        return None;
+    }
+    Some(
+        (time.seconds as u64)
+            .saturating_mul(1000)
+            .saturating_add(time.nanos as u64 / 1_000_000),
+    )
+}
+
+/// Install subreaping before creating the runner or any program children.
+#[unsafe(no_mangle)]
+extern "C" fn witchy_exec_supervise() -> bool {
+    let pid = getpid();
+    let mut path = [0u8; 64];
+    let n = unsafe {
+        snprintf(
+            path.as_mut_ptr().cast(),
+            path.len(),
+            c"/proc/self/task/%d/children".as_ptr(),
+            pid,
+        )
+    };
+    if n <= 0 || n as usize >= path.len() || unsafe { prctl(36, 1, 0, 0, 0) } != 0 {
+        return false;
+    }
+    let fd = unsafe { open(path.as_ptr().cast(), 0o2000000) };
+    if fd < 0 {
+        return false;
+    }
+    if OWNER.get() == pid && CHILDREN_FD.get() >= 0 {
+        close(CHILDREN_FD.get());
+    }
+    CHILDREN_FD.set(fd);
+    OWNER.set(pid);
+    true
+}
+
+pub(super) fn children_descriptor() -> c_int {
+    if OWNER.get() == getpid() {
+        CHILDREN_FD.get()
+    } else {
+        -1
+    }
+}
+
+pub(super) fn discard_inherited() {
+    if OWNER.get() != getpid() && CHILDREN_FD.get() >= 0 {
+        close(CHILDREN_FD.get());
+        CHILDREN_FD.set(-1);
+        OWNER.set(0);
+    }
+}
+
+// A near-full read could end in the middle of a PID. Discard that last token
+// and force another sweep rather than interpreting a truncated PID.
+fn read_children(fd: c_int, output: &mut [c_int]) -> Result<(usize, bool), ()> {
+    let input = unsafe { &mut *(&raw mut INPUT) };
+    let n = unsafe { pread(fd, input.as_mut_ptr().cast(), input.len() - 1, 0) };
+    if n < 0 {
+        return Err(());
+    }
+    let mut used = n as usize;
+    let mut more = used >= input.len() - 64;
+    if more {
+        used = input[..used].iter().rposition(|&b| b == b' ').unwrap_or(0);
+    }
+    let mut count = 0;
+    for part in input[..used]
+        .split(|&b| b.is_ascii_whitespace())
+        .filter(|p| !p.is_empty())
+    {
+        let mut pid = 0i32;
+        for &digit in part {
+            if !digit.is_ascii_digit() {
+                return Err(());
+            }
+            pid = pid
+                .checked_mul(10)
+                .and_then(|p| p.checked_add(i32::from(digit - b'0')))
+                .ok_or(())?;
+        }
+        if pid > 1 {
+            if count == output.len() {
+                more = true;
+                break;
+            }
+            output[count] = pid;
+            count += 1;
+        }
+    }
+    Ok((count, more))
+}
+
+/// Kill and reap this subreaper's direct children. Each round is bounded and
+/// repeats until the kernel's child list is empty, including adopted children.
+#[unsafe(no_mangle)]
+extern "C" fn witchy_exec_sweep_own() -> bool {
+    let (fd, owner) = (CHILDREN_FD.get(), OWNER.get());
+    if fd < 0 || owner != getpid() {
+        return true;
+    }
+    let Some(start) = now_ms() else {
+        return false;
+    };
+    let deadline = start.saturating_add(SWEEP_MS);
+    loop {
+        let pids = unsafe { &mut *(&raw mut PIDS) };
+        let Ok((count, more)) = read_children(fd, pids) else {
+            return false;
+        };
+        let handles = unsafe { &mut *(&raw mut HANDLES) };
+        let mut opened = 0;
+        for &pid in &pids[..count] {
+            let handle = unsafe { syscall(434, pid, 0u32) } as c_int;
+            if handle >= 0 {
+                unsafe {
+                    syscall(424, handle, 19i32, ptr::null::<c_void>(), 0u32);
+                }
+                handles[opened] = handle;
+                opened += 1;
+            }
+        }
+        for &handle in &handles[..opened] {
+            unsafe {
+                syscall(424, handle, 9i32, ptr::null::<c_void>(), 0u32);
+                close(handle);
+            }
+        }
+        for &pid in &pids[..count] {
+            unsafe {
+                waitpid(pid, ptr::null_mut(), 1);
+            }
+        }
+        if count == 0 && !more {
+            return true;
+        }
+        if now_ms().is_none_or(|now| now >= deadline) {
+            return false;
+        }
+        let delay = super::clock_random::Timespec {
+            seconds: 0,
+            nanos: 1_000_000,
+        };
+        unsafe {
+            nanosleep(&raw const delay, ptr::null_mut());
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn parser_rejects_invalid_and_tracks_capacity() {
+        // Exercise the actual proc-file parser against a temporary file.
+        use std::io::Write;
+        use std::os::fd::AsRawFd;
+        let path = std::env::temp_dir().join(format!("witchy-pids-{}", std::process::id()));
+        let mut f = std::fs::File::create(&path).unwrap();
+        f.write_all(b"12 34 56 ").unwrap();
+        drop(f);
+        let f = std::fs::File::open(&path).unwrap();
+        let mut out = [0; 2];
+        assert_eq!(read_children(f.as_raw_fd(), &mut out), Ok((2, true)));
+        assert_eq!(out, [12, 34]);
+        std::fs::remove_file(path).unwrap();
+    }
+    #[test]
+    fn subreaper_stops_its_own_child() {
+        unsafe extern "C" {
+            fn fork() -> c_int;
+            safe fn pause() -> c_int;
+            safe fn _exit(code: c_int) -> !;
+        }
+        let supervisor = unsafe { fork() };
+        assert!(supervisor >= 0);
+        if supervisor == 0 {
+            if !witchy_exec_supervise() {
+                unsafe { _exit(1) }
+            }
+            let child = unsafe { fork() };
+            if child < 0 {
+                unsafe { _exit(2) }
+            }
+            if child == 0 {
+                unsafe {
+                    pause();
+                    _exit(3)
+                }
+            }
+            if !witchy_exec_sweep_own() {
+                unsafe { _exit(4) }
+            }
+            unsafe { _exit(0) }
+        }
+        let mut status = 0;
+        assert_eq!(
+            unsafe { waitpid(supervisor, &raw mut status, 0) },
+            supervisor
+        );
+        assert_eq!(status, 0);
+    }
+
+    #[test]
+    fn runner_stops_a_child_that_created_a_new_session() {
+        unsafe extern "C" {
+            fn fork() -> c_int;
+            fn pipe(fds: *mut c_int) -> c_int;
+            fn write(fd: c_int, bytes: *const c_void, len: usize) -> isize;
+            safe fn setsid() -> c_int;
+            safe fn pause() -> c_int;
+            safe fn _exit(code: c_int) -> !;
+        }
+        let supervisor = unsafe { fork() };
+        assert!(supervisor >= 0);
+        if supervisor == 0 {
+            if !witchy_exec_supervise() {
+                unsafe { _exit(1) }
+            }
+            let mut ready = [-1; 2];
+            if unsafe { pipe(ready.as_mut_ptr()) } != 0 {
+                unsafe { _exit(2) }
+            }
+            let leader = unsafe { fork() };
+            if leader < 0 {
+                unsafe { _exit(3) }
+            }
+            if leader == 0 {
+                unsafe {
+                    close(ready[0]);
+                }
+                let child = unsafe { fork() };
+                if child < 0 {
+                    unsafe { _exit(4) }
+                }
+                if child == 0 {
+                    if unsafe { setsid() } < 0 {
+                        unsafe { _exit(5) }
+                    }
+                    let marker = b'X';
+                    if unsafe { write(ready[1], (&raw const marker).cast(), 1) } != 1 {
+                        unsafe { _exit(6) }
+                    }
+                    unsafe {
+                        pause();
+                        _exit(7)
+                    }
+                }
+                unsafe {
+                    close(ready[1]);
+                    pause();
+                    _exit(8)
+                }
+            }
+            unsafe {
+                close(ready[1]);
+            }
+            let mut marker = 0u8;
+            if unsafe { read(ready[0], (&raw mut marker).cast(), 1) } != 1 || marker != b'X' {
+                unsafe { _exit(9) }
+            }
+            unsafe {
+                close(ready[0]);
+            }
+            if !sweep_descendants(leader) {
+                unsafe { _exit(10) }
+            }
+            unsafe {
+                waitpid(leader, ptr::null_mut(), 0);
+            }
+            if !witchy_exec_sweep_own() {
+                unsafe { _exit(11) }
+            }
+            unsafe { _exit(0) }
+        }
+        let mut status = 0;
+        assert_eq!(
+            unsafe { waitpid(supervisor, &raw mut status, 0) },
+            supervisor
+        );
+        assert_eq!(status, 0);
+    }
+}
+
+use super::linux_stat::Dirent;
+unsafe extern "C" {
+    fn fdopendir(fd: c_int) -> *mut c_void;
+    fn readdir(dir: *mut c_void) -> *const Dirent;
+    fn closedir(dir: *mut c_void) -> c_int;
+    fn dirfd(dir: *mut c_void) -> c_int;
+    fn openat(fd: c_int, path: *const c_char, flags: c_int, ...) -> c_int;
+    fn read(fd: c_int, bytes: *mut c_void, size: usize) -> isize;
+    fn waitid(kind: c_int, id: u32, info: *mut SignalInfo, options: c_int) -> c_int;
+}
+#[repr(C)]
+pub(super) struct SignalInfo {
+    signo: i32,
+    error: i32,
+    pub(super) code: i32,
+    pad: i32,
+    pub(super) pid: i32,
+    uid: u32,
+    pub(super) status: i32,
+    rest: [u8; 100],
+}
+#[repr(C)]
+struct PollFd {
+    fd: c_int,
+    events: i16,
+    returned: i16,
+}
+#[derive(Copy, Clone)]
+struct Held {
+    fd: c_int,
+    pid: c_int,
+    parent: c_int,
+}
+static mut TREE: [Held; HELD] = [Held {
+    fd: -1,
+    pid: 0,
+    parent: 0,
+}; HELD];
+static mut BELOW: [c_int; HELD] = [0; HELD];
+
+fn list_children(parent: c_int, out: &mut [c_int]) -> (usize, bool) {
+    let mut path = [0u8; 64];
+    let n = unsafe {
+        snprintf(
+            path.as_mut_ptr().cast(),
+            path.len(),
+            c"/proc/%d/task".as_ptr(),
+            parent,
+        )
+    };
+    if n <= 0 || n as usize >= path.len() {
+        return (0, true);
+    }
+    let fd = unsafe { open(path.as_ptr().cast(), 0o2040000) };
+    if fd < 0 {
+        let errno = super::errno::get();
+        return (0, !matches!(errno, 2 | 3));
+    }
+    let dir = unsafe { fdopendir(fd) };
+    if dir.is_null() {
+        close(fd);
+        return (0, true);
+    }
+    let mut count = 0;
+    let mut more = false;
+    loop {
+        {
+            super::errno::set(0);
+        }
+        let entry = unsafe { readdir(dir) };
+        if entry.is_null() {
+            more |= super::errno::get() != 0;
+            break;
+        }
+        let name =
+            unsafe { core::ffi::CStr::from_ptr((&raw const (*entry).name).cast()) }.to_bytes();
+        if name.is_empty() || !name.iter().all(u8::is_ascii_digit) {
+            continue;
+        }
+        let mut relative = [0u8; 300];
+        if name.len() + 9 >= relative.len() {
+            more = true;
+            continue;
+        }
+        relative[..name.len()].copy_from_slice(name);
+        relative[name.len()..name.len() + 9].copy_from_slice(b"/children");
+        let child_fd = unsafe { openat(dirfd(dir), relative.as_ptr().cast(), 0o2000000) };
+        if child_fd < 0 {
+            // Threads can disappear while enumerating; other errors must not
+            // make an incomplete process tree look empty.
+            more |= !matches!(super::errno::get(), 2 | 3);
+            continue;
+        }
+        match read_children(child_fd, &mut out[count..]) {
+            Ok((n, truncated)) => {
+                count += n;
+                more |= truncated;
+            }
+            Err(()) => more = true,
+        }
+        close(child_fd);
+    }
+    unsafe {
+        closedir(dir);
+    }
+    (count, more)
+}
+
+fn parent_of(pid: c_int) -> Option<c_int> {
+    let mut path = [0u8; 64];
+    let n = unsafe {
+        snprintf(
+            path.as_mut_ptr().cast(),
+            path.len(),
+            c"/proc/%d/stat".as_ptr(),
+            pid,
+        )
+    };
+    if n <= 0 || n as usize >= path.len() {
+        return None;
+    }
+    let fd = unsafe { open(path.as_ptr().cast(), 0o2000000) };
+    if fd < 0 {
+        return None;
+    }
+    let mut data = [0u8; 512];
+    let n = unsafe { read(fd, data.as_mut_ptr().cast(), data.len()) };
+    close(fd);
+    if n <= 0 {
+        return None;
+    }
+    let data = &data[..n as usize];
+    let right = data.iter().rposition(|&b| b == b')')?;
+    let mut fields = data[right + 1..]
+        .split(|b| b.is_ascii_whitespace())
+        .filter(|p| !p.is_empty());
+    let state = fields.next()?;
+    if state.len() != 1 {
+        return None;
+    }
+    let mut parent = 0i32;
+    for &digit in fields.next()? {
+        if !digit.is_ascii_digit() {
+            return None;
+        }
+        parent = parent
+            .checked_mul(10)?
+            .checked_add(i32::from(digit - b'0'))?;
+    }
+    Some(parent)
+}
+
+fn still_running(fd: c_int) -> bool {
+    let mut probe = PollFd {
+        fd,
+        events: 1,
+        returned: 0,
+    };
+    let zero = super::clock_random::Timespec {
+        seconds: 0,
+        nanos: 0,
+    };
+    unsafe {
+        syscall(
+            73,
+            &raw mut probe,
+            1usize,
+            &raw const zero,
+            ptr::null::<c_void>(),
+            0usize,
+        ) == 0
+    }
+}
+
+fn hold(
+    pid: c_int,
+    parent: c_int,
+    parent_fd: c_int,
+    tree: &mut [Held],
+    count: &mut usize,
+    more: &mut bool,
+) {
+    if *count == tree.len() {
+        *more = true;
+        return;
+    }
+    let fd = unsafe { syscall(434, pid, 0u32) } as c_int;
+    if fd < 0 {
+        return;
+    }
+    if parent_of(pid) != Some(parent) || (parent_fd >= 0 && !still_running(parent_fd)) {
+        close(fd);
+        return;
+    }
+    unsafe {
+        syscall(424, fd, 19i32, ptr::null::<c_void>(), 0u32);
+    }
+    tree[*count] = Held { fd, pid, parent };
+    *count += 1;
+}
+
+/// Stop a running or exited program and every descendant. Keep its leader
+/// unreaped for the caller; every descendant is stopped through a held pidfd.
+pub(super) fn sweep_descendants(keep: c_int) -> bool {
+    if keep <= 1 {
+        return false;
+    }
+    let Some(start) = now_ms() else {
+        return false;
+    };
+    let deadline = start.saturating_add(SWEEP_MS);
+    let myself = getpid();
+    loop {
+        let tree = unsafe { &mut *(&raw mut TREE) };
+        let direct = unsafe { &mut *(&raw mut PIDS) };
+        let below = unsafe { &mut *(&raw mut BELOW) };
+        let (children, mut more) = list_children(myself, direct);
+        let mut held = 0;
+        for &pid in &direct[..children] {
+            hold(pid, myself, -1, tree, &mut held, &mut more);
+        }
+        let mut at = 0;
+        while at < held {
+            let parent = tree[at];
+            let (found, truncated) = list_children(parent.pid, below);
+            more |= truncated;
+            if still_running(parent.fd) {
+                for &pid in &below[..found] {
+                    hold(pid, parent.pid, parent.fd, tree, &mut held, &mut more);
+                }
+            }
+            at += 1;
+        }
+        let mut others = 0;
+        for process in &tree[..held] {
+            unsafe {
+                syscall(424, process.fd, 9i32, ptr::null::<c_void>(), 0u32);
+            }
+            if process.pid != keep {
+                others += 1;
+            }
+        }
+        for process in &tree[..held] {
+            if process.parent == myself && process.pid != keep {
+                unsafe {
+                    waitpid(process.pid, ptr::null_mut(), 1);
+                }
+            }
+            close(process.fd);
+        }
+        let mut seen: SignalInfo = unsafe { core::mem::zeroed() };
+        let ended = unsafe { waitid(1, keep as u32, &raw mut seen, 4 | 1 | 0x01000000) } == 0
+            && seen.pid == keep;
+        if others == 0 && !more && ended {
+            return true;
+        }
+        if now_ms().is_none_or(|now| now >= deadline) {
+            return false;
+        }
+        let delay = super::clock_random::Timespec {
+            seconds: 0,
+            nanos: 1_000_000,
+        };
+        unsafe {
+            nanosleep(&raw const delay, ptr::null_mut());
+        }
+    }
+}

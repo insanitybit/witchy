@@ -1,0 +1,20 @@
+// Refused by the proof, pointing at the first `unreachable` that some path reaches (the
+// second of four) and naming the line of the other (the fourth). The first and the third are
+// proved.
+fn pick(x: U64) -> U64:
+    requires x < 10
+    ensures true
+    proof:
+        auto
+    if x > 20:
+        unreachable
+    if x == 5:
+        unreachable
+    if x >= 10:
+        unreachable
+    if x == 7:
+        unreachable
+    return x
+
+fn main(out: Console<Write>):
+    out.print_int(pick(3))

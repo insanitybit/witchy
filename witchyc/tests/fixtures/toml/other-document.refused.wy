@@ -1,0 +1,25 @@
+// Refused: a handle from one document is used on another.
+import console
+import string
+import option
+import "@toml"
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(first_text): String = String.from_str(&allocator, "a = 1\n") else Err(code):
+        return
+    let Ok(second_text): String = String.from_str(&allocator, "b = 2\n") else Err(code):
+        first_text.close()
+        return
+    let Ok(first): Toml = Toml.parse(&allocator, move first_text) else Err(error):
+        second_text.close()
+        return
+    let Ok(second): Toml = Toml.parse(&allocator, move second_text) else Err(error):
+        first.close()
+        return
+    brand first.doc() as one:
+        brand second.doc() as two:
+            let root = one.root()
+            if let Some(item) = two.get(root, "b"):
+                console.print("read")
+    first.close()
+    second.close()

@@ -1,0 +1,28 @@
+// The capability errors make one of an allocator's code, so `?` on an allocation works in
+// network, process and environment code as in file code: NetError and ExecError hold the code
+// (`NoRoom`), EnvError says `OutOfMemory`.
+import console
+import env
+import exec
+import net
+import string
+
+fn net_side(allocator: &Allocator) -> Result<U64, NetError>:
+    using var s: String = String.new(allocator)?:
+        return Ok(s.byte_len() + 1)
+
+fn exec_side(allocator: &Allocator) -> Result<U64, ExecError>:
+    using var s: String = String.new(allocator)?:
+        return Ok(s.byte_len() + 2)
+
+fn env_side(allocator: &Allocator) -> Result<U64, EnvError>:
+    using var s: String = String.new(allocator)?:
+        return Ok(s.byte_len() + 3)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    if let Ok(n) = net_side(&allocator):
+        console.print_int(n)
+    if let Ok(n) = exec_side(&allocator):
+        console.print_int(n)
+    if let Ok(n) = env_side(&allocator):
+        console.print_int(n)

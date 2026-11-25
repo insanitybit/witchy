@@ -1,0 +1,18 @@
+// Review of in-place generators: a generator local named `stop` met the hidden flag.
+import console
+
+gen fn g(n: U64) -> U64:
+    var stop = false
+    var i: U64 = 0
+    while i < n:
+        yield i
+        i += 1
+        if i == 2:
+            stop = true
+    if stop:
+        yield 99
+
+fn main(console: Console<Write>):
+    for v in g(4):
+        console.print_int(v)
+    console.print("done")

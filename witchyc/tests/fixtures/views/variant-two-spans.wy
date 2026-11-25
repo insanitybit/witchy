@@ -1,0 +1,48 @@
+// A variant that holds two Spans is matched as one that holds a single Span is: each name
+// keeps the loans of the value matched (docs/decisions.md, 2026-11-22).
+import console
+import span
+import string
+
+type Route:
+    All
+    One(Span)
+    Two(Span, Span)
+
+fn pick(text: Span) -> Route:
+    match text.split(32):
+        Ok(halves):
+            return Two(halves.head, halves.tail)
+        Err(whole):
+            if whole.equals_text("all"):
+                return All
+            return One(whole)
+
+fn size(route: Route) -> U64:
+    match route:
+        All:
+            return 0
+        One(name):
+            return name.len()
+        Two(a, b):
+            return a.len() * 10 + b.len()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var text = move made
+    let _ = text.push_text(&allocator, "hello you")
+    console.print_int(size(pick(text.span())))
+    match pick(text.span()):
+        All:
+            console.print_int(0)
+        One(name):
+            console.print_int(name.len())
+        Two(a, b):
+            console.print_int(a.len())
+            write_span(&console, b)
+            console.print("")
+    // Both names are done with: the String may change again.
+    let _ = text.push_text(&allocator, "!")
+    console.print_int(text.byte_len())
+    text.close()

@@ -1,0 +1,13 @@
+// A `For` naming the deriving file's private type is built inside a `${...}` as outside it.
+import "parts/rq.wy"
+import console
+
+type Mine:
+    v: U64
+
+type T derive(rq.I(for: Mine)):
+    a: U64
+
+fn main(console: Console<Write>):
+    let t = T(a: 9)
+    t.peek(&console)

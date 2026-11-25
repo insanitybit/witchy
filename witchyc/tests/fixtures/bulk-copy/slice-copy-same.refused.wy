@@ -1,0 +1,4 @@
+// Refused: the array is lent uniquely as the target, so it cannot also be read as the source.
+fn main():
+    var a: [U8; 8] = [1; 8]
+    a.slice_mut().copy_from(a.slice())

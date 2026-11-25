@@ -1,0 +1,12 @@
+// Refused: an untyped refutable `let` whose failure arm falls through.
+import "../../../library/wasm-console.wy"
+
+fn half(n: U64) -> Result<U64, U64>:
+    if n % 2 == 0:
+        return Ok(n / 2)
+    return Err(n)
+
+fn main(console: Console<Write>):
+    let Ok(h) = half(3) else Err(code):
+        console.print_int(code)
+    console.print_int(h)

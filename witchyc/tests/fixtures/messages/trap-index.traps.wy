@@ -1,0 +1,6 @@
+// A trap names its function and its check: an index past the end.
+import console
+
+fn main(console: Console<Write>):
+    let v = [1, 2, 3]
+    console.print_int(v[5])

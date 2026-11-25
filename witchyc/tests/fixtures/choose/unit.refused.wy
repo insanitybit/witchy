@@ -1,0 +1,7 @@
+// A call that returns nothing is not a value.
+fn main(console: Console<Write>):
+    let value = if true:
+        1
+    else:
+        console.print_int(2)
+    console.print_int(value)

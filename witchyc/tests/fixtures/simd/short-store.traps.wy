@@ -1,0 +1,5 @@
+import simd
+
+fn main():
+    var short: [U16; 8] = [0; 8]
+    U16x8.splat(1).store(short.slice_mut(), 1)

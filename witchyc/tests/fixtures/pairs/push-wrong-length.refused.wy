@@ -1,0 +1,200 @@
+// Refused by Lean: push claims two more elements.
+import vec
+import console
+sealed type Pairs<T>:
+    keys: Buffer<T>
+    values: Buffer<T>
+    length: U64
+    capacity: U64
+    invariant memory.prefix(keys, length, capacity)
+    invariant memory.prefix(values, length, capacity)
+
+impl<T> Pairs<T>:
+    pub fn push_mut(pairs: &mut Pairs<T>, key: T, value: T) -> Bool:
+        ensures pairs.capacity == old(pairs.capacity)
+        ensures result == (old(pairs.length) < old(pairs.capacity))
+        ensures !result || pairs.length == old(pairs.length) + 1
+        proof:
+            auto
+        let index = (*pairs).length
+        if index < (*pairs).capacity:
+            memory_init_unchecked(&mut (*pairs).keys, index, key)
+            memory_init_unchecked(&mut (*pairs).values, index, value)
+            (*pairs).length = index + 1
+            return true
+        return false
+
+    pub fn new(allocator: &Allocator, capacity: U64) -> Result<Pairs<T>, U64>:
+        ensures match result:
+            Ok(output):
+                output.length == 0
+                output.capacity == capacity
+            Err(code):
+                true
+        proof:
+            auto
+        let first: Result<Buffer<T>, U64> = memory.try_alloc(allocator, capacity)
+        match move first:
+            Ok(keys):
+                let second: Result<Buffer<T>, U64> = memory.try_alloc(allocator, capacity)
+                match move second:
+                    Ok(values):
+                        return Ok(Pairs(move keys, move values, 0, capacity))
+                    Err(code):
+                        memory_release_empty(move keys)
+                        return Err(code)
+            Err(code):
+                return Err(code)
+
+    // Reading the second allocation is proved in bounds and initialized from its own invariant.
+    pub fn key(pairs: &Pairs<T>, index: U64) -> Result<T, U64>:
+        ensures match result:
+            Ok(item):
+                index < pairs.length
+            Err(code):
+                index >= pairs.length
+        proof:
+            auto
+        if index < (*pairs).length:
+            return Ok(memory.get_unchecked(&(*pairs).keys, index))
+        return Err(1)
+
+    // Reading the second allocation is proved in bounds and initialized from its own invariant.
+    pub fn value(pairs: &Pairs<T>, index: U64) -> Result<T, U64>:
+        ensures match result:
+            Ok(item):
+                index < pairs.length
+            Err(code):
+                index >= pairs.length
+        proof:
+            auto
+        if index < (*pairs).length:
+            return Ok(memory.get_unchecked(&(*pairs).values, index))
+        return Err(1)
+
+    // Move both allocations into larger ones; on failure the pairs come back unchanged.
+    pub fn grow(input: Pairs<T>, allocator: &Allocator, requested: U64) -> Result<Pairs<T>, Pairs<T>>:
+        ensures match result:
+            Ok(output):
+                output.length == old(input.length)
+                output.capacity >= requested
+            Err(back):
+                back.length == old(input.length)
+                back.capacity == old(input.capacity)
+        proof:
+            auto
+        let length = input.length
+        if requested <= input.capacity:
+            return Ok(move input)
+        let first: Result<Buffer<T>, U64> = memory.try_alloc(allocator, requested)
+        match move first:
+            Ok(keys):
+                let second: Result<Buffer<T>, U64> = memory.try_alloc(allocator, requested)
+                match move second:
+                    Ok(values):
+                        let Pairs(old_keys, old_values, count, capacity) = move input
+                        var from_keys = move old_keys
+                        var to_keys = move keys
+                        var from_values = move old_values
+                        var to_values = move values
+                        move_prefix(&mut from_keys, &mut to_keys, count)
+                        move_prefix(&mut from_values, &mut to_values, count)
+                        memory_release_empty(move from_keys)
+                        memory_release_empty(move from_values)
+                        return Ok(Pairs(move to_keys, move to_values, count, requested))
+                    Err(code):
+                        memory_release_empty(move keys)
+                        return Err(move input)
+            Err(code):
+                return Err(move input)
+
+    // Add a pair, growing both allocations when full. Err: no memory, and nothing changed.
+    pub fn push(input: Pairs<T>, allocator: &Allocator, key: T, value: T) -> Result<Pairs<T>, Pairs<T>>:
+        ensures match result:
+            Ok(output):
+                output.length == old(input.length) + 2
+            Err(back):
+                back.length == old(input.length)
+        proof:
+            auto
+        let length = input.length
+        if length > 9223372036854775806:
+            return Err(move input)
+        match Pairs.grow(move input, allocator, length + length + 1):
+            Ok(grown):
+                var pairs = move grown
+                let added = pairs.push_mut(key, value)
+                return Ok(move pairs)
+            Err(back):
+                return Err(move back)
+
+    // Both allocations are emptied up to the length and released.
+    pub fn close(input: Pairs<T>):
+        ensures memory.released(old(input.keys))
+        ensures memory.released(old(input.values))
+        proof:
+            auto
+        let Pairs(keys, values, length, capacity) = move input
+        var first = move keys
+        var second = move values
+        take_prefix(&mut first, length)
+        take_prefix(&mut second, length)
+        memory_release_empty(move first)
+        memory_release_empty(move second)
+
+// Empty the first `count` cells (as in wasm-vec.wy).
+fn take_prefix<T>(buffer: &mut Buffer<T>, count: U64):
+    requires count <= memory.capacity(buffer)
+    requires memory.initialized_range(buffer, 0, count)
+    ensures memory.empty_range(buffer, 0, count)
+    ensures memory.unchanged_from(buffer, old(buffer), count)
+    proof:
+        auto
+    var index: U64 = 0
+    while index < count:
+        invariant index <= count
+        invariant memory.empty_range(buffer, 0, index)
+        invariant memory.unchanged_from(buffer, old(buffer), index)
+        memory.take_unchecked(buffer, index)
+        index += 1
+    return
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<Pairs<U64>, U64> = Pairs.new(&allocator, 2)
+    match move made:
+        Ok(start):
+            var pairs = move start
+            console.print_int(if pairs.push_mut(1, 10): 1 else: 0)
+            console.print_int(if pairs.push_mut(2, 20): 1 else: 0)
+            console.print_int(if pairs.push_mut(3, 30): 1 else: 0)
+            match pairs.value(1):
+                Ok(v):
+                    console.print_int(v)
+                Err(code):
+                    console.print_int(code)
+            pairs.close()
+        Err(code):
+            console.print_int(code)
+
+fn move_prefix<T: Any>(source: &mut Buffer<T>, target: &mut Buffer<T>, count: U64):
+    requires count <= memory.capacity(source)
+    requires count <= memory.capacity(target)
+    requires memory.initialized_range(source, 0, count)
+    requires memory.empty_range(target, 0, count)
+    ensures memory.empty_range(source, 0, count)
+    ensures memory.unchanged_from(source, old(source), count)
+    ensures memory.same_prefix(target, old(source), count)
+    ensures memory.unchanged_from(target, old(target), count)
+    proof:
+        auto
+    var index: U64 = 0
+    while index < count:
+        invariant index <= count
+        invariant memory.empty_range(source, 0, index)
+        invariant memory.unchanged_from(source, old(source), index)
+        invariant memory.same_prefix(target, old(source), index)
+        invariant memory.unchanged_from(target, old(target), index)
+        let item = memory.take_unchecked(source, index)
+        memory.init_unchecked(target, index, move item)
+        index += 1
+    return

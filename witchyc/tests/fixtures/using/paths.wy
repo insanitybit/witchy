@@ -1,0 +1,58 @@
+// `using` discards its owner on every way out: falling off the end, `return`,
+// a `?` that hands back an error, and `break`. An exit that moves the owner
+// hands it on instead. Two hundred Strings pass through 64 allocation slots,
+// so each one must really have been released.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-text.wy"
+import "../../../library/wasm-string.wy"
+
+// The number of digits, by writing the number out.
+fn digits(allocator: &Allocator, number: U64) -> Result<U64, U64>:
+    using var text = String.new(allocator)?:
+        if let Err(_) = text.push_u64(allocator, number):
+            return Err(1)
+        if text.byte_len() > 18:
+            return Err(2)
+        return Ok(text.byte_len())
+
+// The number written out, handed to the caller.
+fn written(allocator: &Allocator, number: U64) -> Result<String, U64>:
+    using var text = String.new(allocator)?:
+        if let Err(_) = text.push_u64(allocator, number):
+            return Err(1)
+        return Ok(move text)
+
+// The first number at or after `from` whose written form has `count` digits.
+fn first_with(allocator: &Allocator, from: U64, count: U64) -> U64:
+    var found: U64 = 0
+    for number in from..from + 1000:
+        let made = String.new(allocator)
+        let fresh = match move made:
+            Ok(text):
+                move text
+            Err(code):
+                return 0
+        using var text = move fresh:
+            if let Err(_) = text.push_u64(allocator, number):
+                return 0
+            if text.byte_len() == count:
+                found = number
+                break
+    return found
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var total: U64 = 0
+    for n in 0..200:
+        match digits(&allocator, n * 37):
+            Ok(count):
+                total += count
+            Err(code):
+                return
+    console.print_int(total)
+    match written(&allocator, 4096):
+        Ok(text):
+            console.print_int(text.byte_len())
+            text.close()
+        Err(code):
+            return
+    console.print_int(first_with(&allocator, 5, 3))

@@ -1,0 +1,31 @@
+// A generic value's type from its first later use: `Vec.new(...)?` names no element type,
+// and the first `numbers.push_mut(allocator, 0)` says it is U64 (its arguments are typed
+// where the binding is made: a literal, or a variable already in scope).
+import console
+import vec
+
+fn build(allocator: &Allocator) -> Result<U64, U64>:
+    var numbers = Vec.new(allocator, 2)?
+    match numbers.push_mut(allocator, 0):
+        Ok:
+            numbers.truncate_mut(0)
+        Err(item):
+            numbers.close()
+            return Err(item)
+    for i in 0..5:
+        match numbers.push_mut(allocator, i * 7):
+            Ok:
+                continue
+            Err(item):
+                numbers.close()
+                return Err(item)
+    let sum = numbers.index(1) + numbers.index(4)
+    numbers.close()
+    return Ok(sum)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    match build(&allocator):
+        Ok(sum):
+            console.print_int(sum)
+        Err(code):
+            console.print_int(code)

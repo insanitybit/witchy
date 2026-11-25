@@ -1,0 +1,12 @@
+// Refused, saying what to write: a format copies its values, and a String is not copied.
+import console
+import string
+
+fn show(console: &Console<Write>, s: &String):
+    console.print("${s}")
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(c):
+        return
+    show(&console, &made)
+    made.close()

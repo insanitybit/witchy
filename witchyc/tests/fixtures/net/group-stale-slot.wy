@@ -1,0 +1,30 @@
+// A group's wait on a slot that holds no socket (here one taken back) reads that entry as
+// closed and returns at once, as a poll does for an entry naming no socket; it used to stop
+// the whole run.
+import console
+import net
+import vec
+
+fn main(console: Console<Write>, net: Net, listener: Listener, allocator: Allocator):
+    let Ok(near): Socket = net.connect("127.0.0.1:47618") else Err(error):
+        console.line("no connection")
+        return
+    let Ok(far): Socket = listener.accept() else Err(error):
+        near.close()
+        return
+    let group = listener.group()
+    let slot = group.add(move far)
+    let back = group.take(slot)
+    let Ok(made): Vec<U64> = Vec.filled(&allocator, 1, wait_entry(slot, true, false)) else Err(code):
+        back.close()
+        near.close()
+        group.close()
+        return
+    var entries = move made
+    console.print_int(group.wait(entries.as_mut_slice()))
+    if entry_closed(entries[0]):
+        console.line("the empty slot reads as closed")
+    entries.close()
+    back.close()
+    near.close()
+    group.close()

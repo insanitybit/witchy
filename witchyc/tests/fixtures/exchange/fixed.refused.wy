@@ -1,0 +1,6 @@
+// A `let` does not change.
+fn main(console: Console<Write>):
+    let a: U64 = 1
+    var b: U64 = 2
+    memory.exchange(&mut a, &mut b)
+    console.print_int(a)

@@ -1,0 +1,51 @@
+// A declared sum type: a value is exactly one of its variants, and a match names them all.
+type Size:
+    width: U64
+    height: U64
+
+type Shape:
+    Circle(U64)
+    Rectangle(Size)
+    Empty
+
+type Option<T>:
+    Some(T)
+    None
+
+fn area(shape: Shape) -> U64:
+    match shape:
+        Circle(radius):
+            return 3 * radius * radius
+        Rectangle(size):
+            return size.width * size.height
+        Empty:
+            return 0
+
+fn widest(first: Shape, second: Shape) -> Option<Shape>:
+    if area(first) == 0:
+        if area(second) == 0:
+            return None
+        return Some(second)
+    if area(first) >= area(second):
+        return Some(first)
+    return Some(second)
+
+fn show(console: &Console<Write>, found: Option<Shape>):
+    match found:
+        Some(shape):
+            console.print_int(area(shape))
+        None:
+            console.print_int(999)
+
+fn main(console: Console<Write>):
+    console.print_int(area(Circle(2)))
+    console.print_int(area(Rectangle(Size(3, 4))))
+    console.print_int(area(Empty))
+    show(&console, widest(Circle(1), Rectangle(Size(2, 5))))
+    show(&console, widest(Empty, Empty))
+    let kept: Option<U64> = Some(41)
+    match kept:
+        Some(number):
+            console.print_int(number + 1)
+        None:
+            console.print_int(0)

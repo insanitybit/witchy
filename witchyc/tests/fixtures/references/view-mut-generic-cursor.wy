@@ -1,0 +1,18 @@
+// Generic code behind `&mut` to a record that holds a slice of T is fine when T itself holds
+// no reference: it changes the position, and the slice field is refused to it anyway.
+import console
+
+type Cursor<T>:
+    items: &[T]
+    at: U64
+
+fn skip<T>(c: &mut Cursor<T>):
+    (*c).at += 1
+
+fn main(console: Console<Write>):
+    let numbers: [U64; 3] = [7, 8, 9]
+    var c = Cursor(numbers.slice(), 0)
+    skip(&mut c)
+    skip(&mut c)
+    let items = c.items
+    console.print_int(items[c.at])

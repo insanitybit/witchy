@@ -1,0 +1,42 @@
+// Refused: the local is changed before it is returned, so the callee's facts no longer describe it.
+import console
+
+fn half(n: U64) -> Result<U64, U64>:
+    ensures match result:
+        Ok(h):
+            h + h == n
+        Err(code):
+            code == n
+    proof:
+        auto
+    if n % 2 == 1:
+        return Err(n)
+    return Ok(n / 2)
+
+// Hands the callee's Result on, claiming what it holds.
+fn halved(n: U64) -> Result<U64, U64>:
+    ensures match result:
+        Ok(h):
+            h + h == n
+        Err(code):
+            code == n
+    proof:
+        auto
+    var answer = half(n)
+    answer = Ok(1)
+    return answer
+
+// Uses the callee's `Ok` fact: `n - h` cannot go below zero, since `h + h == n`.
+fn rest(n: U64) -> U64:
+    ensures true
+    proof:
+        auto
+    match halved(n):
+        Ok(h):
+            return n - h
+        Err(code):
+            return 0
+
+fn main(console: Console<Write>):
+    console.print_int(rest(10))
+    console.print_int(rest(7))

@@ -1,0 +1,22 @@
+// Refused by the proof: one field is kept lent, then the whole value is lent to a call.
+import console
+
+type Pair:
+    a: U64
+    b: U64
+
+fn poke(slot: &mut U64):
+    *slot = 9
+
+fn whole(p: &mut Pair):
+    (*p).b = 0
+
+fn f(p: &mut Pair) -> U64:
+    ensures p.b == old(p.b)
+    let r = &mut (*p).a
+    *r = 6
+    whole(p)
+    return 1
+
+fn main(console: Console<Write>):
+    console.print_int(1)

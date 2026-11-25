@@ -1,0 +1,149 @@
+// k-nucleotide (the Benchmarks Game): from the third sequence of a FASTA file on the input, the
+// frequency of each 1- and 2-letter run, most frequent first, and the counts of five longer runs.
+// A run of k letters is a key of 2 bits a letter in a HashMap<U64, U64>.
+import console
+import float
+import vec
+import hashmap
+import sort
+import discard
+
+// 0..3 for A, C, G, T in either case; 4 for anything else.
+fn code(byte: U8) -> U64:
+    let value = U8.to_u64(byte)
+    if value == 65 || value == 97:
+        return 0
+    if value == 67 || value == 99:
+        return 1
+    if value == 71 || value == 103:
+        return 2
+    if value == 84 || value == 116:
+        return 3
+    return 4
+
+fn letter(c: U64) -> U8:
+    if c == 0:
+        return 'A'
+    if c == 1:
+        return 'C'
+    if c == 2:
+        return 'G'
+    return 'T'
+
+// Every run of k letters counted. Err: no memory.
+fn count(allocator: &Allocator, sequence: &Vec<U8>, k: U64) -> Result<HashMap<U64, U64>, U64>:
+    var map: HashMap<U64, U64> = HashMap.new(allocator, 64)?
+    var key: U64 = 0
+    var mask: U64 = 1
+    for step in 0..k:
+        mask = mask * 4
+    var index: U64 = 0
+    while index < sequence.len():
+        key = (key * 4 + U8.to_u64(sequence[index])) % mask
+        index += 1
+        if index >= k:
+            match map.get_mut(&key):
+                Ok(found):
+                    *found += 1
+                Err(missing):
+                    match map.put(allocator, key, 1):
+                        Ok:
+                            index = index
+                        Err(back):
+                            map.discard()
+                            return Err(1)
+    return Ok(move map)
+
+// A run and how often it occurs; most frequent first, then by letters.
+type Count:
+    key: U64
+    n: U64
+
+impl Before for Count:
+    fn before(self: &Count, other: &Count) -> Bool:
+        return self.n > other.n || (self.n == other.n && self.key < other.key)
+
+fn write_key(console: &Console<Write>, key: U64, k: U64):
+    var unit: U64 = 1
+    for step in 1..k:
+        unit = unit * 4
+    while unit > 0:
+        console.print_byte(letter(key / unit % 4))
+        unit = unit / 4
+
+fn frequencies(console: &Console<Write>, allocator: &Allocator, sequence: &Vec<U8>, k: U64):
+    let Ok(map): HashMap<U64, U64> = count(allocator, sequence, k) else Err(code):
+        return
+    let Ok(made): Vec<Count> = Vec.new(allocator, map.len()) else Err(code):
+        map.discard()
+        return
+    var counts = move made
+    var total: U64 = 0
+    for entry in &map:
+        total += entry.value
+        match counts.push_mut(allocator, Count(entry.key, entry.value)):
+            Ok:
+                ()
+            Err(back):
+                ()
+    map.discard()
+    sort(&mut counts)
+    for count in &counts:
+        write_key(console, count.key, k)
+        console.write(" ")
+        console.print_f64(100.0 * F64.from_u64(count.n) / F64.from_u64(total), 3)
+    console.line("")
+    counts.close()
+
+fn occurrences(console: &Console<Write>, allocator: &Allocator, sequence: &Vec<U8>, run: Text):
+    let k = run.byte_len()
+    var key: U64 = 0
+    for index in 0..k:
+        match run.byte_at(index):
+            Ok(byte):
+                key = key * 4 + code(byte)
+            Err(e):
+                return
+    let Ok(map): HashMap<U64, U64> = count(allocator, sequence, k) else Err(e):
+        return
+    match map.get(&key):
+        Ok(found):
+            console.write_u64(*found)
+        Err(missing):
+            console.write_u64(0)
+    console.write("\t")
+    console.line(run)
+    map.discard()
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    let Ok(made): Vec<U8> = Vec.new(&allocator, 4096) else Err(e):
+        return
+    var sequence = move made
+    var headers: U64 = 0
+    var in_header = false
+    var going = true
+    while going:
+        match input.read_byte():
+            Ok(byte):
+                if byte == '>':
+                    headers += 1
+                    in_header = true
+                else if in_header:
+                    if byte == '\n':
+                        in_header = false
+                else if headers == 3 && code(byte) < 4:
+                    match sequence.push_mut(&allocator, U8.truncate(code(byte))):
+                        Ok:
+                            going = true
+                        Err(back):
+                            going = false
+            Err(end):
+                going = false
+    frequencies(&console, &allocator, &sequence, 1)
+    frequencies(&console, &allocator, &sequence, 2)
+    occurrences(&console, &allocator, &sequence, "GGT")
+    occurrences(&console, &allocator, &sequence, "GGTA")
+    occurrences(&console, &allocator, &sequence, "GGTATT")
+    occurrences(&console, &allocator, &sequence, "GGTATTTTAATT")
+    occurrences(&console, &allocator, &sequence, "GGTATTTTAATTTATAGT")
+    sequence.close()

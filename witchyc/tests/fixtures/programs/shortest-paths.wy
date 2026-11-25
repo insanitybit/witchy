@@ -1,0 +1,122 @@
+// Shortest paths (Dijkstra): edges `from to weight` read from input, a heap of (distance, node)
+// least first, each node's distance and the path to it from node 0.
+import console
+import string
+import span
+import vec
+import heap
+import sort
+import discard
+
+type Edge derive(Discard):
+    to: U64
+    weight: U64
+
+type Visit:
+    distance: U64
+    node: U64
+
+impl Before for Visit:
+    fn before(self: &Visit, other: &Visit) -> Bool:
+        if self.distance != other.distance:
+            return self.distance < other.distance
+        return self.node < other.node
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    let nodes: U64 = 8
+    let Ok(e): Vec<Vec<Edge>> = Vec.new(&allocator, nodes) else Err(code):
+        return
+    var edges = move e
+    for n in 0..nodes:
+        let Ok(list): Vec<Edge> = Vec.new(&allocator, 4) else Err(code):
+            edges.discard()
+            return
+        match edges.push_mut(&allocator, move list):
+            Ok:
+                ()
+            Err(back):
+                back.discard()
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        edges.discard()
+        return
+    var line = move made
+    while true:
+        line.clear()
+        match input.read_line(&allocator, &mut line):
+            .Line:
+                var numbers: [U64; 3] = [0, 0, 0]
+                var count: U64 = 0
+                for word in line.span().words():
+                    match word.parse_u64():
+                        Ok(value):
+                            if count < 3:
+                                numbers[count] = value
+                            count += 1
+                        Err(code):
+                            count = 9
+                if count == 3 && numbers[0] < nodes && numbers[1] < nodes:
+                    match edges.cell_mut(numbers[0]).push_mut(&allocator, Edge(numbers[1], numbers[2])):
+                        Ok:
+                            ()
+                        Err(back):
+                            console.line("no room")
+                else:
+                    console.write("skipped: ")
+                    console.write_string(&line)
+                    console.line("")
+            .End:
+                break
+            .NotText:
+                break
+            .NoRoom:
+                break
+    line.close()
+    let unreached: U64 = 18446744073709551615
+    var distance: [U64; 8] = [unreached; 8]
+    var previous: [U64; 8] = [unreached; 8]
+    let Ok(h): Heap<Visit> = Heap.new(&allocator) else Err(code):
+        edges.discard()
+        return
+    var queue = move h
+    distance[0] = 0
+    match queue.push(&allocator, Visit(0, 0)):
+        Ok:
+            ()
+        Err(back):
+            ()
+    while true:
+        match queue.pop():
+            Ok(visit):
+                if visit.distance == distance[visit.node]:
+                    for edge in edges.cell(visit.node):
+                        let through = visit.distance + edge.weight
+                        if through < distance[edge.to]:
+                            distance[edge.to] = through
+                            previous[edge.to] = visit.node
+                            match queue.push(&allocator, Visit(through, edge.to)):
+                                Ok:
+                                    ()
+                                Err(back):
+                                    console.line("no room")
+            Err(code):
+                break
+    for n in 0..nodes:
+        if distance[n] == unreached:
+            console.print("${n}: unreached")
+        else:
+            console.write_format("${n}: ${distance[n]} via")
+            // The path, written from the node back to 0, then turned around.
+            var path: [U64; 8] = [0; 8]
+            var length: U64 = 0
+            var at = n
+            while at != unreached && length < 8:
+                path[length] = at
+                length += 1
+                at = previous[at]
+            var k = length
+            while k > 0:
+                k -= 1
+                console.write_format(" ${path[k]}")
+            console.line("")
+    queue.into_vec().close()
+    edges.discard()

@@ -1,0 +1,108 @@
+// Clients of the in-place Vec methods, proved from their contracts; contracts on
+// generic functions, with clauses for each variant of the result; `memory.exchange`
+// followed by the proof.
+import "../../../library/wasm-vec.wy"
+
+// Append `count` copies. The answer is how many went in, and the length says so too.
+fn fill(items: &mut Vec<U64>, allocator: &Allocator, value: U64, count: U64) -> U64:
+    ensures result <= count
+    ensures items.len() == old(items.len()) + result
+    proof:
+        auto
+    var done: U64 = 0
+    while done < count:
+        invariant done <= count
+        invariant items.len() == old(items.len()) + done
+        match items.push_mut(allocator, value):
+            Ok:
+                done += 1
+            Err(back):
+                return done
+    return done
+
+// A generic function with a contract: room for one more, or nothing changed.
+fn room<T: Any>(items: &mut Vec<T>, allocator: &Allocator) -> Bool:
+    ensures items.len() == old(items.len())
+    ensures !result || items.capacity() > items.len()
+    proof:
+        auto
+    if items.len() < items.capacity():
+        return true
+    if items.len() > 1000000:
+        return false
+    // The match, not `.is_ok()`: the proof reads what each arm of `reserve_mut` promises.
+    match items.reserve_mut(allocator, items.len() + 1):
+        Ok:
+            return true
+        Err(code):
+            return false
+
+type Pair:
+    left: U64
+    right: U64
+
+impl Pair:
+    fn first(pair: &Pair) -> U64:
+        return (*pair).left
+
+    fn second(pair: &Pair) -> U64:
+        return (*pair).right
+
+// The two records change places: each has what the other had.
+fn trade(here: &mut Pair, there: &mut Pair):
+    ensures here.first() == old(there.first())
+    ensures there.second() == old(here.second())
+    proof:
+        auto
+    memory.exchange(here, there)
+
+// Clauses for each variant: Err leaves the pair alone, Ok has raised its left side.
+fn raise(pair: &mut Pair, by: U64) -> Result<(), U64>:
+    ensures match result:
+        Ok:
+            pair.first() == old(pair.first()) + by
+        Err(code):
+            pair.first() == old(pair.first())
+    proof:
+        auto
+    if by > 1000 || (*pair).left > 1000:
+        return Err(by)
+    (*pair).left += by
+    return Ok(())
+
+// A caller reads those clauses in the arms of its own match, and hands a result on.
+fn raise_twice(pair: &mut Pair, by: U64) -> Result<(), U64>:
+    ensures match result:
+        Ok:
+            pair.first() == old(pair.first()) + by + by
+        Err(code):
+            pair.first() <= old(pair.first()) + by
+    proof:
+        auto
+    match raise(pair, by):
+        Ok:
+            return raise(pair, by)
+        Err(code):
+            return Err(code)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<Vec<U64>, U64> = Vec.new(&allocator, 0)
+    match move made:
+        Ok(empty):
+            var items = move empty
+            console.print_int(fill(&mut items, &allocator, 7, 10))
+            console.print_int(items.len())
+            if room(&mut items, &allocator):
+                console.print_int(1)
+            items.close()
+        Err(code):
+            console.print_int(code)
+    var one = Pair(1, 2)
+    var two = Pair(3, 4)
+    trade(&mut one, &mut two)
+    console.print_int(one.left * 10 + two.right)
+    match raise_twice(&mut one, 5):
+        Ok:
+            console.print_int(one.left)
+        Err(code):
+            console.print_int(code)

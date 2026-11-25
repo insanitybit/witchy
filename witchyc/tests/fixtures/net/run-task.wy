@@ -1,0 +1,37 @@
+// `run_task_net`: one piece of work run as a task from `main` until it finishes, its socket
+// polled meanwhile; what it reported comes back. The closure takes over the socket and buffer,
+// so nothing else needs a record or a step loop.
+import console
+import net
+import tasks
+import vec
+import discard
+
+fn listen(socket: Socket, made: Vec<U8>) suspends:
+    var buffer = move made
+    match socket.read(buffer.as_mut_slice()):
+        Ok(count):
+            report(100 + count)
+        Err(error):
+            report(1)
+    socket.close()
+    buffer.close()
+
+fn main(console: Console<Write>, net: Net, listener: Listener, allocator: Allocator):
+    let Ok(near): Socket = net.connect("127.0.0.1:47626") else Err(error):
+        return
+    let Ok(far): Socket = listener.accept() else Err(error):
+        near.close()
+        return
+    let zero: U8 = 0
+    let Ok(buffer): Vec<U8> = Vec.filled(&allocator, 16, zero) else Err(code):
+        near.close()
+        far.close()
+        return
+    let sent = far.send("hello")
+    match run_task_net(&allocator, &net, 8192, fn() -> (): listen(move near, move buffer)):
+        Ok(reported):
+            console.print_int(reported)
+        Err(code):
+            console.line("no memory")
+    far.close()

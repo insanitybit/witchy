@@ -1,0 +1,40 @@
+// Word frequencies over a generated text of 1.2M words drawn from a 1000-word vocabulary.
+import console
+import string
+import span
+import hashmap
+import discard
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let word_count: U64 = 1200000
+    let Ok(made): String = String.with_capacity(&allocator, word_count * 4) else Err(code):
+        return
+    var text = move made
+    var seed: U64 = 7
+    for i in 0..word_count:
+        seed = seed * 48271 % 2147483647
+        let word = seed % 1000
+        if let Err(_) = text.push(&allocator, 97 + word % 26):
+            console.line("full")
+        else if let Err(_) = text.push(&allocator, 97 + word / 26 % 26):
+            console.line("full")
+        else if let Err(_) = text.push(&allocator, 97 + word / 676):
+            console.line("full")
+        if let Err(_) = text.push(&allocator, 32):
+            console.line("full")
+    let Ok(m): HashMap<String, U64> = HashMap.new(&allocator, 2048) else Err(code):
+        text.close()
+        return
+    var counts = move m
+    var words: U64 = 0
+    for word in text.span().words():
+        words += 1
+        match counts.get_or_insert(&allocator, &word, 0):
+            Ok(found):
+                *found += 1
+            Err(missed):
+                missed.discard()
+                continue
+    console.print("${words} words, ${counts.len()} distinct")
+    counts.discard()
+    text.close()

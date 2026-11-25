@@ -1,0 +1,8 @@
+fn output(console: Console<Write>, input: Buffer<U8>):
+    requires memory.size(input) == 0
+    console.print_int(42)
+    memory.release(input)
+
+fn main(console: Console<Write>):
+    let input: Buffer<U8> = memory.alloc(0)
+    output(move console, move input)

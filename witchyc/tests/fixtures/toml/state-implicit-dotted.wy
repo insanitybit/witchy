@@ -1,0 +1,39 @@
+// A dotted key may add to a table that was only named on the way to a header, which is then
+// a table made by dotted keys: no header may name it. It may not add to one with a header.
+import console
+import string
+import option
+import "@toml"
+
+fn word(what: TomlProblem) -> Text:
+    match what:
+        Duplicate:
+            return "duplicate"
+        Redefined:
+            return "redefined"
+        NotTable:
+            return "not a table"
+        Closed:
+            return "closed"
+        _:
+            return "other"
+
+// Prints `read` and how many values the text has, or `refused` and the class of the refusal.
+fn report(console: &Console<Write>, allocator: &Allocator, source: Text):
+    let Ok(text): String = String.from_str(allocator, source.as_str()) else Err(code):
+        return
+    match Toml.parse(allocator, move text):
+        Ok(tree):
+            console.write("read ")
+            console.print_int(tree.count())
+            tree.close()
+        Err(error):
+            console.write("refused ")
+            console.line(word(error.what))
+
+fn main(console: Console<Write>, allocator: Allocator):
+    report(&console, &allocator, "[a.b.c]\nz = 9\n[a]\nb.c.t = 1\n")
+    report(&console, &allocator, "[a.b]\n[x]\n[a.d]\ny = 1\n")
+    report(&console, &allocator, "[a.b.b]\n[a]\nb.c = 1\n")
+    report(&console, &allocator, "[a.b.b]\n[a]\nb.c = 1\n[a.b]\n")
+    report(&console, &allocator, "[[a.c.b]]\n[a]\nc.x = 1\nc.y = 2\n")

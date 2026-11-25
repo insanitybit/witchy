@@ -1,0 +1,27 @@
+fn half(input: U64) -> Result<U16, U64>:
+    return U16.try_from(input)
+
+fn quarter(input: U64) -> Result<U32, U64>:
+    return U32.try_from(input)
+
+fn main(console: Console<Write>):
+    match half(65535):
+        Ok(value):
+            console.print_int(U16.to_u64(value))
+        Err(original):
+            console.print_int(original)
+    match half(65536):
+        Ok(value):
+            console.print_int(U16.to_u64(value))
+        Err(original):
+            console.print_int(original)
+    match quarter(4294967295):
+        Ok(value):
+            console.print_int(U32.to_u64(value))
+        Err(original):
+            console.print_int(original)
+    match quarter(4294967296):
+        Ok(value):
+            console.print_int(U32.to_u64(value))
+        Err(original):
+            console.print_int(original)

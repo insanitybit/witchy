@@ -1,0 +1,21 @@
+// A program that opens and closes files and directories for as long as it runs needs no more
+// handles than it holds at once: the host reuses a closed handle's number (review of the HTTP
+// file server: 4096 opens, failed ones included, ran out of handles). 5000 of each here.
+import console
+import fs
+
+fn main(console: Console<Write>, dir: Dir<Read>):
+    var index: U64 = 0
+    while index < 5000:
+        match dir.dir("inner"):
+            Ok(inner):
+                inner.close()
+            Err(error):
+                console.line("no directory")
+                return
+        match dir.open("missing.txt"):
+            Ok(file):
+                file.close()
+            Err(error):
+                index += 1
+    console.print_int(index)

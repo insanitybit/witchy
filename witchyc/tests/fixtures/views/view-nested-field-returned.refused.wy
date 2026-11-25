@@ -1,0 +1,24 @@
+// Refused (review): a reference to a nested field of a view local is this frame's storage.
+import console
+import span
+import string
+
+type Inner:
+    data: [U8; 4]
+
+type Mixed:
+    inner: Inner
+    text: &String
+
+fn leak(text: &String, b: U8) -> &U8:
+    let m = Mixed(Inner([b, b, b, b]), text)
+    return &m.inner.data[0]
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    let first = leak(&made, 65)
+    console.print_int(U8.to_u64(*first))
+    let second = leak(&made, 90)
+    console.print_int(U8.to_u64(*first))
+    made.close()

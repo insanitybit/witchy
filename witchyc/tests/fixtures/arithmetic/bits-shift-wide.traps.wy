@@ -1,0 +1,6 @@
+// A shift by the type's width or more traps (Wasm itself would shift by the amount modulo 64).
+import console
+
+fn main(console: Console<Write>):
+    let n: U64 = 64
+    console.print_int(1 << n)

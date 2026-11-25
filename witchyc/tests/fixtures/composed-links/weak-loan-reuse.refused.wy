@@ -1,0 +1,28 @@
+import cell
+
+fn invalid(a: &Allocator, out: &Console<Write>):
+    ensures true
+    proof:
+        auto
+    let initial: Result<VacantCell<U64>, U64> = VacantCell.new(a)
+    match move initial:
+        Err(code):
+            return
+        Ok(owner):
+            let old = owner.pointer()
+            owner.close()
+            let next: Result<VacantCell<U64>, U64> = VacantCell.new(a)
+            match move next:
+                Err(code):
+                    return
+                Ok(replacement):
+                    let live = replacement.fill(23)
+                    let fresh = live.pointer()
+                    if memory.weak_bits(old) == memory.weak_bits(fresh):
+                        let bad = live.read_at(old)
+                        out.print_int(*bad)
+                    let TakenCell(vacant, value) = live.extract()
+                    vacant.close()
+
+nopanic fn main(a: Allocator, out: Console<Write>):
+    invalid(&a, &out)

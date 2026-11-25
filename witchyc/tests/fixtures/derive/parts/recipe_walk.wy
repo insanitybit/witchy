@@ -1,0 +1,24 @@
+import console
+
+pub fn bump(x: U64) -> U64:
+    return x + 1
+
+pub gen fn walk(n: U64) -> U64:
+    for i in 0..n:
+        yield bump(i)
+
+pub trait Telling:
+    fn show(self: &Self, console: &Console<Write>)
+
+pub derive Shown:
+    impl Telling for Self:
+        fn show(self: &Self, console: &Console<Write>):
+            for v in walk((*self).a):
+                console.print_int(v)
+
+type Own derive(Shown):
+    a: U64
+
+pub fn own(console: &Console<Write>):
+    let o = Own(a: 2)
+    o.show(console)

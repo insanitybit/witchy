@@ -1,0 +1,104 @@
+// Normal library composition: allocating a new Vec must preserve an existing
+// Vec and a separate owned buffer, including on a recoverable allocation error.
+type CreatedBeside:
+    previous: Vec<Bool>
+    created: Vec<Bool>
+    held: Buffer<USize>
+
+type FailedBeside:
+    previous: Vec<Bool>
+    held: Buffer<USize>
+    reason: AllocError
+
+fn new_beside(input: Vec<Bool>, capacity: USize, held: Buffer<USize>) -> Result<CreatedBeside, FailedBeside>:
+    ensures match result:
+        Ok(done):
+            done.previous.data == old(input.data)
+            done.previous.length == old(input.length)
+            done.previous.capacity == old(input.capacity)
+            memory.unchanged(input.data)
+            done.held == old(held)
+            memory.unchanged(held)
+            done.created.length == 0
+            done.created.capacity == capacity
+        Err(failed):
+            failed.previous.data == old(input.data)
+            failed.previous.length == old(input.length)
+            failed.previous.capacity == old(input.capacity)
+            memory.unchanged(input.data)
+            failed.held == old(held)
+            memory.unchanged(held)
+    let allocation: Result<Vec<Bool>, AllocError> = vec_new(capacity)
+    match allocation:
+        Ok(created):
+            return Ok(CreatedBeside(move input, move created, move held))
+        Err(reason):
+            return Err(FailedBeside(move input, move held, reason))
+
+fn new_twice_beside(input: Vec<Bool>, first_capacity: USize, capacity: USize, held: Buffer<USize>) -> Result<CreatedBeside, FailedBeside>:
+    ensures match result:
+        Ok(done):
+            done.previous.data == old(input.data)
+            done.previous.length == old(input.length)
+            done.previous.capacity == old(input.capacity)
+            memory.unchanged(input.data)
+            done.held == old(held)
+            memory.unchanged(held)
+            done.created.length == 0
+            done.created.capacity == capacity
+        Err(failed):
+            failed.previous.data == old(input.data)
+            failed.previous.length == old(input.length)
+            failed.previous.capacity == old(input.capacity)
+            memory.unchanged(input.data)
+            failed.held == old(held)
+            memory.unchanged(held)
+    match new_beside(move input, first_capacity, move held):
+        Ok(first):
+            match new_beside(move first.created, capacity, move first.held):
+                Ok(second):
+                    match vec_release(move second.previous):
+                        Ok(unit):
+                            return Ok(CreatedBeside(move first.previous, move second.created, move second.held))
+                        Err(kept):
+                            discard(move kept)
+                            discard(move second.created)
+                            return Err(FailedBeside(move first.previous, move second.held, AllocError.metadata))
+                Err(failed):
+                    match vec_release(move failed.previous):
+                        Ok(unit):
+                            return Err(FailedBeside(move first.previous, move failed.held, failed.reason))
+                        Err(kept):
+                            discard(move kept)
+                            return Err(FailedBeside(move first.previous, move failed.held, failed.reason))
+        Err(failed):
+            return Err(move failed)
+
+fn recreate_beside(input: Vec<Bool>, first_capacity: USize, capacity: USize, held: Buffer<USize>) -> Result<CreatedBeside, FailedBeside>:
+    ensures match result:
+        Ok(done):
+            done.previous.data == old(input.data)
+            done.previous.length == old(input.length)
+            done.previous.capacity == old(input.capacity)
+            memory.unchanged(input.data)
+            done.held == old(held)
+            memory.unchanged(held)
+            done.created.length == 0
+            done.created.capacity == capacity
+        Err(failed):
+            failed.previous.data == old(input.data)
+            failed.previous.length == old(input.length)
+            failed.previous.capacity == old(input.capacity)
+            memory.unchanged(input.data)
+            failed.held == old(held)
+            memory.unchanged(held)
+    match new_beside(move input, first_capacity, move held):
+        Ok(first):
+            match vec_release(move first.created):
+                Ok(unit):
+                    return new_beside(move first.previous, capacity, move first.held)
+                Err(kept):
+                    discard(move kept)
+                    return Err(FailedBeside(move first.previous, move first.held, AllocError.metadata))
+        Err(failed):
+            return Err(move failed)

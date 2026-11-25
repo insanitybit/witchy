@@ -1,0 +1,100 @@
+// Groups the words of the input that are anagrams of each other.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-hashmap.wy"
+import "../../../library/wasm-sort.wy"
+import "../../../library/wasm-text.wy"
+import "../../../library/wasm-vec.wy"
+import "../../../library/wasm-string.wy"
+import "../../../library/wasm-discard.wy"
+
+// The word's letters in order: the same for every anagram of it.
+fn key(allocator: &Allocator, word: &String) -> Result<String, U64>:
+    using var letters: Vec<U64> = Vec.new(allocator, word.byte_len())?:
+        for index in 0..word.byte_len():
+            match letters.push_mut(allocator, word.byte_or_end(index)):
+                Ok(done):
+                    continue
+                Err(back):
+                    return Err(1)
+        sort(&mut letters)
+        using var made = String.new(allocator)?:
+            for letter in &letters:
+                if let Err(_) = made.push(allocator, *letter):
+                    return Err(1)
+            return Ok(move made)
+
+// Files the word under its key. False: no room; the word is closed.
+fn file(groups: &mut HashMap<String, Vec<String>>, allocator: &Allocator, word: String) -> Bool:
+    let made = key(allocator, &word)
+    let name = match move made:
+        Ok(name):
+            move name
+        Err(reason):
+            word.close()
+            return false
+    match groups.get_mut(&name):
+        Ok(group):
+            name.close()
+            match group.push_mut(allocator, move word):
+                Ok(done):
+                    return true
+                Err(back):
+                    back.close()
+                    return false
+        Err(missing):
+            ()
+    var group: Vec<String> = match Vec.new(allocator, 2):
+        Ok(empty):
+            move empty
+        Err(reason):
+            name.close()
+            word.close()
+            return false
+    match group.push_mut(allocator, move word):
+        Ok(done):
+            ()
+        Err(back):
+            back.close()
+            name.close()
+            group.discard()
+            return false
+    match groups.put(allocator, move name, move group):
+        Ok(done):
+            return true
+        Err(entry):
+            entry.discard()
+            return false
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    let made: Result<HashMap<String, Vec<String>>, U64> = HashMap.new(&allocator, 8)
+    var groups = match move made:
+        Ok(empty):
+            move empty
+        Err(reason):
+            return
+    while true:
+        var word = match String.new(&allocator):
+            Ok(empty):
+                move empty
+            Err(reason):
+                break
+        match input.read_line(&allocator, &mut word):
+            .Line:
+                if word.byte_len() == 0:
+                    word.close()
+                    continue
+                if !file(&mut groups, &allocator, move word):
+                    break
+            _:
+                word.close()
+                break
+    console.write_u64(groups.len())
+    console.line(" groups")
+    for entry in &groups:
+        if entry.value.len() > 1:
+            for index, word in &entry.value:
+                if index > 0:
+                    console.write(" ")
+                console.write_string(word)
+            console.line("")
+    groups.discard()

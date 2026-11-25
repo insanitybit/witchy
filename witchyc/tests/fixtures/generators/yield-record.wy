@@ -1,0 +1,16 @@
+// A `gen fn` yields records too: here a `Point` per step.
+import console
+
+type Point:
+    x: U64
+    y: U64
+
+gen fn diagonal(n: U64) -> Point:
+    for i in 0..n:
+        yield Point(i, i * 2)
+
+fn main(console: Console<Write>):
+    var total: U64 = 0
+    for p in diagonal(4):
+        total += p.x * 10 + p.y
+    console.print_int(total)

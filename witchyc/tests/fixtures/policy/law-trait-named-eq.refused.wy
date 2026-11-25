@@ -1,0 +1,69 @@
+// Refused (adversarial review round 12): a program trait with an eq method, implemented for a query type, ran in place of Eq.eq when == compared a type-parameter field.
+import console
+import hash
+import hashmap
+import keymap
+import discard
+
+trait Mine:
+    fn eq(self: &Self, other: &Self) -> Bool
+
+type Base derive(Discard):
+    v: U64
+
+impl Eq for Base:
+    fn eq(self: &Base, other: &Base) -> Bool:
+        return (*self).v == (*other).v
+
+impl HashKey for Base:
+    fn feed(self: &Base, state: &mut HashState):
+        (*self).v.feed(state)
+
+type Q derive(Discard):
+    v: U64
+
+impl HashKey for Q:
+    fn feed(self: &Q, state: &mut HashState):
+        (*self).v.feed(state)
+
+impl Equivalent<Base> for Q:
+    fn equivalent(self: &Q, key: &Base) -> Bool:
+        return (*self).v == (*key).v
+
+impl Mine for Q:
+    fn eq(self: &Q, other: &Q) -> Bool:
+        return false
+
+type Key<T> derive(Discard):
+    t: T
+
+impl<T: Any + HashKey> HashKey for Key<T>:
+    fn feed(self: &Key<T>, state: &mut HashState):
+        (*self).t.feed(state)
+
+impl<T: Any + HashKey + Mine> Eq for Key<T>:
+    fn eq(self: &Key<T>, other: &Key<T>) -> Bool:
+        return (*self).t == (*other).t
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): KeyMap<Key<Q>, U64> = KeyMap.new(&allocator, 64, Reference(1)) else Err(code):
+        return
+    var map = move made
+    let probe: Key<Q> = Key(t: Q(v: 7))
+    if probe.eq(&probe):
+        console.print_int(1)
+    else:
+        console.print_int(0)
+    for i in 0..3:
+        match map.put(&allocator, Key(t: Q(v: 7)), i):
+            Ok:
+                ()
+            Err(entry):
+                entry.discard()
+    console.print_int(map.len())
+    if map.contains(&probe):
+        console.print_int(1)
+    else:
+        console.print_int(0)
+    probe.discard()
+    map.discard()

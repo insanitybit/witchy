@@ -1,0 +1,18 @@
+read [in] args a b c
+warned 2
+3
+read [hi] args 
+warned 0
+3
+read [] args 
+warned 0
+3
+wider than granted
+wider than granted
+invalid
+too large
+timed out
+slept
+0
+not granted
+not granted

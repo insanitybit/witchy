@@ -1,0 +1,86 @@
+// Refused, saying what to write: a standard module is named with `_`.
+// An order as JSON: parsed into a tree, walked by `match` on references, the active items'
+// price times quantity summed and their names listed.
+import console
+import string
+import json-tree
+
+fn field(members: &Vec<Member>, name: Text) -> Result<&Json, U64>:
+    for m in members:
+        if m.key == name:
+            return Ok(&m.value)
+    return Err(0)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(c):
+        return
+    var text = move made
+    let pushed = text.push_text(&allocator, "{\"items\": [{\"name\": \"pen\", \"price\": 3, \"qty\": 4, \"active\": true}, {\"name\": \"ink\", \"price\": 12, \"qty\": 1, \"active\": false}, {\"name\": \"pad\", \"price\": 5, \"qty\": 2, \"active\": true}]}")
+    let Ok(doc): Json = json_tree(&text, &allocator) else Err(at):
+        console.print("bad json at ${at}")
+        text.close()
+        return
+    var total: U64 = 0
+    match &doc:
+        Object(top):
+            match field(top, "items"):
+                Ok(items):
+                    match items:
+                        Array(list):
+                            for item in list:
+                                match item:
+                                    Object(members):
+                                        var active = false
+                                        match field(members, "active"):
+                                            Ok(flag):
+                                                match flag:
+                                                    Boolean(b):
+                                                        active = *b
+                                                    _:
+                                                        ()
+                                            Err(none):
+                                                ()
+                                        var price: U64 = 0
+                                        var qty: U64 = 0
+                                        match field(members, "price"):
+                                            Ok(p):
+                                                match p:
+                                                    Whole(n):
+                                                        price = *n
+                                                    _:
+                                                        ()
+                                            Err(none):
+                                                ()
+                                        match field(members, "qty"):
+                                            Ok(q):
+                                                match q:
+                                                    Whole(n):
+                                                        qty = *n
+                                                    _:
+                                                        ()
+                                            Err(none):
+                                                ()
+                                        if active:
+                                            total += price * qty
+                                            match field(members, "name"):
+                                                Ok(nm):
+                                                    match nm:
+                                                        Str(s):
+                                                            console.write_string(s)
+                                                            console.write(" ")
+                                                        _:
+                                                            ()
+                                                Err(none):
+                                                    ()
+                                    _:
+                                        ()
+                        _:
+                            ()
+                Err(none):
+                    ()
+        _:
+            ()
+    console.line("")
+    console.print_int(total)
+    json_close(move doc)
+    text.close()

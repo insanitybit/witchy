@@ -1,0 +1,10 @@
+// A private `Key` of this module, deriving: the program declares its own `Key` too.
+import hash
+
+type Key derive(Eq, Hash, Discard):
+    a: U64
+    b: U64
+
+pub fn same(x: U64) -> Bool:
+    let k = Key(a: x, b: 2)
+    return k == Key(a: x, b: 2) && k.hash() == Key(a: x, b: 2).hash()

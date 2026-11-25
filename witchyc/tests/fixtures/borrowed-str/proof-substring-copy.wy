@@ -1,0 +1,14 @@
+fn append_part(target: &mut Buffer<U8>, source: &str, used: U64, lo: U64, hi: U64, count: U64):
+    requires lo + count == hi
+    requires hi <= source.len()
+    requires used + count <= memory.capacity(target)
+    requires memory.empty_range(target, used, used + count)
+    requires memory.utf8(target, 0, used)
+    ensures memory.utf8(target, 0, used + count)
+    proof:
+        auto
+    let part = source.part(lo, hi)
+    memory.init_slice_unchecked(target, used, part.as_bytes())
+
+fn main():
+    return

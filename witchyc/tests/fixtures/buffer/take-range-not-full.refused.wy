@@ -1,0 +1,11 @@
+// Refused: every cell taken must hold a value; nothing says these do.
+fn clear<T>(buffer: &mut Buffer<T>, count: U64):
+    requires count <= memory.capacity(buffer)
+    ensures memory.empty_range(buffer, 0, count)
+    proof:
+        auto
+    memory.take_prefix_unchecked(buffer, count)
+    return
+
+fn main():
+    return

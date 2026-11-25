@@ -1,0 +1,18 @@
+// Refused, saying which `Show`: `Point` implements this file's, and `${p}` needs the library's.
+import console
+
+trait Show:
+    fn show_on(self: &Self, console: &Console<Write>)
+
+type Point:
+    x: U64
+
+impl Show for Point:
+    fn show_on(self: &Point, console: &Console<Write>):
+        console.write("POINT")
+
+fn main(console: Console<Write>):
+    let n: U64 = 5
+    let p = Point(3)
+    console.print("n=${n}")
+    console.print("p=${p}")

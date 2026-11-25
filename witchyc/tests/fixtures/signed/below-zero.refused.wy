@@ -1,0 +1,15 @@
+// An I64 difference may be below zero: it is not a natural number.
+fn f(a: I64, b: I64) -> U64:
+    requires a >= -5
+    requires a <= 5
+    requires b >= -5
+    requires b <= 5
+    ensures result == 0
+    proof:
+        auto
+    if a - b < 0:
+        return 1
+    return 0
+
+fn main(console: Console<Write>):
+    console.print_int(f(1, 2))

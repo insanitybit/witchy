@@ -1,0 +1,26 @@
+// Refused (review): a helper writing two buffers must not leave the second's old cells in the caller's proof; a false `unchanged` claim about it was proved.
+fn mv<T: Any>(a: &mut Buffer<T>, z: &mut Buffer<T>, count: U64):
+    requires count <= memory.capacity(a)
+    requires count <= memory.capacity(z)
+    requires memory.initialized_range(a, 0, count)
+    requires memory.empty_range(z, 0, count)
+    ensures memory.empty_range(a, 0, count)
+    proof:
+        auto
+    memory.move_prefix_unchecked(a, z, count)
+    return
+
+// False: the source is emptied by mv, but claimed unchanged.
+fn bad<T: Any>(a: &mut Buffer<T>, z: &mut Buffer<T>, count: U64):
+    requires count <= memory.capacity(a)
+    requires count <= memory.capacity(z)
+    requires memory.initialized_range(a, 0, count)
+    requires memory.empty_range(z, 0, count)
+    ensures memory.unchanged(a, old(a))
+    proof:
+        auto
+    mv(a, z, count)
+    return
+
+fn main():
+    return

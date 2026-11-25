@@ -1,0 +1,132 @@
+import "paths.wy"
+import crypto
+import span
+
+pub type WebRoute:
+    Catalog
+    PackagePage
+    Stylesheet
+    Bootstrap
+    Worker
+    Filter
+    Frame
+
+pub fn web_route(path: Span) -> Result<WebRoute, U64>:
+    if path.equals_text("/"):
+        return Ok(Catalog)
+    if path.equals_text("/coven.css"):
+        return Ok(Stylesheet)
+    if path.equals_text("/glamour-browser.mjs"):
+        return Ok(Bootstrap)
+    if path.equals_text("/glamour-worker.mjs"):
+        return Ok(Worker)
+    if path.equals_text("/glamour-frame.html"):
+        return Ok(Frame)
+    if path.equals_text("/filter.wasm"):
+        return Ok(Filter)
+    if path.starts_with_text("/packages/") && paths.package_page(path.part(10, path.len())):
+        return Ok(PackagePage)
+    return Err(404)
+
+pub fn asset_limit(route: WebRoute) -> U64:
+    match route:
+        Catalog:
+            return 49152
+        PackagePage:
+            return 8192
+        Filter:
+            return 65536
+        _:
+            return 16384
+
+pub type WebSelection:
+    timestamp: Span
+    framed: Bool
+    digest: Span
+    bootstrap: Span
+
+pub fn select_web_asset(table: Span, path: Span) -> Result<WebSelection, U64>:
+    let Ok(header): Halves = table.split(10) else Err(rest):
+        return Err(503)
+    let checked = header.head.equals_text("coven-web-https-4")
+    let framed = checked || header.head.equals_text("coven-web-https-3")
+    if !framed && !header.head.equals_text("coven-web-https-2"):
+        return Err(503)
+    let Ok(publication): Halves = header.tail.split(10) else Err(rest):
+        return Err(503)
+    if !paths.digest_name(publication.head):
+        return Err(503)
+    if checked:
+        let Ok(rows): Halves = publication.tail.split(10) else Err(rest):
+            return Err(503)
+        if !paths.digest_name(rows.head) || !matches_sha384(rows.tail.as_bytes(), rows.head):
+            return Err(503)
+        return select_rows(publication.head, rows.tail, path, framed)
+    return select_rows(publication.head, publication.tail, path, framed)
+
+fn select_rows(timestamp: Span, entries: Span, path: Span, framed: Bool) -> Result<WebSelection, U64>:
+    var rows = entries
+    let empty = rows.part(0, 0)
+    var previous = empty
+    var digest = empty
+    var bootstrap = empty
+    var fixed: U64 = 0
+    var packages: U64 = 0
+    while !rows.is_empty():
+        let Ok(row): Halves = rows.split(10) else Err(rest):
+            return Err(503)
+        let Ok(fields): Halves = row.head.split(32) else Err(rest):
+            return Err(503)
+        if !paths.digest_name(fields.tail) || !route_before(previous, fields.head):
+            return Err(503)
+        let Ok(route): WebRoute = web_route(fields.head) else Err(code):
+            return Err(503)
+        match route:
+            PackagePage:
+                if packages == 64:
+                    return Err(503)
+                packages += 1
+            Frame:
+                if !framed:
+                    return Err(503)
+                fixed += 1
+            Bootstrap:
+                bootstrap = fields.tail
+                fixed += 1
+            _:
+                fixed += 1
+        if fields.head.same(path):
+            digest = fields.tail
+        previous = fields.head
+        rows = row.tail
+    let expected = if framed: 6 else: 5
+    if fixed != expected:
+        return Err(503)
+    return Ok(WebSelection(timestamp, framed, digest, bootstrap))
+
+// The installer sorts ASCII paths. Strict ordering rejects duplicates
+// of every route, including routes other than the one being requested.
+fn route_before(left: Span, right: Span) -> Bool:
+    for at in 0..left.len():
+        let a = left.byte_or_end(at)
+        let b = right.byte_or_end(at)
+        if b == 256:
+            return false
+        if a != b:
+            return a < b
+    return left.len() < right.len()
+
+pub fn matches_sha384(body: &[U8], expected: Span) -> Bool:
+    var hash: [U8; 48] = [0; 48]
+    if let Err(reason) = crypto.sha384(body, hash.slice_mut()):
+        return false
+    for i in 0..48:
+        let value = U8.to_u64(hash[i])
+        if expected.byte_or_end(i * 2) != hex(value >> 4) || expected.byte_or_end(i * 2 + 1) != hex(value % 16):
+            return false
+    return true
+
+fn hex(value: U64) -> U64:
+    if value < 10:
+        return value + 48
+    return value + 87

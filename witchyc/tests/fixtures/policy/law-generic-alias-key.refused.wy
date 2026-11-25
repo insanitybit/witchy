@@ -1,0 +1,50 @@
+// Refused (adversarial review round 5): a generic alias as the Equivalent key was read by its own name; it is expanded now.
+// Refused (adversarial review round 4): an alias as the Equivalent key was read by its own name.
+import console
+import hash
+import hashmap
+import keymap
+
+type Key derive(Discard):
+    a: U64
+    b: U64
+
+impl Eq for Key:
+    fn eq(self: &Key, other: &Key) -> Bool:
+        return (*self).a == (*other).a && (*self).b == (*other).b
+
+impl HashKey for Key:
+    fn feed(self: &Key, state: &mut HashState):
+        (*self).a.feed(state)
+        (*self).b.feed(state)
+
+type W<T> = U64
+
+impl Equivalent<W<U8>> for U8:
+    fn equivalent(self: &U8, key: &W<U8>) -> Bool:
+        return U8.to_u64(*self) == *key
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): KeyMap<U64, U64> = KeyMap.new(&allocator, 64, Reference(1)) else Err(code):
+        return
+    var map = move made
+    match map.put(&allocator, 1, 70):
+        Ok:
+            ()
+        Err(entry):
+            entry.discard()
+    let q: U8 = 1
+    let k: U64 = 1
+    if q.equivalent(&k):
+        console.print_int(5)
+    match map.get(&k):
+        Ok(v):
+            console.print_int(*v)
+        Err(code):
+            console.print_int(0)
+    match map.get(&q):
+        Ok(v):
+            console.print_int(*v)
+        Err(code):
+            console.print_int(0)
+    map.discard()

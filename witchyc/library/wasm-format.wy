@@ -1,0 +1,53 @@
+// Formatting: values that can write themselves onto the end of a String.
+// Plain Witchy code on String's public functions: no proofs, nothing unchecked.
+import "wasm-string.wy"
+
+// Append this value's text to `out`. Err returns `out` as it was given.
+pub trait Render:
+    fn show(self: &Self, out: String, allocator: &Allocator) -> Result<String, String>
+
+// Append one scalar. Err returns the text cut back to `keep` bytes.
+pub fn show_scalar(out: String, allocator: &Allocator, scalar: U64, keep: U64) -> Result<String, String>:
+    // In place, with room doubling (`push_scalar`, by value, went through the proved byte path).
+    var text = move out
+    if let Ok(_) = text.push(allocator, scalar):
+        return Ok(move text)
+    return Err(text.truncate(keep))
+
+impl Render for Text:
+    fn show(self: &Text, out: String, allocator: &Allocator) -> Result<String, String>:
+        // A literal is well-formed UTF-8, so its bytes are copied as they are, a word at a time
+        // (it decoded each scalar and encoded it again). No room: the text as it was.
+        var text = move out
+        if let Ok(_) = text.push_text(allocator, *self):
+            return Ok(move text)
+        return Err(move text)
+
+impl Render for str:
+    fn show(self: &str, out: String, allocator: &Allocator) -> Result<String, String>:
+        var text = move out
+        if let Ok(_) = text.push_text(allocator, self):
+            return Ok(move text)
+        return Err(move text)
+
+impl Render for String:
+    fn show(self: &String, out: String, allocator: &Allocator) -> Result<String, String>:
+        // Eight bytes at a time (`append` copied a byte at a time). No room: the text as it was.
+        var text = move out
+        if let Ok(_) = text.push_string(allocator, self):
+            return Ok(move text)
+        return Err(move text)
+
+impl Render for U64:
+    fn show(self: &U64, out: String, allocator: &Allocator) -> Result<String, String>:
+        var text = move out
+        if let Ok(_) = text.push_decimal(allocator, *self):
+            return Ok(move text)
+        return Err(move text)
+
+impl Render for Bool:
+    fn show(self: &Bool, out: String, allocator: &Allocator) -> Result<String, String>:
+        var word: Text = "false"
+        if *self:
+            word = "true"
+        return word.show(move out, allocator)

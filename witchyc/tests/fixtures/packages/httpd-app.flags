@@ -1,0 +1,1 @@
+run: --listen=127.0.0.1:47625 --net=127.0.0.1:47625 --clock --deadline-ms=4000 --fuel=4000000 --dir={dir}/httpd-files --dir-rights=read

@@ -1,0 +1,23 @@
+// A path or host that could add lines to the request is refused before anything is sent:
+// the run grants no endpoint here, so reaching the network would answer NotGranted (7).
+import console
+import http
+
+fn code(result: Result<Response, HttpError>) -> U64:
+    match move result:
+        Ok(response):
+            response.close()
+            return 1
+        Err(Malformed):
+            return 0
+        Err(Connect(NotGranted)):
+            return 7
+        Err(_):
+            return 2
+
+fn main(console: Console<Write>, net: Net, allocator: Allocator):
+    console.print_int(code(http.get(&net, &allocator, "127.0.0.1:1", "h", "/a\r\nX-Evil: 1")))
+    console.print_int(code(http.get(&net, &allocator, "127.0.0.1:1", "h", "/a b")))
+    console.print_int(code(http.get(&net, &allocator, "127.0.0.1:1", "h\r\n", "/a")))
+    console.print_int(code(http.get(&net, &allocator, "127.0.0.1:1", "h", "a")))
+    console.print_int(code(http.get(&net, &allocator, "127.0.0.1:2", "h", "/fine")))

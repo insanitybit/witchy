@@ -1,0 +1,17 @@
+// A capability this module defines: a directory known to hold `config.txt`. Only this
+// file can make a ConfigDir or take the Dir back out of one.
+import fs
+import string
+
+pub capability ConfigDir from Dir<Read>
+
+// The only way to get one: checked here.
+pub fn config_dir(root: Dir<Read>) -> Result<ConfigDir, Dir<Read>>:
+    if root.exists("config.txt"):
+        return Ok(ConfigDir(move root))
+    return Err(move root)
+
+impl ConfigDir:
+    // What a holder can do with it: read the configuration, and nothing else in the tree.
+    pub fn load(config: &ConfigDir, allocator: &Allocator) -> Result<String, FsError>:
+        return config.authority.read_text(allocator, "config.txt")

@@ -1,0 +1,6 @@
+# What each part of httpd-app.wy may use (`witchyc wasm-caps --policy`).
+<standard>/: *
+httpd-app.wy: *
+# The HTTP file server package is given connections, a read-only directory, a clock and memory:
+# it can dial nowhere, accept nothing itself, write no file, and holds nothing unchecked.
+@httpd/: Allocator, Clock, Dir<Read>, Socket ; no unchecked ; digest sha384:4db94085869a53b3760d3a03ff5e3914b135b9cbdedaf1a9093f78e3faf8bcb8dd7c4d1259a7ef8afd3e5eb2e8679f2f

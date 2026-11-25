@@ -1,0 +1,264 @@
+// The third dogfooding report's `pq` (witchy-dogfood3-20261122, section C) restated as one sealed
+// generic type whose storage lengths are invariants (2026-11-24).
+// pq: a bounded priority queue. The item with the least key comes out first.
+// One sealed type owns the keys and the items (which may be owners: a String, a File);
+// every public function has a contract, and the type's invariants hold between calls.
+// The storage holds exactly the queued items and has room for exactly `capacity` (the last
+// four invariants), so `push` fails only when the queue is full, `pop` only when it is empty,
+// and each push into the storage or take out of it has no arm that runs: its `Err` is
+// `unreachable`, which the proof shows is never taken.
+import console
+import discard
+import discard_core
+import string
+import text
+import vec
+
+pub sealed type Queue<T>:
+    keys: Vec<U64>
+    items: Vec<T>
+    count: U64
+    capacity: U64
+    invariant capacity >= 1
+    invariant capacity <= 65536
+    invariant count <= capacity
+    invariant keys.len() == count
+    invariant items.len() == count
+    invariant keys.capacity() == capacity
+    invariant items.capacity() == capacity
+
+// What `pop` gives: the least key and its item.
+pub type Least<T>:
+    key: U64
+    item: T
+
+// The key at `from` rises until its parent is not greater, its item with it. The heap order
+// is not stated: it is about elements, which the proof over numbers does not read. The
+// lengths and capacities are, and every step keeps them.
+fn sift_up<T: Any>(keys: &mut Vec<U64>, items: &mut Vec<T>, from: U64):
+    ensures keys.len() == old(keys.len())
+    ensures items.len() == old(items.len())
+    ensures keys.capacity() == old(keys.capacity())
+    ensures items.capacity() == old(items.capacity())
+    proof:
+        auto
+    var at = from
+    while at > 0 && at < keys.len():
+        invariant keys.len() == old(keys.len())
+        invariant items.len() == old(items.len())
+        invariant keys.capacity() == old(keys.capacity())
+        invariant items.capacity() == old(items.capacity())
+        let parent = (at - 1) / 2
+        if keys[parent] <= keys[at]:
+            break
+        let _ = keys.swap(parent, at)
+        let _ = items.exchange(parent, at)
+        at = parent
+
+// The key at 0 sinks below any lesser child, among the first `count`, its item with it.
+fn sift_down<T: Any>(keys: &mut Vec<U64>, items: &mut Vec<T>, count: U64):
+    requires count <= 65536
+    ensures keys.len() == old(keys.len())
+    ensures items.len() == old(items.len())
+    ensures keys.capacity() == old(keys.capacity())
+    ensures items.capacity() == old(items.capacity())
+    proof:
+        auto
+    var at: U64 = 0
+    while at < count:
+        invariant keys.len() == old(keys.len())
+        invariant items.len() == old(items.len())
+        invariant keys.capacity() == old(keys.capacity())
+        invariant items.capacity() == old(items.capacity())
+        let left = at * 2 + 1
+        if left >= count:
+            break
+        var least = left
+        if left + 1 < count && keys[left + 1] < keys[left]:
+            least = left + 1
+        if keys[at] <= keys[least]:
+            break
+        let _ = keys.swap(at, least)
+        let _ = items.exchange(at, least)
+        at = least
+
+impl<T: Any + Discard> Queue<T>:
+    // A queue with room for `capacity` items (1 to 65536). Err(1): not such a capacity; Err(2): no room.
+    pub fn new(allocator: &Allocator, capacity: U64) -> Result<Queue<T>, U64>:
+        ensures match result:
+            Ok(queue):
+                queue.count == 0 && queue.capacity == capacity
+            Err(code):
+                code == 1 || code == 2
+        proof:
+            auto
+        if capacity == 0 || capacity > 65536:
+            return Err(1)
+        let made_keys: Result<Vec<U64>, U64> = Vec.new(allocator, capacity)
+        let Ok(keys): Vec<U64> = move made_keys else Err(_):
+            return Err(2)
+        let made_items: Result<Vec<T>, U64> = Vec.new(allocator, capacity)
+        let Ok(items): Vec<T> = move made_items else Err(_):
+            keys.close()
+            return Err(2)
+        return Ok(Queue(move keys, move items, 0, capacity))
+
+    pub fn len(queue: &Queue<T>) -> U64:
+        ensures result == queue.count
+        ensures result <= queue.capacity
+        return (*queue).count
+
+    pub fn capacity(queue: &Queue<T>) -> U64:
+        ensures result == queue.capacity
+        ensures result >= 1 && result <= 65536
+        return (*queue).capacity
+
+    pub fn is_full(queue: &Queue<T>) -> Bool:
+        ensures result == (queue.count == queue.capacity)
+        return (*queue).count == (*queue).capacity
+
+    // The least key. Err(1): the queue is empty.
+    pub fn least_key(queue: &Queue<T>) -> Result<U64, U64>:
+        ensures match result:
+            Ok(key):
+                queue.count >= 1
+            Err(code):
+                queue.count == 0
+        if (*queue).count == 0:
+            return Err(1)
+        return Ok((*queue).keys[0])
+
+    // Adds `item` under `key`. Err: the queue was full, and only then; the item comes back and
+    // nothing changed.
+    pub fn push(queue: &mut Queue<T>, key: U64, item: T) -> Result<(), T>:
+        ensures queue.capacity == old(queue.capacity)
+        ensures match result:
+            Ok:
+                queue.count == old(queue.count) + 1
+            Err(back):
+                queue.count == old(queue.count)
+                old(queue.count) == old(queue.capacity)
+        proof:
+            auto
+        let last = (*queue).count
+        if last == (*queue).capacity:
+            return Err(move item)
+        let pushed: Result<(), T> = (*queue).items.push_spare_mut(move item)
+        match move pushed:
+            Ok:
+                ()
+            Err(back):
+                // Room for one more: `items.len() == count < capacity == items.capacity()`.
+                unreachable
+        let keyed: Result<(), U64> = (*queue).keys.push_spare_mut(key)
+        match move keyed:
+            Ok:
+                ()
+            Err(back):
+                unreachable
+        (*queue).count = last + 1
+        sift_up(&mut (*queue).keys, &mut (*queue).items, last)
+        return Ok(())
+
+    // Takes the item with the least key. Err(1): the queue is empty, and only then.
+    pub fn pop(queue: &mut Queue<T>) -> Result<Least<T>, U64>:
+        ensures queue.capacity == old(queue.capacity)
+        ensures match result:
+            Ok(least):
+                queue.count + 1 == old(queue.count)
+            Err(code):
+                code == 1
+                old(queue.count) == 0
+                queue.count == 0
+        proof:
+            auto
+        let count = (*queue).count
+        if count == 0:
+            return Err(1)
+        let last = count - 1
+        let _ = (*queue).keys.swap(0, last)
+        let _ = (*queue).items.exchange(0, last)
+        let key_taken: Result<U64, U64> = (*queue).keys.take_last_mut()
+        let Ok(key): U64 = move key_taken else Err(_):
+            // The keys are as many as the items: `count` of them, and `count` is not 0.
+            unreachable
+        let item_taken: Result<T, U64> = (*queue).items.take_last_mut()
+        let Ok(item): T = move item_taken else Err(_):
+            unreachable
+        (*queue).count = last
+        sift_down(&mut (*queue).keys, &mut (*queue).items, last)
+        return Ok(Least(key, move item))
+
+    pub fn close(queue: Queue<T>):
+        let Queue(keys, items, count, capacity) = move queue
+        keys.close()
+        items.discard()
+
+fn word(allocator: &Allocator, number: U64) -> Result<String, U64>:
+    var text = String.new(allocator)?
+    if let Err(code) = text.push_u64(allocator, number):
+        text.close()
+        return Err(code)
+    Ok(move text)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    // Keys out of order come out in order, each with the String pushed under it; a full queue
+    // hands the item back.
+    match Queue.new(&allocator, 6):
+        Ok(made):
+            var queue: Queue<String> = move made
+            for key in [50, 10, 40, 10, 70, 20, 30]:
+                match word(&allocator, *key):
+                    Ok(text):
+                        match queue.push(*key, move text):
+                            Ok:
+                                ()
+                            Err(back):
+                                console.write_string(&back)
+                                console.line(" came back")
+                                back.close()
+                    Err(code):
+                        console.print_int(code)
+            console.print_int(queue.len())
+            while let Ok(least) = queue.pop():
+                let Least(key, item) = move least
+                console.write_string(&item)
+                console.line("")
+                item.close()
+            console.print_int(queue.len())
+            queue.close()
+        Err(code):
+            console.print_int(code)
+    match Queue.new(&allocator, 0):
+        Ok(made):
+            let queue: Queue<U64> = move made
+            queue.close()
+        Err(code):
+            console.print_int(code)
+    // 128 numbers through a queue of 64, checked against the order.
+    match Queue.new(&allocator, 64):
+        Ok(made):
+            var queue: Queue<U64> = move made
+            var seed: U64 = 12345
+            var good = true
+            for round in 0..2:
+                for index in 0..64:
+                    seed = (seed * 1103515245 + 12345) % 2147483648
+                    if let Err(_) = queue.push(seed % 1000, seed):
+                        good = false
+                var last: U64 = 0
+                for index in 0..64:
+                    match queue.pop():
+                        Ok(least):
+                            good = good && least.key >= last && least.item % 1000 == least.key
+                            last = least.key
+                        Err(_):
+                            good = false
+            good = good && queue.len() == 0
+            if good:
+                console.line("ordered")
+            else:
+                console.line("out of order")
+            queue.close()
+        Err(code):
+            console.print_int(code)

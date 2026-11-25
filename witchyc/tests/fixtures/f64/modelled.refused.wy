@@ -1,0 +1,14 @@
+// A function proved by the memory model does not use F64: that model follows only what it was
+// written for. (A scalar proof reads an F64 result as an unknown value: `f64/proved.wy`.)
+fn init_scaled<T>(buffer: &mut Buffer<T>, index: U64, item: T):
+    requires index < memory.capacity(buffer)
+    requires memory.empty(buffer, index)
+    ensures memory.cell(buffer, index, item)
+    proof:
+        auto
+    let scale = F64.from_u64(index) * 2.0
+    memory.init_unchecked(buffer, index, item)
+    return
+
+fn main():
+    return

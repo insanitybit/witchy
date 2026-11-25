@@ -1,0 +1,6 @@
+// The program asks for `Dir<Write>`; the run grants only reading, so the host refuses
+// before anything runs.
+import fs
+
+fn main(dir: Dir<Write>):
+    return

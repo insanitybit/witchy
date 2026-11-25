@@ -1,0 +1,6 @@
+# What each part of download-app.wy may use (`witchyc wasm-caps --policy`).
+<standard>/: *
+download-app.wy: *
+# The download package is given one socket and one file: it can dial nowhere, open no other
+# file, allocate nothing, and holds nothing unchecked.
+download/: Socket, File<Write> ; no unchecked ; digest sha384:e29aae2d45d02ed0914a1b7ad40e6dc20d2f5d6a01e019edcadf6a7586dfa60c86d1cc7c36fae6a80cd69453ecf3e93f

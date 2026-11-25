@@ -1,0 +1,113 @@
+import string
+import vec
+
+pub type ConsoleReadError:
+    ShortConsoleInput(U64)
+    TrailingConsoleInput
+
+pub type ConsoleFrameError:
+    LineTooLong
+    MissingLineFeed
+    InvalidLineText
+    LineAllocationFailed
+
+pub type ConsoleFrame:
+    LineFrame(U64)
+    EndOfFrames
+
+impl Console<Read>:
+    // Read one LF-terminated frame into caller storage, excluding the LF.
+    // On overflow, consume only the first byte that does not fit.
+    pub fn read_line_bytes(input: &Console<Read>, destination: &mut [U8]) -> Result<U64, ConsoleFrameError>:
+        let frame = input.read_optional_line_bytes(destination)?
+        if let LineFrame(length) = frame:
+            return Ok(length)
+        return Err(MissingLineFeed)
+
+    // A sequence of LF frames can end between frames, even with an empty
+    // destination. LineFrame(0) denotes an empty frame and EndOfFrames denotes clean EOF.
+    pub fn read_optional_line_bytes(input: &Console<Read>, destination: &mut [U8]) -> Result<ConsoleFrame, ConsoleFrameError>:
+        var at: U64 = 0
+        while destination.len() - at >= 7:
+            let run = input.next_run()
+            let count = run >> 56
+            if count == 0:
+                if at == 0:
+                    return Ok(EndOfFrames)
+                return Err(MissingLineFeed)
+            for index in 0..count:
+                let byte = U8.truncate(run >> (index * 8))
+                if byte == 10:
+                    return Ok(LineFrame(at))
+                destination[at] = byte
+                at += 1
+        while at < destination.len():
+            let byte = input.next_byte()
+            if byte == 10:
+                return Ok(LineFrame(at))
+            if byte == 256:
+                if at == 0:
+                    return Ok(EndOfFrames)
+                return Err(MissingLineFeed)
+            destination[at] = U8.truncate(byte)
+            at += 1
+
+        let end = input.next_byte()
+        if end == 10:
+            return Ok(LineFrame(at))
+        if end == 256:
+            if at == 0:
+                return Ok(EndOfFrames)
+            return Err(MissingLineFeed)
+        return Err(LineTooLong)
+
+    // Read one bounded UTF-8 frame and validate the contents before LF.
+    pub fn read_text_frame(input: &Console<Read>, allocator: &Allocator, limit: U64) -> Result<String, ConsoleFrameError>:
+        let Ok(storage): Vec<U8> = Vec.filled(allocator, limit, 0) else Err(code):
+            return Err(LineAllocationFailed)
+        var bytes = move storage
+        let Ok(length): U64 = input.read_line_bytes(bytes.as_mut_slice()) else Err(reason):
+            bytes.close()
+            return Err(reason)
+        bytes.truncate_mut(length)
+        match String.from_utf8(move bytes):
+            Ok(line):
+                return Ok(move line)
+            Err(invalid):
+                invalid.close()
+                return Err(InvalidLineText)
+
+    // Fill the destination without consuming the byte after it. On early
+    // EOF, the error carries the length of the prefix already filled.
+    pub fn read_exact(input: &Console<Read>, destination: &mut [U8]) -> Result<(), ConsoleReadError>:
+        let length = destination.len()
+        var at: U64 = 0
+        while length - at >= 7:
+            let run = input.next_run()
+            let count = run >> 56
+            if count == 0:
+                return Err(ShortConsoleInput(at))
+            for i in 0..count:
+                destination[at + i] = U8.truncate(run >> (i * 8))
+            at += count
+        while at < length:
+            let byte = input.next_byte()
+            if byte == 256:
+                return Err(ShortConsoleInput(at))
+            destination[at] = U8.truncate(byte)
+            at += 1
+        return Ok(())
+
+    // Read an unsigned 24-bit big-endian value and leave the following byte unread.
+    pub fn read_u24_be(input: &Console<Read>) -> Result<U64, ConsoleReadError>:
+        var bytes: [U8; 3] = [0; 3]
+        input.read_exact(bytes.slice_mut())?
+        return Ok(U8.to_u64(bytes[0]) * 65536 + U8.to_u64(bytes[1]) * 256 + U8.to_u64(bytes[2]))
+
+    // Read a length-prefixed final body and require EOF. A trailing byte
+    // is consumed to distinguish extra input from an exact body.
+    pub fn read_exact_to_end(input: &Console<Read>, destination: &mut [U8]) -> Result<(), ConsoleReadError>:
+        input.read_exact(destination)?
+        if input.next_byte() != 256:
+            return Err(TrailingConsoleInput)
+        return Ok(())

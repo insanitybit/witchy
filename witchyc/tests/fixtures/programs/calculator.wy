@@ -1,0 +1,171 @@
+// A calculator: each line is parsed by recursive descent into a tree (a sum that holds itself
+// in a Vec), evaluated, and printed; a syntax error or a division by zero is reported with the
+// position where it was found.
+import console
+import span
+import string
+import vec
+
+type Problem:
+    Syntax(U64)
+    DivideByZero
+    NoRoom
+
+impl Problem:
+    pub fn from(code: U64) -> Problem:
+        return NoRoom
+
+type Node:
+    Number(U64)
+    // The operator's byte and its two operands.
+    Apply(U64, Vec<Node>)
+
+// A position in the line being read.
+type Reader:
+    text: Span
+    at: U64
+
+fn skip_spaces(reader: &mut Reader):
+    while (*reader).text.byte_or_end((*reader).at) == 32:
+        (*reader).at += 1
+
+fn peek(reader: &mut Reader) -> U64:
+    skip_spaces(reader)
+    return (*reader).text.byte_or_end((*reader).at)
+
+fn pair(allocator: &Allocator, left: Node, right: Node) -> Result<Vec<Node>, Problem>:
+    let Ok(made): Vec<Node> = Vec.new(allocator, 2) else Err(code):
+        release(move left)
+        release(move right)
+        return Err(NoRoom)
+    var both = move made
+    match both.push_mut(allocator, move left):
+        Ok:
+            ()
+        Err(back):
+            release(move back)
+            release(move right)
+            both.discard_nodes()
+            return Err(NoRoom)
+    match both.push_mut(allocator, move right):
+        Ok:
+            ()
+        Err(back):
+            release(move back)
+            both.discard_nodes()
+            return Err(NoRoom)
+    return Ok(move both)
+
+// number | '(' sum ')'
+fn atom(allocator: &Allocator, reader: &mut Reader) -> Result<Node, Problem>:
+    let next = peek(reader)
+    if next == 40:
+        (*reader).at += 1
+        let inner = sum(allocator, reader)?
+        if peek(reader) != 41:
+            release(move inner)
+            return Err(Syntax((*reader).at))
+        (*reader).at += 1
+        return Ok(move inner)
+    if next < 48 || next > 57:
+        return Err(Syntax((*reader).at))
+    var value: U64 = 0
+    while (*reader).text.byte_or_end((*reader).at) >= 48 && (*reader).text.byte_or_end((*reader).at) <= 57:
+        value = value * 10 + (*reader).text.byte_or_end((*reader).at) - 48
+        (*reader).at += 1
+    return Ok(Number(value))
+
+// atom (('*' | '/') atom)*
+fn product(allocator: &Allocator, reader: &mut Reader) -> Result<Node, Problem>:
+    var left = atom(allocator, reader)?
+    while peek(reader) == 42 || peek(reader) == 47:
+        let op = peek(reader)
+        (*reader).at += 1
+        let right = match atom(allocator, reader):
+            Ok(node):
+                move node
+            Err(problem):
+                release(move left)
+                return Err(problem)
+        let both = pair(allocator, move left, move right)?
+        left = Apply(op, move both)
+    return Ok(move left)
+
+// product (('+' | '-') product)*
+fn sum(allocator: &Allocator, reader: &mut Reader) -> Result<Node, Problem>:
+    var left = product(allocator, reader)?
+    while peek(reader) == 43 || peek(reader) == 45:
+        let op = peek(reader)
+        (*reader).at += 1
+        let right = match product(allocator, reader):
+            Ok(node):
+                move node
+            Err(problem):
+                release(move left)
+                return Err(problem)
+        let both = pair(allocator, move left, move right)?
+        left = Apply(op, move both)
+    return Ok(move left)
+
+fn evaluate(node: &Node) -> Result<U64, Problem>:
+    match node:
+        Number(value):
+            return Ok(*value)
+        Apply(op, both):
+            let left = evaluate(&both[0])?
+            let right = evaluate(&both[1])?
+            if *op == 43:
+                return Ok(left + right)
+            if *op == 45:
+                return Ok(left - right)
+            if *op == 42:
+                return Ok(left * right)
+            if right == 0:
+                return Err(DivideByZero)
+            return Ok(left / right)
+
+fn release(node: Node):
+    match move node:
+        Number(value):
+            ()
+        Apply(op, both):
+            var rest = move both
+            rest.discard_nodes()
+
+impl Vec<Node>:
+    fn discard_nodes(nodes: Vec<Node>):
+        var rest = move nodes
+        while rest.len() > 0:
+            match rest.take_last_mut():
+                Ok(node):
+                    release(move node)
+                Err(code):
+                    unreachable
+        rest.release_empty()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let lines: [Text; 5] = ["1 + 2 * 3", "(1 + 2) * 3", "100 / (5 - 5)", "7 - (2 +", "2 * (3 + 4) * 5 - 6 / 2"]
+    for line in &lines:
+        let Ok(made): String = String.new(&allocator) else Err(code):
+            return
+        var text = move made
+        let _ = text.push_text(&allocator, *line)
+        var reader = Reader(text.span(), 0)
+        match sum(&allocator, &mut reader):
+            Ok(tree):
+                if peek(&mut reader) != 256:
+                    console.print("syntax error at ${reader.at}")
+                else:
+                    match evaluate(&tree):
+                        Ok(value):
+                            console.print_int(value)
+                        Err(DivideByZero):
+                            console.line("division by zero")
+                        Err(_):
+                            console.line("failed")
+                release(move tree)
+            Err(Syntax(at)):
+                console.print("syntax error at ${at}")
+            Err(_):
+                console.line("failed")
+        text.close()

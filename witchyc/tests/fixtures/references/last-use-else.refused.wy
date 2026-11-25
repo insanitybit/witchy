@@ -1,0 +1,15 @@
+// A reference used in the other branch keeps its value lent in both.
+type Pair:
+    a: U64
+    b: U64
+
+fn first(pair: &Pair) -> &U64:
+    return &(*pair).a
+
+fn main(console: Console<Write>):
+    var pair = Pair(4, 5)
+    let seen = first(&pair)
+    if *seen == 9:
+        pair.a = 9
+    else:
+        console.print_int(*seen)

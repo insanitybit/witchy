@@ -1,0 +1,10 @@
+fn one(a: U64) -> U64:
+    ensures result == 1
+    proof:
+        auto
+    var v = 1
+    if a > 3:
+        v = 2
+    return v
+fn main(console: Console<Write>):
+    console.print_int(one(3))

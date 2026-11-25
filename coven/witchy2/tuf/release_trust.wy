@@ -1,0 +1,342 @@
+import "base64url.wy"
+import "canonical.wy"
+import "coordinate.wy"
+import "origin.wy"
+import crypto
+import discard
+import encoding
+import json_tree
+import json_sorted
+import span
+import string
+import text
+import vec
+
+pub type ReleaseError:
+    InvalidTrust
+    InvalidEnvelope
+    InvalidPackage
+    PublisherRefused
+    WitnessRefused
+    ApprovalMismatch
+    AuthenticatorRefused
+    EvidenceResourceFailure
+
+pub sealed type ReleaseTrust:
+    document: Json
+
+pub fn read_release_trust(input: &String, pin: &[U8; 48], allocator: &Allocator) -> Result<ReleaseTrust, ReleaseError>:
+    if input.byte_len() > 262144:
+        return Err(InvalidTrust)
+    var digest: [U8; 48] = [0; 48]
+    if let Err(error) = crypto.sha384(input.as_bytes(), digest.slice_mut()):
+        return Err(EvidenceResourceFailure)
+    for i in 0..48:
+        if digest[i] != (*pin)[i]:
+            return Err(InvalidTrust)
+    return parse_release_trust(input, allocator)
+
+pub fn parse_release_trust(input: &String, allocator: &Allocator) -> Result<ReleaseTrust, ReleaseError>:
+    if input.byte_len() > 262144:
+        return Err(InvalidTrust)
+    let Ok(parsed): Json = parse_release_json(input, allocator) else Err(code):
+        return Err(InvalidTrust)
+    let checked = check_trust(&parsed, allocator)
+    if let Err(error) = checked:
+        parsed.discard()
+        return Err(error)
+    return Ok(ReleaseTrust(move parsed))
+
+pub fn parse_release_json(input: &String, allocator: &Allocator) -> Result<Json, U64>:
+    return json_sorted_tree(input, allocator)
+
+pub fn release_format() -> Text:
+    return "coven-target-1-ml-dsa-87"
+
+pub fn string_field(object: &Json, name: Text) -> Result<&String, U64>:
+    let field = object.field(name)?
+    return field.text()
+
+pub fn count_fields(object: &Json, expected: U64) -> Bool:
+    match object:
+        Object(members):
+            return members.len() == expected
+        _:
+            return false
+
+pub fn member_named(object: &Json, name: &String) -> Result<&Json, U64>:
+    borrows Ok from object
+    match object:
+        Object(members):
+            for entry in members:
+                if entry.key.eq(name):
+                    return Ok(&entry.value)
+        _:
+            ()
+    return Err(1)
+
+pub fn decode_field(object: &Json, name: Text, allocator: &Allocator, limit: U64) -> Result<Vec<U8>, U64>:
+    let encoded = string_field(object, name)?
+    return unpadded_base64url(encoded.as_bytes(), allocator, limit)
+
+pub fn declared_integer(object: &Json, name: Text) -> Result<U64, U64>:
+    let field = object.field(name)?
+    match field:
+        Whole(value):
+            return Ok(*value)
+        _:
+            return Err(1)
+
+pub fn digest_text(bytes: &[U8], allocator: &Allocator) -> Result<String, U64>:
+    var digest: [U8; 48] = [0; 48]
+    if let Err(error) = crypto.sha384(bytes, digest.slice_mut()):
+        return Err(1)
+    let made = String.with_capacity(allocator, 103)?
+    var output = move made
+    if let Err(code) = write_digest(&mut output, digest.slice(), allocator):
+        output.close()
+        return Err(code)
+    return Ok(move output)
+
+fn write_digest(output: &mut String, digest: &[U8], allocator: &Allocator) -> Result<(), U64>:
+    output.push_text(allocator, "sha384:")?
+    return push_hex(output, allocator, digest)
+
+pub fn digest_json(value: &Json, allocator: &Allocator) -> Result<String, U64>:
+    let encoded = release_json(value, allocator)?
+    let digest = digest_text(encoded.as_bytes(), allocator)
+    encoded.close()
+    return move digest
+
+fn check_trust(document: &Json, allocator: &Allocator) -> Result<(), ReleaseError>:
+    let Ok(format): &String = string_field(document, "format") else Err(code):
+        return Err(InvalidTrust)
+    if !format.equals_text(release_format()):
+        return Err(InvalidTrust)
+    let Ok(policy): &Json = document.field("policy") else Err(code):
+        return Err(InvalidTrust)
+    check_policy(policy)?
+    match document.field("policy_history"):
+        Ok(history):
+            if !count_fields(document, 5):
+                return Err(InvalidTrust)
+            check_history(history, policy)?
+        Err(code):
+            if !count_fields(document, 4):
+                return Err(InvalidTrust)
+    let Ok(publishers): &Json = document.field("publishers") else Err(code):
+        return Err(InvalidTrust)
+    let Ok(witness): &String = string_field(document, "witness") else Err(code):
+        return Err(InvalidTrust)
+    if !valid_key(witness, allocator):
+        return Err(InvalidTrust)
+    match publishers:
+        Object(entries):
+            for entry in entries:
+                let Ok(key): &String = entry.value.text() else Err(code):
+                    return Err(InvalidTrust)
+                if !package_name(entry.key.span()) || key.eq(witness) || !valid_key(key, allocator):
+                    return Err(InvalidTrust)
+            return Ok(())
+        _:
+            return Err(InvalidTrust)
+
+fn check_policy(policy: &Json) -> Result<(), ReleaseError>:
+    let Ok(registry): &String = string_field(policy, "registry") else Err(code):
+        return Err(InvalidTrust)
+    let Ok(revision): U64 = declared_integer(policy, "revision") else Err(code):
+        return Err(InvalidTrust)
+    let Ok(origin): &String = string_field(policy, "origin") else Err(code):
+        return Err(InvalidTrust)
+    let Ok(credentials): &Json = policy.field("credentials") else Err(code):
+        return Err(InvalidTrust)
+    if !count_fields(policy, 4) || !registry_id(registry.as_bytes()) || revision == 0 || revision >= 9223372036854775808 || origin.byte_len() == 0 || origin.byte_len() > 300:
+        return Err(InvalidTrust)
+    if let Err(code) = relying_party(origin.span()):
+        return Err(InvalidTrust)
+    match credentials:
+        Object(entries):
+            if entries.len() <= 256:
+                return Ok(())
+        _:
+            ()
+    return Err(InvalidTrust)
+
+fn check_history(history: &Json, active: &Json) -> Result<(), ReleaseError>:
+    let Ok(revision): U64 = declared_integer(active, "revision") else Err(code):
+        return Err(InvalidTrust)
+    let Ok(registry): &String = string_field(active, "registry") else Err(code):
+        return Err(InvalidTrust)
+    let Ok(origin): &String = string_field(active, "origin") else Err(code):
+        return Err(InvalidTrust)
+    match history:
+        Array(entries):
+            if entries.len() > 16:
+                return Err(InvalidTrust)
+            var previous: U64 = 0
+            for entry in entries:
+                let next = historical_revision(entry, registry, origin)?
+                if next <= previous || next >= revision:
+                    return Err(InvalidTrust)
+                previous = next
+            return Ok(())
+        _:
+            return Err(InvalidTrust)
+
+fn historical_revision(entry: &Json, registry: &String, origin: &String) -> Result<U64, ReleaseError>:
+    if !count_fields(entry, 2):
+        return Err(InvalidTrust)
+    let Ok(policy): &Json = entry.field("policy") else Err(code):
+        return Err(InvalidTrust)
+    check_policy(policy)?
+    let Ok(older_registry): &String = string_field(policy, "registry") else Err(code):
+        return Err(InvalidTrust)
+    let Ok(older_origin): &String = string_field(policy, "origin") else Err(code):
+        return Err(InvalidTrust)
+    let Ok(revision): U64 = declared_integer(policy, "revision") else Err(code):
+        return Err(InvalidTrust)
+    let Ok(targets): &Json = entry.field("targets") else Err(code):
+        return Err(InvalidTrust)
+    if !older_registry.eq(registry) || !older_origin.eq(origin) || !valid_pins(targets):
+        return Err(InvalidTrust)
+    return Ok(revision)
+
+fn valid_pins(targets: &Json) -> Bool:
+    match targets:
+        Array(pins):
+            if pins.len() == 0 || pins.len() > 2048:
+                return false
+            for item in pins:
+                let Ok(pin): &String = item.text() else Err(code):
+                    return false
+                let text = pin.span()
+                if text.len() != 103 || !text.starts_with_text("sha384:"):
+                    return false
+                for byte in text.part(7, 103).as_bytes():
+                    if !(*byte >= '0' && *byte <= '9') && !(*byte >= 'a' && *byte <= 'f'):
+                        return false
+            return true
+        _:
+            return false
+
+fn pins_contain(pins: &Json, digest: &String) -> Bool:
+    match pins:
+        Array(items):
+            for item in items:
+                if let Ok(value) = item.text():
+                    if value.eq(digest):
+                        return true
+        _:
+            ()
+    return false
+
+pub fn matches_policy(policy: &Json, expected: &String, allocator: &Allocator) -> Result<Bool, ReleaseError>:
+    let Ok(pin): String = digest_json(policy, allocator) else Err(code):
+        return Err(EvidenceResourceFailure)
+    let same = pin.eq(expected)
+    pin.close()
+    return Ok(same)
+
+fn archived_policy(history: &Json, sealed: &String, expected: &String, allocator: &Allocator) -> Result<&Json, ReleaseError>:
+    borrows Ok from history
+    match history:
+        Array(entries):
+            for entry in entries:
+                let Ok(targets): &Json = entry.field("targets") else Err(code):
+                    return Err(InvalidTrust)
+                if pins_contain(targets, sealed):
+                    let Ok(policy): &Json = entry.field("policy") else Err(code):
+                        return Err(InvalidTrust)
+                    if matches_policy(policy, expected, allocator)?:
+                        return Ok(policy)
+        _:
+            return Err(InvalidTrust)
+    return Err(ApprovalMismatch)
+
+pub fn registry_id(bytes: &[U8]) -> Bool:
+    if bytes.len() == 0 || bytes.len() > 64 || !alphanumeric(bytes[0]):
+        return false
+    for byte in bytes:
+        if !alphanumeric(*byte) && *byte != '-' && *byte != '.':
+            return false
+    return true
+
+fn alphanumeric(byte: U8) -> Bool:
+    return (byte >= '0' && byte <= '9') || (byte >= 'a' && byte <= 'z')
+
+fn valid_key(encoded: &String, allocator: &Allocator) -> Bool:
+    let Ok(decoded): Vec<U8> = unpadded_base64url(encoded.as_bytes(), allocator, 2592) else Err(code):
+        return false
+    let valid = decoded.len() == 2592
+    decoded.close()
+    return valid
+
+impl ReleaseTrust:
+    pub fn fields(self: &ReleaseTrust) -> &Json:
+        return &(*self).document
+
+    pub fn reserved_keys(self: &ReleaseTrust, allocator: &Allocator) -> Result<Vec<U8>, ReleaseError>:
+        let Ok(publishers): &Json = (*self).document.field("publishers") else Err(code):
+            return Err(InvalidTrust)
+        match publishers:
+            Object(entries):
+                let Ok(empty): Vec<U8> = Vec.filled(allocator, (entries.len() + 1) * 48, 0) else Err(code):
+                    return Err(EvidenceResourceFailure)
+                var fingerprints = move empty
+                let checked = hash_authority_keys(self, entries, fingerprints.as_mut_slice(), allocator)
+                if let Err(error) = checked:
+                    fingerprints.close()
+                    return Err(error)
+                return Ok(move fingerprints)
+            _:
+                return Err(InvalidTrust)
+
+    pub fn policy(self: &ReleaseTrust) -> Result<&Json, U64>:
+        return (*self).document.field("policy")
+
+    pub fn approval_policy(self: &ReleaseTrust, expected: &String, bundle: &String, allocator: &Allocator) -> Result<&Json, ReleaseError>:
+        borrows Ok from self
+        let Ok(active): &Json = self.policy() else Err(code):
+            return Err(InvalidTrust)
+        if matches_policy(active, expected, allocator)?:
+            return Ok(active)
+        let Ok(history): &Json = (*self).document.field("policy_history") else Err(code):
+            return Err(ApprovalMismatch)
+        let Ok(sealed): String = digest_text(bundle.as_bytes(), allocator) else Err(code):
+            return Err(EvidenceResourceFailure)
+        let found = archived_policy(history, &sealed, expected, allocator)
+        sealed.close()
+        return found
+
+    pub fn publisher(self: &ReleaseTrust, name: &String, allocator: &Allocator) -> Result<Vec<U8>, U64>:
+        let publishers = (*self).document.field("publishers")?
+        let field = member_named(publishers, name)?
+        let key = field.text()?
+        return unpadded_base64url(key.as_bytes(), allocator, 2592)
+
+    pub fn witness(self: &ReleaseTrust, allocator: &Allocator) -> Result<Vec<U8>, U64>:
+        return decode_field(&(*self).document, "witness", allocator, 2592)
+
+    pub fn close(self: ReleaseTrust):
+        let ReleaseTrust(document) = move self
+        document.discard()
+
+fn hash_authority_keys(trust: &ReleaseTrust, entries: &Vec<Member>, output: &mut [U8], allocator: &Allocator) -> Result<(), ReleaseError>:
+    let Ok(witness): Vec<U8> = trust.witness(allocator) else Err(code):
+        return Err(InvalidTrust)
+    let hashed = crypto.sha384(witness.as_slice(), output.part(0, 48))
+    witness.close()
+    if let Err(error) = hashed:
+        return Err(EvidenceResourceFailure)
+    var at: U64 = 48
+    for entry in entries:
+        let Ok(encoded): &String = entry.value.text() else Err(code):
+            return Err(InvalidTrust)
+        let Ok(key): Vec<U8> = unpadded_base64url(encoded.as_bytes(), allocator, 2592) else Err(code):
+            return Err(InvalidTrust)
+        let digest = crypto.sha384(key.as_slice(), output.part(at, at + 48))
+        key.close()
+        if let Err(error) = digest:
+            return Err(EvidenceResourceFailure)
+        at += 48
+    return Ok(())

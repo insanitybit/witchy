@@ -1,0 +1,8 @@
+fn bad(owner: Boxed<U64>):
+    ensures true
+    proof:
+        auto
+    memory.end_null_box(move owner)
+
+fn main():
+    return

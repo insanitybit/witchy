@@ -1,0 +1,9 @@
+// `a + b` may be outside I64.
+fn add(a: I64, b: I64) -> I64:
+    ensures result == a + b
+    proof:
+        auto
+    return a + b
+
+fn main(console: Console<Write>):
+    console.print_int(I64.bits(add(3, 4)))

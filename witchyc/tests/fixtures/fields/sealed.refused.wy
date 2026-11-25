@@ -1,0 +1,18 @@
+// A sealed type's field is not named outside its file: `items.len()` is the way to read it.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-vec.wy"
+
+fn size(items: &Vec<U64>) -> U64:
+    ensures result == items.length
+    proof:
+        auto
+    return items.len()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<Vec<U64>, U64> = Vec.new(&allocator, 4)
+    match move made:
+        Ok(items):
+            console.print_int(size(&items))
+            items.close()
+        Err(code):
+            console.print_int(code)

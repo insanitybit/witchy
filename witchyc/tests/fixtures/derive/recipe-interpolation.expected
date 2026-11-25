@@ -1,0 +1,4 @@
+before
+f=1; Self For f a@b #x
+f=2; Self For f a@b #x
+after

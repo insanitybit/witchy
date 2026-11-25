@@ -1,0 +1,13 @@
+// Refused (found by adversarial review round 13): a `&mut` field in a view receiver would
+// let an unproved method break the type's invariant through a plain `&mut U64`.
+import console
+sealed type Arr<T>:
+    data: Buffer<T>
+    length: U64
+    capacity: U64
+    invariant memory.prefix(data, length, capacity)
+impl<T> Arr<T>:
+    fn grow(self: Self { &mut length }):
+        self.length = 1000
+fn main(console: Console<Write>):
+    console.print_int(1)

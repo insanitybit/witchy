@@ -1,0 +1,4 @@
+[package]
+name = "webauthn"
+version = "0.1.0"
+source = "webauthn.wy"

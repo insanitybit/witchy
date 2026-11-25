@@ -1,0 +1,15 @@
+// Dividing by -1 is proved not to trap once the dividend is above the least I64.
+import console
+import int
+
+fn f(x: I64) -> I64:
+    requires x > -100
+    ensures true
+    proof:
+        auto
+    let m: I64 = -1
+    x / m
+
+fn main(console: Console<Write>):
+    let a: I64 = -7
+    console.show(f(a))

@@ -1,0 +1,9 @@
+[Unit]
+Description=Loopback ingress for Coven review
+
+[Socket]
+ListenStream=127.0.0.1:9444
+Accept=no
+
+[Install]
+WantedBy=sockets.target

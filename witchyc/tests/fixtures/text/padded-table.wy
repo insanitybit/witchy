@@ -1,0 +1,28 @@
+// A table with aligned columns: names padded to a column with `pad_to` (counting scalars, so
+// `crème` is five wide), numbers right-aligned with `digit_count` and `write_repeated`, a rule
+// of `-` from `push_repeated` longer than a word.
+import console
+import string
+import text
+import int
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(e):
+        return
+    var line = move made
+    let names = ["pen", "crème", "notebook", "ink"]
+    let counts: [U64; 4] = [12, 7, 1500, 0]
+    for i in 0..4:
+        line.clear()
+        let _ = line.push_text(&allocator, names[i])
+        let _ = line.pad_to(&allocator, 10, ' ')
+        console.write_string(&line)
+        console.write_repeated(' ', 6 - counts[i].digit_count())
+        console.print_int(counts[i])
+    line.clear()
+    let _ = line.push_repeated(&allocator, '-', 16)
+    let _ = line.push_repeated(&allocator, 233, 2)
+    console.write_string(&line)
+    console.line("")
+    console.print("${line.scalar_count()} scalars, ${line.byte_len()} bytes; ${line.pad_to(&allocator, 3, '!').is_ok()}")
+    line.close()

@@ -1,0 +1,85 @@
+// `_:` is the arm of every variant that has none of its own; `Variant(_)` leaves a value unnamed.
+import "../../../library/wasm-vec.wy"
+
+type Token:
+    Number(U64)
+    Plus
+    Minus
+    Open
+    Close
+    End
+
+type Slot:
+    Full(Vec<U64>)
+    Marked(U64)
+    Empty
+
+fn weight(token: Token) -> U64:
+    match token:
+        Number(value):
+            return value
+        Plus:
+            return 1
+        _:
+            return 0
+
+fn is_number(token: &Token) -> Bool:
+    match token:
+        Number(_):
+            return true
+        _:
+            return false
+
+// Through a reference nothing is taken, so the owner in `Full` may go unnamed.
+fn marked(slot: &Slot) -> U64:
+    match slot:
+        Marked(mark):
+            return *mark
+        _:
+            return 0
+
+fn full(slot: &Slot) -> Bool:
+    match slot:
+        Full(_):
+            return true
+        _:
+            return false
+
+fn close(slot: Slot):
+    match move slot:
+        Full(items):
+            items.close()
+        _:
+            return
+
+fn main(console: Console<Write>, allocator: Allocator):
+    console.print_int(weight(Number(40)))
+    console.print_int(weight(Plus))
+    console.print_int(weight(Minus))
+    console.print_int(weight(End))
+    var count: U64 = 0
+    // The `_` arm falls through to the code after the match.
+    match Open:
+        Close:
+            count += 100
+        _:
+            count += 1
+    console.print_int(count)
+    if is_number(&Number(3)):
+        console.print_int(7)
+    if !is_number(&End):
+        console.print_int(8)
+    let made: Result<Vec<U64>, U64> = Vec.new(&allocator, 2)
+    match move made:
+        Ok(items):
+            let slot = Full(move items)
+            console.print_int(marked(&slot))
+            if full(&slot):
+                console.print_int(9)
+            close(move slot)
+        Err(_):
+            console.print_int(900)
+    let other = Marked(55)
+    console.print_int(marked(&other))
+    close(move other)
+    close(Empty)

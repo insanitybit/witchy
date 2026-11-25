@@ -1,0 +1,22 @@
+// The words of the launch come through the `Args` capability: how many, each by its index,
+// and nothing at an index past them. A word is bytes the operator typed; one that looks like
+// an engine flag is still only a word.
+import args
+import console
+
+fn show(console: &Console<Write>, args: &Args, allocator: &Allocator, index: U64):
+    match args.get(allocator, index):
+        Ok(word):
+            console.write_string(&word)
+            console.line("")
+            word.close()
+        Err(error):
+            console.line("missing")
+
+fn main(console: Console<Write>, args: Args, allocator: Allocator):
+    console.print_int(args.count())
+    show(&console, &args, &allocator, 0)
+    show(&console, &args, &allocator, 1)
+    show(&console, &args, &allocator, 2)
+    show(&console, &args, &allocator, 3)
+    show(&console, &args, &allocator, 18446744073709551615)

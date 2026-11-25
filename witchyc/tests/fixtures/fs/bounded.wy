@@ -1,0 +1,61 @@
+import console
+import fs
+import string
+
+fn main(console: Console<Write>, dir: Dir, allocator: Allocator):
+    let Ok(file): File<Write> = dir.create("text") else Err(error):
+        return
+    if let Err(error) = file.write("Hello"):
+        file.abandon()
+        return
+    if let Err(error) = file.finish():
+        return
+    let Ok(empty): File<Write> = dir.create("empty") else Err(error):
+        return
+    if let Err(error) = empty.finish():
+        return
+    let Ok(binary): File<Write> = dir.create("binary") else Err(error):
+        return
+    if let Err(error) = binary.write_byte(255):
+        binary.abandon()
+        return
+    if let Err(error) = binary.finish():
+        return
+    var output: [U8; 6] = [0; 6]
+    check_bytes(&console, &dir, "text", output.slice_mut())
+    check_bytes(&console, &dir, "text", output.slice_mut().part(0, 5))
+    check_bytes(&console, &dir, "text", output.slice_mut().part(0, 4))
+    check_bytes(&console, &dir, "empty", output.slice_mut().part(0, 0))
+    check_bytes(&console, &dir, "text", output.slice_mut().part(0, 0))
+    check_text(&console, &dir, "text", 6, &allocator)
+    check_text(&console, &dir, "text", 5, &allocator)
+    check_text(&console, &dir, "text", 4, &allocator)
+    check_text(&console, &dir, "empty", 0, &allocator)
+    check_text(&console, &dir, "text", 0, &allocator)
+    check_text(&console, &dir, "binary", 1, &allocator)
+
+fn check_bytes(console: &Console<Write>, dir: &Dir<Read>, name: Text, output: &mut [U8]):
+    let Ok(file): File<Read> = dir.open(name) else Err(error):
+        return
+    match file.read_to_end_into(output):
+        Ok(count):
+            console.print_int(count)
+        Err(TooLarge):
+            console.line("too large")
+        Err(_):
+            console.line("unexpected error")
+    file.close()
+
+fn check_text(console: &Console<Write>, dir: &Dir<Read>, name: Text, limit: U64, allocator: &Allocator):
+    let Ok(file): File<Read> = dir.open(name) else Err(error):
+        return
+    match file.read_text_bounded(allocator, limit):
+        Ok(content):
+            console.print_int(content.byte_len())
+            content.close()
+        Err(TooLarge):
+            console.line("too large")
+        Err(NotText):
+            console.line("invalid text")
+        Err(_):
+            console.line("unexpected error")

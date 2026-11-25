@@ -1,0 +1,34 @@
+// `[v; n]` into an array that lives in the frame (it is indexed with a computed position) is
+// written by a loop of stores for n of 8 or more, for each width of element; shorter ones are
+// written out. Every element is read back.
+import console
+import float
+
+fn main(console: Console<Write>):
+    var wide: [U64; 40] = [7; 40]
+    var bytes: [U8; 8] = [2; 8]
+    var floats: [F64; 9] = [1.5; 9]
+    var flags: [Bool; 12] = [true; 12]
+    var short: [U64; 3] = [5; 3]
+    let i = wide[39]
+    wide[i] = 1
+    bytes[i] = 3
+    floats[i] = 0.5
+    flags[i] = false
+    short[i - 5] = 6
+    var sum: U64 = 0
+    for k in 0..40:
+        sum += wide[k]
+    for k in 0..8:
+        sum += U8.to_u64(bytes[k])
+    var total = 0.0
+    for k in 0..9:
+        total += floats[k]
+    var set: U64 = 0
+    for k in 0..12:
+        if flags[k]:
+            set += 1
+    console.print_int(sum)
+    console.print_f64(total, 1)
+    console.print_int(set)
+    console.print_int(short[0] + short[1] + short[2])

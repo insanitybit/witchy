@@ -1,0 +1,18 @@
+// Refused: a `break` outside any loop, even inside a `let ... else` arm.
+import console
+
+fn check(n: U64) -> Result<U64, U64>:
+    return Err(n)
+
+gen fn top(limit: U64) -> U64:
+    var got: U64 = 0
+    yield 1
+    let Ok(v): U64 = check(limit) else Err(e):
+        break
+    got = v
+    yield got
+    yield 7
+
+fn main(console: Console<Write>):
+    for v in top(5):
+        console.print_int(v)

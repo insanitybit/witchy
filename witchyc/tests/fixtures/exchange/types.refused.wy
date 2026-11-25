@@ -1,0 +1,6 @@
+// Both sides have one type.
+fn main(console: Console<Write>):
+    var a: U64 = 1
+    var b: U8 = 2
+    memory.exchange(&mut a, &mut b)
+    console.print_int(a)

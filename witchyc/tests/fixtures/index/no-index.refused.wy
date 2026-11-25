@@ -1,0 +1,8 @@
+// A type without an `index` method cannot be read with `[ ]`.
+type Point:
+    x: U64
+    y: U64
+
+fn main():
+    let point = Point(1, 2)
+    let value = point[0]

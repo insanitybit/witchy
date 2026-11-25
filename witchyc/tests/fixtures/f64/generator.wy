@@ -1,0 +1,19 @@
+// A generator keeps an F64 local between steps and yields F64 values.
+import console
+import float
+
+// Halves of a starting value, as many as asked.
+gen fn halves(start: F64, count: U64) -> F64:
+    var value: F64 = start
+    var made: U64 = 0
+    while made < count:
+        yield value
+        value = value / 2.0
+        made += 1
+
+fn main(console: Console<Write>):
+    var total = 0.0
+    for h in halves(3.0, 5):
+        console.print_f64(h, 4)
+        total += h
+    console.print_f64(total, 4)

@@ -1,0 +1,14 @@
+// Two Text values compare by their bytes, eight at a time with the last word cut to the length:
+// lengths that differ, a difference in the last byte past a whole word, empty texts.
+import console
+import string
+
+fn label(t: Text) -> Text:
+    return t
+
+fn main(console: Console<Write>):
+    let a: Text = "abcdefghij"
+    let b: Text = "abcdefghik"
+    let c: Text = "abcdefghij"
+    console.print("${a == b} ${a == c} ${label("x") == "y"} ${label("x") == "x"}")
+    console.print("${"" == ""} ${"abc" == "abcd"} ${"12345678" == "12345678"} ${"1234567x" != "12345678"}")

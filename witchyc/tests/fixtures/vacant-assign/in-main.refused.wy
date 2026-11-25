@@ -1,0 +1,24 @@
+// Refused by the checker: `main` has no contract, so nothing in it can be given the proof.
+import "../../../library/wasm-string.wy"
+
+type Slot:
+    Vacant
+    Full(String)
+
+type Shelf:
+    count: U64
+    slot: Slot
+
+fn main(out: Console<Write>, allocator: Allocator):
+    match String.new(&allocator):
+        Err(code):
+            out.print_int(code)
+        Ok(text):
+            var shelf: Shelf = Shelf(0, Vacant)
+            shelf.slot = Full(move text)
+            let Shelf(count, slot) = move shelf
+            match move slot:
+                Vacant:
+                    out.print_int(count)
+                Full(kept):
+                    kept.close()

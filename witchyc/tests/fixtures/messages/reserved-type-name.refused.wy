@@ -1,0 +1,9 @@
+// Refused, listing the reserved names: `Boxed` is the language's owning box.
+import console
+
+type Boxed:
+    count: U64
+
+fn main(console: Console<Write>):
+    let boxed = Boxed(2)
+    console.print_int(boxed.count)

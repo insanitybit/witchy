@@ -1,0 +1,88 @@
+// A key-value service over a socket the program dials to itself: the client side sends
+// `SET key value` and `GET key` lines and `END`; the server side reads them, keeps a
+// HashMap<String, U64>, and answers each GET; the client prints the answers. Network,
+// allocation and parse errors meet in one `?` (NetError makes one of an allocator's code).
+import console
+import hashmap
+import net
+import span
+import string
+
+// One line from the socket, without its newline. Err: the other side finished first.
+fn line(socket: &Socket, allocator: &Allocator) -> Result<String, NetError>:
+    using var text: String = String.new(allocator)?:
+        while true:
+            match socket.next_byte():
+                Ok(byte):
+                    if byte == 10:
+                        return Ok(move text)
+                    if let Err(_) = text.push(allocator, U8.to_u64(byte)):
+                        return Err(TooLarge)
+                Err:
+                    return Err(Io)
+        unreachable
+
+// The server side: a GET is answered with the value or `none`.
+fn serve(socket: &Socket, allocator: &Allocator) -> Result<U64, NetError>:
+    var answered: U64 = 0
+    using var store: HashMap<String, U64> = HashMap.new(allocator, 8)?:
+        while true:
+            using var request: String = line(socket, allocator)?:
+                let words = request.span()
+                match words.split(32):
+                    Ok(command):
+                        let rest = command.tail
+                        if command.head.equals_text("SET"):
+                            match rest.split(32):
+                                Ok(pair):
+                                    let value = pair.tail.parse_u64()?
+                                    let key = pair.head.to_string(allocator)?
+                                    match store.put(allocator, move key, value):
+                                        Ok:
+                                            ()
+                                        Err(back):
+                                            let Entry(k, v) = move back
+                                            k.close()
+                                Err(one):
+                                    socket.send("bad\n")?
+                        else:
+                            match store.get(&rest):
+                                Ok(value):
+                                    using var reply: String = String.new(allocator)?:
+                                        if let Err(_) = reply.push_format(allocator, "${*value}\n"):
+                                            return Err(TooLarge)
+                                        socket.send_string(&reply)?
+                                Err(code):
+                                    socket.send("none\n")?
+                            answered += 1
+                    Err(alone):
+                        socket.send("BYE\n")?
+                        return Ok(answered)
+        unreachable
+
+fn main(console: Console<Write>, net: Net, listener: Listener, allocator: Allocator):
+    let Ok(near): Socket = net.connect("127.0.0.1:47616") else Err(error):
+        console.line("no connection")
+        return
+    let Ok(far): Socket = listener.accept() else Err(error):
+        near.close()
+        return
+    let sent = near.send("SET apples 3\nSET pears 5\nGET apples\nGET plums\nSET apples 9\nGET pears\nEND\n")
+    match serve(&far, &allocator):
+        Ok(count):
+            console.print("answered ${count}")
+        Err(error):
+            console.line("server failed")
+    var going = true
+    while going:
+        match line(&near, &allocator):
+            Ok(reply):
+                console.write_string(&reply)
+                console.line("")
+                if reply.byte_len() == 3:
+                    going = false
+                reply.close()
+            Err(error):
+                going = false
+    far.close()
+    near.close()

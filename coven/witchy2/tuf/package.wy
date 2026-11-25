@@ -1,0 +1,28 @@
+import "package_imports.wy"
+import "package_record.wy"
+import span
+import vec
+
+pub fn validate_package(bytes: &[U8], name: Span, version: Span, allocator: &Allocator) -> Result<(), PackageError>:
+    let payload = Span.of(bytes)
+    let header = package_header(payload)?
+    if !header.name.same(name) || !header.version.same(version):
+        return Err(InvalidRecord)
+    return validate_package_contents(payload, header, allocator)
+
+pub fn validate_package_contents(payload: Span, header: PackageHeader, allocator: &Allocator) -> Result<(), PackageError>:
+    if !header.multi:
+        // The v1 format has one opaque body and no file table.
+        if !header.after_requires.starts_with_text("\n"):
+            return Err(InvalidRecord)
+        return Ok(())
+    let Ok(empty): Vec<PackageFile> = Vec.new(allocator, 4) else Err(code):
+        return Err(PackageResourceFailure)
+    var files = move empty
+    let checked = validate_multi(payload, header, &mut files, allocator)
+    files.close()
+    return checked
+
+fn validate_multi(payload: Span, header: PackageHeader, files: &mut Vec<PackageFile>, allocator: &Allocator) -> Result<(), PackageError>:
+    let entry = package_files(payload, header.after_requires, files, allocator)?
+    return check_import_closure(payload, header.requirements, files, entry, allocator)

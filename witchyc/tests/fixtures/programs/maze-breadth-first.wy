@@ -1,0 +1,65 @@
+// Shortest path through a maze by breadth-first search: a Deque of cells, distances in a Vec.
+import console
+import string
+import vec
+import deque
+import discard
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(m): String = String.new(&allocator) else Err(c):
+        return
+    var maze = move m
+    // 8 x 6, `#` wall, `S` start, `E` end.
+    let _ = maze.push_text(&allocator, "S..#....#.#..##.#...#...##.#.#.#.....#...##.###E")
+    let width: U64 = 8
+    let height: U64 = 6
+    let cells = width * height
+    let Ok(d): Vec<U64> = Vec.filled(&allocator, cells, 18446744073709551615) else Err(c):
+        maze.close()
+        return
+    var distance = move d
+    let Ok(q): Deque<U64> = Deque.new(&allocator, 16) else Err(c):
+        maze.close()
+        distance.close()
+        return
+    var queue = move q
+    let bytes = maze.as_bytes()
+    var start: U64 = 0
+    var end: U64 = 0
+    for i in 0..cells:
+        if bytes[i] == 83:
+            start = i
+        if bytes[i] == 69:
+            end = i
+    let s = distance.set(start, 0)
+    let pushed = queue.push_back_mut(start)
+    while true:
+        let Ok(at): U64 = queue.pop_front_mut() else Err(empty):
+            break
+        let x = at % width
+        let y = at / width
+        let here = distance[at]
+        // Up, down, left, right, each only inside the grid.
+        for k in 0..4:
+            var next = cells
+            if k == 0 && y > 0:
+                next = at - width
+            else if k == 1 && y + 1 < height:
+                next = at + width
+            else if k == 2 && x > 0:
+                next = at - 1
+            else if k == 3 && x + 1 < width:
+                next = at + 1
+            if next < cells && bytes[next] != 35 && distance[next] == 18446744073709551615:
+                let t = distance.set(next, here + 1)
+                if queue.len() == queue.capacity():
+                    let _ = queue.reserve_mut(&allocator, queue.capacity() * 2)
+                let q2 = queue.push_back_mut(next)
+    let steps = distance[end]
+    if steps == 18446744073709551615:
+        console.line("no way through")
+    else:
+        console.print("${steps} steps")
+    queue.discard()
+    distance.close()
+    maze.close()

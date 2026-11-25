@@ -1,0 +1,39 @@
+// A method called on a reference a call makes.
+import console
+import tasks
+import vec
+
+fn work(n: U64) suspends:
+    pause(n)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<Task> = Vec.new(&allocator, 1) else Err(code):
+        return
+    var tasks = move made
+    match Task.spawn(&allocator, 1024, work, 3):
+        Ok(task):
+            match tasks.push_mut(&allocator, move task):
+                Ok:
+                    console.print_int(0)
+                Err(back):
+                    back.close()
+        Err(input):
+            tasks.release_empty()
+            return
+    let all = tasks.as_mut_slice()
+    match all.cell(0).step():
+        Ok:
+            console.print_int(1)
+        Err(token):
+            console.print_int(token)
+    match all.cell(0).step():
+        Ok:
+            console.print_int(1)
+        Err(token):
+            console.print_int(token)
+    match tasks.take_last_mut():
+        Ok(task):
+            task.close()
+        Err(code):
+            unreachable
+    tasks.release_empty()

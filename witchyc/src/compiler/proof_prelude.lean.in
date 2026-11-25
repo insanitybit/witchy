@@ -1,0 +1,44 @@
+set_option autoImplicit false
+set_option debug.skipKernelTC false
+set_option linter.unusedSimpArgs false
+namespace WitchyScalar
+elab "witchy_inline_omega" : tactic =>
+  Lean.Elab.Tactic.liftMetaFinishingTactic fun goal => do
+    let some goal ← goal.falseOrByContra | return ()
+    goal.withContext do
+      let facts := (← Lean.getLocalHyps).toList
+      Lean.Elab.Tactic.Omega.omega facts goal {}
+-- Whether a hypothesis is one omega can use: linear facts over Nat and Int under the
+-- connectives and implications between them. The others (a cell fact, a quantified one, an
+-- implication to one) are no use to omega, which still splits on those implications.
+-- Annotations are looked through: the negated goal that `falseOrByContra` adds wraps its
+-- proposition in one, and without the goal omega cannot close anything (2026-11-25).
+def witchyArith : Nat → Lean.Expr → Bool
+  | 0, _ => false
+  | n + 1, e =>
+    let e := e.consumeMData
+    let number := fun (t : Lean.Expr) => t.isConstOf ``Nat || t.isConstOf ``Int
+    if e.isConstOf ``False || e.isConstOf ``True then true
+    else if e.isForall then
+      !e.bindingBody!.hasLooseBVars && witchyArith n e.bindingDomain! && witchyArith n e.bindingBody!
+    else match e.getAppFnArgs with
+      | (``Not, #[p]) => witchyArith n p
+      | (``And, #[p, q]) | (``Or, #[p, q]) | (``Iff, #[p, q]) => witchyArith n p && witchyArith n q
+      | (``Eq, #[t, _, _]) | (``Ne, #[t, _, _]) => number t
+      | (``LT.lt, #[t, _, _, _]) | (``LE.le, #[t, _, _, _]) | (``GT.gt, #[t, _, _, _])
+      | (``GE.ge, #[t, _, _, _]) | (``Dvd.dvd, #[t, _, _, _]) => number t
+      | _ => false
+-- Omega over those hypotheses only; `witchy_omega` falls back to every hypothesis, so it
+-- closes what `witchy_inline_omega` closes. The kernel checks either proof (2026-11-25).
+elab "witchy_arith_omega" : tactic =>
+  Lean.Elab.Tactic.liftMetaFinishingTactic fun goal => do
+    let some goal ← goal.falseOrByContra | return ()
+    goal.withContext do
+      let mut facts : List Lean.Expr := []
+      for h in ← Lean.getLocalHyps do
+        if witchyArith 32 (← Lean.instantiateMVars (← Lean.Meta.inferType h)) then facts := h :: facts
+      Lean.Elab.Tactic.Omega.omega facts goal {}
+macro "witchy_omega" : tactic => `(tactic| first | witchy_arith_omega | witchy_inline_omega)
+macro "witchy_close" : tactic =>
+  `(tactic| first | exact True.intro | assumption | (with_reducible rfl) | witchy_omega | (simp [*] <;> witchy_omega) | (simp_all <;> witchy_omega))
+set_option linter.unusedVariables false

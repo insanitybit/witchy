@@ -1,0 +1,87 @@
+// Refused, saying what converts an F64 to a U64: it said "unsupported scalar conversion".
+import console
+import string
+import float
+import json_tree
+
+// Settings read from a JSON document, each with a default when absent or of another kind.
+fn port_of(doc: &Json) -> U64:
+    let Ok(value) = doc.field("port") else Err(code):
+        return 80
+    let Ok(number) = value.number() else Err(code):
+        return 80
+    return F64.to_u64(number)
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    let Ok(l): String = String.new(&allocator) else Err(e):
+        return
+    var text = move l
+    match input.read_line(&allocator, &mut text):
+        .Line:
+            ()
+        .End:
+            ()
+        .NotText:
+            ()
+        .NoRoom:
+            ()
+    let Ok(doc) = json_tree(&text, &allocator) else Err(code):
+        console.print("bad json ${code}")
+        text.close()
+        return
+    match doc.field("name"):
+        Ok(value):
+            match value.text():
+                Ok(name):
+                    console.write("name ")
+                    console.write_string(name)
+                    console.line("")
+                Err(code):
+                    console.line("name is not text")
+        Err(code):
+            console.line("no name")
+    console.print("port ${port_of(&doc)}")
+    match doc.field("debug"):
+        Ok(value):
+            match value.boolean():
+                Ok(on):
+                    console.print("debug ${on}")
+                Err(code):
+                    console.line("debug is not a Boolean")
+        Err(code):
+            console.line("debug false")
+    match doc.field("hosts"):
+        Ok(hosts):
+            match hosts.len():
+                Ok(count):
+                    for index in 0..count:
+                        match hosts.item(index):
+                            Ok(host):
+                                match host.text():
+                                    Ok(h):
+                                        console.write("host ")
+                                        console.write_string(h)
+                                        console.line("")
+                                    Err(code):
+                                        continue
+                            Err(code):
+                                break
+                Err(code):
+                    console.line("hosts is not a list")
+        Err(code):
+            console.line("no hosts")
+    match doc.field("limits"):
+        Ok(limits):
+            match limits.field("burst"):
+                Ok(burst):
+                    match burst.number():
+                        Ok(b):
+                            console.print("burst ${b}")
+                        Err(code):
+                            console.line("burst is not a number")
+                Err(code):
+                    console.line("no burst")
+        Err(code):
+            console.line("no limits")
+    json_close(move doc)
+    text.close()

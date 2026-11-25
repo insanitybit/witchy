@@ -1,0 +1,23 @@
+// `&v[i]` of a Vec of owners lends the element (`Vec.cell`).
+import console
+import string
+import vec
+import discard
+
+fn size(text: &String) -> U64:
+    return text.byte_len()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<String> = Vec.new(&allocator, 2) else Err(code):
+        return
+    var all = move made
+    if let Ok(s) = String.new(&allocator):
+        var t = move s
+        let _ = t.push_text(&allocator, "hello")
+        match all.push_mut(&allocator, move t):
+            Ok:
+                ()
+            Err(back):
+                back.close()
+    console.print_int(size(&all[0]))
+    all.discard()

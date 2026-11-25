@@ -1,0 +1,14 @@
+// A field of a type of the program's own with no Hash: the refusal names the type and the field.
+import console
+import hash
+
+type Colour:
+    Red
+    Green
+
+type Tile derive(Hash):
+    x: U64
+    paint: Colour
+
+fn main(console: Console<Write>):
+    console.print_int(Tile(x: 1, paint: Red).hash())

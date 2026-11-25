@@ -1,0 +1,189 @@
+// Offsets into a sibling buffer. `Index` keeps text in `bytes` and, in `spans`, where each
+// piece of it starts and how long it is. The type's invariant says every span lies inside
+// the text, of every element at once. Lean shows it where a span is added and where text is
+// appended; a read through a span then needs no range test, and cannot trap.
+import console
+import vec
+
+type Span:
+    start: U64
+    len: U64
+
+sealed type Index:
+    bytes: Vec<U8>
+    spans: Vec<Span>
+    invariant forall i in (0, spans.len()): spans[i].start + spans[i].len <= bytes.len()
+
+impl Index:
+    pub fn new(allocator: &Allocator) -> Result<Index, U64>:
+        ensures true
+        proof:
+            auto
+        let bytes: Vec<U8> = Vec.new(allocator, 0)?
+        let made: Result<Vec<Span>, U64> = Vec.new(allocator, 0)
+        match move made:
+            Ok(spans):
+                return Ok(Index(move bytes, move spans))
+            Err(code):
+                bytes.release_empty()
+                return Err(code)
+
+    // More text: every span still lies inside it, since it only grows.
+    pub fn append(index: &mut Index, allocator: &Allocator, byte: U8) -> Bool:
+        ensures true
+        proof:
+            auto
+        match index.bytes.push_mut(allocator, byte):
+            Ok:
+                return true
+            Err(back):
+                return false
+
+    // A span is added only when it lies inside the text.
+    pub fn mark(index: &mut Index, allocator: &Allocator, start: U64, len: U64) -> Bool:
+        ensures true
+        proof:
+            auto
+        if start > index.bytes.len():
+            return false
+        if len > index.bytes.len() - start:
+            return false
+        let span = Span(start, len)
+        match index.spans.push_mut(allocator, span):
+            Ok:
+                return true
+            Err(back):
+                return false
+
+    // Span `i` is given a new place, when that lies inside the text.
+    pub fn retarget(index: &mut Index, i: U64, start: U64, len: U64) -> Bool:
+        ensures true
+        proof:
+            auto
+        if start > index.bytes.len():
+            return false
+        if len > index.bytes.len() - start:
+            return false
+        let span = Span(start, len)
+        match index.spans.set(i, span):
+            Ok:
+                return true
+            Err(code):
+                return false
+
+    // The same, where there being no span `i` is a mistake.
+    pub fn retarget_at(index: &mut Index, i: U64, start: U64) -> Bool:
+        ensures true
+        proof:
+            auto
+        if start > index.bytes.len():
+            return false
+        let span = Span(start, 0)
+        index.spans[i] = span
+        return true
+
+    // Two spans change places: each is still a span that was there.
+    pub fn exchange(index: &mut Index, first: U64, second: U64) -> Bool:
+        ensures true
+        proof:
+            auto
+        match index.spans.swap(first, second):
+            Ok:
+                return true
+            Err(code):
+                return false
+
+    // The last span is taken out: it lay inside the text, and those left still do.
+    pub fn drop_last(index: &mut Index) -> U64:
+        ensures result <= index.bytes.len()
+        proof:
+            auto
+        match index.spans.take_last_mut():
+            Ok(span):
+                return span.start + span.len
+            Err(code):
+                return 0
+
+    // The first byte of span `i`, read with no test against the text's length.
+    pub nopanic fn first_byte(index: &Index, i: U64) -> Result<U8, U64>:
+        ensures true
+        proof:
+            auto
+        match index.spans.at(i):
+            Ok(span):
+                if span.len == 0:
+                    return Err(2)
+                let text = index.bytes.as_slice()
+                return Ok(text[span.start])
+            Err(code):
+                return Err(1)
+
+    // The last byte of every span added up, through a slice of the spans.
+    pub nopanic fn total(index: &Index) -> U64:
+        ensures true
+        proof:
+            auto
+        var sum = 0
+        let text = index.bytes.as_slice()
+        let spans = index.spans.as_slice()
+        for i in 0..spans.len():
+            invariant sum < 65536
+            let span = spans[i]
+            if span.len > 0:
+                sum = (sum + U8.to_u64(text[span.start + span.len - 1])) % 65536
+        return sum
+
+    // Where span `i` ends, through `spans[i]`: no farther than the text.
+    pub fn end(index: &Index, i: U64) -> U64:
+        ensures result <= index.bytes.len()
+        proof:
+            auto
+        let span = index.spans[i]
+        return span.start + span.len
+
+    pub fn close(index: Index):
+        let Index(bytes, spans) = move index
+        bytes.close()
+        spans.close()
+
+fn flag(yes: Bool) -> U64:
+    if yes:
+        return 1
+    return 0
+
+fn main(console: Console<Write>, allocator: Allocator):
+    match Index.new(&allocator):
+        Ok(made):
+            var index = move made
+            for byte in [104, 101, 108, 108, 111, 33]:
+                let added = index.append(&allocator, U8.truncate(*byte))
+            let a = index.mark(&allocator, 0, 5)
+            let b = index.mark(&allocator, 5, 1)
+            let c = index.mark(&allocator, 4, 9)
+            console.print_int(flag(a))
+            console.print_int(flag(b))
+            console.print_int(flag(c))
+            match index.first_byte(1):
+                Ok(byte):
+                    console.print_int(U8.to_u64(byte))
+                Err(code):
+                    console.print_int(1000 + code)
+            match index.first_byte(2):
+                Ok(byte):
+                    console.print_int(U8.to_u64(byte))
+                Err(code):
+                    console.print_int(1000 + code)
+            console.print_int(index.total())
+            console.print_int(index.end(1))
+            console.print_int(flag(index.retarget(0, 2, 3)))
+            console.print_int(flag(index.retarget(0, 2, 9)))
+            console.print_int(flag(index.retarget(7, 0, 0)))
+            console.print_int(flag(index.exchange(0, 1)))
+            console.print_int(index.end(1))
+            console.print_int(flag(index.retarget_at(1, 6)))
+            console.print_int(index.drop_last())
+            console.print_int(index.drop_last())
+            console.print_int(index.drop_last())
+            index.close()
+        Err(code):
+            console.print_int(code)

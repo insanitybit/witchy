@@ -1,0 +1,19 @@
+// Refused: a recipe writing `__witchy_`, the expansion's escape for `@` and `#` (review: it
+// turned into `#` in a literal's text).
+import console
+
+trait Shown:
+    fn show(self: &Self, console: &Console<Write>)
+
+derive Show:
+    impl Shown for Self:
+        fn show(self: &Self, console: &Console<Write>):
+            console.line("__witchy_hash__x __witchy_at__y")
+
+type T derive(Show):
+    id: U64
+
+fn main(console: Console<Write>):
+    let v = T(id: 5)
+    v.show(&console)
+    console.line("__witchy_hash__x __witchy_at__y")

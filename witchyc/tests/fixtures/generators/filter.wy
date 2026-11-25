@@ -1,0 +1,19 @@
+// A generator filtering a Vec: `if *x % 2 == 0: yield *x` inside a `for`, the item read up to its yield.
+import console
+import vec
+
+gen fn evens(v: &Vec<U64>) -> U64:
+    for x in v:
+        if *x % 2 == 0:
+            yield *x
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.new(&allocator, 3) else Err(e):
+        return
+    var v = move made
+    let a = v.push_mut(&allocator, 4)
+    let b = v.push_mut(&allocator, 7)
+    let c = v.push_mut(&allocator, 8)
+    for x in evens(&v):
+        console.print_int(x)
+    v.close()

@@ -1,0 +1,36 @@
+import crypto
+import span
+import "cose.wy"
+
+pub type AssertionError:
+    AssertionRefused
+    AssertionCryptoFailed
+
+// The caller validates clientDataJSON and supplies the expected RP ID.
+pub pure fn verify_es256_assertion(key: &[U8], client: &[U8], auth: &[U8], rp_id: &[U8], signature: &[U8], previous: U64) -> Result<U64, AssertionError>:
+    if auth.len() != 37 || client.len() > 65536 || signature.len() > 72:
+        return Err(AssertionRefused)
+    let flags = auth[32]
+    // Require presence and verification. Backup state implies eligibility.
+    if (flags & 5) != 5 || (flags & 226) != 0 || ((flags & 16) != 0 && (flags & 8) == 0):
+        return Err(AssertionRefused)
+    var rp_hash: [U8; 32] = [0; 32]
+    if let Err(error) = crypto.sha256(rp_id, rp_hash.slice_mut()):
+        return Err(AssertionCryptoFailed)
+    if !Span.of(auth.part(0, 32)).same(Span.of(rp_hash.slice())):
+        return Err(AssertionRefused)
+    var point: [U8; 65] = [0; 65]
+    if !es256_point(key, &mut point):
+        return Err(AssertionRefused)
+    var message: [U8; 69] = [0; 69]
+    message.slice_mut().part(0, 37).copy_from(auth)
+    if let Err(error) = crypto.sha256(client, message.slice_mut().part(37, 69)):
+        return Err(AssertionCryptoFailed)
+    if !crypto.p256_verify(point.slice(), message.slice(), signature):
+        return Err(AssertionRefused)
+    var count: U64 = 0
+    for i in 33..37:
+        count = (count << 8) | U8.to_u64(auth[i])
+    if (count != 0 || previous != 0) && count <= previous:
+        return Err(AssertionRefused)
+    return Ok(count)

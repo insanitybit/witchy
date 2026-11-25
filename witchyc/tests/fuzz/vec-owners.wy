@@ -1,0 +1,202 @@
+// Ownership transitions of Vec, driven by the bytes of the input (scripts/native-vec-fuzz.py
+// writes them and holds the model this program's output is compared with). Each operation is
+// three bytes: which, and two operands. `numbers` holds words; `owners` holds Strings, each an
+// allocation of its own, which every operation must hand on, give back or release exactly once.
+import console
+import string
+import text
+import vec
+import discard
+
+fn word(allocator: &Allocator, number: U64) -> Result<String, U64>:
+    var made = String.new(allocator)?
+    if made.push_text(allocator, "w").is_err() || made.push_u64(allocator, number).is_err():
+        made.close()
+        return Err(1)
+    return Ok(move made)
+
+// A Vec moved in and out by value.
+fn through(input: Vec<U64>, keep: U64) -> Vec<U64>:
+    return input.truncate(keep)
+
+fn show(console: &Console<Write>, numbers: &Vec<U64>, owners: &Vec<String>):
+    var sum: U64 = 0
+    for value in numbers:
+        sum = (sum * 31 + *value) % 1000000007
+    console.write_u64(numbers.len())
+    console.write(" ")
+    console.write_u64(sum)
+    console.write(" ")
+    console.write_u64(owners.len())
+    for item in owners:
+        console.write(" ")
+        console.write_string(item)
+    console.line("")
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    let Ok(first): Vec<U64> = Vec.new(&allocator, 0) else Err(e):
+        return
+    var numbers = move first
+    let Ok(second): Vec<String> = Vec.new(&allocator, 1) else Err(e):
+        numbers.close()
+        return
+    var owners = move second
+    var going = true
+    while going:
+        var op: U64 = 0
+        var a: U64 = 0
+        var b: U64 = 0
+        match input.read_byte():
+            Ok(byte):
+                op = U8.to_u64(byte) % 16
+            Err(e):
+                going = false
+        match input.read_byte():
+            Ok(byte):
+                a = U8.to_u64(byte)
+            Err(e):
+                going = false
+        match input.read_byte():
+            Ok(byte):
+                b = U8.to_u64(byte)
+            Err(e):
+                going = false
+        if going:
+            if op == 0:
+                match numbers.push_mut(&allocator, a * 256 + b):
+                    Ok:
+                        ()
+                    Err(back):
+                        console.line("no room")
+            else if op == 1:
+                match numbers.take_last_mut():
+                    Ok(value):
+                        console.write_u64(value)
+                        console.line(" popped")
+                    Err(e):
+                        console.line("empty")
+            else if op == 2:
+                match numbers.get(a):
+                    Ok(value):
+                        console.write_u64(value)
+                        console.line(" read")
+                    Err(e):
+                        console.line("past")
+            else if op == 3:
+                match numbers.insert_at(&allocator, a % 8, b):
+                    Ok:
+                        ()
+                    Err(back):
+                        console.line("not inserted")
+            else if op == 4:
+                match numbers.remove_at(a % 8):
+                    Ok(value):
+                        console.write_u64(value)
+                        console.line(" removed")
+                    Err(e):
+                        console.line("none")
+            else if op == 5:
+                match numbers.swap(a % 8, b % 8):
+                    Ok:
+                        ()
+                    Err(e):
+                        console.line("not swapped")
+            else if op == 6:
+                if a % 8 <= numbers.len():
+                    numbers.truncate_mut(a % 8)
+            else if op == 7:
+                match Vec.filled(&allocator, a % 5, b):
+                    Ok(more):
+                        match numbers.extend_copy_mut(&allocator, &more):
+                            Ok:
+                                ()
+                            Err(e):
+                                console.line("not extended")
+                        more.close()
+                    Err(e):
+                        console.line("no room")
+            else if op == 8:
+                match word(&allocator, a * 256 + b):
+                    Ok(item):
+                        match owners.push_mut(&allocator, move item):
+                            Ok:
+                                ()
+                            Err(back):
+                                back.close()
+                                console.line("no room")
+                    Err(e):
+                        console.line("no room")
+            else if op == 9:
+                match owners.remove_at(a % 8):
+                    Ok(taken):
+                        console.write_string(&taken)
+                        console.line(" removed")
+                        taken.close()
+                    Err(e):
+                        console.line("none")
+            else if op == 10:
+                match word(&allocator, 70000 + b):
+                    Ok(item):
+                        match owners.replace_mut(a % 8, move item):
+                            Ok(old):
+                                console.write_string(&old)
+                                console.line(" replaced")
+                                old.close()
+                            Err(back):
+                                back.close()
+                                console.line("not replaced")
+                    Err(e):
+                        console.line("no room")
+            else if op == 11:
+                match word(&allocator, 80000 + b):
+                    Ok(item):
+                        match owners.insert_at(&allocator, a % 8, move item):
+                            Ok:
+                                ()
+                            Err(back):
+                                console.write_string(&back)
+                                console.line(" not inserted")
+                                back.close()
+                    Err(e):
+                        console.line("no room")
+            else if op == 12:
+                owners.reverse()
+            else if op == 13:
+                match owners.take_last_mut():
+                    Ok(taken):
+                        console.write_string(&taken)
+                        console.line(" popped")
+                        taken.close()
+                    Err(e):
+                        console.line("empty")
+            else if op == 14:
+                let huge: Result<Vec<U64>, U64> = Vec.new(&allocator, 1152921504606846976 + a)
+                match move huge:
+                    Ok(made):
+                        made.close()
+                        console.line("made")
+                    Err(e):
+                        console.line("refused")
+                match numbers.reserve_mut(&allocator, 1152921504606846976 + b):
+                    Ok:
+                        console.line("reserved")
+                    Err(e):
+                        console.line("not reserved")
+            else:
+                let length = numbers.len()
+                var keep = length
+                if a % 8 <= length:
+                    keep = a % 8
+                numbers = through(move numbers, keep)
+                match numbers.try_release():
+                    Ok:
+                        console.line("released")
+                        let Ok(again): Vec<U64> = Vec.new(&allocator, b % 4) else Err(e):
+                            owners.discard()
+                            return
+                        numbers = move again
+                    Err(back):
+                        numbers = move back
+            show(&console, &numbers, &owners)
+    numbers.close()
+    owners.discard()

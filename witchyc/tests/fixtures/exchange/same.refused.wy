@@ -1,0 +1,5 @@
+// One place cannot be both sides.
+fn main(console: Console<Write>):
+    var a: U64 = 1
+    memory.exchange(&mut a, &mut a)
+    console.print_int(a)

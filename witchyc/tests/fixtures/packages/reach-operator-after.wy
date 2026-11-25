@@ -1,0 +1,15 @@
+// `>` and `<=` are the standard library's, though alpha offers a `sort_after` of its own.
+import console
+import time
+import "@alpha"
+
+fn main(console: Console<Write>):
+    if Duration.from_ms(5) > Duration.from_ms(9):
+        console.print_int(666)
+    else:
+        console.print_int(1)
+    if Duration.from_ms(9) <= Duration.from_ms(5):
+        console.print_int(666)
+    else:
+        console.print_int(2)
+    console.print_int(alpha.shown())

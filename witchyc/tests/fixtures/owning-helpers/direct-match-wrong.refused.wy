@@ -1,0 +1,32 @@
+// Refused by the proof: the call matched where it is made is known to give back `Full(a)`, so
+// the claim that the `Vacant` arm's value is returned is false.
+type Slot<T>:
+    Vacant
+    Full(T)
+
+nopanic fn drain<T: Any>(slot: &mut Slot<T>) -> Slot<T>:
+    var previous: Slot<T> = Vacant
+    memory.exchange(&mut *slot, &mut previous)
+    return move previous
+
+// Puts `next` in the slot and hands back what was there, wrapped.
+nopanic fn wrap(slot: &mut Slot<U64>, next: Slot<U64>) -> Slot<Slot<U64>>:
+    var previous: Slot<U64> = next
+    memory.exchange(&mut *slot, &mut previous)
+    var wrapped: Slot<Slot<U64>> = Full(previous)
+    return wrapped
+
+fn drained(a: U64) -> U64:
+    requires a < 1000
+    ensures result == 7777
+    proof:
+        auto
+    var slot: Slot<U64> = Full(a)
+    match drain(&mut slot):
+        Vacant:
+            return 7777
+        Full(value):
+            return value
+
+fn main(out: Console<Write>):
+    out.print_int(drained(3))

@@ -1,0 +1,53 @@
+// Refused (adversarial review round 11): a keyed record with no Eq impl (a query type) passed as a lawful leaf, and == on it called an unchecked inherent eq; a field's record type must have its own checked Eq.
+// X has no Eq: an inherent `eq` (never true) and a checked Equivalent<X> for X, so the law passes it
+// as a keyed record; `==` on a field of type X lowers to `x.eq(&y)`, which finds the inherent one.
+import console
+import hash
+import hashmap
+import keymap
+import discard
+
+type X derive(Discard):
+    v: U64
+
+impl HashKey for X:
+    fn feed(self: &X, state: &mut HashState):
+        (*self).v.feed(state)
+
+impl Equivalent<X> for X:
+    fn equivalent(self: &X, key: &X) -> Bool:
+        return (*self).v == (*key).v
+
+type Outer derive(Discard):
+    x: X
+
+impl Eq for Outer:
+    fn eq(self: &Outer, other: &Outer) -> Bool:
+        return (*self).x == (*other).x
+
+impl HashKey for Outer:
+    fn feed(self: &Outer, state: &mut HashState):
+        (*self).x.feed(state)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): KeyMap<Outer, U64> = KeyMap.new(&allocator, 64, Reference(1)) else Err(code):
+        return
+    var map = move made
+    let probe = Outer(x: X(v: 7))
+    if probe.eq(&probe):
+        console.print_int(1)
+    else:
+        console.print_int(0)
+    for i in 0..3:
+        match map.put(&allocator, Outer(x: X(v: 7)), i):
+            Ok:
+                ()
+            Err(entry):
+                entry.discard()
+    console.print_int(map.len())
+    if map.contains(&probe):
+        console.print_int(1)
+    else:
+        console.print_int(0)
+    probe.discard()
+    map.discard()

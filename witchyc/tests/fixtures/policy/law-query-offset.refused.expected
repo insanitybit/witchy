@@ -1,0 +1,1 @@
+`NameQuery` feeds its fields so that they do not match `NameKey`'s feed in order through `equivalent`: an equivalent query could hash apart from its key

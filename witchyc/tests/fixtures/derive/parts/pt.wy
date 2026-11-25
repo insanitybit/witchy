@@ -1,0 +1,34 @@
+pub sealed type Token:
+    v: U64
+
+pub fn redeem(t: &Token) -> U64:
+    return t.v
+
+trait Mk:
+    fn make() -> Self
+    fn again(self: &Self) -> Self
+
+impl Mk for Token:
+    fn make() -> Token:
+        return Token(v: 999)
+    fn again(self: &Token) -> Token:
+        return Token(v: 998)
+
+fn build<X: Mk>(x: &X) -> X:
+    return x.again()
+
+pub trait Forge<X>:
+    fn forge(self: &Self, base: X) -> X
+
+pub derive ViaGen:
+    impl Forge<For> for Self:
+        fn forge(self: &Self, base: For) -> For:
+            return build(&base)
+
+pub derive ViaTrait:
+    impl Forge<For> for Self:
+        fn forge(self: &Self, base: For) -> For:
+            return For.make()
+
+pub fn mint() -> Token:
+    return Token(v: 1)

@@ -1,0 +1,6 @@
+// A record holds `&` references, not `&mut`.
+type Cursor:
+    at: &mut U64
+
+fn main(console: Console<Write>):
+    console.print_int(1)

@@ -1,0 +1,91 @@
+import console_bytes
+import "ci/request_transcript.wy"
+import encoding
+import "tuf/release_trust.wy"
+import console
+import discard
+import json_tree
+import mldsa_signer
+import string
+import text
+import vec
+
+fn main(output: Console<Write>, input: Console<Read>, signer: Mldsa87Signer, allocator: Allocator):
+    if let Err(code) = run(&input, &output, &signer, &allocator):
+        output.line("refused")
+
+fn run(input: &Console<Read>, output: &Console<Write>, signer: &Mldsa87Signer, allocator: &Allocator) -> Result<(), U64>:
+    let Ok(line): String = input.read_text_frame(allocator, 9215) else Err(reason):
+        return Err(1)
+    let parsed = parse_release_json(&line, allocator)
+    line.close()
+    let Ok(request): Json = move parsed else Err(code):
+        return Err(code)
+    let result = dispatch(&request, input, output, signer, allocator)
+    request.discard()
+    return result
+
+fn dispatch(request: &Json, input: &Console<Read>, output: &Console<Write>, signer: &Mldsa87Signer, allocator: &Allocator) -> Result<(), U64>:
+    let mode = string_field(request, "mode")?
+    if mode.equals_text("public-key"):
+        if let Ok(extra) = input.read_byte():
+            return Err(1)
+        return print_public_key(output, signer, allocator)
+    if !mode.equals_text("sign"):
+        return Err(1)
+    validate_request_coordinates(request)?
+    let token = string_field(request, "token")?
+    let length = declared_integer(request, "body_size")?
+    let route = string_field(request, "route")?
+    if token.byte_len() == 0 || token.byte_len() > 8192 || length > 1048576 || (route.equals_text("/v1/ci/receipt") && length != 0):
+        return Err(1)
+    let empty: Vec<U8> = Vec.filled(allocator, length, 0)?
+    var body = move empty
+    if let Err(reason) = input.read_exact_to_end(body.as_mut_slice()):
+        body.close()
+        return Err(1)
+    let digest = digest_text(body.as_slice(), allocator)
+    body.close()
+    let Ok(hashing): String = move digest else Err(code):
+        return Err(code)
+    let result = sign_request(output, request, token, &hashing, signer, allocator)
+    hashing.close()
+    return result
+
+fn sign_request(output: &Console<Write>, request: &Json, token: &String, hashing: &String, signer: &Mldsa87Signer, allocator: &Allocator) -> Result<(), U64>:
+    let route = string_field(request, "route")?
+    let release = string_field(request, "digest")?
+    if route.equals_text("/v1/ci/stage") && !release.eq(hashing):
+        return Err(1)
+    let message = request_message(request, token, hashing, allocator)?
+    let result = print_signature(output, &message, signer, allocator)
+    message.close()
+    return result
+
+fn print_public_key(output: &Console<Write>, signer: &Mldsa87Signer, allocator: &Allocator) -> Result<(), U64>:
+    let empty: Vec<U8> = Vec.filled(allocator, 2592, 0)?
+    var key = move empty
+    let provided = signer.public_key(key.as_mut_slice())
+    let result = print_if_ready(provided, output, key.as_slice(), allocator)
+    key.close()
+    return result
+
+fn print_signature(output: &Console<Write>, message: &String, signer: &Mldsa87Signer, allocator: &Allocator) -> Result<(), U64>:
+    let empty: Vec<U8> = Vec.filled(allocator, 4627, 0)?
+    var signature = move empty
+    let provided = signer.sign(message.as_bytes(), signature.as_mut_slice())
+    let result = print_if_ready(provided, output, signature.as_slice(), allocator)
+    signature.close()
+    return result
+
+fn print_if_ready(provided: Result<(), U64>, output: &Console<Write>, bytes: &[U8], allocator: &Allocator) -> Result<(), U64>:
+    provided?
+    let empty = String.with_capacity(allocator, (bytes.len() * 4 + 2) / 3)?
+    var encoded = move empty
+    if let Err(code) = encoding.push_base64url(&mut encoded, allocator, bytes):
+        encoded.close()
+        return Err(code)
+    output.write_string(&encoded)
+    output.print_byte(10)
+    encoded.close()
+    return Ok(())

@@ -1,0 +1,15 @@
+// Refused by the checker: the value ended is moved, as by any `match move`; it cannot be used after.
+type Slot<T>:
+    Vacant
+    Full(T)
+
+type Shelf<T>:
+    count: U64
+    slot: Slot<T>
+
+nopanic fn end<T: Any>(slot: Slot<T>) -> Slot<T>:
+    memory.vacant(move slot)
+    return move slot
+
+fn main(out: Console<Write>):
+    out.print_int(1)

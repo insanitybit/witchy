@@ -1,0 +1,41 @@
+import cell
+
+sealed type Root<T>:
+    owner: OccupiedCell<T>
+    alias: Weak<T>
+    invariant memory.box_id(alias) == memory.box_id(owner.pointer())
+    invariant memory.pointer_bits(alias) == memory.pointer_bits(owner.pointer())
+
+impl<T: Any> Root<T>:
+    nopanic fn hold(owner: OccupiedCell<T>) -> Root<T>:
+        ensures true
+        proof:
+            auto
+        let edge = owner.pointer()
+        return Root(move owner, edge)
+
+    nopanic fn peek(root: &Root<T>) -> &T:
+        ensures true
+        proof:
+            auto
+        return memory.follow_loan((*root).owner.read(), (*root).alias)
+
+    nopanic fn take(root: Root<T>) -> T:
+        ensures true
+        proof:
+            auto
+        let Root(owner, edge) = move root
+        let TakenCell(vacant, value) = owner.extract()
+        vacant.close()
+        return move value
+
+nopanic fn main(a: Allocator, out: Console<Write>):
+    let storage: Result<VacantCell<U64>, U64> = VacantCell.new(&a)
+    match move storage:
+        Err(code):
+            return
+        Ok(vacant):
+            let root = Root.hold(vacant.fill(81))
+            let member = root.peek()
+            out.print_int(*member)
+            out.print_int(root.take())

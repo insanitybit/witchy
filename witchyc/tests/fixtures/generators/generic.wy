@@ -1,0 +1,18 @@
+// A generic `gen fn`: its record is generic too (`Above<T>`).
+import console
+import vec
+
+gen fn above<T>(items: &Vec<T>, limit: U64) -> U64:
+    for i in 0..items.len():
+        if i >= limit:
+            yield i
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.filled(&allocator, 5, 9) else Err(code):
+        return
+    var v = move made
+    var total: U64 = 0
+    for i in above(&v, 2):
+        total += i
+    console.print_int(total)
+    v.close()

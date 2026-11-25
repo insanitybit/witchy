@@ -1,0 +1,9 @@
+// Refused: a Command holds a capability, so it is not stored in a Vec (held past its owner's
+// view of it, or handed around unseen).
+import exec
+import vec
+
+fn main(allocator: Allocator, exec: Exec):
+    let Ok(made): Vec<Command> = Vec.new(&allocator, 4) else Err(code):
+        return
+    var commands = move made

@@ -1,0 +1,8 @@
+// Refused: a group is made from a listener or a `Net`; a socket makes none.
+import net
+
+fn grouped(socket: &Socket) -> Group:
+    return socket.raw_group()
+
+fn main():
+    return

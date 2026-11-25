@@ -1,0 +1,33 @@
+// `ensures true` still has to show that no step can overflow.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-vec.wy"
+
+sealed type Tally:
+    marks: Vec<U8>
+    scale: U64
+
+impl Tally:
+    fn new(allocator: &Allocator) -> Result<Tally, U64>:
+        let marks: Vec<U8> = Vec.new(allocator, 4)?
+        return Ok(Tally(move marks, 3))
+
+    // Nothing bounds the sum, so a step can overflow.
+    fn weight(self: &Tally) -> U64:
+        ensures true
+        proof:
+            auto
+        var sum: U64 = 0
+        for index in 0..self.marks.len():
+            match self.marks.get(index):
+                Ok(mark):
+                    sum = sum * 3 + U8.to_u64(mark)
+                Err(code):
+                    break
+        return sum
+
+    fn close(self: Tally):
+        let Tally(marks, scale) = move self
+        marks.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    console.print_int(1)

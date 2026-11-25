@@ -1,0 +1,94 @@
+// Containers of owners are discarded with what they hold: Vec<String>, Vec<Vec<String>>, HashMap<String, Vec<String>>.
+import "../../../library/wasm-string.wy"
+import "../../../library/wasm-hashmap.wy"
+import "../../../library/wasm-vec.wy"
+import "../../../library/wasm-discard.wy"
+
+fn word(allocator: &Allocator, scalar: U64) -> String:
+    match String.new(allocator):
+        Ok(empty):
+            match empty.push_scalar(allocator, scalar):
+                Ok(text):
+                    return move text
+                Err(back):
+                    return move back
+        Err(_):
+            return word(allocator, scalar)
+
+fn words(console: &Console<Write>, allocator: &Allocator, count: U64) -> Vec<String>:
+    let made: Result<Vec<String>, U64> = Vec.new(allocator, 4)
+    match move made:
+        Ok(empty):
+            var list = move empty
+            var index: U64 = 0
+            while index < count:
+                match list.push_spare_mut(word(allocator, 97 + index)):
+                    Ok:
+                        index += 1
+                    Err(back):
+                        back.discard()
+                        console.print_int(900)
+                        index = count
+            return move list
+        Err(_):
+            return words(console, allocator, count)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let flat = words(&console, &allocator, 3)
+    console.print_int(flat.len())
+    flat.discard()
+    console.print_int(1)
+    let made: Result<Vec<Vec<String>>, U64> = Vec.new(&allocator, 2)
+    match move made:
+        Ok(empty):
+            var nested = move empty
+            match nested.push_spare_mut(words(&console, &allocator, 2)):
+                Ok:
+                    console.print_int(2)
+                Err(back):
+                    back.discard()
+            match nested.push_spare_mut(words(&console, &allocator, 4)):
+                Ok:
+                    console.print_int(3)
+                Err(back):
+                    back.discard()
+            // A third list does not fit: it comes back and is discarded whole.
+            match nested.push_spare_mut(words(&console, &allocator, 1)):
+                Ok:
+                    console.print_int(901)
+                Err(back):
+                    console.print_int(back.len())
+                    back.discard()
+            console.print_int(nested.len())
+            nested.discard()
+            console.print_int(4)
+        Err(code):
+            console.print_int(code)
+    // Every allocation went back: the same request succeeds again.
+    let again = words(&console, &allocator, 4)
+    console.print_int(again.len())
+    again.discard()
+    // A map whose keys and values are both owners.
+    let table: Result<HashMap<String, Vec<String>>, U64> = HashMap.new(&allocator, 4)
+    match move table:
+        Ok(empty):
+            var map = move empty
+            match map.insert(word(&allocator, 120), words(&console, &allocator, 2)):
+                Ok:
+                    console.print_int(5)
+                Err(back):
+                    let Entry(key, value) = move back
+                    key.discard()
+                    value.discard()
+            match map.insert(word(&allocator, 121), words(&console, &allocator, 3)):
+                Ok:
+                    console.print_int(6)
+                Err(back):
+                    let Entry(key, value) = move back
+                    key.discard()
+                    value.discard()
+            console.print_int(map.len())
+            map.discard()
+            console.print_int(7)
+        Err(code):
+            console.print_int(code)

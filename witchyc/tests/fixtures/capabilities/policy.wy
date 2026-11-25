@@ -1,0 +1,18 @@
+// A user-defined capability with policy data beside its authority (book:
+// capabilities-narrowing.md). `wasm-caps` reports `report` as holding the Net, in Table.
+import console
+import net
+import "parts/table.wy"
+
+fn report(console: &Console<Write>, users: &Table):
+    let users_line: Text = if users.count(1): "ok: users" else: "denied: users"
+    console.line(users_line)
+    let secrets_line: Text = if users.count(2): "ok: secrets" else: "denied: secrets"
+    console.line(secrets_line)
+
+fn main(console: Console<Write>, net: Net):
+    match table.open_table(&net, 1):
+        Ok(users):
+            report(&console, &users)
+        Err(e):
+            console.line("not granted")

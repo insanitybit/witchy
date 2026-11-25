@@ -1,0 +1,7 @@
+fn main(console: Console<Write>):
+    let n: U64 = 3
+    match n:
+        1:
+            console.print_int(1)
+        2:
+            console.print_int(2)

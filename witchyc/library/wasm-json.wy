@@ -1,0 +1,315 @@
+// A JSON parser that reports what it reads to a sink, one event at a time.
+// It builds no tree: the program decides what to keep by implementing JsonSink.
+// Plain Witchy code on String's public functions: no proofs, nothing unchecked.
+//
+// Error codes: 1 input ended early, 2 unexpected byte, 3 bad escape,
+// 4 nested too deeply, 5 allocation refused, 6 text after the value.
+import "wasm-string.wy"
+
+pub trait JsonSink:
+    fn null(self: &mut Self)
+    fn boolean(self: &mut Self, value: Bool)
+    // A number is handed over as its bytes in the input, `start` up to `end`.
+    fn number(self: &mut Self, source: &String, start: U64, end: U64)
+    fn string(self: &mut Self, text: &String)
+    fn key(self: &mut Self, text: &String)
+    fn begin_array(self: &mut Self)
+    fn end_array(self: &mut Self)
+    fn begin_object(self: &mut Self)
+    fn end_object(self: &mut Self)
+
+pub type JsonText:
+    text: String
+    next: U64
+
+// The byte at `at`, or 256 past the end.
+pub fn json_byte(input: &String, at: U64) -> U64:
+    // From the byte slice, read behind its length test (it went through `byte_at`'s Result).
+    let bytes = input.as_bytes()
+    if at < bytes.len():
+        return U8.to_u64(bytes[at])
+    return 256
+
+pub fn json_space(input: &String, at: U64) -> U64:
+    // Over the byte slice, taken once (`json_byte` took it for each byte).
+    let bytes = input.as_bytes()
+    var index = at
+    while index < bytes.len() && (bytes[index] == 32 || bytes[index] == 9 || bytes[index] == 10 || bytes[index] == 13):
+        index += 1
+    return index
+
+// The position after `byte`, which must be at `at`.
+pub fn json_expect(input: &String, at: U64, byte: U64) -> Result<U64, U64>:
+    let found = json_byte(input, at)
+    if found == 256:
+        return Err(1)
+    if found != byte:
+        return Err(2)
+    return Ok(at + 1)
+
+fn json_digits(input: &String, at: U64) -> U64:
+    let bytes = input.as_bytes()
+    var index = at
+    while index < bytes.len() && bytes[index] >= 48 && bytes[index] <= 57:
+        index += 1
+    return index
+
+// The value of a run of decimal digits, as far as it fits in U64.
+pub fn json_u64(input: &String, start: U64, end: U64) -> Result<U64, U64>:
+    var value: U64 = 0
+    var index = start
+    if start >= end:
+        return Err(2)
+    while index < end:
+        let byte = json_byte(input, index)
+        if byte < 48 || byte > 57:
+            return Err(2)
+        if value > 1844674407370955161:
+            return Err(2)
+        value = value * 10
+        if value > 18446744073709551615 - (byte - 48):
+            return Err(2)
+        value = value + (byte - 48)
+        index += 1
+    return Ok(value)
+
+pub fn json_number(input: &String, at: U64) -> Result<U64, U64>:
+    var index = at
+    if json_byte(input, index) == 45:
+        index += 1
+    let first = json_byte(input, index)
+    if first < 48 || first > 57:
+        return Err(2)
+    if first == 48:
+        index += 1
+    else:
+        index = json_digits(input, index)
+    if json_byte(input, index) == 46:
+        let fraction = json_digits(input, index + 1)
+        if fraction == index + 1:
+            return Err(2)
+        index = fraction
+    let mark = json_byte(input, index)
+    if mark == 101 || mark == 69:
+        index += 1
+        let sign = json_byte(input, index)
+        if sign == 43 || sign == 45:
+            index += 1
+        let exponent = json_digits(input, index)
+        if exponent == index:
+            return Err(2)
+        index = exponent
+    return Ok(index)
+
+pub fn json_word(input: &String, at: U64, word: &str) -> Result<U64, U64>:
+    var index: U64 = 0
+    while index < word.byte_len():
+        match word.byte_at(index):
+            Ok(byte):
+                if json_byte(input, at + index) != U8.to_u64(byte):
+                    return Err(2)
+            Err(code):
+                return Err(2)
+        index += 1
+    return Ok(at + index)
+
+fn json_hex4(input: &String, at: U64) -> Result<U64, U64>:
+    var value: U64 = 0
+    var index: U64 = 0
+    while index < 4:
+        let byte = json_byte(input, at + index)
+        var digit: U64 = 16
+        if byte >= 48 && byte <= 57:
+            digit = byte - 48
+        if byte >= 65 && byte <= 70:
+            digit = byte - 55
+        if byte >= 97 && byte <= 102:
+            digit = byte - 87
+        if digit == 16:
+            return Err(3)
+        value = value * 16 + digit
+        index += 1
+    return Ok(value)
+
+pub type JsonEscape:
+    scalar: U64
+    next: U64
+
+// `at` is the byte after the backslash.
+fn json_escape(input: &String, at: U64) -> Result<JsonEscape, U64>:
+    let byte = json_byte(input, at)
+    if byte == 34 || byte == 92 || byte == 47:
+        return Ok(JsonEscape(byte, at + 1))
+    if byte == 98:
+        return Ok(JsonEscape(8, at + 1))
+    if byte == 102:
+        return Ok(JsonEscape(12, at + 1))
+    if byte == 110:
+        return Ok(JsonEscape(10, at + 1))
+    if byte == 114:
+        return Ok(JsonEscape(13, at + 1))
+    if byte == 116:
+        return Ok(JsonEscape(9, at + 1))
+    if byte != 117:
+        return Err(3)
+    let high = json_hex4(input, at + 1)?
+    if high >= 56320 && high <= 57343:
+        return Err(3)
+    if high < 55296 || high > 56319:
+        return Ok(JsonEscape(high, at + 5))
+    // A high surrogate must be followed by an escaped low one.
+    if json_byte(input, at + 5) != 92 || json_byte(input, at + 6) != 117:
+        return Err(3)
+    let low = json_hex4(input, at + 7)?
+    if low < 56320 || low > 57343:
+        return Err(3)
+    return Ok(JsonEscape(65536 + (high - 55296) * 1024 + (low - 56320), at + 11))
+
+// `at` is the byte after the opening quote. Ok owns the decoded text.
+pub fn json_string(input: &String, at: U64, allocator: &Allocator) -> Result<JsonText, U64>:
+    // Room for the bytes up to the first `"`, `\` or control byte: a string with no escape (most)
+    // is one allocation (it was an empty String and a second allocation on the first append).
+    let scan = input.as_bytes()
+    var first = at
+    while first < scan.len() && scan[first] != 34 && scan[first] != 92 && scan[first] >= 32:
+        first += 1
+    let made: Result<String, U64> = String.with_capacity(allocator, first - at)
+    match move made:
+        Ok(empty):
+            var text = move empty
+            var index = at
+            let bytes = input.as_bytes()
+            let length = bytes.len()
+            while index < length:
+                // A run of bytes that are neither `"`, `\` nor a control byte, copied as they are:
+                // both ends are ASCII bytes or the end, so whole scalars (it decoded each scalar
+                // and encoded it again, a String at a time).
+                var end = index
+                while end < bytes.len() && bytes[end] != 34 && bytes[end] != 92 && bytes[end] >= 32:
+                    end += 1
+                if end > index:
+                    if let Err(_) = text.push_part(allocator, input, index, end):
+                        text.close()
+                        return Err(5)
+                    index = end
+                let byte = json_byte(input, index)
+                if byte == 34:
+                    return Ok(JsonText(move text, index + 1))
+                if byte == 92:
+                    match json_escape(input, index + 1):
+                        Ok(escape):
+                            if let Err(_) = text.push(allocator, escape.scalar):
+                                text.close()
+                                return Err(5)
+                            index = escape.next
+                        Err(code):
+                            text.close()
+                            return Err(code)
+                else:
+                    if byte < 32:
+                        text.close()
+                        return Err(2)
+            text.close()
+            return Err(1)
+        Err(code):
+            return Err(5)
+
+fn json_array<S: Any + JsonSink>(input: &String, at: U64, sink: &mut S, allocator: &Allocator, depth: U64) -> Result<U64, U64>:
+    if depth == 0:
+        return Err(4)
+    sink.begin_array()
+    var index = json_space(input, at)
+    if json_byte(input, index) == 93:
+        sink.end_array()
+        return Ok(index + 1)
+    let length = input.byte_len()
+    while index < length:
+        let after = json_value(input, index, sink, allocator, depth - 1)?
+        index = json_space(input, after)
+        let mark = json_byte(input, index)
+        if mark == 93:
+            sink.end_array()
+            return Ok(index + 1)
+        if mark == 256:
+            return Err(1)
+        if mark != 44:
+            return Err(2)
+        index += 1
+    return Err(1)
+
+fn json_object<S: Any + JsonSink>(input: &String, at: U64, sink: &mut S, allocator: &Allocator, depth: U64) -> Result<U64, U64>:
+    if depth == 0:
+        return Err(4)
+    sink.begin_object()
+    var index = json_space(input, at)
+    if json_byte(input, index) == 125:
+        sink.end_object()
+        return Ok(index + 1)
+    let length = input.byte_len()
+    while index < length:
+        let quote = json_expect(input, index, 34)?
+        match json_string(input, quote, allocator):
+            Ok(parsed):
+                let JsonText(name, next) = move parsed
+                sink.key(&name)
+                name.close()
+                index = json_space(input, next)
+            Err(code):
+                return Err(code)
+        let colon = json_expect(input, index, 58)?
+        let after = json_value(input, colon, sink, allocator, depth - 1)?
+        index = json_space(input, after)
+        let mark = json_byte(input, index)
+        if mark == 125:
+            sink.end_object()
+            return Ok(index + 1)
+        if mark == 256:
+            return Err(1)
+        if mark != 44:
+            return Err(2)
+        index = json_space(input, index + 1)
+    return Err(1)
+
+fn json_value<S: Any + JsonSink>(input: &String, at: U64, sink: &mut S, allocator: &Allocator, depth: U64) -> Result<U64, U64>:
+    let start = json_space(input, at)
+    let byte = json_byte(input, start)
+    if byte == 256:
+        return Err(1)
+    if byte == 110:
+        let after_null = json_word(input, start, "null")?
+        sink.null()
+        return Ok(after_null)
+    if byte == 116:
+        let after_true = json_word(input, start, "true")?
+        sink.boolean(true)
+        return Ok(after_true)
+    if byte == 102:
+        let after_false = json_word(input, start, "false")?
+        sink.boolean(false)
+        return Ok(after_false)
+    if byte == 34:
+        match json_string(input, start + 1, allocator):
+            Ok(parsed):
+                let JsonText(text, next) = move parsed
+                sink.string(&text)
+                text.close()
+                return Ok(next)
+            Err(code):
+                return Err(code)
+    if byte == 91:
+        return json_array(input, start + 1, sink, allocator, depth)
+    if byte == 123:
+        return json_object(input, start + 1, sink, allocator, depth)
+    if byte == 45 || (byte >= 48 && byte <= 57):
+        let stop = json_number(input, start)?
+        sink.number(input, start, stop)
+        return Ok(stop)
+    return Err(2)
+
+// Parse one JSON value that fills the whole input, at most 32 levels deep.
+pub fn json_parse<S: Any + JsonSink>(input: &String, sink: &mut S, allocator: &Allocator) -> Result<(), U64>:
+    let after = json_value(input, 0, sink, allocator, 32)?
+    let end = json_space(input, after)
+    if json_byte(input, end) != 256:
+        return Err(6)
+    return Ok(())

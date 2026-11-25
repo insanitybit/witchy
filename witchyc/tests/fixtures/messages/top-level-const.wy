@@ -1,0 +1,8 @@
+// A module-scope `const` declares a module constant (docs/wasm-constants.md, since a6c66396);
+// this fixture refused `const` until then, asking for `let NAME = value`.
+import console
+
+const LIMIT: U64 = 10
+
+fn main(console: Console<Write>):
+    console.print_int(LIMIT)

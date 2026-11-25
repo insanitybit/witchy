@@ -1,0 +1,10 @@
+// A helper written for a Buffer does not take a PrefixBuffer, so the key it issues is not had
+// that way either.
+fn key<T>(buffer: &Buffer<T>) -> U64:
+    return memory.allocation_key(buffer)
+
+fn sneak<T>(buffer: &PrefixBuffer<T>) -> U64:
+    return key(buffer)
+
+fn main(out: Console<Write>):
+    out.print_int(0)

@@ -1,0 +1,19 @@
+// Refused: a callee's requires reads a part of an argument built in the call; the refusal has the call's line.
+import console
+
+type Job:
+    id: U64
+    weight: U64
+
+type Lease:
+    id: U64
+
+impl Lease:
+    fn fill(lease: &mut Lease, job: Job):
+        requires job.id >= 1
+        (*lease).id = job.id
+
+fn main(out: Console<Write>):
+    var lease = Lease(id: 0)
+    lease.fill(Job(0, 3))
+    out.print_int(lease.id)

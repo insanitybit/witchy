@@ -1,0 +1,49 @@
+import console
+import hashmap
+import span
+import string
+
+// Words "w0".."w999" in a pseudo-random order, space-separated, 200000 of them.
+fn text(allocator: &Allocator) -> Result<String, U64>:
+    var out = String.new(allocator)?
+    var seed: U64 = 7
+    for i in 0..200000:
+        seed = seed * 48271 % 2147483647
+        if let Err(_) = out.push_format(allocator, "w${seed % 1000} "):
+            return Ok(move out)
+    Ok(move out)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made_text): String = text(&allocator) else Err(code):
+        return
+    let words = move made_text
+    let Ok(made): HashMap<String, U64> = HashMap.new(&allocator, 2048) else Err(code):
+        words.close()
+        return
+    var counts = move made
+    var rest = words.span()
+    while rest.len() > 0:
+        let Ok(halves) = rest.split(' ') else Err(last):
+            break
+        let word = halves.head
+        rest = halves.tail
+        match get_mut_by_span(&mut counts, word):
+            Ok(n):
+                *n += 1
+            Err(missing):
+                let Ok(key): String = word.to_string(&allocator) else Err(code):
+                    break
+                match counts.put(&allocator, move key, 1):
+                    Ok:
+                        continue
+                    Err(back):
+                        back.discard()
+                        break
+    console.print_int(counts.len())
+    var total: U64 = 0
+    var at: U64 = 0
+    while let Ok(entry) = counts.next(&mut at):
+        total += entry.value
+    console.print_int(total)
+    counts.discard()
+    words.close()

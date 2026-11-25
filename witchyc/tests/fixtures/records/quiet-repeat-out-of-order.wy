@@ -1,0 +1,10 @@
+// An anonymous record written out of label order is accepted when no operand has an effect:
+// `[0; 4]` has none (it counted as one).
+import console
+
+type Written = .{words: [U64; 4], length: U64}
+
+fn main(console: Console<Write>):
+    var out: Written = .{words: [7; 4], length: 3}
+    out.words[1] = 9
+    console.print_int(out.words[0] + out.words[1] + out.length)

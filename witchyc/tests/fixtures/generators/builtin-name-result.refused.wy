@@ -1,0 +1,10 @@
+// Refused (review of nested generators): a generator whose type would be named `Result`.
+import console
+
+gen fn result(n: U64) -> U64:
+    yield n
+    yield n + 1
+
+fn main(console: Console<Write>):
+    for n in result(4):
+        console.print_int(n)

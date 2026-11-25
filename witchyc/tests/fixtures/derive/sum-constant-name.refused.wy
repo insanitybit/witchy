@@ -1,0 +1,12 @@
+// Refused, saying why: the derived impls could not name a variant that shares a constant's name.
+import console
+import hash
+
+let Dot: U64 = 7
+
+type Shape derive(Eq):
+    Square(U64)
+    Dot
+
+fn main(console: Console<Write>):
+    console.line("x")

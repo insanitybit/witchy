@@ -1,0 +1,5 @@
+// Lending a value that is not a place says to bind it first.
+import console
+
+fn main(console: Console<Write>):
+    let r = &mut 5

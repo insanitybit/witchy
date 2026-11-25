@@ -1,0 +1,33 @@
+// Refused by the checker: this helper hands the reference it was lent back to its caller, so
+// the borrow does not end when it returns. It keeps the refusal a kept reference gets.
+import cell
+import option
+
+// The mark points at the cell exactly while one is held: the invariant reads the cell through a
+// method, so it is one over a view of the storage.
+sealed type Holder<T>:
+    mark: Weak<T>
+    held: Option<OccupiedCell<T>>
+    invariant when Some(cell) = held:
+        same_target(mark, cell.pointer())
+    invariant when None = held:
+        !has_address(mark)
+
+fn inside<T: Any>(slot: &mut Option<T>) -> &mut Option<T>:
+    return slot
+
+impl<T: Any> Holder<T>:
+    nopanic fn peek(holder: &Holder<T>) -> Option<&T>:
+        match &(*holder).held:
+            None:
+                return None
+            Some(cell):
+                return Some(memory.follow_loan(cell.read(), (*holder).mark))
+
+    nopanic fn pull(holder: &mut Holder<T>) -> Option<OccupiedCell<T>>:
+        let cell = inside(&mut (*holder).held).take()
+        (*holder).mark = memory.null_weak()
+        return move cell
+
+nopanic fn main(a: Allocator, out: Console<Write>):
+    out.print_int(1)

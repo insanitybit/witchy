@@ -1,0 +1,14 @@
+// Refused: `for:` names a function, not a type (review round 4: the recipe called its own file's
+// private function of that name).
+import "parts/fnw.wy"
+import console
+
+fn dbl(x: U64) -> U64:
+    return 2 * x
+
+type T derive(fnw.Wf(for: dbl)):
+    a: U64
+
+fn main(console: Console<Write>):
+    let t = T(a: 5)
+    console.print("${t.ask()} ${dbl(1)}")

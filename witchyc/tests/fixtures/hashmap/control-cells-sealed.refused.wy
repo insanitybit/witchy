@@ -1,0 +1,8 @@
+// Swapping the entries independently of the probe index would make lookups stale.
+import hashmap
+
+fn swap_entries(a: &mut HashMap<U64, U64>, b: &mut HashMap<U64, U64>):
+    memory.exchange(&mut (*a).cells, &mut (*b).cells)
+
+fn main(console: Console<Write>):
+    console.print_int(0)

@@ -1,0 +1,13 @@
+// A `nopanic fn` with nothing to trap on itself, calling one that can: refused, naming how.
+fn half(a: U64, b: U64) -> U64:
+    return a / b
+
+nopanic fn twice(a: U64) -> U64:
+    requires a < 100
+    ensures true
+    proof:
+        auto
+    return half(a, 2)
+
+fn main():
+    let x = twice(10)

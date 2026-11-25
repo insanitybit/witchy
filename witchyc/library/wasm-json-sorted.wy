@@ -1,0 +1,38 @@
+// Parse JSON with a single value for each decoded object key.
+import discard
+import json_tree
+import sort
+import string
+import text
+import vec
+
+// Sort object keys by UTF-8 bytes, keeping array order. Parsing errors match
+// json_tree. Err(11) means that an object contains a duplicate decoded key.
+pub fn json_sorted_tree(input: &String, allocator: &Allocator) -> Result<Json, U64>:
+    let tree = json_tree(input, allocator)?
+    var document = move tree
+    if let Err(code) = sort_objects(&mut document):
+        document.discard()
+        return Err(code)
+    return Ok(move document)
+
+impl Before for Member:
+    fn before(self: &Member, other: &Member) -> Bool:
+        return (*self).key.less(&(*other).key)
+
+// The decoder has already checked string escapes, so compare decoded keys.
+fn sort_objects(value: &mut Json) -> Result<(), U64>:
+    match value:
+        Array(items):
+            for item in items.elements_mut():
+                sort_objects(item)?
+        Object(members):
+            sort(members)
+            for i in 1..members.len():
+                if !precedes(members, i - 1, i):
+                    return Err(11)
+            for member in members.elements_mut():
+                sort_objects(&mut (*member).value)?
+        _:
+            ()
+    return Ok(())

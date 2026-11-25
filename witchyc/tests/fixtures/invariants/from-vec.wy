@@ -1,0 +1,79 @@
+// Accounts whose balance never passes their limit: the invariant is the type's, and each
+// operation is proved to keep it, so no deposit can make a balance the type forbids, and
+// the arithmetic in them needs no overflow checks.
+import console
+import vec
+
+pub type Refusal:
+    OverLimit(U64)
+    Short(U64)
+
+sealed type Account:
+    balance: U64
+    limit: U64
+    invariant balance <= limit
+
+impl Account:
+    pub fn open(limit: U64) -> Account:
+        ensures result.balance == 0
+        proof:
+            auto
+        return Account(0, limit)
+
+    pub fn balance(account: &Account) -> U64:
+        return (*account).balance
+
+    pub fn deposit(account: &mut Account, amount: U64) -> Result<(), Refusal>:
+        ensures match result:
+            Ok:
+                account.balance == old(account.balance) + amount
+            Err(why):
+                account.balance == old(account.balance)
+        proof:
+            auto
+        let room = (*account).limit - (*account).balance
+        if amount > room:
+            return Err(OverLimit(room))
+        (*account).balance = (*account).balance + amount
+        return Ok(())
+
+    pub fn withdraw(account: &mut Account, amount: U64) -> Result<(), Refusal>:
+        ensures match result:
+            Ok:
+                account.balance + amount == old(account.balance)
+            Err(why):
+                account.balance == old(account.balance)
+        proof:
+            auto
+        if amount > (*account).balance:
+            return Err(Short((*account).balance))
+        (*account).balance = (*account).balance - amount
+        return Ok(())
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<Account> = Vec.new(&allocator, 2) else Err(code):
+        return
+    var accounts = move made
+    for limit in [100, 50]:
+        match accounts.push_mut(&allocator, Account.open(*limit)):
+            Ok:
+                ()
+            Err(back):
+                accounts.close()
+                return
+    // An account read out of the Vec: no proof at the call, the invariant is the type's.
+    if let Ok(first) = accounts.at_mut(0):
+        match first.deposit(70):
+            Ok:
+                console.line("ok")
+            Err(why):
+                console.line("refused")
+    if let Ok(second) = accounts.at_mut(1):
+        match second.deposit(70):
+            Ok:
+                console.line("ok")
+            Err(why):
+                console.line("refused")
+    for account in &accounts:
+        console.print_int(account.balance())
+    accounts.close()

@@ -1,0 +1,317 @@
+// Refused: an element is read, the whole value is exchanged for another, and only then is the
+// result matched. The clause is of the fields as they were at the read, not as they are at
+// the match, so the read past the new text is not shown (found in review).
+import console
+import vec
+
+sealed type Row<T>:
+    data: Buffer<T>
+    length: U64
+    capacity: U64
+    invariant memory.prefix(data, length, capacity)
+
+impl<T: Any> Row<T>:
+    // An empty Row with room for `requested` elements. Err: no room.
+    pub fn new(allocator: &Allocator, requested: U64) -> Result<Row<T>, U64>:
+        ensures match result:
+            Ok(output):
+                output.length == 0
+                output.capacity == requested
+            Err(code):
+                true
+        proof:
+            auto
+        let allocation: Result<Buffer<T>, U64> = memory.try_alloc(allocator, requested)
+        match move allocation:
+            Ok(buffer):
+                return Ok(Row(move buffer, 0, requested))
+            Err(allocation_error):
+                return Err(allocation_error)
+
+    // How many elements it holds.
+    pub fn len(value: &Row<T>) -> U64:
+        return (*value).length
+
+    // How many it has room for before it must grow.
+    pub fn capacity(value: &Row<T>) -> U64:
+        return (*value).capacity
+impl<T> Row<T>:
+    // A copy of the element at `index`. Err(1): not an element.
+    pub fn get(value: &Row<T>, index: U64) -> Result<T, U64>:
+        ensures memory.unchanged(value.data, old(value.data))
+        ensures value.length == old(value.length)
+        ensures value.capacity == old(value.capacity)
+        ensures match result:
+            Ok(item):
+                index < value.length
+                index < memory.capacity(value.data)
+                memory.cell(value.data, index, item)
+                memory.cell(old(value.data), index, item)
+            Err(code):
+                code == 1
+                index >= value.length
+        proof:
+            auto
+        if index < (*value).length:
+            return Ok(memory.get_unchecked(&(*value).data, index))
+        return Err(1)
+
+impl<T: Any> Row<T>:
+    // A reference to an element in place. The vector stays lent while the reference is used.
+    pub fn at(value: &Row<T>, index: U64) -> Result<&T, U64>:
+        ensures match result:
+            Ok(item):
+                index < value.length
+                memory.cell(value.data, index, item)
+            Err(code):
+                code == 1
+                index >= value.length
+        proof:
+            auto
+        if index < (*value).length:
+            return Ok(memory.ref_unchecked(&(*value).data, index))
+        return Err(1)
+
+impl<T: Any> Row<T>:
+    // A reference to an element for changing it where it is. The vector stays lent,
+    // and cannot be used otherwise, while the reference is.
+    pub fn at_mut(value: &mut Row<T>, index: U64) -> Result<&mut T, U64>:
+        ensures memory.same_allocation(value.data, old(value.data))
+        ensures value.length == old(value.length)
+        ensures value.capacity == old(value.capacity)
+        ensures match result:
+            Ok(item):
+                index < value.length
+            Err(code):
+                code == 1
+                index >= value.length
+                memory.unchanged(value.data, old(value.data))
+        proof:
+            auto
+        if index < (*value).length:
+            return Ok(memory.mut_unchecked(&mut (*value).data, index))
+        return Err(1)
+
+// `items[index] = item` past the end: a mistake in the program, so the run stops here. It has no
+// contract, so `index_set`, which has one, shows its `ensures` on every path that returns and
+// does not have to show that this one is never taken.
+fn index_past_end():
+    unreachable
+
+fn memory_init_unchecked<T: Any>(buffer: &mut Buffer<T>, index: U64, item: T):
+    requires index < memory.capacity(buffer)
+    requires memory.empty(buffer, index)
+    ensures memory.cell(buffer, index, item)
+    ensures memory.same_allocation(buffer, old(buffer))
+    ensures memory.capacity(buffer) == memory.capacity(old(buffer))
+    ensures memory.unchanged_except(buffer, old(buffer), index)
+    proof:
+        auto
+    memory.init_unchecked(buffer, index, move item)
+    return
+
+// Empty the first `count` cells, which are the ones that hold a value. Nothing else is touched.
+fn memory_take_prefix<T>(buffer: &mut Buffer<T>, count: U64):
+    requires count <= memory.capacity(buffer)
+    requires memory.initialized_range(buffer, 0, count)
+    ensures memory.empty_range(buffer, 0, count)
+    ensures memory.unchanged_from(buffer, old(buffer), count)
+    proof:
+        auto
+    // One range step: the elements are Copy, so emptying them loses nothing
+    // (docs/proposal-cell-ranges.md).
+    memory.take_prefix_unchecked(buffer, count)
+    return
+
+// Write the low `count` bytes of `word`, lowest first, into the empty cells from `at`, in one
+
+impl<T> Row<T>:
+    // The cells past `length` are empty already, so only the first `length` are emptied.
+    pub fn close(input: Row<T>):
+        ensures memory.released(old(input.data))
+        proof:
+            auto
+        let length = input.length
+        var buffer = move input.data
+        memory_take_prefix(&mut buffer, length)
+        memory_release_empty(move buffer)
+// Release a buffer that holds nothing. The failure arm cannot be reached.
+fn memory_release_empty<T: Any>(input: Buffer<T>):
+    requires memory.empty_all(input)
+    ensures memory.released(old(input))
+    proof:
+        auto
+    match memory.try_release(move input):
+        Ok:
+            return
+        Err(remainder):
+            memory_release_empty(move remainder)
+impl<T: Any> Row<T>:
+    // Append into room already there. Err: no room left, and the item comes back.
+    pub fn push_spare_mut(vector: &mut Row<T>, item: T) -> Result<(), T>:
+        ensures memory.same_allocation(vector.data, old(vector.data))
+        ensures vector.capacity == old(vector.capacity)
+        ensures match result:
+            Ok:
+                vector.length == old(vector.length) + 1
+                memory.cell(vector.data, old(vector.length), item)
+                memory.unchanged_except(vector.data, old(vector.data), old(vector.length))
+            Err(back):
+                vector.length == old(vector.length)
+                old(vector.length) == old(vector.capacity)
+                memory.unchanged(vector.data, old(vector.data))
+        proof:
+            auto
+        let index = (*vector).length
+        if index < (*vector).capacity:
+            memory_init_unchecked(&mut (*vector).data, index, move item)
+            (*vector).length = index + 1
+            return Ok(())
+        return Err(move item)
+
+impl<T> Row<T>:
+    // program, and the run stops with a trap; `get` is the call that asks.
+    // It is the element of `as_slice` at `index`, read with a test against the slice's length,
+    // and nothing else: so `for i in a..v.len(): ... v[i]` reads it with no test, the slice being
+    // as long as `v.len()` (`as_slice`'s `ensures`; check/methods.rs `counted_container`).
+    pub fn index(vector: &Row<T>, index: U64) -> T:
+        return vector.as_slice()[index]
+
+    // `items[index] = item`. There being no element at `index` is a mistake in the
+    // program, and the run stops with a trap; `set` is the call that asks.
+    pub fn index_set(vector: &mut Row<T>, index: U64, item: T):
+        ensures vector.len() == old(vector.len())
+        ensures vector.capacity() == old(vector.capacity())
+        ensures elements.kept_except(vector.data, index)
+        ensures elements.holds(vector.data, index, item)
+        proof:
+            auto
+        match vector.at_mut(index):
+            Ok(place):
+                *place = item
+            Err(code):
+                index_past_end()
+
+    // The elements as a slice (docs/design-slices.md): every cell below the length holds a
+    // value, which the type's invariant says and the proof uses. The vector stays lent while
+    // the slice is used.
+    pub fn as_slice(value: &Row<T>) -> &[T]:
+        ensures value.length == old(value.length)
+        ensures result.len() == value.length
+        proof:
+            auto
+        return memory.slice_unchecked(&(*value).data, 0, (*value).length)
+
+
+type Span:
+    start: U64
+    len: U64
+
+sealed type Index:
+    bytes: Vec<U8>
+    spans: Row<Span>
+    invariant forall i in (0, spans.len()): spans[i].start + spans[i].len <= bytes.len()
+
+impl Index:
+    pub fn new(allocator: &Allocator) -> Result<Index, U64>:
+        ensures true
+        proof:
+            auto
+        let bytes: Vec<U8> = Vec.new(allocator, 0)?
+        let made: Result<Row<Span>, U64> = Row.new(allocator, 8)
+        match move made:
+            Ok(spans):
+                return Ok(Index(move bytes, move spans))
+            Err(code):
+                bytes.release_empty()
+                return Err(code)
+
+    pub fn append(index: &mut Index, allocator: &Allocator, byte: U8) -> Bool:
+        ensures true
+        proof:
+            auto
+        match index.bytes.push_mut(allocator, byte):
+            Ok:
+                return true
+            Err(back):
+                return false
+
+    pub fn mark(index: &mut Index, start: U64, len: U64) -> Bool:
+        ensures true
+        proof:
+            auto
+        if start > index.bytes.len():
+            return false
+        if len > index.bytes.len() - start:
+            return false
+        let span = Span(start, len)
+        match index.spans.push_spare_mut(span):
+            Ok:
+                return true
+            Err(back):
+                return false
+
+    // reads text[start+len-1] with no range test
+    pub nopanic fn last_byte(index: &Index, i: U64) -> Result<U8, U64>:
+        ensures true
+        proof:
+            auto
+        match index.spans.at(i):
+            Ok(span):
+                if span.len == 0:
+                    return Err(2)
+                let text = index.bytes.as_slice()
+                return Ok(text[span.start + span.len - 1])
+            Err(code):
+                return Err(1)
+
+    pub fn text_len(index: &Index) -> U64:
+        ensures true
+        proof:
+            auto
+        return index.bytes.len()
+
+    pub fn close(index: Index):
+        let Index(bytes, spans) = move index
+        bytes.close()
+        spans.close()
+
+    pub nopanic fn evil(index: &mut Index, other: &mut Index) -> U64:
+        ensures true
+        proof:
+            auto
+        let r: Result<Span, U64> = Row.get(&(*index).spans, 0)
+        swap_whole(index, other)
+        match r:
+            Ok(span):
+                if span.len == 0:
+                    return 1001
+                let text: &[U8] = Vec.as_slice(&(*index).bytes)
+                return U8.to_u64(text[span.start + span.len - 1])
+            Err(code):
+                return 1002
+
+fn swap_whole(a: &mut Index, b: &mut Index):
+    memory.exchange(a, b)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    match Index.new(&allocator):
+        Ok(made):
+            var index = move made
+            for k in 0..3000000:
+                let added = index.append(&allocator, 65)
+            console.print_int(index.text_len())
+            let a = index.mark(index.text_len() - 1, 1)
+            let b = index.mark(1000000000, 0)
+            match Index.new(&allocator):
+                Ok(second):
+                    var other = move second
+                    console.print_int(other.text_len())
+                    console.print_int(index.evil(&mut other))
+                    console.print_int(index.text_len())
+                    other.close()
+                Err(code):
+                    console.print_int(code)
+            index.close()
+        Err(code):
+            console.print_int(code)

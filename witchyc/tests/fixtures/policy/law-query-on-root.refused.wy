@@ -1,0 +1,44 @@
+// Refused (adversarial review round 2): an Equivalent written on a root type (U64) for a checked key went unread, and the map missed the key.
+import console
+import hash
+import hashmap
+import keymap
+import discard
+
+type Key derive(Discard):
+    id: U64
+    tag: U64
+
+impl Eq for Key:
+    fn eq(self: &Key, other: &Key) -> Bool:
+        return (*self).id == (*other).id && (*self).tag == (*other).tag
+
+impl HashKey for Key:
+    fn feed(self: &Key, state: &mut HashState):
+        (*self).id.feed(state)
+        (*self).tag.feed(state)
+
+impl Equivalent<Key> for U64:
+    fn equivalent(self: &U64, key: &Key) -> Bool:
+        return *self == (*key).id
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): KeyMap<Key, U64> = KeyMap.new(&allocator, 64, Reference(1)) else Err(code):
+        return
+    var map = move made
+    match map.put(&allocator, Key(id: 7, tag: 3), 42):
+        Ok:
+            ()
+        Err(entry):
+            entry.discard()
+    let q: U64 = 7
+    if q.equivalent(&Key(id: 7, tag: 3)):
+        console.print_int(1)
+    console.print_int(hash_key(&q, Reference(1)))
+    console.print_int(hash_key(&Key(id: 7, tag: 3), Reference(1)))
+    match map.get(&q):
+        Ok(v):
+            console.print_int(*v)
+        Err(code):
+            console.print_int(0)
+    map.discard()

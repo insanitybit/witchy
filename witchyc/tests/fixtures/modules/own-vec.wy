@@ -1,0 +1,10 @@
+// A program's own `pub type Vec` beside library modules that reach `Vec` only through
+// their imports (once refused: the rule looked at direct imports only).
+import console
+import heap
+pub type Vec<T>:
+    data: U64
+    length: U64
+    capacity: U64
+fn main(console: Console<Write>, allocator: Allocator):
+    console.print_int(1)

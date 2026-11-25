@@ -1,0 +1,6 @@
+[run]
+entry = "main.wy"
+
+[grants]
+document = "main.grants.toml"
+output = true

@@ -1,0 +1,23 @@
+// A generator given an owner (RFC 0182: a frame owns what lives across steps and releases it
+// once): its steps borrow the Vec, and `finish` hands it back to be closed.
+import console
+import vec
+
+gen fn above(items: Vec<U64>, limit: U64) -> U64:
+    for index in 0..items.len():
+        let value: U64 = items[index]
+        if value > limit:
+            yield value
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.filled(&allocator, 4, 3) else Err(code):
+        return
+    var numbers = move made
+    let _ = numbers.set(1, 9)
+    let _ = numbers.set(3, 7)
+    var g = above(move numbers, 5)
+    for n in g:
+        console.print_int(n)
+    let back = g.finish()
+    console.print_int(back.len())
+    back.close()

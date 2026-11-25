@@ -1,0 +1,42 @@
+import console
+import http
+import http_framing
+import net
+import string
+
+fn main(output: Console<Write>, network: Net, allocator: Allocator):
+    let Ok(fields): RequestHeaders = http.request_headers(&allocator) else Err(reason):
+        output.line("header allocation failed")
+        return
+    let encoded = http.request_head_str(&allocator, HeadRequest, "TEST_ADDRESS", "/sample", &fields)
+    fields.close()
+    let Ok(request): String = move encoded else Err(reason):
+        output.line("encoding failed")
+        return
+    let Ok(socket): Socket = network.connect("TEST_ADDRESS") else Err(reason):
+        request.close()
+        output.line("connect failed")
+        return
+    let sent = socket.write_all(request.as_bytes())
+    request.close()
+    if let Err(reason) = sent:
+        socket.close()
+        output.line("write failed")
+        return
+    var head: [U8; 256] = [0; 256]
+    var input: [U8; 7] = [0; 7]
+    let result = http_framing.read_head_response(&socket, head.slice_mut(), input.slice_mut())
+    socket.close()
+    match result:
+        Ok(reply):
+            if reply.status == 200 && reply.head_len > 0 && reply.body_len == 0:
+                output.line("ok")
+            else:
+                output.line("unexpected response")
+        Err(reason):
+            if let SocketMessageRefused(InvalidResponse) = reason:
+                output.line("invalid response")
+            else if let SocketMessageRefused(IncompleteResponse) = reason:
+                output.line("incomplete response")
+            else:
+                output.line("other error")

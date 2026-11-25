@@ -1,0 +1,14 @@
+// Refused by the proof: nothing shows the slot is vacant, so the assignment could lose an owner.
+type Slot<T>:
+    Vacant
+    Full(T)
+
+type Shelf<T>:
+    count: U64
+    slot: Slot<T>
+
+nopanic fn clobber<T: Any>(shelf: &mut Shelf<T>, item: T):
+    (*shelf).slot = Full(move item)
+
+fn main(out: Console<Write>):
+    out.print_int(1)

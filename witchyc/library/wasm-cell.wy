@@ -1,0 +1,134 @@
+// A linear allocation with exactly one cell. Filling and emptying move the
+// element, including an owner. Neither operation allocates.
+import "wasm-link.wy"
+
+pub sealed type VacantCell<T>:
+    data: Buffer<T>
+    invariant memory.prefix(data, 0, 1)
+
+pub sealed type OccupiedCell<T>:
+    data: Buffer<T>
+    invariant memory.prefix(data, 1, 1)
+
+pub type TakenCell<T>:
+    vacant: VacantCell<T>
+    value: T
+
+impl<T: Any> VacantCell<T>:
+    pub fn new(allocator: &Allocator) -> Result<VacantCell<T>, U64>:
+        ensures match result:
+            Ok(empty):
+                memory.capacity(empty.data) == 1
+            Err(code):
+                true
+        proof:
+            auto
+        let allocation: Result<Buffer<T>, U64> = memory.try_alloc(allocator, 1)
+        match move allocation:
+            Ok(storage):
+                return Ok(VacantCell(move storage))
+            Err(code):
+                return Err(code)
+
+    pub fn pointer(value: &VacantCell<T>) -> Weak<T>:
+        ensures memory.pointer_bits(result) != 0
+        ensures memory.pointer_bits(result) == memory.pointer_bits(value.data)
+        ensures memory.box_id(result) == memory.box_id(value.data)
+        proof:
+            auto
+        return memory.buffer_pointer(&(*value).data)
+
+    pub fn link(value: &VacantCell<T>) -> Link<T>:
+        return Link.to(&(*value).data)
+
+    pub fn fill(empty: VacantCell<T>, item: T) -> OccupiedCell<T>:
+        ensures memory.same_allocation(result.data, old(empty.data))
+        ensures memory.cell(result.data, 0, item)
+        proof:
+            auto
+        var data = move empty.data
+        memory.init_unchecked(&mut data, 0, move item)
+        return OccupiedCell(move data)
+
+    pub fn close(empty: VacantCell<T>):
+        ensures memory.released(old(empty.data))
+        proof:
+            auto
+        match memory.try_release(move empty.data):
+            Ok:
+                return
+            Err(back):
+                unreachable
+
+impl<T: Any> OccupiedCell<T>:
+    pub fn pointer(value: &OccupiedCell<T>) -> Weak<T>:
+        ensures memory.pointer_bits(result) != 0
+        ensures memory.pointer_bits(result) == memory.pointer_bits(value.data)
+        ensures memory.box_id(result) == memory.box_id(value.data)
+        proof:
+            auto
+        return memory.buffer_pointer(&(*value).data)
+
+    pub fn link(value: &OccupiedCell<T>) -> Link<T>:
+        return Link.to(&(*value).data)
+
+    pub fn borrow(value: &OccupiedCell<T>, link: Link<T>) -> Result<&T, U64>:
+        return value.get(link.identity())
+
+    pub fn borrow_mut(value: &mut OccupiedCell<T>, link: Link<T>) -> Result<&mut T, U64>:
+        return value.get_mut(link.identity())
+
+    fn get(value: &OccupiedCell<T>, word: U64) -> Result<&T, U64>:
+        ensures match result:
+            Ok(item):
+                word == memory.allocation_key(value.data)
+                memory.cell(value.data, 0, item)
+            Err(code):
+                word != memory.allocation_key(value.data)
+        proof:
+            auto
+        if word == memory.allocation_key(&(*value).data):
+            return Ok(memory.ref_link(&(*value).data, word))
+        return Err(1)
+
+    fn get_mut(value: &mut OccupiedCell<T>, word: U64) -> Result<&mut T, U64>:
+        ensures match result:
+            Ok(item):
+                word == memory.allocation_key(value.data)
+            Err(code):
+                word != memory.allocation_key(value.data)
+                memory.unchanged(value.data, old(value.data))
+        proof:
+            auto
+        if word == memory.allocation_key(&(*value).data):
+            return Ok(memory.mut_link(&mut (*value).data, word))
+        return Err(1)
+
+    pub fn extract(full: OccupiedCell<T>) -> TakenCell<T>:
+        ensures memory.same_allocation(result.vacant.data, old(full.data))
+        ensures memory.cell(old(full.data), 0, result.value)
+        proof:
+            auto
+        var data = move full.data
+        let item = memory.take_unchecked(&mut data, 0)
+        return TakenCell(VacantCell(move data), move item)
+
+    pub fn read(full: &OccupiedCell<T>) -> &T:
+        ensures memory.cell(full.data, 0, result)
+        proof:
+            auto
+        return memory.ref_unchecked(&(*full).data, 0)
+
+    pub fn write(full: &mut OccupiedCell<T>) -> &mut T:
+        ensures memory.same_allocation(full.data, old(full.data))
+        proof:
+            auto
+        return memory.mut_unchecked(&mut (*full).data, 0)
+
+    pub nopanic fn read_at(full: &OccupiedCell<T>, link: Weak<T>) -> &T:
+        requires memory.pointer_bits(link) == memory.pointer_bits(full.data)
+        requires memory.box_id(link) == memory.box_id(full.data)
+        ensures true
+        proof:
+            auto
+        return memory.follow_loan(full.read(), link)

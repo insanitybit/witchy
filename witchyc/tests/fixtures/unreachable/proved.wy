@@ -1,0 +1,15 @@
+// Under a numeric contract, `unreachable` is a claim the proof must establish:
+// the path that reaches it cannot be taken.
+import "../../../library/wasm-console.wy"
+
+fn half(value: U64) -> U64:
+    requires value % 2 == 0
+    ensures result * 2 == value
+    proof:
+        auto
+    if value % 2 == 1:
+        unreachable
+    return value / 2
+
+fn main(console: Console<Write>):
+    console.print_int(half(18))

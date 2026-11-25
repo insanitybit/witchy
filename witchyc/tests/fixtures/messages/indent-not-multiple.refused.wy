@@ -1,0 +1,6 @@
+// Refused, saying how many spaces the line has and what it is under: it said only that indentation
+// advances by four (the most common refusal of mutated fixtures, 546 of 4,000).
+import console
+
+fn main(console: Console<Write>):
+  console.line("x")

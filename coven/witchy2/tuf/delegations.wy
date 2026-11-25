@@ -1,0 +1,291 @@
+import "coordinate.wy"
+import "expiry.wy"
+import "metadata.wy"
+import "root.wy"
+import "signatures.wy"
+import discard
+import json_tree
+import sort
+import span
+import string
+import text
+import vec
+
+pub type DelegationError:
+    InvalidDelegation
+    DelegationThresholdFailed
+    DelegationExpired
+    TargetNotListed
+    InvalidTarget
+    TargetContentMismatch
+
+// Check the complete namespace, key, and snapshot assignment before a child
+// role can be opened. The snapshot and parent have passed top-level checks.
+pub fn validate_delegations(root: &TrustedRoot, snapshot: &Metadata, parent: &Metadata, reserved: &[U8], allocator: &Allocator) -> Result<(), DelegationError>:
+    let Ok(top): &Json = parent.signed() else Err(code):
+        return Err(InvalidDelegation)
+    let Ok(offers): &Json = top.field("targets") else Err(code):
+        return Err(InvalidDelegation)
+    match offers:
+        Object(entries):
+            if entries.len() != 0:
+                return Err(InvalidDelegation)
+        _:
+            return Err(InvalidDelegation)
+    let Ok(delegations): &Json = top.field("delegations") else Err(code):
+        return Err(InvalidDelegation)
+    if let Ok(ignored) = delegations.field("succinct_roles"):
+        return Err(InvalidDelegation)
+    let Ok(roles): &Json = delegations.field("roles") else Err(code):
+        return Err(InvalidDelegation)
+    let Ok(keys): &Json = delegations.field("keys") else Err(code):
+        return Err(InvalidDelegation)
+    let Ok(meta): &Json = snapshot_meta(snapshot) else Err(code):
+        return Err(InvalidDelegation)
+    match roles:
+        Array(assigned):
+            match meta:
+                Object(references):
+                    return check_assignments(root, assigned, keys, references, reserved, allocator)
+                _:
+                    return Err(InvalidDelegation)
+        _:
+            return Err(InvalidDelegation)
+
+fn snapshot_meta(snapshot: &Metadata) -> Result<&Json, U64>:
+    let signed = snapshot.signed()?
+    return signed.field("meta")
+
+fn check_assignments(root: &TrustedRoot, assigned: &Vec<Json>, keys: &Json, refs: &Vec<Member>, reserved: &[U8], allocator: &Allocator) -> Result<(), DelegationError>:
+    if refs.len() != assigned.len() + 1:
+        return Err(InvalidDelegation)
+    match keys:
+        Object(members):
+            let Ok(size): U64 = root.key_count() else Err(error):
+                return Err(InvalidDelegation)
+            let Ok(empty): Vec<U8> = Vec.filled(allocator, reserved.len() + (size + members.len()) * 48, 0) else Err(code):
+                return Err(InvalidDelegation)
+            var fingerprints = move empty
+            fingerprints.as_mut_slice().part(0, reserved.len()).copy_from(reserved)
+            let checked = check_initialized(root, assigned, keys, refs, fingerprints.as_mut_slice(), reserved.len(), allocator)
+            fingerprints.close()
+            return checked
+        _:
+            return Err(InvalidDelegation)
+
+fn check_initialized(root: &TrustedRoot, assigned: &Vec<Json>, keys: &Json, refs: &Vec<Member>, seen: &mut [U8], reserved_bytes: U64, allocator: &Allocator) -> Result<(), DelegationError>:
+    var used = reserved_bytes
+    if let Err(error) = root.record_authority_keys(seen, &mut used, allocator):
+        return Err(InvalidDelegation)
+    let Ok(positions): Vec<U8> = Vec.filled(allocator, refs.len(), 0) else Err(code):
+        return Err(InvalidDelegation)
+    var positions_seen = move positions
+    let Ok(empty): Vec<String> = Vec.new(allocator, 0) else Err(code):
+        positions_seen.close()
+        return Err(InvalidDelegation)
+    var namespaces = move empty
+    let checked = check_roles(assigned, keys, refs, positions_seen.as_mut_slice(), seen, &mut used, &mut namespaces, allocator)
+    positions_seen.close()
+    namespaces.discard()
+    return checked
+
+fn check_roles(assigned: &Vec<Json>, keys: &Json, refs: &Vec<Member>, positions_seen: &mut [U8], seen: &mut [U8], used: &mut U64, namespaces: &mut Vec<String>, allocator: &Allocator) -> Result<(), DelegationError>:
+    for role in assigned:
+        let Ok(name): &String = role_name(role) else Err(code):
+            return Err(InvalidDelegation)
+        if !delegated_name(name.span()):
+            return Err(InvalidDelegation)
+        let Ok(slot): U64 = reference_index(refs, name) else Err(code):
+            return Err(InvalidDelegation)
+        if positions_seen[slot] != 0:
+            return Err(InvalidDelegation)
+        positions_seen[slot] = 1
+        let Ok(reference): &Member = refs.at(slot) else Err(code):
+            return Err(InvalidDelegation)
+        if let Err(error) = parse_metadata_reference(&reference.value, allocator, metadata_limit(Targets)):
+            return Err(InvalidDelegation)
+        if let Err(error) = validate_role_keys(role, keys, seen, used, allocator):
+            return Err(InvalidDelegation)
+        collect_scopes(role, namespaces, allocator)?
+    sort(namespaces)
+    for i in 1..namespaces.len():
+        if !precedes(namespaces, i - 1, i):
+            return Err(InvalidDelegation)
+    return Ok(())
+
+fn collect_scopes(role: &Json, namespaces: &mut Vec<String>, allocator: &Allocator) -> Result<(), DelegationError>:
+    if let Ok(ignored) = role.field("path_hash_prefixes"):
+        return Err(InvalidDelegation)
+    let Ok(flag): &Json = role.field("terminating") else Err(code):
+        return Err(InvalidDelegation)
+    if let Err(code) = flag.boolean():
+        return Err(InvalidDelegation)
+    let Ok(paths): &Json = role.field("paths") else Err(code):
+        return Err(InvalidDelegation)
+    match paths:
+        Array(scopes):
+            if scopes.len() == 0:
+                return Err(InvalidDelegation)
+            for scope in scopes:
+                let Ok(text): &String = scope.text() else Err(code):
+                    return Err(InvalidDelegation)
+                let Ok(parts): Halves = text.span().split('/') else Err(rest):
+                    return Err(InvalidDelegation)
+                if !package_name(parts.head) || !parts.tail.equals_text("*"):
+                    return Err(InvalidDelegation)
+                let Ok(copy): String = String.from_utf8_bytes(allocator, parts.head.as_bytes()) else Err(code):
+                    return Err(InvalidDelegation)
+                if let Err(unused) = namespaces.push_mut(allocator, move copy):
+                    unused.close()
+                    return Err(InvalidDelegation)
+            return Ok(())
+        _:
+            return Err(InvalidDelegation)
+
+fn reference_index(entries: &Vec<Member>, role: &String) -> Result<U64, U64>:
+    for i in 0..entries.len():
+        let entry = entries.at(i)?
+        let key = entry.key.span()
+        if key.len() == role.byte_len() + 5 && key.part(role.byte_len(), key.len()).equals_text(".json") && same_bytes(key.part(0, role.byte_len()).as_bytes(), role.as_bytes()):
+            return Ok(i)
+    return Err(1)
+
+fn same_bytes(left: &[U8], right: &[U8]) -> Bool:
+    if left.len() != right.len():
+        return false
+    for i in 0..left.len():
+        if left[i] != right[i]:
+            return false
+    return true
+
+fn role_name(role: &Json) -> Result<&String, U64>:
+    let value = role.field("name")?
+    return value.text()
+
+pub fn delegated_roles(parent: &Metadata) -> Result<&Json, U64>:
+    let top = parent.signed()?
+    let delegations = top.field("delegations")?
+    return delegations.field("roles")
+
+pub fn delegated_role_name(parent: &Metadata, index: U64) -> Result<&String, U64>:
+    let roles = delegated_roles(parent)?
+    let role = roles.item(index)?
+    return role_name(role)
+
+pub fn named_role(parent: &Metadata, name: &String) -> Result<&Json, U64>:
+    borrows Ok from parent
+    let roles = delegated_roles(parent)?
+    match roles:
+        Array(assigned):
+            for role in assigned:
+                let field = role_name(role)?
+                if field.eq(name):
+                    return Ok(role)
+        _:
+            ()
+    return Err(1)
+
+pub fn role_for_package(parent: &Metadata, package: Span) -> Result<&String, U64>:
+    borrows Ok from parent
+    let roles = delegated_roles(parent)?
+    match roles:
+        Array(assigned):
+            for role in assigned:
+                let paths = role.field("paths")?
+                if authorized(paths, package):
+                    return role_name(role)
+        _:
+            ()
+    return Err(1)
+
+pub fn role_reference(snapshot: &Metadata, name: &String, allocator: &Allocator) -> Result<MetadataReference, DelegationError>:
+    if !delegated_name(name.span()):
+        return Err(InvalidDelegation)
+    let Ok(meta): &Json = snapshot_meta(snapshot) else Err(code):
+        return Err(InvalidDelegation)
+    match meta:
+        Object(refs):
+            let Ok(index): U64 = reference_index(refs, name) else Err(code):
+                return Err(InvalidDelegation)
+            let Ok(found): &Member = refs.at(index) else Err(code):
+                return Err(InvalidDelegation)
+            let Ok(reference): MetadataReference = parse_metadata_reference(&found.value, allocator, metadata_limit(Targets)) else Err(error):
+                return Err(InvalidDelegation)
+            return Ok(reference)
+        _:
+            return Err(InvalidDelegation)
+
+pub fn authenticate_role(snapshot: &Metadata, parent: &Metadata, name: &String, wire: &String, when: U64, allocator: &Allocator) -> Result<Metadata, DelegationError>:
+    let Ok(role): &Json = named_role(parent, name) else Err(code):
+        return Err(InvalidDelegation)
+    let reference = role_reference(snapshot, name, allocator)?
+    let Ok(document): Metadata = reference.open(Targets, wire, allocator) else Err(error):
+        return Err(InvalidDelegation)
+    let checked = check_role(parent, role, &document, when, allocator)
+    if let Err(error) = checked:
+        document.close()
+        return Err(error)
+    return Ok(move document)
+
+fn check_role(parent: &Metadata, role: &Json, document: &Metadata, when: U64, allocator: &Allocator) -> Result<(), DelegationError>:
+    let Ok(top): &Json = parent.signed() else Err(code):
+        return Err(InvalidDelegation)
+    let Ok(delegations): &Json = top.field("delegations") else Err(code):
+        return Err(InvalidDelegation)
+    let Ok(keys): &Json = delegations.field("keys") else Err(code):
+        return Err(InvalidDelegation)
+    if let Err(error) = verify_threshold(document, role, keys, allocator):
+        return Err(DelegationThresholdFailed)
+    if let Err(error) = check_freshness(document, when):
+        if let Expired = error:
+            return Err(DelegationExpired)
+        return Err(InvalidDelegation)
+    let Ok(signed): &Json = document.signed() else Err(code):
+        return Err(InvalidDelegation)
+    if let Ok(ignored) = signed.field("delegations"):
+        return Err(InvalidDelegation)
+    let Ok(offers): &Json = signed.field("targets") else Err(code):
+        return Err(InvalidDelegation)
+    return check_targets(role, offers, allocator)
+
+pub fn check_targets(role: &Json, offers: &Json, allocator: &Allocator) -> Result<(), DelegationError>:
+    let Ok(scopes): &Json = role.field("paths") else Err(code):
+        return Err(InvalidDelegation)
+    match offers:
+        Object(targets):
+            for target in targets:
+                let Ok(parts): Halves = target.key.span().split('/') else Err(rest):
+                    return Err(InvalidTarget)
+                if !package_name(parts.head) || !version_bundle(parts.tail) || !authorized(scopes, parts.head):
+                    return Err(InvalidTarget)
+                if let Err(error) = parse_reference(&target.value, allocator, 2097152):
+                    return Err(InvalidTarget)
+            return Ok(())
+        _:
+            return Err(InvalidTarget)
+
+fn authorized(paths: &Json, package: Span) -> Bool:
+    match paths:
+        Array(scopes):
+            for entry in scopes:
+                let Ok(scope): &String = entry.text() else Err(code):
+                    return false
+                let Ok(parts): Halves = scope.span().split('/') else Err(rest):
+                    return false
+                if parts.tail.equals_text("*") && same_bytes(parts.head.as_bytes(), package.as_bytes()):
+                    return true
+        _:
+            ()
+    return false
+
+pub fn target_reference(offers: &Json, coordinate: &String, allocator: &Allocator) -> Result<ContentReference, DelegationError>:
+    match offers:
+        Object(targets):
+            for target in targets:
+                if target.key.eq(coordinate):
+                    let Ok(reference): ContentReference = parse_reference(&target.value, allocator, 2097152) else Err(error):
+                        return Err(InvalidTarget)
+                    return Ok(reference)
+        _:
+            ()
+    return Err(TargetNotListed)

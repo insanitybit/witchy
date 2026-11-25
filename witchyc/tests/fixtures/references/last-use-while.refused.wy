@@ -1,0 +1,16 @@
+// A `while` condition is read again after the body, so its references stay in use.
+type Pair:
+    a: U64
+    b: U64
+
+fn first(pair: &Pair) -> &U64:
+    return &(*pair).a
+
+fn main(console: Console<Write>):
+    var pair = Pair(4, 5)
+    let seen = first(&pair)
+    var n: U64 = 0
+    while *seen > n:
+        pair.a = 0
+        n += 1
+    console.print_int(n)

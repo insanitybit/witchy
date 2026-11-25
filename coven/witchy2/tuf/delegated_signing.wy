@@ -1,0 +1,128 @@
+import "canonical.wy"
+import "coordinate.wy"
+
+import "delegations.wy"
+import "expiry.wy"
+import "metadata.wy"
+import "public_key.wy"
+import "release_trust.wy"
+import crypto
+import encoding
+import json_tree
+import mldsa_signer
+import span
+
+import string
+import text
+
+import vec
+
+pub fn checked_signing_role(parent: &Metadata, child: &Metadata, name: &String, now: U64, allocator: &Allocator) -> Result<&Json, U64>:
+    borrows Ok from parent
+    if !delegated_name(name.span()):
+        return Err(1)
+    if let Err(error) = check_freshness(parent, now):
+        return Err(1)
+    if let Err(error) = check_freshness(child, now):
+        return Err(1)
+    let top = parent.signed()?
+    let body = child.signed()?
+    if !count_fields(body, 5):
+        return Err(1)
+    let upper = string_field(top, "expires")?
+    let expiry = string_field(body, "expires")?
+    if upper.less(expiry):
+        return Err(1)
+    if let Ok(valid) = check_expiry(expiry.as_bytes(), now + 7776000000):
+        return Err(1)
+    let signatures = child.signatures()?
+    let count = signatures.len()?
+    if count != 0:
+        return Err(1)
+    let role = named_role(parent, name)?
+    if let Ok(ignored) = role.field("path_hash_prefixes"):
+        return Err(1)
+    let targets = body.field("targets")?
+    if let Err(error) = check_targets(role, targets, allocator):
+        return Err(1)
+    return Ok(role)
+
+pub fn signing_key(parent: &Metadata, role: &Json, trust: &ReleaseTrust, public: &[U8], allocator: &Allocator) -> Result<&String, U64>:
+    borrows Ok from role
+    let Ok(reserved): Vec<U8> = trust.reserved_keys(allocator) else Err(error):
+        return Err(1)
+    let independent = key_is_independent(public, reserved.as_slice())
+    reserved.close()
+    if !independent:
+        return Err(2)
+    let top = parent.signed()?
+    let delegations = top.field("delegations")?
+    let keys = delegations.field("keys")?
+    let ids = role.field("keyids")?
+    return matching_key(ids, keys, public, allocator)
+
+fn key_is_independent(public: &[U8], reserved: &[U8]) -> Bool:
+    var hash: [U8; 48] = [0; 48]
+    if let Err(error) = crypto.sha384(public, hash.slice_mut()):
+        return false
+    for i in 0..reserved.len() / 48:
+        let start = i * 48
+        if equal_bytes(reserved.part(start, start + 48), hash.slice()):
+            return false
+    return true
+
+fn matching_key(ids: &Json, keys: &Json, public: &[U8], allocator: &Allocator) -> Result<&String, U64>:
+    borrows Ok from ids
+    match ids:
+        Array(assigned):
+            var matches: U64 = 0
+            var index: U64 = 0
+            for i in 0..assigned.len():
+                let entry = assigned.at(i)?
+                let id = entry.text()?
+                let key = member_named(keys, id)?
+                let der = mldsa87_key(key, allocator)?
+                let matches_key = equal_bytes(der.as_slice().part(22, 2614), public)
+                der.close()
+                if matches_key:
+                    if !matches_key_id(key, id, allocator):
+                        return Err(3)
+                    matches += 1
+                    index = i
+            if matches == 1:
+                let entry = assigned.at(index)?
+                return entry.text()
+        _:
+            ()
+    return Err(3)
+
+fn matches_key_id(key: &Json, id: &String, allocator: &Allocator) -> Bool:
+    if id.byte_len() != 64 || !count_fields(key, 3):
+        return false
+    for byte in id.as_bytes():
+        if !(*byte >= '0' && *byte <= '9') && !(*byte >= 'a' && *byte <= 'f'):
+            return false
+    let Ok(keyval): &Json = key.field("keyval") else Err(code):
+        return false
+    if !count_fields(keyval, 1):
+        return false
+    let Ok(wire): String = canonical(key, allocator) else Err(code):
+        return false
+    var hash: [U8; 32] = [0; 32]
+    let hashed = crypto.sha256(wire.as_bytes(), hash.slice_mut())
+    wire.close()
+    if let Err(code) = hashed:
+        return false
+    let Ok(expected): Vec<U8> = decode_hex(allocator, id.as_bytes()) else Err(code):
+        return false
+    let matches = equal_bytes(hash.slice(), expected.as_slice())
+    expected.close()
+    return matches
+
+fn equal_bytes(left: &[U8], right: &[U8]) -> Bool:
+    if left.len() != right.len():
+        return false
+    for i in 0..left.len():
+        if left[i] != right[i]:
+            return false
+    return true

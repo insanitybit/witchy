@@ -1,0 +1,65 @@
+// A min-heap over a Vec<U64>: push sifts up, pop swaps the last into the root and sifts down;
+// popping everything gives the numbers in order.
+import console
+import vec
+
+fn sift_up(items: &mut Vec<U64>, start: U64):
+    var at = start
+    while at > 0:
+        let parent = (at - 1) / 2
+        if items[parent] <= items[at]:
+            return
+        let low = items[at]
+        items[at] = items[parent]
+        items[parent] = low
+        at = parent
+
+fn sift_down(items: &mut Vec<U64>):
+    var at: U64 = 0
+    let n = items.len()
+    while true:
+        let left = at * 2 + 1
+        if left >= n:
+            return
+        var smallest = left
+        let right = left + 1
+        if right < n && items[right] < items[left]:
+            smallest = right
+        if items[at] <= items[smallest]:
+            return
+        let high = items[at]
+        items[at] = items[smallest]
+        items[smallest] = high
+        at = smallest
+
+fn push(items: &mut Vec<U64>, allocator: &Allocator, value: U64):
+    let pushed = items.push_mut(allocator, value)
+    let last = items.len() - 1
+    sift_up(items, last)
+
+fn pop(items: &mut Vec<U64>) -> Result<U64, U64>:
+    let n = items.len()
+    if n == 0:
+        return Err(0)
+    let top = items[0]
+    let last = items.take_last_mut()?
+    if n > 1:
+        items[0] = last
+        sift_down(items)
+    return Ok(top)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.new(&allocator, 8) else Err(c):
+        return
+    var heap = move made
+    for x in [9, 4, 7, 1, 8, 2, 6, 3, 5, 0]:
+        push(&mut heap, &allocator, *x)
+    var out: U64 = 0
+    while true:
+        match pop(&mut heap):
+            Ok(v):
+                out = out * 10 + v
+            Err(e):
+                break
+    console.print_int(out)
+    heap.close()

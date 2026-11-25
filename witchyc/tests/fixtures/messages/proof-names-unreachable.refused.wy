@@ -1,0 +1,16 @@
+// Refused, saying which part did not prove: an `unreachable` a path reaches.
+import console
+
+fn pick(x: U64) -> U64:
+    requires x < 10
+    ensures true
+    proof:
+        auto
+    if x > 20:
+        return 1
+    if x == 5:
+        unreachable
+    return x
+
+fn main(console: Console<Write>):
+    console.print_int(pick(3))

@@ -1,0 +1,17 @@
+// Refused: one level of `static for`, so what a recipe writes grows with the field count.
+import hash
+
+derive Square:
+    impl Eq for Self:
+        fn eq(self: &Self, other: &Self) -> Bool:
+            static for f in fields:
+                static for g in fields:
+                    if !((*self).f == (*other).g):
+                        return false
+            return true
+
+type P derive(Square):
+    x: U64
+
+fn main():
+    return

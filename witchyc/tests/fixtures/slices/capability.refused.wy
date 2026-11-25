@@ -1,0 +1,7 @@
+// Refused (an automated security review): a slice's elements are data, never capabilities,
+// so a signature cannot name a slice of them.
+fn each(consoles: &[Console<Write>]):
+    return
+
+fn main():
+    return

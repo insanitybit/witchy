@@ -1,0 +1,23 @@
+// A field of a sealed type is not reached from outside it: exchanging two
+// vectors' lengths would break both invariants.
+import "../../../library/wasm-vec.wy"
+
+fn cheat(one: &mut Vec<U64>, two: &mut Vec<U64>):
+    memory.exchange(&mut (*one).length, &mut (*two).length)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let a: Result<Vec<U64>, U64> = Vec.new(&allocator, 2)
+    match move a:
+        Ok(first):
+            let b: Result<Vec<U64>, U64> = Vec.new(&allocator, 8)
+            match move b:
+                Ok(second):
+                    var one = move first
+                    var two = move second
+                    cheat(&mut one, &mut two)
+                    one.close()
+                    two.close()
+                Err(code):
+                    first.close()
+        Err(code):
+            console.print_int(code)

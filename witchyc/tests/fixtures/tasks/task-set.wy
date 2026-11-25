@@ -1,0 +1,86 @@
+// A TaskSet starts any number of closures as tasks, then races or joins them, all or nothing:
+// work that cannot start is discarded, and the set gives Err(1) after cancelling what did.
+import console
+import tasks
+import vec
+import discard
+
+// Sums its numbers, pausing once per number, and reports the sum.
+fn add_up(numbers: Vec<U64>) suspends:
+    var sum: U64 = 0
+    for n in numbers.as_slice():
+        sum += *n
+        pause(0)
+    numbers.close()
+    report(sum)
+
+fn filled(allocator: &Allocator, count: U64, value: U64) -> Vec<U64>:
+    let Ok(made): Vec<U64> = Vec.filled(allocator, count, value) else Err(code):
+        unreachable
+    return move made
+
+fn main_task(allocator: Allocator) suspends:
+    // The shortest finishes first: the second added (index 1).
+    let a: Vec<U64> = filled(&allocator, 3, 1)
+    let b: Vec<U64> = filled(&allocator, 1, 10)
+    let c: Vec<U64> = filled(&allocator, 2, 100)
+    let Ok(made): TaskSet = TaskSet.new(&allocator, 3, 2048) else Err(code):
+        a.close()
+        b.close()
+        c.close()
+        return
+    var set = move made
+    set.add(fn() -> (): add_up(move a))
+    set.add(fn() -> (): add_up(move b))
+    set.add(fn() -> (): add_up(move c))
+    match set.first():
+        Ok(which):
+            report(1000 + which)
+        Err(code):
+            report(2000 + code)
+    // All three to their ends.
+    let d: Vec<U64> = filled(&allocator, 2, 5)
+    let e: Vec<U64> = filled(&allocator, 1, 7)
+    let Ok(both): TaskSet = TaskSet.new(&allocator, 2, 2048) else Err(code):
+        d.close()
+        e.close()
+        return
+    var pair = move both
+    pair.add(fn() -> (): add_up(move d))
+    pair.add(fn() -> (): add_up(move e))
+    match pair.join():
+        Ok:
+            report(3000)
+        Err(code):
+            report(4000 + code)
+    // Room for one, two added: the second is discarded, the first cancelled, and Err(1).
+    let f: Vec<U64> = filled(&allocator, 2, 1)
+    let g: Vec<U64> = filled(&allocator, 2, 1)
+    let Ok(small): TaskSet = TaskSet.new(&allocator, 1, 2048) else Err(code):
+        f.close()
+        g.close()
+        return
+    var one = move small
+    one.add(fn() -> (): add_up(move f))
+    one.add(fn() -> (): add_up(move g))
+    match one.first():
+        Ok(which):
+            report(5000 + which)
+        Err(code):
+            report(6000 + code)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    match Task.spawn(&allocator, 8192, main_task, allocator.share()):
+        Ok(task):
+            var running = move task
+            var going = true
+            while going:
+                match running.step():
+                    Ok:
+                        going = false
+                    Err(token):
+                        if token >= REPORTED:
+                            console.print_int(token - REPORTED)
+            running.close()
+        Err(back):
+            console.line("no memory")

@@ -1,0 +1,64 @@
+// Refused (adversarial review round 10): a field tested by eq but not fed, whose type is a generic instance (Wrap<U64, Bad>), carried Bad's unchecked, irreflexive Eq; every type argument of a key's field must itself be lawful.
+import console
+import hash
+import hashmap
+import keymap
+import discard
+
+// Bad: no HashKey, so its Eq (never true) is never checked by the key law.
+type Bad derive(Discard):
+    x: U64
+
+impl Eq for Bad:
+    fn eq(self: &Bad, other: &Bad) -> Bool:
+        return false
+
+type Wrap<T, U> derive(Discard):
+    a: T
+    b: U
+
+impl<T: Any + HashKey, U: Any + HashKey> HashKey for Wrap<T, U>:
+    fn feed(self: &Wrap<T, U>, state: &mut HashState):
+        (*self).a.feed(state)
+        (*self).b.feed(state)
+
+impl<T: Any + Eq, U: Any + Eq> Eq for Wrap<T, U>:
+    fn eq(self: &Wrap<T, U>, other: &Wrap<T, U>) -> Bool:
+        return (*self).a == (*other).a && (*self).b == (*other).b
+
+// Tests `w` in eq but does not feed it: Wrap<U64, Bad>'s HashKey (whose bound would refuse Bad)
+// is never instantiated, only its Eq.
+type Outer derive(Discard):
+    id: U64
+    w: Wrap<U64, Bad>
+
+impl Eq for Outer:
+    fn eq(self: &Outer, other: &Outer) -> Bool:
+        return (*self).id == (*other).id && (*self).w == (*other).w
+
+impl HashKey for Outer:
+    fn feed(self: &Outer, state: &mut HashState):
+        (*self).id.feed(state)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): KeyMap<Outer, U64> = KeyMap.new(&allocator, 64, Reference(1)) else Err(code):
+        return
+    var map = move made
+    let probe = Outer(id: 7, w: Wrap(a: 1, b: Bad(x: 1)))
+    if probe.eq(&probe):
+        console.print_int(1)
+    else:
+        console.print_int(0)
+    for i in 0..3:
+        match map.put(&allocator, Outer(id: 7, w: Wrap(a: 1, b: Bad(x: 1))), i):
+            Ok:
+                ()
+            Err(entry):
+                entry.discard()
+    console.print_int(map.len())
+    if map.contains(&probe):
+        console.print_int(1)
+    else:
+        console.print_int(0)
+    probe.discard()
+    map.discard()

@@ -1,0 +1,16 @@
+// Refused: the cell after the run is not written.
+fn write(buffer: &mut Buffer<U8>, at: U64, word: U64, count: U64):
+    requires count <= 8
+    requires at + count <= memory.capacity(buffer)
+    requires memory.empty_range(buffer, at, at + count)
+    requires memory.initialized_range(buffer, 0, at)
+    ensures memory.initialized_range(buffer, at, at + count + 1)
+    ensures memory.same_prefix(buffer, old(buffer), at)
+    ensures memory.unchanged_from(buffer, old(buffer), at + count)
+    proof:
+        auto
+    memory.init_word_unchecked(buffer, at, word, count)
+    return
+
+fn main():
+    return

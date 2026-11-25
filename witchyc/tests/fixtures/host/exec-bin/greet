@@ -1,0 +1,3 @@
+#!/bin/sh
+# A program the exec fixture may run: it greets its first argument and counts them.
+echo "hello, $1 ($#)"

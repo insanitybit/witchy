@@ -1,0 +1,54 @@
+// Review 2026-11-24: a generic callee whose `T` has a trait bound can reach, through an impl for `U64`,
+// the `U64` field an invariant reads: its kept result lends the whole record, and the invariant is not shown.
+import console
+
+pub type Holder<T>:
+    n: U64
+    x: T
+
+impl<T> Holder<T>:
+    fn len(h: &Holder<T>) -> U64:
+        return (*h).n
+
+trait Grab:
+    fn grab(self: &Self, holder: &mut Holder<Self>) -> &mut Self
+
+impl Grab for U64:
+    fn grab(self: &U64, holder: &mut Holder<U64>) -> &mut U64:
+        return &mut (*holder).n
+
+fn reach<T: Any + Grab>(holder: &mut Holder<T>, key: &T) -> &mut T:
+    return key.grab(holder)
+
+sealed type Shelf:
+    items: Holder<U64>
+    room: U64
+    invariant room <= 64
+    invariant items.len() == room
+
+impl Shelf:
+    fn new(room: U64) -> Shelf:
+        requires room <= 64
+        ensures true
+        proof:
+            auto
+        return Shelf(Holder(room, 0), room)
+
+    fn poke(shelf: &mut Shelf, key: &U64):
+        ensures true
+        proof:
+            auto
+        let r = reach(&mut (*shelf).items, key)
+        *r = 1000
+
+    fn count(shelf: &Shelf) -> U64:
+        ensures result <= 64
+        proof:
+            auto
+        return (*shelf).items.len()
+
+fn main(console: Console<Write>):
+    var shelf = Shelf.new(3)
+    let k: U64 = 0
+    shelf.poke(&k)
+    console.print_int(shelf.count())

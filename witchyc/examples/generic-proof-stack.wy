@@ -1,0 +1,353 @@
+// A fixed-capacity Stack over generic memory. Public headers are untrusted:
+// operations check the physical capacity and the selected cell explicitly.
+// T is CopyStorage; this example does not store owning elements.
+type Stack<T>:
+    slots: Buffer<T>
+    used: U64
+    limit: U64
+
+type StackRefusal<T>:
+    stack: Stack<T>
+    item: T
+
+type StackTaken<T>:
+    stack: Stack<T>
+    item: T
+
+fn stack_new<T>(allocator: &Allocator, limit: U64) -> Result<Stack<T>, U64>:
+    let allocation: Result<Buffer<T>, U64> = memory.try_alloc(allocator, limit)
+    match move allocation:
+        Ok(slots):
+            return Ok(Stack(move slots, 0, limit))
+        Err(code):
+            return Err(code)
+
+fn stack_push<T>(input: Stack<T>, item: T) -> Result<Stack<T>, StackRefusal<T>>:
+    ensures match result:
+        Ok(out):
+            memory.same_allocation(out.slots, old(input.slots))
+            out.used == old(input.used) + 1
+            out.limit == old(input.limit)
+            out.limit == memory.capacity(out.slots)
+            out.used <= out.limit
+            memory.cell(out.slots, old(input.used), item)
+            memory.unchanged_except(out.slots, old(input.slots), old(input.used))
+        Err(back):
+            memory.same_allocation(back.stack.slots, old(input.slots))
+            back.stack.used == old(input.used)
+            back.stack.limit == old(input.limit)
+            back.item == item
+            memory.unchanged(back.stack.slots, old(input.slots))
+    proof:
+        auto
+    var stack = move input
+    let index = stack.used
+    let actual = memory.capacity(&stack.slots)
+    if stack.limit != actual || index > actual:
+        return Err(StackRefusal(move stack, item))
+    if index < actual:
+        if !memory.initialized(&stack.slots, index):
+            memory.init_unchecked(&mut stack.slots, index, item)
+            stack.used = index + 1
+            return Ok(move stack)
+    return Err(StackRefusal(move stack, item))
+
+fn stack_pop<T>(input: Stack<T>) -> Result<StackTaken<T>, Stack<T>>:
+    ensures match result:
+        Ok(out):
+            memory.same_allocation(out.stack.slots, old(input.slots))
+            out.stack.used + 1 == old(input.used)
+            out.stack.limit == old(input.limit)
+            out.stack.limit == memory.capacity(out.stack.slots)
+            out.stack.used < out.stack.limit
+            memory.cell(old(input.slots), out.stack.used, out.item)
+            memory.empty(out.stack.slots, out.stack.used)
+            memory.unchanged_except(out.stack.slots, old(input.slots), out.stack.used)
+        Err(back):
+            memory.same_allocation(back.slots, old(input.slots))
+            back.used == old(input.used)
+            back.limit == old(input.limit)
+            memory.unchanged(back.slots, old(input.slots))
+    proof:
+        auto
+    var stack = move input
+    let actual = memory.capacity(&stack.slots)
+    if stack.limit != actual || stack.used > actual:
+        return Err(move stack)
+    if stack.used > 0:
+        let index = stack.used - 1
+        match memory.take(&mut stack.slots, index):
+            Ok(item):
+                stack.used = index
+                return Ok(StackTaken(move stack, item))
+            Err(code):
+                return Err(move stack)
+    return Err(move stack)
+
+fn stack_clear<T>(slots: &mut Buffer<T>):
+    ensures memory.empty_all(slots)
+    ensures memory.same_allocation(slots, old(slots))
+    ensures memory.capacity(slots) == memory.capacity(old(slots))
+    proof:
+        auto
+    let limit = memory.capacity(slots)
+    var index: U64 = 0
+    while index < limit:
+        invariant index <= limit
+        invariant memory.empty_range(slots, 0, index)
+        invariant memory.unchanged_from(slots, old(slots), index)
+        let _ = memory.take(slots, index)
+        index += 1
+    return
+
+fn stack_buffer_close<T>(input: Buffer<T>):
+    ensures memory.released(old(input))
+    proof:
+        auto
+    var slots = move input
+    stack_clear(&mut slots)
+    match memory.try_release(move slots):
+        Ok:
+            return
+        Err(back):
+            stack_buffer_close(move back)
+
+fn stack_close<T>(input: Stack<T>):
+    ensures memory.released(old(input.slots))
+    proof:
+        auto
+    stack_buffer_close(move input.slots)
+
+// Copyable results expose the actual two popped elements to concrete callers.
+type StackPair<T>:
+    top: T
+    bottom: T
+
+fn stack_roundtrip<T>(allocator: &Allocator, first: T, second: T) -> Result<StackPair<T>, U64>:
+    let allocation: Result<Stack<T>, U64> = stack_new(allocator, 2)
+    match move allocation:
+        Ok(empty):
+            match stack_push(move empty, first):
+                Ok(once):
+                    match stack_push(move once, second):
+                        Ok(full):
+                            match stack_pop(move full):
+                                Ok(top):
+                                    let last = top.item
+                                    match stack_pop(move top.stack):
+                                        Ok(bottom):
+                                            let earliest = bottom.item
+                                            stack_close(move bottom.stack)
+                                            return Ok(StackPair(last, earliest))
+                                        Err(back):
+                                            stack_close(move back)
+                                            return Err(4)
+                                Err(back):
+                                    stack_close(move back)
+                                    return Err(3)
+                        Err(back):
+                            stack_close(move back.stack)
+                            return Err(2)
+                Err(back):
+                    stack_close(move back.stack)
+                    return Err(1)
+        Err(code):
+            return Err(code)
+
+// This client also checks ordinary runtime refusals. A successful proof does
+// not supply a representation invariant for a record with arbitrary headers.
+fn stack_boundaries(console: &Console<Write>, allocator: &Allocator):
+    let zero: Result<Stack<U64>, U64> = stack_new(allocator, 0)
+    match move zero:
+        Ok(empty):
+            match stack_push(move empty, 7):
+                Ok(unexpected):
+                    stack_close(move unexpected)
+                    console.print_int(901)
+                Err(back):
+                    console.print_int(back.item)
+                    console.print_int(back.stack.used)
+                    match stack_pop(move back.stack):
+                        Ok(unexpected):
+                            stack_close(move unexpected.stack)
+                            console.print_int(902)
+                        Err(kept):
+                            console.print_int(kept.used)
+                            stack_close(move kept)
+        Err(code):
+            console.print_int(903)
+    let one: Result<Stack<U64>, U64> = stack_new(allocator, 1)
+    match move one:
+        Ok(empty):
+            match stack_push(move empty, 11):
+                Ok(full):
+                    match stack_push(move full, 99):
+                        Ok(unexpected):
+                            stack_close(move unexpected)
+                            console.print_int(904)
+                        Err(back):
+                            console.print_int(back.item)
+                            console.print_int(back.stack.used)
+                            match stack_pop(move back.stack):
+                                Ok(taken):
+                                    console.print_int(taken.item)
+                                    console.print_int(taken.stack.used)
+                                    match stack_push(move taken.stack, 17):
+                                        Ok(reused):
+                                            match stack_pop(move reused):
+                                                Ok(again):
+                                                    console.print_int(again.item)
+                                                    stack_close(move again.stack)
+                                                Err(kept):
+                                                    stack_close(move kept)
+                                                    console.print_int(905)
+                                        Err(rejected):
+                                            stack_close(move rejected.stack)
+                                            console.print_int(906)
+                                Err(kept):
+                                    stack_close(move kept)
+                                    console.print_int(907)
+                Err(back):
+                    stack_close(move back.stack)
+                    console.print_int(908)
+        Err(code):
+            console.print_int(909)
+    let hole: Result<Stack<U64>, U64> = stack_new(allocator, 1)
+    match move hole:
+        Ok(empty):
+            var sparse = move empty
+            sparse.used = 1
+            match stack_pop(move sparse):
+                Ok(unexpected):
+                    stack_close(move unexpected.stack)
+                    console.print_int(910)
+                Err(back):
+                    console.print_int(back.used)
+                    if memory.initialized(&back.slots, 0):
+                        console.print_int(911)
+                    else:
+                        console.print_int(0)
+                    stack_close(move back)
+        Err(code):
+            console.print_int(912)
+    let malformed: Result<Stack<U64>, U64> = stack_new(allocator, 1)
+    match move malformed:
+        Ok(empty):
+            var forged = move empty
+            forged.limit = 99
+            match stack_push(move forged, 31):
+                Ok(unexpected):
+                    stack_close(move unexpected)
+                    console.print_int(913)
+                Err(back):
+                    console.print_int(back.item)
+                    console.print_int(back.stack.limit)
+                    match stack_pop(move back.stack):
+                        Ok(unexpected):
+                            stack_close(move unexpected.stack)
+                            console.print_int(914)
+                        Err(kept):
+                            console.print_int(kept.limit)
+                            stack_close(move kept)
+        Err(code):
+            console.print_int(915)
+    let oversized: Result<Stack<U64>, U64> = stack_new(allocator, 1)
+    match move oversized:
+        Ok(empty):
+            var forged = move empty
+            forged.used = 18446744073709551615
+            match stack_pop(move forged):
+                Ok(unexpected):
+                    stack_close(move unexpected.stack)
+                    console.print_int(916)
+                Err(kept):
+                    console.print_int(kept.used)
+                    stack_close(move kept)
+        Err(code):
+            console.print_int(917)
+    let occupied: Result<Buffer<U64>, U64> = memory.try_alloc(allocator, 2)
+    match move occupied:
+        Ok(slots):
+            var storage = move slots
+            let _ = memory.init(&mut storage, 0, 41)
+            let input: Stack<U64> = Stack(move storage, 0, 2)
+            match stack_push(move input, 99):
+                Ok(unexpected):
+                    stack_close(move unexpected)
+                    console.print_int(918)
+                Err(back):
+                    console.print_int(back.item)
+                    console.print_int(back.stack.used)
+                    match memory.read(&back.stack.slots, 0):
+                        Ok(item):
+                            console.print_int(item)
+                        Err(code):
+                            console.print_int(919)
+                    stack_close(move back.stack)
+        Err(code):
+            console.print_int(920)
+    let impossible: Result<Stack<U64>, U64> = stack_new(allocator, 18446744073709551615)
+    match move impossible:
+        Ok(unexpected):
+            stack_close(move unexpected)
+            console.print_int(921)
+        Err(code):
+            console.print_int(1)
+    // More cycles than the allocator's metadata slots checks actual cleanup.
+    let loop_first: U64 = 11
+    let loop_second: U64 = 17
+    var cycles: U64 = 0
+    while cycles < 80:
+        match stack_roundtrip(allocator, loop_first, loop_second):
+            Ok(pair):
+                if pair.top != 17 || pair.bottom != 11:
+                    console.print_int(922)
+            Err(code):
+                console.print_int(923)
+        cycles += 1
+    console.print_int(cycles)
+
+type StackSample:
+    byte: U8
+    word: U64
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let first: U64 = 37
+    let second: U64 = 73
+    match stack_roundtrip(&allocator, first, second):
+        Ok(pair):
+            console.print_int(pair.top)
+            console.print_int(pair.bottom)
+        Err(code):
+            console.print_int(999)
+    let byte_first: U8 = 7
+    let byte_second: U8 = 9
+    match stack_roundtrip(&allocator, byte_first, byte_second):
+        Ok(pair):
+            console.print_int(U8.to_u64(pair.top))
+            console.print_int(U8.to_u64(pair.bottom))
+        Err(code):
+            console.print_int(998)
+    match stack_roundtrip(&allocator, true, false):
+        Ok(pair):
+            if pair.top:
+                console.print_int(997)
+            else:
+                console.print_int(0)
+            if pair.bottom:
+                console.print_int(1)
+            else:
+                console.print_int(996)
+        Err(code):
+            console.print_int(995)
+    let record_first = StackSample(byte_first, 18446744073709551615)
+    let record_second = StackSample(byte_second, 4294967296)
+    match stack_roundtrip(&allocator, record_first, record_second):
+        Ok(pair):
+            console.print_int(U8.to_u64(pair.top.byte))
+            console.print_int(pair.top.word)
+            console.print_int(U8.to_u64(pair.bottom.byte))
+            console.print_int(pair.bottom.word)
+        Err(code):
+            console.print_int(994)
+    stack_boundaries(&console, &allocator)

@@ -1,0 +1,7 @@
+// `choose` from another file: each variant says which input it borrows from.
+pub fn choose(left: &U64, right: &U64, flag: Bool) -> Result<&U64, &U64>:
+    borrows Ok from left
+    borrows Err from right
+    if flag:
+        return Ok(left)
+    return Err(right)

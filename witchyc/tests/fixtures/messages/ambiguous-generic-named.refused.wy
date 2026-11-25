@@ -1,0 +1,7 @@
+// Refused, naming the type parameter nothing fixes and how to fix it.
+import console
+import vec
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made = Vec.new(&allocator, 4)
+    console.print_int(1)

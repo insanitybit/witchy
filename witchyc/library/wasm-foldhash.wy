@@ -1,0 +1,75 @@
+import "wasm-word.wy"
+
+// One fast::FoldHasher::write, with an all-ones per-hasher seed and global_fixed shared seed.
+// Ported from orlp/foldhash (Zlib license), revision 77d8e3dae0d43abe65753e888b9e74efbe4ee3f7.
+fn fold(a: U64, b: U64) -> U64:
+    let product = a.widening_mul(b)
+    return product.low ^ product.high
+
+fn mix(x: U64, y: U64, state: U64) -> U64:
+    return fold(x ^ state, y ^ 13883517620612518109)
+
+pub fn foldhash(bytes: &[U8]) -> U64:
+    let n = bytes.len()
+    // Rotating an all-ones seed by the byte length leaves it unchanged.
+    let initial = 18446744073709551615
+    var s0 = initial
+    var s1 = 4577018097722394903
+    if n < 17:
+        if n > 7:
+            s0 = s0 ^ (bytes.read_le64(0))
+            s1 = s1 ^ (bytes.read_le64(n - 8))
+        else:
+            if n > 3:
+                s0 = s0 ^ (load_word_le32(bytes, 0))
+                s1 = s1 ^ (load_word_le32(bytes, n - 4))
+            else:
+                if n > 0:
+                    var mid: U64 = 0
+                    if n > 1:
+                        mid = 1
+                    s0 = s0 ^ (U8.to_u64(bytes[0]))
+                    let hi = U8.to_u64(bytes[n - 1])
+                    s1 = s1 ^ (hi * 256 + U8.to_u64(bytes[mid]))
+        return fold(s0, s1)
+    s1 = U64.wrapping_add(initial, 4577018097722394903)
+    var pos = 0
+    var remaining = n
+    if n > 128:
+        var s2 = U64.wrapping_add(initial, 10526836309316205339)
+        var s3 = U64.wrapping_add(initial, 15073842237943035308)
+        if n > 256:
+            var s4 = U64.wrapping_add(initial, 3458046377305235383)
+            var s5 = U64.wrapping_add(initial, 13322122606961655446)
+            while remaining > 256:
+                s0 = mix(bytes.read_le64(pos), bytes.read_le64(pos + 48), s0)
+                s1 = mix(bytes.read_le64(pos + 8), bytes.read_le64(pos + 56), s1)
+                s2 = mix(bytes.read_le64(pos + 16), bytes.read_le64(pos + 64), s2)
+                s3 = mix(bytes.read_le64(pos + 24), bytes.read_le64(pos + 72), s3)
+                s4 = mix(bytes.read_le64(pos + 32), bytes.read_le64(pos + 80), s4)
+                s5 = mix(bytes.read_le64(pos + 40), bytes.read_le64(pos + 88), s5)
+                pos += 96
+                remaining -= 96
+            s0 = s0 ^ (s4)
+            s1 = s1 ^ (s5)
+        while remaining > 128:
+            s0 = mix(bytes.read_le64(pos), bytes.read_le64(pos + 32), s0)
+            s1 = mix(bytes.read_le64(pos + 8), bytes.read_le64(pos + 40), s1)
+            s2 = mix(bytes.read_le64(pos + 16), bytes.read_le64(pos + 48), s2)
+            s3 = mix(bytes.read_le64(pos + 24), bytes.read_le64(pos + 56), s3)
+            pos += 64
+            remaining -= 64
+        s0 = s0 ^ (s2)
+        s1 = s1 ^ (s3)
+    s0 = mix(bytes.read_le64(pos), bytes.read_le64(n - 16), s0)
+    s1 = mix(bytes.read_le64(pos + 8), bytes.read_le64(n - 8), s1)
+    if remaining > 31:
+        s0 = mix(bytes.read_le64(pos + 16), bytes.read_le64(n - 32), s0)
+        s1 = mix(bytes.read_le64(pos + 24), bytes.read_le64(n - 24), s1)
+    if remaining > 63:
+        s0 = mix(bytes.read_le64(pos + 32), bytes.read_le64(n - 48), s0)
+        s1 = mix(bytes.read_le64(pos + 40), bytes.read_le64(n - 40), s1)
+    if remaining > 95:
+        s0 = mix(bytes.read_le64(pos + 48), bytes.read_le64(n - 64), s0)
+        s1 = mix(bytes.read_le64(pos + 56), bytes.read_le64(n - 56), s1)
+    return s0 ^ (s1)

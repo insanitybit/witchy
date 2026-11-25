@@ -1,0 +1,17 @@
+// `pure fn`: checked to be given no capability, so a call has no effect but its result.
+import console
+
+pure fn square(x: U64) -> U64:
+    return x * x
+
+type Point:
+    x: U64
+    y: U64
+
+impl Point:
+    pub pure fn length_squared(point: &Point) -> U64:
+        return square(point.x) + square(point.y)
+
+fn main(console: Console<Write>):
+    let point = Point(3, 4)
+    console.print_int(point.length_squared())

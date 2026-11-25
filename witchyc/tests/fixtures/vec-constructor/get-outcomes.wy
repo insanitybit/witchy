@@ -1,0 +1,59 @@
+fn inspect_get(console: &Console<Write>, input: &Vec<U8>, index: U64):
+    match vec_get(input, index):
+        Ok(item):
+            console.print_int(U8.to_u64(item))
+        Err(code):
+            console.print_int(code)
+    console.print_int((*input).length)
+    console.print_int((*input).capacity)
+    console.print_int(memory.capacity(&(*input).data))
+    match memory.read(&(*input).data, 0):
+        Ok(item):
+            console.print_int(U8.to_u64(item))
+        Err(code):
+            console.print_int(404)
+
+fn get_cases(console: &Console<Write>, allocator: &Allocator):
+    let made: Result<Vec<U8>, U64> = vec_new(allocator, 2)
+    match move made:
+        Ok(empty):
+            inspect_get(console, &empty, 0)
+            let first: U8 = 73
+            match vec_push(allocator, move empty, first):
+                Ok(vector):
+                    inspect_get(console, &vector, 0)
+                    let last: U8 = 37
+                    match vec_push(allocator, move vector, last):
+                        Ok(full):
+                            match vec_take_last(move full):
+                                Ok(taken):
+                                    console.print_int(U8.to_u64(taken.item))
+                                    inspect_get(console, &taken.vector, 0)
+                                    inspect_get(console, &taken.vector, 1)
+                                    inspect_get(console, &taken.vector, 18446744073709551615)
+                                    vec_close(move taken.vector)
+                                Err(back):
+                                    console.print_int(901)
+                                    vec_close(move back)
+                        Err(back):
+                            console.print_int(902)
+                            vec_close(move back.vector)
+                Err(back):
+                    console.print_int(903)
+                    vec_close(move back.vector)
+        Err(code):
+            console.print_int(904)
+    let raw: Result<Buffer<U8>, U64> = memory.try_alloc(allocator, 2)
+    match move raw:
+        Ok(fresh):
+            var data = move fresh
+            let byte: U8 = 99
+            memory.init(&mut data, 0, byte)
+            let malformed: Vec<U8> = Vec(move data, 18446744073709551615, 0)
+            inspect_get(console, &malformed, 0)
+            inspect_get(console, &malformed, 1)
+            inspect_get(console, &malformed, 2)
+            inspect_get(console, &malformed, 18446744073709551615)
+            vec_close(move malformed)
+        Err(code):
+            console.print_int(905)

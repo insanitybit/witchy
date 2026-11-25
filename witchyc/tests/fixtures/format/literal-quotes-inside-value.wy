@@ -1,0 +1,17 @@
+// A text literal inside `${...}` is written with plain quotes, as in the value's own source; the
+// escaped form still reads the same, and a `$`, `\n` or `}` inside the inner literal is its own.
+import console
+import string
+
+fn label(name: Text) -> Text:
+    return name
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(c):
+        return
+    var s = move made
+    let _ = s.push_text(&allocator, "pen")
+    console.print("${s == "pen"} ${s == \"pen\"} ${s != "pad"}")
+    console.print("[${label("a b")}] [${label("x\ty")}] [${label("$5")}]")
+    console.print("[${label("}")}] [${label("{x}")}]")
+    s.close()

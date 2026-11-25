@@ -1,0 +1,7 @@
+name témoin
+port 8080
+debug true
+host alpha
+host beta
+host gamma
+burst 1500.0

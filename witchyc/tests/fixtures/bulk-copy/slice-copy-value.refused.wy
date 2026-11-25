@@ -1,0 +1,13 @@
+fn copy_byte(target: &mut Buffer<U8>, source: &Buffer<U8>, byte: U8):
+    requires 0 < memory.capacity(target)
+    requires 0 < memory.capacity(source)
+    requires memory.empty(target, 0)
+    requires memory.cell(source, 0, byte)
+    ensures !memory.cell(target, 0, byte)
+    proof:
+        auto
+    let view = memory.slice_unchecked(source, 0, 1)
+    memory.init_slice_unchecked(target, 0, view)
+
+fn main():
+    return

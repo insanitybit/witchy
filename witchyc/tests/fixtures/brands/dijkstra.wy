@@ -1,0 +1,102 @@
+// Dijkstra on an n by n grid, as programs/dijkstra.wy, with the weight and cost tables sharing
+// the grid's rows: `relax` takes `Node<G>` and two `Distances<G>` of one opening.
+import console
+import graph
+import heap
+import sort
+
+// A cell to visit and the cost of reaching it; the cheapest comes first.
+type Visit<G>:
+    cost: U64
+    cell: Node<G>
+
+impl<G: Brand> Before for Visit<G>:
+    fn before(self: &Visit<G>, other: &Visit<G>) -> Bool:
+        self.cost < other.cost
+
+fn relax<G: Brand>(queue: &mut Heap<Visit<G>>, allocator: &Allocator, cost: &mut Distances<G>, weight: &Distances<G>, from: Node<G>, to: Node<G>) -> Bool:
+    let next = cost.get(from) + weight.get(to)
+    if next < cost.get(to):
+        cost.set(to, next)
+        match queue.push(allocator, Visit(next, to)):
+            Ok:
+                return true
+            Err(back):
+                return false
+    true
+
+// The search, over the rows of one opening: `G` names its brand, so the queue's type can be written.
+fn search<G: Brand>(cells: &Nodes<G>, n: U64, allocator: &Allocator, console: &Console<Write>) -> Result<(), U64>:
+    let infinite: U64 = 1000000000000000000
+    var weight = cells.distances(allocator, 0)?
+    var seed: U64 = 7
+    for i in 0..n * n:
+        seed = seed * 48271 % 2147483647
+        if let Some(cell) = cells.node(i):
+            weight.set(cell, 1 + ((seed >> 8) & 15))
+    let Ok(made_c) = cells.distances(allocator, infinite) else Err(code):
+        weight.close()
+        return Err(code)
+    var cost = move made_c
+    let Ok(made_q): Heap<Visit<G>> = Heap.new(allocator) else Err(code):
+        weight.close()
+        cost.close()
+        return Err(code)
+    var queue = move made_q
+    var ok = true
+    if let Some(start) = cells.first():
+        cost.set(start, weight.get(start))
+        match queue.push(allocator, Visit(weight.get(start), start)):
+            Ok:
+                ()
+            Err(back):
+                ok = false
+    while ok:
+        match queue.pop():
+            Ok(visit):
+                let u = visit.cell
+                if visit.cost == cost.get(u):
+                    let at = cells.number(u)
+                    let row = at / n
+                    let col = at % n
+                    if row + 1 < n:
+                        if let Some(to) = cells.node(at + n):
+                            ok = ok && relax(&mut queue, allocator, &mut cost, &weight, u, to)
+                    if row > 0:
+                        if let Some(to) = cells.node(at - n):
+                            ok = ok && relax(&mut queue, allocator, &mut cost, &weight, u, to)
+                    if col + 1 < n:
+                        if let Some(to) = cells.node(at + 1):
+                            ok = ok && relax(&mut queue, allocator, &mut cost, &weight, u, to)
+                    if col > 0:
+                        if let Some(to) = cells.node(at - 1):
+                            ok = ok && relax(&mut queue, allocator, &mut cost, &weight, u, to)
+            Err(empty):
+                ok = false
+    if let Some(last) = cells.node(n * n - 1):
+        console.print_int(cost.get(last))
+    var sum: U64 = 0
+    for i in 0..n * n:
+        if let Some(cell) = cells.node(i):
+            sum = (sum + cost.get(cell)) % 1000000007
+    console.print_int(sum)
+    queue.into_vec().close()
+    weight.close()
+    cost.close()
+    return Ok(())
+
+fn shortest(grid: &Graph, n: U64, allocator: &Allocator, console: &Console<Write>) -> Result<(), U64>:
+    brand grid.nodes() as cells:
+        return search(&cells, n, allocator, console)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let n: U64 = 60
+    let Ok(made): Graph = Graph.new(&allocator, n * n) else Err(code):
+        return
+    var grid = move made
+    match shortest(&grid, n, &allocator, &console):
+        Ok:
+            ()
+        Err(code):
+            console.line("no room")
+    grid.close()

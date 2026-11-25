@@ -1,0 +1,14 @@
+// A recipe file's `self` function is the one its recipe calls, though the program declares a
+// `fn self` (the sixth review found the program's, 2).
+import "parts/recipe_selfname.wy"
+import console
+
+fn self(a: U64) -> U64:
+    return 2
+
+type T derive(recipe_selfname.Shown):
+    a: U64
+
+fn main(console: Console<Write>):
+    let t = T(a: 1)
+    t.show(&console)

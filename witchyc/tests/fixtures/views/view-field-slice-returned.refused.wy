@@ -1,0 +1,21 @@
+// Refused (review): a slice of a view local's own array field points into this frame.
+import console
+import span
+import string
+
+type Mixed:
+    data: [U8; 4]
+    text: &String
+
+fn leak(text: &String, b: U8) -> &[U8]:
+    let m = Mixed([b, b, b, b], text)
+    return m.data.slice()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    let first = leak(&made, 65)
+    console.print_int(U8.to_u64(first[0]))
+    let second = leak(&made, 90)
+    console.print_int(U8.to_u64(first[0]))
+    made.close()

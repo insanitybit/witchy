@@ -1,0 +1,32 @@
+import console
+
+fn check(console: &Console<Write>, bytes: &[U8]):
+    match str.from_utf8_bytes(bytes):
+        Ok(text):
+            console.line(text)
+        Err(code):
+            console.print_int(code)
+
+fn main(console: Console<Write>):
+    let valid: [U8; 3] = [104, 195, 169]
+    let overlong: [U8; 2] = [192, 128]
+    let surrogate: [U8; 3] = [237, 160, 128]
+    let truncated: [U8; 2] = [240, 144]
+    check(&console, valid.slice())
+    check(&console, overlong.slice())
+    check(&console, surrogate.slice())
+    check(&console, truncated.slice())
+    let minimum_three: [U8; 3] = [224, 160, 128]
+    let minimum_four: [U8; 4] = [240, 144, 128, 128]
+    let maximum: [U8; 4] = [244, 143, 191, 191]
+    let beyond_maximum: [U8; 4] = [244, 144, 128, 128]
+    let overlong_three: [U8; 3] = [224, 159, 191]
+    let stray_after_ascii: [U8; 9] = [65, 66, 67, 68, 69, 70, 71, 72, 128]
+    check(&console, minimum_three.slice())
+    check(&console, minimum_four.slice())
+    check(&console, maximum.slice())
+    check(&console, beyond_maximum.slice())
+    check(&console, overlong_three.slice())
+    check(&console, stray_after_ascii.slice())
+    let mixed: [U8; 19] = [65, 66, 67, 68, 69, 70, 71, 72, 195, 169, 97, 98, 99, 100, 101, 102, 103, 104, 33]
+    check(&console, mixed.slice())

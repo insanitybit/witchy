@@ -1,0 +1,5 @@
+// A duration is whole milliseconds: `us` and `ns` are refused.
+import console
+
+fn main(console: Console<Write>):
+    console.print_int(5us)

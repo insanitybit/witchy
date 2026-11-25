@@ -1,0 +1,11 @@
+// Refused: in the function's own file, a type parameter of the same name would be ambiguous.
+import console
+
+fn T() -> U64:
+    return 1
+
+fn id<T>(x: T) -> T:
+    return x
+
+fn main(console: Console<Write>):
+    console.print_int(id(T()))

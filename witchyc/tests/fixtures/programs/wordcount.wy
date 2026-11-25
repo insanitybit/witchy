@@ -1,0 +1,69 @@
+// Count the words in each `.txt` file of one directory and write a report to another.
+// Its authority is in main's parameters: it reads one tree, writes another, prints, and
+// allocates. `count_words` is a pure fn: the compiler checked it is given nothing more.
+import console
+import fs
+import text
+import string
+
+pure fn space(byte: U64) -> Bool:
+    return byte == 32 || byte == 10 || byte == 9 || byte == 13
+
+pure fn count_words(text: &String) -> U64:
+    var words: U64 = 0
+    var inside = false
+    for at in 0..text.byte_len():
+        if space(text.byte_or_end(at)):
+            inside = false
+        else:
+            if !inside:
+                words += 1
+            inside = true
+    return words
+
+pure fn is_text_file(name: &String) -> Bool:
+    let count = name.byte_len()
+    if count < 4:
+        return false
+    // ".txt" at the end: 46 116 120 116.
+    return name.byte_or_end(count - 4) == 46 && name.byte_or_end(count - 3) == 116 && name.byte_or_end(count - 2) == 120 && name.byte_or_end(count - 1) == 116
+
+fn report(input: &Dir<Read>, allocator: &Allocator, out: &mut String) -> Result<U64, FsError>:
+    let names = input.list(allocator)?
+    var total: U64 = 0
+    var cursor: U64 = 0
+    while cursor < names.byte_len():
+        match names.field(allocator, 10, &mut cursor):
+            Ok(name):
+                if is_text_file(&name):
+                    match input.read_text_path(allocator, &name):
+                        Ok(contents):
+                            let words = count_words(&contents)
+                            total += words
+                            let pushed = out.push_string(allocator, &name).is_ok() && out.push_text(allocator, ": ").is_ok() && out.push_u64(allocator, words).is_ok() && out.push_text(allocator, "\n").is_ok()
+                            contents.close()
+                        Err(error):
+                            name.close()
+                            names.close()
+                            return Err(error)
+                name.close()
+            Err(code):
+                cursor = names.byte_len()
+    names.close()
+    return Ok(total)
+
+fn main(console: Console<Write>, input: Dir<Read>, output: Dir<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var out = move made
+    match report(&input, &allocator, &mut out):
+        Ok(total):
+            let pushed = out.push_text(&allocator, "total: ").is_ok() && out.push_u64(&allocator, total).is_ok() && out.push_text(&allocator, "\n").is_ok()
+            match output.write_text("report.txt", &out):
+                Ok:
+                    console.write_string(&out)
+                Err(error):
+                    console.line("could not write the report")
+        Err(error):
+            console.line("could not read the input")
+    out.close()

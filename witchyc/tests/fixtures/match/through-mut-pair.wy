@@ -1,0 +1,30 @@
+// Through `&mut`, an arm names both values of its variant and changes one by the other.
+import "../../../library/wasm-console.wy"
+
+type Light:
+    Red
+    Green(U64)
+
+type Shape:
+    Circle(U64)
+    Rect(U64, U64)
+
+fn widen(shape: &mut Shape):
+    match shape:
+        Circle(radius):
+            *radius += 1
+        Rect(width, height):
+            *width += *height
+
+fn step(light: &mut Light):
+    var shape = Rect(1, 2)
+    widen(&mut shape)
+
+fn main(console: Console<Write>):
+    var light = Green(3)
+    step(&mut light)
+    match light:
+        Red:
+            console.print_int(0)
+        Green(left):
+            console.print_int(left)

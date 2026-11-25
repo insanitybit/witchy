@@ -1,0 +1,28 @@
+// Narrowing by reach: `dir.dir("notes")` is authority over `notes/` alone. A helper
+// given it cannot read `config.txt`, which is beside `notes/`, not in it.
+import fs
+import console
+import string
+
+fn first_note(notes: &Dir<Read>, allocator: &Allocator) -> Result<String, FsError>:
+    return notes.read_text(allocator, "one.txt")
+
+fn sneak(notes: &Dir<Read>, allocator: &Allocator) -> Result<String, FsError>:
+    return notes.read_text(allocator, "../config.txt")
+
+fn main(console: Console<Write>, dir: Dir<Read>, allocator: Allocator):
+    let Ok(notes): Dir<Read> = dir.dir("notes") else Err(error):
+        console.line("no notes")
+        return
+    match first_note(&notes, &allocator):
+        Ok(text):
+            console.write_string(&text)
+            text.close()
+        Err(error):
+            console.line("unreadable")
+    match sneak(&notes, &allocator):
+        Ok(text):
+            console.line("escaped")
+            text.close()
+        Err(error):
+            console.line("stayed inside")

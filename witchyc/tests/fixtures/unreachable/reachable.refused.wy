@@ -1,0 +1,11 @@
+// Without the precondition, an odd value reaches `unreachable`: not proved.
+fn half(value: U64) -> U64:
+    ensures result * 2 == value
+    proof:
+        auto
+    if value % 2 == 1:
+        unreachable
+    return value / 2
+
+fn main():
+    let x = half(4)

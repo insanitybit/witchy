@@ -1,0 +1,4 @@
+// Refused: a capability is made from something that holds authority.
+capability Count from U64
+fn main():
+    return

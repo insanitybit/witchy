@@ -1,0 +1,22 @@
+// Refused (adversarial review round 21, and an automated security review): generic code given
+// `&mut Box<T>` with T a view could store a new view in the box, with a loan the caller never sees.
+import console
+type Point:
+    x: U64
+type Seen:
+    point: &Point
+    n: U64
+type Box<T>:
+    item: T
+    tag: U64
+fn g<T>(b: &mut Box<T>, x: T):
+    (*b).item = x
+fn main(console: Console<Write>):
+    let p = Point(1)
+    var q = Point(2)
+    var b = Box(Seen(&p, 1), 0)
+    g(&mut b, Seen(&q, 2))
+    q.x = 99
+    let s = b.item
+    let pt = s.point
+    console.print_int(pt.x)

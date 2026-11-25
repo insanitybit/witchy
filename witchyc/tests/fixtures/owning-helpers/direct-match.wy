@@ -1,0 +1,89 @@
+// A helper that only moves values, matched where it is called: the arms know which variant
+// came back and what it holds, as they do when the call is bound with `let` first.
+type Slot<T>:
+    Vacant
+    Full(T)
+
+nopanic fn drain<T: Any>(slot: &mut Slot<T>) -> Slot<T>:
+    var previous: Slot<T> = Vacant
+    memory.exchange(&mut *slot, &mut previous)
+    return move previous
+
+// Puts `next` in the slot and hands back what was there, wrapped.
+nopanic fn wrap(slot: &mut Slot<U64>, next: Slot<U64>) -> Slot<Slot<U64>>:
+    var previous: Slot<U64> = next
+    memory.exchange(&mut *slot, &mut previous)
+    var wrapped: Slot<Slot<U64>> = Full(previous)
+    return wrapped
+
+// The result is the slot's old value: `Full(a)`.
+fn drained(a: U64) -> U64:
+    requires a < 1000
+    ensures result == a
+    proof:
+        auto
+    var slot: Slot<U64> = Full(a)
+    match drain(&mut slot):
+        Vacant:
+            return 7777
+        Full(value):
+            return value
+
+// The same with `let`, for comparison.
+fn drained_bound(a: U64) -> U64:
+    requires a < 1000
+    ensures result == a
+    proof:
+        auto
+    var slot: Slot<U64> = Full(a)
+    let old = drain(&mut slot)
+    match old:
+        Vacant:
+            return 7777
+        Full(value):
+            return value
+
+// A variant the helper built, around the old value; and the slot holds what was given.
+fn wrapped(a: U64, b: U64) -> U64:
+    requires a < 1000
+    requires b < 1000
+    ensures result == a * 1000 + b
+    proof:
+        auto
+    var slot: Slot<U64> = Full(a)
+    match wrap(&mut slot, Full(b)):
+        Vacant:
+            return 7777
+        Full(inner):
+            match inner:
+                Vacant:
+                    return 8888
+                Full(value):
+                    match slot:
+                        Vacant:
+                            return 9999
+                        Full(kept):
+                            return value * 1000 + kept
+
+// An owner: the arm that cannot be taken is `unreachable`, and proved so.
+nopanic fn swap_out<T: Any>(slot: &mut Slot<T>, item: T) -> T:
+    let emptied = drain(&mut *slot)
+    *slot = Full(move item)
+    match drain(&mut *slot):
+        Full(back):
+            *slot = move emptied
+            return move back
+        Vacant:
+            unreachable
+
+fn main(out: Console<Write>):
+    out.print_int(drained(3))
+    out.print_int(drained_bound(4))
+    out.print_int(wrapped(5, 6))
+    var slot: Slot<U64> = Full(8)
+    out.print_int(swap_out(&mut slot, 9))
+    match slot:
+        Vacant:
+            out.print_int(0)
+        Full(value):
+            out.print_int(value)

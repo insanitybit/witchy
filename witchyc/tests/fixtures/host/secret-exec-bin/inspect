@@ -1,0 +1,19 @@
+#!/bin/sh
+# Run by secret-slot-exec-child through `Exec`: what a program the module starts can find of
+# the run's secrets. It counts its open descriptors from 3 up that hold a canary, and the lines
+# of its parent's (the engine's) environment that do, as another process of the same user
+# reads it: /proc/PID/environ on Linux, `ps -E` on macOS. This text names no canary itself
+# (the shell may read it through a descriptor of its own).
+found=0
+for path in /dev/fd/*; do
+  number=${path##*/}
+  [ "$number" -ge 3 ] 2>/dev/null || continue
+  if /bin/cat "$path" 2>/dev/null | /usr/bin/grep -q 'ca''nary-'; then found=$((found + 1)); fi
+done
+echo "descriptors with a canary: $found"
+if [ -r "/proc/$PPID/environ" ]; then
+  lines=$(/usr/bin/tr '\0' '\n' < "/proc/$PPID/environ" | /usr/bin/grep -c 'ca''nary-')
+else
+  lines=$(/bin/ps -E -ww -o command= -p "$PPID" | /usr/bin/grep -c 'ca''nary-')
+fi
+echo "engine environment with a canary: $lines"

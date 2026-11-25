@@ -1,0 +1,23 @@
+// Randomness is a capability too. `below` is unbiased; the fixture checks that every
+// draw is in range and that the draws are not all the same.
+import console
+import rand
+
+fn main(console: Console<Write>, rand: Rand):
+    var seen: U64 = 0
+    var low: U64 = 10
+    var high: U64 = 0
+    for step in 0..200:
+        match rand.below(10):
+            Ok(n):
+                if n < low:
+                    low = n
+                if n > high:
+                    high = n
+                if n < 10:
+                    seen += 1
+            Err:
+                return
+    console.print_int(seen)
+    if low < high:
+        console.line("varied")

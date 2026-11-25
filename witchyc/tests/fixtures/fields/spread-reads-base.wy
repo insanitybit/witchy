@@ -1,0 +1,11 @@
+// A spread may read its base in a written field: `Stats(..s, words: s.words + 1)`.
+import console
+
+type S:
+    a: U64
+    b: U64
+
+fn main(console: Console<Write>):
+    var s = S(a: 1, b: 2)
+    s = S(..s, a: s.a + s.b)
+    console.print_int(s.a * 10 + s.b)

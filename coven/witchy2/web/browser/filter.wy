@@ -1,0 +1,35 @@
+import "@glamour"
+
+// A bounded event contains a length-prefixed query, a row count and that
+// many length-prefixed names. The only response operation is row visibility.
+fn read_text(input: &Console<Read>, buffer: &mut [U8; 64]) -> Result<U64, U64>:
+    let length = input.next_byte()
+    if length > 64:
+        return Err(1)
+    for index in 0..length:
+        let byte = input.next_byte()
+        if byte > 127:
+            return Err(1)
+        (*buffer)[index] = U8.truncate(byte)
+    return Ok(length)
+
+fn main(input: Console<Read>, output: Console<Write>):
+    var query: [U8; 64] = [0; 64]
+    var name: [U8; 64] = [0; 64]
+    var visible: [U8; 64] = [0; 64]
+    let Ok(query_length): U64 = read_text(&input, &mut query) else Err(code):
+        return
+    let rows = input.next_byte()
+    if rows > 64:
+        return
+    let needle = query.slice().part(0, query_length)
+    for row in 0..rows:
+        let Ok(name_length): U64 = read_text(&input, &mut name) else Err(code):
+            return
+        if glamour.matches(name.slice().part(0, name_length), needle):
+            visible[row] = 1
+    if input.next_byte() != 256:
+        return
+    output.print_byte(1)
+    for row in 0..rows:
+        output.print_byte(visible[row])

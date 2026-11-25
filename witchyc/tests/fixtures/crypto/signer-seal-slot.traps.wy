@@ -1,0 +1,4 @@
+// A `Signer` whose grant says `seal`: the run stops before `main`, naming the slot.
+import crypto
+fn main(targets: Signer):
+    return

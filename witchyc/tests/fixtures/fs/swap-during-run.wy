@@ -1,0 +1,55 @@
+// Time of check against time of use: a directory on a path the program has already used is
+// swapped for a symbolic link to a directory outside the grant while the program runs (by a
+// program it starts, standing in for anything else on the machine). The next open through that
+// path is refused; the file outside is never read (its text is a canary). A Dir the program
+// opened before the swap still reaches the directory it opened, now under another name: a
+// grant is the directory, held open, not its path.
+import console
+import env
+import exec
+import fs
+
+fn show(console: &Console<Write>, allocator: &Allocator, dir: &Dir<Read>, path: Text):
+    match dir.read_text(allocator, path):
+        Ok(text):
+            console.write_string(&text)
+            console.line("")
+            text.close()
+        Err(error):
+            match error:
+                InvalidPath:
+                    console.line("invalid path")
+                NotFound:
+                    console.line("not found")
+                _:
+                    console.line("other error")
+
+fn main(console: Console<Write>, allocator: Allocator, dir: Dir<Read>, env: Env, exec: Exec):
+    let Ok(held) = dir.dir("sub") else Err(error):
+        console.line("no sub")
+        return
+    show(&console, &allocator, &dir, "sub/file.txt")
+    let Ok(root) = env.get(&allocator, "SCRATCH") else Err(error):
+        console.line("no scratch")
+        return
+    exec.arg_string(&root)
+    root.close()
+    match exec.run("swap"):
+        Ok(run):
+            match run.read_text(&allocator):
+                Ok(said):
+                    console.write_string(&said)
+                    said.close()
+                Err(error):
+                    console.line("no output")
+        Err(error):
+            console.line("swap failed")
+    show(&console, &allocator, &dir, "sub/file.txt")
+    match dir.dir("sub"):
+        Ok(inner):
+            console.line("opened sub")
+            inner.close()
+        Err(error):
+            console.line("refused sub")
+    show(&console, &allocator, &held, "file.txt")
+    show(&console, &allocator, &dir, "sub-real/file.txt")

@@ -1,0 +1,23 @@
+// Print the content digest of one file, `sha384:<hex>`, as a Coven registry records it (the
+// engine's SHA-384), or `refused: ...` for a file larger than a version holds.
+import "raw.wy"
+import vec
+
+fn main(console: Console<Write>, allocator: Allocator, source: File<Read>):
+    let Ok(made): Vec<U8> = Vec.filled(&allocator, package_bound() + 1, 0) else Err(code):
+        say(&console, "refused: out of memory\n")
+        return
+    var bytes = move made
+    let Ok(digest_made): Vec<U8> = Vec.filled(&allocator, 48, 0) else Err(code):
+        bytes.close()
+        say(&console, "refused: out of memory\n")
+        return
+    var digest = move digest_made
+    let length = read_into(move source, &mut bytes, 0, package_bound() + 1)
+    if length <= package_bound() && digest_of(&bytes, length, &mut digest):
+        say_digest(&console, digest.as_slice())
+        console.print_byte(10)
+    else:
+        say(&console, "refused: larger than a version holds\n")
+    digest.close()
+    bytes.close()

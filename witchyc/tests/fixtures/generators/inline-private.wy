@@ -1,0 +1,12 @@
+// A `for` over another file's generator: in place when its body uses only what this file may,
+// stepped as before when it calls a private function of its own file. The same results either way.
+import console
+import "parts/stepping.wy"
+
+fn main(console: Console<Write>):
+    for v in tripled(4):
+        console.print_int(v)
+    for v in plain(3):
+        if v == 2:
+            continue
+        console.print_int(v)

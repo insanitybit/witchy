@@ -1,0 +1,2 @@
+not proved: a `*` that may overflow, in what is assigned to `total`
+not proved: a `+` that may overflow, in what is assigned to `total`

@@ -1,0 +1,4 @@
+[package]
+name = "coven-codec"
+version = "0.1.0"
+source = "witchy2.wy"

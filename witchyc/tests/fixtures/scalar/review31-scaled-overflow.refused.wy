@@ -1,0 +1,21 @@
+// Refused (review 31): `x < y` with `y` unbounded: `x * 7` may overflow, so the quotient bound is not reached.
+import console
+
+fn f(x: U64, y: U64) -> U64:
+    requires y > 0 && x <= 1000
+    ensures result <= 1000
+    proof:
+        auto
+    let q = x / y
+    let r = x % y
+    return q + r * 0 + (r - r)
+
+fn g(x: U64, y: U64) -> U64:
+    requires y > 0 && x < y
+    ensures result <= 7
+    proof:
+        auto
+    return x * 7 / y
+
+fn main(console: Console<Write>):
+    console.print("${f(1000, 1)} ${g(4, 5)}")

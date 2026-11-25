@@ -1,0 +1,14 @@
+73615fc5aaa407846b296677b2803e29c3f555db426c69103a3cb45d584730c531ba2d818786b2a9d09b13100e3174f1
+first: signed
+second: signed
+first: valid
+second: valid
+hedged: two different signatures
+as root: invalid
+truncated signature: invalid
+changed message: invalid
+another key: invalid
+restored: valid
+another role: wrong domain
+no separator: wrong domain
+short slice: wrong length

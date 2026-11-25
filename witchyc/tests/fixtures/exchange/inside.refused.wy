@@ -1,0 +1,13 @@
+// A field and the record that holds it overlap.
+type Pair:
+    left: U64
+    right: U64
+
+type Two:
+    first: Pair
+    second: Pair
+
+fn main(console: Console<Write>):
+    var two = Two(Pair(1, 2), Pair(3, 4))
+    memory.exchange(&mut two.first, &mut two.first)
+    console.print_int(two.first.left)

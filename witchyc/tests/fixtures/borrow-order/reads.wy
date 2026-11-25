@@ -1,0 +1,40 @@
+// An argument may read, or change, the value the call borrows: the reference is
+// taken after the other arguments are worked out.
+import "../../../library/wasm-vec.wy"
+
+type Counter:
+    count: U64
+
+fn add(counter: &mut Counter, amount: U64) -> U64:
+    (*counter).count += amount
+    return (*counter).count
+
+fn read(counter: &Counter) -> U64:
+    return (*counter).count
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<Vec<U64>, U64> = Vec.new(&allocator, 0)
+    match move made:
+        Ok(empty):
+            var items = move empty
+            for round in 0..5:
+                match items.push_mut(&allocator, items.len() * 10):
+                    Ok:
+                        continue
+                    Err(back):
+                        break
+            console.print_int(items.len())
+            match items.get(items.len() - 1):
+                Ok(last):
+                    console.print_int(last)
+                Err(code):
+                    console.print_int(code)
+            if let Ok(_) = items.reserve_mut(&allocator, items.capacity() + 1):
+                console.print_int(items.capacity() - items.len())
+            items.close()
+        Err(code):
+            console.print_int(code)
+    var counter = Counter(1)
+    // The inner call changes the counter first; the outer one then adds what it returned.
+    console.print_int(add(&mut counter, add(&mut counter, 2)))
+    console.print_int(add(&mut counter, read(&counter)))

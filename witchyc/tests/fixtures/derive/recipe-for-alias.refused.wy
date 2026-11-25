@@ -1,0 +1,14 @@
+// Refused: `for:` naming the recipe module's sealed type through an alias of the deriving file
+// (review round 4: the written name `Tok` was checked, not the type; `For` is resolved now).
+import "parts/forgew.wy"
+import console
+
+type Tok = forgew.Token
+
+type T derive(forgew.Wr(for: Tok)):
+    a: U64
+
+fn main(console: Console<Write>):
+    let t = T(a: 999)
+    let tok: forgew.Token = t.made(forgew.mint())
+    console.print("${forgew.redeem(&tok)}")

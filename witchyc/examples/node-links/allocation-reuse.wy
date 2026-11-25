@@ -1,0 +1,63 @@
+import link
+
+fn make(a: &Allocator, n: U64) -> Result<Buffer<U64>, U64>:
+    let result: Result<Buffer<U64>, U64> = memory.try_alloc(a, 1)
+    match move result:
+        Ok(owner):
+            var cell = move owner
+            match memory.init(&mut cell, 0, n):
+                Ok(done):
+                    return Ok(move cell)
+                Err(code):
+                    unreachable
+        Err(code):
+            return Err(code)
+
+fn close(owner: Buffer<U64>):
+    var cell = move owner
+    let _ = memory.take(&mut cell, 0)
+    match memory.try_release(move cell):
+        Ok(done):
+            return
+        Err(back):
+            unreachable
+
+fn main(out: Console<Write>, a: Allocator):
+    let first = match make(&a, 11):
+        Ok(first):
+            move first
+        Err(code):
+            out.print_int(code)
+            return
+    let saved = Link.to(&first)
+    match saved.get(&first):
+        Ok(value):
+            out.print_int(*value)
+        Err(code):
+            unreachable
+    out.print_int(memory.allocation_key(&first))
+    close(move first)
+    var second = match make(&a, 22):
+        Ok(second):
+            move second
+        Err(code):
+            out.print_int(code)
+            return
+    out.print_int(memory.allocation_key(&second))
+    match saved.get(&second):
+        Ok(wrong):
+            unreachable
+        Err(stale):
+            out.print_int(stale)
+    let current = Link.to(&second)
+    match current.get_mut(&mut second):
+        Ok(value):
+            *value = 33
+        Err(code):
+            unreachable
+    match current.get(&second):
+        Ok(value):
+            out.print_int(*value)
+        Err(code):
+            unreachable
+    close(move second)

@@ -1,0 +1,19 @@
+// Text output: literals and a built String, written a byte at a time.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-string.wy"
+
+fn main(console: Console<Write>, allocator: Allocator):
+    console.line("Hello, Witchy.")
+    console.write("count: ")
+    console.print_int(3)
+    match String.new(&allocator):
+        Ok(empty):
+            match empty.push_scalar(&allocator, 129497):
+                Ok(text):
+                    console.write_string(&text)
+                    console.print_byte(10)
+                    text.close()
+                Err(original):
+                    original.close()
+        Err(code):
+            console.print_int(code)

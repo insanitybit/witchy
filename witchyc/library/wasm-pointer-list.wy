@@ -1,0 +1,212 @@
+import "wasm-discard.wy"
+import "wasm-option.wy"
+import "wasm-discard-core.wy"
+
+// A weak address may outlive its target. It can be compared and stored.
+sealed type Pointer<T>:
+    target: Weak<T>
+
+impl<T: Any> Pointer<T>:
+    fn null() -> Pointer<T>:
+        ensures memory.pointer_bits(result.target) == 0
+        ensures memory.box_id(result.target) == 0
+        proof:
+            auto
+        let empty: Weak<T> = memory.null_weak()
+        return Pointer(empty)
+
+    fn of(owner: &Boxed<T>) -> Pointer<T>:
+        ensures memory.box_id(result.target) == memory.box_id(owner)
+        ensures memory.pointer_bits(result.target) == memory.pointer_bits(owner)
+        proof:
+            auto
+        let target: Weak<T> = memory.weaken_box(owner)
+        return Pointer(target)
+
+    pub fn bits(ptr: &Pointer<T>) -> U32:
+        return memory.weak_bits((*ptr).target)
+
+pub sealed type Node<T>:
+    value: T
+    prev: Boxed<Node<T>>
+    next: Pointer<Node<T>>
+
+pub sealed type DoublyLinkedList<T>:
+    head: Pointer<Node<T>>
+    tail: Boxed<Node<T>>
+    invariant memory.pointer_bits(head.target) != 0 || memory.pointer_bits(tail) == 0
+    invariant memory.pointer_bits(tail) != 0 || memory.pointer_bits(head.target) == 0
+
+impl<T: Any> Node<T>:
+    fn prev_bits(node: &Node<T>) -> U32:
+        return memory.box_address(&(*node).prev)
+
+    fn next_bits(node: &Node<T>) -> U32:
+        return (*node).next.bits()
+
+    pub fn item(node: &Node<T>) -> &T:
+        return &(*node).value
+
+    pub fn previous(node: &Node<T>) -> Option<&Node<T>>:
+        match memory.box_ref(&(*node).prev):
+            Ok(earlier):
+                return Some(earlier)
+            Err:
+                return None
+
+fn repair_next<T: Any>(node: &mut Node<T>, address: Pointer<Node<T>>):
+    ensures node.next_bits() == old(address.bits())
+    ensures memory.box_id(node.next.target) == old(memory.box_id(address.target))
+    proof:
+        auto
+    (*node).next = address
+
+fn repaired<T: Any>(node: &Node<T>, address: Pointer<Node<T>>):
+    requires node.next_bits() == address.bits()
+    requires memory.box_id(node.next.target) == memory.box_id(address.target)
+    ensures true
+    proof:
+        auto
+    return
+
+fn repaired_previous<T: Any>(node: &Node<T>, expected: Weak<Node<T>>):
+    requires node.prev_bits() == memory.pointer_bits(expected)
+    requires memory.box_id(node.prev) == memory.box_id(expected)
+    ensures true
+    proof:
+        auto
+    return
+
+impl<T: Any> DoublyLinkedList<T>:
+    pub fn new() -> DoublyLinkedList<T>:
+        ensures memory.pointer_bits(result.tail) == 0
+        proof:
+            auto
+        let head: Pointer<Node<T>> = Pointer.null()
+        let tail: Boxed<Node<T>> = memory.null_box()
+        return DoublyLinkedList(head, move tail)
+
+    pub fn back(list: &DoublyLinkedList<T>) -> Option<&Node<T>>:
+        match memory.box_ref(&(*list).tail):
+            Ok(node):
+                return Some(node)
+            Err:
+                return None
+
+    pub fn tail_address(list: &DoublyLinkedList<T>) -> U32:
+        return memory.box_address(&(*list).tail)
+
+    // On failure the allocator hands the complete input node back. The list
+    // has not yet been touched, and the caller takes its original payload.
+    pub fn push_back(list: &mut DoublyLinkedList<T>, a: &Allocator, value: T) -> Option<T>:
+        ensures true
+        proof:
+            auto
+        let nil: Pointer<Node<T>> = Pointer.null()
+        let vacant: Boxed<Node<T>> = memory.null_box()
+        let allocation: Result<Boxed<Node<T>>, Node<T>> = memory.try_box(a, Node(move value, move vacant, nil))
+        match move allocation:
+            Err(back):
+                let Node(original, unused, next) = move back
+                memory.end_null_box(move unused)
+                return Some(move original)
+            Ok(owner):
+                var fresh = move owner
+                let address = Pointer.of(&fresh)
+                var forward = address
+                match memory.box_mut(&mut (*list).tail):
+                    Ok(left):
+                        repair_next(left, address)
+                        forward = (*left).next
+                    Err:
+                        (*list).head = address
+                // The allocation supplies authority and the stored link supplies
+                // the address of the reverse edge to install.
+                let arrived = memory.follow_weak_mut(&mut fresh, forward.target)
+                let former: Weak<Node<T>> = memory.weaken_box(&(*list).tail)
+                memory.exchange(&mut (*arrived).prev, &mut (*list).tail)
+                repaired_previous(&*arrived, former)
+                memory.exchange(&mut (*list).tail, &mut fresh)
+                memory.end_null_box(move fresh)
+                return None
+
+    pub fn pop_back(list: &mut DoublyLinkedList<T>) -> Option<T>:
+        ensures true
+        proof:
+            auto
+        var tail: Boxed<Node<T>> = memory.null_box()
+        memory.exchange(&mut (*list).tail, &mut tail)
+        match memory.unbox(move tail):
+            Err:
+                return None
+            Ok(node):
+                let Node(value, prev, next) = move node
+                var previous = move prev
+                let nil: Pointer<Node<T>> = Pointer.null()
+                match memory.box_mut(&mut previous):
+                    Ok(last):
+                        repair_next(last, nil)
+                        repaired(&*last, nil)
+                    Err:
+                        (*list).head = nil
+                memory.exchange(&mut (*list).tail, &mut previous)
+                memory.end_null_box(move previous)
+                return Some(move value)
+
+    // tail is the position of the successor here. unlink_previous also works
+    // at an interior owning edge, with the same two exclusive loans.
+    pub fn pop_penultimate(list: &mut DoublyLinkedList<T>) -> Option<T>:
+        ensures true
+        proof:
+            auto
+        return unlink_previous(&mut (*list).head, &mut (*list).tail)
+
+impl<T: Any + Discard> DoublyLinkedList<T>:
+    pub fn close(list: DoublyLinkedList<T>):
+        ensures true
+        proof:
+            auto
+        let DoublyLinkedList(head, tail) = move list
+        var current = move tail
+        while memory.box_address(&current) != 0:
+            match memory.unbox(move current):
+                Ok(node):
+                    let Node(value, prev, next) = move node
+                    value.discard()
+                    current = move prev
+                Err:
+                    return
+        memory.end_null_box(move current)
+
+// The supplied position owns the successor. The successor owns the victim.
+// There is one predecessor repair, regardless of the length of either chain.
+fn unlink_previous<T: Any>(head: &mut Pointer<Node<T>>, position: &mut Boxed<Node<T>>) -> Option<T>:
+    ensures memory.pointer_bits(position) == old(memory.pointer_bits(position))
+    ensures memory.box_id(position) == old(memory.box_id(position))
+    ensures memory.pointer_bits(head.target) == old(memory.pointer_bits(head.target)) || (memory.pointer_bits(position) != 0 && memory.pointer_bits(head.target) == memory.pointer_bits(position))
+    proof:
+        auto
+    let successor = Pointer.of(&*position)
+    match memory.box_mut(position):
+        Err:
+            return None
+        Ok(right):
+            var victim: Boxed<Node<T>> = memory.null_box()
+            memory.exchange(&mut (*right).prev, &mut victim)
+            match memory.unbox(move victim):
+                Err:
+                    return None
+                Ok(removed):
+                    let Node(value, previous, next) = move removed
+                    var before = move previous
+                    let expected: Weak<Node<T>> = memory.weaken_box(&before)
+                    match memory.box_mut(&mut before):
+                        Ok(left):
+                            repair_next(left, successor)
+                            repaired(&*left, successor)
+                        Err:
+                            *head = successor
+                    memory.exchange(&mut (*right).prev, &mut before)
+                    repaired_previous(&*right, expected)
+                    memory.end_null_box(move before)
+                    return Some(move value)

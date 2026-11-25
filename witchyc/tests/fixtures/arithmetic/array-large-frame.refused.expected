@@ -1,0 +1,1 @@
+a function's frame needs 2048 bytes, more than the 1024-byte stack

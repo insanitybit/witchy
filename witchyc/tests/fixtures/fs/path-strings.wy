@@ -1,0 +1,51 @@
+// Paths held in Strings (names from a request): write, probe, rename and remove, each with
+// the right its handle carries. Existence is asked of a `Dir<Read>`; a `Dir<Write>` alone
+// cannot ask.
+import fs
+import console
+import string
+
+fn name(allocator: &Allocator, text: Text) -> String:
+    let Ok(made): String = String.new(allocator) else Err(code):
+        unreachable
+    var out = move made
+    let _ = out.push_text(allocator, text)
+    return move out
+
+fn show(console: &Console<Write>, found: Bool):
+    if found:
+        console.line("yes")
+    else:
+        console.line("no")
+
+fn write(dir: &Dir<Write>, path: &String, text: &String) -> Bool:
+    return dir.write_text_path(path, text).is_ok()
+
+fn probe(dir: &Dir<Read>, path: &String) -> Bool:
+    return dir.exists_path(path)
+
+fn main(console: Console<Write>, dir: Dir, allocator: Allocator):
+    let first = name(&allocator, "a.note")
+    let second = name(&allocator, "b.note")
+    let body = name(&allocator, "kept\n")
+    show(&console, probe(&dir, &first))
+    show(&console, write(&dir, &first, &body))
+    show(&console, probe(&dir, &first))
+    let moved: &Dir<Write> = &dir
+    show(&console, moved.rename_path(&first, &second).is_ok())
+    show(&console, probe(&dir, &first))
+    show(&console, probe(&dir, &second))
+    let reader: &Dir<Read> = &dir
+    show(&console, reader.is_dir_path(&second))
+    match reader.read_text_path(&allocator, &second):
+        Ok(back):
+            console.write_string(&back)
+            back.close()
+        Err(error):
+            console.line("unread")
+    show(&console, moved.remove_path(&second).is_ok())
+    show(&console, probe(&dir, &second))
+    show(&console, moved.remove_path(&second).is_ok())
+    first.close()
+    second.close()
+    body.close()

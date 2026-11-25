@@ -1,0 +1,5 @@
+# What each part of config-app.wy may use (`witchyc wasm-caps --policy`).
+<standard>/: *
+config-app.wy: *
+# The config package is given text and memory: no file, no network, nothing unchecked.
+config/: Allocator ; no unchecked ; digest sha384:fd3444b0dfd4aa92e3f92f50cb730d07829877611e47cc2e43e45cb4f5c77bdb2db0320a9c05f10317d85ffb4f12b760

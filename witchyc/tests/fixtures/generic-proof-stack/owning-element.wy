@@ -1,0 +1,4 @@
+// Generic storage remains CopyStorage. An owning Buffer cannot become a stored
+// element merely because the ordinary generic Stack helpers exist.
+fn owning_element(input: Buffer<Buffer<U8>>):
+    stack_buffer_close(move input)

@@ -1,0 +1,21 @@
+import "../../../library/wasm-vec.wy"
+fn grow(items: &mut Vec<U64>):
+    match items.push_spare_mut(7):
+        Ok:
+            return
+        Err(back):
+            return
+fn same(items: &mut Vec<U64>) -> U64:
+    ensures items.len() == old(items.len())
+    proof:
+        auto
+    grow(items)
+    return 0
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<Vec<U64>, U64> = Vec.new(&allocator, 8)
+    let Ok(empty) = move made else Err(code):
+        console.print_int(code)
+        return
+    var items = move empty
+    console.print_int(same(&mut items))
+    Vec.close(move items)

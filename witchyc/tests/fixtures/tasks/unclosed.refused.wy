@@ -1,0 +1,10 @@
+// Refused: a task must be closed, since it holds its memory and what its input held.
+import tasks
+
+fn once(n: U64) suspends:
+    pause(n)
+
+fn main(allocator: Allocator):
+    let Ok(task): Task = Task.spawn(&allocator, 1024, once, 1) else Err(given):
+        return
+    return

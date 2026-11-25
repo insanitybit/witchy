@@ -1,0 +1,16 @@
+// Alternatives still have to cover every variant.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-string.wy"
+
+type Shape:
+    Dot
+    Circle(U64)
+    Square(U64)
+
+fn size(shape: Shape) -> U64:
+    match shape:
+        Dot | Circle(_):
+            return 1
+
+fn main(console: Console<Write>):
+    console.print_int(size(Dot))

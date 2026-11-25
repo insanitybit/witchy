@@ -1,0 +1,5 @@
+type Text:
+    bytes: U64
+
+fn main(console: Console<Write>):
+    console.print_int(1)

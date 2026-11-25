@@ -1,0 +1,22 @@
+// Inherent methods are resolved from the receiver's named type.
+type Counter:
+    value: U64
+
+impl Counter:
+    fn get(self: Counter) -> U64:
+        return self.value
+
+type Wrapper<T>:
+    value: T
+
+impl<T> Wrapper<T>:
+    fn get(self: Wrapper<T>) -> T:
+        return move self.value
+
+fn make_counter() -> Counter:
+    return Counter(7)
+
+fn main(console: Console<Write>):
+    console.print_int(make_counter().get())
+    console.print_int(Wrapper(42).get())
+    discard(move console)

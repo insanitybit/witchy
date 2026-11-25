@@ -1,0 +1,125 @@
+import "@glamour"
+import console
+import console_bytes
+import string
+
+fn line(input: &Console<Read>, allocator: &Allocator, value: &mut String, limit: U64) -> Result<Bool, U64>:
+    var bytes: [U8; 128] = [0; 128]
+    let Ok(frame): ConsoleFrame = input.read_optional_line_bytes(bytes.slice_mut().part(0, limit)) else Err(reason):
+        return Err(1)
+    let LineFrame(length) = frame else EndOfFrames:
+        return Ok(false)
+    if length == 0:
+        return Err(1)
+    value.clear()
+    value.push_utf8_slice(allocator, bytes.slice().part(0, length))?
+    return Ok(true)
+
+fn required(input: &Console<Read>, allocator: &Allocator, value: &mut String, limit: U64) -> Result<(), U64>:
+    if !line(input, allocator, value, limit)?:
+        return Err(1)
+    return Ok(())
+
+fn path(input: &Console<Read>, allocator: &Allocator) -> Result<LocalLink, U64>:
+    let initial = String.new(allocator)?
+    var value = move initial
+    match required(input, allocator, &mut value, 128):
+        Ok:
+            return LocalLink.parse(move value)
+        Err(code):
+            value.close()
+            return Err(code)
+
+fn rows(input: &Console<Read>, allocator: &Allocator, table: &mut Document, name: &mut String, version: &mut String) -> Result<(), U64>:
+    var count: U64 = 0
+    while line(input, allocator, name, 64)?:
+        if count == 64:
+            return Err(1)
+        required(input, allocator, version, 29)?
+        let link = path(input, allocator)?
+        let result = table.linked_row(allocator, name, version, &link)
+        link.close()
+        result?
+        count += 1
+    return Ok(())
+
+fn catalog(input: &Console<Read>, allocator: &Allocator, label: &mut String, value: &mut String) -> Result<DocumentBytes, U64>:
+    required(input, allocator, label, 64)?
+    required(input, allocator, value, 64)?
+    let opened = Document.open(allocator)?
+    var table = move opened
+    let status = table.begin_table(allocator, label, value)
+    match status:
+        Ok:
+            return finish_catalog(input, allocator, move table, label, value)
+        Err(code):
+            table.close()
+            return Err(code)
+
+fn finish_catalog(input: &Console<Read>, allocator: &Allocator, opened: Document, label: &mut String, value: &mut String) -> Result<DocumentBytes, U64>:
+    var table = move opened
+    match rows(input, allocator, &mut table, label, value):
+        Ok:
+            match table.end_table(allocator):
+                Ok:
+                    return table.finish(allocator)
+                Err(code):
+                    table.close()
+                    return Err(code)
+        Err(code):
+            table.close()
+            return Err(code)
+
+fn fields(input: &Console<Read>, allocator: &Allocator, page: &mut Document, label: &mut String, value: &mut String) -> Result<(), U64>:
+    required(input, allocator, label, 64)?
+    page.heading(allocator, label)?
+    for field in 0..2:
+        required(input, allocator, label, 64)?
+        required(input, allocator, value, 103)?
+        page.definition(allocator, label, value)?
+    required(input, allocator, label, 64)?
+    let link = path(input, allocator)?
+    let result = page.link(allocator, label, &link)
+    link.close()
+    result?
+    if input.next_byte() != 256:
+        return Err(1)
+    return Ok(())
+
+fn detail(input: &Console<Read>, allocator: &Allocator, label: &mut String, value: &mut String) -> Result<DocumentBytes, U64>:
+    let opened = Document.open(allocator)?
+    var page = move opened
+    match fields(input, allocator, &mut page, label, value):
+        Ok:
+            return page.finish(allocator)
+        Err(code):
+            page.close()
+            return Err(code)
+
+fn document(mode: U64, input: &Console<Read>, allocator: &Allocator, label: &mut String, value: &mut String) -> Result<DocumentBytes, U64>:
+    if mode == 67:
+        return catalog(input, allocator, label, value)
+    return detail(input, allocator, label, value)
+
+fn render(input: &Console<Read>, allocator: &Allocator) -> Result<DocumentBytes, U64>:
+    let mode = input.next_byte()
+    if mode != 67 && mode != 68:
+        return Err(1)
+    let first = String.new(allocator)?
+    let Ok(second): String = String.new(allocator) else Err(code):
+        first.close()
+        return Err(code)
+    var label = move first
+    var value = move second
+    let result = document(mode, input, allocator, &mut label, &mut value)
+    label.close()
+    value.close()
+    return move result
+
+fn main(input: Console<Read>, output: Console<Write>, allocator: Allocator):
+    match render(&input, &allocator):
+        Ok(body):
+            output.write_string(body.bytes())
+            body.close()
+        Err(code):
+            return

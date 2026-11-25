@@ -1,0 +1,23 @@
+// A field written beside `..base` does not use the base (red-team review: a call that changed the
+// base was read before or after depending on the type's field order).
+import console
+import vec
+
+type P:
+    x: U64
+    y: U64
+
+fn mkv(allocator: &Allocator) -> Vec<P>:
+    let Ok(made): Vec<P> = Vec.filled(allocator, 3, P(x: 1, y: 2)) else Err(code):
+        unreachable
+    move made
+
+fn bump(p: &mut P) -> U64:
+    (*p).y = 100
+    5
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var p = P(x: 1, y: 2)
+    let q = P(..p, x: bump(&mut p))
+    console.print_int(q.y)
+    console.print_int(p.y)

@@ -1,0 +1,15 @@
+// A private sum and a public one: only the public one's variants are built in other files.
+type Quietude:
+    Hush
+    Loud(U64)
+
+pub type Volume:
+    Soft
+    Level(U64)
+
+pub fn level(volume: Volume) -> U64:
+    match volume:
+        Soft:
+            return 0
+        Level(n):
+            return n

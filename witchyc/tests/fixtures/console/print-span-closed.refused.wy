@@ -1,0 +1,11 @@
+// Refused: the format holds a view of `name`, so `name` stays lent while it is in use.
+import console
+import string
+import span
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(name): String = String.new(&allocator) else Err(code):
+        return
+    let message = "hello ${name.span()}"
+    name.close()
+    console.print(message)

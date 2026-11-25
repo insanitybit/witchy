@@ -1,0 +1,5 @@
+// Refused: `copy_from` copies numbers; a Bool, a record or an owner is written one at a time.
+fn main():
+    var a: [Bool; 8] = [false; 8]
+    let b: [Bool; 8] = [true; 8]
+    a.slice_mut().copy_from(b.slice())

@@ -1,0 +1,15 @@
+// Refused: `p.inner` and `p.inner.a` overlap, so they are not lent at once with one mutable.
+type Inner:
+    a: U64
+    b: U64
+
+type Pair:
+    left: U64
+    inner: Inner
+
+fn main():
+    var p = Pair(1, Inner(3, 4))
+    let whole = &p.inner
+    let part = &mut p.inner.a
+    *part += 1
+    let n = (*whole).b

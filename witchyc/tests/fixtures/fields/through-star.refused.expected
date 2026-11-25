@@ -1,0 +1,1 @@
+not proved: ensures *value == old(*value)

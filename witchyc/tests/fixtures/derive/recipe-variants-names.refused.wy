@@ -1,0 +1,28 @@
+// Refused: a `static for` over a variant's values naming one word twice (review of sum recipes:
+// `static for a, a in mine, theirs:` read both as `mine`, and `A(1) == A(2)` held while their
+// hashes differed). An inner name equal to the outer loop's words is refused the same way.
+import console
+
+trait Same:
+    fn same(self: &Self, other: &Self) -> Bool
+
+derive Twice:
+    impl Same for Self:
+        fn same(self: &Self, other: &Self) -> Bool:
+            match self:
+                static for v in variants:
+                    v(..mine):
+                        match other:
+                            v(..theirs):
+                                static for a, a in mine, theirs:
+                                    if !(*a == *a):
+                                        return false
+                                return true
+                            _:
+                                return false
+
+type E derive(Twice):
+    A(U64)
+
+fn main(console: Console<Write>):
+    console.print("${A(1).same(&A(2))}")

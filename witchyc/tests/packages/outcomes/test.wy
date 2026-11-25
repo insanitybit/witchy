@@ -1,0 +1,26 @@
+import "counter.wy"
+import testing
+import test_runner
+
+fn compare(actual: U64, expected: U64, site: U64 = source_site()) -> Result<(), Failure>:
+    return testing.eq_u64(actual, expected, site)
+
+test fn private_counter() -> Result<(), Failure>:
+    let c = counter.counter(5)
+    return compare(counter.count(&c), 5)
+
+test fn upper_bound(input: U64) -> Result<(), Failure>:
+    testing.ok(input > 0, source_site("nonzero"))?
+    return testing.ok(input < 16, source_site("under_limit"))
+
+test fn divide(input: U64) -> Result<(), Failure>:
+    return compare(10 / input, 5, source_site("quotient"))
+
+fn main(tests: Tests, grants: TestGrants):
+    for case in tests.collect():
+        grants.offer_word(case, "input", 2)
+        match grants.bind(case):
+            Bound(invocation):
+                invocation.run()
+            Blocked(slot):
+                continue

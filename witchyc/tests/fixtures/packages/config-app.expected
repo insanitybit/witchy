@@ -1,0 +1,5 @@
+name: witchy (in place)
+greeting: hello	there "friend" (decoded)
+path: /srv/app (in place)
+port: 8080 (in place)
+missing: missing

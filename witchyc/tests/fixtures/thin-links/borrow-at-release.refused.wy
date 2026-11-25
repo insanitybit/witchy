@@ -1,0 +1,11 @@
+fn bad(owner: Boxed<U64>) -> U64:
+    match memory.box_ref(&owner):
+        Ok(item):
+            memory.unbox(move owner)
+            return *item
+        Err:
+            memory.unbox(move owner)
+            return 0
+
+fn main():
+    return

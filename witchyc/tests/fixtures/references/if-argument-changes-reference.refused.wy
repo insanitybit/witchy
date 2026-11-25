@@ -1,0 +1,17 @@
+// Refused: the `if` changes what the reference bound before it points at.
+import console
+
+fn add(x: &mut U64, v: U64):
+    *x += v
+
+fn bump(x: &mut U64) -> Bool:
+    *x += 100
+    return true
+
+fn f(x: &mut U64):
+    add(x, if bump(x): 1 else: 2)
+
+fn main(console: Console<Write>):
+    var n: U64 = 0
+    f(&mut n)
+    console.print_int(n)

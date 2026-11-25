@@ -1,0 +1,62 @@
+// The body stores 7.
+import "../../../library/wasm-console.wy"
+
+type Pair:
+    left: U64
+    right: U64
+
+type Small:
+    byte: U8
+    wide: U64
+
+type Two:
+    a: Pair
+    b: Pair
+    small: Small
+
+// One more on the left; the right is as it was.
+fn grow(pair: &mut Pair):
+    requires pair.left < 100
+    ensures pair.left == old(pair.left) + 1
+    ensures pair.right == old(pair.right)
+    proof:
+        auto
+    pair.left += 1
+
+// Changes `a` and says only that one field of `b` is as it was.
+fn quiet(two: &mut Two):
+    ensures two.b.left == old(two.b.left)
+    proof:
+        auto
+    two.a.right = 5
+
+// No contract: a caller knows nothing of `two` afterwards.
+fn loud(two: &mut Two):
+    two.a.right = 5
+
+fn peek(value: &U64) -> U64:
+    ensures result == *value
+    proof:
+        auto
+    return *value
+
+fn bump(value: &mut U64):
+    requires *value < 100
+    ensures *value == old(*value) + 1
+    proof:
+        auto
+    *value += 1
+
+fn poke(value: &mut U64):
+    ensures *value == old(*value)
+    proof:
+        auto
+    *value = 7
+
+fn run(two: &mut Two):
+    poke(&mut two.small.wide)
+
+fn main(console: Console<Write>):
+    var two = Two(Pair(1, 2), Pair(3, 4), Small(5, 6))
+    run(&mut two)
+    console.print_int(two.a.left + two.b.left)

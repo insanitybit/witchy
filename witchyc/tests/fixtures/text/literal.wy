@@ -1,0 +1,22 @@
+// Text literals: static bytes read by length and index.
+fn show(console: &Console<Write>, text: Text):
+    console.print_int(text.byte_len())
+    var index: U64 = 0
+    while index < text.byte_len():
+        match text.byte_at(index):
+            Ok(byte):
+                console.print_int(U8.to_u64(byte))
+            Err(code):
+                console.print_int(900)
+        index += 1
+
+fn main(console: Console<Write>):
+    show(&console, "hi")
+    show(&console, "")
+    show(&console, "é, 123456789")
+    let again: Text = "hi"
+    match again.byte_at(2):
+        Ok(byte):
+            console.print_int(901)
+        Err(code):
+            console.print_int(code)

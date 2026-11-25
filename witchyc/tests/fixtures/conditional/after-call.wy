@@ -1,0 +1,12 @@
+// An inline `if` after a call in the same statement: the call is bound first (to a hidden
+// name), so the call runs, then the `if`, as written.
+import console
+
+fn one(console: &Console<Write>) -> U64:
+    console.print_int(1)
+    return 1
+
+fn main(console: Console<Write>):
+    let flag = true
+    let sum = one(&console) + if flag: 2 else: 3
+    console.print_int(sum)

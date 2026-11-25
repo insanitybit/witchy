@@ -1,0 +1,62 @@
+import console
+import span
+import string
+import text
+import url
+
+fn inspect(value: &String, port: U64, host: Text, resource: Text) -> Bool:
+    match url.parse_url(value.span()):
+        Ok(parsed):
+            let origin = parsed.origin()
+            return (origin.is_https() && origin.port() == port &&
+                origin.hostname().equals_text(host) && parsed.resource().equals_text(resource))
+        Err(error):
+            return false
+
+fn check(allocator: &Allocator, source: Text, port: U64, host: Text, resource: Text) -> Bool:
+    let Ok(empty): String = String.with_capacity(allocator, source.byte_len()) else Err(code):
+        return false
+    var value = move empty
+    let status = value.push_text(allocator, source)
+    if let Err(code) = status:
+        value.close()
+        return false
+    let result = inspect(&value, port, host, resource)
+    value.close()
+    return result
+
+fn rejects(allocator: &Allocator, source: Text) -> Bool:
+    let Ok(empty): String = String.with_capacity(allocator, source.byte_len()) else Err(code):
+        return false
+    var value = move empty
+    if let Err(code) = value.push_text(allocator, source):
+        value.close()
+        return false
+    let result = match url.parse_url(value.span()):
+        Ok(parsed):
+            false
+        Err(error):
+            true
+    value.close()
+    return result
+
+fn main(output: Console<Write>, allocator: Allocator):
+    if !(check(&allocator, "https://example.test", 443, "example.test", "") &&
+         check(&allocator, "https://example.test:8443/p%2Fq?x=1", 8443, "example.test", "/p%2Fq?x=1") &&
+         check(&allocator, "https://example.test?q=a/b", 443, "example.test", "?q=a/b")):
+        output.line("valid URL rejected")
+        return
+    if !(rejects(&allocator, "https://example.test:443/") &&
+         rejects(&allocator, "http://example.test:080/") &&
+         rejects(&allocator, "https://example.test:65536/") &&
+         rejects(&allocator, "https://EXAMPLE.test/") &&
+         rejects(&allocator, "https://user@example.test/") &&
+         rejects(&allocator, "https://example..test/") &&
+         rejects(&allocator, "https://[::1]/") &&
+         rejects(&allocator, "https://example.test/p%") &&
+         rejects(&allocator, "https://example.test/p%ax") &&
+         rejects(&allocator, "https://example.test/p#f") &&
+         rejects(&allocator, "https://example.test/p q")):
+        output.line("invalid URL admitted")
+        return
+    output.line("URL parser OK")

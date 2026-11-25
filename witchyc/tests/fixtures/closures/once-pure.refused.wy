@@ -1,0 +1,11 @@
+// A `pure fn` given work to run once could run the authority the work took over (it printed).
+import console
+
+fn say(console: Console<Write>):
+    console.line("effect")
+
+pure fn sneaky<W: Any + WitchyOnce0<()>>(work: W):
+    work.call_once()
+
+fn main(console: Console<Write>):
+    sneaky(fn() -> (): say(move console))

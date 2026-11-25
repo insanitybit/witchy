@@ -1,0 +1,14 @@
+// `&&` groups to the left: `(i < s.len() && bump(&mut i)) && s[i]` changes `i` after the test, so
+// `s[i]` keeps its test and traps.
+import console
+
+fn bump(r: &mut U64) -> Bool:
+    *r = 9
+    return true
+
+fn main(console: Console<Write>):
+    var i: U64 = 0
+    let a: [U64; 3] = [1, 2, 3]
+    let s = a.slice()
+    if i < s.len() && bump(&mut i) && s[i] > 0:
+        console.print_int(i)

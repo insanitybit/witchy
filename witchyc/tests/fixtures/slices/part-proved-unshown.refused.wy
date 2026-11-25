@@ -1,0 +1,13 @@
+// Refused: nothing shows `to <= bytes.len()`, so the part keeps its range test and may trap.
+import console
+
+nopanic fn middle(bytes: &[U8], from: U64, to: U64) -> &[U8]:
+    requires from <= to
+    ensures true
+    proof:
+        auto
+    return bytes.part_proved(from, to)
+
+fn main(console: Console<Write>):
+    let digits: [U8; 5] = [1, 2, 3, 4, 5]
+    console.print_int(middle(digits.slice(), 1, 9).len())

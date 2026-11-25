@@ -1,0 +1,9 @@
+[Unit]
+Description=Public TCP ingress for the Coven mirror
+
+[Socket]
+ListenStream=443
+Accept=no
+
+[Install]
+WantedBy=sockets.target

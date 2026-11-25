@@ -1,0 +1,16 @@
+// Refused, naming the arm and listing the variants.
+import console
+
+type Mode:
+    On
+    Off
+
+fn main(console: Console<Write>):
+    let m: Mode = On
+    match m:
+        On:
+            console.print_int(1)
+        Of:
+            console.print_int(2)
+        Off:
+            console.print_int(3)

@@ -1,0 +1,16 @@
+// An impl's method must take what the trait says, with its argument put in.
+trait Comparable<K>:
+    fn compare(self: &Self, key: &K) -> Bool
+
+type Celsius:
+    degrees: U64
+
+type Kelvin:
+    value: U64
+
+impl Comparable<Kelvin> for Celsius:
+    fn compare(self: &Celsius, key: &Celsius) -> Bool:
+        return true
+
+fn main():
+    return

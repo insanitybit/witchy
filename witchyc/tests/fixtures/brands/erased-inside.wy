@@ -1,0 +1,25 @@
+// A brand inside another type argument (`Option<Node<G>>` given to `keep<T>`) is erased too:
+// three openings, one copy of `keep`.
+import console
+import graph
+
+fn keep<T>(x: T) -> T:
+    return x
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Graph = Graph.new(&allocator, 4) else Err(code):
+        return
+    var roads = move made
+    brand roads.nodes() as n0:
+        let picked = keep(n0.first())
+        if let Some(home) = picked:
+            console.print_int(n0.number(home) + 0)
+    brand roads.nodes() as n1:
+        let picked = keep(n1.first())
+        if let Some(home) = picked:
+            console.print_int(n1.number(home) + 1)
+    brand roads.nodes() as n2:
+        let picked = keep(n2.first())
+        if let Some(home) = picked:
+            console.print_int(n2.number(home) + 2)
+    roads.close()

@@ -1,0 +1,26 @@
+// Refused: stores through a reference in a loop change the local it lends.
+import console
+
+type Shape:
+    Rect(U64, U64)
+    Dot
+
+type P:
+    x: U64
+    y: U64
+
+fn f(x: U64) -> U64:
+    requires x < 1000
+    ensures result < 1000
+    proof:
+        auto
+    var v = x
+    let r = &mut v
+    var i: U64 = 0
+    while i < 3:
+        *r += 1000
+        i += 1
+    return v
+
+fn main(console: Console<Write>):
+    console.print_int(f(3))

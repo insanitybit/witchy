@@ -1,0 +1,167 @@
+// Refused (review): a sealed method calling a two-buffer move kept the old cells, so a String was popped from both buffers and released twice at run time.
+// Calling a two-&mut-Buffer helper from a proved function: only one buffer's cells are
+// forgotten, so the source keeps its old (full) cells in the caller's model.
+import vec
+import console
+import string
+sealed type Two<T>:
+    a: Buffer<T>
+    z: Buffer<T>
+    la: U64
+    lz: U64
+    cap: U64
+    invariant memory.prefix(a, la, cap)
+    invariant memory.prefix(z, lz, cap)
+
+impl<T: Any> Two<T>:
+    pub fn new(allocator: &Allocator, capacity: U64) -> Result<Two<T>, U64>:
+        ensures match result:
+            Ok(output):
+                output.la == 0
+                output.cap == capacity
+            Err(code):
+                true
+        proof:
+            auto
+        let first: Result<Buffer<T>, U64> = memory.try_alloc(allocator, capacity)
+        match move first:
+            Ok(a):
+                let second: Result<Buffer<T>, U64> = memory.try_alloc(allocator, capacity)
+                match move second:
+                    Ok(z):
+                        return Ok(Two(move a, move z, 0, 0, capacity))
+                    Err(code):
+                        memory_release_empty(move a)
+                        return Err(code)
+            Err(code):
+                return Err(code)
+
+    pub fn push_a(t: &mut Two<T>, item: T) -> Result<(), T>:
+        ensures t.cap == old(t.cap)
+        proof:
+            auto
+        let index = (*t).la
+        if index < (*t).cap:
+            memory_init_unchecked(&mut (*t).a, index, move item)
+            (*t).la = index + 1
+            return Ok(())
+        return Err(move item)
+
+
+impl<T: Any> Two<T>:
+    pub fn pop_a(t: &mut Two<T>) -> Result<T, U64>:
+        ensures t.cap == old(t.cap)
+        proof:
+            auto
+        let n = (*t).la
+        if n > 0:
+            let item = memory.take_unchecked(&mut (*t).a, n - 1)
+            (*t).la = n - 1
+            return Ok(move item)
+        return Err(1)
+
+    pub fn pop_z(t: &mut Two<T>) -> Result<T, U64>:
+        ensures t.cap == old(t.cap)
+        proof:
+            auto
+        let n = (*t).lz
+        if n > 0:
+            let item = memory.take_unchecked(&mut (*t).z, n - 1)
+            (*t).lz = n - 1
+            return Ok(move item)
+        return Err(1)
+
+    pub fn boom(t: &mut Two<T>) -> Bool:
+        ensures t.cap == old(t.cap)
+        proof:
+            auto
+        if (*t).la == 1:
+            if (*t).lz == 0:
+                if 1 <= (*t).cap:
+                    steal(&mut (*t).a, &mut (*t).z, 1)
+                    (*t).lz = 1
+                    return true
+        return false
+
+
+impl<T: Any> Two<T>:
+    pub fn release(input: Two<T>) -> Result<(), Two<T>>:
+        ensures match result:
+            Ok:
+                true
+            Err(back):
+                true
+        proof:
+            auto
+        if input.la == 0:
+            if input.lz == 0:
+                let Two(a, z, la, lz, cap) = move input
+                memory_release_empty(move a)
+                memory_release_empty(move z)
+                return Ok(())
+        return Err(move input)
+
+fn steal<T: Any>(source: &mut Buffer<T>, target: &mut Buffer<T>, count: U64):
+    requires count <= memory.capacity(source)
+    requires count <= memory.capacity(target)
+    requires memory.initialized_range(source, 0, count)
+    requires memory.empty_range(target, 0, count)
+    ensures memory.empty_range(source, 0, count)
+    ensures memory.unchanged_from(source, old(source), count)
+    ensures memory.same_prefix(target, old(source), count)
+    ensures memory.unchanged_from(target, old(target), count)
+    proof:
+        auto
+    memory.move_prefix_unchecked(source, target, count)
+    return
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<Two<String>, U64> = Two.new(&allocator, 2)
+    let Ok(start) = move made else Err(code):
+        return
+    var t = move start
+    let Ok(sm): String = String.new(&allocator) else Err(code):
+        finish(move t)
+        return
+    var s = move sm
+    let _ = s.push(&allocator, 65)
+    match t.push_a(move s):
+        Ok:
+            console.print_int(1)
+        Err(back):
+            back.close()
+    console.print_int(if t.boom(): 1 else: 0)
+    match t.pop_a():
+        Ok(first):
+            match t.pop_z():
+                Ok(second):
+                    var x = move first
+                    let _ = x.push(&allocator, 66)
+                    console.print_int(x.byte_len())
+                    console.print_int(second.byte_len())
+                    x.close()
+                    second.close()
+                Err(c):
+                    first.close()
+        Err(c):
+            console.print_int(c)
+    finish(move t)
+    console.print_int(99)
+
+fn finish(t: Two<String>):
+    var u = move t
+    match u.pop_a():
+        Ok(s):
+            s.close()
+        Err(c):
+            let d = c
+    match u.pop_z():
+        Ok(s):
+            s.close()
+        Err(c):
+            let d = c
+    match Two.release(move u):
+        Ok:
+            return
+        Err(back):
+            finish(move back)

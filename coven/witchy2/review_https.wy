@@ -1,0 +1,154 @@
+import "ci/https_origin.wy"
+import "ci/https_stream.wy"
+import "mirror/identity.wy"
+import "review/integrity.wy"
+import "review/page.wy"
+import "review/request.wy"
+import "review/response.wy"
+import "review/response_head.wy"
+import tls_certificates
+import tls_server_socket
+import tls
+import "tuf/origin.wy"
+import fs
+import local_service
+import net
+import span
+import string
+import text
+import vec
+
+fn main(connection: Socket, allocator: Allocator, root: Dir<Read>, random: Rand, issuer: TlsSigner, actions: LocalService):
+    match server_buffers(&allocator):
+        Err(reason):
+            connection.close()
+        Ok(made):
+            let ServerBuffers(client, flight, plaintext, ciphertext) = move made
+            var hello = move client
+            var data = move flight
+            var scratch = move plaintext
+            var wire = move ciphertext
+            handle(move connection, &root, &allocator, &random, &issuer, &actions, hello.as_mut_slice(), data.as_mut_slice(), scratch.as_mut_slice(), wire.as_mut_slice())
+            wire.close()
+            scratch.close()
+            data.close()
+            hello.close()
+    root.close()
+
+fn handle(connection: Socket, root: &Dir<Read>, allocator: &Allocator, random: &Rand, issuer: &TlsSigner, actions: &LocalService, hello: &mut [U8], data: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]):
+    let Ok(origin): String = ci_origin(root, allocator, data.part(0, 261)) else Err(reason):
+        connection.close()
+        return
+    connect(move connection, root, &origin, allocator, random, issuer, actions, hello, data, plaintext, wire)
+    origin.close()
+
+fn connect(connection: Socket, root: &Dir<Read>, origin: &String, allocator: &Allocator, random: &Rand, issuer: &TlsSigner, actions: &LocalService, hello: &mut [U8], data: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]):
+    let Ok(host): Span = relying_party(origin.span()) else Err(reason):
+        connection.close()
+        return
+    let Ok(size): U64 = identity.read_file(root, "chain", data) else Err(reason):
+        connection.close()
+        return
+    let Ok(chain): CertificateChain = tls_certificates.from_der_list(allocator, data.part(0, size)) else Err(reason):
+        connection.close()
+        return
+    let accepted = accept_named(move connection, allocator, random, issuer, &chain, host, hello, data, plaintext, wire)
+    chain.close()
+    let Ok(session): SecureSession = move accepted else Err(reason):
+        return
+    var stream = move session
+    let sent = serve(&mut stream, root, origin.span(), actions, data, hello.part(0, 16384), plaintext, wire, allocator)
+    stream.close()
+
+fn serve(stream: &mut SecureSession, root: &Dir<Read>, origin: Span, actions: &LocalService, data: &mut [U8], asset: &mut [U8], plaintext: &mut [U8], wire: &mut [U8], allocator: &Allocator) -> Result<(), SessionError>:
+    let Ok(size): U64 = receive_ci_head(stream, data, plaintext, wire) else Err(status):
+        return error_response(stream, status, plaintext, wire, allocator)
+    let Ok(request): ReviewRequest = review_request(Span.of(data.part(0, size)), origin) else Err(status):
+        return error_response(stream, status, plaintext, wire, allocator)
+    match request.route:
+        Challenge:
+            return action_response(stream, actions, request, 3, 16384, plaintext, wire, allocator)
+        Inspect:
+            return action_response(stream, actions, request, 4, 20971520, plaintext, wire, allocator)
+        Approve:
+            return action_response(stream, actions, request, 5, 16384, plaintext, wire, allocator)
+        Page:
+            return page_response(stream, root, origin, ReviewPage, asset, plaintext, wire, allocator)
+        Enrollment:
+            return page_response(stream, root, origin, EnrollmentPage, asset, plaintext, wire, allocator)
+        _:
+            return static_response(stream, root, request.route, asset, plaintext, wire, allocator)
+
+fn static_response(stream: &mut SecureSession, root: &Dir<Read>, route: ReviewRoute, asset: &mut [U8], plaintext: &mut [U8], wire: &mut [U8], allocator: &Allocator) -> Result<(), SessionError>:
+    let filename: Text = match route:
+        Script:
+            "review.mjs"
+        Style:
+            "review.css"
+        EnrollmentScript:
+            "enroll.mjs"
+        _:
+            return error_response(stream, 503, plaintext, wire, allocator)
+    let Ok(length): U64 = identity.read_file(root, filename, asset) else Err(reason):
+        return error_response(stream, 503, plaintext, wire, allocator)
+    return review_response(stream, 200, route, Span.of(asset.part(0, length)), NoPage, plaintext, wire, allocator)
+
+fn page_response(stream: &mut SecureSession, root: &Dir<Read>, origin: Span, page: MaintainerPage, asset: &mut [U8], plaintext: &mut [U8], wire: &mut [U8], allocator: &Allocator) -> Result<(), SessionError>:
+    let Ok(script): Integrity = read_integrity(root, page.script_file(), asset, allocator) else Err(reason):
+        return error_response(stream, 503, plaintext, wire, allocator)
+    let Ok(style): Integrity = read_integrity(root, "review.css", asset.part(0, 8192), allocator) else Err(reason):
+        script.close()
+        return error_response(stream, 503, plaintext, wire, allocator)
+    let rendered = render_page(page, &script, &style, allocator)
+    style.close()
+    let Ok(body): String = move rendered else Err(reason):
+        script.close()
+        return error_response(stream, 503, plaintext, wire, allocator)
+    let sent = review_response(stream, 200, page.route(), body.span(), PageAssets(origin, &script), plaintext, wire, allocator)
+    body.close()
+    script.close()
+    return sent
+
+fn read_integrity(root: &Dir<Read>, filename: Text, asset: &mut [U8], allocator: &Allocator) -> Result<Integrity, U64>:
+    let Ok(length): U64 = identity.read_file(root, filename, asset) else Err(reason):
+        return Err(1)
+    return asset_integrity(asset.part(0, length), allocator)
+
+fn action_response(stream: &mut SecureSession, service: &LocalService, request: ReviewRequest, operation: U8, capacity: U64, plaintext: &mut [U8], wire: &mut [U8], allocator: &Allocator) -> Result<(), SessionError>:
+    let packet: Result<Vec<U8>, U64> = Vec.filled(allocator, request.length + 1, 0)
+    let Ok(buffer): Vec<U8> = move packet else Err(reason):
+        return error_response(stream, 503, plaintext, wire, allocator)
+    var payload = move buffer
+    let prefix: [U8; 1] = [operation]
+    payload.as_mut_slice().part(0, 1).copy_from(prefix.slice())
+    let read = receive_ci_body(stream, request.initial, payload.as_mut_slice().part(1, request.length + 1), plaintext, wire)
+    if let Err(status) = read:
+        payload.close()
+        return error_response(stream, status, plaintext, wire, allocator)
+    let sent = exchange(stream, service, request.route, capacity, payload.as_slice(), plaintext, wire, allocator)
+    payload.close()
+    return sent
+
+fn exchange(stream: &mut SecureSession, service: &LocalService, route: ReviewRoute, capacity: U64, payload: &[U8], plaintext: &mut [U8], wire: &mut [U8], allocator: &Allocator) -> Result<(), SessionError>:
+    let prepared: Result<Vec<U8>, U64> = Vec.filled(allocator, capacity, 0)
+    let Ok(buffer): Vec<U8> = move prepared else Err(reason):
+        return error_response(stream, 503, plaintext, wire, allocator)
+    var reply = move buffer
+    let result = service.exchange(payload, reply.as_mut_slice())
+    let sent = send_reply(stream, route, result, reply.as_slice(), plaintext, wire, allocator)
+    reply.close()
+    return sent
+
+fn send_reply(stream: &mut SecureSession, route: ReviewRoute, result: Result<U64, U64>, reply: &[U8], plaintext: &mut [U8], wire: &mut [U8], allocator: &Allocator) -> Result<(), SessionError>:
+    let Ok(length): U64 = result else Err(code):
+        return error_response(stream, 503, plaintext, wire, allocator)
+    if length > 1 && reply[0] == 0:
+        let body = Span.of(reply.part(1, length))
+        return review_response(stream, 200, route, body, NoPage, plaintext, wire, allocator)
+    let status = if length == 1 && reply[0] == 1: 403 else: 503
+    return error_response(stream, status, plaintext, wire, allocator)
+
+fn error_response(stream: &mut SecureSession, status: U64, plaintext: &mut [U8], wire: &mut [U8], allocator: &Allocator) -> Result<(), SessionError>:
+    let bytes: [U8; 1] = [0]
+    let empty = Span.of(bytes.slice().part(0, 0))
+    return review_response(stream, status, Page, empty, NoPage, plaintext, wire, allocator)

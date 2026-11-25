@@ -1,0 +1,11 @@
+// Which way an I64 comparison goes is unknown to the proof.
+fn f(x: I64) -> U64:
+    ensures result == 0
+    proof:
+        auto
+    if x < 0:
+        return 1
+    return 0
+
+fn main(console: Console<Write>):
+    console.print_int(f(-1))

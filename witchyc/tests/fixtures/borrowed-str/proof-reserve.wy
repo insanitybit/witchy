@@ -1,0 +1,30 @@
+import console
+import vec
+import vec_text
+
+fn rebuild(allocator: &Allocator, requested: U64) -> Result<Vec<U8>, U64>:
+    ensures match result:
+        Ok(output):
+            output.length == 0
+            memory.utf8(output.data, 0, output.length)
+        Err(code):
+            true
+    proof:
+        auto
+    match Vec.new(allocator, 0):
+        Ok(empty):
+            var vector = move empty
+            let _ = vector.reserve_utf8_mut(allocator, requested)
+            return Ok(move vector)
+        Err(code):
+            return Err(code)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(small): Vec<U8> = rebuild(&allocator, 32) else Err(code):
+        return
+    console.print_int(small.capacity())
+    small.close()
+    let Ok(large): Vec<U8> = rebuild(&allocator, 18446744073709551615) else Err(code):
+        return
+    console.print_int(large.capacity())
+    large.close()

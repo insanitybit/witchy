@@ -1,0 +1,76 @@
+// A HashMap of numbers: insert, look up, remove through a probe chain, grow.
+import "../../../library/wasm-hashmap.wy"
+import "../../../library/wasm-hash.wy"
+
+// Every key lands in one chain when the table has eight cells.
+type Key:
+    id: U64
+
+impl Hash for Key:
+    fn hash(self: &Key) -> U64:
+        return (*self).id * 8
+
+impl Eq for Key:
+    fn eq(self: &Key, other: &Key) -> Bool:
+        return (*self).id == (*other).id
+
+fn put(console: &Console<Write>, map: &mut HashMap<Key, U64>, key: U64, value: U64):
+    match map.insert(Key(key), value):
+        Ok:
+            return
+        Err(back):
+            console.print_int(900)
+
+fn show(console: &Console<Write>, map: &HashMap<Key, U64>, key: U64):
+    let wanted = Key(key)
+    match map.get(&wanted):
+        Ok(value):
+            console.print_int(*value)
+        Err(code):
+            console.print_int(0)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<HashMap<Key, U64>, U64> = HashMap.new(&allocator, 8)
+    match move made:
+        Ok(empty):
+            var map = move empty
+            put(&console, &mut map, 1, 10)
+            put(&console, &mut map, 2, 20)
+            put(&console, &mut map, 3, 30)
+            // A key that is already there is handed back.
+            put(&console, &mut map, 2, 21)
+            console.print_int(map.len())
+            show(&console, &map, 2)
+            show(&console, &map, 4)
+            // Removing the head of the chain keeps the rest reachable.
+            let one = Key(1)
+            match map.remove(&one):
+                Ok(entry):
+                    console.print_int(entry.value)
+                Err(code):
+                    console.print_int(901)
+            show(&console, &map, 1)
+            show(&console, &map, 2)
+            show(&console, &map, 3)
+            console.print_int(map.len())
+            match map.resize(&allocator, 32):
+                Ok(grown):
+                    var large = move grown
+                    console.print_int(large.capacity())
+                    show(&console, &large, 2)
+                    show(&console, &large, 3)
+                    put(&console, &mut large, 40, 400)
+                    show(&console, &large, 40)
+                    while large.len() > 0:
+                        match large.take_any():
+                            Ok(entry):
+                                console.print_int(entry.key.id)
+                            Err(code):
+                                console.print_int(902)
+                    large.release()
+                    console.print_int(1)
+                Err(back):
+                    console.print_int(903)
+                    back.release()
+        Err(code):
+            console.print_int(code)

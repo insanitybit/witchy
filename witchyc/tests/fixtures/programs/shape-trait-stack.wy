@@ -1,0 +1,83 @@
+// Shapes behind a trait: areas summed by a generic function, and a generic Stack over a Vec.
+import console
+import vec
+import discard
+import discard_core
+
+trait Shape:
+    fn area(self: &Self) -> U64
+    fn name(self: &Self) -> Text
+
+type Square:
+    side: U64
+
+type Rect:
+    width: U64
+    height: U64
+
+impl Shape for Square:
+    fn area(self: &Square) -> U64:
+        return (*self).side * (*self).side
+    fn name(self: &Square) -> Text:
+        return "square"
+
+impl Shape for Rect:
+    fn area(self: &Rect) -> U64:
+        return (*self).width * (*self).height
+    fn name(self: &Rect) -> Text:
+        return "rect"
+
+fn total<S: Shape>(items: &[S]) -> U64:
+    var sum: U64 = 0
+    for item in items:
+        sum += item.area()
+    return sum
+
+fn largest<S: Shape>(items: &[S]) -> U64:
+    var best: U64 = 0
+    for item in items:
+        if item.area() > best:
+            best = item.area()
+    return best
+
+type Stack<T>:
+    items: Vec<T>
+
+impl<T: Any + Discard> Stack<T>:
+    fn new(allocator: &Allocator) -> Result<Stack<T>, U64>:
+        let items: Vec<T> = Vec.new(allocator, 4)?
+        return Ok(Stack(move items))
+
+    fn push(self: &mut Stack<T>, allocator: &Allocator, item: T) -> Bool:
+        match (*self).items.push_mut(allocator, move item):
+            Ok:
+                return true
+            Err(back):
+                back.discard()
+                return false
+
+    fn pop(self: &mut Stack<T>) -> Result<T, U64>:
+        return (*self).items.take_last_mut()
+
+    fn depth(self: &Stack<T>) -> U64:
+        return (*self).items.len()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let squares: [Square; 3] = [Square(2), Square(5), Square(3)]
+    let rects: [Rect; 2] = [Rect(2, 7), Rect(4, 4)]
+    console.print("${total(squares.slice())} ${largest(squares.slice())} ${total(rects.slice())} ${squares[0].name()}")
+    let Ok(made): Stack<U64> = Stack.new(&allocator) else Err(c):
+        return
+    var stack = move made
+    for x in [1, 2, 3]:
+        let pushed = stack.push(&allocator, *x)
+    var popped: U64 = 0
+    while stack.depth() > 0:
+        match stack.pop():
+            Ok(v):
+                popped = popped * 10 + v
+            Err(e):
+                break
+    console.print_int(popped)
+    let Stack(items) = move stack
+    items.close()

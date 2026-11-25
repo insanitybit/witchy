@@ -1,0 +1,13 @@
+// Two files each declare a private `type Key` with derives (private_types.rs makes them
+// `Key@file`): the derived source names the renamed type, which it once failed to lex, reported
+// as `unexpected character` inside another file (adversarial review round 4).
+import "parts/private-key.wy"
+import console
+import hash
+
+type Key derive(Eq, Hash):
+    a: U64
+
+fn main(console: Console<Write>):
+    if same(5) && Key(a: 1) == Key(a: 1):
+        console.print_int(1)

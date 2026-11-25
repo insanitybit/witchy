@@ -1,0 +1,9 @@
+fn next() -> U64:
+    return 3
+
+fn main(console: Console<Write>):
+    match next():
+        1:
+            console.print_int(1)
+        _:
+            console.print_int(2)

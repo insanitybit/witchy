@@ -1,0 +1,37 @@
+// `unreachable` ends a path: a function need not return after it, a `match`
+// used as a value may leave by it, and what is live there is abandoned.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-vec.wy"
+
+type Shape:
+    Square(U64)
+    Line(U64)
+    Point
+
+// Every caller passes a digit.
+fn digit(byte: U64) -> U64:
+    if byte >= 48 && byte <= 57:
+        return byte - 48
+    unreachable
+
+fn side(shape: Shape) -> U64:
+    let length = match shape:
+        Square(side):
+            side
+        Line(length):
+            length
+        Point:
+            unreachable
+    return length
+
+fn main(console: Console<Write>, allocator: Allocator):
+    console.print_int(digit(55))
+    console.print_int(side(Square(4)) + side(Line(9)))
+    var items: Vec<U64> = match Vec.new(&allocator, 2):
+        Ok(made):
+            move made
+        Err(code):
+            unreachable
+    let _ = items.push_mut(&allocator, 3)
+    console.print_int(items.len())
+    items.close()

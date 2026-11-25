@@ -1,0 +1,16 @@
+// Refused: a store at a computed index may be any element, so `ys[0]` is no longer known.
+import console
+
+fn bump(xs: [U64; 3], i: U64) -> U64:
+    requires xs[0] < 1000
+    requires i < 3
+    ensures result < 1001
+    proof:
+        auto
+    var ys = xs
+    ys[i] = 5000
+    ys[0] + 1
+
+fn main(console: Console<Write>):
+    let given = [1, 2, 3]
+    console.print_int(bump(given, 0))

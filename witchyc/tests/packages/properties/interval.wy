@@ -1,0 +1,8 @@
+pub sealed type Interval:
+    low: U64
+    high: U64
+
+pub fn ordered(a: U64, b: U64) -> Interval:
+    if a > b:
+        return Interval(b, a)
+    return Interval(a, b)

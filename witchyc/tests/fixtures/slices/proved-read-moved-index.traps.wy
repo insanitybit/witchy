@@ -1,0 +1,17 @@
+// The index moves after the test: the read keeps its check and traps.
+import console
+
+// The index moves after the test: the read must still trap.
+fn read(bytes: &[U8], index: U64) -> U64:
+    ensures true
+    proof:
+        auto
+    var i = index
+    if i >= bytes.len():
+        return 256
+    i += 1
+    return U8.to_u64(bytes[i])
+
+fn main(console: Console<Write>):
+    let a: [U8; 3] = [7, 8, 9]
+    console.print_int(read(&a, 2))

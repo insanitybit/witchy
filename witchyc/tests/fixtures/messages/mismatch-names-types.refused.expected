@@ -1,0 +1,2 @@
+scalar expression type mismatch: this is a `Bool` where a `U64` is expected
+a Bool is expected here and this is a number

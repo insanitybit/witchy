@@ -1,0 +1,10 @@
+// Refused: a `${...}` text given where a Text parameter is expected says it is a format, not
+// that a generic record constructor needs its type.
+import console
+
+fn label(t: Text) -> Text:
+    return t
+
+fn main(console: Console<Write>):
+    let n: U64 = 2
+    console.line(label("n is ${n}"))

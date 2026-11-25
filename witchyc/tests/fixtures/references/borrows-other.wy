@@ -1,0 +1,15 @@
+// `borrows Ok from left`, `borrows Err from right`: in each arm the other input is free (it was
+// refused: a match handed both inputs' loans to every arm).
+import console
+import "../modules/parts/choose.wy"
+
+fn main(console: Console<Write>):
+    var a: U64 = 1
+    var b: U64 = 2
+    match choose(&a, &b, a < b):
+        Ok(item):
+            b = 3
+            console.print_int(*item)
+        Err(item):
+            a = 3
+            console.print_int(*item)

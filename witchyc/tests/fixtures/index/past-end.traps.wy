@@ -1,0 +1,13 @@
+// Reading past the end is a mistake in the program: the run stops with a trap.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-vec.wy"
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var items: Vec<U64> = match Vec.filled(&allocator, 3, 1):
+        Ok(made):
+            move made
+        Err(code):
+            return
+    let value = items[3]
+    items.close()
+    console.print_int(value)

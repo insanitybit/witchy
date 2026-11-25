@@ -1,0 +1,19 @@
+fn checked_part(buffer: &Buffer<U8>, source: &str, lo: U64, hi: U64, count: U64) -> &str:
+    requires lo + count == hi
+    requires hi <= source.len()
+    ensures result.len() == count
+    ensures memory.utf8(result, 0, result.len())
+    proof:
+        auto
+    return source.part(lo, hi)
+
+fn through_call(buffer: &Buffer<U8>, source: &str, lo: U64, hi: U64, count: U64) -> &str:
+    requires lo + count == hi
+    requires hi <= source.len()
+    ensures memory.utf8(result, 0, result.len())
+    proof:
+        auto
+    return checked_part(buffer, source, lo, hi, count)
+
+fn main():
+    return

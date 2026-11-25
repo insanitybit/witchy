@@ -1,0 +1,15 @@
+// Refused, naming the value moved before its use.
+import console
+import string
+
+fn take(s: String) -> U64:
+    let n = s.byte_len()
+    s.close()
+    return n
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(c):
+        return
+    let s = move made
+    let a = take(move s)
+    console.print_int(s.byte_len() + a)

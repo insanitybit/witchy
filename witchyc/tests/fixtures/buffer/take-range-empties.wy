@@ -1,0 +1,13 @@
+// memory.take_prefix_unchecked: a run of Copy cells is emptied in one step, proved.
+fn clear<T>(buffer: &mut Buffer<T>, count: U64):
+    requires count <= memory.capacity(buffer)
+    requires memory.initialized_range(buffer, 0, count)
+    ensures memory.empty_range(buffer, 0, count)
+    ensures memory.unchanged_from(buffer, old(buffer), count)
+    proof:
+        auto
+    memory.take_prefix_unchecked(buffer, count)
+    return
+
+fn main():
+    return

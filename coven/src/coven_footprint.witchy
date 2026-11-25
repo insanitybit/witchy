@@ -1,0 +1,93 @@
+// coven_footprint — server-side capability-footprint recomputation. coven computes
+// the capabilities a rune may exercise from its source via the compiler, never
+// trusting the uploaded manifest; that recomputation is what the registry's trust
+// model rests on.
+
+import json
+import compiler
+import show
+import error
+import convert
+
+// The capabilities the uploaded source actually demands — the union over its
+// `src/**/*.witchy` modules, computed via `compiler.footprint`. A module whose footprint
+// cannot be computed (the source does not compile, or the report does not parse) is a
+// HARD failure: returning an empty footprint would let an uncomputable rune slip past the
+// under-declaration gate (empty is trivially covered), so the publish is refused instead.
+pub fn computed_footprint(files: List((String, String))) -> Result(List(String), FootprintError):
+    var out: List(String) = []
+    for path, text in files:
+        if is_src_module(path):
+            let caps = footprint_total(compiler.footprint(text))?
+            for cap in caps:
+                if !out.contains(cap):
+                    out.push(cap)
+    Ok(out)
+
+fn is_src_module(path: String) -> Bool:
+    path.starts_with("src/") && path.ends_with(".witchy")
+
+// The `total` array of a `compiler.footprint` report, or an Err if the report does not
+// parse or is an `{"error":..}` report (the source did not compile). Never silently [].
+fn footprint_total(report: String) -> Result(List(String), FootprintError):
+    match json.decode(report):
+        Err(_e) -> Err(FootprintReportJson)
+        Ok(doc) ->
+            match json.get(doc, "error"):
+                Some(error) -> Err(FootprintSourceDoesNotCompile(json.as_string(error) ?? "unknown compiler error"))
+                None -> Ok(json.get_strings(doc, "total"))
+
+// Matchable errors for the registry's recomputed source footprint. This is the
+// server-side under-declaration gate; an uncomputable footprint must be a typed
+// hard failure before the HTTP layer renders it.
+type FootprintError:
+    FootprintReportJson
+    FootprintSourceDoesNotCompile(String)
+
+pub fn footprint_error_message(e: FootprintError) -> String:
+    match e:
+        FootprintReportJson -> "the compiler footprint report did not parse"
+        FootprintSourceDoesNotCompile(detail) -> "the rune source does not compile — its capability footprint is uncomputable: ${detail}"
+
+impl Show for FootprintError:
+    fn show(self) -> String:
+        footprint_error_message(self)
+
+impl Error for FootprintError
+
+impl From(FootprintError) for String:
+    fn from(value: FootprintError) -> Self:
+        footprint_error_message(value)
+
+// The foreign-code COMPARTMENT renderer ids a rune embeds (RFC-0015), found by scanning
+// its source modules for `compartment("<id>"` call sites. This is the registry-side audit
+// of "what third-party code does this package run?" — the `Js` governance signal, kept
+// HERE (in coven) rather than in the compiler so the compiler stays decoupled from the
+// glamour framework. It is a REVIEW HINT: it reads literal renderer ids from the text, so
+// it may over-report an id mentioned in a comment and cannot see a non-literal id. The
+// actual isolation is the host's iframe sandbox, not this — the audit just makes the
+// foreign code visible (a reviewer/the package page can flag it).
+pub fn compartments_in(files: List((String, String))) -> List(String):
+    var out: List(String) = []
+    for path, text in files:
+        if is_src_module(path):
+            for id in scan_compartments(text):
+                if !out.contains(id):
+                    out.push(id)
+    out
+
+fn scan_compartments(s: String) -> List(String):
+    let marker = "compartment(\""
+    let i = s.index_of(marker) ?? -1
+    if i < 0:
+        []
+    else:
+        let after = s.drop(i + marker.char_count())
+        let close = after.index_of("\"") ?? -1
+        if close < 0:
+            []
+        else:
+            let id = after.substring(0, close)
+            var out = scan_compartments(after.drop(close))
+            out.push(id)
+            out

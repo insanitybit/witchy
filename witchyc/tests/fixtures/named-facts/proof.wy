@@ -1,0 +1,35 @@
+// General contents reasoning, independent of any container representation.
+lemma initialized_between_at(data: Buffer<U64>, lower: USize, upper: USize, index: USize):
+    requires InitializedBetween(data, lower, upper)
+    requires lower <= index && index < upper
+    ensures memory.initialized(data, index)
+    proof:
+        auto
+
+// Prefix access explicitly supplies the checked facts needed by the general rule.
+lemma initialized_in_prefix(data: Buffer<U64>, length: USize, index: USize):
+    requires InitializedBetween(data, 0, length)
+    requires index < length
+    ensures memory.initialized(data, index)
+    proof:
+        have contents: InitializedBetween(data, 0, length)
+        have within: 0 <= index && index < length
+        apply initialized_between_at(data, 0, length, index) using contents, within as ready
+        exact ready
+
+// Same scalar-return ownership shape as the existing bare unchecked-read control.
+fn named_fact_read() -> U64:
+    var data = memory.alloc(1)
+    if memory.loan_room(1):
+        memory.init(&mut data, 0, 73)
+        let length: USize = 1
+        let index: USize = 0
+        proof:
+            apply initialized_in_prefix(data, length, index)
+        let value = memory.read_unchecked(&data, 0)
+        let removed = memory.take(&mut data, 0)
+        discard(removed)
+        memory.release(data)
+        return value
+    memory.release(data)
+    return 0

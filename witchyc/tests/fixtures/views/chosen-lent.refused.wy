@@ -1,0 +1,16 @@
+// `r` may point at `b`, which is assigned while `r` is still read.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-span.wy"
+
+fn pick(first: Bool) -> U64:
+    var a: U64 = 1
+    var b: U64 = 2
+    let r = if first:
+        &a
+    else:
+        &b
+    b = 20
+    return *r + a
+
+fn main(console: Console<Write>):
+    console.print_int(pick(true))

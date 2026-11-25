@@ -1,0 +1,6 @@
+// The count goes on the right: `4 * 250ms` is refused, naming `value * n`.
+import console
+import time
+
+fn main(console: Console<Write>):
+    console.print("${4 * 250ms}")

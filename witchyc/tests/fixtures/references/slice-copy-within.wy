@@ -1,0 +1,24 @@
+// `s[i] = s[j]` through a unique slice: a value that only reads is read before the cell's unique
+// loan begins (as Rust's two-phase borrows allow), so an element is copied within the slice
+// without a `let` first (the benchmark's `pp[left] = pp[right]` was refused).
+import console
+
+fn reverse(s: &mut [U64], count: U64):
+    var left: U64 = 0
+    var right = count - 1
+    while left < right:
+        let t = s[left]
+        s[left] = s[right]
+        s[right] = t
+        left += 1
+        right -= 1
+
+fn main(console: Console<Write>):
+    var data: [U64; 5] = [1, 2, 3, 4, 5]
+    let s = data.slice_mut()
+    s[0] = s[4] + s[3]
+    s[1] += s[2]
+    reverse(s, 5)
+    console.print_int(s[0])
+    console.print_int(s[3])
+    console.print_int(s[4])

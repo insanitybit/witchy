@@ -1,0 +1,55 @@
+import "fetch_role_file.wy"
+import "generation.wy"
+import "metadata.wy"
+import console
+import fs
+import json_tree
+import string
+import text
+import vec
+
+pub fn emit_catalog(source: &Dir<Read>, generation: &VerifiedTopLevel, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let count = generation.role_count()?
+    if count > 64:
+        return Err(1)
+    var remaining: U64 = 4096
+    for index in 0..count:
+        let name = generation.role_name(index)?
+        remaining = emit_role(source, generation, name, remaining, output, allocator)?
+    return Ok(())
+
+fn emit_role(source: &Dir<Read>, generation: &VerifiedTopLevel, name: &String, limit: U64, output: &Console<Write>, allocator: &Allocator) -> Result<U64, U64>:
+    let role = open_fetch_role(source, generation, name, allocator)?
+    let result = emit_targets(&role, limit, output, allocator)
+    role.close()
+    return result
+
+fn emit_targets(role: &VerifiedRole, limit: U64, output: &Console<Write>, allocator: &Allocator) -> Result<U64, U64>:
+    let targets = role.targets()?
+    match targets:
+        Object(entries):
+            if entries.len() > limit:
+                return Err(1)
+            let empty = String.with_capacity(allocator, 96)?
+            var digest = move empty
+            let result = emit_entries(entries, &mut digest, output, allocator)
+            digest.close()
+            result?
+            return Ok(limit - entries.len())
+        _:
+            return Err(1)
+
+fn emit_entries(entries: &Vec<Member>, digest: &mut String, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    for entry in entries:
+        let Ok(reference): ContentReference = parse_reference(&entry.value, allocator, 2097152) else Err(error):
+            return Err(1)
+        digest.clear()
+        reference.append_sha384(digest, allocator)?
+        output.write_string(&entry.key)
+        output.print_byte(32)
+        output.write("sha384:")
+        output.write_string(digest)
+        output.print_byte(32)
+        output.write_u64(reference.length())
+        output.print_byte(10)
+    return Ok(())

@@ -1,0 +1,15 @@
+// The standard library by name: the compiler ships it, wherever the program is.
+import console
+import deque
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(queue): Deque<U64> = Deque.new(&allocator, 2) else Err(code):
+        return
+    var q = move queue
+    for n in 0..5:
+        if q.push_back(&allocator, n * 10).is_err():
+            q.close()
+            return
+    for item in &q:
+        console.print_int(*item)
+    q.close()

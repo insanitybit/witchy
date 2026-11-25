@@ -1,0 +1,45 @@
+// A Text literal hashes as the String of the same bytes and is equivalent to it, at lengths
+// either side of each eight-byte word (Text reads a word at a time); one byte off is not equal.
+import console
+import string
+import hash
+
+fn check(allocator: &Allocator, text: Text) -> U64:
+    let Ok(made): String = String.new(allocator) else Err(c):
+        return 1
+    var s = move made
+    let _ = s.push_text(allocator, text)
+    var wrong: U64 = 0
+    if text.hash() != s.hash() || !text.equivalent(&s):
+        wrong += 1
+    // The same length with the last byte changed: not equivalent.
+    if s.byte_len() > 0:
+        let Ok(other): String = String.new(allocator) else Err(c):
+            s.close()
+            return 1
+        var t = move other
+        let _ = t.push_text(allocator, text)
+        let n = t.byte_len()
+        t.cut(n - 1)
+        let _ = t.push(allocator, 126)
+        if t.byte_len() == n && text.equivalent(&t):
+            wrong += 1
+        t.close()
+    s.close()
+    return wrong
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var wrong: U64 = 0
+    wrong += check(&allocator, "")
+    wrong += check(&allocator, "a")
+    wrong += check(&allocator, "ab")
+    wrong += check(&allocator, "abc")
+    wrong += check(&allocator, "abcdefg")
+    wrong += check(&allocator, "abcdefgh")
+    wrong += check(&allocator, "abcdefghi")
+    wrong += check(&allocator, "0123456789abcde")
+    wrong += check(&allocator, "0123456789abcdef")
+    wrong += check(&allocator, "0123456789abcdefg")
+    wrong += check(&allocator, "the quick brown fox jumps")
+    wrong += check(&allocator, "été café naïve résumé!!")
+    console.print("${wrong} wrong")

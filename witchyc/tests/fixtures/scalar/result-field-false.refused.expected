@@ -1,0 +1,1 @@
+not proved: ensures result.low <= result.high

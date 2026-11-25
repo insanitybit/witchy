@@ -1,0 +1,74 @@
+// `push_slice` (now a byte copy, `push_part`) at random ends of a String of mixed widths, onto a
+// String that already holds text: it appends exactly bytes from..to when both ends are scalar
+// boundaries (or the end) and from <= to, and otherwise changes nothing; checked byte by byte.
+import console
+import string
+import text
+import vec
+
+fn width(c: U64) -> U64:
+    if c < 128:
+        return 1
+    if c < 2048:
+        return 2
+    if c < 65536:
+        return 3
+    return 4
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var seed: U64 = 41
+    var wrong: U64 = 0
+    var copied: U64 = 0
+    for round in 0..400:
+        let Ok(a): String = String.new(&allocator) else Err(c):
+            return
+        var source = move a
+        let Ok(b): String = String.new(&allocator) else Err(c):
+            source.close()
+            return
+        var out = move b
+        let _ = out.push_text(&allocator, "x")
+        let _ = out.push(&allocator, 233)
+        let Ok(o): Vec<Bool> = Vec.filled(&allocator, 64, false) else Err(c):
+            source.close()
+            out.close()
+            return
+        var boundary = move o
+        var total: U64 = 0
+        for k in 0..12:
+            seed = seed * 48271 % 2147483647
+            var c = 32 + seed % 95
+            let kind = seed % 4
+            if kind == 1:
+                c = 128 + seed % 1920
+            else if kind == 2:
+                c = 2048 + seed % 50000
+            else if kind == 3:
+                c = 65536 + seed % 1000000
+            if c >= 55296 && c <= 57343:
+                c = 66
+            if let Ok(_) = source.push(&allocator, c):
+                let s = boundary.set(total, true)
+                total += width(c)
+        let e = boundary.set(total, true)
+        seed = seed * 48271 % 2147483647
+        let from = seed % (total + 2)
+        let to = (seed / 64) % (total + 2)
+        let before = out.byte_len()
+        let ok = out.push_slice(&allocator, &source, from, to).is_ok()
+        let fits = from <= to && to <= total && boundary[from] && boundary[to]
+        if ok != fits:
+            wrong += 1
+        if fits:
+            copied += 1
+            if out.byte_len() != before + to - from:
+                wrong += 1
+            for i in 0..to - from:
+                if out.byte_or_end(before + i) != source.byte_or_end(from + i):
+                    wrong += 1
+        else if out.byte_len() != before:
+            wrong += 1
+        source.close()
+        out.close()
+        boundary.close()
+    console.print("${wrong} wrong, ${copied} copied")

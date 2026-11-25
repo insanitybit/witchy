@@ -1,0 +1,14 @@
+// `using` needs a way to discard the value: a type without `Discard` is refused.
+import "../../../library/wasm-text.wy"
+import "../../../library/wasm-string.wy"
+
+type Pair:
+    left: String
+    right: String
+
+fn work(allocator: &Allocator, left: String, right: String) -> U64:
+    using pair = Pair(move left, move right):
+        return 1
+
+fn main(allocator: Allocator):
+    let x = 0

@@ -1,0 +1,30 @@
+// Helpers for a bare Buffer, for code that manages cells itself. Vec does not need them:
+// it knows which cells are in use.
+// Close a bare buffer whose cells may hold values anywhere: every cell is emptied, then it is released.
+pub fn memory_clear<T>(buffer: &mut Buffer<T>):
+    ensures memory.empty_all(buffer)
+    ensures memory.same_allocation(buffer, old(buffer))
+    ensures memory.capacity(buffer) == memory.capacity(old(buffer))
+    proof:
+        auto
+    let capacity = memory.capacity(buffer)
+    var index: U64 = 0
+    while index < capacity:
+        invariant index <= capacity
+        invariant memory.empty_range(buffer, 0, index)
+        invariant memory.unchanged_from(buffer, old(buffer), index)
+        let _ = memory.take(buffer, index)
+        index += 1
+    return
+
+pub fn vec_buffer_close<T>(input: Buffer<T>):
+    ensures memory.released(old(input))
+    proof:
+        auto
+    var buffer = move input
+    memory_clear(&mut buffer)
+    match memory.try_release(move buffer):
+        Ok:
+            return
+        Err(remainder):
+            vec_buffer_close(move remainder)

@@ -1,0 +1,18 @@
+// The same under `while i < bytes.len()`.
+import console
+
+// The position of the first 9, or the length: `bytes[i]` under `while i < bytes.len()`.
+fn find_nine(bytes: &[U8]) -> U64:
+    ensures true
+    proof:
+        auto
+    var i: U64 = 0
+    while i < bytes.len():
+        if bytes[i] == 9:
+            return i
+        i += 1
+    return i
+
+fn main(console: Console<Write>):
+    let a: [U8; 4] = [7, 8, 9, 10]
+    console.print_int(find_nine(&a))

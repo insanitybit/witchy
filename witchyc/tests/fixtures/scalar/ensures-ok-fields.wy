@@ -1,0 +1,22 @@
+// An `ensures` over the fields of the value an `Ok` variant holds (`made.low <= made.high`).
+import console
+
+type Pair:
+    low: U64
+    high: U64
+
+fn make(a: U64, b: U64) -> Result<Pair, U64>:
+    ensures match result:
+        Ok(made):
+            made.low <= made.high
+        Err(code):
+            true
+    proof:
+        auto
+    if a > b:
+        return Err(1)
+    return Ok(Pair(a, b))
+
+fn main(console: Console<Write>):
+    if let Ok(p) = make(2, 5):
+        console.print_int(p.high - p.low)

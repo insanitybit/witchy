@@ -1,0 +1,87 @@
+// A trie of lowercase words in a Vec arena: each node holds 26 child indices (0 for none; the
+// root is node 0, so no child is 0) and whether a word ends there.
+import console
+import vec
+import string
+
+type Node = .{children: [U64; 26], ends: Bool}
+
+fn empty() -> Node:
+    return .{children: [0; 26], ends: false}
+
+fn letter(byte: U8) -> U64:
+    let b = U8.to_u64(byte)
+    if b >= 97 && b <= 122:
+        return b - 97
+    return 26
+
+fn add(nodes: &mut Vec<Node>, allocator: &Allocator, word: &String) -> Bool:
+    var at: U64 = 0
+    let bytes = word.as_bytes()
+    for i in 0..bytes.len():
+        let c = letter(bytes[i])
+        if c >= 26:
+            return false
+        let Ok(node): &Node = nodes.at(at) else Err(e):
+            return false
+        var next = node.children[c]
+        if next == 0:
+            next = nodes.len()
+            match nodes.push_mut(allocator, empty()):
+                Ok:
+                    ()
+                Err(back):
+                    return false
+            let Ok(parent): &mut Node = nodes.at_mut(at) else Err(e):
+                return false
+            (*parent).children[c] = next
+        at = next
+    let Ok(last): &mut Node = nodes.at_mut(at) else Err(e):
+        return false
+    (*last).ends = true
+    return true
+
+fn has(nodes: &Vec<Node>, word: Text) -> Bool:
+    var at: U64 = 0
+    for i in 0..word.byte_len():
+        let Ok(byte) = word.byte_at(i) else Err(e):
+            return false
+        let c = letter(byte)
+        if c >= 26:
+            return false
+        let Ok(node): &Node = nodes.at(at) else Err(e):
+            return false
+        at = node.children[c]
+        if at == 0:
+            return false
+    let Ok(node): &Node = nodes.at(at) else Err(e):
+        return false
+    return node.ends
+
+fn count(nodes: &Vec<Node>, at: U64) -> U64:
+    let Ok(node): &Node = nodes.at(at) else Err(e):
+        return 0
+    var total: U64 = if node.ends: 1 else: 0
+    for c in 0..26:
+        let child = node.children[c]
+        if child != 0:
+            total += count(nodes, child)
+    return total
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<Node> = Vec.new(&allocator, 0) else Err(c):
+        return
+    var nodes = move made
+    let r = nodes.push_mut(&allocator, empty())
+    let Ok(text): String = String.new(&allocator) else Err(c):
+        nodes.close()
+        return
+    var word = move text
+    for w in ["tea", "ten", "to", "inn", "in", "tea", "team"]:
+        word.clear()
+        let _ = word.push_text(&allocator, *w)
+        let added = add(&mut nodes, &allocator, &word)
+    console.print("nodes ${nodes.len()} words ${count(&nodes, 0)}")
+    console.print("tea ${has(&nodes, "tea")} te ${has(&nodes, "te")} team ${has(&nodes, "team")} tx ${has(&nodes, "tx")}")
+    word.close()
+    nodes.close()

@@ -1,0 +1,5 @@
+// A part past the end traps.
+fn main():
+    let numbers: [U64; 3] = [1, 2, 3]
+    let all = numbers.slice()
+    let part = all.part(2, 4)

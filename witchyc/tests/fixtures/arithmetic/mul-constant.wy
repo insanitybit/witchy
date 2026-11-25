@@ -1,0 +1,9 @@
+// A product with a constant, checked: the largest operand that fits, either side of the `*`, a
+// narrower type's own range, and zero.
+fn main(console: Console<Write>):
+    let x: U64 = 595056260442243600
+    console.print_int(x * 31)
+    console.print_int(7 * x)
+    let small: U8 = 8
+    console.print_int(U8.to_u64(small * 31))
+    console.print_int(x * 0)

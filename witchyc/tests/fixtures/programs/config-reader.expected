@@ -1,0 +1,6 @@
+line 6: no `=`
+host = [example.org]
+port = [8080]
+name = [witchy]
+mode = [fast # trailing]
+missing is not set

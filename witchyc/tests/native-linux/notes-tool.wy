@@ -1,0 +1,10 @@
+fn main(project: Dir<Read>, out: Console<Write>):
+    project.raw_path_byte(U8.truncate(97))
+    project.raw_path_byte(U8.truncate(46))
+    project.raw_path_byte(U8.truncate(116))
+    project.raw_path_byte(U8.truncate(120))
+    project.raw_path_byte(U8.truncate(116))
+    let file = project.raw_open_file()
+    out.print_int(file.raw_status())
+    out.print_int(file.raw_read_byte())
+    let closed = file.raw_close()

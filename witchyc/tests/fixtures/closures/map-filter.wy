@@ -1,0 +1,33 @@
+// `map` and `filter` (import query): new Vecs from a closure over each element; `map` may
+// change the element type.
+import console
+import vec
+import query
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.filled(&allocator, 5, 0) else Err(code):
+        return
+    var values = move made
+    for i in 0..5:
+        values.index_set(i, i + 1)
+    let offset: U64 = 100
+    match values.map(&allocator, fn(n: U64) -> U64: n * n + offset):
+        Ok(squares):
+            console.print_int(squares.index(4))
+            squares.close()
+        Err(code):
+            console.print_int(code)
+    match values.map(&allocator, fn(n: U64) -> Bool: n % 2 == 0):
+        Ok(evens):
+            console.print_int(if evens.index(1): 1 else: 0)
+            evens.close()
+        Err(code):
+            console.print_int(code)
+    match values.filter(&allocator, fn(n: U64) -> Bool: n > 2):
+        Ok(big):
+            console.print_int(big.len())
+            console.print_int(big.index(0))
+            big.close()
+        Err(code):
+            console.print_int(code)
+    values.close()

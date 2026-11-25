@@ -1,0 +1,82 @@
+// Random push_mut, take_last_mut, set, swap, exchange, replace_mut and truncate_mut on a Vec
+// growing from one cell, against a plain array; out-of-range indexes included, which must be
+// refused and change nothing. Every element compared after each step.
+import console
+import vec
+import result
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.new(&allocator, 1) else Err(c):
+        return
+    var v = move made
+    var want: [U64; 256] = [0; 256]
+    var size: U64 = 0
+    var seed: U64 = 8
+    var wrong: U64 = 0
+    for step in 0..20000:
+        seed = seed * 48271 % 2147483647
+        let op = seed % 8
+        // Sometimes one past the end, or further.
+        let a = (seed / 8) % (size + 2)
+        let b = (seed / 2048) % (size + 2)
+        if op < 2:
+            if size < 250:
+                match v.push_mut(&allocator, step):
+                    Ok:
+                        want[size] = step
+                        size += 1
+                    Err(back):
+                        wrong += 1
+        else if op == 2:
+            match v.take_last_mut():
+                Ok(x):
+                    if size == 0 || x != want[size - 1]:
+                        wrong += 1
+                    size -= 1
+                Err(e):
+                    if size != 0:
+                        wrong += 1
+        else if op == 3:
+            if v.set(a, step).is_ok() != (a < size):
+                wrong += 1
+            if a < size:
+                want[a] = step
+        else if op == 4:
+            if v.swap(a, b).is_ok() != (a < size && b < size):
+                wrong += 1
+            if a < size && b < size:
+                let t = want[a]
+                want[a] = want[b]
+                want[b] = t
+        else if op == 5:
+            if v.exchange(a, b).is_ok() != (a < size && b < size):
+                wrong += 1
+            if a < size && b < size:
+                let t = want[a]
+                want[a] = want[b]
+                want[b] = t
+        else if op == 6:
+            match v.replace_mut(a, step):
+                Ok(old):
+                    if a >= size || old != want[a]:
+                        wrong += 1
+                    want[a] = step
+                Err(back):
+                    if a < size || back != step:
+                        wrong += 1
+        else:
+            if seed % 5 == 0:
+                v.truncate_mut(a)
+                if a < size:
+                    size = a
+        if v.len() != size:
+            wrong += 1
+        for i in 0..size:
+            match v.get(i):
+                Ok(x):
+                    if x != want[i]:
+                        wrong += 1
+                Err(e):
+                    wrong += 1
+    console.print("${wrong} wrong, ${size} held")
+    v.close()

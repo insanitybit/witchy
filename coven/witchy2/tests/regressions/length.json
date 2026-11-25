@@ -1,0 +1,8 @@
+{
+  "case": "test.wy::length",
+  "codec": "coven-length/be32-v1",
+  "inputs": [
+    "",
+    "903bb13e39"
+  ]
+}

@@ -1,0 +1,14 @@
+// Refused: only the logger's file can reach the console inside it.
+import "../../../library/wasm-console.wy"
+import "parts/logger.wy"
+
+fn work(log: &mut Logger):
+    for n in 0..3:
+        log.log(n * n)
+
+fn main(console: Console<Write>):
+    var log = logger(move console)
+    work(&mut log)
+    log.out.print_int(7)
+    let total = log.lines()
+    log.log(total)

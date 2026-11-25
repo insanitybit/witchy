@@ -1,0 +1,11 @@
+// A default is a literal: one that runs code would run at every call that leaves it out.
+import console
+
+fn three() -> U64:
+    3
+
+fn f(a: U64 = three()) -> U64:
+    a
+
+fn main(console: Console<Write>):
+    console.print_int(f())

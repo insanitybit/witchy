@@ -1,0 +1,23 @@
+import vec
+
+fn keep_original(input: Buffer<U8>, allocator: &Allocator) -> Result<Buffer<U8>, Buffer<U8>>:
+    ensures match result:
+        Ok(output):
+            !memory.same_allocation(output, old(input))
+        Err(original):
+            memory.same_allocation(original, old(input))
+    proof:
+        auto
+    let allocation: Result<Buffer<U8>, U64> = memory.try_alloc(allocator, 0)
+    match move allocation:
+        Ok(fresh):
+            var left = move input
+            var right = move fresh
+            memory.exchange(&mut left, &mut right)
+            memory_release_empty(move left)
+            return Ok(move right)
+        Err(code):
+            return Err(move input)
+
+fn main():
+    return

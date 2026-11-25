@@ -1,0 +1,17 @@
+import console
+import hashmap
+import discard
+
+fn main(out: Console<Write>, allocator: Allocator):
+    let Ok(outer): HashMap<U64, HashMap<U64, U64>> = HashMap.new(&allocator, 4) else Err(code):
+        return
+    var tables = move outer
+    let Ok(inner): HashMap<U64, U64> = HashMap.new(&allocator, 2) else Err(code):
+        tables.discard()
+        return
+    match tables.insert(1, move inner):
+        Ok:
+            out.print_int(tables.len())
+        Err(back):
+            back.discard()
+    tables.discard()

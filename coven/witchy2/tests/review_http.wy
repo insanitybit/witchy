@@ -1,0 +1,122 @@
+import "../review/integrity.wy"
+import "../review/page.wy"
+import "../review/request.wy"
+import "../review/response_head.wy"
+import http
+import span
+import string
+import text
+import testing
+
+fn check(allocator: &Allocator, wire: Text, expected: U64, length: U64, site: U64 = source_site()) -> Result<(), Failure>:
+    let empty = testing.set_up(String.with_capacity(allocator, wire.byte_len() + 32))?
+    var raw = move empty
+    if let Err(code) = raw.push_text(allocator, wire):
+        raw.close()
+        return Err(Failure(7, site, code, 0))
+    let made = raw.push_text(allocator, "https://review.example:8444")
+    if let Err(code) = made:
+        raw.close()
+        return Err(Failure(7, site, code, 0))
+    let data = raw.span()
+    let checked = check_result(data.part(0, wire.byte_len()), data.part(wire.byte_len(), data.len()), expected, length)
+    raw.close()
+    return checked
+
+fn check_result(wire: Span, origin: Span, expected: U64, length: U64) -> Result<(), Failure>:
+    match review_request(wire, origin):
+        Ok(found):
+            testing.eq_u64(200, expected)?
+            return testing.eq_u64(found.length, length)
+        Err(status):
+            return testing.eq_u64(status, expected)
+
+test fn review_requires_exact_host_origin_and_action(allocator: &Allocator) -> Result<(), Failure>:
+    check(allocator, "GET /review.mjs HTTP/1.1\r\nHost: review.example:8444\r\n\r\n", 200, 0)?
+    check(allocator, "GET /review.mjs HTTP/1.1\r\nHost: review.example\r\n\r\n", 421, 0)?
+    check(allocator, "GET /review.mjs?one HTTP/1.1\r\nHost: review.example:8444\r\n\r\n", 404, 0)?
+    check(allocator, "POST /v1/review/challenge HTTP/1.1\r\nHost: review.example:8444\r\nOrigin: https://review.example:8444\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}", 200, 2)?
+    check(allocator, "POST /v1/review/challenge HTTP/1.1\r\nHost: review.example:8444\r\nOrigin: https://other.example\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}", 403, 0)?
+    return check(allocator, "POST /v1/review/challenge HTTP/1.1\r\nHost: review.example:8444\r\nOrigin: https://review.example:8444\r\nSec-Fetch-Site: cross-site\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}", 403, 0)
+
+test fn review_refuses_ambiguous_and_oversized_bodies(allocator: &Allocator) -> Result<(), Failure>:
+    check(allocator, "GET /review.css HTTP/1.1\r\nHost: review.example:8444\r\nContent-Length: 1\r\n\r\n", 400, 0)?
+    check(allocator, "POST /v1/review/inspect HTTP/1.1\r\nHost: review.example:8444\r\nOrigin: https://review.example:8444\r\nContent-Type: application/json\r\nContent-Length: 65537\r\n\r\n", 413, 0)?
+    check(allocator, "POST /v1/review/inspect HTTP/1.1\r\nHost: review.example:8444\r\nOrigin: https://review.example:8444\r\nContent-Type: application/json\r\nContent-Length: 2\r\ncontent-length: 2\r\n\r\n{}", 400, 0)?
+    return check(allocator, "POST /v1/review/inspect HTTP/1.1\r\nHost: review.example:8444\r\nOrigin: https://review.example:8444\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nContent-Length: 2\r\n\r\n{}", 400, 0)
+
+test fn review_page_integrity_agrees_with_its_policy(allocator: &Allocator) -> Result<(), Failure>:
+    let bytes: [U8; 3] = [97, 98, 99]
+    let integrity = testing.set_up(asset_integrity(bytes.slice(), allocator))?
+    let checked = check_pages(&integrity, allocator)
+    integrity.close()
+    return checked
+
+fn check_pages(integrity: &Integrity, allocator: &Allocator) -> Result<(), Failure>:
+    let empty = testing.set_up(String.with_capacity(allocator, 1024))?
+    var wire = move empty
+    let result = check_responses(&mut wire, integrity, allocator)
+    wire.close()
+    return result
+
+fn check_responses(wire: &mut String, integrity: &Integrity, allocator: &Allocator) -> Result<(), Failure>:
+    testing.set_up(wire.push_text(allocator, "https://review.example:8444"))?
+    let test_origin = wire.span()
+    check_policy(test_origin, integrity, allocator)?
+    let page = testing.set_up(render_page(ReviewPage, integrity, integrity, allocator))?
+    let checked = contains(page.span(), "integrity=\"sha384-ywB1P0WjXou1oD1pmsZQBycsMqsO3tFjGotgWkP/W+2AhgcroefMI1i67KE0yCWn\"")
+    page.close()
+    return checked
+
+fn check_policy(origin: Span, script: &Integrity, allocator: &Allocator) -> Result<(), Failure>:
+    let assets = PageAssets(origin, script)
+    let review = encode(200, Page, assets, allocator)?
+    let reviewed = check_review_wire(review.span())
+    review.close()
+    reviewed?
+    let enrollment = encode(200, Enrollment, assets, allocator)?
+    let enrolled = check_enrollment_wire(enrollment.span())
+    enrollment.close()
+    enrolled?
+    let error = encode(403, Enrollment, NoPage, allocator)?
+    let refused = contains(error.span(), "\r\nPermissions-Policy: publickey-credentials-get=(self), publickey-credentials-create=()\r\n")
+    error.close()
+    return refused
+
+fn encode(status: U64, route: ReviewRoute, policy: PagePolicy, allocator: &Allocator, site: U64 = source_site()) -> Result<String, Failure>:
+    let Ok(initial): ResponseHeaders = http.response_headers(allocator) else Err(reason):
+        return Err(Failure(7, site, 0, 0))
+    var fields = move initial
+    let result = encode_fields(&mut fields, status, route, policy, allocator)
+    fields.close()
+    return move result
+
+fn encode_fields(fields: &mut ResponseHeaders, status: U64, route: ReviewRoute, policy: PagePolicy, allocator: &Allocator, site: U64 = source_site()) -> Result<String, Failure>:
+    testing.set_up(make_fields(fields, status, route, policy, allocator))?
+    let Ok(head): String = http.response_head_with_headers(allocator, status, content_type(status, route), 4, fields) else Err(reason):
+        return Err(Failure(7, site, 0, 0))
+    return Ok(move head)
+
+fn check_review_wire(review: Span) -> Result<(), Failure>:
+    contains(review, "\r\nContent-Type: text/html; charset=utf-8\r\n")?
+    contains(review, "\r\nContent-Length: 4\r\n")?
+    contains(review, "\r\nCross-Origin-Opener-Policy: same-origin\r\n")?
+    contains(review, "\r\nPermissions-Policy: publickey-credentials-get=(self), publickey-credentials-create=()\r\n")?
+    contains(review, "require-trusted-types-for 'script'; trusted-types 'none'; script-src 'sha384-ywB1P0WjXou1oD1pmsZQBycsMqsO3tFjGotgWkP/W+2AhgcroefMI1i67KE0yCWn'")?
+    return contains(review, "style-src https://review.example:8444/review.css; connect-src https://review.example:8444/v1/review/challenge https://review.example:8444/v1/review/inspect https://review.example:8444/v1/review/approve")
+
+fn check_enrollment_wire(enrollment: Span) -> Result<(), Failure>:
+    contains(enrollment, "\r\nPermissions-Policy: publickey-credentials-get=(self), publickey-credentials-create=(self)\r\n")?
+    contains(enrollment, "style-src https://review.example:8444/review.css")?
+    match enrollment.find_text("connect-src", 0):
+        Ok(index):
+            return testing.ok(false)
+        Err(reason):
+            return Ok(())
+
+fn contains(wire: Span, value: Text) -> Result<(), Failure>:
+    match wire.find_text(value, 0):
+        Ok(index):
+            return Ok(())
+        Err(reason):
+            return testing.ok(false)

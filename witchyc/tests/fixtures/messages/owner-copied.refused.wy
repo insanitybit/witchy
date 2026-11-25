@@ -1,0 +1,9 @@
+// Copying an owner says to move or lend it.
+import console
+import string
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(s): String = String.new(&allocator) else Err(e):
+        return
+    let t = s
+    t.close()

@@ -1,0 +1,21 @@
+// At the `continue`, `count` has moved ahead of `index`.
+import "../../../library/wasm-console.wy"
+
+fn evens(n: U64) -> U64:
+    requires n < 1000
+    ensures result <= n
+    proof:
+        auto
+    var count: U64 = 0
+    var index: U64 = 0
+    while index < n:
+        invariant count <= index
+        invariant index <= n
+        count += 1
+        if count % 2 == 1:
+            continue
+        index += 1
+    return count
+
+fn main(console: Console<Write>):
+    console.print_int(1)

@@ -1,0 +1,60 @@
+// Read one archived receipt together with the immutable release it approves.
+import "review/approval_bindings.wy"
+import "review/challenge_bindings.wy"
+import "review/commit_request.wy"
+import "review/receipt_record.wy"
+import "tuf/release_trust.wy"
+import console
+import discard
+import json_tree
+import "@sqlite"
+import string
+import vec
+
+fn main(db: Sqlite, input: Console<Read>, output: Console<Write>, allocator: Allocator):
+    if let Err(code) = run(&db, &input, &output, &allocator):
+        output.line("unavailable")
+
+fn run(db: &Sqlite, input: &Console<Read>, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let request = read_commit_request(input, allocator)?
+    let checked = lookup(&request, db, output, allocator)
+    request.discard()
+    return checked
+
+fn lookup(request: &Json, db: &Sqlite, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let digest = string_field(request, "digest")?
+    if !count_fields(request, 1) || !valid_digest(digest):
+        output.line("refused")
+        output.line("expected a staged SHA-384 digest")
+        return Ok(())
+    let empty = String.with_capacity(allocator, 128)?
+    var bindings = move empty
+    let bound = text_binding(&mut bindings, "digest", digest, allocator)
+    let checked = fetch(db, &bindings, digest, output, bound, allocator)
+    bindings.close()
+    return checked
+
+fn fetch(db: &Sqlite, bindings: &String, digest: &String, output: &Console<Write>, bound: Result<(), U64>, allocator: &Allocator) -> Result<(), U64>:
+    bound?
+    let empty = String.with_capacity(allocator, 1024)?
+    var plan = move empty
+    let written = statements(&mut plan, allocator)
+    let checked = query(db, &plan, bindings, digest, output, written, allocator)
+    plan.close()
+    return checked
+
+fn statements(plan: &mut String, allocator: &Allocator) -> Result<(), U64>:
+    plan.push_text(allocator, "expect\tunknown staged candidate\tSELECT EXISTS(SELECT 1 FROM candidates WHERE digest=:digest)\n")?
+    plan.push_text(allocator, "expect\tcandidate has no maintainer approval\tSELECT EXISTS(SELECT 1 FROM approvals WHERE digest=:digest)\n")?
+    return plan.push_text(allocator, "result\tapproval does not match staged coordinates\tSELECT CAST(c.name || X'00' || c.version || X'00' || a.receipt || X'00' || c.payload AS BLOB) FROM candidates AS c JOIN approvals AS a ON c.digest=a.digest AND c.name=a.name AND c.version=a.version WHERE c.digest=:digest\n")
+
+fn query(db: &Sqlite, plan: &String, bindings: &String, digest: &String, output: &Console<Write>, written: Result<(), U64>, allocator: &Allocator) -> Result<(), U64>:
+    written?
+    // Covers the bounded candidate, receipt, coordinates, delimiters and status.
+    let empty: Vec<U8> = Vec.filled(allocator, 1310976, 0)?
+    var reply = move empty
+    let bytes = bindings.as_bytes()
+    let size = db.transact(plan.as_bytes(), bytes, bytes.part(0, 0), reply.as_mut_slice())
+    let checked = print_receipt(size, reply.as_slice(), digest, output, allocator)
+    reply.close()
+    return checked

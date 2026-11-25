@@ -1,0 +1,15 @@
+// A `&mut` reference to a value the function owns does not leave it.
+type Pair:
+    a: U64
+    b: U64
+
+fn first(pair: &mut Pair) -> &mut U64:
+    return &mut (*pair).a
+
+fn make() -> &mut U64:
+    var x: U64 = 1
+    return &mut x
+
+fn main(console: Console<Write>):
+    let r = make()
+    console.print_int(*r)

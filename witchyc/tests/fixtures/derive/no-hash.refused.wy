@@ -1,0 +1,9 @@
+// A field whose type has no Hash is refused at the derive: F64 has none (NaN is not equal to itself).
+import console
+import hash
+
+type Small derive(Hash):
+    b: F64
+
+fn main(console: Console<Write>):
+    console.print_int(Small(b: 1.0).hash())

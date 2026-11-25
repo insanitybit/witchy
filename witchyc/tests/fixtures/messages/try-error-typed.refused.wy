@@ -1,0 +1,14 @@
+// Refused, naming both errors: `let t: String = String.new(allocator)?` in a function whose errors are Mine, which has no `from`.
+import console
+import string
+
+type Mine:
+    Bad
+
+fn make(allocator: &Allocator) -> Result<(), Mine>:
+    let t: String = String.new(allocator)?
+    t.close()
+    return Ok(())
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let r = make(&allocator)

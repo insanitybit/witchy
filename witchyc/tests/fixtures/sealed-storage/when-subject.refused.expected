@@ -1,0 +1,1 @@
+a `&mut` reference into a field of a sealed type cannot be kept or returned outside its file, or at all if the type has an invariant

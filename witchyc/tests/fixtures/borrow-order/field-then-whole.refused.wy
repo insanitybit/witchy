@@ -1,0 +1,11 @@
+// Refused: the whole value overlaps each of its fields.
+type Pair:
+    left: U64
+    right: U64
+
+fn main():
+    var p = Pair(1, 2)
+    let a = &p.left
+    let all = &mut p
+    (*all).right = 5
+    let n = *a

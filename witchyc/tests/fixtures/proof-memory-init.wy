@@ -1,0 +1,212 @@
+type InitPair:
+    byte: U8
+    word: U64
+
+fn append_two<T>(allocator: &Allocator, first: T, second: T) -> Result<Vec<T>, U64>:
+    let made: Result<Vec<T>, U64> = vec_new(allocator, 2)
+    match move made:
+        Ok(input):
+            var vector = move input
+            vec_push_spare_mut(&mut vector, first)
+            vec_push_spare_mut(&mut vector, second)
+            return Ok(move vector)
+        Err(code):
+            return Err(code)
+
+fn init_and_read_if_empty<T>(buffer: &mut Buffer<T>, index: U64, item: T) -> Result<T, U64>:
+    ensures true
+    proof:
+        auto
+    let capacity = memory.capacity(buffer)
+    if index < capacity:
+        if !memory.initialized(buffer, index):
+            memory_init_unchecked(buffer, index, item)
+            return Ok(memory_get_unchecked(buffer, index))
+    return Err(1)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let bytes: Result<Vec<U8>, U64> = vec_new(&allocator, 10)
+    let seven: U8 = 7
+    let nine: U8 = 9
+    let ninety_nine: U8 = 99
+    match move bytes:
+        Ok(input):
+            var vector = move input
+            var index: U64 = 0
+            while index < 10:
+                vec_push_spare_mut(&mut vector, seven)
+                index += 1
+            console.print_int(vector.length)
+            index = 0
+            while index < 10:
+                match vec_get(&vector, index):
+                    Ok(value):
+                        console.print_int(U8.to_u64(value))
+                    Err(code):
+                        console.print_int(901)
+                index += 1
+            match vec_push_spare_mut(&mut vector, ninety_nine):
+                Ok:
+                    console.print_int(902)
+                Err(item):
+                    console.print_int(U8.to_u64(item))
+            console.print_int(vector.length)
+            match vec_try_release(move vector):
+                Ok:
+                    console.print_int(903)
+                Err(full):
+                    console.print_int(20)
+                    vec_close(move full)
+        Err(code):
+            console.print_int(904)
+    let sparse: Result<Vec<U8>, U64> = vec_new(&allocator, 3)
+    match move sparse:
+        Ok(input):
+            var vector = move input
+            let five: U8 = 5
+            memory.init(&mut vector.data, 0, five)
+            match vec_push_spare_mut(&mut vector, nine):
+                Ok:
+                    console.print_int(905)
+                Err(item):
+                    console.print_int(U8.to_u64(item))
+            console.print_int(vector.length)
+            match memory.read(&vector.data, 0):
+                Ok(item):
+                    console.print_int(U8.to_u64(item))
+                Err(code):
+                    console.print_int(906)
+            memory.take(&mut vector.data, 0)
+            vec_push_spare_mut(&mut vector, nine)
+            console.print_int(vector.length)
+            match vec_get(&vector, 0):
+                Ok(item):
+                    console.print_int(U8.to_u64(item))
+                Err(code):
+                    console.print_int(907)
+            vector.capacity = 99
+            match vec_push_spare_mut(&mut vector, nine):
+                Ok:
+                    console.print_int(908)
+                Err(item):
+                    console.print_int(U8.to_u64(item))
+            console.print_int(vector.length)
+            if memory.initialized(&vector.data, 1):
+                console.print_int(909)
+            else:
+                console.print_int(0)
+            vector.capacity = 3
+            vector.length = 18446744073709551615
+            match vec_push_spare_mut(&mut vector, nine):
+                Ok:
+                    console.print_int(910)
+                Err(item):
+                    console.print_int(U8.to_u64(item))
+            console.print_int(vector.length)
+            vec_close(move vector)
+        Err(code):
+            console.print_int(911)
+    let first: U64 = 18446744073709551615
+    let second: U64 = 4294967296
+    match append_two(&allocator, first, second):
+        Ok(vector):
+            console.print_int(vector.length)
+            match vec_get(&vector, 0):
+                Ok(item):
+                    console.print_int(item)
+                Err(code):
+                    console.print_int(912)
+            match vec_get(&vector, 1):
+                Ok(item):
+                    console.print_int(item)
+                Err(code):
+                    console.print_int(913)
+            vec_close(move vector)
+        Err(code):
+            console.print_int(914)
+    match append_two(&allocator, true, false):
+        Ok(vector):
+            match vec_get(&vector, 0):
+                Ok(item):
+                    if item:
+                        console.print_int(1)
+                    else:
+                        console.print_int(915)
+                Err(code):
+                    console.print_int(916)
+            match vec_get(&vector, 1):
+                Ok(item):
+                    if item:
+                        console.print_int(917)
+                    else:
+                        console.print_int(0)
+                Err(code):
+                    console.print_int(918)
+            vec_close(move vector)
+        Err(code):
+            console.print_int(919)
+    let a: U8 = 9
+    let b: U8 = 11
+    match append_two(&allocator, InitPair(a, second), InitPair(b, first)):
+        Ok(vector):
+            match vec_get(&vector, 0):
+                Ok(item):
+                    console.print_int(U8.to_u64(item.byte))
+                    console.print_int(item.word)
+                Err(code):
+                    console.print_int(920)
+            match vec_get(&vector, 1):
+                Ok(item):
+                    console.print_int(U8.to_u64(item.byte))
+                    console.print_int(item.word)
+                Err(code):
+                    console.print_int(921)
+            vec_close(move vector)
+        Err(code):
+            console.print_int(922)
+    let empty: Result<Vec<U8>, U64> = vec_new(&allocator, 0)
+    match move empty:
+        Ok(input):
+            var vector = move input
+            match vec_push_spare_mut(&mut vector, nine):
+                Ok:
+                    console.print_int(923)
+                Err(item):
+                    console.print_int(U8.to_u64(item))
+            console.print_int(vector.length)
+            vec_close(move vector)
+        Err(code):
+            console.print_int(924)
+    let allocation: Result<Buffer<U64>, U64> = memory.try_alloc(&allocator, 2)
+    match move allocation:
+        Ok(input):
+            var buffer = move input
+            match init_and_read_if_empty(&mut buffer, 1, 123):
+                Ok(item):
+                    console.print_int(item)
+                Err(code):
+                    console.print_int(925)
+            match init_and_read_if_empty(&mut buffer, 1, 456):
+                Ok(item):
+                    console.print_int(926)
+                Err(code):
+                    console.print_int(code)
+            match memory.read(&buffer, 1):
+                Ok(item):
+                    console.print_int(item)
+                Err(code):
+                    console.print_int(927)
+            if memory.initialized(&buffer, 0):
+                console.print_int(928)
+            else:
+                console.print_int(0)
+            vec_buffer_close(move buffer)
+        Err(code):
+            console.print_int(929)
+    let impossible: Result<Vec<U8>, U64> = vec_new(&allocator, 18446744073709551615)
+    match move impossible:
+        Ok(vector):
+            console.print_int(930)
+            vec_close(move vector)
+        Err(code):
+            console.print_int(30)

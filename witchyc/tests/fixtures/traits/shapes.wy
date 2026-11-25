@@ -1,0 +1,79 @@
+// Traits: a list of signatures, an implementation per type, and generic code bound by them.
+trait Area:
+    fn area(self: &Self) -> U64
+
+trait Same:
+    fn same(self: &Self, other: &Self) -> Bool
+
+type Square:
+    side: U64
+
+type Rect:
+    width: U64
+    height: U64
+
+type Pair<T>:
+    first: T
+    second: T
+
+impl Area for Square:
+    fn area(self: &Square) -> U64:
+        return (*self).side * (*self).side
+
+impl Area for Rect:
+    fn area(self: &Rect) -> U64:
+        return (*self).width * (*self).height
+
+impl Same for U64:
+    fn same(self: &U64, other: &U64) -> Bool:
+        return *self == *other
+
+impl Same for Square:
+    fn same(self: &Square, other: &Square) -> Bool:
+        return (*self).side == (*other).side
+
+// A pair is the same as another when its parts are: the impl has its own bound.
+impl<T: Same> Same for Pair<T>:
+    fn same(self: &Pair<T>, other: &Pair<T>) -> Bool:
+        if (*self).first.same(&(*other).first):
+            return (*self).second.same(&(*other).second)
+        return false
+
+fn twice<T: Area>(shape: &T) -> U64:
+    return shape.area() + shape.area()
+
+fn larger<T: Area + Same>(left: &T, right: &T) -> U64:
+    if left.same(right):
+        return 0
+    if left.area() > right.area():
+        return 1
+    return 2
+
+fn flag(console: &Console<Write>, value: Bool):
+    if value:
+        console.print_int(1)
+    else:
+        console.print_int(0)
+
+fn main(console: Console<Write>):
+    let square = Square(3)
+    let rect = Rect(2, 5)
+    console.print_int(square.area())
+    console.print_int(twice(&square))
+    console.print_int(twice(&rect))
+    let other = Square(4)
+    console.print_int(larger(&square, &other))
+    console.print_int(larger(&other, &square))
+    console.print_int(larger(&square, &square))
+    let seven: U64 = 7
+    let eight: U64 = 8
+    flag(&console, seven.same(&eight))
+    let pair: Pair<U64> = Pair(seven, eight)
+    let again: Pair<U64> = Pair(seven, eight)
+    let swapped: Pair<U64> = Pair(eight, seven)
+    flag(&console, pair.same(&again))
+    flag(&console, pair.same(&swapped))
+    let nested: Pair<Pair<U64>> = Pair(pair, again)
+    let mixed: Pair<Pair<U64>> = Pair(pair, swapped)
+    flag(&console, nested.same(&nested))
+    flag(&console, nested.same(&mixed))

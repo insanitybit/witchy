@@ -1,0 +1,13 @@
+// Refused: the element is lent, so the Vec cannot be changed, lent again or closed meanwhile.
+import console
+import vec
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.filled(&allocator, 3, 5) else Err(code):
+        return
+    var v = move made
+    let s = &v[1]
+    v.close()
+    console.print_int(*s)
+    return
+    v.close()

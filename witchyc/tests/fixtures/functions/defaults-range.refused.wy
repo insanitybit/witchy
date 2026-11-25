@@ -1,0 +1,8 @@
+// A default is checked against its parameter's type like any literal.
+import console
+
+fn f(a: U8 = 300) -> U64:
+    7
+
+fn main(console: Console<Write>):
+    console.print_int(f())

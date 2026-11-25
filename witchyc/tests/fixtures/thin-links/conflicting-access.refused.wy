@@ -1,0 +1,14 @@
+fn bad(owner: &mut Boxed<U64>) -> U64:
+    match memory.box_ref(&*owner):
+        Ok(item):
+            match memory.box_mut(owner):
+                Ok(other):
+                    *other = 20
+                Err:
+                    return 0
+            return *item
+        Err:
+            return 0
+
+fn main():
+    return

@@ -1,0 +1,18 @@
+// Refused: a claim the bounds do not give.
+import console
+import int
+
+fn f(a: I64, b: I64) -> I64:
+    requires a >= -1000000
+    requires a <= 1000000
+    requires b >= -10000
+    requires b <= 10000
+    ensures result >= -9999999999
+    proof:
+        auto
+    return a * b
+
+fn main(console: Console<Write>):
+    let x: I64 = -3
+    let y: I64 = 4
+    console.show(f(x, y))

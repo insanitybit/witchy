@@ -1,0 +1,1 @@
+run: --dir={scratch} --dir-rights=read,write

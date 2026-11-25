@@ -1,0 +1,831 @@
+// TCP connections through the `Net` capability (book: capabilities-narrowing.md, "Net").
+// A `Net` reaches the endpoints the run grants (`--net=HOST:PORT,...`), each written
+// exactly as granted; `only` narrows one to a single endpoint, so a helper given it can
+// dial nowhere else. Bytes cross in bulk: `read_some` and `write_some` hand the host a
+// checked slice, which it reads or fills within the program's memory, and say how far a
+// transfer got.
+//
+// Inside a task (library/wasm-tasks.wy), `read` and `write` pause the task where a blocking
+// call would wait, with a wait entry for the socket as the token; whatever steps tasks waits
+// for many entries at once with `listener.poll` and steps those that are ready.
+import "wasm-time.wy"
+import "wasm-string.wy"
+import "wasm-result.wy"
+import "wasm-tasks.wy"
+import "wasm-vec.wy"
+
+pub type NetError:
+    // The address is not one this `Net` reaches.
+    NotGranted
+    // Not a `host:port` the host can resolve.
+    InvalidAddress
+    // Past the bytes the run may send and receive.
+    TooLarge
+    // Nothing accepted the connection.
+    Refused
+    // The connection failed.
+    Io
+    // No one connected within the host's wait (`accept`).
+    TimedOut
+    // What was received is not UTF-8 text.
+    NotText
+    // The allocator had no room (the code it gave): what `?` makes of an allocation's error in a
+    // function whose errors are NetError.
+    NoRoom(U64)
+    // No memory for what was received.
+    OutOfMemory
+    // Nothing yet: a `try_` operation found nothing to do now.
+    WouldBlock
+    // The task was cancelled while it waited (`task.cancel()`).
+    Cancelled
+
+impl NetError:
+    // An allocator's error code as a NetError, for `?` (docs/wasm-results.md).
+    pub fn from(code: U64) -> NetError:
+        return NoRoom(code)
+
+// A transfer that stopped: why, and how many bytes went through before it did.
+pub type NetFailure:
+    error: NetError
+    done: U64
+
+// An exact read stopped after filling this many bytes of the destination.
+pub type ExactReadError:
+    UnexpectedEof(U64)
+    ReadFailed(NetFailure)
+
+fn net_error(code: U64) -> NetError:
+    if code == 1:
+        return NotGranted
+    if code == 2:
+        return InvalidAddress
+    if code == 3:
+        return TooLarge
+    if code == 4:
+        return Refused
+    if code == 6:
+        return TimedOut
+    if code == 7:
+        return WouldBlock
+    return Io
+
+// A `Group` is a set of connections waited on together: sockets are moved into it and given
+// back by slot, so code handling one connection holds just that socket while it does, and a
+// `Vec` of slots (plain numbers) tracks many. `wait` blocks until one is ready.
+// What a wait entry names for the listener its group was made from.
+pub let LISTENER_SLOT = 16777215
+
+// Whether a `try_` operation found nothing to do yet.
+fn blocked(outcome: &Result<U64, NetError>) -> Bool:
+    match outcome:
+        Ok(count):
+            return false
+        Err(error):
+            match error:
+                WouldBlock:
+                    return true
+                _:
+                    return false
+
+// An entry for `wait`: this slot, ready to read, to write, or both.
+pub fn wait_entry(slot: U64, read: Bool, write: Bool) -> U64:
+    var wanted: U64 = 0
+    if read:
+        wanted += 1
+    if write:
+        wanted += 2
+    return slot * 256 + wanted
+
+// An entry a poll passes over: never ready.
+pub let HOLE = 0
+
+// An entry that reads ready (closed) at once: it names a handle number no handle has.
+let YIELDED = 257
+
+// Added to a task's count of entries while it is parked in the middle of a step.
+let PARKED = 9223372036854775808
+
+pub fn entry_slot(entry: U64) -> U64:
+    return entry / 256
+
+pub fn entry_readable(entry: U64) -> Bool:
+    return (entry / 4) % 2 == 1
+
+pub fn entry_writable(entry: U64) -> Bool:
+    return (entry / 8) % 2 == 1
+
+// The other side closed, or the connection failed: reading says which.
+pub fn entry_closed(entry: U64) -> Bool:
+    return (entry / 16) % 2 == 1
+
+impl Clock:
+    // Another handle to the one clock, for what must own one (a task's input): it tells
+    // nothing that lending `&Clock` would not.
+    pub fn share(clock: &Clock) -> Clock:
+        return memory.share(clock)
+
+    // A timer, ready ("readable") once the clock reads `due_ms` (milliseconds since the Unix
+    // epoch, as `now_ms`): a wait entry for `listener.poll`, which waits no longer than its
+    // soonest timer. Only a clock makes one, so code without a clock cannot ask the time by
+    // polling. Give it back with `end_timer`.
+    pub fn timer(clock: &Clock, due_ms: U64) -> U64:
+        return wait_entry(clock.raw_timer(due_ms), true, false)
+
+    // Gives back a timer `timer` made.
+    pub fn end_timer(clock: &Clock, entry: U64):
+        clock.raw_timer_end(entry_slot(entry))
+
+    // Pauses the running task for `ms` milliseconds or more: Ok, or Err(Cancelled) when it is
+    // cancelled first. It waits on a timer, so whatever steps the task polls for it, as
+    // `Waiting` does.
+    // `sleep` for a Duration: `clock.sleep_for(250ms)`.
+    pub fn sleep_for(clock: &Clock, length: Duration) -> Result<(), NetError> suspends:
+        return clock.sleep(length.ms())
+
+    pub fn sleep(clock: &Clock, ms: U64) -> Result<(), NetError> suspends:
+        var wait = ms
+        if wait > 1099511627776:
+            wait = 1099511627776
+        let due = clock.now_ms() + wait
+        let timer = clock.timer(due)
+        while clock.now_ms() < due:
+            if pause_for(timer) == CANCELLED:
+                clock.end_timer(timer)
+                return Err(Cancelled)
+        clock.end_timer(timer)
+        return Ok(())
+
+impl Net:
+    fn send_address(net: &Net, address: &str):
+        let count = address.byte_len()
+        var index: U64 = 0
+        while index < count:
+            match address.byte_at(index):
+                Ok(byte):
+                    net.raw_addr_byte(byte)
+                Err(code):
+                    return
+            index += 1
+
+    // A `Net` that reaches `address` alone, if this one reaches it.
+    pub fn only(net: &Net, address: &str) -> Result<Net, NetError>:
+        net.send_address(address)
+        let narrowed = net.raw_only()
+        let code = narrowed.raw_status()
+        if code != 0:
+            let closed = narrowed.raw_close()
+            return Err(net_error(code))
+        return Ok(move narrowed)
+
+    // A connection to `address`, written `host:port` exactly as granted.
+    pub fn connect(net: &Net, address: &str) -> Result<Socket, NetError>:
+        net.send_address(address)
+        let socket = net.raw_connect()
+        let code = socket.raw_status()
+        if code != 0:
+            let closed = socket.raw_close()
+            return Err(net_error(code))
+        return Ok(move socket)
+
+// A `Listener` is the one address the run lets the program listen on (`--listen=HOST:PORT`).
+// It accepts connections and does nothing else: it cannot dial out, and it is not a `Net`.
+impl Net:
+    // Waits until one of `entries` (wait entries of the program's sockets and timers, as
+    // tasks pause with) is ready, or the run's deadline; each is marked. How many are ready.
+    // For a program that listens on nothing; `listener.poll` is the same.
+    pub fn poll(net: &Net, entries: &mut [U64]) -> U64:
+        return net.raw_poll(entries)
+
+impl Group:
+    // Moves the socket in; the slot it is in.
+    pub fn add(group: &Group, socket: Socket) -> U64:
+        return group.raw_add(socket)
+
+    // The socket in `slot`, given back; the slot is free again.
+    pub fn take(group: &Group, slot: U64) -> Socket:
+        return group.raw_take(slot)
+
+    // Waits until one of `entries` (made by `wait_entry`) is ready, or the run's deadline; each
+    // is marked (`entry_readable` and the rest). How many are ready.
+    pub fn wait(group: &Group, entries: &mut [U64]) -> U64:
+        return group.raw_wait(entries)
+
+    // Closes every socket still in the group.
+    pub fn close(group: Group):
+        let closed = group.raw_close()
+
+impl Listener:
+    // The entry for `poll` that waits for a connection.
+    pub fn wait_entry(listener: &Listener) -> U64:
+        return wait_entry(listener.raw_handle(), true, false)
+
+    // Waits until one of `entries` (wait entries of this program's sockets and listeners,
+    // as tasks pause with) is ready, or the run's deadline; each is marked (`entry_readable`
+    // and the rest). How many are ready.
+    pub fn poll(listener: &Listener, entries: &mut [U64]) -> U64:
+        return listener.raw_poll(entries)
+
+    // A group that can wait on this listener too (`LISTENER_SLOT`).
+    pub fn group(listener: &Listener) -> Group:
+        return listener.raw_group()
+
+    // A connection that is waiting now, or Err(WouldBlock).
+    pub fn try_accept(listener: &Listener) -> Result<Socket, NetError>:
+        let socket = listener.raw_try_accept()
+        let code = socket.raw_status()
+        if code != 0:
+            let closed = socket.raw_close()
+            return Err(net_error(code))
+        return Ok(move socket)
+
+    // The next connection. Err(TimedOut): no one connected within the host's wait.
+    pub fn accept(listener: &Listener) -> Result<Socket, NetError>:
+        let socket = listener.raw_accept()
+        let code = socket.raw_status()
+        if code != 0:
+            let closed = socket.raw_close()
+            return Err(net_error(code))
+        return Ok(move socket)
+
+impl Socket:
+    // As many of `bytes` as the connection takes now: Ok(count), or the failure and how many
+    // went out before it.
+    pub fn write_some(socket: &Socket, bytes: &[U8]) -> Result<U64, NetFailure>:
+        let packed = socket.raw_send(bytes)
+        let count = packed % 4294967296
+        let code = packed / 4294967296
+        if code != 0:
+            return Err(NetFailure(net_error(code), count))
+        return Ok(count)
+
+    // All of `bytes`, or the failure and how many went out before it (they are not resent).
+    pub fn write_all(socket: &Socket, bytes: &[U8]) -> Result<(), NetFailure>:
+        var done: U64 = 0
+        while done < bytes.len():
+            match socket.write_some(bytes.part(done, bytes.len())):
+                Ok(count):
+                    done += count
+                Err(failure):
+                    return Err(NetFailure(failure.error, done + failure.done))
+        return Ok(())
+
+    // What has been received, without waiting: Ok(count), Ok(0) at the end, Err(WouldBlock)
+    // when nothing has come yet. Right after a read that came up short it says WouldBlock
+    // once without asking the system, which is usually right and saves a call: poll (or
+    // ask again) to learn what has come since.
+    pub fn try_read(socket: &Socket, buffer: &mut [U8]) -> Result<U64, NetError>:
+        let packed = socket.raw_try_recv(buffer)
+        let code = packed / 4294967296
+        if code != 0:
+            return Err(net_error(code))
+        return Ok(packed % 4294967296)
+
+    // As much of `bytes` as the socket takes now: Ok(count), or Err(WouldBlock).
+    pub fn try_write(socket: &Socket, bytes: &[U8]) -> Result<U64, NetError>:
+        let packed = socket.raw_try_send(bytes)
+        let code = packed / 4294967296
+        if code != 0:
+            return Err(net_error(code))
+        return Ok(packed % 4294967296)
+
+    // Bytes received into `buffer`, up to its length: Ok(count), Ok(0) once the other side
+    // has finished. The task pauses until there are some, waiting on this socket;
+    // Err(Cancelled) when it is cancelled meanwhile.
+    pub fn read(socket: &Socket, buffer: &mut [U8]) -> Result<U64, NetError> suspends:
+        var outcome = socket.try_read(buffer)
+        while blocked(&outcome):
+            if pause_for(wait_entry(socket.raw_handle(), true, false)) == CANCELLED:
+                return Err(Cancelled)
+            outcome = socket.try_read(buffer)
+        return outcome
+
+    // Fill the slice, waiting on the socket when the next bytes are unavailable.
+    pub fn read_exact_async(socket: &Socket, bytes: &mut [U8]) -> Result<(), ExactReadError> suspends:
+        let size = bytes.len()
+        var done: U64 = 0
+        while done < size:
+            match socket.read(bytes.part(done, size)):
+                Ok(count):
+                    if count == 0:
+                        return Err(UnexpectedEof(done))
+                    done += count
+                Err(error):
+                    return Err(ReadFailed(NetFailure(error, done)))
+        return Ok(())
+
+    // All of `bytes`, the task pausing while the socket takes no more: Ok, or Err with how
+    // far it got (Cancelled when the task was cancelled meanwhile).
+    pub fn write(socket: &Socket, bytes: &[U8]) -> Result<(), NetFailure> suspends:
+        var done: U64 = 0
+        while done < bytes.len():
+            let rest = bytes.part(done, bytes.len())
+            match socket.try_write(rest):
+                Ok(count):
+                    done += count
+                Err(error):
+                    match error:
+                        WouldBlock:
+                            if pause_for(wait_entry(socket.raw_handle(), false, true)) == CANCELLED:
+                                return Err(NetFailure(Cancelled, done))
+                        _:
+                            return Err(NetFailure(error, done))
+        return Ok(())
+
+    // The address of the granted listener this connection was accepted on, as a request to it
+    // names it in its `Host` header: `host:port`, an IPv6 address in brackets (`[::1]:8080`),
+    // written to `into`. How many bytes: 0 for a socket the program dialled, or when `into` is
+    // too short for all of it. It is what the run granted (`--listen`) with the port bound,
+    // whatever the client said and whatever name the client reached it by.
+    pub fn accepted_on(socket: &Socket, into: &mut [U8]) -> U64:
+        return socket.raw_accepted_on(into)
+
+    // Bytes received into `buffer`, up to its length: Ok(count), Ok(0) once the other side
+    // has finished.
+    pub fn read_some(socket: &Socket, buffer: &mut [U8]) -> Result<U64, NetError>:
+        let packed = socket.raw_recv(buffer)
+        let code = packed / 4294967296
+        if code != 0:
+            return Err(net_error(code))
+        return Ok(packed % 4294967296)
+
+    // Fill the slice without reading ahead, or report the initialized prefix.
+    pub fn read_exact(socket: &Socket, bytes: &mut [U8]) -> Result<(), ExactReadError>:
+        let size = bytes.len()
+        var done: U64 = 0
+        while done < size:
+            match socket.read_some(bytes.part(done, size)):
+                Ok(count):
+                    if count == 0:
+                        return Err(UnexpectedEof(done))
+                    done += count
+                Err(error):
+                    return Err(ReadFailed(NetFailure(error, done)))
+        return Ok(())
+
+    pub fn send(socket: &Socket, text: &str) -> Result<(), NetError>:
+        let count = text.byte_len()
+        var index: U64 = 0
+        while index < count:
+            match text.byte_at(index):
+                Ok(byte):
+                    let code = socket.raw_send_byte(byte)
+                    if code != 0:
+                        return Err(net_error(code))
+                Err(code):
+                    return Ok(())
+            index += 1
+        // What was queued goes out now, so a request sent and then waited on elsewhere (another
+        // task, another socket) arrives: an empty bulk send writes the queue and nothing more.
+        let one: [U8; 1] = [0]
+        let flushed = socket.raw_send(one.slice().part(0, 0))
+        let code = flushed / 4294967296
+        if code != 0:
+            return Err(net_error(code))
+        return Ok(())
+
+    pub fn send_string(socket: &Socket, text: &String) -> Result<(), NetError>:
+        match socket.write_all(text.as_bytes()):
+            Ok:
+                return Ok(())
+            Err(failure):
+                return Err(failure.error)
+
+    // The next byte received, or Err(()) once the other side has finished.
+    pub fn next_byte(socket: &Socket) -> Result<U8, ()>:
+        let next = socket.raw_recv_byte()
+        if next > 255:
+            return Err(())
+        return Ok(U8.truncate(next))
+
+    // Everything received until the other side finishes, as text. The socket is closed.
+    pub fn read_text(socket: Socket, allocator: &Allocator) -> Result<String, NetError>:
+        let Ok(made): Vec<U8> = Vec.new(allocator, 64) else Err(code):
+            let closed = socket.raw_close()
+            return Err(OutOfMemory)
+        var bytes = move made
+        let zero: U8 = 0
+        let Ok(chunk_made): Vec<U8> = Vec.filled(allocator, 256, zero) else Err(code):
+            bytes.close()
+            let closed = socket.raw_close()
+            return Err(OutOfMemory)
+        var chunk = move chunk_made
+        var failed = false
+        var more = true
+        while more:
+            match socket.read_some(chunk.as_mut_slice()):
+                Ok(count):
+                    if count == 0:
+                        more = false
+                    // What was read, in one append (it was a `push_mut` a byte).
+                    if let Err(_) = bytes.extend_from_slice_mut(allocator, chunk.as_slice().part(0, count)):
+                        chunk.close()
+                        bytes.close()
+                        let closed = socket.raw_close()
+                        return Err(OutOfMemory)
+                Err(error):
+                    failed = true
+                    more = false
+        chunk.close()
+        let closed = socket.raw_close()
+        if failed:
+            bytes.close()
+            return Err(Io)
+        match String.from_utf8(move bytes):
+            Ok(text):
+                return Ok(move text)
+            Err(raw):
+                raw.close()
+                return Err(NotText)
+
+    pub fn close(socket: Socket):
+        let closed = socket.raw_close()
+
+    // The same as `close`, by the name owners share: a closure that took a socket over and is
+    // given up unstarted discards it.
+    pub fn discard(socket: Socket):
+        socket.close()
+
+// Tasks waiting on sockets, stepped as their sockets become ready: a task per connection,
+// each written as sequential code (examples/echo/tasks.wy). A task waits on one entry, or on
+// several (`ALSO`, as `join` does), and is stepped when any of them is ready.
+pub type Waiting:
+    tasks: Vec<Task>
+    // What the tasks wait for, polled together; the first entry is the listener's.
+    entries: Vec<U64>
+    // The task each entry is for, GONE once it is not (removed at the end of the round).
+    owners: Vec<U64>
+    // How many entries each task has.
+    counts: Vec<U64>
+
+// The owner of an entry no task waits for any more.
+let GONE = 18446744073709551615
+
+// What a round of `step_ready` saw.
+pub type Stepped:
+    // The listener has a connection waiting: accept it (`try_accept`) and `start` its task.
+    connections: Bool
+    // Tasks that finished, and the sum of what tasks reported.
+    finished: U64
+    reported: U64
+    // False when the run's deadline came first and nothing was ready.
+    ready: Bool
+
+impl Waiting:
+    pub fn new(allocator: &Allocator, listener: &Listener) -> Result<Waiting, U64>:
+        return Waiting.made(allocator, listener.wait_entry())
+
+    // A set for a program that listens on nothing (a client): step it with `step_ready_net`.
+    pub fn empty(allocator: &Allocator) -> Result<Waiting, U64>:
+        return Waiting.made(allocator, HOLE)
+
+    fn made(allocator: &Allocator, first: U64) -> Result<Waiting, U64>:
+        let Ok(tasks): Vec<Task> = Vec.new(allocator, 8) else Err(code):
+            return Err(code)
+        let Ok(counts): Vec<U64> = Vec.new(allocator, 8) else Err(code):
+            tasks.release_empty()
+            return Err(code)
+        let Ok(entries): Vec<U64> = Vec.filled(allocator, 1, first) else Err(code):
+            tasks.release_empty()
+            counts.close()
+            return Err(code)
+        let Ok(owners): Vec<U64> = Vec.filled(allocator, 1, GONE) else Err(code):
+            tasks.release_empty()
+            counts.close()
+            entries.close()
+            return Err(code)
+        return Ok(Waiting(move tasks, move entries, move owners, move counts))
+
+    // Tasks still waiting.
+    pub fn len(waiting: &Waiting) -> U64:
+        return (*waiting).tasks.len()
+
+    // Steps a new task until it waits or finishes: Ok(what it reported) once kept or closed,
+    // Err(the task) when there was no memory to keep it. Traps when there is no memory to
+    // record what a kept task waits for: nothing could ever step it again.
+    pub fn start(waiting: &mut Waiting, allocator: &Allocator, task: Task) -> Result<Stepped, Task>:
+        let index = (*waiting).tasks.len()
+        match (*waiting).tasks.push_mut(allocator, move task):
+            Ok:
+                match (*waiting).counts.push_mut(allocator, 1):
+                    Ok:
+                        let outcome = (*waiting).advance(allocator, index, 0, false)
+                        var stepped = Stepped(false, 0, outcome.reported, true)
+                        if outcome.finished:
+                            stepped.finished = 1
+                            if outcome.extras > 0:
+                                (*waiting).forget(index)
+                                (*waiting).compact()
+                            let count = (*waiting).counts.take_last_mut()
+                            match (*waiting).tasks.take_last_mut():
+                                Ok(done):
+                                    done.close()
+                                Err(code):
+                                    unreachable
+                        else:
+                            var counted = outcome.extras + 1
+                            if outcome.parked:
+                                counted += PARKED
+                            let set = (*waiting).counts.set(index, counted)
+                            (*waiting).record(allocator, outcome.entry, index)
+                        return Ok(stepped)
+                    Err(lost):
+                        match (*waiting).tasks.take_last_mut():
+                            Ok(back):
+                                return Err(move back)
+                            Err(code):
+                                unreachable
+            Err(back):
+                return Err(move back)
+
+    // Waits until the listener or something a task waits for is ready, or the run's deadline,
+    // and steps every task that is ready; finished tasks are closed. Traps as `start` does.
+    pub fn step_ready(waiting: &mut Waiting, allocator: &Allocator, listener: &Listener) -> Stepped:
+        let ready = listener.poll((*waiting).entries.as_mut_slice())
+        return (*waiting).round(allocator, ready)
+
+    // `step_ready` for a set made `empty`, polling through a `Net`; `connections` is false.
+    pub fn step_ready_net(waiting: &mut Waiting, allocator: &Allocator, net: &Net) -> Stepped:
+        let ready = net.poll((*waiting).entries.as_mut_slice())
+        return (*waiting).round(allocator, ready)
+
+    // Steps the tasks a poll that found `ready` entries marked ready.
+    fn round(waiting: &mut Waiting, allocator: &Allocator, ready: U64) -> Stepped:
+        var stepped = Stepped(false, 0, 0, true)
+        if ready == 0:
+            stepped.ready = false
+            return stepped
+        stepped.connections = entry_readable((*waiting).entries[0])
+        var gone = false
+        var k: U64 = 1
+        while k < (*waiting).entries.len():
+            let entry = (*waiting).entries[k]
+            let owner = (*waiting).owners[k]
+            if owner != GONE && (entry_readable(entry) || entry_writable(entry) || entry_closed(entry)):
+                // A task with one entry waits again in its place when it can; one with
+                // several has them all removed, and records what it waits for anew. A parked
+                // task is in the middle of a step: what it handed on before keeps, and only
+                // the parking entry goes.
+                let parked = (*waiting).counts[owner] >= PARKED
+                let count = (*waiting).counts[owner] % PARKED
+                let alone = count == 1 && !parked
+                var kept: U64 = 0
+                if alone:
+                    let marked = (*waiting).owners.set(k, GONE)
+                else:
+                    if parked:
+                        (*waiting).unpark(owner)
+                        kept = count - 1
+                    else:
+                        (*waiting).forget(owner)
+                let outcome = (*waiting).advance(allocator, owner, entry, false)
+                stepped.reported += outcome.reported
+                if outcome.finished:
+                    stepped.finished += 1
+                    let finished = (*waiting).counts.set(owner, 0)
+                    (*waiting).forget(owner)
+                    gone = true
+                else:
+                    var counted = kept + outcome.extras + 1
+                    if outcome.parked:
+                        counted += PARKED
+                    let set_count = (*waiting).counts.set(owner, counted)
+                    if alone && outcome.extras == 0 && !outcome.parked:
+                        let back = (*waiting).owners.set(k, owner)
+                        let set = (*waiting).entries.set(k, outcome.entry)
+                    else:
+                        gone = true
+                        (*waiting).record(allocator, outcome.entry, owner)
+            k += 1
+        if stepped.finished > 0:
+            (*waiting).close_finished()
+        if gone:
+            (*waiting).compact()
+        return stepped
+
+    // Cancels every task and closes those that finish, as a server shutting down does: the sum
+    // of what they reported. Each is stepped with CANCELLED, every pause of it, until it finishes
+    // or has waited three times regardless; one that still waits is kept, waiting on what it
+    // last asked for.
+    pub fn cancel_all(waiting: &mut Waiting, allocator: &Allocator) -> U64:
+        var reported: U64 = 0
+        var finished: U64 = 0
+        var t: U64 = 0
+        while t < (*waiting).tasks.len():
+            var waits: U64 = 0
+            var going = true
+            while going:
+                (*waiting).forget(t)
+                let outcome = (*waiting).advance(allocator, t, CANCELLED, true)
+                reported += outcome.reported
+                if outcome.finished:
+                    let count = (*waiting).counts.set(t, 0)
+                    finished += 1
+                    going = false
+                else:
+                    let count = (*waiting).counts.set(t, outcome.extras + 1)
+                    (*waiting).record(allocator, outcome.entry, t)
+                    waits += 1
+                    if waits == 3:
+                        going = false
+            t += 1
+        if finished > 0:
+            (*waiting).close_finished()
+        (*waiting).compact()
+        return reported
+
+    // Gives back the set's memory; every task must have finished (`cancel_all` first).
+    pub fn close(waiting: Waiting):
+        let Waiting(tasks, entries, owners, counts) = move waiting
+        tasks.release_empty()
+        entries.close()
+        owners.close()
+        counts.close()
+
+    // Steps task `index` until it waits or finishes, recording its extra entries (ALSO) and
+    // adding up what it reports on the way. Its pause returns `woke`, the entry found ready
+    // (0 for a new task); a pause after an ALSO or a report returns 0, or CANCELLED for every
+    // one when `cancelling`. A task that reports 1024 times is parked (`parked`): it waits on
+    // YIELDED in the middle of its step, and goes on from its report when stepped again.
+    fn advance(waiting: &mut Waiting, allocator: &Allocator, index: U64, woke: U64, cancelling: Bool) -> Advanced:
+        var outcome = Advanced(false, 0, 0, 0, false)
+        var going = true
+        var word = woke
+        var reports: U64 = 0
+        while going:
+            let tasks = (*waiting).tasks.as_mut_slice()
+            let task = tasks.cell(index)
+            let stepped = task.resume(word)
+            word = 0
+            if cancelling:
+                word = CANCELLED
+            match stepped:
+                Ok:
+                    outcome.finished = true
+                    going = false
+                Err(token):
+                    if token >= REPORTED:
+                        outcome.reported += token - REPORTED
+                        // A task that keeps reporting yields after a while: it waits on an entry
+                        // that reads ready at once, so the others are stepped before it goes on.
+                        reports += 1
+                        if reports == 1024 && !cancelling:
+                            outcome.entry = YIELDED
+                            outcome.parked = true
+                            going = false
+                    else:
+                        if token >= ALSO:
+                            outcome.extras += 1
+                            (*waiting).record(allocator, token - ALSO, index)
+                        else:
+                            outcome.entry = token
+                            going = false
+        return outcome
+
+    // Keeps `entry` for task `owner`, as a request only: what a task pauses with is never
+    // taken as already ready.
+    fn record(waiting: &mut Waiting, allocator: &Allocator, entry: U64, owner: U64):
+        let request = entry - entry % 256 + entry % 4
+        match (*waiting).entries.push_mut(allocator, request):
+            Ok:
+                match (*waiting).owners.push_mut(allocator, owner):
+                    Ok:
+                        return
+                    Err(lost):
+                        unreachable
+            Err(lost):
+                unreachable
+
+    // Marks task `owner`'s parking entry as no longer waited for, keeping the others.
+    fn unpark(waiting: &mut Waiting, owner: U64):
+        var j: U64 = 1
+        while j < (*waiting).owners.len():
+            if (*waiting).owners[j] == owner && entry_slot((*waiting).entries[j]) == entry_slot(YIELDED):
+                let marked = (*waiting).owners.set(j, GONE)
+            j += 1
+
+    // Marks every entry of task `owner` as no longer waited for.
+    fn forget(waiting: &mut Waiting, owner: U64):
+        var j: U64 = 1
+        while j < (*waiting).owners.len():
+            if (*waiting).owners[j] == owner:
+                let marked = (*waiting).owners.set(j, GONE)
+            j += 1
+
+    // Removes the entries no task waits for, keeping the others in order.
+    fn compact(waiting: &mut Waiting):
+        var kept: U64 = 1
+        var j: U64 = 1
+        while j < (*waiting).owners.len():
+            let owner = (*waiting).owners[j]
+            if owner != GONE:
+                let entry = (*waiting).entries[j]
+                let moved = (*waiting).entries.set(kept, entry)
+                let owned = (*waiting).owners.set(kept, owner)
+                kept += 1
+            j += 1
+        (*waiting).entries.truncate_mut(kept)
+        (*waiting).owners.truncate_mut(kept)
+
+    // Closes the tasks that finished (count 0), the last task taking each one's place.
+    fn close_finished(waiting: &mut Waiting):
+        var t = (*waiting).tasks.len()
+        while t > 0:
+            t -= 1
+            if (*waiting).counts[t] == 0:
+                let last = (*waiting).tasks.len() - 1
+                if t != last:
+                    let moved = (*waiting).tasks.exchange(t, last)
+                    let swapped = (*waiting).counts.swap(t, last)
+                    var j: U64 = 1
+                    while j < (*waiting).owners.len():
+                        if (*waiting).owners[j] == last:
+                            let renamed = (*waiting).owners.set(j, t)
+                        j += 1
+                let count = (*waiting).counts.take_last_mut()
+                match (*waiting).tasks.take_last_mut():
+                    Ok(done):
+                        done.close()
+                    Err(code):
+                        unreachable
+
+// How far stepping a task got: finished, or waiting on `entry` and `extras` more; and what it
+// reported.
+type Advanced:
+    finished: Bool
+    entry: U64
+    extras: U64
+    reported: U64
+    parked: Bool
+
+// Runs `work` (a closure that takes over what it needs) as a task with a stack of `bytes`, from
+// code that is not itself a task (`main`), until it finishes: Ok(what it reported, summed).
+// Called inside a task, it refuses: Err(2), the work discarded unstarted.
+// Its sockets, timers and the listener's connections are polled meanwhile. Err(1): no memory,
+// and the work was discarded unstarted. A task that never finishes holds it up until the run's
+// limits end it.
+pub fn run_task<W: Any + WitchyOnce0<()>>(allocator: &Allocator, listener: &Listener, bytes: U64, work: W) -> Result<U64, U64>:
+    // Inside a task it would hold every other task up until its work finished, and not hear a
+    // cancel (review): there, `race`, `both` or `TaskSet` run work. Err(2), the work discarded.
+    if memory.in_task():
+        work.discard()
+        return Err(2)
+    let Ok(made): Waiting = Waiting.new(allocator, listener) else Err(code):
+        work.discard()
+        return Err(1)
+    var waiting = move made
+    let Ok(task): Task = Task.spawn(allocator, bytes, move work) else Err(back):
+        back.discard()
+        waiting.close()
+        return Err(1)
+    var reported: U64 = 0
+    var finished: U64 = 0
+    match waiting.start(allocator, move task):
+        Ok(stepped):
+            reported += stepped.reported
+            finished += stepped.finished
+        Err(back):
+            var lost = move back
+            let cancelled = lost.cancel()
+            lost.close()
+            waiting.close()
+            return Err(1)
+    while finished == 0:
+        let stepped = waiting.step_ready(allocator, listener)
+        reported += stepped.reported
+        finished += stepped.finished
+    waiting.close()
+    return Ok(reported)
+
+// `run_task` for a program with no listener: its sockets are dialled with `net`.
+pub fn run_task_net<W: Any + WitchyOnce0<()>>(allocator: &Allocator, net: &Net, bytes: U64, work: W) -> Result<U64, U64>:
+    // Inside a task it would hold every other task up until its work finished, and not hear a
+    // cancel (review): there, `race`, `both` or `TaskSet` run work. Err(2), the work discarded.
+    if memory.in_task():
+        work.discard()
+        return Err(2)
+    let Ok(made): Waiting = Waiting.empty(allocator) else Err(code):
+        work.discard()
+        return Err(1)
+    var waiting = move made
+    let Ok(task): Task = Task.spawn(allocator, bytes, move work) else Err(back):
+        back.discard()
+        waiting.close()
+        return Err(1)
+    var reported: U64 = 0
+    var finished: U64 = 0
+    match waiting.start(allocator, move task):
+        Ok(stepped):
+            reported += stepped.reported
+            finished += stepped.finished
+        Err(back):
+            var lost = move back
+            let cancelled = lost.cancel()
+            lost.close()
+            waiting.close()
+            return Err(1)
+    while finished == 0:
+        let stepped = waiting.step_ready_net(allocator, net)
+        reported += stepped.reported
+        finished += stepped.finished
+    waiting.close()
+    return Ok(reported)

@@ -1,0 +1,3 @@
+// Refused: `yield` belongs to a `gen fn`.
+fn main():
+    yield 1

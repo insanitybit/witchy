@@ -1,0 +1,18 @@
+// Generic inference does not depend on argument order: a call among the arguments leaves a bare
+// number open until the others have had their say (`choose(id(1), typed)` was refused while
+// `choose(typed, id(1))` compiled); alone, a bare number is still a U64.
+import console
+
+fn id<T>(x: T) -> T:
+    x
+
+fn choose<T>(a: T, b: T) -> T:
+    a
+
+fn main(console: Console<Write>):
+    let typed: U8 = 7
+    let first = choose(id(1), typed)
+    let second = choose(typed, id(1))
+    console.print_int(U8.to_u64(first) + U8.to_u64(second))
+    let alone = id(id(300))
+    console.print_int(alone)

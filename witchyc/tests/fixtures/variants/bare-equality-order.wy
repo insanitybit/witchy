@@ -1,0 +1,21 @@
+// `==` keeps the operands in the order written, even beside a bare variant: a hand-written Eq
+// need not be symmetric (`Left == r` is `Side.eq(&Left, &r)`).
+import console
+import hash
+
+type Side:
+    Left
+    Right(U64)
+
+// Deliberately not symmetric: `a.eq(&b)` is whether `a` is Left.
+impl Eq for Side:
+    fn eq(self: &Side, other: &Side) -> Bool:
+        match self:
+            Left:
+                return true
+            Right(n):
+                return false
+
+fn main(console: Console<Write>):
+    let r = Right(1)
+    console.print("${Left == r} ${r == Left} ${Right(2) == r}")

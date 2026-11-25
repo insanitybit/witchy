@@ -1,0 +1,12 @@
+// Refused: a recipe over variants reaches a value only in its own variant's arm; `Empty`'s arm
+// binds nothing, so the `mine0` the recipe reads there is unknown (no inactive storage).
+import "parts/variant_bad.wy"
+import console
+
+type Edge derive(variant_bad.Inactive):
+    Point(U64)
+    Empty
+
+fn main(console: Console<Write>):
+    let p = Point(3)
+    console.print("${p.first()}")

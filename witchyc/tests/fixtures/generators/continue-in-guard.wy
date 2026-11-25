@@ -1,0 +1,24 @@
+// Found by an adversarial review: a `continue` in a `let ... else` arm must go to the loop
+// head (checking the condition), not repeat the generator's current step.
+import console
+
+fn check(n: U64) -> Result<U64, U64>:
+    if n == 2:
+        return Err(n)
+    return Ok(n)
+
+gen fn skip(limit: U64) -> U64:
+    var n: U64 = 0
+    var calls: U64 = 0
+    var got: U64 = 0
+    while n < limit:
+        n += 1
+        calls += 1
+        let Ok(v): U64 = check(n) else Err(e):
+            continue
+        got = v
+        yield got * 1000 + calls
+
+fn main(console: Console<Write>):
+    for v in skip(2):
+        console.print_int(v)

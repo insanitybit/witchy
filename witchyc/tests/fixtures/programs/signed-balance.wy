@@ -1,0 +1,14 @@
+// Signed arithmetic: a running balance through deposits and withdrawals, its lowest point, and
+// division and remainder of negatives (truncating toward zero).
+import console
+import int
+
+fn main(console: Console<Write>):
+    let moves: [I64; 6] = [100, -250, 75, -30, 400, -120]
+    var balance: I64 = 0
+    var lowest: I64 = 0
+    for m in moves:
+        balance += *m
+        if balance < lowest:
+            lowest = balance
+    console.print("${balance} ${lowest} ${-7 / 2} ${-7 % 2} ${lowest / 3}")

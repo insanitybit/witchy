@@ -1,0 +1,1 @@
+to change storage named by a shared view invariant, consume and unpack the owner, then reconstruct it under proof

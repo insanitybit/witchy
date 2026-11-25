@@ -1,0 +1,16 @@
+pub sealed type Token:
+    v: U64
+
+pub fn mint() -> Token:
+    return Token(v: 1)
+
+pub fn redeem(t: &Token) -> U64:
+    return t.v
+
+pub trait Poke<X>:
+    fn poke(self: &Self, base: X)
+
+pub derive Pk:
+    impl Poke<For> for Self:
+        fn poke(self: &Self, base: For):
+            base.v = (*self).a

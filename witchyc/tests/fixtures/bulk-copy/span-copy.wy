@@ -1,0 +1,49 @@
+// A Span as a String of its own and appended to one: ASCII and other text of every length
+// around a word, the empty span, and bytes that are not whole UTF-8 (a part cut inside a
+// scalar): Err(2), and the text appended to is as it was.
+import console
+import string
+import text
+import span
+import format
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var source = move made
+    let _ = source.push_text(&allocator, "héllo, wörld: the quick brown fox ✓ jumps over the lazy dog 🙂 again and again")
+    let whole = source.span()
+    var good: U64 = 0
+    var bad: U64 = 0
+    var check: U64 = 0
+    for to in 0..whole.len() + 1:
+        match whole.part(0, to).to_string(&allocator):
+            Ok(copy):
+                good += 1
+                if copy.byte_len() != to:
+                    console.line("length")
+                if !whole.part(0, to).same(copy.span()):
+                    console.line("bytes")
+                copy.close()
+            Err(code):
+                bad += code
+    console.print_int(good)
+    console.print_int(bad)
+    let Ok(other): String = String.new(&allocator) else Err(code):
+        source.close()
+        return
+    var out = move other
+    let _ = out.push_text(&allocator, "<")
+    for to in 0..whole.len() + 1:
+        let before = out.byte_len()
+        match whole.part(0, to).push_on(&mut out, &allocator):
+            Ok:
+                check += out.byte_len() - before
+            Err(code):
+                if out.byte_len() != before:
+                    console.line("changed")
+    console.print_int(check)
+    console.print_int(out.byte_len())
+    console.print_int(out.scalar_count())
+    out.close()
+    source.close()

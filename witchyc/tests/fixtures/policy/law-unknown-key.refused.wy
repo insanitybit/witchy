@@ -1,0 +1,21 @@
+// Refused (fail closed, review round 5): a query whose key is neither a library key type nor a
+// record of the program (here a sum) is not one the key law can speak for.
+import hash
+
+type Shape:
+    Dot(U64)
+    Nothing
+
+type Q:
+    x: U64
+
+impl HashKey for Q:
+    fn feed(self: &Q, state: &mut HashState):
+        (*self).x.feed(state)
+
+impl Equivalent<Shape> for Q:
+    fn equivalent(self: &Q, key: &Shape) -> Bool:
+        return true
+
+fn main():
+    return

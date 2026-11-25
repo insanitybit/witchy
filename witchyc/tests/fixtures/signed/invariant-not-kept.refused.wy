@@ -1,0 +1,17 @@
+// A loop that does not keep its invariant.
+fn down(n: I64) -> I64:
+    requires n >= 0
+    ensures result == 0 - n
+    proof:
+        auto
+    var left = n
+    var total: I64 = 0
+    while left > 0:
+        invariant left >= 0
+        invariant total == left - n
+        total = total - 2
+        left = left - 1
+    return total
+
+fn main(console: Console<Write>):
+    console.print_int(I64.bits(down(5) + 5))

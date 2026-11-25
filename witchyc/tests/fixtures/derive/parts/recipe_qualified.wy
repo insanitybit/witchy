@@ -1,0 +1,9 @@
+import "lib/util.wy"
+
+pub trait Pick:
+    fn picked(self: &Self) -> U64
+
+pub derive First:
+    impl Pick for Self:
+        fn picked(self: &Self) -> U64:
+            return util.pick((*self).a, (*self).b)

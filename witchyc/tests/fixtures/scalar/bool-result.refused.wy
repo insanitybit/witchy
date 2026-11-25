@@ -1,0 +1,7 @@
+fn below(a: U64) -> Bool:
+    ensures result == (a < 10)
+    proof:
+        auto
+    return a <= 10
+fn main(console: Console<Write>):
+    console.print_int(0)

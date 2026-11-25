@@ -1,0 +1,11 @@
+// Refused, saying what to write: two bare variants of a generic sum say nothing of its `T`.
+import console
+import hash
+
+type Maybe<T> derive(Eq):
+    Nothing
+    Just(T)
+
+fn main(console: Console<Write>):
+    let m: Maybe<U64> = Just(3)
+    console.print("${Nothing == Nothing}")

@@ -1,0 +1,43 @@
+// `Self` in an impl block is the implementing type with its arguments: `Pair<T>` in a type,
+// `Pair` before `(` or `.` (a constructor, a static call); in an inherent impl, a generic one, and
+// a trait's impl, whose methods then match the trait's signature.
+import console
+
+type Pair<T>:
+    left: T
+    right: T
+
+impl<T: Any> Pair<T>:
+    fn make(a: T, b: T) -> Self:
+        return Self(left: move a, right: move b)
+    fn left_of(self: &Self) -> &T:
+        return &(*self).left
+    fn again(a: T, b: T) -> Pair<T>:
+        let made: Self = Self.make(move a, move b)
+        return move made
+
+type Point:
+    x: U64
+    y: U64
+
+impl Point:
+    fn origin() -> Self:
+        return Self(x: 1, y: 2)
+    fn swapped(self: &Self) -> Self:
+        return Self(x: (*self).y, y: (*self).x)
+    fn sum(self: &Self) -> U64:
+        let copy: Self = *self
+        return copy.x * 10 + copy.y
+
+trait Twice:
+    fn twice(self: &Self) -> Self
+
+impl Twice for Point:
+    fn twice(self: &Self) -> Self:
+        return Self(x: (*self).x * 2, y: (*self).y * 2)
+
+fn main(console: Console<Write>):
+    let p: Pair<U64> = Pair.again(1, 2)
+    let o = Point.origin()
+    let l = *p.left_of()
+    console.print("${l} ${o.sum()} ${o.swapped().sum()} ${o.twice().sum()}")

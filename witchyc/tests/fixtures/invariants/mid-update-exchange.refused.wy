@@ -1,0 +1,33 @@
+// Refused (second review): the fields swapped by memory.exchange, then a proved method called.
+import console
+
+sealed type Account:
+    balance: U64
+    limit: U64
+    invariant balance <= limit
+
+impl Account:
+    pub fn open(limit: U64) -> Account:
+        ensures result.balance == 0
+        proof:
+            auto
+        return Account(0, limit)
+
+    pub fn room(account: &Account) -> U64:
+        ensures true
+        proof:
+            auto
+        return (*account).limit - (*account).balance
+
+    pub fn trick(account: &mut Account) -> U64:
+        ensures true
+        proof:
+            auto
+        memory.exchange(&mut (*account).balance, &mut (*account).limit)
+        let r = account.room()
+        memory.exchange(&mut (*account).balance, &mut (*account).limit)
+        return r
+
+fn main(console: Console<Write>):
+    var a = Account.open(5)
+    console.print_int(a.trick())

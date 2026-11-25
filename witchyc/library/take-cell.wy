@@ -1,0 +1,7 @@
+fn take_true(reader: &mut Buffer<Bool>, index: USize) -> Bool:
+    requires CellAt(reader, index, true)
+    ensures result == true
+    ensures memory.empty(reader, index)
+    let value: Bool = memory.take(reader, index)
+    memory.end(reader)
+    return value

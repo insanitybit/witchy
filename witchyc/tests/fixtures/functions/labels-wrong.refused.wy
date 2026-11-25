@@ -1,0 +1,11 @@
+// A label that is not the parameter at its place, in order, is refused.
+import console
+
+fn three() -> U64:
+    3
+
+fn greet(n: U64, by: U64) -> U64:
+    n * by
+
+fn main(console: Console<Write>):
+    console.print_int(greet(n: three(), times: 4))

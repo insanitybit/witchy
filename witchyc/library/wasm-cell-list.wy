@@ -1,0 +1,249 @@
+import "wasm-cell.wy"
+import "wasm-option.wy"
+import "wasm-discard.wy"
+import "wasm-discard-core.wy"
+
+pub sealed type Node<T>:
+    value: T
+    prev: Option<OwnedNode<T>>
+    next: Weak<Node<T>>
+
+// Folding the owner checks the actual successor stored in its optional child.
+// The child itself was already folded before it could be moved into this node.
+sealed type OwnedNode<T>:
+    cell: OccupiedCell<Node<T>>
+    invariant when Some(prev) = cell.read().prev:
+        same_target(prev.cell.read().next, cell.pointer())
+
+impl<T: Any> OwnedNode<T>:
+    // Local lemma for a step of the owning walk. Its clauses read the
+    // predecessor's real initialized value and the enclosing allocation.
+    fn focus(owner: &OwnedNode<T>) -> &Node<T>:
+        ensures when Some(prev) = owner.cell.read().prev:
+            same_target(prev.cell.read().next, owner.cell.pointer())
+        return (*owner).cell.read()
+
+    fn first(owner: &OwnedNode<T>) -> &OccupiedCell<Node<T>>:
+        let node = (*owner).cell.read()
+        match &(*node).prev:
+            Some(child):
+                return child.first()
+            None:
+                return &(*owner).cell
+
+    fn retarget(owned: OwnedNode<T>, target: Weak<Node<T>>) -> OwnedNode<T>:
+        ensures same_target(result.first().pointer(), old(owned.first().pointer()))
+        ensures same_target(result.cell.read().next, old(target))
+        ensures same_target(result.cell.pointer(), old(owned.cell.pointer()))
+        let OwnedNode(cell) = move owned
+        let TakenCell(vacant, node) = cell.extract()
+        let Node(value, prev, next) = move node
+        let updated = Node(move value, move prev, target)
+        let restored = vacant.fill(move updated)
+        return OwnedNode(move restored)
+
+    fn remove(owned: OwnedNode<T>) -> Node<T>:
+        ensures when Some(prev) = result.prev:
+            same_target(prev.first().pointer(), old(owned.first().pointer()))
+        let OwnedNode(cell) = move owned
+        let TakenCell(vacant, node) = cell.extract()
+        vacant.close()
+        return move node
+
+    fn install(vacant: VacantCell<Node<T>>, value: T, previous: Option<OwnedNode<T>>, next: Weak<Node<T>>) -> OwnedNode<T>:
+        requires when Some(prev) = previous:
+            same_target(prev.cell.read().next, vacant.pointer())
+        ensures when None = old(previous):
+            same_target(result.first().pointer(), old(vacant.pointer()))
+        ensures when Some(prev) = old(previous):
+            same_target(result.first().pointer(), prev.first().pointer())
+        ensures same_target(result.cell.read().next, old(next))
+        ensures same_target(result.cell.pointer(), old(vacant.pointer()))
+        let input = Node(move value, move previous, next)
+        let full = vacant.fill(move input)
+        return OwnedNode(move full)
+
+type Attached<T>:
+    owner: OwnedNode<T>
+    head: Weak<Node<T>>
+
+fn attach<T: Any>(vacant: VacantCell<Node<T>>, value: T, previous: Option<OwnedNode<T>>, next: Weak<Node<T>>, head: Weak<Node<T>>) -> Attached<T>:
+    requires when Some(prev) = previous:
+        has_address(head)
+        same_target(head, prev.first().pointer())
+    ensures same_target(result.head, result.owner.first().pointer())
+    ensures has_address(result.head)
+    ensures same_target(result.owner.cell.read().next, old(next))
+    ensures same_target(result.owner.cell.pointer(), old(vacant.pointer()))
+    match move previous:
+        None:
+            let empty: Option<OwnedNode<T>> = None
+            let first = vacant.pointer()
+            let node = OwnedNode.install(move vacant, move value, move empty, next)
+            return Attached(move node, first)
+        Some(left):
+            let address = vacant.pointer()
+            let updated = left.retarget(address)
+            let child: Option<OwnedNode<T>> = Some(move updated)
+            let node = OwnedNode.install(move vacant, move value, move child, next)
+            return Attached(move node, head)
+
+pub sealed type DoublyLinkedList<T>:
+    head: Weak<Node<T>>
+    tail: Option<OwnedNode<T>>
+    invariant when Some(last) = tail:
+        has_address(head)
+        null_target(last.cell.read().next)
+        same_target(head, last.first().pointer())
+    invariant when None = tail:
+        !has_address(head)
+
+pub predicate member_of<T>(node: &Node<T>, list: &DoublyLinkedList<T>):
+    match list.tail:
+        None:
+            false
+        Some(last):
+            memory.member(node, last.first().read())
+
+impl<T: Any> Node<T>:
+    pub nopanic fn item(node: &Node<T>) -> &T:
+        return &(*node).value
+
+    pub nopanic fn previous(node: &Node<T>) -> Option<&Node<T>>:
+        match &(*node).prev:
+            None:
+                return None
+            Some(cell):
+                return Some((*cell).cell.read())
+
+impl<T: Any> DoublyLinkedList<T>:
+    pub nopanic fn new() -> DoublyLinkedList<T>:
+        ensures when Some = result.tail:
+            false
+        let nil: Weak<Node<T>> = memory.null_weak()
+        return DoublyLinkedList(nil, None)
+
+    pub nopanic fn front(list: &DoublyLinkedList<T>) -> Option<&Node<T>>:
+        ensures when Some(node) = result:
+            member_of(node, list)
+        match &(*list).tail:
+            None:
+                return None
+            Some(owner):
+                return Some(memory.follow_loan(owner.first().read(), (*list).head))
+
+    pub nopanic fn next(list: &DoublyLinkedList<T>, from: &Node<T>) -> Option<&Node<T>>:
+        requires member_of(from, list)
+        ensures when Some(node) = result:
+            member_of(node, list)
+        match &(*list).tail:
+            None:
+                return None
+            Some(owner):
+                if memory.weak_bits((*from).next) == 0:
+                    return None
+                return Some(memory.lend_enclosing(owner.first().read(), from, (*from).next, owner.focus()))
+
+    pub nopanic fn back(list: &DoublyLinkedList<T>) -> Option<&Node<T>>:
+        match &(*list).tail:
+            None:
+                return None
+            Some(cell):
+                return Some((*cell).cell.read())
+
+    pub nopanic fn tail_address(list: &DoublyLinkedList<T>) -> U32:
+        match &(*list).tail:
+            None:
+                return 0
+            Some(cell):
+                return memory.weak_bits((*cell).cell.pointer())
+
+    pub nopanic fn push_back(list: &mut DoublyLinkedList<T>, a: &Allocator, value: T) -> Option<T>:
+        let allocation: Result<VacantCell<Node<T>>, U64> = VacantCell.new(a)
+        match move allocation:
+            Err(code):
+                return Some(move value)
+            Ok(vacant):
+                let previous = (*list).tail.take()
+                let nil: Weak<Node<T>> = memory.null_weak()
+                let Attached(node, first) = attach(move vacant, move value, move previous, nil, (*list).head)
+                (*list).head = first
+                (*list).tail = Some(move node)
+                return None
+
+    pub nopanic fn pop_back(list: &mut DoublyLinkedList<T>) -> Option<T>:
+        let tail = (*list).tail.take()
+        match move tail:
+            None:
+                return None
+            Some(owner):
+                let node = owner.remove()
+                let Node(value, prev, next) = move node
+                let nil: Weak<Node<T>> = memory.null_weak()
+                match move prev:
+                    None:
+                        (*list).head = nil
+                        return Some(move value)
+                    Some(cell):
+                        let last = cell.retarget(nil)
+                        (*list).tail = Some(move last)
+                        return Some(move value)
+
+    pub nopanic fn pop_penultimate(list: &mut DoublyLinkedList<T>) -> Option<T>:
+        let held = (*list).tail.take()
+        match move held:
+            None:
+                return None
+            Some(cell):
+                let Unlinked(head, right, item) = unlink_before((*list).head, move cell)
+                (*list).head = head
+                (*list).tail = Some(move right)
+                return move item
+
+    pub nopanic fn close_empty(list: DoublyLinkedList<T>) -> Result<(), DoublyLinkedList<T>>:
+        match &list.tail:
+            Some(_):
+                return Err(move list)
+            None:
+                let DoublyLinkedList(head, tail) = move list
+                memory.vacant(move tail)
+                return Ok(())
+
+impl<T: Any + Discard> DoublyLinkedList<T>:
+    pub nopanic fn close(list: DoublyLinkedList<T>):
+        let DoublyLinkedList(head, tail) = move list
+        var current = move tail
+        while true:
+            match move current:
+                None:
+                    return
+                Some(owner):
+                    let node = owner.remove()
+                    let Node(value, prev, next) = move node
+                    value.discard()
+                    current = move prev
+        unreachable
+
+type Unlinked<T>:
+    head: Weak<Node<T>>
+    right: OwnedNode<T>
+    removed: Option<T>
+
+fn unlink_before<T: Any>(head: Weak<Node<T>>, right: OwnedNode<T>) -> Unlinked<T>:
+    requires has_address(head)
+    requires same_target(head, right.first().pointer())
+    ensures same_target(result.head, result.right.first().pointer())
+    ensures !has_address(old(head)) || has_address(result.head)
+    ensures same_target(result.right.cell.read().next, old(right.cell.read().next))
+    let OwnedNode(full) = move right
+    let TakenCell(vacant, node) = full.extract()
+    let Node(value, victim, next) = move node
+    match move victim:
+        None:
+            let empty: Option<OwnedNode<T>> = None
+            let restored = OwnedNode.install(move vacant, move value, move empty, next)
+            return Unlinked(head, move restored, None)
+        Some(removed):
+            let Node(item, previous, old_next) = removed.remove()
+            let Attached(restored, first) = attach(move vacant, move value, move previous, next, head)
+            return Unlinked(first, move restored, Some(move item))

@@ -1,0 +1,5 @@
+fn bad<T: Any>(owner: &Buffer<T>, key: U64) -> &T:
+    return memory.ref_link(owner, key)
+
+fn main():
+    return

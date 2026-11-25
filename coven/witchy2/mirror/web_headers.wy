@@ -1,0 +1,76 @@
+import "web_routes.wy"
+import "../review/integrity.wy"
+import "../response_fields.wy"
+import http
+import span
+import string
+import option
+import text
+
+pub fn web_head(route: WebRoute, length: U64, bootstrap: Option<&Integrity>, framed: Bool, allocator: &Allocator) -> Result<String, U64>:
+    let Ok(empty): ResponseHeaders = http.response_headers(allocator) else Err(reason):
+        return Err(503)
+    var headers = move empty
+    let result = encode_head(&mut headers, route, length, bootstrap, framed, allocator)
+    headers.close()
+    return move result
+
+fn encode_head(headers: &mut ResponseHeaders, route: WebRoute, length: U64, bootstrap: Option<&Integrity>, framed: Bool, allocator: &Allocator) -> Result<String, U64>:
+    let empty = String.with_capacity(allocator, 448)?
+    var field = move empty
+    let added = add_fields(headers, &mut field, route, bootstrap, framed, allocator)
+    field.close()
+    added?
+    let Ok(head): String = http.response_head_with_headers(allocator, 200, content_type(route), length, headers) else Err(reason):
+        return Err(503)
+    return Ok(move head)
+
+fn add_fields(headers: &mut ResponseHeaders, field: &mut String, route: WebRoute, bootstrap: Option<&Integrity>, framed: Bool, allocator: &Allocator) -> Result<(), U64>:
+    add_common_fields(headers, field, allocator)?
+    add_literal(headers, field, "Referrer-Policy", "no-referrer", allocator)?
+    add_literal(headers, field, "Cross-Origin-Resource-Policy", "same-origin", allocator)?
+    field.cut(0)
+    let name: Text = "Content-Security-Policy"
+    field.push_text(allocator, name)?
+    if let Frame = route:
+        field.push_text(allocator, "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; require-trusted-types-for 'script'; trusted-types glamour-worker; sandbox allow-scripts; script-src 'sha384-B+1nAHHPkrmlMHfJ9cwPpQdd8aEvaBBZQeMIlK74qfiyg6u2PXpddB0d0Ag1qmt4' 'wasm-unsafe-eval'; worker-src blob:")?
+    else:
+        field.push_text(allocator, "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'")?
+        append_policy(field, route, bootstrap, framed, allocator)?
+    return add_field(headers, field.span(), name.byte_len(), allocator)
+
+fn append_policy(head: &mut String, route: WebRoute, bootstrap: Option<&Integrity>, framed: Bool, allocator: &Allocator) -> Result<(), U64>:
+    if let Catalog = route:
+        match bootstrap:
+            Some(script):
+                if framed:
+                    head.push_text(allocator, "; trusted-types 'none'; script-src '")?
+                else:
+                    head.push_text(allocator, "; trusted-types glamour-worker; script-src '")?
+                script.append(head, allocator)?
+                if framed:
+                    return head.push_text(allocator, "'; worker-src 'none'; frame-src 'self'; connect-src 'self'; style-src 'self'")
+                return head.push_text(allocator, "'; worker-src 'self'; connect-src 'self'; style-src 'self'")
+            None:
+                return Err(503)
+    head.push_text(allocator, "; trusted-types 'none'")?
+    match route:
+        PackagePage:
+            return head.push_text(allocator, "; style-src 'self'")
+        Worker:
+            return head.push_text(allocator, "; script-src 'wasm-unsafe-eval'")
+        _:
+            return Ok(())
+
+fn content_type(route: WebRoute) -> Text:
+    match route:
+        Catalog:
+            return "text/html; charset=utf-8"
+        PackagePage | Frame:
+            return "text/html; charset=utf-8"
+        Stylesheet:
+            return "text/css; charset=utf-8"
+        Filter:
+            return "application/wasm"
+        _:
+            return "text/javascript; charset=utf-8"

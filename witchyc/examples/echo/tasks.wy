@@ -1,0 +1,94 @@
+// A concurrent echo server written as one sequential function per connection: `serve` reads
+// and writes as if it had the connection to itself, and its task pauses where it would wait.
+// `Waiting` (library/wasm-net.wy) steps the tasks whose sockets are ready (docs/design-async.md,
+// "How a pause works"). It serves `--grant=Load.connections=N` connections, then prints how
+// many bytes it echoed. `scripts/bench-echo-concurrent.py` runs it beside
+// examples/echo/server.wy, the same server written as an event loop.
+import console
+import net
+import tasks
+import vec
+import discard
+
+grantable capability Load:
+    connections: U64
+
+// One connection, start to end, with a buffer of its own; it reports how many bytes it echoed.
+fn serve(socket: Socket, made: Vec<U8>) suspends:
+    var buffer = move made
+    // Cancelled before it began (a shutdown): give back what it holds and do nothing else.
+    if first_word() == CANCELLED:
+        socket.close()
+        buffer.close()
+        return
+    var total: U64 = 0
+    var more = true
+    while more:
+        match socket.read(buffer.as_mut_slice()):
+            Ok(count):
+                if count == 0:
+                    more = false
+                else:
+                    let echo = buffer.as_slice()
+                    match socket.write(echo.part(0, count)):
+                        Ok:
+                            total += count
+                        Err(failure):
+                            more = false
+            Err(error):
+                more = false
+    socket.close()
+    buffer.close()
+    report(total)
+
+// A task for the next waiting connection, or why there is none.
+fn connection_task(listener: &Listener, allocator: &Allocator) -> Result<Task, U64>:
+    let Ok(socket): Socket = listener.try_accept() else Err(error):
+        return Err(0)
+    let zero: U8 = 0
+    let Ok(buffer): Vec<U8> = Vec.filled(allocator, 16384, zero) else Err(code):
+        socket.close()
+        return Err(code)
+    match Task.spawn(allocator, 4096, fn() -> (): serve(move socket, move buffer)):
+        Ok(task):
+            return Ok(move task)
+        Err(back):
+            back.discard()
+            return Err(1)
+
+fn main(console: Console<Write>, listener: Listener, allocator: Allocator, load: Load):
+    let Ok(made): Waiting = Waiting.new(&allocator, &listener) else Err(code):
+        return
+    var waiting = move made
+    var finished: U64 = 0
+    var echoed: U64 = 0
+    var serving = true
+    while serving && finished < load.connections:
+        let stepped = waiting.step_ready(&allocator, &listener)
+        serving = stepped.ready
+        finished += stepped.finished
+        echoed += stepped.reported
+        var accepting = stepped.connections
+        while accepting:
+            match connection_task(&listener, &allocator):
+                Ok(task):
+                    match waiting.start(&allocator, move task):
+                        Ok(started):
+                            finished += started.finished
+                            echoed += started.reported
+                        // No memory to keep a waiting connection: it is cancelled, which
+                        // closes its socket.
+                        Err(unkept):
+                            var dropped = move unkept
+                            match dropped.cancel():
+                                Ok(reported):
+                                    echoed += reported
+                                Err(token):
+                                    unreachable
+                            dropped.close()
+                Err(code):
+                    accepting = false
+    // Connections still open when the run's deadline comes are cancelled.
+    echoed += waiting.cancel_all(&allocator)
+    console.print_int(echoed)
+    waiting.close()

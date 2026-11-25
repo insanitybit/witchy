@@ -1,0 +1,21 @@
+// The callee needs the flag on; the caller passes it off.
+type Flag:
+    on: Bool
+    count: U64
+
+fn last(flag: &Flag) -> U64:
+    requires flag.on && flag.count > 0
+    ensures result < flag.count
+    proof:
+        auto
+    return flag.count - 1
+
+fn use_flag() -> U64:
+    ensures result < 5
+    proof:
+        auto
+    let flag = Flag(false, 5)
+    return last(&flag)
+
+fn main(console: Console<Write>):
+    console.print_int(use_flag())

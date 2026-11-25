@@ -1,0 +1,286 @@
+import "attestations.wy"
+import "delegations.wy"
+import "expiry.wy"
+import "metadata.wy"
+import "release_trust.wy"
+import "root.wy"
+import json_tree
+import span
+import string
+import text
+import vec
+
+pub type GenerationError:
+    MalformedGeneration
+    GenerationThresholdFailed
+    MetadataExpired
+    MetadataRollback
+    InvalidHistory
+    InvalidDelegations
+
+pub sealed type VerifiedTopLevel:
+    snapshot: Boxed<Metadata>
+    targets: Metadata
+    timestamp_version: U64
+    checked_at: U64
+
+pub sealed type VerifiedRole:
+    document: Metadata
+    checked_at: U64
+
+pub type TargetAttestationError:
+    TargetMismatch(DelegationError)
+    Unattested(ReleaseError)
+
+pub type History:
+    FirstPublication
+    Published(PreviousGeneration)
+
+pub type PreviousGeneration:
+    timestamp: &String
+    snapshot: &String
+
+// All three inputs are the original repository bytes. The published
+// baseline must come from the protected mirror while publication is locked.
+pub fn verify_top_level(root: &TrustedRoot, timestamp_bytes: &String, snapshot_bytes: &String, targets_bytes: &String, history: History, now_ms: U64, allocator: &Allocator) -> Result<VerifiedTopLevel, GenerationError>:
+    let empty: [U8; 1] = [0]
+    return verify_reserved_generation(root, timestamp_bytes, snapshot_bytes, targets_bytes, history, now_ms, empty.slice().part(0, 0), allocator)
+
+pub fn verify_reserved_generation(root: &TrustedRoot, timestamp_bytes: &String, snapshot_bytes: &String, targets_bytes: &String, history: History, now_ms: U64, reserved: &[U8], allocator: &Allocator) -> Result<VerifiedTopLevel, GenerationError>:
+    if let Err(error) = root.fresh_at(now_ms):
+        return Err(freshness_failure(error))
+    let Ok(timestamp): Metadata = parse_metadata(timestamp_bytes, allocator, Timestamp) else Err(error):
+        return Err(MalformedGeneration)
+    let result = verify_after_timestamp(root, &timestamp, timestamp_bytes, snapshot_bytes, targets_bytes, history, now_ms, reserved, allocator)
+    timestamp.close()
+    return move result
+
+fn verify_after_timestamp(root: &TrustedRoot, timestamp: &Metadata, timestamp_bytes: &String, snapshot_bytes: &String, targets_bytes: &String, history: History, now_ms: U64, reserved: &[U8], allocator: &Allocator) -> Result<VerifiedTopLevel, GenerationError>:
+    authenticated(root, timestamp, now_ms, allocator)?
+    let reference = snapshot_reference(timestamp, allocator)?
+    let Ok(snapshot): Metadata = reference.open(Snapshot, snapshot_bytes, allocator) else Err(error):
+        return Err(MalformedGeneration)
+    let checked = verify_after_snapshot(root, timestamp, &snapshot, timestamp_bytes, targets_bytes, history, now_ms, reserved, allocator)
+    match move checked:
+        Ok(targets):
+            let Ok(version): U64 = timestamp.version() else Err(error):
+                targets.close()
+                snapshot.close()
+                return Err(MalformedGeneration)
+            let boxed: Result<Boxed<Metadata>, Metadata> = memory.try_box(allocator, move snapshot)
+            match move boxed:
+                Ok(owner):
+                    return Ok(VerifiedTopLevel(move owner, move targets, version, now_ms))
+                Err(unsaved):
+                    unsaved.close()
+                    targets.close()
+                    return Err(MalformedGeneration)
+        Err(error):
+            snapshot.close()
+            return Err(error)
+
+fn verify_after_snapshot(root: &TrustedRoot, timestamp: &Metadata, snapshot: &Metadata, timestamp_bytes: &String, targets_bytes: &String, history: History, now_ms: U64, reserved: &[U8], allocator: &Allocator) -> Result<Metadata, GenerationError>:
+    authenticated(root, snapshot, now_ms, allocator)?
+    check_history(timestamp, snapshot, timestamp_bytes, history, allocator)?
+    let reference = top_targets_reference(snapshot, allocator)?
+    let Ok(targets): Metadata = reference.open(Targets, targets_bytes, allocator) else Err(error):
+        return Err(MalformedGeneration)
+    let checked = check_parent(root, snapshot, &targets, now_ms, reserved, allocator)
+    if let Err(error) = checked:
+        targets.close()
+        return Err(error)
+    return Ok(move targets)
+
+fn check_parent(root: &TrustedRoot, snapshot: &Metadata, parent: &Metadata, now_ms: U64, reserved: &[U8], allocator: &Allocator) -> Result<(), GenerationError>:
+    authenticated(root, parent, now_ms, allocator)?
+    if let Err(error) = validate_delegations(root, snapshot, parent, reserved, allocator):
+        return Err(InvalidDelegations)
+    return Ok(())
+
+pub fn authenticated(root: &TrustedRoot, document: &Metadata, now_ms: U64, allocator: &Allocator) -> Result<(), GenerationError>:
+    if let Err(error) = root.verify(document, allocator):
+        return Err(GenerationThresholdFailed)
+    if let Err(error) = check_freshness(document, now_ms):
+        return Err(freshness_failure(error))
+    return Ok(())
+
+fn freshness_failure(error: FreshnessError) -> GenerationError:
+    match error:
+        Expired:
+            return MetadataExpired
+        _:
+            return MalformedGeneration
+
+pub fn snapshot_reference(timestamp: &Metadata, allocator: &Allocator) -> Result<MetadataReference, GenerationError>:
+    let Ok(body): &Json = timestamp.signed() else Err(code):
+        return Err(MalformedGeneration)
+    let Ok(reference): &Json = body.field("meta") else Err(code):
+        return Err(MalformedGeneration)
+    let Ok(field): &Json = reference.field("snapshot.json") else Err(code):
+        return Err(MalformedGeneration)
+    let Ok(checked): MetadataReference = parse_metadata_reference(field, allocator, metadata_limit(Snapshot)) else Err(error):
+        return Err(MalformedGeneration)
+    return Ok(checked)
+
+pub fn top_targets_reference(snapshot: &Metadata, allocator: &Allocator) -> Result<MetadataReference, GenerationError>:
+    let Ok(meta): &Json = snapshot_entries(snapshot) else Err(code):
+        return Err(MalformedGeneration)
+    let Ok(field): &Json = meta.field("targets.json") else Err(code):
+        return Err(MalformedGeneration)
+    let Ok(reference): MetadataReference = parse_metadata_reference(field, allocator, metadata_limit(Targets)) else Err(error):
+        return Err(MalformedGeneration)
+    return Ok(reference)
+
+fn snapshot_entries(snapshot: &Metadata) -> Result<&Json, U64>:
+    let body = snapshot.signed()?
+    return body.field("meta")
+
+pub fn check_history(timestamp: &Metadata, snapshot: &Metadata, bytes: &String, history: History, allocator: &Allocator) -> Result<(), GenerationError>:
+    match history:
+        FirstPublication:
+            return Ok(())
+        Published(previous):
+            let Ok(old): Metadata = parse_metadata(previous.timestamp, allocator, Timestamp) else Err(error):
+                return Err(InvalidHistory)
+            let checked = compare_history(timestamp, snapshot, &old, bytes, previous, allocator)
+            old.close()
+            return checked
+
+fn compare_history(timestamp: &Metadata, snapshot: &Metadata, old: &Metadata, bytes: &String, previous: PreviousGeneration, allocator: &Allocator) -> Result<(), GenerationError>:
+    let reference = compare_timestamp(timestamp, old, bytes, previous.timestamp, allocator)?
+    let Ok(old_snapshot): Metadata = reference.open(Snapshot, previous.snapshot, allocator) else Err(error):
+        return Err(InvalidHistory)
+    let checked = compare_entries(snapshot, &old_snapshot, allocator)
+    old_snapshot.close()
+    return checked
+
+pub fn check_timestamp_history(timestamp: &Metadata, bytes: &String, previous: &String, allocator: &Allocator) -> Result<(), GenerationError>:
+    let Ok(old): Metadata = parse_metadata(previous, allocator, Timestamp) else Err(error):
+        return Err(InvalidHistory)
+    let checked = compare_timestamp(timestamp, &old, bytes, previous, allocator)
+    old.close()
+    checked?
+    return Ok(())
+
+fn compare_timestamp(timestamp: &Metadata, old: &Metadata, bytes: &String, previous: &String, allocator: &Allocator) -> Result<MetadataReference, GenerationError>:
+    let Ok(before): U64 = old.version() else Err(error):
+        return Err(InvalidHistory)
+    let Ok(current): U64 = timestamp.version() else Err(error):
+        return Err(MalformedGeneration)
+    if current < before || (current == before && !bytes.eq(previous)):
+        return Err(MetadataRollback)
+    let Ok(reference): MetadataReference = snapshot_reference(old, allocator) else Err(error):
+        return Err(InvalidHistory)
+    let next = snapshot_reference(timestamp, allocator)?
+    if !next.supersedes(&reference):
+        return Err(MetadataRollback)
+    return Ok(reference)
+
+fn compare_entries(snapshot: &Metadata, previous: &Metadata, allocator: &Allocator) -> Result<(), GenerationError>:
+    let Ok(old): &Json = snapshot_entries(previous) else Err(code):
+        return Err(InvalidHistory)
+    let Ok(current): &Json = snapshot_entries(snapshot) else Err(code):
+        return Err(MalformedGeneration)
+    match current:
+        Object(entries):
+            match old:
+                Object(floors):
+                    return compare_sorted_entries(entries, floors, allocator)
+                _:
+                    return Err(InvalidHistory)
+        _:
+            return Err(MalformedGeneration)
+
+// parse_metadata has already sorted member names and rejected duplicates.
+fn compare_sorted_entries(current: &Vec<Member>, old: &Vec<Member>, allocator: &Allocator) -> Result<(), GenerationError>:
+    var index: U64 = 0
+    for entry in old:
+        let Ok(floor): MetadataReference = parse_metadata_reference(&entry.value, allocator, metadata_limit(Targets)) else Err(error):
+            return Err(InvalidHistory)
+        index = skip_new_entries(current, index, &entry.key)
+        let Ok(found): &Member = current.at(index) else Err(code):
+            return Err(MetadataRollback)
+        if !found.key.eq(&entry.key):
+            return Err(MetadataRollback)
+        let Ok(next): MetadataReference = parse_metadata_reference(&found.value, allocator, metadata_limit(Targets)) else Err(error):
+            return Err(MalformedGeneration)
+        if !next.supersedes(&floor):
+            return Err(MetadataRollback)
+        index += 1
+    return Ok(())
+
+fn skip_new_entries(entries: &Vec<Member>, start: U64, name: &String) -> U64:
+    var index = start
+    while index < entries.len():
+        let Ok(entry): &Member = entries.at(index) else Err(code):
+            return entries.len()
+        if !entry.key.less(name):
+            return index
+        index += 1
+    return index
+
+impl VerifiedTopLevel:
+    pub fn role_count(self: &VerifiedTopLevel) -> Result<U64, U64>:
+        let roles = delegated_roles(&(*self).targets)?
+        return roles.len()
+
+    pub fn role_name(self: &VerifiedTopLevel, index: U64) -> Result<&String, U64>:
+        return delegated_role_name(&(*self).targets, index)
+
+    pub fn reference(self: &VerifiedTopLevel, name: &String, allocator: &Allocator) -> Result<MetadataReference, DelegationError>:
+        let Ok(snapshot): &Metadata = self.snapshot() else Err:
+            return Err(InvalidDelegation)
+        return role_reference(snapshot, name, allocator)
+
+    pub fn open_role(self: &VerifiedTopLevel, name: &String, wire: &String, allocator: &Allocator) -> Result<VerifiedRole, DelegationError>:
+        let Ok(snapshot): &Metadata = self.snapshot() else Err:
+            return Err(InvalidDelegation)
+        let document = authenticate_role(snapshot, &(*self).targets, name, wire, (*self).checked_at, allocator)?
+        return Ok(VerifiedRole(move document, (*self).checked_at))
+
+    pub fn snapshot(self: &VerifiedTopLevel) -> Result<&Metadata, ()>:
+        return memory.box_ref(&(*self).snapshot)
+
+    pub fn targets(self: &VerifiedTopLevel) -> &Metadata:
+        return &(*self).targets
+
+    pub pure fn timestamp_version(self: &VerifiedTopLevel) -> U64:
+        return (*self).timestamp_version
+
+    pub pure fn checked_at(self: &VerifiedTopLevel) -> U64:
+        return (*self).checked_at
+
+    pub fn close(self: VerifiedTopLevel):
+        let VerifiedTopLevel(snapshot, targets, version, when) = move self
+        if let Ok(document) = memory.unbox(move snapshot):
+            document.close()
+        targets.close()
+
+impl VerifiedRole:
+    pub fn targets(self: &VerifiedRole) -> Result<&Json, U64>:
+        let signed = (*self).document.signed()?
+        return signed.field("targets")
+
+    pub fn reference(self: &VerifiedRole, coordinate: &String, allocator: &Allocator) -> Result<ContentReference, DelegationError>:
+        let Ok(offers): &Json = self.targets() else Err(code):
+            return Err(InvalidTarget)
+        return target_reference(offers, coordinate, allocator)
+
+    pub fn verify_target(self: &VerifiedRole, coordinate: &String, bytes: &[U8], allocator: &Allocator) -> Result<(), DelegationError>:
+        let reference = self.reference(coordinate, allocator)?
+        if let Err(error) = reference.verify(bytes):
+            return Err(TargetContentMismatch)
+        return Ok(())
+
+    // Verify the exact same bytes against the TUF reference and the two
+    // independent release authorities, with one time for the update.
+    pub fn verify_attestations(self: &VerifiedRole, coordinate: &String, bundle: &String, trust: &ReleaseTrust, allocator: &Allocator) -> Result<(), TargetAttestationError>:
+        if let Err(error) = self.verify_target(coordinate, bundle.as_bytes(), allocator):
+            return Err(TargetMismatch(error))
+        if let Err(error) = verify_coordinate_attestations(bundle, trust, coordinate.span(), (*self).checked_at, allocator):
+            return Err(Unattested(error))
+        return Ok(())
+
+    pub fn close(self: VerifiedRole):
+        let VerifiedRole(document, when) = move self
+        document.close()

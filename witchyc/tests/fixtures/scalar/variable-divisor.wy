@@ -1,0 +1,27 @@
+// Quotients and remainders by a variable, and a product bounded by a `requires` of two
+// conjuncts: `a / b <= a`, `i % n < n` and `w * h <= 1000000` are proved, so callers know them.
+import console
+
+fn area(w: U64, h: U64) -> U64:
+    requires w <= 1000 && h <= 1000
+    ensures result <= 1000000
+    proof:
+        auto
+    return w * h
+
+fn wrap(i: U64, n: U64) -> U64:
+    requires n > 0
+    ensures result < n
+    proof:
+        auto
+    return i % n
+
+fn ratio(a: U64, b: U64) -> U64:
+    requires b > 0 && a <= 1000
+    ensures result <= a
+    proof:
+        auto
+    return a / b
+
+fn main(console: Console<Write>):
+    console.print("${area(1000, 1000)} ${wrap(17, 5)} ${ratio(9, 2)} ${ratio(9, 1)}")

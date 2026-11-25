@@ -1,0 +1,34 @@
+// What precedes an inline `if` runs first in a generator, a closure, and a task whose `if` pauses:
+// `tick` prints 5 before `step` pauses.
+import console
+import tasks
+
+fn tick(console: &Console<Write>, n: U64) -> U64:
+    console.print_int(n)
+    n
+
+gen fn pairs(limit: U64) -> U64:
+    for i in 0..limit:
+        var x: U64 = i
+        yield x * 10 + (if i % 2 == 0: 1 else: 2)
+
+fn step(n: U64) -> U64 suspends:
+    pause(n)
+    n + 1
+
+fn work(console: Console<Write>) suspends:
+    var x: U64 = 5
+    let y = tick(&console, x) + (if x > 3: step(x) else: 0)
+    console.print_int(y)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    for v in pairs(3):
+        console.print_int(v)
+    let add = fn(a: U64, b: U64): a * 100 + (if b > 1: b else: 0)
+    console.print_int(add(3, 4))
+    let Ok(made): Task = Task.spawn(&allocator, 4096, work, move console) else Err(back):
+        return
+    var task = move made
+    while let Err(token) = task.step():
+        ()
+    task.close()

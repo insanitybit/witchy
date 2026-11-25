@@ -1,0 +1,9 @@
+// Refused, saying what to write: `Nothing.discard()` names a type's method, and `Nothing` is a variant.
+import discard
+
+type Slot derive(Discard):
+    Nothing
+    Held(U64)
+
+fn main(console: Console<Write>):
+    Nothing.discard()

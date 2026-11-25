@@ -1,0 +1,7 @@
+fn after(a: U64) -> U64:
+    ensures result >= a
+    proof:
+        auto
+    return a + 1
+fn main(console: Console<Write>):
+    console.print_int(after(1))

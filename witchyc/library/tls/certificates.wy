@@ -1,0 +1,92 @@
+// TLS 1.3 server Certificate with a leaf-first chain and no entry extensions.
+// The operator supplies DER certificates in chain order.
+import vec
+
+pub type CertificateError:
+    CertificateNoRoom
+    InvalidCertificateLength
+    EmptyChain
+    CertificateOutputTooShort
+
+pub sealed type CertificateChain:
+    entries: Vec<U8>
+    count: U64
+
+pub fn chain(allocator: &Allocator, capacity: U64) -> Result<CertificateChain, CertificateError>:
+    if capacity < 6 || capacity > 65536:
+        return Err(InvalidCertificateLength)
+    let allocated: Result<Vec<U8>, U64> = Vec.filled(allocator, capacity, 0)
+    match move allocated:
+        Err(reason):
+            return Err(CertificateNoRoom)
+        Ok(bytes):
+            return Ok(CertificateChain(move bytes, 0))
+
+impl CertificateChain:
+    pub fn add(self: &mut CertificateChain, der: &[U8]) -> Result<(), CertificateError>:
+        let count = der.len()
+        let start = (*self).count
+        let output = (*self).entries.as_mut_slice()
+        if count == 0 || count > 65531:
+            return Err(InvalidCertificateLength)
+        if output.len() - start < count + 5:
+            return Err(CertificateNoRoom)
+        word24(output.part(start, start + 3), count)
+        let end = start + 3 + count
+        output.part(start + 3, end).copy_from(der)
+        // Empty per-certificate extensions.
+        output[end] = 0
+        output[end + 1] = 0
+        (*self).count = end + 2
+        return Ok(())
+
+    pub fn encode(self: &CertificateChain, output: &mut [U8]) -> Result<U64, CertificateError>:
+        let count = (*self).count
+        if count == 0:
+            return Err(EmptyChain)
+        let length = count + 8
+        if output.len() < length:
+            return Err(CertificateOutputTooShort)
+        output[0] = 11
+        word24(output.part(1, 4), count + 4)
+        output[4] = 0
+        word24(output.part(5, 8), count)
+        output.part(8, length).copy_from((*self).entries.as_slice().part(0, count))
+        return Ok(length)
+
+    pub fn close(self: CertificateChain):
+        let CertificateChain(entries, count) = move self
+        entries.close()
+
+fn word24(output: &mut [U8], value: U64):
+    output[0] = U8.truncate(value >> 16)
+    output[1] = U8.truncate(value >> 8)
+    output[2] = U8.truncate(value)
+
+// A public certificate bundle is consecutive big-endian u24 DER lengths and
+// their DER bytes, leaf first. The root trust anchor normally stays with clients.
+pub fn from_der_list(allocator: &Allocator, bundle: &[U8]) -> Result<CertificateChain, CertificateError>:
+    if bundle.len() == 0 || bundle.len() > 65536:
+        return Err(InvalidCertificateLength)
+    let made = chain(allocator, 65536)?
+    var ready = move made
+    let added = add_der_list(&mut ready, bundle)
+    match added:
+        Err(reason):
+            ready.close()
+            return Err(reason)
+        Ok:
+            return Ok(move ready)
+
+fn add_der_list(chain: &mut CertificateChain, bundle: &[U8]) -> Result<(), CertificateError>:
+    var at: U64 = 0
+    while at < bundle.len():
+        if bundle.len() - at < 3:
+            return Err(InvalidCertificateLength)
+        let size = U8.to_u64(bundle[at]) * 65536 + U8.to_u64(bundle[at + 1]) * 256 + U8.to_u64(bundle[at + 2])
+        at += 3
+        if size == 0 || size > bundle.len() - at:
+            return Err(InvalidCertificateLength)
+        chain.add(bundle.part(at, at + size))?
+        at += size
+    return Ok(())

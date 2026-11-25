@@ -1,0 +1,88 @@
+// A sum that owns: a document is text or a list of documents. Text is appended to and
+// lists are pushed onto where they are, through `&mut`, without taking the sum apart.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-text.wy"
+import "../../../library/wasm-discard.wy"
+import "../../../library/wasm-string.wy"
+import "../../../library/wasm-vec.wy"
+import "../../../library/wasm-discard-core.wy"
+
+type Doc:
+    Words(String)
+    Many(Vec<String>)
+    Nothing
+
+impl Discard for Doc:
+    fn discard(self: Doc):
+        match move self:
+            Words(text):
+                text.close()
+            Many(items):
+                items.discard()
+            Nothing:
+                return
+
+fn text(allocator: &Allocator, value: Text) -> Result<String, U64>:
+    var made = String.new(allocator)?
+    if let Err(_) = made.push_text(allocator, value):
+        made.close()
+        return Err(1)
+    return Ok(move made)
+
+// Add `more` to the document in place. False: no room.
+fn add(doc: &mut Doc, allocator: &Allocator, more: Text) -> Bool:
+    match doc:
+        Words(words):
+            return words.push_text(allocator, more).is_ok()
+        Many(items):
+            match text(allocator, more):
+                Ok(made):
+                    match items.push_mut(allocator, move made):
+                        Ok:
+                            return true
+                        Err(back):
+                            back.close()
+                            return false
+                Err(code):
+                    return false
+        Nothing:
+            return false
+
+fn show(console: &Console<Write>, doc: &Doc):
+    match doc:
+        Words(words):
+            console.write_string(words)
+            console.print_byte(10)
+        Many(items):
+            for item in items:
+                console.write_string(item)
+                console.print_byte(32)
+            console.print_byte(10)
+        Nothing:
+            console.line("nothing")
+
+fn run(console: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    var one = Words(text(allocator, "in")?)
+    if !add(&mut one, allocator, " place"):
+        console.line("no room")
+    show(console, &one)
+    one.discard()
+    let items: Vec<String> = Vec.new(allocator, 0)?
+    var many = Many(move items)
+    if !add(&mut many, allocator, "first") || !add(&mut many, allocator, "second"):
+        console.line("no room")
+    show(console, &many)
+    many.discard()
+    var none = Nothing
+    if add(&mut none, allocator, "lost"):
+        console.line("added to nothing")
+    show(console, &none)
+    none.discard()
+    return Ok(())
+
+fn main(console: Console<Write>, allocator: Allocator):
+    match run(&console, &allocator):
+        Ok:
+            return
+        Err(code):
+            console.print_int(code)

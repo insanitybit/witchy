@@ -1,0 +1,1 @@
+a function returns a closure as `fn(...)`, not inside `&` or another type

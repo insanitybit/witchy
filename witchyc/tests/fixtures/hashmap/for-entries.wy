@@ -1,0 +1,25 @@
+// `HashMap.for_entries(n)` sizes for n entries by `put`'s three-quarters rule, rounded up to an odd
+// count of cells: 300 fit in 401 cells with no growth; a count whose cells overflow is refused.
+import console
+import hashmap
+import discard
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(m): HashMap<U64, U64> = HashMap.for_entries(&allocator, 300) else Err(c):
+        return
+    var map = move m
+    let before = map.capacity()
+    for k in 0..300:
+        let r = map.put(&allocator, k * 7, k)
+    console.print("${before} ${map.capacity()} ${map.len()}")
+    map.discard()
+    let Ok(n): HashMap<U64, U64> = HashMap.for_entries(&allocator, 3) else Err(c):
+        return
+    console.print_int(n.capacity())
+    n.discard()
+    match HashMap.for_entries(&allocator, 18446744073709551615):
+        Ok(huge):
+            let h: HashMap<U64, U64> = move huge
+            h.discard()
+        Err(code):
+            console.print("too many ${code}")

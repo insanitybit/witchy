@@ -1,0 +1,15 @@
+// The same type and the same derive name, from a different recipe module: the hash is the one
+// that module writes (the fields' hashes added), with no change to the compiler.
+import "parts/sumkeys.wy"
+import console
+import hash
+
+type Pair derive(sumkeys.Key):
+    left: U64
+    right: U64
+
+fn main(console: Console<Write>):
+    let one: U64 = 1
+    let two: U64 = 2
+    if Pair(left: 1, right: 2).hash() == (one.hash() % 1000000) + (two.hash() % 1000000):
+        console.print_int(3)

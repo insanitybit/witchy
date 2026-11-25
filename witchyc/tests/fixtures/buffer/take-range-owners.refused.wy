@@ -1,0 +1,12 @@
+// Refused: a run of owners is taken out one by one, never dropped in a run.
+fn clear<T: Any>(buffer: &mut Buffer<T>, count: U64):
+    requires count <= memory.capacity(buffer)
+    requires memory.initialized_range(buffer, 0, count)
+    ensures memory.empty_range(buffer, 0, count)
+    proof:
+        auto
+    memory.take_prefix_unchecked(buffer, count)
+    return
+
+fn main():
+    return

@@ -1,0 +1,75 @@
+// binary-trees (the Benchmarks Game): build perfect binary trees, count their nodes, give them
+// back. A tree is a sum that holds itself in a Vec of two.
+import console
+import vec
+
+type Tree:
+    Leaf
+    Branch(Vec<Tree>)
+
+fn build(allocator: &Allocator, depth: U64) -> Tree:
+    if depth == 0:
+        return Leaf
+    let Ok(made): Vec<Tree> = Vec.new(allocator, 2) else Err(code):
+        return Leaf
+    var children = move made
+    let left = build(allocator, depth - 1)
+    match children.push_mut(allocator, move left):
+        Ok:
+            let pushed = true
+        Err(back):
+            let lost = check(move back)
+    let right = build(allocator, depth - 1)
+    match children.push_mut(allocator, move right):
+        Ok:
+            let pushed = true
+        Err(back):
+            let lost = check(move back)
+    return Branch(move children)
+
+// The number of nodes; the tree is given back.
+fn check(tree: Tree) -> U64:
+    match move tree:
+        Leaf:
+            return 1
+        Branch(children):
+            var rest = move children
+            var count: U64 = 1
+            while rest.len() > 0:
+                match rest.take_last_mut():
+                    Ok(child):
+                        count += check(move child)
+                    Err(code):
+                        count = count
+            match rest.try_release():
+                Ok:
+                    return count
+                Err(stuck):
+                    return count + check(Branch(move stuck))
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let n: U64 = 16
+    let stretch = n + 1
+    console.write("stretch tree of depth ")
+    console.write_u64(stretch)
+    console.write("\t check: ")
+    console.print_int(check(build(&allocator, stretch)))
+    let long_lived = build(&allocator, n)
+    var depth: U64 = 4
+    while depth <= n:
+        var iterations: U64 = 1
+        for step in 0..n - depth + 4:
+            iterations = iterations * 2
+        var total: U64 = 0
+        for i in 0..iterations:
+            total += check(build(&allocator, depth))
+        console.write_u64(iterations)
+        console.write("\t trees of depth ")
+        console.write_u64(depth)
+        console.write("\t check: ")
+        console.print_int(total)
+        depth += 2
+    console.write("long lived tree of depth ")
+    console.write_u64(n)
+    console.write("\t check: ")
+    console.print_int(check(move long_lived))

@@ -1,0 +1,10 @@
+// Refused: a file being written must be finished or abandoned. Dropping it would
+// lose what was written without a word.
+import fs
+
+fn main(dir: Dir<Write>):
+    match dir.create("out.txt"):
+        Ok(file):
+            let written = file.write("lost")
+        Err(error):
+            return

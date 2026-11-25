@@ -1,0 +1,38 @@
+// Refused (review): a word write with no proof.
+// No contract: write 8 bytes into a 1-cell buffer, twice into the same (full) cells.
+fn poke(cells: &mut Buffer<U8>, at: U64, word: U64, count: U64):
+    memory.init_word_unchecked(cells, at, word, count)
+
+fn empty(cells: &mut Buffer<U8>, n: U64):
+    for i in 0..n:
+        match memory.take(cells, i):
+            Ok(b):
+                b
+            Err(c):
+                c
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<Buffer<U8>, U64> = memory.try_alloc(&allocator, 4)
+    match move made:
+        Ok(buffer):
+            var cells = move buffer
+            poke(&mut cells, 0, 4702111234474983745, 2)
+            console.print_int(1)
+            poke(&mut cells, 0, 1, 2)
+            console.print_int(2)
+            empty(&mut cells, 4)
+            match memory.try_release(move cells):
+                Ok:
+                    console.print_int(3)
+                Err(stuck):
+                    console.print_int(4)
+                    finish(move stuck)
+        Err(code):
+            console.print_int(code)
+
+fn finish(cells: Buffer<U8>):
+    match memory.try_release(move cells):
+        Ok:
+            return
+        Err(stuck):
+            finish(move stuck)

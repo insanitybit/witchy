@@ -1,0 +1,14 @@
+// A trap in a small function the compiler writes into its caller names that function: the
+// report said only `main`, where its code now is.
+import console
+
+fn must_be_small(x: U64) -> U64:
+    if x > 10:
+        unreachable
+    return x * 2
+
+fn main(console: Console<Write>):
+    var total: U64 = 0
+    for i in 0..20:
+        total += must_be_small(i)
+    console.print_int(total)

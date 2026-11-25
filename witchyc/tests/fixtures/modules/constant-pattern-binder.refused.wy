@@ -1,0 +1,15 @@
+// A binder in a record pattern named like a module constant is refused: it would silently
+// mean the constant (review round 28).
+import console
+
+let LIMIT = 42
+
+type Pt:
+    a: U64
+    b: U64
+
+fn main(console: Console<Write>):
+    let p = Pt(7, 8)
+    let Pt(LIMIT, b) = p
+    console.print_int(LIMIT)
+    console.print_int(b)

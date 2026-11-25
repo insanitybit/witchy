@@ -1,0 +1,41 @@
+// Verify Coven witchy-2 objects (signed by the engine, AWS-LC) with Go's crypto/mldsa, an
+// independent FIPS 204 implementation: ML-DSA-65, empty context, the whole message; a message
+// changed by one bit must not verify. Prints each object's domain and signer key ID (SHA-384 of
+// its public key). Run (2026-11-20, Go 1.27.3) as main.go in a module, on a registry Grimoire's
+// examples/registry/demo.sh made: go run . registry/snapshot registry/NAME/index
+// registry/NAME/VERSION/release-signature (each verified, each changed one refused).
+package main
+
+import (
+	"bytes"
+	"crypto/mldsa"
+	"crypto/sha512"
+	"encoding/base64"
+	"fmt"
+	"os"
+)
+
+func main() {
+	ok := true
+	for _, path := range os.Args[1:] {
+		raw, _ := os.ReadFile(path)
+		at := bytes.LastIndex(raw, []byte("\nsignature "))
+		msg := raw[:at+1]
+		sig, err := base64.StdEncoding.DecodeString(string(bytes.TrimSuffix(raw[at+11:], []byte("\n"))))
+		if err != nil { panic(err) }
+		var pkText []byte
+		for _, line := range bytes.Split(msg, []byte("\n")) {
+			f := bytes.Fields(line)
+			if len(f) == 3 && string(f[1]) == "witchy-2" && (string(f[0]) == "signer" || string(f[0]) == "operator") { pkText = f[2]; break }
+		}
+		pkBytes, _ := base64.StdEncoding.DecodeString(string(pkText))
+		pk, err := mldsa.NewPublicKey(mldsa.MLDSA65(), pkBytes)
+		if err != nil { panic(err) }
+		verr := mldsa.Verify(pk, msg, sig, &mldsa.Options{})
+		bad := append([]byte{}, msg...); bad[len(bad)-2] ^= 1
+		berr := mldsa.Verify(pk, bad, sig, &mldsa.Options{})
+		fmt.Printf("%s: domain %q, key witchy-2:%x, sig %d bytes, verify=%v, changed=%v\n", path, bytes.SplitN(msg, []byte{0}, 2)[0], sha512.Sum384(pkBytes), len(sig), verr == nil, berr == nil)
+		ok = ok && verr == nil && berr != nil
+	}
+	if !ok { os.Exit(1) }
+}

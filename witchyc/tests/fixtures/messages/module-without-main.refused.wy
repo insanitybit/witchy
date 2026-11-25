@@ -1,0 +1,6 @@
+// Refused, saying this file offers functions for import and to compile the program that imports it:
+// it said only "missing main function" (123 of 4,000 mutants).
+import console
+
+pub fn helper(n: U64) -> U64:
+    return n + 1

@@ -1,0 +1,43 @@
+// A Span against a literal without regard to ASCII case, and whether its bytes are whole
+// UTF-8, neither making a String.
+import console
+import span
+import string
+import vec
+
+fn show(console: &Console<Write>, found: Bool):
+    if found:
+        console.line("yes")
+    else:
+        console.line("no")
+
+fn utf8(console: &Console<Write>, allocator: &Allocator, a: U8, b: U8, c: U8):
+    let Ok(made): Vec<U8> = Vec.new(allocator, 3) else Err(code):
+        return
+    var bytes = move made
+    let _ = bytes.push_mut(allocator, a)
+    let _ = bytes.push_mut(allocator, b)
+    let _ = bytes.push_mut(allocator, c)
+    show(console, Span.of(bytes.as_slice()).is_utf8())
+    bytes.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var text = move made
+    let _ = text.push_text(&allocator, "Content-LENGTH")
+    show(&console, text.span().equals_text_ignore_ascii_case("content-length"))
+    show(&console, text.span().equals_text_ignore_ascii_case("content-lengt"))
+    show(&console, text.span().equals_text_ignore_ascii_case("content_length"))
+    show(&console, text.span().equals_text("content-length"))
+    show(&console, text.span().is_utf8())
+    text.close()
+    // "a", then U+00E9 whole.
+    utf8(&console, &allocator, 97, 195, 169)
+    // A lead byte with nothing after it; a bare continuation; an overlong form; a surrogate.
+    utf8(&console, &allocator, 97, 98, 195)
+    utf8(&console, &allocator, 97, 169, 98)
+    utf8(&console, &allocator, 192, 128, 97)
+    utf8(&console, &allocator, 237, 160, 128)
+    // U+20AC whole.
+    utf8(&console, &allocator, 226, 130, 172)

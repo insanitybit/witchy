@@ -1,0 +1,9 @@
+// Refused: `by:` names a field the type has.
+import "parts/keys.wy"
+import hash
+
+type P derive(keys.Key(by: idd)):
+    id: U64
+
+fn main():
+    return

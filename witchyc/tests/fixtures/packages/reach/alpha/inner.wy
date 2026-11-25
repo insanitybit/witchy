@@ -1,0 +1,37 @@
+// alpha's own file: everything here is `pub` only so alpha.wy can use it.
+import ops
+
+pub let LIMIT = 7
+
+pub fn alpha_internal(n: U64) -> U64:
+    return n + 41
+
+pub type Hidden:
+    value: U64
+
+impl Hidden:
+    pub fn peek(self: &Hidden) -> U64:
+        return (*self).value
+
+impl Add for Hidden:
+    fn add(self: Hidden, other: Hidden) -> Hidden:
+        return Hidden(value: self.value + other.value)
+
+pub type Mode:
+    Quick
+    Slow(U64)
+
+pub trait Secretive:
+    fn reveal(self: &Self) -> U64
+
+impl Secretive for U64:
+    fn reveal(self: &U64) -> U64:
+        return *self + 1000
+
+// A blanket impl: every type has `probe` where this file is in reach, and nowhere else.
+pub trait Probe:
+    fn probe(self: &Self) -> U64
+
+impl<T: Any> Probe for T:
+    fn probe(self: &T) -> U64:
+        return 777

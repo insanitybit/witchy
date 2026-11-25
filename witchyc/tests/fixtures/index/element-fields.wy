@@ -1,0 +1,23 @@
+// A Vec element's fields are read and written by index: `cells[i].pos.x`, `cells[0].count += 10`,
+// and a value that reads the same Vec (it is evaluated before the element is borrowed).
+import console
+import vec
+
+type Cell:
+    count: U64
+    pos: Pos
+
+type Pos:
+    x: U64
+    y: U64
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<Cell> = Vec.filled(&allocator, 3, Cell(count: 1, pos: Pos(x: 2, y: 3))) else Err(code):
+        return
+    var cells = move made
+    cells[0].count += 10
+    cells[1].pos.x = cells[0].count + 1
+    cells[2].pos.y -= 1
+    for i in 0..cells.len():
+        console.print_int(cells[i].count * 100 + cells[i].pos.x * 10 + cells[i].pos.y)
+    cells.close()

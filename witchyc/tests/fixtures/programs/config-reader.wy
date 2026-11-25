@@ -1,0 +1,47 @@
+// A config reader: `key = value` lines, `#` comments, blank lines; a line with no `=` is reported.
+import console
+import string
+import span
+import hash
+import hashmap
+import discard
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(e):
+        return
+    var text = move made
+    let _ = text.push_text(&allocator, "# server settings\nhost = example.org\nport=8080\n\n  name =  witchy  \nbroken line\nmode = fast # trailing\n")
+    let Ok(m): HashMap<String, String> = HashMap.new(&allocator, 16) else Err(e):
+        text.close()
+        return
+    var settings = move m
+    var number: U64 = 0
+    for raw in text.span().lines():
+        number += 1
+        let line = raw.trim()
+        if line.len() == 0 || line.starts_with_text("#"):
+            continue
+        match line.split('='):
+            Ok(halves):
+                let Ok(key): String = halves.head.trim().to_string(&allocator) else Err(e):
+                    continue
+                let Ok(value): String = halves.tail.trim().to_string(&allocator) else Err(e):
+                    key.close()
+                    continue
+                match settings.put(&allocator, move key, move value):
+                    Ok:
+                        ()
+                    Err(entry):
+                        entry.discard()
+            Err(whole):
+                console.print("line ${number}: no `=`")
+    for name in ["host", "port", "name", "mode", "missing"]:
+        match settings.get(name):
+            Ok(value):
+                console.write_format("${*name} = [")
+                console.write_string(value)
+                console.line("]")
+            Err(e):
+                console.print("${*name} is not set")
+    settings.discard()
+    text.close()

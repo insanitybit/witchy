@@ -1,0 +1,7 @@
+// Every path gives the same type.
+fn main(console: Console<Write>):
+    let value = if true:
+        1
+    else:
+        false
+    console.print_int(value)

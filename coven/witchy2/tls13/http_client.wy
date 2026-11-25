@@ -1,0 +1,22 @@
+import tls
+import https_client
+import span
+import url
+
+pub fn https_origin(value: Span) -> Result<HttpOrigin, U64>:
+    let Ok(origin): HttpOrigin = url.parse_origin(value) else Err(error):
+        return Err(1)
+    if !origin.is_https():
+        return Err(1)
+    return Ok(origin)
+
+pub fn connect_https(net: &Net, origin: HttpOrigin, roots: &[U8], rng: &Rand, clock: &Clock, allocator: &Allocator, transcript: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]) -> Result<SecureSession, U64>:
+    match https_client.connect(net, origin, roots, rng, clock, allocator, transcript, plaintext, wire):
+        Ok(session):
+            return Ok(move session)
+        Err(TcpConnectFailed(code)):
+            return Err(2)
+        Err(TlsHandshakeFailed(reason)):
+            return Err(4)
+        Err(NotHttpsOrigin):
+            return Err(1)

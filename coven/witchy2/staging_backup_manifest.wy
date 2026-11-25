@@ -1,0 +1,105 @@
+// Define the backup wire format and check its independent SHA-384 pin.
+import "review/approval_bindings.wy"
+import "review/commit_request.wy"
+import "tuf/release_trust.wy"
+import console
+import discard
+import json_tree
+import string
+import text
+
+fn main(input: Console<Read>, output: Console<Write>, allocator: Allocator):
+    if let Err(code) = run(&input, &output, &allocator):
+        if code == 2:
+            output.line("refused pin")
+        else:
+            output.line("refused manifest")
+
+fn run(input: &Console<Read>, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let request = read_commit_request(input, allocator)?
+    let checked = dispatch(&request, output, allocator)
+    request.discard()
+    return checked
+
+fn dispatch(request: &Json, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    if !count_fields(request, 3):
+        return Err(1)
+    let mode = string_field(request, "mode")?
+    if mode.equals_text("verify"):
+        return verify(request, output, allocator)
+    if !mode.equals_text("create"):
+        return Err(1)
+    let manifest = encode(request, allocator)?
+    let checked = print_created(&manifest, output, allocator)
+    manifest.close()
+    return checked
+
+fn print_created(manifest: &String, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let pin = digest_text(manifest.as_bytes(), allocator)?
+    output.write_string(&pin)
+    output.print_byte(10)
+    output.write_string(manifest)
+    output.print_byte(10)
+    pin.close()
+    return Ok(())
+
+fn verify(request: &Json, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let raw = string_field(request, "manifest")?
+    let expected = string_field(request, "pin")?
+    if raw.byte_len() > 1024:
+        return Err(1)
+    let pin = digest_text(raw.as_bytes(), allocator)?
+    let matches = pin.eq(expected)
+    pin.close()
+    if !matches:
+        return Err(2)
+    let document = parse_release_json(raw, allocator)?
+    let checked = checked_manifest(&document, allocator)
+    document.discard()
+    let Ok(manifest): String = move checked else Err(code):
+        return Err(code)
+    output.line("verified")
+    output.write_string(&manifest)
+    output.print_byte(10)
+    manifest.close()
+    return Ok(())
+
+fn checked_manifest(document: &Json, allocator: &Allocator) -> Result<String, U64>:
+    if !count_fields(document, 3):
+        return Err(1)
+    let format = string_field(document, "format")?
+    if !format.equals_text("coven-staging-backup-1"):
+        return Err(1)
+    return encode(document, allocator)
+
+fn encode(document: &Json, allocator: &Allocator) -> Result<String, U64>:
+    let empty = String.with_capacity(allocator, 288)?
+    var output = move empty
+    if let Err(code) = write_fields(document, &mut output, allocator):
+        output.close()
+        return Err(code)
+    return Ok(move output)
+
+fn write_fields(document: &Json, output: &mut String, allocator: &Allocator) -> Result<(), U64>:
+    let database = string_field(document, "database")?
+    if !valid_digest(database):
+        return Err(1)
+    let history = document.field("review_history")?
+    output.push_text(allocator, "{\"database\":")?
+    write_pin(database, output, allocator)?
+    output.push_text(allocator, ",\"format\":\"coven-staging-backup-1\",\"review_history\":")?
+    match history:
+        Null:
+            output.push_text(allocator, "null")?
+        Str(pin):
+            if !valid_digest(pin):
+                return Err(1)
+            write_pin(pin, output, allocator)?
+        _:
+            return Err(1)
+    return output.push_text(allocator, "}")
+
+fn write_pin(pin: &String, output: &mut String, allocator: &Allocator) -> Result<(), U64>:
+    output.push_text(allocator, "\"")?
+    output.push_part(allocator, pin, 0, pin.byte_len())?
+    return output.push_text(allocator, "\"")

@@ -1,0 +1,117 @@
+// Publish a package at an exact version into its registry slot, `<registry>/<name>/<version>/`.
+// A version is two files, hashed as one: `package` (format, name, version and exact
+// requirements, then a blank line) and `source.wy`. The launcher hands them over as one bundle,
+// the record and then the source, which is the text the digest is of. The slot's
+// `digest` file is the claim: created only if nothing is there, so a version is published once.
+// The bundle is read once into memory (at most 1 MiB), hashed there with the engine's SHA-384,
+// and those same bytes are staged, so the bytes stored are the bytes the digest names. Prints
+// one line:
+//   published sha384:<hex>   the version is now this package
+//   unchanged sha384:<hex>   the version already holds this exact package (stored again, which
+//                            completes a publish that stopped between its claim and its files)
+//   refused: <why>           nothing was written
+// Before anything else it verifies the batch on its input, every signed object the launcher's decision to
+// publish rests on (the package's index, rotations and release signatures), and writes nothing
+// unless each is valid (`verified_first`: a `valid` or `invalid` line for each, then `end`).
+import "raw.wy"
+import "witchy2.wy"
+import vec
+
+fn main(console: Console<Write>, allocator: Allocator, input: Console<Read>, bundle: File<Read>, slot: Dir<Write>, record: Dir<Read>):
+    if !verified_first(&console, &allocator, &input):
+        let closed = bundle.raw_close()
+        return
+    let Ok(bytes_made): Vec<U8> = Vec.filled(&allocator, package_bound() + 1, 0) else Err(code):
+        let closed = bundle.raw_close()
+        say(&console, "refused: out of memory\n")
+        return
+    var bytes = move bytes_made
+    let Ok(digest_made): Vec<U8> = Vec.filled(&allocator, 48, 0) else Err(code):
+        let closed = bundle.raw_close()
+        bytes.close()
+        say(&console, "refused: out of memory\n")
+        return
+    var digest = move digest_made
+    let length = read_into(move bundle, &mut bytes, 0, package_bound() + 1)
+    let hashed = length <= package_bound() && digest_of(&bytes, length, &mut digest)
+    publish(&console, &bytes, length, hashed, digest.as_slice(), &slot, &record)
+    digest.close()
+    bytes.close()
+
+fn publish(console: &Console<Write>, bytes: &Vec<U8>, length: U64, hashed: Bool, digest: &[U8], slot: &Dir<Write>, record: &Dir<Read>):
+    if length > package_bound():
+        say(console, "refused: the package record and source are larger than a version holds (1 MiB)\n")
+        return
+    if !hashed:
+        say(console, "refused: cannot hash the package\n")
+        return
+    let head = release_record_end(bytes.as_slice().part(0, length))
+    if head == 0:
+        say(console, "refused: the bundle has no package record\n")
+        return
+    let Ok(staged_package): File<Write> = create(slot, "package") else Err(code):
+        say(console, "refused: cannot stage the package record in the registry slot\n")
+        return
+    let Ok(staged): File<Write> = create(slot, "source.wy") else Err(code):
+        staged_package.raw_abandon()
+        say(console, "refused: cannot stage the source in the registry slot\n")
+        return
+    if write_part(&staged_package, bytes, 0, head) != 0 || write_part(&staged, bytes, head, length) != 0:
+        staged_package.raw_abandon()
+        staged.raw_abandon()
+        say(console, "refused: cannot write the package to the registry\n")
+        return
+    // The claim. Its contents are staged too: a reader sees no digest or the whole of it. The
+    // host reports a name already there when the file is opened or when it is finished.
+    var claimed: U64 = 0
+    match create_new(slot, "digest"):
+        Ok(claim):
+            match write_digest(&claim, digest):
+                Ok:
+                    claimed = claim.raw_close()
+                Err(code):
+                    claim.raw_abandon()
+                    staged_package.raw_abandon()
+                    staged.raw_abandon()
+                    say(console, "refused: cannot write the digest\n")
+                    return
+        Err(code):
+            claimed = code
+    if already_exists(claimed):
+        // Published before: the same bytes are stored again, other bytes are refused. Storing
+        // them again replaces each file with itself, or completes a publish that stopped after
+        // its claim: the staged bytes are the ones the recorded digest names.
+        let Ok(existing): File<Read> = open_read(record, "digest") else Err(code):
+            staged_package.raw_abandon()
+            staged.raw_abandon()
+            say(console, "refused: the version is claimed and its digest cannot be read\n")
+            return
+        if holds_digest(move existing, digest):
+            let kept_package = staged_package.raw_close()
+            let kept_source = staged.raw_close()
+            if kept_package != 0 || kept_source != 0:
+                say(console, "refused: the version holds this package, and it could not be stored again\n")
+                return
+            say(console, "unchanged ")
+            say_digest(console, digest)
+            console.print_byte(10)
+            return
+        staged_package.raw_abandon()
+        staged.raw_abandon()
+        say(console, "refused: this version is already published with different source or requirements (")
+        say_digest(console, digest)
+        say(console, " is not the recorded digest)\n")
+        return
+    if claimed != 0:
+        staged_package.raw_abandon()
+        staged.raw_abandon()
+        say(console, "refused: cannot claim the version\n")
+        return
+    let kept_package = staged_package.raw_close()
+    let kept_source = staged.raw_close()
+    if kept_package != 0 || kept_source != 0:
+        say(console, "refused: the version is claimed but its files were not stored; publish the same package again to complete it\n")
+        return
+    say(console, "published ")
+    say_digest(console, digest)
+    console.print_byte(10)

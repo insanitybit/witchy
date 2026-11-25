@@ -1,0 +1,19 @@
+// Refused: a slice of a view's own inline array points into the view's storage, which ends with
+// the function.
+import console
+import string
+
+type Mixed:
+    data: [U8; 4]
+    text: &String
+
+impl Mixed:
+    fn local_part(self: &Mixed) -> &[U8]:
+        return (*self).data.slice()
+
+fn leak(text: &String) -> &[U8]:
+    let m = Mixed([1, 2, 3, 4], text)
+    return m.local_part()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    console.line("x")

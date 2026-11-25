@@ -1,0 +1,21 @@
+// Refused by the proof: the reference is made before a branch that returns, and written after.
+import console
+
+type Pair:
+    a: U64
+    b: U64
+
+fn poke(slot: &mut U64):
+    *slot = 9
+
+fn f(p: &mut Pair, c: Bool) -> U64:
+    ensures result == 5
+    (*p).a = 5
+    let r = &mut (*p).a
+    if c:
+        return 5
+    *r = 6
+    return (*p).a
+
+fn main(console: Console<Write>):
+    console.print_int(1)

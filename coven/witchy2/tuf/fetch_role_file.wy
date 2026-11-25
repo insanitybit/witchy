@@ -1,0 +1,29 @@
+import "generation.wy"
+import "publication_files.wy"
+import fs
+import string
+import text
+
+pub fn fetch_role_filename(name: &String, allocator: &Allocator) -> Result<String, U64>:
+    let empty = String.with_capacity(allocator, 69)?
+    var path = move empty
+    if let Err(error) = append_filename(&mut path, name, allocator):
+        path.close()
+        return Err(error)
+    return Ok(move path)
+
+fn append_filename(path: &mut String, name: &String, allocator: &Allocator) -> Result<(), U64>:
+    path.push_part(allocator, name, 0, name.byte_len())?
+    return path.push_text(allocator, ".json")
+
+pub fn open_fetch_role(source: &Dir<Read>, generation: &VerifiedTopLevel, name: &String, allocator: &Allocator) -> Result<VerifiedRole, U64>:
+    let path = fetch_role_filename(name, allocator)?
+    let read = read_text_object(source, &path, 2097152, allocator)
+    path.close()
+    let Ok(wire): String = move read else Err(error):
+        return Err(1)
+    let checked = generation.open_role(name, &wire, allocator)
+    wire.close()
+    let Ok(role): VerifiedRole = move checked else Err(error):
+        return Err(1)
+    return Ok(move role)

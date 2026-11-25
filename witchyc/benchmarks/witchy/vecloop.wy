@@ -1,0 +1,23 @@
+// A small Vec loop that isolates the cost of an indexed read: 1,024 words summed 100,000 times.
+import console
+import vec
+
+fn sum(values: &Vec<U64>, rounds: U64) -> U64:
+    var total: U64 = 0
+    for round in 0..rounds:
+        for i in 0..values.len():
+            match values.get(i):
+                Ok(value):
+                    total = (total + value * (round + 1)) % 1000000007
+                Err(code):
+                    return 0
+    return total
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.new(&allocator, 1024) else Err(code):
+        return
+    var values = move made
+    for i in 0..1024:
+        let _ = values.push_mut(&allocator, i * 7 + 3)
+    console.print_int(sum(&values, 100000))
+    values.close()

@@ -1,0 +1,19 @@
+// Refused: a `static if` holds no other `static` block (one level, as `static for`).
+import console
+
+trait Described:
+    fn described(self: &Self, console: &Console<Write>)
+
+derive Describe:
+    impl Described for Self:
+        fn described(self: &Self, console: &Console<Write>):
+            static for f in fields:
+                static if f is U32:
+                    static if f is U32:
+                        console.print("twice")
+
+type One derive(Describe):
+    a: U32
+
+fn main(console: Console<Write>):
+    One(a: 1).described(&console)

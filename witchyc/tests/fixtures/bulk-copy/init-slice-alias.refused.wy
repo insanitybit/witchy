@@ -1,0 +1,7 @@
+import vec
+fn append(target: &mut Vec<U8>, allocator: &Allocator):
+    let source = target.as_slice()
+    let _ = target.extend_from_slice_mut(allocator, source)
+
+fn main():
+    return

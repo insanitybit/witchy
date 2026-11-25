@@ -1,0 +1,1 @@
+run: --listen=127.0.0.1:47623 --net=127.0.0.1:47623 --clock --deadline-ms=4000 --dir={scratch} --dir-rights=read,write

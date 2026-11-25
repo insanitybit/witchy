@@ -1,0 +1,45 @@
+// Renaming inside one directory: a file, a directory, a file replacing another, and paths
+// that would leave the directory or name nothing, refused by the host.
+import console
+import fs
+
+fn put(dir: &Dir<Write>, path: Text, text: Text) -> Result<(), FsError>:
+    let file = dir.create(path)?
+    match file.write(text):
+        Ok:
+            return file.finish()
+        Err(e):
+            file.abandon()
+            return Err(e)
+
+fn say(console: &Console<Write>, done: Result<(), FsError>):
+    match done:
+        Ok:
+            console.line("ok")
+        Err(e):
+            console.line("refused")
+
+fn main(console: Console<Write>, allocator: Allocator, dir: Dir):
+    say(&console, put(&dir, "a.txt", "alpha"))
+    say(&console, dir.rename("a.txt", "b.txt"))
+    console.print_int(if dir.exists("a.txt"): 1 else: 0)
+    match dir.read_text(&allocator, "b.txt"):
+        Ok(text):
+            console.print_int(text.byte_len())
+            text.close()
+        Err(e):
+            console.line("lost")
+    say(&console, dir.make_dir("box"))
+    say(&console, dir.rename("b.txt", "box/c.txt"))
+    say(&console, dir.rename("box", "crate"))
+    console.print_int(if dir.exists("crate/c.txt"): 1 else: 0)
+    say(&console, put(&dir, "d.txt", "delta!"))
+    say(&console, dir.rename("d.txt", "crate/c.txt"))
+    match dir.read_text(&allocator, "crate/c.txt"):
+        Ok(text):
+            console.print_int(text.byte_len())
+            text.close()
+        Err(e):
+            console.line("lost")
+    say(&console, dir.rename("crate/c.txt", "../outside.txt"))
+    say(&console, dir.rename("missing.txt", "e.txt"))

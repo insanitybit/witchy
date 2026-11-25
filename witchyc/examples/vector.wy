@@ -1,0 +1,234 @@
+// The compiler/runtime know memory operations, not Vector or these functions.
+type Vector:
+    data: Buffer<U64>
+    length: USize
+    capacity: USize
+
+type PushFailure:
+    vector: Vector
+    reason: AllocError
+
+type Popped:
+    vector: Vector
+    item: Option<U64>
+
+fn vector_new(capacity: USize) -> Result<Vector, AllocError>:
+    let data = memory.try_alloc(capacity)?
+    return Ok(Vector(move data, 0, capacity))
+
+fn vector_get(data: &Buffer<U64>, length: USize, index: USize) -> Option<U64>:
+    if index < length:
+        return Some(memory.read(data, index))
+    return None
+
+fn vector_push(input: Vector, value: U64) -> Result<Vector, PushFailure>:
+    var vector = move input
+    if vector.length < vector.capacity:
+        memory.init(&mut vector.data, vector.length, value)
+        vector.length += 1
+        return Ok(move vector)
+    var next_capacity: USize = 1
+    if vector.capacity > 0:
+        if vector.capacity > 9223372036854775807:
+            return Err(PushFailure(move vector, AllocError.overflow))
+        next_capacity = vector.capacity * 2
+    match memory.try_alloc(next_capacity):
+        Ok(allocated):
+            var replacement = move allocated
+            let reader = &vector.data
+            let writer = &mut replacement
+            var i: USize = 0
+            while i < vector.length:
+                memory.init(writer, i, memory.read(reader, i))
+                i += 1
+            memory.end(reader)
+            memory.end(writer)
+            vector.data = move replacement
+            vector.capacity = next_capacity
+            memory.init(&mut vector.data, vector.length, value)
+            vector.length += 1
+            return Ok(move vector)
+        Err(error):
+            return Err(PushFailure(move vector, error))
+
+fn vector_pop(input: Vector) -> Popped:
+    var vector = move input
+    if vector.length == 0:
+        return Popped(move vector, None)
+    vector.length -= 1
+    let value = memory.take(&mut vector.data, vector.length)
+    return Popped(move vector, Some(value))
+
+// The remaining functions are the native acceptance smoke, not library logic.
+type Checked:
+    vector: Vector
+    passed: Bool
+
+fn append_or_keep(input: Vector, value: U64) -> Vector:
+    match vector_push(move input, value):
+        Ok(updated):
+            return move updated
+        Err(failed):
+            return move failed.vector
+
+fn check_allocation_failure(input: Vector) -> Checked:
+    // The input owns 32 slots; occupy the remaining budget. Growing to 64 must
+    // return the original vector. pressure is released on either return path.
+    let pressure = memory.alloc(65504)
+    match vector_push(move input, 1000):
+        Ok(unexpected):
+            return Checked(move unexpected, false)
+        Err(failed):
+            let passed = failed.reason == AllocError.quota
+            return Checked(move failed.vector, passed)
+
+fn constructor_fails() -> Bool:
+    match vector_new(65537):
+        Ok(unexpected):
+            return false
+        Err(error):
+            return error == AllocError.quota
+
+fn overflow_guard_fires() -> Bool:
+    // Deliberately synthetic metadata, not a representation-valid vector. This
+    // exercises the overflow refusal without allocating an enormous buffer.
+    let synthetic = Vector(memory.alloc(0), 9223372036854775808, 9223372036854775808)
+    match vector_push(move synthetic, 1):
+        Ok(unexpected):
+            return false
+        Err(failed):
+            return failed.reason == AllocError.overflow
+
+type WrappedResult:
+    result: Result<Option<Buffer<U64>>, Buffer<U64>>
+
+fn nested(flag: Bool) -> WrappedResult:
+    if flag:
+        return WrappedResult(Ok(Some(memory.alloc(1))))
+    return WrappedResult(Err(memory.alloc(2)))
+
+fn propagate_owned_error(flag: Bool) -> Result<U64, Buffer<U64>>:
+    let wrapped = nested(flag)
+    let optional = wrapped.result?
+    return Ok(7)
+
+fn optional_buffer(flag: Bool) -> Option<Buffer<U64>>:
+    if flag:
+        return Some(memory.alloc(1))
+    return None
+
+fn optional_number(flag: Bool) -> Option<U64>:
+    let storage = optional_buffer(flag)?
+    return Some(7)
+
+fn check_optional() -> Bool:
+    match optional_number(false):
+        Some(unexpected):
+            return false
+        None:
+            match optional_number(true):
+                Some(value):
+                    return value == 7
+                None:
+                    return false
+
+fn check_sum_cleanup():
+    discard(nested(true))
+    discard(nested(false))
+    discard(propagate_owned_error(true))
+    discard(propagate_owned_error(false))
+    let absent: Option<Buffer<U64>> = None
+    let present: Option<Buffer<U64>> = Some(memory.alloc(0))
+
+fn exercise() -> U64:
+    check_sum_cleanup()
+    if !constructor_fails():
+        return 112
+    if !overflow_guard_fires():
+        return 114
+    if !check_optional():
+        return 115
+    match vector_new(0):
+        Err(error):
+            return 101
+        Ok(initial):
+            var vector = move initial
+            var i: USize = 0
+            while i < 32:
+                vector = append_or_keep(move vector, i)
+                i += 1
+            if !(vector.length == 32):
+                return 102
+            if !(vector.capacity == 32):
+                return 103
+            let checked = check_allocation_failure(move vector)
+            var recovered = move checked.vector
+            if !checked.passed:
+                return 104
+            if !(recovered.length == 32):
+                return 105
+            if !(recovered.capacity == 32):
+                return 106
+            i = 0
+            var checksum: U64 = 0
+            while i < recovered.length:
+                match vector_get(&recovered.data, recovered.length, i):
+                    Some(value):
+                        checksum += value
+                    None:
+                        return 107
+                i += 1
+            if !(checksum == 496):
+                return 108
+            match vector_get(&recovered.data, recovered.length, 32):
+                Some(unexpected):
+                    return 113
+                None:
+                    ()
+            i = 32
+            while i > 0:
+                let popped = vector_pop(move recovered)
+                recovered = move popped.vector
+                match popped.item:
+                    Some(value):
+                        if !(value == i - 1):
+                            return 109
+                    None:
+                        return 110
+                i -= 1
+            let empty = vector_pop(move recovered)
+            match empty.item:
+                Some(unexpected):
+                    return 111
+                None:
+                    return 41
+
+fn array_total(values: &[U64]) -> U64:
+    var total = 0
+    var i = 0
+    while i < values.len():
+        total += values[i]
+        i += 1
+    return total
+
+fn array_update(values: &mut [U64]):
+    values[0] = values[1] + 1
+    values[2] += 2
+
+fn array_check() -> U64:
+    var values: [U64; 3] = [1, 2, 3]
+    array_update(&mut values)
+    let moved = move values
+    let empty = [7; 0]
+    if !(array_total(&empty) == 0):
+        return 125
+    let repeated = [7; 4]
+    if !(array_total(&repeated) == 28):
+        return 126
+    return array_total(&moved)
+
+fn main(console: Console<Write>):
+    if array_check() == 10:
+        console.print_int(exercise())
+    else:
+        console.print_int(127)

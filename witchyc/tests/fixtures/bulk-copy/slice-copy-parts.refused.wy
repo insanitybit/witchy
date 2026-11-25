@@ -1,0 +1,8 @@
+// Refused: two parts of one unique slice are never in use together, so a copy cannot overlap
+// itself.
+fn shift(s: &mut [U8]):
+    s.part(1, 5).copy_from(s.part(0, 4))
+
+fn main():
+    var a: [U8; 8] = [1; 8]
+    shift(a.slice_mut())

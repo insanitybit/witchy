@@ -1,0 +1,52 @@
+// Range writes of one-byte cells at every offset and length 1..17, across bitmap words: each
+// append marks exactly its cells full (a wider mark makes the next append trap, a narrower one
+// makes `close` trap), and each `close` marks exactly its string's cells empty (a neighbour kept
+// alive beside it traps at its own `close` if its cells were cleared; reused memory traps at its
+// next append if any were left full). The checksum tests the bytes themselves.
+import console
+import string
+import text
+
+fn fill(allocator: &Allocator, text: &mut String, round: U64) -> Bool:
+    var length: U64 = 1
+    while length <= 17:
+        // `round` bytes first, so every append starts at a different place in the word.
+        var pad: U64 = 0
+        while pad < round % 9:
+            if let Err(_) = text.push(allocator, 97 + pad):
+                return false
+            pad += 1
+        if length % 3 == 0:
+            if let Err(_) = text.push_text(allocator, "ABCDEFGHIJKLMNOPQ"):
+                return false
+        else:
+            if let Err(_) = text.push_text(allocator, "abcdefghi"):
+                return false
+        length += 1
+    return true
+
+fn sum(text: &String) -> U64:
+    var total: U64 = 0
+    for at in 0..text.byte_len():
+        total = (total * 31 + text.byte_or_end(at)) % 1000000007
+    return total
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var all: U64 = 0
+    for round in 0..12:
+        let Ok(a): String = String.new(&allocator) else Err(code):
+            return
+        let Ok(b): String = String.new(&allocator) else Err(code):
+            a.close()
+            return
+        var first = move a
+        var second = move b
+        if !fill(&allocator, &mut first, round) || !fill(&allocator, &mut second, round + 4):
+            console.line("no room")
+        all = (all * 7 + sum(&first) + sum(&second) + first.byte_len()) % 1000000007
+        first.close()
+        if let Err(_) = second.push_text(&allocator, "xyz"):
+            console.line("no room")
+        all = (all + sum(&second)) % 1000000007
+        second.close()
+    console.print_int(all)

@@ -1,0 +1,98 @@
+// `memory.try_init` on a buffer of buffers. Its `Result<(), Buffer<U64>>` has no tag word: an
+// owner is never zero, so zero is `Ok` and the item handed back is `Err` (layout.rs). Review
+// 2026-11-21: the emitter still wrote a tag there and the engine refused the module. Filled,
+// already full, and past the end; then the same through a record that holds only a buffer.
+type Held:
+    cells: Buffer<U64>
+
+fn release(cells: Buffer<U64>):
+    match memory.try_release(move cells):
+        Ok:
+            return
+        Err(stuck):
+            release(move stuck)
+
+// 0 when the cell took the buffer; otherwise the capacity of the buffer that came back.
+fn put(rows: &mut Buffer<Buffer<U64>>, index: U64, row: Buffer<U64>) -> U64:
+    match memory.try_init(rows, index, move row):
+        Ok:
+            return 0
+        Err(back):
+            let size = memory.capacity(&back)
+            release(move back)
+            return size
+
+fn hold(rows: &mut Buffer<Held>, index: U64, row: Held) -> U64:
+    match memory.try_init(rows, index, move row):
+        Ok:
+            return 0
+        Err(back):
+            let Held(cells) = move back
+            let size = memory.capacity(&cells)
+            release(move cells)
+            return size
+
+fn offer(console: &Console<Write>, allocator: &Allocator, rows: &mut Buffer<Buffer<U64>>, index: U64, size: U64):
+    let made: Result<Buffer<U64>, U64> = memory.try_alloc(allocator, size)
+    match move made:
+        Ok(row):
+            console.print_int(put(rows, index, move row))
+        Err(code):
+            console.print_int(900 + code)
+
+fn offer_held(console: &Console<Write>, allocator: &Allocator, rows: &mut Buffer<Held>, index: U64, size: U64):
+    let made: Result<Buffer<U64>, U64> = memory.try_alloc(allocator, size)
+    match move made:
+        Ok(row):
+            console.print_int(hold(rows, index, Held(cells: move row)))
+        Err(code):
+            console.print_int(900 + code)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let outer: Result<Buffer<Buffer<U64>>, U64> = memory.try_alloc(&allocator, 2)
+    match move outer:
+        Err(code):
+            console.print_int(900 + code)
+        Ok(made):
+            var rows = move made
+            offer(&console, &allocator, &mut rows, 0, 3)
+            offer(&console, &allocator, &mut rows, 0, 4)
+            offer(&console, &allocator, &mut rows, 2, 5)
+            offer(&console, &allocator, &mut rows, 1, 6)
+            match memory.take(&mut rows, 0):
+                Ok(row):
+                    console.print_int(memory.capacity(&row))
+                    release(move row)
+                Err(code):
+                    console.print_int(900 + code)
+            match memory.take(&mut rows, 1):
+                Ok(row):
+                    console.print_int(memory.capacity(&row))
+                    release(move row)
+                Err(code):
+                    console.print_int(900 + code)
+            match memory.try_release(move rows):
+                Ok:
+                    console.print_int(7)
+                Err(stuck):
+                    unreachable
+    let wrapped: Result<Buffer<Held>, U64> = memory.try_alloc(&allocator, 1)
+    match move wrapped:
+        Err(code):
+            console.print_int(900 + code)
+        Ok(made):
+            var rows = move made
+            offer_held(&console, &allocator, &mut rows, 0, 8)
+            offer_held(&console, &allocator, &mut rows, 0, 9)
+            match memory.take(&mut rows, 0):
+                Ok(row):
+                    let Held(cells) = move row
+                    console.print_int(memory.capacity(&cells))
+                    release(move cells)
+                Err(code):
+                    console.print_int(900 + code)
+            match memory.try_release(move rows):
+                Ok:
+                    console.print_int(7)
+                Err(stuck):
+                    unreachable

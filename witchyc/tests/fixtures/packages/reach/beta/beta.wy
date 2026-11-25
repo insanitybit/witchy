@@ -1,0 +1,3 @@
+// beta imports nothing, and its list line requires nothing.
+pub fn reach() -> U64:
+    return 1

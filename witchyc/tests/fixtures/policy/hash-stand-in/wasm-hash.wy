@@ -1,0 +1,17 @@
+// Not the library's wasm-hash.wy: a program file of that name declaring its own key traits.
+pub trait Eq:
+    fn eq(self: &Self, other: &Self) -> Bool
+
+pub trait HashState:
+    fn value(self: &Self) -> U64
+
+pub trait HashKey:
+    fn feed(self: &Self, state: &mut U64)
+
+impl HashKey for U64:
+    fn feed(self: &U64, state: &mut U64):
+        *state = *state + 1
+
+impl Eq for U64:
+    fn eq(self: &U64, other: &U64) -> Bool:
+        return true

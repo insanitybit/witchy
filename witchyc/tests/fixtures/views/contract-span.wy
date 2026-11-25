@@ -1,0 +1,41 @@
+// A function with a contract is given a Span whole and hands it to calls: here the sealed
+// type's invariant is shown from the length read once. The proof knows nothing of the Span,
+// so the length is bound and both uses read the binding. An empty Span is one too.
+import console
+import span
+import string
+
+sealed type Short:
+    length: U64
+    invariant length <= 64
+
+impl Short:
+    fn parse(text: Span) -> Result<Short, U64>:
+        let n = text.len()
+        if n > 64:
+            return Err(n)
+        return Ok(Short(n))
+
+    fn size(self: &Short) -> U64:
+        return self.length
+
+fn show(console: &Console<Write>, allocator: &Allocator, words: Text):
+    let Ok(made): String = String.new(allocator) else Err(code):
+        return
+    var s = move made
+    let _ = s.push_text(allocator, words)
+    match Short.parse(s.span()):
+        Ok(short):
+            console.print_int(short.size())
+        Err(code):
+            console.print_int(1000 + code)
+    match Short.parse(s.span().part(0, 0)):
+        Ok(short):
+            console.print_int(short.size())
+        Err(code):
+            console.print_int(1000 + code)
+    s.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    show(&console, &allocator, "hello")
+    show(&console, &allocator, "0123456789012345678901234567890123456789012345678901234567890123456789")

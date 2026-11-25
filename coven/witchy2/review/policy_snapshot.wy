@@ -1,0 +1,35 @@
+import "policy_plan.wy"
+import console
+import "@sqlite"
+import string
+import text
+import vec
+
+pub fn read_policy_snapshot(db: &Sqlite, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let plan = policy_snapshot_plan(allocator)?
+    let Ok(empty): Vec<U8> = Vec.filled(allocator, 65538, 0) else Err(code):
+        plan.close()
+        return Err(code)
+    var reply = move empty
+    let bytes = plan.as_bytes()
+    let unused = bytes.part(0, 0)
+    let size = db.transact(bytes, unused, unused, reply.as_mut_slice())
+    plan.close()
+    let checked = emit_snapshot(size, reply.as_slice(), output, allocator)
+    reply.close()
+    return checked
+
+fn emit_snapshot(size: Result<U64, U64>, reply: &[U8], output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let Ok(length): U64 = size else Err(code):
+        return Err(10)
+    if length < 2 || length > reply.len():
+        return Err(10)
+    if reply[0] == 1:
+        return Err(1)
+    if reply[0] != 0:
+        return Err(10)
+    let snapshot = String.from_utf8_bytes(allocator, reply.part(1, length))?
+    output.line("snapshot")
+    output.write_string(&snapshot)
+    snapshot.close()
+    return Ok(())

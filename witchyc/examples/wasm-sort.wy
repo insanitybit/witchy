@@ -1,0 +1,23 @@
+// An ordinary source algorithm over copied fixed arrays, not a compiler builtin.
+fn sorted(input: [U64; 4]) -> [U64; 4]:
+    var values = input
+    var pass = 0
+    while pass < 4:
+        var index = 0
+        while index + 1 < 4:
+            if values[index] > values[index + 1]:
+                let temporary = values[index]
+                values[index] = values[index + 1]
+                values[index + 1] = temporary
+            index += 1
+        pass += 1
+    return values
+
+fn main(console: Console<Write>):
+    let original = [9, 3, 7, 1]
+    let result = sorted(original)
+    var index = 0
+    while index < 4:
+        console.print_int(result[index])
+        index += 1
+    console.print_int(original[0])

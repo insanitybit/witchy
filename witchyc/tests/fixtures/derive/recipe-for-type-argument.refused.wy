@@ -1,0 +1,25 @@
+// Refused: `For` stands for the outermost type named at `for:`; a sealed type given as its type
+// argument (`for: Pair<Vault>`) is not reached by the recipe (review round 3: it wrote `Vault`'s field).
+import "parts/for_argument.wy"
+import console
+
+sealed type Vault:
+    n: U64
+
+fn open() -> Vault:
+    return Vault(n: 1)
+
+fn reveal(v: &Vault) -> U64:
+    return v.n
+
+type Pair<X>:
+    a: U64
+    b: X
+
+type T derive(for_argument.Inner(for: Pair<Vault>)):
+    a: U64
+
+fn main(console: Console<Write>):
+    let t = T(a: 999)
+    let p = t.made(Pair(a: 0, b: open()))
+    console.print("${reveal(&p.b)}")

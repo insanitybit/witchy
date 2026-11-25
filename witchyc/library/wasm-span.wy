@@ -1,0 +1,406 @@
+// A Span is part of a String's bytes, by reference: a sealed wrapper over a `&[U8]`
+// (docs/design-slices.md). Making one, narrowing it and splitting it copy no bytes, and the
+// String stays lent, unchanged and open, while a Span of it is in use. The bytes are UTF-8
+// where the Span came from a whole String; a part may end inside a scalar, and `to_string`
+// checks. Safe code throughout: every read goes through the slice's own bounds.
+import "wasm-console.wy"
+import "wasm-text.wy"
+import "wasm-hashmap.wy"
+import "wasm-int.wy"
+import "wasm-string.wy"
+import "wasm-hash.wy"
+import "wasm-result.wy"
+import "wasm-simd.wy"
+
+pub sealed type Span:
+    bytes: &[U8]
+
+// What `split` gives: the part before the separator and the part after it.
+pub type Halves = .{head: Span, tail: Span}
+
+// The words of a Span; a `for` asks `next` for each in turn.
+pub sealed type Words:
+    rest: Span
+
+// The lines of a Span, each without its `\n` (or `\r\n`); a `for` asks `next` for each.
+pub sealed type Lines:
+    rest: Span
+
+impl String:
+    // The whole text as a Span.
+    pub fn span(self: &String) -> Span:
+        return Span(self.as_bytes())
+
+impl Span:
+    // A Span of bytes that did not come from a String (bytes read from a socket or a file):
+    // nothing here assumes UTF-8 but `to_string`, which checks it.
+    pub fn of(bytes: &[U8]) -> Span:
+        return Span(bytes)
+
+    // How many bytes the view is.
+    pub fn len(self: Span) -> U64:
+        let bytes = self.bytes
+        return bytes.len()
+
+    // The same, by the name a String and a Text give their length.
+    pub fn byte_len(self: Span) -> U64:
+        return self.len()
+
+    // Whether the view holds no bytes.
+    pub fn is_empty(self: Span) -> Bool:
+        return self.len() == 0
+
+    // The bytes themselves.
+    pub fn as_bytes(self: Span) -> &[U8]:
+        return self.bytes
+
+    // The byte at `index`, as `for b in view:` asks for it (src/compiler/iteration.rs).
+    pub fn at(self: Span, index: U64) -> Result<&U8, U64>:
+        let bytes = self.bytes
+        return bytes.at(index)
+
+    // The byte at `index` as a number, or 256 past the end.
+    pub fn byte_or_end(self: Span, index: U64) -> U64:
+        let bytes = self.bytes
+        if index >= bytes.len():
+            return 256
+        return U8.to_u64(bytes[index])
+
+    // Bytes `from..to` of this Span; an end past the Span is its end.
+    pub fn part(self: Span, from: U64, to: U64) -> Span:
+        let bytes = self.bytes
+        let length = bytes.len()
+        let last = if to > length:
+            length
+        else:
+            to
+        let first = if from > last:
+            last
+        else:
+            from
+        return Span(bytes.part(first, last))
+
+    // Where `byte` first appears. Err(1): it does not.
+    pub fn find_byte(self: Span, byte: U8) -> Result<U64, U64>:
+        let bytes = self.bytes
+        let index = find_byte_from(bytes, byte, 0)
+        if index == bytes.len():
+            return Err(1)
+        return Ok(index)
+
+    // Where `needle` first appears at or after `from`, as a byte position in this Span. Err(1):
+    // it does not. As `String.find_text`.
+    pub fn find_text(self: Span, needle: &str, from: U64) -> Result<U64, U64>:
+        return find_bytes(self.bytes, needle.as_bytes(), from)
+
+    // The parts before and after the first `byte`. Err: there is none, and the
+    // Span comes back.
+    pub fn split(self: Span, byte: U8) -> Result<Halves, Span>:
+        let bytes = self.bytes
+        match self.find_byte(byte):
+            Ok(at):
+                return Ok(.{head: Span(bytes.part(0, at)), tail: Span(bytes.part(at + 1, bytes.len()))})
+            Err(code):
+                return Err(self)
+
+    // The words, split at runs of spaces, newlines and tabs: `for word in text.span().words():`.
+    pub fn words(self: Span) -> Words:
+        return Words(self)
+
+    // The lines: `for line in text.span().lines():`. An empty line is one; the end of the text
+    // after a last `\n` is not.
+    pub fn lines(self: Span) -> Lines:
+        return Lines(self)
+
+    // Whether the first bytes are this literal's.
+    pub fn starts_with_text(self: Span, text: &str) -> Bool:
+        let count = text.byte_len()
+        if count > self.bytes.len():
+            return false
+        return self.part(0, count).equals_text(text)
+
+    // Whether the last bytes are this literal's.
+    pub fn ends_with_text(self: Span, text: &str) -> Bool:
+        let bytes = self.bytes
+        let count = text.byte_len()
+        if count > bytes.len():
+            return false
+        // Found where it would have to start, or not at all (nothing starts later).
+        match self.find_text(text, bytes.len() - count):
+            Ok(at):
+                return at == bytes.len() - count
+            Err(e):
+                return false
+
+    // Whether two Spans hold the same bytes once ASCII letters are taken as one case.
+    pub fn eq_ignore_ascii_case(self: Span, other: Span) -> Bool:
+        let mine = self.bytes
+        let theirs = other.bytes
+        if mine.len() != theirs.len():
+            return false
+        for index in 0..mine.len():
+            if index < theirs.len() && fold_case(U8.to_u64(mine[index])) != fold_case(U8.to_u64(theirs[index])):
+                return false
+        return true
+
+    // Borrow the same bytes as text after checking UTF-8.
+    pub fn as_str(self: Span) -> Result<&str, U64>:
+        return str.from_utf8_bytes(self.bytes)
+
+    // Whether the bytes are well-formed UTF-8.
+    pub fn is_utf8(self: Span) -> Bool:
+        match self.as_str():
+            Ok(text):
+                return true
+            Err(code):
+                return false
+
+    // Whether the bytes are these once ASCII letters are taken as one case: a header name against
+    // `"content-length"`, with no copy of the text made.
+    pub fn equals_text_ignore_ascii_case(self: Span, text: &str) -> Bool:
+        return self.eq_ignore_ascii_case(Span.of(text.as_bytes()))
+
+    // Whether the literal appears anywhere.
+    pub fn contains_text(self: Span, text: &str) -> Bool:
+        match self.find_text(text, 0):
+            Ok(at):
+                return true
+            Err(e):
+                return false
+
+    // Without the spaces at either end.
+    pub fn trim(self: Span) -> Span:
+        let bytes = self.bytes
+        var from: U64 = 0
+        var to = bytes.len()
+        while from < to && bytes[from] == 32:
+            from += 1
+        while from < to && bytes[to - 1] == 32:
+            to -= 1
+        return Span(bytes.part(from, to))
+
+    // Whether the bytes are exactly these.
+    pub fn equals_text(self: Span, text: &str) -> Bool:
+        return self.same(Span.of(text.as_bytes()))
+
+    // Whether two Spans hold the same bytes.
+    pub fn same(self: Span, other: Span) -> Bool:
+        let mine = self.bytes
+        let theirs = other.bytes
+        if mine.len() != theirs.len():
+            return false
+        for index in 0..mine.len():
+            if mine[index] != theirs[index]:
+                return false
+        return true
+
+    // The number written in decimal digits. Err(1): empty, or a byte that is
+    // not a digit. Err(2): it does not fit in a U64.
+    pub fn parse_u64(self: Span) -> Result<U64, U64>:
+        let bytes = self.bytes
+        if bytes.len() == 0:
+            return Err(1)
+        var value: U64 = 0
+        for index in 0..bytes.len():
+            let byte = U8.to_u64(bytes[index])
+            if byte < 48 || byte > 57:
+                return Err(1)
+            let digit = byte - 48
+            if value > 1844674407370955161 || (value == 1844674407370955161 && digit > 5):
+                return Err(2)
+            value = value * 10 + digit
+        return Ok(value)
+
+    // A String of its own holding these bytes. Err(1): no room. Err(2): the bytes are
+    // not whole UTF-8 (an end is inside a scalar).
+    pub fn to_string(self: Span, allocator: &Allocator) -> Result<String, U64>:
+        // One fill, one copy a word at a time, one test a word at a time where the text is
+        // ASCII (`String.from_utf8_bytes`). It packed eight bytes into a word and pushed the
+        // word, each push an allocator call, then tested a byte at a time: 275 instructions a
+        // byte (2026-11-22).
+        return String.from_utf8_bytes(allocator, self.bytes)
+
+// The bytes of a Span, as they are.
+pub fn write_span(console: &Console<Write>, span: Span):
+    let bytes = span.bytes
+    for index in 0..bytes.len():
+        console.print_byte(bytes[index])
+
+// A Span shown by its text: `"hello ${name.span()}"` (docs/design-format.md).
+impl Show for Span:
+    fn show_on(self: Span, console: &Console<Write>):
+        write_span(console, self)
+    fn push_on(self: Span, text: &mut String, allocator: &Allocator) -> Result<(), U64>:
+        return text.push_utf8_slice(allocator, self.bytes)
+
+// The hash a String of these bytes has (library/wasm-string.wy), so a Span probes the cells
+// the equal String key was put in.
+fn span_hash(view: Span) -> U64:
+    return hash_bytes(view.as_bytes())
+
+fn span_is(view: Span, key: &String) -> Bool:
+    let bytes = view.as_bytes()
+    let other = key.as_bytes()
+    if bytes.len() != other.len():
+        return false
+    // Both reads have no test: `bytes[index]` is counted to its length, and `other[index]` comes
+    // after `index < other.len() &&` (docs/wasm-iteration.md).
+    for index in 0..bytes.len():
+        if index < other.len() && bytes[index] != other[index]:
+            return false
+    return true
+
+// A map keyed by String looked up with a part of a text, without copying it into a String:
+// `get_by_span(&counts, word)`. The same probe as `find`; Err as `find`'s. (Functions, as an
+// impl block is for every instance of a type or for one.)
+pub fn find_by_span<V: Any>(map: &HashMap<String, V>, key: Span) -> Result<U64, U64>:
+    let capacity = memory.capacity(&(*map).cells)
+    if capacity == 0:
+        return Err(0)
+    var index = span_hash(key) % capacity
+    var step: U64 = 0
+    while step < capacity:
+        match memory.ref(&(*map).cells, index):
+            Ok(entry):
+                if span_is(key, &(*entry).key):
+                    return Ok(index)
+            Err(code):
+                return Err(index)
+        // The next cell, wrapping at the end: no division a step.
+        index += 1
+        if index == capacity:
+            index = 0
+        step += 1
+    return Err(capacity)
+
+// Whether a map keyed by String has a key with these bytes, without copying them into a String.
+pub fn contains_span<V: Any>(map: &HashMap<String, V>, key: Span) -> Bool:
+    return find_by_span(map, key).is_ok()
+
+// The value of the key with these bytes. Err: none.
+pub fn get_by_span<V: Any>(map: &HashMap<String, V>, key: Span) -> Result<&V, U64>:
+    // The map's own one-probe lookup (it found the cell, then looked it up again).
+    return map.get(&key)
+
+// The value of the key with these bytes, to change in place. Err: none.
+pub fn get_mut_by_span<V: Any>(map: &mut HashMap<String, V>, key: Span) -> Result<&mut V, U64>:
+    // The map's own one-probe lookup (it found the cell, then looked it up again).
+    return map.get_mut(&key)
+
+// A Span hashes as the String of the same bytes and finds that String key, so a map of String
+// keys is looked up by a part of another text with the map's own methods:
+// `map.get(&word)`, `map.contains(&word)`. Generic code holds the Span only behind `&`
+// (docs/design-references-to-views.md).
+impl Hash for Span:
+    fn hash(self: &Span) -> U64:
+        return span_hash(*self)
+
+// A part of a text makes the String of its bytes (`counts.get_or_insert(&allocator, &word, 0)`).
+impl KeyFor<String> for Span:
+    fn key_for(self: &Span, allocator: &Allocator) -> Result<String, U64>:
+        return (*self).to_string(allocator)
+
+impl Equivalent<String> for Span:
+    fn equivalent(self: &Span, key: &String) -> Bool:
+        return span_is(*self, key)
+
+// As the String of the same bytes: its length, then its bytes, wherever the span starts.
+impl HashKey for Span:
+    fn feed(self: &Span, state: &mut HashState):
+        let bytes = (*self).as_bytes()
+        state.word(bytes.len(), 8)
+        state.bytes(bytes)
+
+// A space, a newline, a carriage return or a tab.
+fn blank(byte: U8) -> Bool:
+    return byte == 32 || byte == 10 || byte == 13 || byte == 9
+
+impl Words:
+    // The next word from byte `cursor` on; the cursor moves past it.
+    pub fn next(self: &Words, cursor: &mut U64) -> Result<Span, U64>:
+        let bytes = (*self).rest.bytes
+        var from = *cursor
+        while from < bytes.len() && blank(bytes[from]):
+            from += 1
+        if from >= bytes.len():
+            *cursor = bytes.len()
+            return Err(0)
+        var to = from
+        while to < bytes.len() && !blank(bytes[to]):
+            to += 1
+        *cursor = to
+        return Ok(Span(bytes.part(from, to)))
+
+// Find the first matching byte, or the end. Only load complete vectors.
+fn find_byte_from(bytes: &[U8], byte: U8, from: U64) -> U64:
+    var at = from
+    static if target.backend == .Native:
+        if bytes.len() - at >= 16:
+            let needle = U8x16.splat(byte)
+            while bytes.len() - at >= 16:
+                let mask = U8x16.load(bytes, at).cmp_eq(needle).bitmask()
+                if mask != 0:
+                    // The lowest set bit is the first matching lane.
+                    return at + U64.trailing_zeros(mask)
+                at += 16
+    while at < bytes.len() && bytes[at] != byte:
+        at += 1
+    return at
+
+impl Lines:
+    // The next line from byte `cursor` on; the cursor moves past its newline.
+    pub fn next(self: &Lines, cursor: &mut U64) -> Result<Span, U64>:
+        let bytes = (*self).rest.bytes
+        let from = *cursor
+        if from >= bytes.len():
+            return Err(0)
+        let to = find_byte_from(bytes, 10, from)
+        *cursor = to + 1
+        var end = to
+        if end > from && bytes[end - 1] == 13:
+            end -= 1
+        return Ok(Span(bytes.part(from, end)))
+
+impl Span:
+    // As `String.parse_i64` (library/wasm-int.wy), over a view.
+    // The number written as decimal digits, with `-` first when it is below zero.
+    // Err(1): no digits, or a byte that is not one. Err(2): it does not fit in an I64.
+    pub fn parse_i64(self: Span) -> Result<I64, U64>:
+        let count = self.len()
+        var index: U64 = 0
+        let negative = self.byte_or_end(0) == 45
+        if negative:
+            index = 1
+        if index == count:
+            return Err(1)
+        // One past the greatest I64 is the magnitude of the least.
+        var limit: U64 = 9223372036854775807
+        if negative:
+            limit = 9223372036854775808
+        var magnitude: U64 = 0
+        while index < count:
+            let byte = self.byte_or_end(index)
+            if byte < 48 || byte > 57:
+                return Err(1)
+            let digit = byte - 48
+            if magnitude > (limit - digit) / 10:
+                return Err(2)
+            magnitude = magnitude * 10 + digit
+            index += 1
+        if negative:
+            match I64.below_zero(magnitude):
+                Ok(value):
+                    return Ok(value)
+                Err(past):
+                    return Err(2)
+        match I64.from(magnitude):
+            Ok(value):
+                return Ok(value)
+            Err(past):
+                return Err(2)
+
+// An ASCII upper-case letter as its lower case; any other byte as it is.
+fn fold_case(byte: U64) -> U64:
+    if byte >= 65 && byte <= 90:
+        return byte + 32
+    return byte

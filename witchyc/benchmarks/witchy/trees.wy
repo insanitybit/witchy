@@ -1,0 +1,98 @@
+// Packed arena for the Trees workload. trees-vec.wy retains the per-branch Vec baseline.
+import console
+import vec
+
+sealed type Node<G>:
+    left: U32
+    right: U32
+
+sealed type Root<G>:
+    index: U64
+
+sealed type Arena<G>:
+    nodes: Vec<Node<G>>
+
+fn allocate<G: Fresh>(allocator: &Allocator, depth: U64, count: U64) -> Result<Arena<G>, U64>:
+    if count > 0xFFFFFFFF:
+        return Err(1)
+    let Ok(nodes): Vec<Node<G>> = Vec.filled(allocator, count, Node(0, 0)) else Err(code):
+        return Err(code)
+    var storage = move nodes
+    build(storage.as_mut_slice(), depth, 0, count)
+    return Ok(Arena(move storage))
+
+// Preorder placement. Index zero is the root and is never a child.
+fn build<G: Brand>(nodes: &mut [Node<G>], depth: U64, at: U64, count: U64):
+    if depth == 0:
+        nodes[at] = Node(0, 0)
+        return
+    let left = at + 1
+    let right = left + count / 2
+    nodes[at] = Node(U32.truncate(left), U32.truncate(right))
+    build(nodes, depth - 1, left, count / 2)
+    build(nodes, depth - 1, right, count / 2)
+
+fn root<G: Brand>(arena: &Arena<G>) -> Root<G>:
+    return Root(0)
+
+fn visit<G: Brand>(nodes: &[Node<G>], at: U64) -> U64:
+    let node = nodes[at]
+    if node.left == 0:
+        return 1
+    return 1 + visit(nodes, U32.to_u64(node.left)) + visit(nodes, U32.to_u64(node.right))
+
+fn check<G: Brand>(arena: &Arena<G>, root: Root<G>) -> U64:
+    return visit((*arena).nodes.as_slice(), root.index)
+
+fn close<G: Brand>(arena: Arena<G>):
+    arena.nodes.close()
+
+fn node_count(depth: U64) -> U64:
+    var count: U64 = 1
+    for step in 0..depth:
+        count = count * 2 + 1
+    return count
+
+fn one(allocator: &Allocator, depth: U64, count: U64) -> U64:
+    brand allocate(allocator, depth, count) as result:
+        let Ok(made) = move result else Err(code):
+            unreachable
+        let arena = move made
+        let handle = root(&arena)
+        let total = check(&arena, handle)
+        close(move arena)
+        return total
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let n: U64 = 16
+    let stretch = n + 1
+    console.write("stretch tree of depth ")
+    console.write_u64(stretch)
+    console.write("\t check: ")
+    console.print_int(one(&allocator, stretch, node_count(stretch)))
+    let count = node_count(n)
+    brand allocate(&allocator, n, count) as result:
+        let Ok(made) = move result else Err(code):
+            unreachable
+        let long_lived = move made
+        let handle = root(&long_lived)
+        var depth: U64 = 4
+        while depth <= n:
+            var iterations: U64 = 1
+            for step in 0..n - depth + 4:
+                iterations = iterations * 2
+            var total: U64 = 0
+            let capacity = node_count(depth)
+            for i in 0..iterations:
+                total += one(&allocator, depth, capacity)
+            console.write_u64(iterations)
+            console.write("\t trees of depth ")
+            console.write_u64(depth)
+            console.write("\t check: ")
+            console.print_int(total)
+            depth += 2
+        console.write("long lived tree of depth ")
+        console.write_u64(n)
+        console.write("\t check: ")
+        console.print_int(check(&long_lived, handle))
+        close(move long_lived)

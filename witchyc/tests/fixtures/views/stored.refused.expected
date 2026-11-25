@@ -1,0 +1,1 @@
+this type holds a reference (a view such as `Span`), and a Vec or record stores values

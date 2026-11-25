@@ -1,0 +1,27 @@
+// `if let Variant(x) = value: a else: b` on one line is a value, like `if c: a else: b`.
+import console
+import hash
+import hashmap
+
+fn half(n: U64) -> Result<U64, U64>:
+    if n % 2 == 0:
+        return Ok(n / 2)
+    Err(n)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let a = if let Ok(h) = half(10): h else: 0
+    let b = if let Ok(h) = half(7): h else: 99
+    console.print_int(a + b)
+    let Ok(made): HashMap<U64, U64> = HashMap.new(&allocator, 8) else Err(code):
+        return
+    var m = move made
+    match m.insert(3, 30):
+        Ok:
+            ()
+        Err(entry):
+            discard(entry)
+    for k in 2..5:
+        let v = if let Ok(n) = m.get(&k): *n else: 0
+        console.print_int(v)
+    console.print_int(if let Err(x) = half(5): x * 2 else: 0)
+    m.discard()

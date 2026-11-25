@@ -1,0 +1,24 @@
+// `n += f(&mut n)` adds to the value `n` had before `f` ran: the emitted code reads the
+// destination first, and the proof now does too. `result == x + 1` holds only in that order
+// (the proof read `n` after the call, and once removed an overflow check on that basis).
+import console
+
+fn reset(n: &mut U64) -> U64:
+    ensures *n == 0
+    ensures result == 1
+    proof:
+        auto
+    *n = 0
+    return 1
+
+fn bumped(x: U64) -> U64:
+    requires x < 100
+    ensures result == x + 1
+    proof:
+        auto
+    var n = x
+    n += reset(&mut n)
+    return n
+
+fn main(console: Console<Write>):
+    console.print_int(bumped(5))

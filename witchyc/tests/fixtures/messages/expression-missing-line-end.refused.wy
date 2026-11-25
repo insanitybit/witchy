@@ -1,0 +1,6 @@
+// Refused, saying the line ended where an expression was wanted.
+import console
+
+fn main(console: Console<Write>):
+    let x: U64 = 3 +
+    console.print_int(x)

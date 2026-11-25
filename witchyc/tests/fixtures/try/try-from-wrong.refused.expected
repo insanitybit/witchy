@@ -1,0 +1,1 @@
+or give `AppError` a `pub fn from(error: U64) -> AppError`

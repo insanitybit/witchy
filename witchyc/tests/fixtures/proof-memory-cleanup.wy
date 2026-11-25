@@ -1,0 +1,68 @@
+fn memory_check_empty_from<T>(buffer: &Buffer<T>, start: U64) -> Result<(), U64>:
+    ensures memory.unchanged(buffer, old(buffer))
+    ensures match result:
+        Ok:
+            memory.empty_from(buffer, start)
+        Err(code):
+            true
+    proof:
+        auto
+    let capacity = memory.capacity(buffer)
+    if start > capacity:
+        return Ok(())
+    var index: U64 = start
+    while index < capacity:
+        invariant start <= index
+        invariant index <= capacity
+        invariant memory.empty_range(buffer, start, index)
+        if memory.initialized(buffer, index):
+            return Err(1)
+        index += 1
+    return Ok(())
+
+fn fallback_close<T>(input: Buffer<T>):
+    var buffer = move input
+    let capacity = memory.capacity(&buffer)
+    var index: U64 = 0
+    while index < capacity:
+        let _ = memory.take(&mut buffer, index)
+        index += 1
+    match memory.try_release(move buffer):
+        Ok:
+            return
+        Err(back):
+            fallback_close(move back)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<Buffer<U8>, U64> = memory.try_alloc(&allocator, 3)
+    let seven: U8 = 7
+    let nine: U8 = 9
+    match move made:
+        Ok(input):
+            var buffer = move input
+            let _ = memory.init(&mut buffer, 0, seven)
+            let _ = memory.init(&mut buffer, 2, nine)
+            match memory_check_empty_from(&buffer, 1):
+                Ok:
+                    console.print_int(991)
+                Err(code):
+                    console.print_int(code)
+            match memory_check_empty_from(&buffer, 3):
+                Ok:
+                    console.print_int(0)
+                Err(code):
+                    console.print_int(992)
+            memory_clear(&mut buffer)
+            match memory_check_empty_from(&buffer, 0):
+                Ok:
+                    console.print_int(0)
+                Err(code):
+                    console.print_int(993)
+            match memory.try_release(move buffer):
+                Ok:
+                    console.print_int(1)
+                Err(back):
+                    console.print_int(994)
+                    fallback_close(move back)
+        Err(code):
+            console.print_int(995)

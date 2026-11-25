@@ -1,0 +1,1 @@
+borrows from `right`, which the function's `borrows` clause for this variant does not name

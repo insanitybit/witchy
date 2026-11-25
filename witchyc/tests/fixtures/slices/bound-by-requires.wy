@@ -1,0 +1,18 @@
+// `for i in 0..n` under `requires n <= s.len()`: `i < n` and `n <= s.len()` give `i < s.len()` in one
+// linear step, so the read is a goal Lean proves and has no test.
+import console
+
+fn prefix_sum(s: &[U64], n: U64) -> U64:
+    requires n <= s.len() && n <= 1000
+    ensures true
+    proof:
+        auto
+    var t: U64 = 0
+    for i in 0..n:
+        t = t ^ s[i]
+    return t
+
+fn main(console: Console<Write>):
+    let a: [U64; 4] = [1, 2, 4, 8]
+    let s = a.slice()
+    console.print_int(prefix_sum(s, 3))

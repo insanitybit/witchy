@@ -1,0 +1,12 @@
+// A type with an invariant lends no field for writing, in its own file either.
+sealed type Box:
+    data: Buffer<U64>
+    length: U64
+    capacity: U64
+    invariant memory.prefix(data, length, capacity)
+
+fn slot(box: &mut Box) -> &mut U64:
+    return &mut (*box).length
+
+fn main(console: Console<Write>):
+    console.print_int(1)

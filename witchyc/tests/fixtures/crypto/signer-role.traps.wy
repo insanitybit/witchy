@@ -1,0 +1,4 @@
+// A signer's role is lowercase letters, digits and `-`: anything else is no grant.
+import crypto
+fn main(targets: Signer):
+    return

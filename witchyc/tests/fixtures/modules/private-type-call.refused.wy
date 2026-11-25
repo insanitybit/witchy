@@ -1,0 +1,6 @@
+// Refused: a private type's functions are not reached through its name from another file.
+import "../../../library/wasm-console.wy"
+import "parts/corner-maker.wy"
+
+fn main(console: Console<Write>):
+    console.print_int(Corner.zero())

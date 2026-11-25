@@ -1,0 +1,3 @@
+// Another module's grantable capability of the same name as parts/limits.wy's.
+pub grantable capability RateLimit:
+    burst: U64

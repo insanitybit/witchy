@@ -1,0 +1,5 @@
+// An import is refused at its own line, and no byte range is printed.
+import console
+import nosuch
+fn main(console: Console<Write>):
+    return

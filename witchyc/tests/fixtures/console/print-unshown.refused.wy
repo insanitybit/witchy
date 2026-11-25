@@ -1,0 +1,6 @@
+import console
+type Point:
+    x: U64
+fn main(console: Console<Write>):
+    let p = Point(1)
+    console.print("point ${p}")

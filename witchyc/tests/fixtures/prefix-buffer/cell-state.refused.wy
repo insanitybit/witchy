@@ -1,0 +1,6 @@
+// A PrefixBuffer has no cell-by-cell state to ask about.
+fn full<T>(buffer: &PrefixBuffer<T>, index: U64) -> Bool:
+    return memory.initialized(buffer, index)
+
+fn main(out: Console<Write>):
+    out.print_int(0)

@@ -1,0 +1,11 @@
+import console
+import string
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.from_str(&allocator, "héllo") else Err(code):
+        return
+    var value = move made
+    let text = value.as_str()
+    value.clear()
+    console.line(text)
+    value.close()

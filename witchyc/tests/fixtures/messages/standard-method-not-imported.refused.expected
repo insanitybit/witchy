@@ -1,0 +1,1 @@
+`String.find_text` is in the standard library's `text`: add `import text`

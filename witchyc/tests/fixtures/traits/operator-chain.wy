@@ -1,0 +1,24 @@
+// A long chain of an operator on a program's own type: typed in steps in proportion to its
+// length (each level used to read its operands again: 16 terms took 2 s, 20 took 92 s, and
+// more than 14 were refused by a bound on the work).
+import console
+import ops
+
+type Money:
+    cents: U64
+
+impl Add for Money:
+    fn add(self: Money, other: Money) -> Money:
+        return Money(self.cents + other.cents)
+
+impl Sub for Money:
+    fn sub(self: Money, other: Money) -> Money:
+        return Money(self.cents - other.cents)
+
+fn main(console: Console<Write>):
+    let m = Money(1)
+    let total = m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m
+    console.print_int(total.cents)
+    let ten = Money(10)
+    let mixed = ten + m - m + ten - m - m + ten + ten - m + m + m + ten - ten + m + m + m
+    console.print_int(mixed.cents)

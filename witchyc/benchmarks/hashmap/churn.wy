@@ -1,0 +1,32 @@
+// Each replacement traverses a 256-key cluster, repairs the hole, and inserts a new key.
+import console
+import hashmap
+import discard
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(table): HashMap<U64, U64> = HashMap.new(&allocator, 1021) else Err(code):
+        return
+    var map = move table
+    for i in 0..256:
+        match map.insert(i * 1021, i):
+            Ok:
+                continue
+            Err(back):
+                unreachable
+    var checksum: U64 = 0
+    for i in 0..20000:
+        let key = i * 1021
+        match map.remove(&key):
+            Ok(entry):
+                checksum += entry.value
+            Err(missing):
+                unreachable
+        let next = i + 256
+        match map.insert(next * 1021, next):
+            Ok:
+                continue
+            Err(back):
+                unreachable
+    console.print_int(checksum)
+    console.print_int(map.len())
+    map.discard()

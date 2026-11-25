@@ -1,0 +1,14 @@
+fn bad(old: Boxed<U64>, a: &Allocator):
+    let address = memory.box_address(&old)
+    let _ = memory.unbox(move old)
+    let replacement: Result<Boxed<U64>, U64> = memory.try_box(a, 7)
+    match move replacement:
+        Ok(current):
+            if memory.box_address(&current) == address:
+                memory.box_ref(&address)
+            memory.unbox(move current)
+        Err(original):
+            return
+
+fn main():
+    return

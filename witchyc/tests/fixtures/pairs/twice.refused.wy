@@ -1,0 +1,27 @@
+// Refused by Lean: one cell is initialized twice.
+import vec
+sealed type Pairs<T>:
+    keys: Buffer<T>
+    values: Buffer<T>
+    length: U64
+    capacity: U64
+    invariant memory.prefix(keys, length, capacity)
+    invariant memory.prefix(values, length, capacity)
+
+impl<T> Pairs<T>:
+    pub fn push_mut(pairs: &mut Pairs<T>, key: T, value: T) -> Bool:
+        ensures pairs.capacity == old(pairs.capacity)
+        ensures result == (old(pairs.length) < old(pairs.capacity))
+        proof:
+            auto
+        let index = (*pairs).length
+        if index < (*pairs).capacity:
+            memory_init_unchecked(&mut (*pairs).keys, index, key)
+            memory_init_unchecked(&mut (*pairs).keys, index, value)
+            memory_init_unchecked(&mut (*pairs).values, index, key)
+            (*pairs).length = index + 1
+            return true
+        return false
+
+fn main():
+    return

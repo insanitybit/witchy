@@ -1,0 +1,59 @@
+// Run-length encoding over bytes: (count, byte) pairs with counts up to 255, then decoding, and a
+// check that the round trip gives the input back.
+import console
+import vec
+
+fn encode(allocator: &Allocator, input: &[U8]) -> Result<Vec<U8>, U64>:
+    var out: Vec<U8> = Vec.new(allocator, 16)?
+    var at: U64 = 0
+    while at < input.len():
+        let byte = input[at]
+        var run: U64 = 1
+        while at + run < input.len() && input[at + run] == byte && run < 255:
+            run += 1
+        let a = out.push_mut(allocator, U8.truncate(run))
+        let b = out.push_mut(allocator, byte)
+        at += run
+    return Ok(move out)
+
+fn decode(allocator: &Allocator, packed: &[U8]) -> Result<Vec<U8>, U64>:
+    var out: Vec<U8> = Vec.new(allocator, 16)?
+    var at: U64 = 0
+    while at + 1 < packed.len():
+        let count = U8.to_u64(packed[at])
+        let byte = packed[at + 1]
+        for k in 0..count:
+            let pushed = out.push_mut(allocator, byte)
+        at += 2
+    return Ok(move out)
+
+fn same(a: &[U8], b: &[U8]) -> Bool:
+    if a.len() != b.len():
+        return false
+    for i in 0..a.len():
+        if a[i] != b[i]:
+            return false
+    return true
+
+fn check(console: &Console<Write>, allocator: &Allocator, input: &[U8]):
+    let Ok(packed): Vec<U8> = encode(allocator, input) else Err(c):
+        return
+    let Ok(back): Vec<U8> = decode(allocator, packed.as_slice()) else Err(c):
+        packed.close()
+        return
+    console.print("${input.len()} -> ${packed.len()} ${same(input, back.as_slice())}")
+    packed.close()
+    back.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let empty: [U8; 1] = [0]
+    check(&console, &allocator, empty.slice().part(0, 0))
+    let mixed: [U8; 10] = [1, 1, 1, 2, 3, 3, 9, 9, 9, 9]
+    check(&console, &allocator, mixed.slice())
+    let Ok(made): Vec<U8> = Vec.new(&allocator, 600) else Err(c):
+        return
+    var long = move made
+    for i in 0..600:
+        let pushed = long.push_mut(&allocator, 7)
+    check(&console, &allocator, long.as_slice())
+    long.close()

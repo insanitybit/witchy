@@ -1,0 +1,2 @@
+proof failed: function `read_nonzero`
+not proved: an `unreachable` that some path reaches

@@ -1,0 +1,11 @@
+// Taking a socket from a group slot can be refused by the host (the slot may hold none), so a
+// `nopanic fn` may not (review round 32: host refusals were not counted). It is checked though
+// nothing calls it: its promise is for whoever does.
+import net
+
+nopanic fn take(group: &Group, slot: U64) -> Socket:
+    return group.take(slot)
+
+fn main(listener: Listener):
+    let group = listener.group()
+    group.close()

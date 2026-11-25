@@ -1,0 +1,8 @@
+// Refused, naming the unknown type and the nearest declared one.
+import console
+
+fn f(x: Strng) -> U64:
+    return 1
+
+fn main(console: Console<Write>):
+    console.print_int(1)

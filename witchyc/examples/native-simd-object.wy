@@ -1,0 +1,2 @@
+fn add_pair(a: U64x2, b: U64x2) -> U64x2:
+    return a.wrapping_add(b)

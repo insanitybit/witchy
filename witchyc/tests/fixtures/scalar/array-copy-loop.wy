@@ -1,0 +1,27 @@
+// A whole array copied (`var b = a`) is a loop of loads and stores for 8 elements or more: the copy
+// is independent of the original, U8 elements keep their width, and below 8 the copy is written
+// out as before. (Unrolled, a [U64; 128] copy was 3.8 KB of code.)
+import console
+
+fn main(console: Console<Write>):
+    var a: [U64; 20] = [0; 20]
+    for k in 0..20:
+        a[k] = k * k
+    var b = a
+    b[3] = 1000
+    a[4] = 2000
+    var sum_a: U64 = 0
+    var sum_b: U64 = 0
+    for k in 0..20:
+        sum_a += a[k]
+        sum_b += b[k]
+    console.print("${a[3]} ${b[3]} ${a[4]} ${b[4]} ${sum_a} ${sum_b}")
+    var c: [U8; 12] = [7; 12]
+    c[11] = 9
+    var d = c
+    c[0] = 1
+    console.print("${U8.to_u64(c[0])} ${U8.to_u64(d[0])} ${U8.to_u64(d[11])}")
+    var e: [U64; 4] = [5; 4]
+    var f = e
+    e[0] = 6
+    console.print("${e[0]} ${f[0]}")

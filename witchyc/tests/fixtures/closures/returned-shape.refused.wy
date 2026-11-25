@@ -1,0 +1,5 @@
+// Refused (found by an adversarial review): the declared function type is the closure's.
+fn liar() -> fn(U64) -> U64:
+    return fn(b: Bool) -> Bool: !b
+fn main():
+    return

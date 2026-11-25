@@ -1,0 +1,21 @@
+import string
+import text
+
+pub fn enrollment_plan(allocator: &Allocator) -> Result<String, U64>:
+    let empty = String.with_capacity(allocator, 2048)?
+    var plan = move empty
+    if let Err(code) = steps(&mut plan, allocator):
+        plan.close()
+        return Err(code)
+    return Ok(move plan)
+
+fn steps(plan: &mut String, allocator: &Allocator) -> Result<(), U64>:
+    plan.push_text(allocator, "expect\trelease challenge is unknown, expired, consumed or from an old policy\tSELECT EXISTS(SELECT 1 FROM policy WHERE singleton=1 AND CAST(document AS TEXT)=json_extract(CAST(:blob AS TEXT),'$.policy')) AND EXISTS(SELECT 1 FROM challenges WHERE challenge=:token AND policy=:policy_pin AND expires=:expires AND :now < expires AND CAST(envelope AS TEXT)=json_extract(CAST(:blob AS TEXT),'$.envelope'))\n")?
+    plan.push_text(allocator, "expect\tenrollment requires a fresh credential ID and public key\tSELECT NOT EXISTS(SELECT 1 FROM counters WHERE credential=:credential OR public_key=:public_key)\n")?
+    plan.push_text(allocator, "exec\t\tINSERT OR IGNORE INTO counters (credential,public_key,count) SELECT :retired,:retired_key,0 WHERE :retired != ''\n")?
+    plan.push_text(allocator, "change\tmaintainer counter was not stored\tINSERT INTO counters (credential,public_key,count) VALUES (:credential,:public_key,:count)\n")?
+    plan.push_text(allocator, "change\tmaintainer policy was not replaced\tDELETE FROM policy WHERE singleton=1\n")?
+    plan.push_text(allocator, "change\tmaintainer policy was not stored\tINSERT INTO policy (singleton,document) VALUES (1,CAST(json_extract(CAST(:blob AS TEXT),'$.next') AS BLOB))\n")?
+    plan.push_text(allocator, "exec\t\tDELETE FROM browser_approvals\n")?
+    plan.push_text(allocator, "exec\t\tDELETE FROM challenges\n")?
+    return plan.push_text(allocator, "result\tenrollment result is invalid\tSELECT CAST('ok' AS BLOB)\n")

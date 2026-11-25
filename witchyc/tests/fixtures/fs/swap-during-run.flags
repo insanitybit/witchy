@@ -1,0 +1,4 @@
+scratch-file: grant/sub/file.txt 696e73696465
+scratch-file: outside/file.txt 6f7574736964652d63616e617279
+run: --dir={scratch}/grant --exec={dir}/swap-bin:swap --env=SCRATCH={scratch} --deadline-ms=5000
+absent: outside-canary

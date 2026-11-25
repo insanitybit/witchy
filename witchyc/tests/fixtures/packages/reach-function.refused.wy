@@ -1,0 +1,6 @@
+// Refused: a package function that alpha's entry does not offer, called by its bare name.
+import console
+import "@alpha"
+
+fn main(console: Console<Write>):
+    console.print_int(alpha_internal(5))

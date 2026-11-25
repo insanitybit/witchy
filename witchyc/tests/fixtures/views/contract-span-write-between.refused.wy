@@ -1,0 +1,23 @@
+// Refused: a store between two reads of a Span leaves the proof with two unknown numbers,
+// not one.
+import console
+import span
+import string
+
+fn twice(text: Span, count: &mut U64) -> U64:
+    ensures result == 0
+    let before = text.len()
+    *count = *count / 2 + before / 2
+    let after = text.len()
+    if before == after:
+        return 0
+    return 1
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var s = move made
+    let _ = s.push_text(&allocator, "hello")
+    var count: U64 = 0
+    console.print_int(twice(s.span(), &mut count))
+    s.close()

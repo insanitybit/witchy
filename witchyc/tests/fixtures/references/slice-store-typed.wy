@@ -1,0 +1,7 @@
+// A value not read first keeps the type the cell gives it: `50 + 50` into a [U8] slice.
+fn main(console: Console<Write>):
+    var data: [U8; 3] = [1, 2, 3]
+    data[0] = 100 + 100
+    let s = data.slice_mut()
+    s[1] = 50 + 50
+    console.print_int(U8.to_u64(s[0]))

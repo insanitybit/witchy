@@ -1,0 +1,12 @@
+// Refused: a claim past what is known (a false variant of variable-divisor.wy's `area`).
+import console
+
+fn area(w: U64, h: U64) -> U64:
+    requires w <= 1000 && h <= 1000
+    ensures result <= 999999
+    proof:
+        auto
+    return w * h
+
+fn main(console: Console<Write>):
+    console.line("ok")

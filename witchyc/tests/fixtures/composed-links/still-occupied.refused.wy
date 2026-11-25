@@ -1,0 +1,20 @@
+import option
+
+fn replace<T: Any>(place: &mut Option<T>, value: T) -> Option<T>:
+    ensures true
+    proof:
+        auto
+    var was: Option<T> = None
+    var pending: Option<T> = Some(move value)
+    memory.exchange(place, &mut pending)
+    match move pending:
+        Some(impossible):
+            unreachable
+        None:
+            return move was
+
+fn main(out: Console<Write>):
+    var old: Option<U64> = Some(11)
+    let prior = replace(&mut old, 22)
+    out.print_int(prior.unwrap_or(0))
+    out.print_int(old.unwrap_or(0))

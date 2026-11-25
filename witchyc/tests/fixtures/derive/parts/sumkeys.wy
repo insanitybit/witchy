@@ -1,0 +1,23 @@
+// Another recipe of the same name in another module: hashes by adding the fields' hashes, so a
+// program that imports this one instead gets a different hash with no change to the compiler.
+import hash
+
+pub derive Key:
+    impl Eq for Self:
+        fn eq(self: &Self, other: &Self) -> Bool:
+            static for f in fields:
+                if !((*self).f == (*other).f):
+                    return false
+            return true
+
+    impl Hash for Self:
+        fn hash(self: &Self) -> U64:
+            var total: U64 = 0
+            static for f in fields:
+                total = (total % 1000000) + ((*self).f.hash() % 1000000)
+            return total
+
+derive Hidden:
+    impl Eq for Self:
+        fn eq(self: &Self, other: &Self) -> Bool:
+            return true

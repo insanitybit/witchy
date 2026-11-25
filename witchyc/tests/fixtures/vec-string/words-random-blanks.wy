@@ -1,0 +1,52 @@
+// `words()` over random text of letters and the four blanks (space, newline, return, tab),
+// against a count made byte by byte: the number of words and their total length.
+import console
+import string
+import span
+
+fn blank(b: U64) -> Bool:
+    return b == 32 || b == 10 || b == 13 || b == 9
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var seed: U64 = 3
+    var wrong: U64 = 0
+    var all: U64 = 0
+    for round in 0..300:
+        let Ok(made): String = String.new(&allocator) else Err(c):
+            return
+        var s = move made
+        var words: U64 = 0
+        var letters: U64 = 0
+        var inside = false
+        seed = seed * 48271 % 2147483647
+        let n = seed % 40
+        for k in 0..n:
+            seed = seed * 48271 % 2147483647
+            let pick = seed % 9
+            var b: U64 = 97 + seed % 26
+            if pick == 0:
+                b = 32
+            else if pick == 1:
+                b = 10
+            else if pick == 2:
+                b = 9
+            else if pick == 3:
+                b = 13
+            let _ = s.push(&allocator, b)
+            if blank(b):
+                inside = false
+            else:
+                letters += 1
+                if !inside:
+                    words += 1
+                inside = true
+        var seen: U64 = 0
+        var length: U64 = 0
+        for w in s.span().words():
+            seen += 1
+            length += w.byte_len()
+        if seen != words || length != letters:
+            wrong += 1
+        all += seen
+        s.close()
+    console.print("${wrong} wrong, ${all} words")

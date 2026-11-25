@@ -1,0 +1,2 @@
+proof failed: function `bad`
+not proved: lending a box that may be null, in the value returned

@@ -1,0 +1,86 @@
+// Binary buffering. The owning storage is initialized; no capability is held here.
+import vec
+
+pub type StreamError:
+    SourceFailed(U64)
+    SinkFailed(U64)
+    InvalidCount
+    NoProgress
+
+// An operation may deliver a prefix before failing.
+pub type WriteFailure:
+    error: StreamError
+    done: U64
+
+pub sealed type ByteBuffer:
+    storage: Vec<U8>
+    head: U64
+    end: U64
+
+// The storage's length sets the buffer capacity, including zero.
+pub fn byte_buffer(storage: Vec<U8>) -> ByteBuffer:
+    return ByteBuffer(move storage, 0, 0)
+
+impl ByteBuffer:
+    pub fn buffered(self: &ByteBuffer) -> U64:
+        return (*self).end - (*self).head
+
+    pub fn capacity(self: &ByteBuffer) -> U64:
+        return (*self).storage.len()
+
+    pub fn readable(self: &ByteBuffer) -> &[U8]:
+        return (*self).storage.as_slice().part((*self).head, (*self).end)
+
+    pub fn writable(self: &mut ByteBuffer) -> &mut [U8]:
+        let start = (*self).end
+        let end = (*self).storage.len()
+        return (*self).storage.as_mut_slice().part(start, end)
+
+    // Mark bytes just written into the writable tail as readable.
+    pub fn commit(self: &mut ByteBuffer, count: U64) -> Result<(), StreamError>:
+        if count > self.capacity() - (*self).end:
+            return Err(InvalidCount)
+        (*self).end += count
+        return Ok(())
+
+    // Mark bytes in the readable prefix as consumed.
+    pub fn consume(self: &mut ByteBuffer, count: U64) -> Result<(), StreamError>:
+        if count > self.buffered():
+            return Err(InvalidCount)
+        (*self).head += count
+        if (*self).head == (*self).end:
+            (*self).head = 0
+            (*self).end = 0
+        return Ok(())
+
+    pub fn drain(self: &mut ByteBuffer, output: &mut [U8]) -> U64:
+        let count = smaller(output.len(), self.buffered())
+        output.part(0, count).copy_from(self.readable().part(0, count))
+        let advanced = self.consume(count)
+        return count
+
+    pub fn append(self: &mut ByteBuffer, input: &[U8]) -> U64:
+        let count = smaller(input.len(), self.capacity() - (*self).end)
+        self.writable().part(0, count).copy_from(input.part(0, count))
+        let committed = self.commit(count)
+        return count
+
+    // A failed write may have consumed bytes. Retain only the unsent suffix.
+    pub fn record_write(self: &mut ByteBuffer, result: Result<U64, WriteFailure>) -> Result<(), StreamError>:
+        match result:
+            Ok(count):
+                if count == 0:
+                    return Err(NoProgress)
+                return self.consume(count)
+            Err(failure):
+                self.consume(failure.done)?
+                return Err(failure.error)
+
+    pub fn close(self: ByteBuffer):
+        let ByteBuffer(storage, head, end) = move self
+        storage.close()
+
+fn smaller(left: U64, right: U64) -> U64:
+    if left < right:
+        return left
+    return right

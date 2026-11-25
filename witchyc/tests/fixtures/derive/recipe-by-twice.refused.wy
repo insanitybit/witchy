@@ -1,0 +1,9 @@
+// Refused: a field named twice in `by:`.
+import "parts/keys.wy"
+import hash
+
+type P derive(keys.Key(by: id, id)):
+    id: U64
+
+fn main():
+    return

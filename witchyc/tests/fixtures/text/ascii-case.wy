@@ -1,0 +1,29 @@
+// ASCII case: to_ascii_lower and to_ascii_upper change only A-Z / a-z (é, ß, Σ and digits stay),
+// across more than a word of ASCII and around multi-byte scalars; eq_ignore_ascii_case compares
+// Spans without allocating.
+import console
+import string
+import text
+import span
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(e):
+        return
+    var text = move made
+    let _ = text.push_text(&allocator, "Hello, WORLD! Ünïcode éÉ ßΣσ @[`{ 0123456789 The Quick Brown Fox")
+    match text.to_ascii_lower(&allocator):
+        Ok(lower):
+            console.write_string(&lower)
+            console.line("")
+            lower.close()
+        Err(e):
+            console.line("no room")
+    match text.to_ascii_upper(&allocator):
+        Ok(upper):
+            console.write_string(&upper)
+            console.line("")
+            console.print("${text.span().eq_ignore_ascii_case(upper.span())} ${text.span().part(0, 5).eq_ignore_ascii_case(upper.span().part(0, 4))}")
+            upper.close()
+        Err(e):
+            console.line("no room")
+    text.close()

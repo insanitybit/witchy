@@ -1,0 +1,23 @@
+// A reference parameter passed beside an `if` value: the arguments before the `if` are bound
+// first, and a reference bound so is passed on as the name it was (it was refused).
+import console
+
+fn add(x: &mut U64, v: U64):
+    *x += v
+
+fn bumped(x: &mut U64, d: U64):
+    add(x, if d < 10: 1 else: 2)
+
+fn both(x: &U64, y: &U64, v: U64) -> U64:
+    return *x + *y + v
+
+fn read(x: &U64) -> U64:
+    return both(x, x, if *x > 1: 10 else: 20)
+
+fn main(console: Console<Write>):
+    var n: U64 = 0
+    bumped(&mut n, 3)
+    bumped(&mut n, 30)
+    console.print_int(n)
+    let m: U64 = 3
+    console.print_int(read(&m))

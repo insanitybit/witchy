@@ -1,0 +1,30 @@
+// A Dir reaches its own subtree only. Every way out is refused by the host, whatever
+// the path says: `..`, an absolute path, an empty component, a symbolic link.
+import fs
+import console
+
+fn report(console: &Console<Write>, dir: &Dir<Read>, path: Text):
+    match dir.open(path):
+        Ok(file):
+            console.line("opened")
+            file.close()
+        Err(error):
+            match error:
+                InvalidPath:
+                    console.line("invalid path")
+                NotFound:
+                    console.line("not found")
+                WrongKind:
+                    console.line("wrong kind")
+                _:
+                    console.line("other error")
+
+fn main(console: Console<Write>, dir: Dir<Read>):
+    report(&console, &dir, "../load-config.wy")
+    report(&console, &dir, "/etc/passwd")
+    report(&console, &dir, "notes//one.txt")
+    report(&console, &dir, "notes/../config.txt")
+    report(&console, &dir, "outside/README.md")
+    report(&console, &dir, "missing.txt")
+    report(&console, &dir, "notes")
+    report(&console, &dir, "notes/one.txt")

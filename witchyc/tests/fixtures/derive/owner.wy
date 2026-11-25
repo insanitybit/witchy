@@ -1,0 +1,31 @@
+// Derived impls on a record holding an owner: Eq and Hash through the String's, Discard closes it.
+import console
+import hash
+import string
+
+type Named derive(Eq, Hash, Discard):
+    name: String
+    id: U64
+
+fn make(allocator: &Allocator, text: Text, id: U64) -> Result<Named, U64>:
+    let Ok(made): String = String.new(allocator) else Err(code):
+        return Err(code)
+    var name = move made
+    let _ = name.push_text(allocator, text)
+    Ok(Named(name: move name, id: id))
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(a): Named = make(&allocator, "ab", 1) else Err(code):
+        return
+    let Ok(b): Named = make(&allocator, "ab", 1) else Err(code):
+        a.discard()
+        return
+    let Ok(c): Named = make(&allocator, "ac", 1) else Err(code):
+        a.discard()
+        b.discard()
+        return
+    if a == b && !(a == c) && a.hash() == b.hash():
+        console.print_int(1)
+    a.discard()
+    b.discard()
+    c.discard()

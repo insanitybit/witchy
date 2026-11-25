@@ -1,0 +1,32 @@
+// Rows of one opening go to a helper generic over its brand (`G: Brand`).
+import console
+
+type Graph:
+    count: U64
+
+type Node<G>:
+    offset: U64
+
+type Nodes<G>:
+    count: U64
+
+impl Graph:
+    fn nodes<D: Fresh>(self: &Graph) -> Nodes<D>:
+        return Nodes(count: (*self).count)
+
+fn first<G: Brand>(nodes: &Nodes<G>) -> Node<G>:
+    return Node(offset: 0)
+
+fn last<G: Brand>(nodes: &Nodes<G>) -> Node<G>:
+    return Node(offset: (*nodes).count - 1)
+
+fn apart<G: Brand>(a: Node<G>, b: Node<G>) -> U64:
+    return b.offset - a.offset
+
+fn main(console: Console<Write>):
+    let roads = Graph(count: 80)
+    let rail = Graph(count: 80)
+    brand roads.nodes() as r:
+        let a = first(&r)
+        let b = last(&r)
+        console.print_int(apart(a, b))

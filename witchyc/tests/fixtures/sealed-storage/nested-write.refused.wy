@@ -1,0 +1,25 @@
+// Refused: a reference to a field whose own type has an invariant is kept, and that type's
+// field written through it.
+import console
+import vec
+
+sealed type Inner:
+    a: U64
+    b: U64
+    free: U64
+    invariant a <= b
+
+sealed type Outer:
+    inner: Inner
+    n: U64
+    invariant n >= 1
+
+impl Outer:
+    fn set(outer: &mut Outer) -> Bool:
+        ensures outer.n == old(outer.n)
+        let r = &mut (*outer).inner
+        (*r).a = 99
+        return true
+
+fn main(console: Console<Write>):
+    console.print_int(1)

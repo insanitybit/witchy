@@ -1,0 +1,20 @@
+// Refused: the proof knows nothing of the bytes a Span refers to.
+import console
+import span
+import string
+
+fn first(text: Span) -> U64:
+    ensures result == 104
+    match text.at(0):
+        Ok(byte):
+            return 104
+        Err(code):
+            return 0
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var s = move made
+    let _ = s.push_text(&allocator, "hello")
+    console.print_int(first(s.span()))
+    s.close()

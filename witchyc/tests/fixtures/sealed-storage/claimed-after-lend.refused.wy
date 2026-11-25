@@ -1,0 +1,26 @@
+// Refused by the proof: `spare` is lent and kept, so what was assigned to it before is not
+// known afterwards.
+import console
+import vec
+import option
+
+sealed type Bag:
+    items: Vec<U64>
+    held: Option<U64>
+    spare: U64
+    count: U64
+    limit: U64
+    invariant count <= limit
+    invariant when None = held:
+        count == 0
+
+impl Bag:
+    fn set(bag: &mut Bag) -> Bool:
+        ensures bag.spare == 5
+        (*bag).spare = 5
+        let r = &mut (*bag).spare
+        *r = 6
+        return true
+
+fn main(console: Console<Write>):
+    console.print_int(1)

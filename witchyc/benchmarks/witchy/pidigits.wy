@@ -1,0 +1,74 @@
+// The Benchmarks Game sequential spigot. The signed accumulator is
+// represented as a difference of two nonnegative arbitrary-precision values.
+import console
+import big
+import discard_core
+
+fn extract(scratch: &mut BigNat, allocator: &Allocator, pos: &BigNat, neg: &BigNat, numer: &BigNat, denom: &BigNat) -> Result<U64, U64>:
+    scratch.copy_from(allocator, pos)?
+    scratch.add_scaled(allocator, numer, 3)?
+    if !scratch.subtract(neg):
+        return Err(1)
+    var digit: U64 = 0
+    while scratch.subtract(denom):
+        digit += 1
+    return Ok(digit)
+
+fn digits(console: &Console<Write>, allocator: &Allocator, pos: &mut BigNat, neg: &mut BigNat, numer: &mut BigNat, denom: &mut BigNat, scratch: &mut BigNat, n: U64) -> Result<(), U64>:
+    numer.set_word(allocator, 1)?
+    denom.set_word(allocator, 1)?
+    var k: U32 = 0
+    for written in 1..n + 1:
+        var digit: U64 = 0
+        var found = false
+        while !found:
+            k += 1
+            let scale = k * 2 + 1
+            pos.add_scaled(allocator, numer, 2)?
+            pos.multiply_word(allocator, scale)?
+            neg.multiply_word(allocator, scale)?
+            denom.multiply_word(allocator, scale)?
+            numer.multiply_word(allocator, k)?
+            scratch.copy_from(allocator, neg)?
+            scratch.add_scaled(allocator, numer, 1)?
+            let ready = match pos.compare(scratch):
+                Less:
+                    false
+                _:
+                    true
+            if ready:
+                let candidate = extract(scratch, allocator, pos, neg, numer, denom)?
+                // extract leaves the remainder for 3 * numer + accumulator.
+                // Moving from 3 to 4 adds numer. The quotient stays the same
+                // exactly when the new remainder is still below denom.
+                scratch.add_scaled(allocator, numer, 1)?
+                match scratch.compare(denom):
+                    Less:
+                        digit = candidate
+                        found = true
+                    _:
+                        found = false
+        console.print_byte(U8.truncate(48 + digit))
+        if written % 10 == 0 || written == n:
+            if written % 10 != 0:
+                console.write_spaces(10 - written % 10)
+            console.write("\t:")
+            console.print_int(written)
+        neg.add_scaled(allocator, denom, U32.truncate(digit))?
+        pos.multiply_word(allocator, 10)?
+        neg.multiply_word(allocator, 10)?
+        numer.multiply_word(allocator, 10)?
+    return Ok(())
+
+fn run(console: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let limbs: U64 = 2048
+    using var pos = BigNat.with_capacity(allocator, limbs)?:
+        using var neg = BigNat.with_capacity(allocator, limbs)?:
+            using var numer = BigNat.with_capacity(allocator, limbs)?:
+                using var denom = BigNat.with_capacity(allocator, limbs)?:
+                    using var scratch = BigNat.with_capacity(allocator, limbs)?:
+                        digits(console, allocator, &mut pos, &mut neg, &mut numer, &mut denom, &mut scratch, 1000)?
+    return Ok(())
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let _ = run(&console, &allocator)

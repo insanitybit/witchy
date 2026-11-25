@@ -1,0 +1,15 @@
+// Refused, naming the fix: the type argument lacks the derived trait.
+import console
+import sort
+
+
+type Box2<T> derive(Before):
+    item: T
+
+type Plain:
+    n: U64
+
+fn main(console: Console<Write>):
+    let a: Box2<Plain> = Box2(Plain(1))
+    let b: Box2<Plain> = Box2(Plain(2))
+    console.print("${a.before(&b)}")

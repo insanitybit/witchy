@@ -1,0 +1,46 @@
+// A for over a shared slice or a Vec reads the length once and each element without a test:
+// with an index, continue and break, empty, nested over one slice, in a proved function.
+import console
+import vec
+
+fn total(bytes: &[U8]) -> U64:
+    ensures true
+    proof:
+        auto
+    var count: U64 = 0
+    for b in bytes:
+        if U8.to_u64(*b) > 200:
+            return count
+        if count < 100:
+            count += 1
+    return count
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.new(&allocator, 4) else Err(code):
+        return
+    var v = move made
+    let Ok(e): Vec<U64> = Vec.new(&allocator, 0) else Err(code):
+        v.close()
+        return
+    let empty = move e
+    for x in &empty:
+        console.print("never ${*x}")
+    for i in 0..6:
+        let pushed = v.push_mut(&allocator, i * 10)
+    for i, x in &v:
+        if i == 1:
+            continue
+        if *x == 40:
+            break
+        console.print("${i}:${*x}")
+    let s = v.as_slice()
+    var pairs: U64 = 0
+    for a in s:
+        for b in s:
+            if *a < *b:
+                pairs += 1
+    console.print("pairs ${pairs}")
+    let bytes: [U8; 4] = [1, 2, 250, 4]
+    console.print("total ${total(bytes.slice())}")
+    empty.close()
+    v.close()

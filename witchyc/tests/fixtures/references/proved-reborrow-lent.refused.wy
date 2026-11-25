@@ -1,0 +1,24 @@
+// Refused: a reference lent on with `&mut *r` is unknown afterwards.
+import console
+
+type Shape:
+    Rect(U64, U64)
+    Dot
+
+type P:
+    x: U64
+    y: U64
+
+fn f(x: U64) -> U64:
+    requires x < 10
+    ensures result < 20
+    proof:
+        auto
+    var v = x
+    let r = &mut v
+    let q = &mut *r
+    *q = 5000
+    return *r
+
+fn main(console: Console<Write>):
+    console.print_int(f(3))

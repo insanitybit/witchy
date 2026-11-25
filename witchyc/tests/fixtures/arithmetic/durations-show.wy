@@ -1,0 +1,16 @@
+// A Duration is shown in its human form: each unit that is not zero, largest first.
+import console
+import string
+import time
+
+fn main(console: Console<Write>, allocator: Allocator):
+    console.print("${1m30s} ${2h + 5m} ${250ms} ${0ms} ${1d + 1s + 7ms}")
+    console.show(90000ms)
+    console.print("")
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var text = move made
+    if let Ok(_) = text.push_format(&allocator, "waited ${3s + 400ms}"):
+        console.write_string(&text)
+        console.print("")
+    text.close()

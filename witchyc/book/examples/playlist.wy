@@ -1,0 +1,27 @@
+import console
+
+sealed type Playlist<G>:
+    tracks: [U64; 3]
+
+sealed type Selection<G>:
+    slot: U64
+
+fn open_playlist<G: Fresh>(tracks: [U64; 3]) -> Playlist<G>:
+    return Playlist(tracks)
+
+fn select_third<G: Brand>(playlist: &Playlist<G>) -> Selection<G>:
+    return Selection(2)
+
+fn remove<G: Brand>(playlist: &mut Playlist<G>, selection: Selection<G>) -> U64:
+    let removed = (*playlist).tracks[selection.slot]
+    (*playlist).tracks[selection.slot] = 0
+    return removed
+
+fn main(console: Console<Write>):
+    brand open_playlist([11, 22, 33]) as opened_road:
+        var road = opened_road
+        let selected = select_third(&road)
+        brand open_playlist([44, 55, 66]) as opened_workout:
+            var workout = opened_workout
+            // Try replacing &mut road below with &mut workout.
+            console.print_int(remove(&mut road, selected))

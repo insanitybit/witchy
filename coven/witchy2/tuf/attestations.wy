@@ -1,0 +1,307 @@
+import "coordinate.wy"
+import "package.wy"
+import "release_trust.wy"
+import "webauthn.wy"
+import crypto
+import discard
+import json_tree
+import span
+import string
+import text
+import vec
+
+pub type ReleaseClaim:
+    name: &String
+    version: &String
+    digest: &String
+    registry: &String
+
+pub sealed type VerifiedPackage:
+    payload: Vec<U8>
+    source_digest: String
+    package_name: String
+    package_version: String
+
+impl VerifiedPackage:
+    pub fn bytes(self: &VerifiedPackage) -> &[U8]:
+        return (*self).payload.as_slice()
+
+    pub fn digest(self: &VerifiedPackage) -> &String:
+        return &(*self).source_digest
+
+    pub fn name(self: &VerifiedPackage) -> &String:
+        return &(*self).package_name
+
+    pub fn version(self: &VerifiedPackage) -> &String:
+        return &(*self).package_version
+
+    pub fn close(self: VerifiedPackage):
+        let VerifiedPackage(payload, digest, name, version) = move self
+        payload.close()
+        digest.close()
+        name.close()
+        version.close()
+
+// Check both release authorities and the enrolled WebAuthn credential.
+// The digest is checked only after validating the complete package.
+pub fn verify_release_attestations(input: &String, trust: &ReleaseTrust, name: &String, version: &String, now_ms: U64, allocator: &Allocator) -> Result<(), ReleaseError>:
+    if name.byte_len() == 0 || version.byte_len() == 0:
+        return Err(InvalidPackage)
+    let package = verify_release_package(input, trust, name, version, now_ms, allocator)?
+    package.close()
+    return Ok(())
+
+// An empty coordinate asks for the coordinate bound by the evidence.
+pub fn verify_release_package(input: &String, trust: &ReleaseTrust, name: &String, version: &String, now_ms: U64, allocator: &Allocator) -> Result<VerifiedPackage, ReleaseError>:
+    if input.byte_len() > 2097152:
+        return Err(InvalidEnvelope)
+    let Ok(target): Json = parse_release_json(input, allocator) else Err(code):
+        return Err(InvalidEnvelope)
+    let checked = if name.byte_len() == 0 && version.byte_len() == 0:
+        infer_target(&target, input, trust, now_ms / 1000, allocator)
+    else:
+        check_target(&target, input, trust, name, version, now_ms / 1000, allocator)
+    target.discard()
+    return move checked
+
+fn infer_target(target: &Json, bundle: &String, trust: &ReleaseTrust, now: U64, allocator: &Allocator) -> Result<VerifiedPackage, ReleaseError>:
+    let Ok(approval): &Json = target.field("approval") else Err(code):
+        return Err(ApprovalMismatch)
+    let Ok(intent): &Json = approval_intent(approval) else Err(code):
+        return Err(ApprovalMismatch)
+    let Ok(name): &String = string_field(intent, "name") else Err(code):
+        return Err(ApprovalMismatch)
+    let Ok(version): &String = string_field(intent, "version") else Err(code):
+        return Err(ApprovalMismatch)
+    return check_target(target, bundle, trust, name, version, now, allocator)
+
+pub fn verify_coordinate_attestations(input: &String, trust: &ReleaseTrust, coordinate: Span, now_ms: U64, allocator: &Allocator) -> Result<(), ReleaseError>:
+    let Ok(parts): Halves = coordinate.split('/') else Err(rest):
+        return Err(InvalidPackage)
+    if !version_bundle(parts.tail):
+        return Err(InvalidPackage)
+    let Ok(name): String = parts.head.to_string(allocator) else Err(code):
+        return Err(InvalidPackage)
+    let checked = verify_named(input, trust, &name, parts.tail.part(0, parts.tail.len() - 6), now_ms, allocator)
+    name.close()
+    return checked
+
+fn verify_named(input: &String, trust: &ReleaseTrust, name: &String, version: Span, now_ms: U64, allocator: &Allocator) -> Result<(), ReleaseError>:
+    let Ok(text): String = version.to_string(allocator) else Err(code):
+        return Err(InvalidPackage)
+    let checked = verify_release_attestations(input, trust, name, &text, now_ms, allocator)
+    text.close()
+    return checked
+
+fn check_target(target: &Json, bundle: &String, trust: &ReleaseTrust, name: &String, version: &String, now: U64, allocator: &Allocator) -> Result<VerifiedPackage, ReleaseError>:
+    if !package_name(name.span()) || !release_version(version.span()):
+        return Err(InvalidPackage)
+    let Ok(format): &String = string_field(target, "format") else Err(code):
+        return Err(InvalidEnvelope)
+    if !count_fields(target, 6) || !format.equals_text(release_format()):
+        return Err(InvalidEnvelope)
+    let Ok(package): Vec<U8> = decode_field(target, "package", allocator, 1048576) else Err(code):
+        return Err(InvalidPackage)
+    let calculated = package_digest(package.as_slice(), name, version, allocator)
+    let Ok(digest): String = move calculated else Err(error):
+        package.close()
+        return Err(error)
+    if let Err(error) = check_evidence(target, bundle, trust, name, version, &digest, now, allocator):
+        digest.close()
+        package.close()
+        return Err(error)
+    let Ok(owned_name): String = name.span().to_string(allocator) else Err(code):
+        digest.close()
+        package.close()
+        return Err(EvidenceResourceFailure)
+    let Ok(owned_version): String = version.span().to_string(allocator) else Err(code):
+        owned_name.close()
+        digest.close()
+        package.close()
+        return Err(EvidenceResourceFailure)
+    return Ok(VerifiedPackage(move package, move digest, move owned_name, move owned_version))
+
+pub fn package_digest(bytes: &[U8], name: &String, version: &String, allocator: &Allocator) -> Result<String, ReleaseError>:
+    if let Err(error) = validate_package(bytes, name.span(), version.span(), allocator):
+        if let PackageResourceFailure = error:
+            return Err(EvidenceResourceFailure)
+        return Err(InvalidPackage)
+    let Ok(digest): String = digest_text(bytes, allocator) else Err(code):
+        return Err(EvidenceResourceFailure)
+    return Ok(move digest)
+
+fn check_evidence(target: &Json, bundle: &String, trust: &ReleaseTrust, name: &String, version: &String, digest: &String, now: U64, allocator: &Allocator) -> Result<(), ReleaseError>:
+    let Ok(approval): &Json = target.field("approval") else Err(code):
+        return Err(InvalidEnvelope)
+    let Ok(attested_at): U64 = declared_integer(target, "attested_at") else Err(code):
+        return Err(InvalidEnvelope)
+    let Ok(expected): &String = claimed_policy(approval) else Err(code):
+        return Err(ApprovalMismatch)
+    let policy = trust.approval_policy(expected, bundle, allocator)?
+    let Ok(registry): &String = string_field(policy, "registry") else Err(code):
+        return Err(InvalidTrust)
+    let claim = ReleaseClaim(name, version, digest, registry)
+    check_approval(approval, policy, claim, attested_at, now, allocator)?
+    let Ok(publisher): Vec<U8> = decode_field(target, "publisher_signature", allocator, 4627) else Err(code):
+        return Err(PublisherRefused)
+    let checked = check_signatures(target, trust, claim, publisher.as_slice(), approval, attested_at, allocator)
+    publisher.close()
+    checked?
+    return verify_assertion(approval, policy, allocator)
+
+pub fn claimed_policy(approval: &Json) -> Result<&String, U64>:
+    let intent = approval_intent(approval)?
+    return string_field(intent, "policy")
+
+fn approval_intent(approval: &Json) -> Result<&Json, U64>:
+    let envelope = approval.field("envelope")?
+    return envelope.field("intent")
+
+pub fn check_approval(receipt: &Json, policy: &Json, claim: ReleaseClaim, attested_at: U64, now: U64, allocator: &Allocator) -> Result<(), ReleaseError>:
+    let Ok(format): &String = string_field(receipt, "format") else Err(code):
+        return Err(ApprovalMismatch)
+    if !count_fields(receipt, 4) || !format.equals_text("coven-approval-1"):
+        return Err(ApprovalMismatch)
+    let Ok(envelope): &Json = receipt.field("envelope") else Err(code):
+        return Err(ApprovalMismatch)
+    if !count_fields(envelope, 2):
+        return Err(ApprovalMismatch)
+    let Ok(nonce): Vec<U8> = decode_field(envelope, "nonce", allocator, 32) else Err(code):
+        return Err(ApprovalMismatch)
+    let size = nonce.len()
+    nonce.close()
+    if size != 32:
+        return Err(ApprovalMismatch)
+    let Ok(approved_at): U64 = declared_integer(receipt, "approved_at") else Err(code):
+        return Err(ApprovalMismatch)
+    let Ok(intent): &Json = envelope.field("intent") else Err(code):
+        return Err(ApprovalMismatch)
+    let Ok(expires): U64 = declared_integer(intent, "expires") else Err(code):
+        return Err(ApprovalMismatch)
+    if expires < 300 || approved_at < expires - 300 || approved_at > attested_at || attested_at >= expires || attested_at > now:
+        return Err(ApprovalMismatch)
+    check_intent(intent, claim)?
+    let Ok(assertion): &Json = receipt.field("assertion") else Err(code):
+        return Err(ApprovalMismatch)
+    return check_scope(assertion, policy, claim.name)
+
+fn intent_value(intent: &Json, name: Text, expected: &String) -> Bool:
+    let Ok(actual): &String = string_field(intent, name) else Err(code):
+        return false
+    return actual.eq(expected)
+
+fn check_intent(intent: &Json, claim: ReleaseClaim) -> Result<(), ReleaseError>:
+    let Ok(operation): &String = string_field(intent, "operation") else Err(code):
+        return Err(ApprovalMismatch)
+    if !count_fields(intent, 7) || !operation.equals_text("release") || !intent_value(intent, "digest", claim.digest) || !intent_value(intent, "name", claim.name) || !intent_value(intent, "registry", claim.registry) || !intent_value(intent, "version", claim.version):
+        return Err(ApprovalMismatch)
+    return Ok(())
+
+fn check_scope(assertion: &Json, policy: &Json, name: &String) -> Result<(), ReleaseError>:
+    let Ok(id): &String = string_field(assertion, "id") else Err(code):
+        return Err(ApprovalMismatch)
+    let Ok(raw): &String = string_field(assertion, "rawId") else Err(code):
+        return Err(ApprovalMismatch)
+    if !id.eq(raw):
+        return Err(ApprovalMismatch)
+    let Ok(credentials): &Json = policy.field("credentials") else Err(code):
+        return Err(ApprovalMismatch)
+    let Ok(record): &Json = member_named(credentials, id) else Err(code):
+        return Err(ApprovalMismatch)
+    let Ok(packages): &Json = record.field("packages") else Err(code):
+        return Err(ApprovalMismatch)
+    match packages:
+        Array(scopes):
+            for scope in scopes:
+                if let Ok(package) = scope.text():
+                    if package.eq(name):
+                        return Ok(())
+        _:
+            ()
+    return Err(ApprovalMismatch)
+
+fn check_signatures(target: &Json, trust: &ReleaseTrust, claim: ReleaseClaim, publisher: &[U8], approval: &Json, attested_at: U64, allocator: &Allocator) -> Result<(), ReleaseError>:
+    check_publisher(trust, claim, publisher, allocator)?
+    let Ok(witness): Vec<U8> = decode_field(target, "witness_signature", allocator, 4627) else Err(code):
+        return Err(WitnessRefused)
+    let checked = verify_witness(trust, claim, publisher, approval, attested_at, witness.as_slice(), allocator)
+    witness.close()
+    return checked
+
+fn verify_publisher(key: &[U8], claim: ReleaseClaim, signature: &[U8], allocator: &Allocator) -> Result<(), ReleaseError>:
+    let Ok(empty): String = String.with_capacity(allocator, 512) else Err(code):
+        return Err(EvidenceResourceFailure)
+    var message = move empty
+    let prepared = publisher_message(&mut message, claim, allocator)
+    let checked = check_message(key, signature, &message, prepared)
+    message.close()
+    if !checked?:
+        return Err(PublisherRefused)
+    return Ok(())
+
+pub fn publisher_message(message: &mut String, claim: ReleaseClaim, allocator: &Allocator) -> Result<(), U64>:
+    message.push_text(allocator, "coven target publisher ml-dsa-87 v1")?
+    message.push_ascii(allocator, 0, 1)?
+    return write_claim(message, claim, allocator)
+
+fn write_claim(message: &mut String, claim: ReleaseClaim, allocator: &Allocator) -> Result<(), U64>:
+    message.push_text(allocator, "{\"digest\":\"")?
+    message.push_part(allocator, claim.digest, 0, claim.digest.byte_len())?
+    message.push_text(allocator, "\",\"name\":\"")?
+    message.push_part(allocator, claim.name, 0, claim.name.byte_len())?
+    message.push_text(allocator, "\",\"registry\":\"")?
+    message.push_part(allocator, claim.registry, 0, claim.registry.byte_len())?
+    message.push_text(allocator, "\",\"suite\":\"")?
+    message.push_text(allocator, release_format())?
+    message.push_text(allocator, "\",\"version\":\"")?
+    message.push_part(allocator, claim.version, 0, claim.version.byte_len())?
+    return message.push_text(allocator, "\"}")
+
+fn check_message(key: &[U8], signature: &[U8], message: &String, prepared: Result<(), U64>) -> Result<Bool, ReleaseError>:
+    if let Err(code) = prepared:
+        return Err(EvidenceResourceFailure)
+    return Ok(crypto.mldsa87_verify(key, message.as_bytes(), signature))
+
+fn verify_witness(trust: &ReleaseTrust, claim: ReleaseClaim, publisher: &[U8], approval: &Json, attested_at: U64, signature: &[U8], allocator: &Allocator) -> Result<(), ReleaseError>:
+    let Ok(key): Vec<U8> = trust.witness(allocator) else Err(code):
+        return Err(WitnessRefused)
+    let checked = check_witness(key.as_slice(), claim, publisher, approval, attested_at, signature, allocator)
+    key.close()
+    return checked
+
+fn check_witness(key: &[U8], claim: ReleaseClaim, publisher: &[U8], approval: &Json, attested_at: U64, signature: &[U8], allocator: &Allocator) -> Result<(), ReleaseError>:
+    let Ok(empty): String = String.with_capacity(allocator, 768) else Err(code):
+        return Err(EvidenceResourceFailure)
+    var message = move empty
+    let prepared = witness_message(&mut message, claim, publisher, approval, attested_at, allocator)
+    let checked = check_message(key, signature, &message, prepared)
+    message.close()
+    if !checked?:
+        return Err(WitnessRefused)
+    return Ok(())
+
+pub fn witness_message(message: &mut String, claim: ReleaseClaim, publisher: &[U8], approval: &Json, attested_at: U64, allocator: &Allocator) -> Result<(), U64>:
+    message.push_text(allocator, "coven target approval witness ml-dsa-87 v1")?
+    message.push_ascii(allocator, 0, 1)?
+    message.push_text(allocator, "{\"approval\":\"")?
+    let approval_pin = digest_json(approval, allocator)?
+    let wrote_approval = message.push_part(allocator, &approval_pin, 0, approval_pin.byte_len())
+    approval_pin.close()
+    wrote_approval?
+    message.push_text(allocator, "\",\"attested_at\":")?
+    message.push_u64(allocator, attested_at)?
+    message.push_text(allocator, ",\"publisher_signature\":\"")?
+    let publisher_pin = digest_text(publisher, allocator)?
+    let wrote_publisher = message.push_part(allocator, &publisher_pin, 0, publisher_pin.byte_len())
+    publisher_pin.close()
+    wrote_publisher?
+    message.push_text(allocator, "\",\"release\":")?
+    write_claim(message, claim, allocator)?
+    return message.push_text(allocator, "}")
+
+pub fn check_publisher(trust: &ReleaseTrust, claim: ReleaseClaim, publisher: &[U8], allocator: &Allocator) -> Result<(), ReleaseError>:
+    let Ok(key): Vec<U8> = trust.publisher(claim.name, allocator) else Err(code):
+        return Err(PublisherRefused)
+    let checked = verify_publisher(key.as_slice(), claim, publisher, allocator)
+    key.close()
+    return checked

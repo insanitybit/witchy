@@ -1,0 +1,28 @@
+// An impl for every type that meets a bound: anything with a code can be doubled.
+import "../../../library/wasm-console.wy"
+
+trait Coded:
+    fn code(self: &Self) -> U64
+
+trait Doubled:
+    fn doubled(self: &Self) -> U64
+
+impl<T: Coded> Doubled for T:
+    fn doubled(self: &T) -> U64:
+        return self.code() * 2
+
+type Part:
+    id: U64
+
+impl Coded for Part:
+    fn code(self: &Part) -> U64:
+        return (*self).id + 1
+
+// Through a bound on the blanket trait itself.
+fn twice<T: Doubled>(value: &T) -> U64:
+    return value.doubled()
+
+fn main(console: Console<Write>):
+    let part = Part(20)
+    console.print_int(part.doubled())
+    console.print_int(twice(&part))

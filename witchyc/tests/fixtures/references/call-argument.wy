@@ -1,0 +1,16 @@
+// A reference a call makes, passed straight on.
+import console
+import vec
+
+fn bump(n: &mut U64):
+    *n += 1
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.filled(&allocator, 3, 5) else Err(code):
+        return
+    var v = move made
+    let s = v.as_mut_slice()
+    bump(s.cell(1))
+    bump(s.cell(1))
+    console.print_int(v[1])
+    v.close()

@@ -1,0 +1,44 @@
+// A compound assignment reads the old value before the value that pauses, as everywhere
+// (adversarial review round 26).
+import console
+import tasks
+type P:
+    a: U64
+    b: U64
+
+fn bump(v: &mut U64, by: U64) -> U64  suspends:
+    let old = *v
+    pause(old)
+    *v = old + by
+    return old
+
+fn run(console: &Console<Write>, allocator: &Allocator)  suspends:
+    var y: U64 = 2
+    y += bump(&mut y, 5)
+    console.print_int(y)
+    var p = P(1, 2)
+    p.a *= bump(&mut p.a, 10)
+    console.print_int(p.a)
+    var arr: [U64; 2] = [3, 4]
+    arr[1] -= bump(&mut arr[1], 100)
+    console.print_int(arr[1])
+
+type TaskEnvZ:
+    console: Console<Write>
+    allocator: Allocator
+
+fn work(env: TaskEnvZ) suspends:
+    run(&env.console, &env.allocator)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Task = Task.spawn(&allocator, 4096, work, TaskEnvZ(move console, move allocator)) else Err(back):
+        return
+    var task = move made
+    var going = true
+    while going:
+        match task.step():
+            Ok:
+                going = false
+            Err(token):
+                going = true
+    task.close()

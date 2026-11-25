@@ -1,0 +1,31 @@
+// Checked arithmetic at its edges: the largest results that fit, and zero operands.
+fn sum(left: U64, right: U64) -> U64:
+    return left + right
+
+fn difference(left: U64, right: U64) -> U64:
+    return left - right
+
+fn product(left: U64, right: U64) -> U64:
+    return left * right
+
+fn bytes(left: U8, right: U8) -> U8:
+    return left + right
+
+fn nested(a: U64, b: U64, c: U64, d: U64) -> U64:
+    return (a + b) * (c - d) + (a * b - c) * (d + 1)
+
+fn main(console: Console<Write>):
+    console.print_int(sum(18446744073709551614, 1))
+    console.print_int(difference(7, 7))
+    console.print_int(product(4294967295, 4294967297))
+    console.print_int(product(4294967296, 4294967295))
+    console.print_int(product(0, 18446744073709551615))
+    console.print_int(product(18446744073709551615, 0))
+    console.print_int(product(18446744073709551615, 1))
+    console.print_int(U8.to_u64(bytes(200, 55)))
+    console.print_int(nested(5, 6, 9, 2))
+    var total: U64 = 10
+    total += 5
+    total -= 15
+    total = total * 3
+    console.print_int(total)

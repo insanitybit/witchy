@@ -1,0 +1,44 @@
+fn main(console: Console<Write>):
+    var witness = memory.alloc(1)
+    memory.init(&mut witness, 0, 42)
+    let allocation: Result<Vec<Bool>, AllocError> = vec_new(1)
+    match allocation:
+        Ok(vector):
+            match vec_push_spare(move vector, true):
+                Ok(pushed):
+                    let saved = &witness
+                    match vec_replace(move pushed, 1, false):
+                        Ok(changed):
+                            memory.end(saved)
+                            discard(move changed)
+                        Err(failed):
+                            if failed.out_of_bounds:
+                                console.print_int(80)
+                            else:
+                                console.print_int(79)
+                            if failed.replacement:
+                                console.print_int(90)
+                            else:
+                                console.print_int(81)
+                            console.print_int(memory.read(saved, 0))
+                            memory.end(saved)
+                            match vec_pop(move failed.vector):
+                                Ok(popped):
+                                    match popped.item:
+                                        Some(item):
+                                            if item:
+                                                console.print_int(82)
+                                        None:
+                                            console.print_int(91)
+                                    match vec_release(move popped.vector):
+                                        Ok(done):
+                                            console.print_int(83)
+                                        Err(kept):
+                                            discard(move kept)
+                                Err(kept):
+                                    discard(move kept)
+                Err(failed):
+                    discard(move failed)
+        Err(reason):
+            console.print_int(92)
+    memory.release(witness)

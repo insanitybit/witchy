@@ -1,0 +1,25 @@
+// `*=`, `/=` and `%=` on a variable, a field through a reference, and an element.
+type Pair:
+    left: U64
+    right: U64
+
+fn scale(pair: &mut Pair, by: U64):
+    (*pair).left *= by
+    (*pair).right /= by
+
+fn main(console: Console<Write>):
+    var total: U64 = 7
+    total *= 6
+    console.print_int(total)
+    total /= 4
+    console.print_int(total)
+    total %= 4
+    console.print_int(total)
+    var pair = Pair(5, 40)
+    scale(&mut pair, 4)
+    console.print_int(pair.left)
+    console.print_int(pair.right)
+    var cells: [U64; 3] = [1, 2, 3]
+    let at: U64 = 2
+    cells[at] *= 9
+    console.print_int(cells[2])

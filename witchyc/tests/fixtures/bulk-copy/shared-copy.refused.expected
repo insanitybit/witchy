@@ -1,0 +1,1 @@
+ensures memory.same_prefix(left, right, source.len())

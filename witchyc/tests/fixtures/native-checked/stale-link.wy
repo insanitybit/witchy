@@ -1,0 +1,31 @@
+// A link saved from a cell that has been closed does not open the next cell, though that
+// cell has the same visible address: the allocation a link names is told from its successor.
+import cell
+
+fn main(out: Console<Write>, allocator: Allocator):
+    let Ok(first): VacantCell<U64> = VacantCell.new(&allocator) else Err(code):
+        return
+    let saved = first.link()
+    let old = first.pointer()
+    first.close()
+    let Ok(second): VacantCell<U64> = VacantCell.new(&allocator) else Err(code):
+        return
+    let fresh = second.pointer()
+    let current = second.link()
+    let full = second.fill(23)
+    if memory.weak_bits(old) == memory.weak_bits(fresh):
+        out.print_int(1)
+    else:
+        out.print_int(0)
+    match full.borrow(saved):
+        Ok(value):
+            out.print_int(*value)
+        Err(code):
+            out.print_int(100 + code)
+    match full.borrow(current):
+        Ok(value):
+            out.print_int(*value)
+        Err(code):
+            out.print_int(200 + code)
+    let TakenCell(empty, _) = full.extract()
+    empty.close()

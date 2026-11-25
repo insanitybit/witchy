@@ -1,0 +1,7 @@
+[launch]
+version = 1
+[exec]
+exec = { dir = "/w/bin", programs = ["greet"] }
+[limits]
+deadline-ms = 3000
+exec-bytes = 1024

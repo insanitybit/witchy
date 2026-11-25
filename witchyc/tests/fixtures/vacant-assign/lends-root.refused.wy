@@ -1,0 +1,22 @@
+// Refused by the proof: the value assigned lends the whole shelf to a call, which may refill
+// the slot; vacancy is asked of the state after the value, where nothing is known of it.
+type Slot<T>:
+    Vacant
+    Full(T)
+
+type Shelf<T>:
+    count: U64
+    slot: Slot<T>
+
+fn make<T: Any>(shelf: &mut Shelf<T>, item: T) -> T:
+    (*shelf).count = (*shelf).count + 1
+    return move item
+
+nopanic fn swap_in<T: Any>(shelf: &mut Shelf<T>, item: T) -> Slot<T>:
+    var held: Slot<T> = Vacant
+    memory.exchange(&mut (*shelf).slot, &mut held)
+    (*shelf).slot = Full(make(&mut *shelf, move item))
+    return move held
+
+fn main(out: Console<Write>):
+    out.print_int(1)

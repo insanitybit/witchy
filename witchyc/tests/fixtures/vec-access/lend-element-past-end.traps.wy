@@ -1,0 +1,11 @@
+// `&v[i]` past the end stops the run, as `v[i]` does.
+import console
+import vec
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.filled(&allocator, 3, 5) else Err(code):
+        return
+    var v = move made
+    let r = &v[3]
+    console.print_int(*r)
+    v.close()

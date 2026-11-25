@@ -1,0 +1,11 @@
+// Two references to one value in one call are still refused.
+type Counter:
+    count: U64
+
+fn both(left: &mut Counter, right: &mut Counter) -> U64:
+    (*left).count += 1
+    return (*right).count
+
+fn main(console: Console<Write>):
+    var counter = Counter(1)
+    console.print_int(both(&mut counter, &mut counter))

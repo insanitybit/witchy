@@ -1,0 +1,46 @@
+// An application using the config package (packages/config/config.wy), which it imports from
+// a file written apart from it. Only the application holds the directory, read-only; the
+// package is given text. A plain value is a part of the file's text, used in place: the scratch
+// can be changed meanwhile. An escaped one is decoded into the scratch and borrowed from it,
+// which stays lent while it is read. Neither needs a proof.
+import console
+import fs
+import span
+import string
+import "config/config.wy"
+
+fn show(console: &Console<Write>, text: Span, key: Text, scratch: &mut String, allocator: &Allocator):
+    match raw(text, key):
+        Ok(found):
+            console.write(key)
+            console.write(": ")
+            match value(found, scratch, allocator):
+                Plain(plain):
+                    scratch.clear()
+                    write_span(console, plain)
+                    console.line(" (in place)")
+                Decoded(decoded):
+                    write_span(console, decoded)
+                    console.line(" (decoded)")
+                Invalid:
+                    console.line("invalid")
+        Err(code):
+            console.write(key)
+            console.line(": missing")
+
+fn main(console: Console<Write>, allocator: Allocator, dir: Dir<Read>):
+    let Ok(text): String = dir.read_text(&allocator, "app.conf") else Err(failure):
+        console.line("no app.conf")
+        return
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        text.close()
+        return
+    var scratch = move made
+    let whole = text.span()
+    show(&console, whole, "name", &mut scratch, &allocator)
+    show(&console, whole, "greeting", &mut scratch, &allocator)
+    show(&console, whole, "path", &mut scratch, &allocator)
+    show(&console, whole, "port", &mut scratch, &allocator)
+    show(&console, whole, "missing", &mut scratch, &allocator)
+    scratch.close()
+    text.close()

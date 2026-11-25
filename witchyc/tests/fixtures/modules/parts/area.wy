@@ -1,0 +1,22 @@
+// A module of the area fixtures: one function it offers, one helper it keeps.
+pub type Box:
+    width: U64
+    height: U64
+
+fn product(a: U64, b: U64) -> U64:
+    return a * b
+
+pub fn area(shape: &Box) -> U64:
+    return product(shape.width, shape.height)
+
+impl Box:
+    pub fn perimeter(shape: &Box) -> U64:
+        return 2 * (shape.width + shape.height)
+
+    fn half_width(shape: &Box) -> U64:
+        return shape.width / 2
+
+// Only this file builds corners.
+type Corner:
+    x: U64
+    y: U64

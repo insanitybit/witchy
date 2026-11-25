@@ -1,0 +1,16 @@
+// A match on numbers may end in a name, the `_` arm with the value bound to it.
+import console
+
+fn describe(n: U64) -> U64:
+    match n:
+        0:
+            100
+        1..=9:
+            200
+        other:
+            other * 2
+
+fn main(console: Console<Write>):
+    console.print_int(describe(0))
+    console.print_int(describe(5))
+    console.print_int(describe(21))

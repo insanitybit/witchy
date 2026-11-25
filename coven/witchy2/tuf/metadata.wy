@@ -1,0 +1,233 @@
+import "canonical.wy"
+import crypto
+import discard
+import encoding
+import json_tree
+import json_sorted
+import string
+import text
+import vec
+
+pub type MetadataError:
+    InvalidMetadata
+    InvalidReference
+    WrongLength
+    WrongDigest
+    WrongVersion
+    CryptoFailed
+
+pub type MetadataKind:
+    Root
+    Timestamp
+    Snapshot
+    Targets
+
+pub sealed type Metadata:
+    document: Json
+    message: String
+    kind: MetadataKind
+
+pub sealed type ContentReference:
+    length: U64
+    digest: [U64; 6]
+
+pub sealed type MetadataReference:
+    version: U64
+    content: ContentReference
+
+// Parsed framing and signature bytes are still untrusted. Authorization
+// requires verification against independently authenticated role keys.
+pub fn parse_metadata(input: &String, allocator: &Allocator, kind: MetadataKind) -> Result<Metadata, MetadataError>:
+    if input.byte_len() > metadata_limit(kind):
+        return Err(InvalidMetadata)
+    let Ok(parsed): Json = json_sorted_tree(input, allocator) else Err(code):
+        return Err(InvalidMetadata)
+    let encoded = checked_message(&parsed, allocator, kind)
+    match move encoded:
+        Ok(message):
+            return Ok(Metadata(move parsed, move message, kind))
+        Err(error):
+            parsed.discard()
+            return Err(error)
+
+pub pure fn metadata_limit(kind: MetadataKind) -> U64:
+    match kind:
+        Root:
+            return 512000
+        Timestamp:
+            return 16384
+        _:
+            return 2097152
+
+fn checked_message(document: &Json, allocator: &Allocator, kind: MetadataKind) -> Result<String, MetadataError>:
+    let Ok(signed): &Json = document.field("signed") else Err(code):
+        return Err(InvalidMetadata)
+    let Ok(signatures): &Json = document.field("signatures") else Err(code):
+        return Err(InvalidMetadata)
+    match signatures:
+        Array(items):
+            ()
+        _:
+            return Err(InvalidMetadata)
+    let Ok(type_field): &Json = signed.field("_type") else Err(code):
+        return Err(InvalidMetadata)
+    let Ok(type_name): &String = type_field.text() else Err(code):
+        return Err(InvalidMetadata)
+    if !type_name.equals_text(kind_name(kind)):
+        return Err(InvalidMetadata)
+    let checked = metadata_version(signed)?
+    let Ok(encoded): String = canonical(signed, allocator) else Err(code):
+        return Err(InvalidMetadata)
+    return Ok(move encoded)
+
+pub fn kind_name(kind: MetadataKind) -> Text:
+    match kind:
+        Root:
+            return "root"
+        Timestamp:
+            return "timestamp"
+        Snapshot:
+            return "snapshot"
+        Targets:
+            return "targets"
+
+fn version_number(value: &Json) -> Result<U64, MetadataError>:
+    match value:
+        Whole(number):
+            if *number > 0 && *number < 9007199254740992:
+                return Ok(*number)
+        _:
+            ()
+    return Err(InvalidMetadata)
+
+fn metadata_version(signed: &Json) -> Result<U64, MetadataError>:
+    let Ok(field): &Json = signed.field("version") else Err(code):
+        return Err(InvalidMetadata)
+    return version_number(field)
+
+impl Metadata:
+    pub pure fn kind(self: &Metadata) -> MetadataKind:
+        return (*self).kind
+
+    pub fn signed(self: &Metadata) -> Result<&Json, U64>:
+        return (*self).document.field("signed")
+
+    pub fn signatures(self: &Metadata) -> Result<&Json, U64>:
+        return (*self).document.field("signatures")
+
+    pub fn signature_message(self: &Metadata) -> &[U8]:
+        return (*self).message.as_bytes()
+
+    pub fn version(self: &Metadata) -> Result<U64, MetadataError>:
+        let Ok(body): &Json = self.signed() else Err(code):
+            return Err(InvalidMetadata)
+        return metadata_version(body)
+
+    pub fn close(self: Metadata):
+        let Metadata(document, message, kind) = move self
+        document.discard()
+        message.close()
+
+pub fn parse_metadata_reference(value: &Json, allocator: &Allocator, limit: U64) -> Result<MetadataReference, MetadataError>:
+    let Ok(version): U64 = metadata_version(value) else Err(error):
+        return Err(InvalidReference)
+    let content = parse_reference(value, allocator, limit)?
+    return Ok(MetadataReference(version, content))
+
+impl MetadataReference:
+    pub pure fn version(self: &MetadataReference) -> U64:
+        return (*self).version
+
+    pub pure fn length(self: &MetadataReference) -> U64:
+        return (*self).content.length
+
+    pub fn append_sha384(self: &MetadataReference, output: &mut String, allocator: &Allocator) -> Result<(), U64>:
+        return (*self).content.append_sha384(output, allocator)
+
+    // A versioned filename stays immutable even across timestamp updates.
+    pub pure fn supersedes(self: &MetadataReference, previous: &MetadataReference) -> Bool:
+        if (*self).version != (*previous).version:
+            return (*self).version > (*previous).version
+        if (*self).content.length != (*previous).content.length:
+            return false
+        for i in 0..6:
+            if (*self).content.digest[i] != (*previous).content.digest[i]:
+                return false
+        return true
+
+    pub fn open(self: &MetadataReference, kind: MetadataKind, input: &String, allocator: &Allocator) -> Result<Metadata, MetadataError>:
+        (*self).content.verify(input.as_bytes())?
+        let document = parse_metadata(input, allocator, kind)?
+        if let Ok(version) = document.version():
+            if version == (*self).version:
+                return Ok(move document)
+        document.close()
+        return Err(WrongVersion)
+
+// TUF references cover the original file bytes. Canonicalization is used
+// only for signatures. The caller supplies the size bound for the role.
+pub fn parse_reference(value: &Json, allocator: &Allocator, limit: U64) -> Result<ContentReference, MetadataError>:
+    let Ok(length): &Json = value.field("length") else Err(code):
+        return Err(InvalidReference)
+    match length:
+        Whole(count):
+            if *count == 0 || *count > limit:
+                return Err(InvalidReference)
+            let digest = reference_digest(value, allocator)?
+            return Ok(ContentReference(*count, digest))
+        _:
+            return Err(InvalidReference)
+
+fn reference_digest(value: &Json, allocator: &Allocator) -> Result<[U64; 6], MetadataError>:
+    let Ok(hashes): &Json = value.field("hashes") else Err(code):
+        return Err(InvalidReference)
+    match hashes:
+        Object(members):
+            if members.len() != 1:
+                return Err(InvalidReference)
+        _:
+            return Err(InvalidReference)
+    let Ok(field): &Json = hashes.field("sha384") else Err(code):
+        return Err(InvalidReference)
+    let Ok(text): &String = field.text() else Err(code):
+        return Err(InvalidReference)
+    let hex = text.as_bytes()
+    if hex.len() != 96:
+        return Err(InvalidReference)
+    for byte in hex:
+        if !(*byte >= '0' && *byte <= '9') && !(*byte >= 'a' && *byte <= 'f'):
+            return Err(InvalidReference)
+    let Ok(decoded): Vec<U8> = decode_hex(allocator, hex) else Err(code):
+        return Err(InvalidReference)
+    let digest = pack_digest(decoded.as_slice())
+    decoded.close()
+    return Ok(digest)
+
+// Six words fit within the aggregate slot limit for ContentReference.
+fn pack_digest(bytes: &[U8]) -> [U64; 6]:
+    var words: [U64; 6] = [0; 6]
+    for i in 0..48:
+        words[i / 8] = words[i / 8] | (U8.to_u64(bytes[i]) << (8 * (i % 8)))
+    return words
+
+impl ContentReference:
+    pub fn append_sha384(self: &ContentReference, output: &mut String, allocator: &Allocator) -> Result<(), U64>:
+        var digest: [U8; 48] = [0; 48]
+        for i in 0..48:
+            digest[i] = U8.truncate((*self).digest[i / 8] >> (8 * (i % 8)))
+        return push_hex(output, allocator, digest.slice())
+
+    pub pure fn length(self: &ContentReference) -> U64:
+        return (*self).length
+
+    pub fn verify(self: &ContentReference, bytes: &[U8]) -> Result<(), MetadataError>:
+        if bytes.len() != (*self).length:
+            return Err(WrongLength)
+        var digest: [U8; 48] = [0; 48]
+        if let Err(error) = crypto.sha384(bytes, digest.slice_mut()):
+            return Err(CryptoFailed)
+        let words = pack_digest(digest.slice())
+        for i in 0..6:
+            if words[i] != (*self).digest[i]:
+                return Err(WrongDigest)
+        return Ok(())

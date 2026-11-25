@@ -1,0 +1,10 @@
+// Refused: the window's slice keeps the array lent while the window is in use.
+type Window:
+    items: &[U64]
+    start: U64
+
+fn main():
+    var numbers: [U64; 3] = [1, 2, 3]
+    let w = Window(numbers.slice(), 0)
+    numbers[0] = 5
+    let n = w.start

@@ -1,0 +1,9 @@
+// Bounded quantification is ghost-only; these names have no compiler privilege.
+predicate InitializedBetween(data, begin, end):
+    forall index in (begin, end): memory.initialized(data, index)
+
+predicate EmptyBetween(data, begin, end):
+    forall index in (begin, end): memory.empty(data, index)
+
+predicate BufferContents(data, length, capacity):
+    length <= capacity && memory.size(data) == capacity && InitializedBetween(data, 0, length) && EmptyBetween(data, length, capacity)

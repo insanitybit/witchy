@@ -1,0 +1,86 @@
+import "tuf/delegated_input.wy"
+import "tuf/delegated_signing.wy"
+import "tuf/metadata.wy"
+import "tuf/release_trust.wy"
+import "tuf/signatures.wy"
+import "review/commit_request.wy"
+import console
+import discard
+import fs
+import json_tree
+import string
+import text
+import time
+
+fn main(source: Dir<Read>, output: Console<Write>, clock: Clock, allocator: Allocator):
+    let finished = finalize(&source, &output, clock.now_ms(), &allocator)
+    source.close()
+    if let Err(code) = finished:
+        if code == 2:
+            output.line("refused threshold")
+        else:
+            output.line("refused")
+
+fn finalize(source: &Dir<Read>, output: &Console<Write>, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let request = read_json(source, "request.json", 512, allocator)?
+    let finished = with_request(&request, source, output, now, allocator)
+    request.discard()
+    return finished
+
+fn read_json(source: &Dir<Read>, path: Text, limit: U64, allocator: &Allocator) -> Result<Json, U64>:
+    let wire = read_delegated_input(source, path, limit, allocator)?
+    let parsed = parse_release_json(&wire, allocator)
+    wire.close()
+    return move parsed
+
+fn with_request(request: &Json, source: &Dir<Read>, output: &Console<Write>, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    if !count_fields(request, 2):
+        return Err(1)
+    let pin = string_field(request, "parent_pin")?
+    let name = string_field(request, "role")?
+    let parent = read_delegated_parent(source, pin, allocator)?
+    let finished = with_parent(&parent, name, source, output, now, allocator)
+    parent.close()
+    return finished
+
+fn with_parent(parent: &Metadata, name: &String, source: &Dir<Read>, output: &Console<Write>, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let child = read_unsigned_targets(source, allocator)?
+    let finished = with_child(parent, &child, name, source, output, now, allocator)
+    child.close()
+    return finished
+
+fn with_child(parent: &Metadata, child: &Metadata, name: &String, source: &Dir<Read>, output: &Console<Write>, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let role = checked_signing_role(parent, child, name, now, allocator)?
+    let body = parent.signed()?
+    let delegations = body.field("delegations")?
+    let keys = delegations.field("keys")?
+    let signatures = read_json(source, "signatures.json", 2097152, allocator)?
+    let finished = check_and_emit(child, role, keys, &signatures, output, allocator)
+    signatures.discard()
+    return finished
+
+fn check_and_emit(child: &Metadata, role: &Json, keys: &Json, signatures: &Json, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    if let Err(error) = verify_signature_set(child, role, keys, signatures, allocator):
+        return Err(2)
+    let signed = child.signed()?
+    let empty = String.with_capacity(allocator, 4096)?
+    var envelope = move empty
+    let written = write_envelope(&mut envelope, signed, signatures, allocator)
+    let emitted = emit(written, &envelope, output)
+    envelope.close()
+    return emitted
+
+fn write_envelope(envelope: &mut String, signed: &Json, signatures: &Json, allocator: &Allocator) -> Result<(), U64>:
+    envelope.push_text(allocator, "{\"signatures\":")?
+    append_json(envelope, signatures, allocator)?
+    envelope.push_text(allocator, ",\"signed\":")?
+    append_json(envelope, signed, allocator)?
+    return envelope.push_text(allocator, "}")
+
+fn emit(written: Result<(), U64>, envelope: &String, output: &Console<Write>) -> Result<(), U64>:
+    written?
+    if envelope.byte_len() > 2097152:
+        return Err(1)
+    output.line("finalized")
+    output.write_string(envelope)
+    return Ok(())

@@ -1,0 +1,5 @@
+// A signer's seed comes from a descriptor only: a variable source stops the run before `main`
+// (an environment is inherited by children and readable by ps before the engine can clear it).
+import crypto
+fn main(targets: Signer):
+    return

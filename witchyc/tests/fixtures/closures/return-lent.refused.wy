@@ -1,0 +1,6 @@
+// Refused (found by an adversarial review, with no location before): a lent callback is
+// not handed back.
+fn keep(each: &fn(U64) -> ()) -> &fn(U64) -> ():
+    return each
+fn main():
+    return

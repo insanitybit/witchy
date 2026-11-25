@@ -1,0 +1,4 @@
+import "coin.wy"
+
+pub fn mint(n: U64) -> Coin:
+    return Coin(n: n)

@@ -1,0 +1,9 @@
+// Refused: writing the whole array overlaps a loan of one element.
+type Grid:
+    cells: [U64; 3]
+
+fn main():
+    var g = Grid([1, 2, 3])
+    let r = &g.cells[0]
+    g.cells = [7, 7, 7]
+    let n = *r

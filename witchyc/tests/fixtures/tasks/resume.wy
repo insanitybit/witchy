@@ -1,0 +1,72 @@
+// What a resumed function finds as it was (docs/design-async.md, "How a pause works"):
+// operands evaluated before a call that pauses, a reference into a frame, a loop condition
+// and a match scrutinee that pause, recursion through a pause, and an owned input.
+import console
+import tasks
+import vec
+
+// Pauses, then hands back twice what it was given.
+fn twice(n: U64) -> U64 suspends:
+    pause(n)
+    return n * 2
+
+// A reference into this frame lives across the pauses inside `bump`.
+fn bump(total: &mut U64, by: U64) suspends:
+    pause(*total)
+    *total += by
+
+fn deep(n: U64) -> U64 suspends:
+    if n == 0:
+        pause(999)
+        return 1
+    return deep(n - 1) + n
+
+fn odd(n: U64) -> Result<U64, U64> suspends:
+    pause(n)
+    if n % 2 == 1:
+        return Ok(n)
+    return Err(n)
+
+fn work(items: Vec<U64>) suspends:
+    var total: U64 = 0
+    // Operands before a call that pauses are kept: 100 + twice(3) is 106.
+    total = 100 + twice(3)
+    bump(&mut total, 1)
+    bump(&mut total, 10)
+    var i: U64 = 0
+    while twice(i) < 4:
+        i += 1
+    match odd(i):
+        Ok(n):
+            total += n
+        Err(n):
+            total += 1000 * n
+    total += deep(3)
+    var at: U64 = 0
+    while at < items.len():
+        let item = items[at]
+        total += twice(item)
+        at += 1
+    pause(total)
+    items.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.new(&allocator, 4) else Err(code):
+        return
+    var items = move made
+    let one: U64 = 5
+    let two: U64 = 7
+    let pushed = items.push_mut(&allocator, one)
+    let again = items.push_mut(&allocator, two)
+    let Ok(started): Task = Task.spawn(&allocator, 4096, work, move items) else Err(back):
+        back.close()
+        return
+    var task = move started
+    var going = true
+    while going:
+        match task.step():
+            Ok:
+                going = false
+            Err(token):
+                console.print_int(token)
+    task.close()

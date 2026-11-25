@@ -1,0 +1,7 @@
+// Refused (found by an adversarial review): two imports named alike by their files.
+import console
+import "parts/a/x.wy"
+import "parts/b/x.wy"
+fn main(console: Console<Write>):
+    let e: x.Entry = x.make()
+    console.print_int(x.read(&e))

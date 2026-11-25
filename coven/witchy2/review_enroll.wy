@@ -1,0 +1,96 @@
+import "review/commit_request.wy"
+import "review/enrollment_plan.wy"
+import "review/enrollment_policy.wy"
+import "review/enrollment_read.wy"
+import "tuf/release_trust.wy"
+import console
+import discard
+import json_tree
+import "@sqlite"
+import string
+import text
+
+fn main(db: Sqlite, input: Console<Read>, output: Console<Write>, allocator: Allocator):
+    if let Err(reason) = run(&db, &input, &output, &allocator):
+        if reason == 3:
+            output.line("enrollment requires a fresh credential ID and public key")
+        else if reason == 4:
+            output.line("maintainer policy exceeds the size limit")
+        else if reason == 10:
+            output.line("maintainer enrollment transaction unavailable")
+        else:
+            output.line("maintainer assertion refused")
+
+fn run(db: &Sqlite, input: &Console<Read>, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let request = read_commit_request(input, allocator)?
+    let checked = dispatch(&request, db, output, allocator)
+    request.discard()
+    return checked
+
+fn dispatch(request: &Json, db: &Sqlite, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    if count_fields(request, 1) || count_fields(request, 2):
+        let mode = string_field(request, "mode")?
+        if count_fields(request, 1) && mode.equals_text("policy"):
+            return read_enrollment(request, false, db, output, allocator)
+        if count_fields(request, 2) && mode.equals_text("snapshot"):
+            return read_enrollment(request, true, db, output, allocator)
+        return Err(1)
+    return verify_and_commit(request, db, output, allocator)
+
+fn verify_and_commit(request: &Json, db: &Sqlite, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let empty = String.with_capacity(allocator, 1024)?
+    var bindings = move empty
+    let allocated = String.with_capacity(allocator, 4096)
+    let Ok(policy): String = move allocated else Err(code):
+        bindings.close()
+        return Err(code)
+    var next = move policy
+    let approved = enroll(request, &mut bindings, &mut next, allocator)
+    let checked = commit_verified(approved, request, &bindings, &next, db, output, allocator)
+    next.close()
+    bindings.close()
+    return checked
+
+fn commit_verified(approved: Result<(), U64>, request: &Json, bindings: &String, next: &String, db: &Sqlite, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    approved?
+    let empty = String.with_capacity(allocator, 8192)?
+    var blob = move empty
+    let made = encode_snapshot(request, next, &mut blob, allocator)
+    let result = commit(made, db, bindings, &blob, next, output, allocator)
+    blob.close()
+    return result
+
+fn encode_snapshot(request: &Json, next: &String, out: &mut String, allocator: &Allocator) -> Result<(), U64>:
+    let policy = request.field("policy")?
+    let envelope = request.field("envelope")?
+    out.push_text(allocator, "{\"policy\":")?
+    append_json(out, policy, allocator)?
+    out.push_text(allocator, ",\"envelope\":")?
+    append_json(out, envelope, allocator)?
+    out.push_text(allocator, ",\"next\":")?
+    out.push_part(allocator, next, 0, next.byte_len())?
+    return out.push_text(allocator, "}")
+
+fn commit(made: Result<(), U64>, db: &Sqlite, bindings: &String, blob: &String, next: &String, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    made?
+    let plan = enrollment_plan(allocator)?
+    var reply: [U8; 256] = [0; 256]
+    let wrote = db.transact(plan.as_bytes(), bindings.as_bytes(), blob.as_bytes(), reply.slice_mut())
+    plan.close()
+    let Ok(size): U64 = wrote else Err(code):
+        return Err(10)
+    if size <= 1 || size > 256:
+        return Err(10)
+    if reply[0] == 0:
+        output.line("committed")
+        output.write_string(next)
+        output.print_byte(10)
+        return Ok(())
+    if reply[0] != 1:
+        return Err(10)
+    let reason = String.from_utf8_bytes(allocator, reply.slice().part(1, size))?
+    output.line("refused")
+    output.write_string(&reason)
+    output.print_byte(10)
+    reason.close()
+    return Ok(())

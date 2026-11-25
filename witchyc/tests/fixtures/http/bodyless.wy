@@ -1,0 +1,30 @@
+import console
+import http
+import http_framing
+import span
+import text
+
+fn check(output: &Console<Write>, message: Text):
+    var wire: [U8; 128] = [0; 128]
+    for index in 0..message.byte_len():
+        let Ok(byte): U8 = message.byte_at(index) else Err(reason):
+            return
+        wire[index] = byte
+    let Ok(head): RequestHead = http.request(Span.of(wire.slice().part(0, message.byte_len()))) else Err(reason):
+        output.line("bad fixture")
+        return
+    match http_framing.request_without_body(head):
+        Ok:
+            output.line("accepted")
+        Err(reason):
+            output.line("refused")
+
+fn main(output: Console<Write>):
+    check(&output, "GET / HTTP/1.1\r\nHost: example.test\r\nAccept:\t*/*\r\n\r\n")
+    check(&output, "GET / HTTP/1.1\r\nHost: example.test\r\nContent-Length: 0\r\n\r\n")
+    check(&output, "GET / HTTP/1.1\r\nHost: example.test\r\nTransfer-Encoding: chunked\r\n\r\n")
+    check(&output, "GET / HTTP/1.1\r\nHost: example.test\r\nExpect: 100-continue\r\n\r\n")
+    check(&output, "GET / HTTP/1.1\r\nHost: example.test\r\nAccept : */*\r\n\r\n")
+    check(&output, "GET / HTTP/1.1\r\nHost: example.test\r\nAccept: */*\n\r\n\r\n")
+    check(&output, "GET / HTTP/1.1\r\nHost: example.test\r\nAccept: *\r/*\r\n\r\n")
+    check(&output, "GET / HTTP/1.1\r\nHost: example.test\r\n\r\nbytes")

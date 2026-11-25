@@ -1,0 +1,21 @@
+// A Span variable is given only Spans of the String it already borrows.
+import "../../../library/wasm-span.wy"
+import "../../../library/wasm-string.wy"
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var text = match String.new(&allocator):
+        Ok(empty):
+            move empty
+        Err(code):
+            return
+    var other = match String.new(&allocator):
+        Ok(empty):
+            move empty
+        Err(code):
+            text.close()
+            return
+    var span = text.span()
+    span = other.span()
+    console.print_int(span.len())
+    other.close()
+    text.close()

@@ -1,0 +1,20 @@
+// Appended to library/unchecked-u64.wy by tests/unsafe_adversarial.rs.
+//
+// Two vectors are live. The index bound and the applied lemma concern `left`
+// only. The test redirects the unchecked read to `right`, about which nothing
+// relating `index` to its length is known.
+type Both:
+    first: Vec<U64>
+    second: Vec<U64>
+    item: U64
+
+fn read_first(first: Vec<U64>, second: Vec<U64>, index: USize) -> Both:
+    requires index < first.length
+    var left = move first
+    var right = move second
+    proof:
+        apply initialized_in_prefix(left.data, left.length, index)
+    if memory.loan_room(1):
+        let item = memory.read_unchecked(&left.data, index)
+        return Both(move left, move right, item)
+    return Both(move left, move right, 0)

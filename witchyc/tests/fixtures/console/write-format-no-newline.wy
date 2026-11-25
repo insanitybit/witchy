@@ -1,0 +1,8 @@
+// `write_format` writes a format with no end of line; `print` ends the line.
+import console
+
+fn main(console: Console<Write>):
+    let n: U64 = 3
+    console.write_format("a=${n} ")
+    console.write_format("b=${n * 2}")
+    console.print(" c=${n + 1}")

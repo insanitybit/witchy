@@ -1,0 +1,5 @@
+// The retired `witchy-1` suite (ML-DSA-44): a grant that names it is no grant, and the run
+// stops before `main` with what changed, whatever key the slot holds.
+import crypto
+fn main(targets: Signer):
+    return

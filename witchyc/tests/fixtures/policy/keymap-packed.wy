@@ -1,0 +1,76 @@
+// Packed U32 words in a key (parts packed/quad.wy): the same hashes as feeding the fields one by
+// one under each policy, and a KeyMap of them with a query (`Probe`, its fields in another order)
+// that packs the paired fields alike: hit, miss, growth, removal.
+import "packed/quad.wy"
+import console
+import hash
+import keymap
+
+type Probe:
+    w: U32
+    x: U32
+    y: U32
+    z: U32
+
+impl Equivalent<quad.Quad> for Probe:
+    fn equivalent(self: &Probe, key: &quad.Quad) -> Bool:
+        return (*self).w == (*key).a && (*self).x == (*key).b && (*self).y == (*key).c && (*self).z == (*key).d
+
+impl HashKey for Probe:
+    fn feed(self: &Probe, state: &mut HashState):
+        state.word(U32.to_u64((*self).w) | (U32.to_u64((*self).x) << 32), 8)
+        state.word(U32.to_u64((*self).y) | (U32.to_u64((*self).z) << 32), 8)
+
+fn quad(n: U64) -> quad.Quad:
+    return quad.Quad(a: U32.truncate(n), b: U32.truncate(n * 3 + 4294967000), c: U32.truncate(n % 7), d: U32.truncate(4294967295 - n))
+
+fn probe(n: U64) -> Probe:
+    return Probe(w: U32.truncate(n), x: U32.truncate(n * 3 + 4294967000), y: U32.truncate(n % 7), z: U32.truncate(4294967295 - n))
+
+fn same_hashes(policy: Policy) -> U64:
+    var same: U64 = 0
+    for n in 0..500:
+        let q = quad(n)
+        let p = quad.Plain(a: q.a, b: q.b, c: q.c, d: q.d)
+        if hash_key(&q, policy) == hash_key(&p, policy):
+            same += 1
+    return same
+
+fn run(console: &Console<Write>, allocator: &Allocator, policy: Policy):
+    let Ok(made): KeyMap<quad.Quad, U64> = KeyMap.new(allocator, 4, policy) else Err(code):
+        return
+    var map = move made
+    for n in 0..200:
+        match map.put(allocator, quad(n), n * 10):
+            Ok:
+                ()
+            Err(entry):
+                entry.discard()
+    var found: U64 = 0
+    for n in 0..200:
+        match map.get(&probe(n)):
+            Ok(v):
+                found += *v
+            Err(code):
+                ()
+    var missing: U64 = 0
+    for n in 200..250:
+        if !map.contains(&probe(n)):
+            missing += 1
+    for n in 0..100:
+        match map.remove(&quad(n * 2)):
+            Ok(entry):
+                entry.discard()
+            Err(code):
+                ()
+    var left: U64 = 0
+    for n in 0..200:
+        if map.contains(&probe(n)):
+            left += n
+    console.print("${same_hashes(policy)} ${map.len()} ${found} ${missing} ${left}")
+    map.discard()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    run(&console, &allocator, Reference(0))
+    run(&console, &allocator, Fast(7))
+    run(&console, &allocator, Constant)

@@ -1,0 +1,1 @@
+`derive` makes `Eq`, `Hash`, `Before` and `Discard`, or a recipe a module declares (`keys.Key`), not `Show`

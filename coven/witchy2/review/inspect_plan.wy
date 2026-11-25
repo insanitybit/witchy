@@ -1,0 +1,24 @@
+import string
+import text
+
+pub fn inspect_plan(allocator: &Allocator) -> Result<String, U64>:
+    let empty = String.with_capacity(allocator, 4096)?
+    var plan = move empty
+    if let Err(code) = steps(&mut plan, allocator):
+        plan.close()
+        return Err(code)
+    return Ok(move plan)
+
+fn steps(plan: &mut String, allocator: &Allocator) -> Result<(), U64>:
+    plan.push_text(allocator, "expect\treview challenge is unknown, expired, consumed or from an old policy\tSELECT EXISTS(SELECT 1 FROM policy WHERE singleton=1 AND CAST(document AS TEXT)=json_extract(CAST(:blob AS TEXT),'$.policy')) AND EXISTS(SELECT 1 FROM challenges WHERE challenge=:token AND policy=:policy_pin AND expires=:expires AND :now < expires AND CAST(envelope AS TEXT)=json_extract(CAST(:blob AS TEXT),'$.envelope'))\n")?
+    plan.push_text(allocator, "expect\treview challenge does not match the candidate\tSELECT EXISTS(SELECT 1 FROM candidates WHERE digest=:digest AND name=:name AND version=:version)\n")?
+    plan.push_text(allocator, "expect\tmaintainer counter changed during review\tSELECT (:present=0 AND NOT EXISTS(SELECT 1 FROM counters WHERE credential=:credential)) OR (:present=1 AND EXISTS(SELECT 1 FROM counters WHERE credential=:credential AND public_key=:public_key AND count=:previous))\n")?
+    plan.push_text(allocator, "exec\t\tDELETE FROM counters WHERE credential=:credential\n")?
+    plan.push_text(allocator, "change\tmaintainer counter was not stored\tINSERT INTO counters (credential,public_key,count) VALUES (:credential,:public_key,:count)\n")?
+    plan.push_text(allocator, "change\treview challenge was not consumed\tDELETE FROM challenges WHERE challenge=:token\n")?
+    plan.push_text(allocator, "exec\t\tDELETE FROM challenges WHERE expires <= :now\n")?
+    plan.push_text(allocator, "exec\t\tDELETE FROM browser_approvals WHERE challenge NOT IN (SELECT challenge FROM challenges)\n")?
+    plan.push_text(allocator, "expect\ttoo many pending maintainer challenges\tSELECT EXISTS(SELECT 1 FROM approvals WHERE name=:name AND version=:version) OR NOT EXISTS(SELECT 1 FROM challenges WHERE challenge IS NOT NULL LIMIT 1 OFFSET 4095)\n")?
+    plan.push_text(allocator, "exec\t\tINSERT INTO challenges (challenge,policy,expires,envelope) SELECT :next_token,:policy_pin,:next_expiry,CAST(json_extract(CAST(:blob AS TEXT),'$.next') AS BLOB) WHERE NOT EXISTS(SELECT 1 FROM approvals WHERE name=:name AND version=:version)\n")?
+    plan.push_text(allocator, "exec\t\tINSERT INTO browser_approvals (challenge,credential) SELECT challenge,:credential FROM challenges WHERE challenge=:next_token AND NOT EXISTS(SELECT 1 FROM approvals WHERE name=:name AND version=:version)\n")?
+    return plan.push_text(allocator, "result\treview result is invalid\tSELECT CAST(json_object('previous',(SELECT digest FROM approvals WHERE name=:name AND version=:version),'token',(SELECT challenge FROM challenges WHERE challenge=:next_token AND NOT EXISTS(SELECT 1 FROM approvals WHERE name=:name AND version=:version)),'envelope',(SELECT json_extract(CAST(envelope AS TEXT),'$') FROM challenges WHERE challenge=:next_token AND NOT EXISTS(SELECT 1 FROM approvals WHERE name=:name AND version=:version))) AS BLOB)\n")

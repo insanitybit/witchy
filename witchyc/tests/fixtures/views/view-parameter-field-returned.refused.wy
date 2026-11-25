@@ -1,0 +1,28 @@
+// Refused (review): a by-value view parameter's array field lives in this frame too.
+import console
+import span
+import string
+
+type Mixed:
+    data: [U8; 4]
+    text: &String
+
+fn leak(m: Mixed) -> Span:
+    let w = Span.of(m.data.slice()).words()
+    var c: U64 = 0
+    match w.next(&mut c):
+        Ok(word):
+            return word
+        Err(e):
+            return m.text.span()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    let first = leak(Mixed([65, 65, 65, 65], &made))
+    write_span(&console, first)
+    console.line("")
+    let second = leak(Mixed([90, 90, 90, 90], &made))
+    write_span(&console, first)
+    console.line("")
+    made.close()

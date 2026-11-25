@@ -1,0 +1,61 @@
+// A full Vec<String> hands back both the vector and the rejected String in one
+// record; the last String comes out next to the remaining vector the same way.
+import "../../../library/wasm-string.wy"
+import "../../../library/wasm-vec.wy"
+
+fn text(allocator: &Allocator, scalar: U64) -> Result<String, U64>:
+    let made: Result<String, U64> = String.new(allocator)
+    match move made:
+        Ok(empty):
+            match empty.push_scalar(allocator, scalar):
+                Ok(one):
+                    return Ok(move one)
+                Err(back):
+                    back.close()
+                    return Err(901)
+        Err(code):
+            return Err(code)
+
+// Push if there is room; otherwise close the String that came back.
+fn keep(console: &Console<Write>, names: Vec<String>, item: Result<String, U64>) -> Vec<String>:
+    match move item:
+        Ok(name):
+            match names.push_spare(move name):
+                Ok(grown):
+                    return move grown
+                Err(failure):
+                    let VecPushError(vector, rejected) = move failure
+                    console.print_int(rejected.byte_len())
+                    rejected.close()
+                    return move vector
+        Err(code):
+            console.print_int(code)
+            return move names
+
+fn finish(console: &Console<Write>, names: Vec<String>):
+    match names.take_last():
+        Ok(taken):
+            let VecTaken(rest, name) = move taken
+            console.print_int(name.byte_len())
+            name.close()
+            finish(console, move rest)
+        Err(empty):
+            match empty.try_release():
+                Ok:
+                    console.print_int(1)
+                Err(stuck):
+                    console.print_int(902)
+                    finish(console, move stuck)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<Vec<String>, U64> = Vec.new(&allocator, 2)
+    match move made:
+        Ok(empty):
+            var names = keep(&console, move empty, text(&allocator, 104))
+            names = keep(&console, move names, text(&allocator, 233))
+            // Full: the three-byte String is printed and closed, the vector survives.
+            names = keep(&console, move names, text(&allocator, 10003))
+            console.print_int(names.len())
+            finish(&console, move names)
+        Err(code):
+            console.print_int(code)

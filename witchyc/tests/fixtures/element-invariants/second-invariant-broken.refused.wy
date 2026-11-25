@@ -1,0 +1,59 @@
+// Refused: the entry stored keeps the first invariant and breaks the second.
+import console
+import vec
+
+type Entry:
+    key: U64
+    key_len: U64
+    value: U64
+    value_len: U64
+
+sealed type Table:
+    bytes: Vec<U8>
+    entries: Vec<Entry>
+    invariant forall i in (0, entries.len()): entries[i].key + entries[i].key_len <= bytes.len()
+    invariant forall i in (0, entries.len()): entries[i].value + entries[i].value_len <= bytes.len()
+
+impl Table:
+    pub fn new(allocator: &Allocator) -> Result<Table, U64>:
+        ensures true
+        proof:
+            auto
+        let bytes: Vec<U8> = Vec.new(allocator, 0)?
+        let made: Result<Vec<Entry>, U64> = Vec.new(allocator, 0)
+        match move made:
+            Ok(entries):
+                return Ok(Table(move bytes, move entries))
+            Err(code):
+                bytes.release_empty()
+                return Err(code)
+
+    pub fn add(table: &mut Table, allocator: &Allocator, key: U64, key_len: U64, value: U64, value_len: U64) -> Bool:
+        ensures true
+        proof:
+            auto
+        let limit = table.bytes.len()
+        if key > limit:
+            return false
+        if key_len > limit - key:
+            return false
+        let entry = Entry(key, key_len, value, value_len)
+        match table.entries.push_mut(allocator, entry):
+            Ok:
+                return true
+            Err(back):
+                return false
+
+    pub fn close(table: Table):
+        let Table(bytes, entries) = move table
+        bytes.close()
+        entries.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    match Table.new(&allocator):
+        Ok(made):
+            var table = move made
+            let ok = table.add(&allocator, 0, 0, 9, 9)
+            table.close()
+        Err(code):
+            console.print_int(code)

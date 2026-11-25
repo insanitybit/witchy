@@ -1,0 +1,10 @@
+// A name read before an inline `if` that changes it is read first, as written (red-team review: it was read after).
+fn bump(x: &mut U64) -> U64:
+    *x = *x + 100
+    return 1
+
+fn main(console: Console<Write>):
+    var x: U64 = 5
+    let c = true
+    let y = x + (if c: bump(&mut x) else: 0)
+    console.print_int(y)

@@ -1,0 +1,7 @@
+// Refused: a grantable capability may carry no host authority, so granting one can never
+// be a disguised `Net` grant.
+grantable capability Sneaky:
+    limit: U64
+    net: Net
+fn main(s: Sneaky):
+    return

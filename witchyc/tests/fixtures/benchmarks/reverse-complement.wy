@@ -1,0 +1,64 @@
+// reverse-complement (the Benchmarks Game): for each sequence of a FASTA file on the input, its
+// header and then its reverse complement, in lines of 60.
+import console
+import vec
+
+// The complement of a nucleotide code (upper case for either case).
+fn complement(byte: U8) -> U8:
+    let table: Text = "TVGHEFCDIJMLKNOPQYSAABWXRZ"
+    let value = U8.to_u64(byte)
+    var index: U64 = 99
+    if value >= 65 && value <= 90:
+        index = value - 65
+    else if value >= 97 && value <= 122:
+        index = value - 97
+    if index == 99:
+        return byte
+    match table.byte_at(index):
+        Ok(found):
+            return found
+        Err(code):
+            return byte
+
+// The sequence held so far, reversed and complemented, in lines of 60; then it is emptied.
+fn flush(console: &Console<Write>, sequence: &mut Vec<U8>):
+    var written: U64 = 0
+    while sequence.len() > 0:
+        match sequence.take_last_mut():
+            Ok(byte):
+                console.print_byte(complement(byte))
+                written += 1
+                if written % 60 == 0:
+                    console.print_byte('\n')
+            Err(code):
+                return
+    if written % 60 != 0:
+        console.print_byte('\n')
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    let Ok(made): Vec<U8> = Vec.new(&allocator, 4096) else Err(code):
+        return
+    var sequence = move made
+    var in_header = false
+    var going = true
+    while going:
+        match input.read_byte():
+            Ok(byte):
+                if byte == '>':
+                    flush(&console, &mut sequence)
+                    in_header = true
+                    console.print_byte(byte)
+                else if in_header:
+                    console.print_byte(byte)
+                    if byte == '\n':
+                        in_header = false
+                else if byte != '\n':
+                    match sequence.push_mut(&allocator, byte):
+                        Ok:
+                            going = true
+                        Err(back):
+                            going = false
+            Err(code):
+                going = false
+    flush(&console, &mut sequence)
+    sequence.close()

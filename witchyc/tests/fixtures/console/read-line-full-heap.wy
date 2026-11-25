@@ -1,0 +1,55 @@
+// read_line with a line buffer that cannot grow (7 bytes of room, the rest of the heap taken):
+// a line that fits is still read whole, an empty line is a Line, the end is End, and a line
+// longer than the room is NoRoom. It made room for a whole run first and said NoRoom even for
+// a line that fit (review of 00ba4181).
+import console
+import string
+import vec
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    let Ok(made): String = String.with_capacity(&allocator, 7) else Err(e):
+        return
+    var line = move made
+    // Take what is left of the heap, halving the request until one is granted, several times.
+    let Ok(h): Vec<Vec<U8>> = Vec.new(&allocator, 48) else Err(e):
+        line.close()
+        return
+    var hogs = move h
+    var size: U64 = 1 << 30
+    while size > 0 && hogs.len() < hogs.capacity():
+        let asked: Result<Vec<U8>, U64> = Vec.new(&allocator, size)
+        match move asked:
+            Ok(hog):
+                match hogs.push_spare_mut(move hog):
+                    Ok:
+                        ()
+                    Err(back):
+                        back.close()
+            Err(code):
+                size = size / 2
+    while true:
+        line.clear()
+        match input.read_line(&allocator, &mut line):
+            .Line:
+                console.write("line [")
+                console.write_string(&line)
+                console.line("]")
+            .End:
+                console.line("end")
+                break
+            .NotText:
+                console.line("not text")
+                break
+            .NoRoom:
+                console.write("no room after [")
+                console.write_string(&line)
+                console.line("]")
+                break
+    while hogs.len() > 0:
+        match hogs.take_last_mut():
+            Ok(hog):
+                hog.close()
+            Err(code):
+                break
+    hogs.release_empty()
+    line.close()

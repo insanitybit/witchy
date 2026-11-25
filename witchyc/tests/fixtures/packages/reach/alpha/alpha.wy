@@ -1,0 +1,35 @@
+// alpha: its entry offers `shown`, `Shown` (with its methods and operators) and `hidden`; its
+// inner file is for alpha's own use (packages/reach-*.wy, 2026-11-22).
+import ops
+import sort
+import "inner.wy"
+
+pub type Shown:
+    n: U64
+
+impl Shown:
+    pub fn value(self: &Shown) -> U64:
+        return (*self).n
+
+impl Add for Shown:
+    fn add(self: Shown, other: Shown) -> Shown:
+        return Shown(n: self.n + other.n)
+
+pub fn shown() -> U64:
+    return inner.alpha_internal(1)
+
+pub fn make(n: U64) -> Shown:
+    return Shown(n: n)
+
+// A value of a type alpha's inner file declares: a user may hold it and hand it back, and has
+// none of its methods, impls or operators (they are in a file no user imports).
+pub fn hidden(n: U64) -> inner.Hidden:
+    return inner.Hidden(value: n)
+
+pub fn read(h: &inner.Hidden) -> U64:
+    return h.peek()
+
+// Named as the standard library's operator helper: `>` and `<=` in a program that imports alpha
+// still mean the standard library's (packages/reach-operator-after.wy).
+pub fn sort_after<T: Any + Before>(a: &T, b: &T) -> Bool:
+    return true

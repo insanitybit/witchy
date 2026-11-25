@@ -1,0 +1,19 @@
+// A generic function given borrowed UTF-8 as `Q = str` (`key: &Q`), and passing it on to
+// another: the reference is the address and the length all the way down, and hashes as the
+// String of the same bytes does.
+import console
+import string
+import hash
+
+fn g<Q: Any + Hash>(key: &Q) -> U64:
+    return key.hash()
+
+fn h<Q: Any + Hash>(key: &Q) -> U64:
+    return g(key)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let s = "héllo"
+    let Ok(owned): String = String.from_str(&allocator, s) else Err(e):
+        return
+    console.print("${g(s) == h(s)} ${g(s) == g(&owned)}")
+    owned.close()

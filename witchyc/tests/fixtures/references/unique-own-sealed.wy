@@ -1,0 +1,13 @@
+// In a sealed type's own file, with no invariant to keep, a `&mut` reference to a
+// field can be kept and returned: the file may write the field anyway.
+sealed type Counter:
+    n: U64
+
+fn slot(counter: &mut Counter) -> &mut U64:
+    return &mut (*counter).n
+
+fn main(console: Console<Write>):
+    var counter = Counter(4)
+    let held = slot(&mut counter)
+    *held = 9
+    console.print_int(counter.n)

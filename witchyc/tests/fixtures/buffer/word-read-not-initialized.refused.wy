@@ -1,0 +1,11 @@
+// Refused: every cell read must hold a value.
+fn read(buffer: &Buffer<U8>, at: U64, count: U64) -> U64:
+    requires count <= 8
+    requires at + count <= memory.capacity(buffer)
+    ensures true
+    proof:
+        auto
+    return memory.read_word_unchecked(buffer, at, count)
+
+fn main():
+    return

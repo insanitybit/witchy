@@ -1,0 +1,17 @@
+// A program's constants are its own (adversarial review round 16): `K`, `count` and `index`
+// are also names inside the standard library (a type parameter, parameters), which once
+// made those libraries fail to build.
+import console
+import vec
+
+pub let K = 1
+let count = 3
+let index = 0
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.filled(&allocator, count, K) else Err(code):
+        return
+    var numbers = move made
+    let _ = numbers.set(index, 9)
+    console.print_int(numbers.len() + numbers[index])
+    numbers.close()

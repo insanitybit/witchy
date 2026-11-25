@@ -1,0 +1,10 @@
+impl Console<Write>:
+    fn say(self: &Console<Write>):
+        self.print_int(1)
+
+impl Console<Read>:
+    fn say(self: &Console<Read>):
+        ()
+
+fn main(console: Console<Write>):
+    console.say()

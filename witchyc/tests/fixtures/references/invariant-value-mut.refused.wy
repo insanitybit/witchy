@@ -1,0 +1,22 @@
+// A type whose invariant speaks of the value in a cell cannot hand out a `&mut` reference
+// to it: whoever holds the reference could store another value. The same function with
+// `&` is `invariant-value.wy`.
+sealed type Marked<T>:
+    data: Buffer<T>
+    length: U64
+    capacity: U64
+    mark: T
+    invariant memory.prefix(data, length, capacity)
+    invariant memory.cell(data, 0, mark)
+
+impl<T> Marked<T>:
+    fn slot(value: &mut Marked<T>) -> Result<&mut T, U64>:
+        ensures value.length == old(value.length)
+        proof:
+            auto
+        if 0 < (*value).length:
+            return Ok(memory.mut_unchecked(&mut (*value).data, 0))
+        return Err(1)
+
+fn main(console: Console<Write>):
+    console.print_int(1)

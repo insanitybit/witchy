@@ -1,0 +1,32 @@
+// A million random keys counted in a HashMap<U64, U64>, then a million lookups.
+import console
+import hashmap
+import discard
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): HashMap<U64, U64> = HashMap.new(&allocator, 666667) else Err(code):
+        return
+    var map = move made
+    var seed: U64 = 42
+    for i in 0..1000000:
+        seed = seed * 48271 % 2147483647
+        let key = seed % 500000
+        match map.get_or_insert(&allocator, &key, 0):
+            Ok(found):
+                *found += 1
+            Err(missed):
+                missed.discard()
+                console.line("full")
+    var hits: U64 = 0
+    var total: U64 = 0
+    for key in 0..1000000:
+        match map.get(&key):
+            Ok(count):
+                hits += 1
+                total += *count
+            Err(missing):
+                continue
+    console.print_int(map.len())
+    console.print_int(hits)
+    console.print_int(total)
+    map.discard()

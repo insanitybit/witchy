@@ -1,0 +1,88 @@
+// A CSV summary: per city, the count and the lowest and highest reading, sorted by city;
+// 2,000 lines, compared with Python. Splits fields on a Span, parses with parse_f64.
+import console
+import string
+import span
+import float
+import hashmap
+import sort
+import vec
+import discard
+
+type Stats derive(Discard):
+    count: U64
+    low: F64
+    high: F64
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    let Ok(m): HashMap<String, Stats> = HashMap.new(&allocator, 16) else Err(e):
+        return
+    var stats = move m
+    let Ok(l): String = String.new(&allocator) else Err(e):
+        stats.discard()
+        return
+    var line = move l
+    var header = true
+    while true:
+        line.clear()
+        match input.read_line(&allocator, &mut line):
+            .Line:
+                if header:
+                    header = false
+                    continue
+                match line.span().split(44):
+                    Ok(parts):
+                        let name = parts.head.trim()
+                        match parse_f64(parts.tail.trim().as_bytes()):
+                            Ok(t):
+                                match get_mut_by_span(&mut stats, name):
+                                    Ok(s):
+                                        (*s).count += 1
+                                        (*s).low = (*s).low.min(t)
+                                        (*s).high = (*s).high.max(t)
+                                    Err(missing):
+                                        match name.to_string(&allocator):
+                                            Ok(key):
+                                                match stats.put(&allocator, move key, Stats(1, t, t)):
+                                                    Ok:
+                                                        continue
+                                                    Err(back):
+                                                        back.discard()
+                                            Err(code):
+                                                continue
+                            Err(code):
+                                console.line("bad number")
+                    Err(whole):
+                        console.line("no comma")
+            .End:
+                break
+            .NotText:
+                break
+            .NoRoom:
+                break
+    line.close()
+    let Ok(k): Vec<String> = Vec.new(&allocator, 8) else Err(e):
+        stats.discard()
+        return
+    var keys = move k
+    for entry in &stats:
+        match entry.key.span().to_string(&allocator):
+            Ok(copy):
+                match keys.push_mut(&allocator, move copy):
+                    Ok:
+                        continue
+                    Err(back):
+                        back.close()
+            Err(code):
+                continue
+    sort(&mut keys)
+    for index in 0..keys.len():
+        let key = keys.cell(index)
+        match stats.get(key):
+            Ok(s):
+                console.write_string(key)
+                console.print(" ${s.count} ${s.low} ${s.high}")
+            Err(missing):
+                continue
+    keys.discard()
+    stats.discard()

@@ -1,0 +1,27 @@
+// A read-only method with `ensures true` is proved over numbers, which cannot
+// show a helper's memory requirement: the call is refused, not assumed.
+import "../../../library/wasm-console.wy"
+
+sealed type Box:
+    data: Buffer<U64>
+    length: U64
+    capacity: U64
+    invariant memory.prefix(data, length, capacity)
+
+fn memory_peek<T>(buffer: &Buffer<T>, index: U64) -> T:
+    requires index < memory.capacity(buffer)
+    requires memory.initialized_range(buffer, index, index + 1)
+    ensures memory.unchanged(buffer, old(buffer))
+    proof:
+        auto
+    return memory.get_unchecked(buffer, index)
+
+impl Box:
+    fn wild(self: &Box) -> U64:
+        ensures true
+        proof:
+            auto
+        return memory_peek(&(*self).data, 5)
+
+fn main(console: Console<Write>):
+    console.print_int(1)

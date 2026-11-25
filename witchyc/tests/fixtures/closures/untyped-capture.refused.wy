@@ -1,0 +1,11 @@
+// Refused: a captured variable whose value comes from a generic function says its type where it
+// is declared (its result depends on the call; a plain function's signature shows it,
+// `closures/captures-calls.wy`).
+
+fn id<T>(x: T) -> T:
+    x
+
+fn main(console: Console<Write>):
+    let by = id(3)
+    let add = fn(n: U64) -> U64: n + by
+    console.print_int(add(1))

@@ -1,0 +1,14 @@
+// Refused: a recipe from another file taking its module's `double` as a value: a function is not a
+// value (and, read in its own file, it would be the module's `double`, not the program's).
+import "parts/recipe_value.wy"
+import console
+
+fn double(x: U64) -> U64:
+    return x * 3
+
+type T derive(recipe_value.Twiced):
+    a: U64
+
+fn main(console: Console<Write>):
+    let t = T(a: 5)
+    console.print("${t.twice()}")

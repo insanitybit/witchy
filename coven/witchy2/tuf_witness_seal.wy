@@ -1,0 +1,81 @@
+import "tuf/attestations.wy"
+import "tuf/release_envelope.wy"
+import "tuf/release_signing.wy"
+import "tuf/release_trust.wy"
+import "tuf/signing_input.wy"
+import "tuf/witness_input.wy"
+import console
+import discard
+import json_tree
+import mldsa_signer
+import span
+import string
+import text
+import time
+import vec
+
+fn main(input: Console<Read>, output: Console<Write>, signer: Mldsa87Signer, clock: Clock, allocator: Allocator):
+    if let Err(code) = run(&input, &output, &signer, clock.now_ms() / 1000, &allocator):
+        if code == 2:
+            output.line("refused key")
+        else if code == 3:
+            output.line("refused policy")
+        else if code == 4:
+            output.line("refused digest")
+        else:
+            output.line("refused")
+
+fn run(input: &Console<Read>, output: &Console<Write>, signer: &Mldsa87Signer, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let request = read_signing_request(input, allocator)?
+    let signed = read_package(&request, input, output, signer, now, allocator)
+    request.discard()
+    return signed
+
+fn read_package(request: &Json, input: &Console<Read>, output: &Console<Write>, signer: &Mldsa87Signer, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let layout = witness_layout(request)?
+    let body = read_signing_bytes(layout.size, input, allocator)?
+    let snapshot = witness_snapshot(layout, Span.of(body.as_slice()))
+    let signed = verify_snapshot(request, snapshot, output, signer, now, allocator)
+    body.close()
+    return signed
+
+fn verify_snapshot(request: &Json, snapshot: WitnessSnapshot, output: &Console<Write>, signer: &Mldsa87Signer, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let name = string_field(request, "name")?
+    let version = string_field(request, "version")?
+    let pinned = string_field(request, "digest")?
+    let Ok(digest): String = package_digest(snapshot.package.as_bytes(), name, version, allocator) else Err(error):
+        return Err(1)
+    let matches = digest.eq(pinned)
+    digest.close()
+    if !matches:
+        return Err(4)
+    let trust = read_witness_trust(snapshot.trust, allocator)?
+    let signed = verify_approval(snapshot, name, version, pinned, &trust, output, signer, now, allocator)
+    trust.close()
+    return signed
+
+fn verify_approval(snapshot: WitnessSnapshot, name: &String, version: &String, digest: &String, trust: &ReleaseTrust, output: &Console<Write>, signer: &Mldsa87Signer, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let policy = trust.policy()?
+    let registry = string_field(policy, "registry")?
+    let approval = read_witness_approval(snapshot.approval, allocator)?
+    let claim = ReleaseClaim(name, version, digest, registry)
+    let proof = WitnessProof(&approval, snapshot.policy, snapshot.publisher)
+    let signed = seal(claim, proof, snapshot.package, trust, output, signer, now, allocator)
+    approval.discard()
+    return signed
+
+fn seal(claim: ReleaseClaim, proof: WitnessProof, package: Span, trust: &ReleaseTrust, output: &Console<Write>, signer: &Mldsa87Signer, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let empty: Vec<U8> = Vec.filled(allocator, 4627, 0)?
+    var signature = move empty
+    let signed = sign_witness(claim, proof, trust, now, signer, signature.as_mut_slice(), allocator)
+    let emitted = emit(signed, proof, package, signature.as_slice(), output, now, allocator)
+    signature.close()
+    return emitted
+
+fn emit(signed: Result<(), U64>, proof: WitnessProof, package: Span, signature: &[U8], output: &Console<Write>, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    signed?
+    let target = sealed_target(proof.approval, proof.publisher.as_bytes(), package.as_bytes(), signature, now, allocator)?
+    output.write_string(&target)
+    output.print_byte(10)
+    target.close()
+    return Ok(())

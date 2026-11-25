@@ -1,0 +1,1 @@
+ensures memory.same_allocation(input, old(input))

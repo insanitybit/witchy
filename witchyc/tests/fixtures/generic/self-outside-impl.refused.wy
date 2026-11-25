@@ -1,0 +1,11 @@
+// Refused: `Self` names the implementing type only inside an impl block.
+import console
+
+type Point:
+    x: U64
+
+fn origin() -> Self:
+    return Point(x: 0)
+
+fn main(console: Console<Write>):
+    console.print("${origin().x}")

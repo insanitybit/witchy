@@ -1,0 +1,56 @@
+import cell
+import option
+
+type Box<T>:
+    owned: OccupiedCell<T>
+
+type State<T>:
+    Off
+    Holding(Box<T>)
+
+type Pair<T>:
+    state: State<T>
+    extra: Option<Option<OccupiedCell<T>>>
+
+fn main(out: Console<Write>, a: Allocator):
+    let allocated: Result<VacantCell<U64>, U64> = VacantCell.new(&a)
+    match move allocated:
+        Err(code):
+            out.print_int(code)
+        Ok(empty):
+            let owner = empty.fill(37)
+            var pair: Pair<U64> = Pair(Holding(Box(move owner)), Some(None))
+            match &mut pair.state:
+                Off:
+                    out.print_int(0)
+                Holding(held):
+                    let ptr = (*held).owned.write()
+                    *ptr = 61
+            match &pair.extra:
+                Some(inner):
+                    out.print_int(7)
+                None:
+                    out.print_int(8)
+            let Pair(state, rest) = move pair
+            match move rest:
+                None:
+                    return discard_state(move state, &out)
+                Some(inner):
+                    match move inner:
+                        None:
+                            return discard_state(move state, &out)
+                        Some(other):
+                            let TakenCell(clear, value) = other.extract()
+                            clear.close()
+                            out.print_int(value)
+                            return discard_state(move state, &out)
+
+fn discard_state(state: State<U64>, out: &Console<Write>):
+    match move state:
+        Off:
+            return
+        Holding(wrapped):
+            let Box(cell) = move wrapped
+            let TakenCell(vacant, actual) = cell.extract()
+            vacant.close()
+            out.print_int(actual)

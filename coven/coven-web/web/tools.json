@@ -1,0 +1,7 @@
+{
+  "_comment": "Pinned, vendored build tools for coven-web (PLAN.md WS-D). Installed into ./tools/node_modules; never runtime deps. Bump deliberately.",
+  "node": "22.22.3",
+  "esbuild": "0.27.4",
+  "typescript": "5.9.3",
+  "oxlint": "1.56.0"
+}

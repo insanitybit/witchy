@@ -1,0 +1,12 @@
+// Refused: a recipe's private generic helper given a field of the recipe module's sealed type
+// (review round 6: `poke_it<X: Poke>(&mut (*self).t)` wrote it).
+import "parts/gh.wy"
+import console
+
+type T derive(gh.Gen):
+    t: gh.Token
+
+fn main(console: Console<Write>):
+    var x = T(t: gh.mint())
+    x.bump()
+    console.print("${gh.redeem(&x.t)}")

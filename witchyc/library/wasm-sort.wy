@@ -1,0 +1,263 @@
+// Order and sorting, written as safe code on Vec's public methods.
+import "wasm-text.wy"
+import "wasm-int.wy"
+import "wasm-string.wy"
+import "wasm-vec.wy"
+import "wasm-hash.wy"
+
+// A strict order: `before` is false for a value and itself, and for two values
+// that are equal. Nothing checks that an implementation is an order; a sort with
+// one that is not still ends, and still holds every element once.
+pub trait Before:
+    fn before(self: &Self, other: &Self) -> Bool
+
+// `a > b` and `a <= b` on a program's type: whether `b` is before `a`, with `a` evaluated first,
+// as written (red-team review: `b.before(&a)` evaluated `b` first).
+pub fn sort_after<T: Any + Before>(a: &T, b: &T) -> Bool:
+    return b.before(a)
+
+impl Before for U64:
+    fn before(self: &U64, other: &U64) -> Bool:
+        return *self < *other
+
+impl Before for U8:
+    fn before(self: &U8, other: &U8) -> Bool:
+        return *self < *other
+
+impl Before for U16:
+    fn before(self: &U16, other: &U16) -> Bool:
+        return *self < *other
+
+impl Before for U32:
+    fn before(self: &U32, other: &U32) -> Bool:
+        return *self < *other
+
+// `false` before `true`.
+impl Before for Bool:
+    fn before(self: &Bool, other: &Bool) -> Bool:
+        return !*self && *other
+
+impl Before for I64:
+    fn before(self: &I64, other: &I64) -> Bool:
+        return *self < *other
+
+// IEEE 754's totalOrder, an order for every F64: -inf, the negatives, -0.0, 0.0, the positives,
+// inf, NaN. On numbers it is `<`, except that -0.0 comes before 0.0. Every NaN is last, and
+// they are alike: `F64.bits` gives each the canonical NaN's bits (a payload or sign may differ
+// between machines; docs/wasm-f64.md), so the order is the same everywhere. (It was `<`, which
+// no NaN is on either side of: not an order, so where NaNs went, and with them the order of
+// the rest, was not specified.)
+impl Before for F64:
+    fn before(self: &F64, other: &F64) -> Bool:
+        return total_key(*self) < total_key(*other)
+
+// A U64 whose order is the F64's totalOrder: a negative's bits reversed, a positive's above
+// every negative's.
+pub fn total_key(value: F64) -> U64:
+    let bits = F64.bits(value)
+    if bits >= 9223372036854775808:
+        return 18446744073709551615 - bits
+    return bits + 9223372036854775808
+
+// Byte order, which for UTF-8 is the order of the scalars.
+impl Before for String:
+    fn before(self: &String, other: &String) -> Bool:
+        return self.less(other)
+
+// Whether the element at `first` comes before the one at `second`.
+pub fn precedes<T: Any + Before>(items: &Vec<T>, first: U64, second: U64) -> Bool:
+    match items.at(first):
+        Ok(one):
+            match items.at(second):
+                Ok(other):
+                    return one.before(other)
+                Err(code):
+                    return false
+        Err(code):
+            return false
+
+// Whether the element at `first` of a slice comes before the one at `second`.
+fn slice_precedes<T: Any + Before>(items: &[T], first: U64, second: U64) -> Bool:
+    match items.at(first):
+        Ok(one):
+            match items.at(second):
+                Ok(other):
+                    return one.before(other)
+                Err(code):
+                    return false
+        Err(code):
+            return false
+
+// Exchange two elements of a slice through the held element: three exchanges in place, so
+// nothing is copied and no element is ever missing. The sort works on a slice, whose start and
+// length are values the loops keep, not fields read again through the Vec at every step (the
+// sort benchmark: 134 to 81 ms written this way by hand).
+fn sort_swap<T: Any>(items: &mut [T], hand: &mut T, first: U64, second: U64):
+    if first == second || first >= items.len() || second >= items.len():
+        return
+    let one = items.cell(first)
+    memory.exchange(one, hand)
+    let other = items.cell(second)
+    memory.exchange(other, hand)
+    let again = items.cell(first)
+    memory.exchange(again, hand)
+
+// Elements `base + root + 1 .. base + end` are a heap with the greatest first; let the one at
+// `base + root` sink to its place.
+fn sort_sink<T: Any + Before>(items: &mut [T], hand: &mut T, base: U64, root: U64, end: U64):
+    var at = root
+    while at * 2 + 1 < end:
+        var child = at * 2 + 1
+        if child + 1 < end && slice_precedes(items, base + child, base + child + 1):
+            child += 1
+        if !slice_precedes(items, base + at, base + child):
+            return
+        sort_swap(items, hand, base + at, base + child)
+        at = child
+
+// Heap sort of `low .. high`: what introsort falls back to, so no input takes more than n log n.
+fn sort_heap<T: Any + Before>(items: &mut [T], hand: &mut T, low: U64, high: U64):
+    let count = high - low
+    var start = count / 2
+    while start > 0:
+        start -= 1
+        sort_sink(items, hand, low, start, count)
+    var last = count
+    while last > 1:
+        last -= 1
+        sort_swap(items, hand, low, low + last)
+        sort_sink(items, hand, low, 0, last)
+
+// Insertion sort of `low .. high`, for short ranges.
+fn sort_insert<T: Any + Before>(items: &mut [T], hand: &mut T, low: U64, high: U64):
+    for next in low + 1..high:
+        var at = next
+        while at > low && slice_precedes(items, at, at - 1):
+            sort_swap(items, hand, at, at - 1)
+            at -= 1
+
+// Introsort of `low .. high`: quicksort with the median of three as pivot and Hoare's
+// partition, insertion sort below 17 elements, heap sort once `depth` levels are used up. The
+// smaller side is sorted by a call and the larger by the loop, so calls nest at most log n deep.
+fn sort_range<T: Any + Before>(items: &mut [T], hand: &mut T, low: U64, high: U64, depth: U64):
+    var from = low
+    var to = high
+    var budget = depth
+    while to - from > 16:
+        if budget == 0:
+            sort_heap(items, hand, from, to)
+            return
+        budget -= 1
+        // The median of three goes to `from` as the pivot; `to - 1` is then not before it, so
+        // the scan up stops there at the latest, and the scan down stops at the pivot.
+        let middle = from + (to - from) / 2
+        if slice_precedes(items, middle, from):
+            sort_swap(items, hand, middle, from)
+        if slice_precedes(items, to - 1, middle):
+            sort_swap(items, hand, to - 1, middle)
+            if slice_precedes(items, middle, from):
+                sort_swap(items, hand, middle, from)
+        sort_swap(items, hand, from, middle)
+        var up = from + 1
+        var down = to - 1
+        var going = true
+        while going:
+            while slice_precedes(items, up, from):
+                up += 1
+            // `down > from`: an order that says the pivot comes before itself would walk past
+            // the range (review: a `before` that is always true trapped at index 0).
+            while down > from && slice_precedes(items, from, down):
+                down -= 1
+            if up >= down:
+                going = false
+            else:
+                sort_swap(items, hand, up, down)
+                up += 1
+                down -= 1
+        sort_swap(items, hand, from, down)
+        if down - from < to - down - 1:
+            sort_range(items, hand, from, down, budget)
+            from = down + 1
+        else:
+            sort_range(items, hand, down + 1, to, budget)
+            to = down
+    sort_insert(items, hand, from, to)
+
+// Sort in place, least first. Introsort (quicksort, falling back to heap sort): the time grows
+// as n log n whatever the input, and nothing is allocated. The last element is held while the
+// rest are sorted, so each exchange is three trades in place and only that one element leaves
+// the vector (owners and copied values alike); it then goes where it belongs. Equal elements
+// may change places with each other.
+pub fn sort<T: Any + Before>(items: &mut Vec<T>):
+    let count = items.len()
+    if count < 2:
+        return
+    var hand = match items.take_last_mut():
+        Ok(item):
+            move item
+        Err(code):
+            return
+    let rest = count - 1
+    // Twice the number of halvings to one.
+    var depth: U64 = 0
+    var size = rest
+    while size > 1:
+        size = size / 2
+        depth += 2
+    sort_range(items.as_mut_slice(), &mut hand, 0, rest, depth)
+    // Where the held element belongs: after every element it is not before.
+    var low: U64 = 0
+    var high = rest
+    while low < high:
+        let middle = low + (high - low) / 2
+        var earlier = true
+        match items.at(middle):
+            Ok(other):
+                earlier = hand.before(other)
+            Err(code):
+                earlier = true
+        if earlier:
+            high = middle
+        else:
+            low = middle + 1
+    // Each element from there moves up one place, through the hand.
+    for at in low..rest:
+        items.trade(at, &mut hand)
+    items.put_back(move hand)
+
+// Whether each element is not before the one ahead of it.
+pub fn is_sorted<T: Any + Before>(items: &Vec<T>) -> Bool:
+    for index in 1..items.len():
+        if precedes(items, index, index - 1):
+            return false
+    return true
+
+// Where `key` is in `items`, which are sorted least first: Ok(an index holding an element
+// neither before nor after it), or Err(where it would go to keep them sorted). Binary search.
+pub fn search<T: Any + Before>(items: &Vec<T>, key: &T) -> Result<U64, U64>:
+    var low: U64 = 0
+    var high = items.len()
+    while low < high:
+        let middle = low + (high - low) / 2
+        match items.at(middle):
+            Ok(other):
+                if other.before(key):
+                    low = middle + 1
+                else if key.before(other):
+                    high = middle
+                else:
+                    return Ok(middle)
+            Err(code):
+                return Err(low)
+    return Err(low)
+
+// The first index whose element equals `key`. Err(1): none does.
+pub fn index_of<T: Any + Eq>(items: &Vec<T>, key: &T) -> Result<U64, U64>:
+    for index in 0..items.len():
+        match items.at(index):
+            Ok(other):
+                if other.eq(key):
+                    return Ok(index)
+            Err(code):
+                return Err(1)
+    return Err(1)

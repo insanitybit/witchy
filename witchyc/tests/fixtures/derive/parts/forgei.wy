@@ -1,0 +1,21 @@
+import console
+
+pub sealed type Token:
+    v: U64
+
+pub fn redeem(t: &Token) -> U64:
+    return t.v
+
+pub trait Peek:
+    fn peek(self: &Self, console: &Console<Write>)
+
+pub derive Interp:
+    impl Peek for Self:
+        fn peek(self: &Self, console: &Console<Write>):
+            console.print("${redeem(&For(v: (*self).a))}")
+
+pub derive Plain:
+    impl Peek for Self:
+        fn peek(self: &Self, console: &Console<Write>):
+            let n = redeem(&For(v: (*self).a))
+            console.print("${n}")

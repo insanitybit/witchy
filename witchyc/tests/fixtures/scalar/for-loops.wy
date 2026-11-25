@@ -1,0 +1,74 @@
+// Proofs through `for`: a counting loop with invariants, where the name stands for the
+// index the next pass will have; a walk over a Vec; a walk over an array.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-vec.wy"
+
+fn thrice(n: U64) -> U64:
+    requires n < 1000
+    ensures result == n * 3
+    proof:
+        auto
+    var sum: U64 = 0
+    for index in 0..n:
+        invariant sum == index * 3
+        invariant index <= n
+        sum += 3
+    return sum
+
+fn span(low: U64, high: U64) -> U64:
+    requires low <= high
+    requires high < 1000
+    ensures result == high - low
+    proof:
+        auto
+    var count: U64 = 0
+    for index in low..high:
+        invariant low <= index
+        invariant index <= high
+        invariant count == index - low
+        count += 1
+    return count
+
+fn count_big(items: &Vec<U64>, bound: U64) -> U64:
+    ensures result <= 1000
+    proof:
+        auto
+    var count: U64 = 0
+    for item in items:
+        invariant count <= 1000
+        if *item > bound && count < 1000:
+            count += 1
+    return count
+
+fn total(values: &[U64; 4]) -> U64:
+    ensures result <= 400
+    proof:
+        auto
+    var sum: U64 = 0
+    var seen: U64 = 0
+    for value in values:
+        invariant sum <= seen * 100
+        invariant seen <= 4
+        if *value <= 100 && seen < 4:
+            sum += *value
+            seen += 1
+    return sum
+
+fn main(console: Console<Write>, allocator: Allocator):
+    console.print_int(thrice(7))
+    console.print_int(span(3, 9))
+    let values: [U64; 4] = [3, 5, 7, 11]
+    console.print_int(total(&values))
+    var items: Vec<U64> = match Vec.new(&allocator, 4):
+        Ok(made):
+            move made
+        Err(code):
+            return
+    for step in 0..4:
+        match items.push_mut(&allocator, step * 10):
+            Ok(done):
+                continue
+            Err(back):
+                break
+    console.print_int(count_big(&items, 15))
+    items.close()

@@ -1,0 +1,17 @@
+// A program's own type with a real element borrow: `&shelf[0]` is its `cell`.
+import console
+
+type Shelf:
+    top: U64
+
+impl Shelf:
+    // A real element borrow: a reference into the receiver.
+    pub fn cell(self: &Shelf, i: U64) -> &U64:
+        return &(*self).top
+
+fn show(value: &U64) -> U64:
+    return *value
+
+fn main(console: Console<Write>):
+    let shelf = Shelf(43)
+    console.print_int(show(&shelf[0]))

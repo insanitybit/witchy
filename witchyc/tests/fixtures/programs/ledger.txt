@@ -1,0 +1,10 @@
+deposit ann 50
+deposit bob 20
+withdraw ann 15
+show ann
+show carl
+withdraw bob 99
+deposit ann 5
+frobnicate
+deposit dan
+total

@@ -1,0 +1,21 @@
+// Appended to library/unchecked-u64.wy by tests/unsafe_adversarial.rs.
+//
+// `impossible_get` has requirements no input can satisfy, so its out-of-range
+// unchecked read is never reachable and the definition is admitted. That is
+// only sound if every actual caller must establish both requirements.
+fn impossible_get(input: Vec<U64>, index: USize) -> Result<Indexed, Vec<U64>>:
+    requires index < input.length
+    requires input.length < index
+    var vector = move input
+    if memory.loan_room(1):
+        let item = memory.read_unchecked(&vector.data, index + 7)
+        return Ok(Indexed(move vector, Some(item)))
+    return Err(move vector)
+
+// The inner branch is dead, and it establishes the second requirement.
+// The test removes it, leaving a live call that knows only the first.
+fn caller(input: Vec<U64>, index: USize) -> Result<Indexed, Vec<U64>>:
+    if index < input.length:
+        if input.length < index:
+            return impossible_get(move input, index)
+    return Err(move input)

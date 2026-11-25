@@ -1,0 +1,176 @@
+import "../tuf/release_trust.wy"
+import "approval_bindings.wy"
+import "challenge_bindings.wy"
+import "challenge_plan.wy"
+import "challenge_wire.wy"
+import "../sqlite_reply.wy"
+import "commit_request.wy"
+import "enrollment_policy.wy"
+import console
+import discard
+import json_tree
+import rand
+import span
+import "@sqlite"
+import string
+import text
+
+pub fn issue(input: &Console<Read>, db: &Sqlite, output: &Console<Write>, random: &Rand, now: U64, browser: Bool, allocator: &Allocator) -> Result<(), U64>:
+    let request = read_commit_request(input, allocator)?
+    let checked = prepare(&request, db, output, random, now + 300, browser, allocator)
+    request.discard()
+    return checked
+
+fn prepare(request: &Json, db: &Sqlite, output: &Console<Write>, random: &Rand, expiry: U64, browser: Bool, allocator: &Allocator) -> Result<(), U64>:
+    let operation = string_field(request, "operation")?
+    let release = !browser && operation.equals_text("release")
+    if !release && ((browser && !operation.equals_text("inspect")) || (!browser && !operation.equals_text("enroll-maintainer"))):
+        return Err(1)
+    let policy = request.field("policy")?
+    let Ok(pin): String = digest_json(policy, allocator) else Err(reason):
+        return Err(1)
+    let checked = with_pin(request, policy, &pin, db, output, random, expiry, browser, release, allocator)
+    pin.close()
+    return checked
+
+fn with_pin(request: &Json, policy: &Json, pin: &String, db: &Sqlite, output: &Console<Write>, random: &Rand, expiry: U64, browser: Bool, release: Bool, allocator: &Allocator) -> Result<(), U64>:
+    let empty = String.with_capacity(allocator, 512)?
+    var bindings = move empty
+    let made = prepare_intent(request, policy, pin, expiry, &mut bindings, browser, release, allocator)
+    let Ok(intent): String = move made else Err(code):
+        bindings.close()
+        return Err(code)
+    let checked = with_intent(&intent, policy, pin, &mut bindings, db, output, random, expiry, release, allocator)
+    intent.close()
+    bindings.close()
+    return checked
+
+fn prepare_intent(request: &Json, policy: &Json, pin: &String, expiry: U64, bindings: &mut String, browser: Bool, release: Bool, allocator: &Allocator) -> Result<String, U64>:
+    let empty = String.with_capacity(allocator, 512)?
+    var intent = move empty
+    let checked = write_intent(request, policy, pin, expiry, bindings, &mut intent, browser, release, allocator)
+    if let Err(code) = checked:
+        intent.close()
+        return Err(code)
+    return Ok(move intent)
+
+fn write_intent(request: &Json, policy: &Json, pin: &String, expiry: U64, bindings: &mut String, intent: &mut String, browser: Bool, release: Bool, allocator: &Allocator) -> Result<(), U64>:
+    if browser:
+        if !count_fields(request, 3):
+            return Err(1)
+        let digest = string_field(request, "digest")?
+        if !valid_digest(digest):
+            return Err(1)
+        intent.push_text(allocator, "{\"digest\":\"")?
+        intent.push_part(allocator, digest, 0, digest.byte_len())?
+        intent.push_text(allocator, "\",\"expires\":")?
+        intent.push_u64(allocator, expiry)?
+        return intent.push_text(allocator, ",\"operation\":\"inspect\"}")
+    if release:
+        return write_release(request, policy, pin, expiry, bindings, intent, allocator)
+    return write_enrollment(request, policy, expiry, intent, allocator)
+
+fn write_release(request: &Json, policy: &Json, pin: &String, expiry: U64, bindings: &mut String, intent: &mut String, allocator: &Allocator) -> Result<(), U64>:
+    if !count_fields(request, 5):
+        return Err(1)
+    let name = string_field(request, "name")?
+    let version = string_field(request, "version")?
+    let digest = string_field(request, "digest")?
+    let registry = string_field(policy, "registry")?
+    if !valid_coordinates(name, version, digest) || !registry_id(registry.as_bytes()):
+        return Err(1)
+    let credentials = policy.field("credentials")?
+    if !has_reviewer(credentials, name):
+        return Err(3)
+    text_binding(bindings, "name", name, allocator)?
+    text_binding(bindings, "version", version, allocator)?
+    text_binding(bindings, "digest", digest, allocator)?
+    return approval_intent(ReviewCoordinate(name, version, digest, registry), pin, expiry, intent, allocator)
+
+fn has_reviewer(credentials: &Json, name: &String) -> Bool:
+    match credentials:
+        Object(entries):
+            for entry in entries:
+                if has_scope(&entry.value, name):
+                    return true
+        _:
+            ()
+    return false
+
+fn write_enrollment(request: &Json, policy: &Json, expiry: U64, intent: &mut String, allocator: &Allocator) -> Result<(), U64>:
+    if !count_fields(request, 4):
+        return Err(1)
+    let origin = string_field(policy, "origin")?
+    if !origin.span().starts_with_text("https://"):
+        return Err(4)
+    let revision = declared_integer(policy, "revision")?
+    if revision >= 9223372036854775807:
+        return Err(5)
+    let packages = request.field("packages")?
+    if !valid_packages(packages):
+        return Err(1)
+    let replace = string_field(request, "replace")?
+    let credentials = policy.field("credentials")?
+    check_replacement(credentials, replace, packages)?
+    intent.push_text(allocator, "{\"expires\":")?
+    intent.push_u64(allocator, expiry)?
+    intent.push_text(allocator, ",\"operation\":\"enroll-maintainer\",\"origin\":")?
+    let origin_value = policy.field("origin")?
+    append_json(intent, origin_value, allocator)?
+    intent.push_text(allocator, ",\"packages\":")?
+    append_json(intent, packages, allocator)?
+    intent.push_text(allocator, ",\"registry\":")?
+    let registry_value = policy.field("registry")?
+    append_json(intent, registry_value, allocator)?
+    intent.push_text(allocator, ",\"replace\":")?
+    let replace_value = request.field("replace")?
+    append_json(intent, replace_value, allocator)?
+    return intent.push_text(allocator, "}")
+
+
+fn check_replacement(credentials: &Json, replace: &String, packages: &Json) -> Result<(), U64>:
+    if replace.byte_len() == 0:
+        let count = credentials.len()?
+        if count >= 256:
+            return Err(6)
+        return Ok(())
+    let Ok(record): &Json = member_named(credentials, replace) else Err(code):
+        return Err(7)
+    let scope = record.field("packages")?
+    if !same_scope(scope, packages):
+        return Err(8)
+    return Ok(())
+
+fn with_intent(intent: &String, policy: &Json, pin: &String, bindings: &mut String, db: &Sqlite, output: &Console<Write>, random: &Rand, expiry: U64, release: Bool, allocator: &Allocator) -> Result<(), U64>:
+    text_binding(bindings, "policy_pin", pin, allocator)?
+    integer_binding(bindings, "expires", expiry, allocator)?
+    let empty = String.with_capacity(allocator, 1024)?
+    var envelope = move empty
+    let built = challenge_envelope(intent, &mut envelope, random, allocator)
+    let checked = with_envelope(built, &envelope, policy, bindings, db, output, release, allocator)
+    envelope.close()
+    return checked
+
+fn with_envelope(built: Result<(), U64>, envelope: &String, policy: &Json, bindings: &mut String, db: &Sqlite, output: &Console<Write>, release: Bool, allocator: &Allocator) -> Result<(), U64>:
+    built?
+    bind_challenge_token(bindings, "token", envelope, allocator)?
+    let empty = String.with_capacity(allocator, 4096)?
+    var blob = move empty
+    let made = encode_snapshot(envelope, policy, &mut blob, allocator)
+    let checked = commit(made, db, bindings, &blob, output, release, allocator)
+    blob.close()
+    return checked
+
+fn encode_snapshot(envelope: &String, policy: &Json, blob: &mut String, allocator: &Allocator) -> Result<(), U64>:
+    blob.push_text(allocator, "{\"policy\":")?
+    append_json(blob, policy, allocator)?
+    blob.push_text(allocator, ",\"envelope\":")?
+    blob.push_part(allocator, envelope, 0, envelope.byte_len())?
+    return blob.push_text(allocator, "}")
+
+fn commit(made: Result<(), U64>, db: &Sqlite, bindings: &String, blob: &String, output: &Console<Write>, release: Bool, allocator: &Allocator) -> Result<(), U64>:
+    made?
+    let plan = challenge_plan(release, allocator)?
+    let checked = emit_transaction(db, &plan, bindings, blob.as_bytes(), output, 2048, allocator)
+    plan.close()
+    return checked

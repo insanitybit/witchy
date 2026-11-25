@@ -1,0 +1,46 @@
+import fs
+import http_framing
+import https
+import tls
+
+pub type IdentityFileError:
+    IdentityFileReadError(IdentityBodyError)
+    IdentityFileWriteError(FsError)
+
+// Write a validated identity response body to a staged file without allocating.
+// The caller checks status and headers and owns the final commit or abandonment.
+pub fn copy_identity_body(session: &mut SecureSession, file: &File<Write>, framing: IdentityResponseLength, initial: &[U8], limit: IdentityBodyLimit, end: IdentityBodyEnd, plaintext: &mut [U8], wire: &mut [U8]) -> Result<(), IdentityFileError>:
+    let Ok(state): IdentityBody = https.identity_body(framing, initial.len(), limit, end) else Err(reason):
+        return Err(IdentityFileReadError(BodyFramingError(reason)))
+    if let Err(reason) = file.write_bytes(initial):
+        return Err(IdentityFileWriteError(reason))
+    var body = state
+    while true:
+        let Ok(count): U64 = https.read_identity_chunk(&mut body, session, plaintext, wire) else Err(reason):
+            return Err(IdentityFileReadError(reason))
+        if count == 0:
+            break
+        if let Err(reason) = file.write_bytes(plaintext.part(0, count)):
+            return Err(IdentityFileWriteError(reason))
+    return Ok(())
+
+pub type FileBodyError:
+    IncompleteFileBody
+    FileBodyTransportError(SessionError)
+
+// Send exactly length bytes from the current file position with caller-owned
+// storage. The caller checks the length before sending headers and abandons
+// the exchange on error because some body bytes may already have been sent.
+pub fn send_file_body(session: &mut SecureSession, file: &File<Read>, length: U64, buffer: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]) -> Result<(), FileBodyError>:
+    var remaining = length
+    while remaining != 0:
+        let limit = if remaining < buffer.len(): remaining else: buffer.len()
+        if limit == 0:
+            return Err(IncompleteFileBody)
+        let count = file.read_some(buffer.part(0, limit))
+        if count == 0 || count > limit:
+            return Err(IncompleteFileBody)
+        if let Err(reason) = session.write(buffer.part(0, count), plaintext, wire):
+            return Err(FileBodyTransportError(reason))
+        remaining -= count
+    return Ok(())

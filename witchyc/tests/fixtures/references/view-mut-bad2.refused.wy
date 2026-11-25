@@ -1,0 +1,12 @@
+// Refused: through a `&mut` to a view, a field holding a reference (or the whole view) is not
+// changed; a callee could plant a reference that lives shorter than the caller's view.
+type Point:
+    x: U64
+type Seen:
+    point: &Point
+    n: U64
+fn replace(s: &mut Seen, other: Seen):
+    *s = other
+fn main():
+    let p = Point(1)
+    var s = Seen(&p, 1)

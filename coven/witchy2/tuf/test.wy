@@ -1,0 +1,251 @@
+import "@webauthn"
+import time
+import "package.wy"
+import "origin.wy"
+import span
+import "base64url.wy"
+import "canonical.wy"
+import "release_trust.wy"
+import vec
+import "expiry.wy"
+import "metadata.wy"
+import discard
+import json_tree
+import string
+import testing
+
+fn literal(allocator: &Allocator, text: Text, site: U64 = source_site()) -> Result<String, Failure>:
+    let made = testing.set_up(String.new(allocator))?
+    var output = move made
+    if let Err(code) = output.push_text(allocator, text):
+        output.close()
+        return Err(Failure(7, site, code, 0))
+    return Ok(move output)
+
+test fn canonical_signed_bytes_sort_keys_and_preserve_extensions(allocator: &Allocator) -> Result<(), Failure>:
+    let input = literal(allocator, "{\"signatures\":[],\"signed\":{\"version\":1,\"é\":\"\\u000a\\\"\\\\\",\"_type\":\"timestamp\",\"z\":[null,true,false,-0,-123,18446744073709551616,{\"b\":0,\"a\":1}]}}")?
+    let parsed = parse_metadata(&input, allocator, Timestamp)
+    input.close()
+    let document = checked_metadata(move parsed)?
+    let expected = literal(allocator, "{\"_type\":\"timestamp\",\"version\":1,\"z\":[null,true,false,0,-123,18446744073709551616,{\"a\":1,\"b\":0}],\"é\":\"\n\\\"\\\\\"}")
+    match move expected:
+        Ok(text):
+            let checked = testing.eq_bytes(document.signature_message(), text.as_bytes())
+            text.close()
+            document.close()
+            return checked
+        Err(error):
+            document.close()
+            return Err(error)
+
+fn rejected(allocator: &Allocator, text: Text) -> Result<(), Failure>:
+    let input = literal(allocator, text)?
+    let parsed = parse_metadata(&input, allocator, Timestamp)
+    input.close()
+    match move parsed:
+        Err(error):
+            if let InvalidMetadata = error:
+                return testing.ok(true)
+            return testing.ok(false)
+        Ok(document):
+            document.close()
+            return testing.ok(false)
+
+test fn rejects_ambiguous_or_nonintegral_signed_metadata(allocator: &Allocator) -> Result<(), Failure>:
+    rejected(allocator, "{\"signatures\":[],\"signed\":{\"_type\":\"timestamp\",\"version\":1,\"extra\":{\"a\":1,\"\\u0061\":2}}}")?
+    rejected(allocator, "{\"signatures\":[],\"signed\":{\"_type\":\"timestamp\",\"version\":1,\"extra\":1e0}}")?
+    rejected(allocator, "{\"signatures\":[],\"signed\":{\"_type\":\"timestamp\",\"version\":9007199254740992}}")?
+    return rejected(allocator, "{\"signatures\":[],\"signed\":{\"_type\":\"targets\",\"version\":1}}")
+
+fn make_reference(allocator: &Allocator, text: Text) -> Result<MetadataReference, Failure>:
+    let input = literal(allocator, text)?
+    let parsed = json_tree(&input, allocator)
+    input.close()
+    let node = testing.set_up(move parsed)?
+    let reference = parse_metadata_reference(&node, allocator, 100)
+    node.discard()
+    return checked_metadata(reference)
+
+fn same_reference_open(allocator: &Allocator, reference: &MetadataReference, contents: Text) -> Result<Metadata, Failure>:
+    let input = literal(allocator, contents)?
+    let checked = reference.open(Snapshot, &input, allocator)
+    input.close()
+    return checked_metadata(move checked)
+
+test fn metadata_link_checks_wire_length_hash_and_version(allocator: &Allocator) -> Result<(), Failure>:
+    let reference = make_reference(allocator, "{\"version\":3,\"length\":59,\"hashes\":{\"sha384\":\"6cfa014810b804a5e25aefccbb57c96e1b7221f6360278c6aa1b5a807943855de9fc0cbd80f672bb26e7e696d5d32f1f\"}}")?
+    let source: Text = "{\"signed\":{\"version\":3,\"_type\":\"snapshot\"},\"signatures\":[]}"
+    let linked = same_reference_open(allocator, &reference, source)?
+    let found = linked.version()
+    linked.close()
+    testing.eq_u64(checked_metadata(found)?, 3)?
+    refuse_link(allocator, &reference, "", WrongLength)?
+    refuse_link(allocator, &reference, "{\"signed\":{\"version\":4,\"_type\":\"snapshot\"},\"signatures\":[]}", WrongDigest)?
+    let wrong_version = make_reference(allocator, "{\"version\":4,\"length\":59,\"hashes\":{\"sha384\":\"6cfa014810b804a5e25aefccbb57c96e1b7221f6360278c6aa1b5a807943855de9fc0cbd80f672bb26e7e696d5d32f1f\"}}")?
+    return refuse_link(allocator, &wrong_version, source, WrongVersion)
+
+fn refuse_link(allocator: &Allocator, reference: &MetadataReference, text: Text, expected: MetadataError) -> Result<(), Failure>:
+    let input = literal(allocator, text)?
+    let checked = reference.open(Snapshot, &input, allocator)
+    input.close()
+    match move checked:
+        Err(found):
+            match expected:
+                WrongLength:
+                    return testing.ok(is_wrong_length(found))
+                WrongDigest:
+                    return testing.ok(is_wrong_digest(found))
+                WrongVersion:
+                    return testing.ok(is_wrong_version(found))
+                _:
+                    return testing.ok(false)
+        Ok(document):
+            document.close()
+            return testing.ok(false)
+
+fn is_wrong_length(error: MetadataError) -> Bool:
+    if let WrongLength = error:
+        return true
+    return false
+
+fn is_wrong_digest(error: MetadataError) -> Bool:
+    if let WrongDigest = error:
+        return true
+    return false
+
+fn is_wrong_version(error: MetadataError) -> Bool:
+    if let WrongVersion = error:
+        return true
+    return false
+
+fn checked_metadata<T: Any>(result: Result<T, MetadataError>, site: U64 = source_site()) -> Result<T, Failure>:
+    match move result:
+        Ok(value):
+            return Ok(move value)
+        Err(error):
+            return Err(Failure(7, site, 0, 0))
+
+fn verify_date(allocator: &Allocator, date: Text, now_ms: U64, expected: U64) -> Result<(), Failure>:
+    let text = literal(allocator, date)?
+    let result = check_expiry(text.as_bytes(), now_ms)
+    text.close()
+    match result:
+        Ok:
+            return testing.eq_u64(0, expected)
+        Err(InvalidDate):
+            return testing.eq_u64(1, expected)
+        Err(Expired):
+            return testing.eq_u64(2, expected)
+        Err(UnsupportedSpec):
+            return testing.ok(false)
+
+test fn expiry_requires_utc_and_a_valid_gregorian_date(allocator: &Allocator) -> Result<(), Failure>:
+    verify_date(allocator, "1970-01-01T00:00:01Z", 999, 0)?
+    verify_date(allocator, "1970-01-01T00:00:01Z", 1000, 2)?
+    verify_date(allocator, "1969-12-31T23:59:59Z", 0, 2)?
+    verify_date(allocator, "1969-02-29T00:00:00Z", 0, 1)?
+    verify_date(allocator, "2000-02-29T00:00:00Z", 951782399999, 0)?
+    verify_date(allocator, "2000-02-29T00:00:00Z", 951782400000, 2)?
+    verify_date(allocator, "2100-02-29T00:00:00Z", 0, 1)?
+    verify_date(allocator, "2026-04-31T00:00:00Z", 0, 1)?
+    verify_date(allocator, "2026-01-01T24:00:00Z", 0, 1)?
+    verify_date(allocator, "2026-01-01T00:00:60Z", 0, 1)?
+    verify_date(allocator, "2026-01-01T00:00:00+00:00", 0, 1)?
+    let empty = testing.set_up(String.new(allocator))?
+    var formatted = move empty
+    let written = time.append_utc_seconds(&mut formatted, 951782401, allocator)
+    let matches = formatted.span().equals_text("2000-02-29T00:00:01Z")
+    formatted.close()
+    testing.set_up(written)?
+    return testing.ok(matches)
+
+test fn release_canonical_json_escapes_unicode_and_control_bytes(allocator: &Allocator) -> Result<(), Failure>:
+    let input = literal(allocator, "{\"z\":\"\\u007f\\n😀\",\"a\":-0,\"é\":\"\\b\\t\\u0000\"}")?
+    let parsed = parse_release_json(&input, allocator)
+    input.close()
+    let document = testing.set_up(move parsed)?
+    let serialized = release_json(&document, allocator)
+    document.discard()
+    let encoded = testing.set_up(move serialized)?
+    let wanted = literal(allocator, "{\"a\":0,\"z\":\"\\u007f\\n\\ud83d\\ude00\",\"\\u00e9\":\"\\b\\t\\u0000\"}")
+    match move wanted:
+        Ok(expected):
+            let result = testing.eq_bytes(encoded.as_bytes(), expected.as_bytes())
+            expected.close()
+            encoded.close()
+            return result
+        Err(error):
+            encoded.close()
+            return Err(error)
+
+fn check_b64url(allocator: &Allocator, source: Text, expected: &[U8], wanted: Bool) -> Result<(), Failure>:
+    let input = literal(allocator, source)?
+    let result = unpadded_base64url(input.as_bytes(), allocator, 4)
+    input.close()
+    match move result:
+        Ok(bytes):
+            let checked = testing.eq_bytes(bytes.as_slice(), expected)
+            bytes.close()
+            testing.ok(wanted)?
+            return checked
+        Err(code):
+            return testing.ok(!wanted)
+
+test fn release_base64url_requires_canonical_spelling(allocator: &Allocator) -> Result<(), Failure>:
+    let one: [U8; 1] = [255]
+    let two: [U8; 2] = [255, 238]
+    let three: [U8; 3] = [255, 238, 0]
+    check_b64url(allocator, "_w", one.slice(), true)?
+    check_b64url(allocator, "_-4", two.slice(), true)?
+    check_b64url(allocator, "_-4A", three.slice(), true)?
+    check_b64url(allocator, "_x", one.slice(), false)?
+    check_b64url(allocator, "_-5", two.slice(), false)?
+    check_b64url(allocator, "/w", one.slice(), false)?
+    check_b64url(allocator, "_w==", one.slice(), false)?
+    check_b64url(allocator, "_", one.slice(), false)?
+    check_b64url(allocator, "", one.slice(), false)?
+    return check_b64url(allocator, "________", one.slice(), false)
+
+fn check_origin(allocator: &Allocator, source: Text, expected: Text, allowed: Bool) -> Result<(), Failure>:
+    let input = literal(allocator, source)?
+    let result = relying_party(input.span())
+    let checked = match result:
+        Ok(host):
+            testing.ok(allowed && host.equals_text(expected))
+        Err(code):
+            testing.ok(!allowed)
+    input.close()
+    return checked
+
+test fn approval_origin_requires_an_exact_hostname_and_canonical_port(allocator: &Allocator) -> Result<(), Failure>:
+    check_origin(allocator, "https://release.example:8443", "release.example", true)?
+    check_origin(allocator, "http://localhost:8000", "localhost", true)?
+    check_origin(allocator, "https://release.example:443", "", false)?
+    check_origin(allocator, "https://release.example:044", "", false)?
+    check_origin(allocator, "https://release.example@other.example", "", false)?
+    check_origin(allocator, "https://release.example/", "", false)?
+    check_origin(allocator, "https://release..example", "", false)?
+    return check_origin(allocator, "http://localhost.example", "", false)
+
+fn check_bundle(allocator: &Allocator, text: Text, valid: Bool) -> Result<(), Failure>:
+    let input = literal(allocator, text)?
+    let coordinate = literal(allocator, "demo1.0.0")
+    let Ok(expected): String = move coordinate else Err(error):
+        input.close()
+        return Err(error)
+    let span = expected.span()
+    let checked = validate_package(input.as_bytes(), span.part(0, 4), span.part(4, 9), allocator)
+    expected.close()
+    input.close()
+    match checked:
+        Ok:
+            return testing.ok(valid)
+        Err(error):
+            return testing.ok(!valid)
+
+test fn checks_package_file_digests_and_import_closure(allocator: &Allocator) -> Result<(), Failure>:
+    check_bundle(allocator, "witchy-package 1\nname demo\nversion 1.0.0\n\n", true)?
+    check_bundle(allocator, "witchy-package 1\nname demo\nversion 1.0.0\nrequires z 0.1.0\nrequires a 1.0.0\n\n", false)?
+    check_bundle(allocator, "witchy-package 2\nname demo\nversion 1.0.0\nentry main.wy\nfile lib.wy 0 sha384:38b060a751ac96384cd9327eb1b1e36a21fdb71114be07434c0cc7bf63f6e1da274edebfe76f65fbd51ad2f14898b95b\nfile main.wy 16 sha384:47bfeaf2f6fac249fc77c98914a1dac5097127cce528839d5edf9519e7c5dd34b7bff05812ff404ae0e945cf8d58509f\n\nimport \"lib.wy\"\n", true)?
+    check_bundle(allocator, "witchy-package 2\nname demo\nversion 1.0.0\nentry main.wy\nfile lib.wy 0 sha384:38b060a751ac96384cd9327eb1b1e36a21fdb71114be07434c0cc7bf63f6e1da274edebfe76f65fbd51ad2f14898b95b\nfile main.wy 16 sha384:47bfeaf2f6fac249fc77c98914a1dac5097127cce528839d5edf9519e7c5dd34b7bff05812ff404ae0e945cf8d58509f\n\nimport \"lIb.wy\"\n", false)?
+    return check_bundle(allocator, "witchy-package 2\nname demo\nversion 1.0.0\nentry main.wy\nfile lib.wy 0 sha384:38b060a751ac96384cd9327eb1b1e36a21fdb71114be07434c0cc7bf63f6e1da274edebfe76f65fbd51ad2f14898b95b\nfile main.wy 19 sha384:b80860035df425a963c7e0529f4064c9e1c5f385220ed72e256ce51089907ad0fb20e1a65c01b42836ca43735055284e\n\nimport \"../lib.wy\"\n", false)

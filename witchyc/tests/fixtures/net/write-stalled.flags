@@ -1,0 +1,2 @@
+build: --heap-pages=280
+run: --listen=127.0.0.1:47627 --net=127.0.0.1:47627 --net-bytes=64000000 --clock --deadline-ms=6000 --memory-pages=400 --unmetered

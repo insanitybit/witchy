@@ -1,0 +1,11 @@
+// Two increments a pass: the condition bounds only the first, so the second overflows and the
+// run stops (guarded.rs does not take this counter).
+import console
+
+fn main(console: Console<Write>):
+    let top: U64 = 18446744073709551615
+    var i: U64 = top - 1
+    while i < top:
+        i += 1
+        i += 1
+    console.print_int(i)

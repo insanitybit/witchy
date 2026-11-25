@@ -1,0 +1,1 @@
+not proved: ensures two.a.right == old(two.a.right)

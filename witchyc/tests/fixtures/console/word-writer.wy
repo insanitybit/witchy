@@ -1,0 +1,16 @@
+// A WordWriter sends its bytes eight to a host call: runs of 0 to 17 letters, each flushed and
+// followed by `|`, and 1,000 bytes put one at a time across many words.
+import console
+
+fn main(console: Console<Write>):
+    var out = WordWriter.new()
+    for n in 0..18:
+        for k in 0..n:
+            out.put(&console, U8.truncate(97 + k))
+        out.flush(&console)
+        console.write("|")
+    console.line("")
+    for k in 0..1000:
+        out.put(&console, U8.truncate(48 + k % 10))
+    out.put(&console, '\n')
+    out.flush(&console)

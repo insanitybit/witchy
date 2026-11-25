@@ -1,0 +1,10 @@
+// Refused: a record may not hold a reference to a view (loans stay two levels deep).
+type Point:
+    x: U64
+type Seen:
+    point: &Point
+    n: U64
+fn main():
+    let p = Point(1)
+    let s = Seen(&p, 1)
+    let pair = .{held: &s, n: 2}

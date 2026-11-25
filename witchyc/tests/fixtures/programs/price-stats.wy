@@ -1,0 +1,51 @@
+// Price statistics from CSV: a header, then `name,price` rows; prices read with `parse_f64`,
+// totals written with `${x}` (the shortest text that reads back). A row with no name or a price
+// that is no number is reported and skipped.
+import console
+import string
+import span
+import float
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(e):
+        return
+    var line = move made
+    var number: U64 = 0
+    var count: U64 = 0
+    var total = 0.0
+    var least = 0.0
+    var most = 0.0
+    while true:
+        line.clear()
+        match input.read_line(&allocator, &mut line):
+            .Line:
+                number += 1
+                if number > 1:
+                    match line.span().split(','):
+                        Ok(halves):
+                            let name = halves.head.trim()
+                            match parse_f64(halves.tail.trim().as_bytes()):
+                                Ok(price):
+                                    if name.len() == 0:
+                                        console.print("line ${number}: no name")
+                                    else:
+                                        if count == 0 || price < least:
+                                            least = price
+                                        if count == 0 || price > most:
+                                            most = price
+                                        total = total + price
+                                        count += 1
+                                Err(code):
+                                    console.print("line ${number}: not a number")
+                        Err(whole):
+                            console.print("line ${number}: no comma")
+            .End:
+                break
+            .NotText:
+                break
+            .NoRoom:
+                break
+    console.print("${count} prices, total ${total}, least ${least}, most ${most}")
+    if count > 0:
+        console.print("mean ${total / F64.from_u64(count)}")
+    line.close()

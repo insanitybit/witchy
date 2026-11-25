@@ -1,0 +1,6 @@
+// Refused, naming the type that has no such method: it said "no method of this name on the value's
+// type" without saying the type.
+import console
+
+fn main(console: Console<Write>):
+    console.frobnicate("x")

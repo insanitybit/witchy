@@ -1,0 +1,5 @@
+// A literal too big for its type says the type's largest value.
+import console
+
+fn main(console: Console<Write>):
+    let x: U8 = 300

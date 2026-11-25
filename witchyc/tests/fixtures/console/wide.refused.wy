@@ -1,0 +1,4 @@
+// A byte is a U8; a wider number is not written as one.
+fn main(console: Console<Write>):
+    let big: U64 = 300
+    console.print_byte(big)

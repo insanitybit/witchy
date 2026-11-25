@@ -1,0 +1,22 @@
+import "review/challenge_issue.wy"
+import console
+import rand
+import time
+import text
+
+fn main(db: Sqlite, input: Console<Read>, output: Console<Write>, random: Rand, clock: Clock, allocator: Allocator):
+    if let Err(reason) = issue(&input, &db, &output, &random, clock.now_ms() / 1000, false, &allocator):
+        if reason == 3:
+            output.line("no enrolled maintainer for this package")
+        else if reason == 4:
+            output.line("maintainer enrollment requires HTTPS")
+        else if reason == 5:
+            output.line("maintainer policy revision is exhausted")
+        else if reason == 6:
+            output.line("maintainer credential table is full")
+        else if reason == 7:
+            output.line("replacement credential is absent")
+        else if reason == 8:
+            output.line("replacement must keep the existing package scope")
+        else:
+            output.line("invalid maintainer challenge request")

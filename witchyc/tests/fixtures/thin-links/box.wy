@@ -1,0 +1,19 @@
+fn main(out: Console<Write>, a: Allocator):
+    let n: U64 = 27
+    let result: Result<Boxed<U64>, U64> = memory.try_box(&a, n)
+    match move result:
+        Err(original):
+            out.print_int(original)
+        Ok(owner):
+            var x = move owner
+            out.print_int(U32.to_u64(memory.box_address(&x)))
+            match memory.box_mut(&mut x):
+                Ok(ref):
+                    *ref = 43
+                Err:
+                    out.print_int(1)
+            match memory.unbox(move x):
+                Ok(value):
+                    out.print_int(value)
+                Err:
+                    out.print_int(2)

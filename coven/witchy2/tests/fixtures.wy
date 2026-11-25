@@ -1,0 +1,15 @@
+pub type DecoderLimit:
+    bytes: U64
+
+type DecoderFixture:
+    limit: DecoderLimit
+
+fn fixed_limits() -> DecoderFixture:
+    return DecoderFixture(DecoderLimit(1048576))
+
+type RoleDirectories:
+    publisher: &Dir<Read>
+    reviewer: &Dir<Read>
+
+fn role_directories(left: &Dir<Read>, right: &Dir<Read>) -> RoleDirectories:
+    return RoleDirectories(left, right)

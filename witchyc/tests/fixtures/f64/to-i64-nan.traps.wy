@@ -1,0 +1,7 @@
+// F64.to_i64 truncates toward zero and traps on NaN and on a value outside I64.
+import console
+
+fn main(console: Console<Write>):
+    let zero = 0.0
+    let nan = zero / zero
+    console.print_int(I64.bits(F64.to_i64(nan)))

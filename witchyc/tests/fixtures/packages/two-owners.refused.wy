@@ -1,0 +1,7 @@
+// A file belongs to one owner: the program may not also import a package's file by path, which
+// would let one policy line or the other govern it depending on import order.
+import "greeting/words.wy"
+import "@hello-world"
+
+fn main(console: Console<Write>):
+    console.print_int(greeting())

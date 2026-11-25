@@ -1,0 +1,89 @@
+// `let name = match ...` and `let name = if ...` may give a reference or a record that
+// holds one. The name keeps what every path borrowed, until its last use.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-span.wy"
+import "../../../library/wasm-string.wy"
+
+fn pick(first: Bool) -> U64:
+    var a: U64 = 1
+    var b: U64 = 2
+    let r = if first:
+        &a
+    else:
+        &b
+    let seen = *r
+    a = 10
+    b = 20
+    return seen + a + b
+
+fn bump(first: Bool) -> U64:
+    var a: U64 = 1
+    var b: U64 = 2
+    let r = if first:
+        &mut a
+    else:
+        &mut b
+    *r += 5
+    return a * 10 + b
+
+fn head_then_clear(text: &mut String) -> U64:
+    let whole = text.span()
+    let first = match whole.split(44):
+        Ok(halves):
+            halves.head
+        Err(all):
+            all
+    let count = first.len()
+    text.clear()
+    return count
+
+fn head(text: &String) -> Span:
+    let whole = text.span()
+    let first = match whole.split(44):
+        Ok(halves):
+            halves.head
+        Err(all):
+            all
+    return first
+
+fn fields(text: &String) -> U64:
+    var rest = text.span()
+    var count: U64 = 0
+    var more = true
+    while more:
+        let field = match rest.split(44):
+            Ok(halves):
+                rest = halves.tail
+                halves.head
+            Err(all):
+                more = false
+                all
+        count += field.len() + 100
+    return count
+
+fn head_cut(text: &String) -> U64:
+    let whole = text.span()
+    let first = if whole.len() > 2:
+        let cut = whole.part(0, 2)
+        cut
+    else:
+        whole
+    return first.len()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    console.print_int(pick(true))
+    console.print_int(pick(false))
+    console.print_int(bump(true))
+    console.print_int(bump(false))
+    var text = match String.new(&allocator):
+        Ok(made):
+            move made
+        Err(code):
+            return
+    if let Ok(_) = text.push_text(&allocator, "ab,cde,f"):
+        console.print_int(head(&text).len())
+        console.print_int(fields(&text))
+        console.print_int(head_cut(&text))
+        console.print_int(head_then_clear(&mut text))
+    console.print_int(text.byte_len())
+    text.close()

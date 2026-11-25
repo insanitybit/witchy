@@ -1,0 +1,7 @@
+// `*=` past the greatest I64 traps, as `*` does.
+import "../../../library/wasm-int.wy"
+
+fn main(console: Console<Write>):
+    var x: I64 = 4611686018427387904
+    x *= 2
+    console.print_i64(x)

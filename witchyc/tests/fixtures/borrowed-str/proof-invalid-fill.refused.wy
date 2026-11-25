@@ -1,0 +1,11 @@
+fn fill_bad(target: &mut Buffer<U8>):
+    requires 2 <= memory.capacity(target)
+    requires memory.empty_range(target, 0, 2)
+    ensures memory.utf8(target, 0, 2)
+    proof:
+        auto
+    let invalid: U8 = 255
+    memory.fill_unchecked(target, 2, invalid)
+
+fn main():
+    return

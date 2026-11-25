@@ -1,0 +1,22 @@
+// A `"{"` inside a `${...}` does not leave the scanner inside it: the literal's text after it
+// is kept as written, and only the field inside `${...}` is substituted.
+import console
+
+fn one(t: Text) -> U64:
+    return 1
+
+trait Shown:
+    fn show(self: &Self, console: &Console<Write>)
+
+derive Show:
+    impl Shown for Self:
+        fn show(self: &Self, console: &Console<Write>):
+            static for f in fields:
+                console.print("${one("{")} f=${(*self).f} Self")
+
+type T derive(Show):
+    id: U64
+
+fn main(console: Console<Write>):
+    let v = T(id: 5)
+    v.show(&console)

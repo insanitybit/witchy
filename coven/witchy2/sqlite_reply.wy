@@ -1,0 +1,28 @@
+import console
+import "@sqlite"
+import string
+import text
+import vec
+
+pub fn emit_transaction(db: &Sqlite, plan: &String, bindings: &String, blob: &[U8], output: &Console<Write>, capacity: U64, allocator: &Allocator) -> Result<(), U64>:
+    let empty: Vec<U8> = Vec.filled(allocator, capacity, 0)?
+    var reply = move empty
+    let wrote = db.transact(plan.as_bytes(), bindings.as_bytes(), blob, reply.as_mut_slice())
+    let checked = emit(wrote, reply.as_slice(), output, allocator)
+    reply.close()
+    return checked
+
+fn emit(wrote: Result<U64, U64>, reply: &[U8], output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let Ok(size): U64 = wrote else Err(code):
+        return Err(10)
+    if size <= 1 || size > reply.len() || (reply[0] != 0 && reply[0] != 1):
+        return Err(10)
+    let text = String.from_utf8_bytes(allocator, reply.part(1, size))?
+    if reply[0] == 0:
+        output.line("committed")
+    else:
+        output.line("refused")
+    output.write_string(&text)
+    output.print_byte(10)
+    text.close()
+    return Ok(())

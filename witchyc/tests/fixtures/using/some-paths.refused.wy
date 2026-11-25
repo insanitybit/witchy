@@ -1,0 +1,18 @@
+// The owner is handed on when `flag` holds and kept otherwise: at the exit it
+// would be discarded on one path and not the other, so the program is refused.
+import "../../../library/wasm-text.wy"
+import "../../../library/wasm-string.wy"
+
+fn keep(text: String) -> U64:
+    let count = text.byte_len()
+    text.close()
+    return count
+
+fn work(allocator: &Allocator, flag: Bool) -> Result<U64, U64>:
+    using text = String.new(allocator)?:
+        if flag:
+            let count = keep(move text)
+        return Ok(0)
+
+fn main(allocator: Allocator):
+    let x = work(&allocator, true)

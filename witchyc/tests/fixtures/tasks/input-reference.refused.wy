@@ -1,0 +1,11 @@
+// Refused: a task's input moves into the task, so it holds no references.
+import tasks
+
+fn look(at: &U64) suspends:
+    pause(*at)
+
+fn main(allocator: Allocator):
+    let n: U64 = 3
+    let Ok(task): Task = Task.spawn(&allocator, 1024, look, &n) else Err(given):
+        return
+    task.close()

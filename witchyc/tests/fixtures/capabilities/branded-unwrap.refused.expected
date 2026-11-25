@@ -1,0 +1,1 @@
+a capability inside a sealed type is reached only in the type's own file

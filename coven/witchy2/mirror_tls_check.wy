@@ -1,0 +1,68 @@
+// Verify the installed identity before the listener can report readiness.
+import "mirror/identity.wy"
+import "tls13/identity_match.wy"
+import console
+import crypto
+import fs
+import span
+import string
+import time
+import tls_certificates
+import tls_trust_pem
+import url
+import vec
+
+fn main(root: Dir<Read>, ca: File<Read>, signer: TlsSigner, clock: Clock, output: Console<Write>, allocator: Allocator):
+    var digest: [U8; 48] = [0; 48]
+    let checked = check(&root, move ca, &signer, clock.now_ms() / 1000, &allocator, digest.slice_mut())
+    root.close()
+    if let Ok(done) = checked:
+        output.line("verified")
+        output.write_bytes(digest.slice())
+    else:
+        output.line("refused")
+
+fn check(root: &Dir<Read>, ca: File<Read>, signer: &TlsSigner, now: U64, allocator: &Allocator, digest: &mut [U8]) -> Result<(), U64>:
+    let pem = read_trust_pem(move ca, allocator)?
+    if let Err(reason) = sha384(pem.as_bytes(), digest):
+        pem.close()
+        return Err(1)
+    let parsed = trust_bundle(pem.span(), allocator)
+    pem.close()
+    let Ok(roots): Vec<U8> = move parsed else Err(code):
+        return Err(code)
+    let checked = check_installed(root, roots.as_slice(), signer, now, allocator)
+    roots.close()
+    return checked
+
+fn check_installed(root: &Dir<Read>, roots: &[U8], signer: &TlsSigner, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let empty = Vec.filled(allocator, 261, U8.truncate(0))?
+    var name = move empty
+    let checked = check_authority(root, roots, signer, name.as_mut_slice(), now, allocator)
+    name.close()
+    return checked
+
+fn check_authority(root: &Dir<Read>, roots: &[U8], signer: &TlsSigner, name: &mut [U8], now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let Ok(length): U64 = read_file(root, "tls/authority", name) else Err(reason):
+        return Err(1)
+    let authority = authority_line(Span.of(name.part(0, length)))
+    let Ok(endpoint): HttpAuthority = url.parse_authority(authority) else Err(reason):
+        return Err(1)
+    if endpoint.explicit_port() == 0:
+        return Err(1)
+    let empty = Vec.filled(allocator, 65536, U8.truncate(0))?
+    var chain = move empty
+    let checked = check_chain(root, chain.as_mut_slice(), roots, signer, endpoint.hostname(), now, allocator)
+    chain.close()
+    return checked
+
+fn check_chain(root: &Dir<Read>, buffer: &mut [U8], roots: &[U8], signer: &TlsSigner, hostname: Span, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let Ok(length): U64 = read_file(root, "tls/chain", buffer) else Err(reason):
+        return Err(1)
+    let bytes = buffer.part(0, length)
+    let Ok(chain): CertificateChain = from_der_list(allocator, bytes) else Err(reason):
+        return Err(1)
+    chain.close()
+    if !matches_key(signer, hostname, roots, bytes, now):
+        return Err(1)
+    return Ok(())

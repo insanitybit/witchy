@@ -1,0 +1,9 @@
+// The bound says what `Q` compares with: a call through it with another type is refused.
+trait Comparable<K>:
+    fn compare(self: &Self, key: &K) -> Bool
+
+fn wrong<Q: Comparable<K>, K, J>(probe: &Q, other: &J) -> Bool:
+    return probe.compare(other)
+
+fn main():
+    return

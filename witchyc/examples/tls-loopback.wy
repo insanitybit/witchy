@@ -1,0 +1,60 @@
+import console
+import fs
+import https
+import https_client
+import span
+import tls
+import tls_trust_pem
+import url
+import vec
+
+fn main(console: Console<Write>, net: Net, random: Rand, clock: Clock, roots_dir: Dir<Read>, allocator: Allocator):
+    if let Err(reason) = fetch(&console, &net, &random, &clock, &roots_dir, &allocator):
+        console.line("HTTPS exchange failed")
+
+fn fetch(console: &Console<Write>, net: &Net, random: &Rand, clock: &Clock, roots_dir: &Dir<Read>, allocator: &Allocator) -> Result<(), U64>:
+    let Ok(file): File<Read> = roots_dir.open("root.pem") else Err(reason):
+        return Err(1)
+    let anchors = tls_trust_pem.read_trust_bundle(move file, allocator)?
+    let result = with_anchors(console, net, random, clock, allocator, anchors.as_slice())
+    anchors.close()
+    return result
+
+fn with_anchors(console: &Console<Write>, net: &Net, random: &Rand, clock: &Clock, allocator: &Allocator, anchors: &[U8]) -> Result<(), U64>:
+    let buffer: Vec<U8> = Vec.filled(allocator, 72704, 0)?
+    var transcript = move buffer
+    let Ok(clear): Vec<U8> = Vec.filled(allocator, 16385, 0) else Err(reason):
+        transcript.close()
+        return Err(reason)
+    var plaintext = move clear
+    let Ok(ciphertext): Vec<U8> = Vec.filled(allocator, 16406, 0) else Err(reason):
+        transcript.close()
+        plaintext.close()
+        return Err(reason)
+    var wire = move ciphertext
+    let result = connect_and_exchange(console, net, random, clock, allocator, anchors, transcript.as_mut_slice(), plaintext.as_mut_slice(), wire.as_mut_slice())
+    transcript.close()
+    plaintext.close()
+    wire.close()
+    return result
+
+fn connect_and_exchange(console: &Console<Write>, net: &Net, random: &Rand, clock: &Clock, allocator: &Allocator, anchors: &[U8], transcript: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]) -> Result<(), U64>:
+    let address: &str = "https://localhost:19473"
+    let Ok(origin): HttpOrigin = url.parse_origin(Span.of(address.as_bytes())) else Err(reason):
+        return Err(2)
+    let connected = https_client.connect(net, origin, anchors, random, clock, allocator, transcript, plaintext, wire)
+    let Ok(accepted): SecureSession = move connected else Err(reason):
+        return Err(3)
+    return exchange(console, move accepted, allocator, transcript, plaintext, wire)
+
+fn exchange(console: &Console<Write>, session: SecureSession, allocator: &Allocator, head: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]) -> Result<(), U64>:
+    var body: [U8; 256] = [0; 256]
+    var stream = move session
+    let result = https.get(&mut stream, allocator, "localhost:19473", "/", head, body.slice_mut(), plaintext, wire)
+    stream.close()
+    let Ok(reply): Reply = result else Err(reason):
+        return Err(4)
+    console.print_int(reply.status)
+    for byte in body.slice().part(0, reply.body_len):
+        console.print_byte(*byte)
+    return Ok(())

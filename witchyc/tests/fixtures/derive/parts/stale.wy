@@ -1,0 +1,24 @@
+pub trait Poke:
+    fn poke(self: &mut Self)
+    fn k() -> U64
+
+pub derive Idx:
+    impl Poke for Self:
+        fn poke(self: &mut Self):
+            (*self).s.xs[Self.k()] = 99
+        fn k() -> U64:
+            return 0
+
+pub derive Lit:
+    impl Poke for Self:
+        fn poke(self: &mut Self):
+            (*self).s.xs[0] = 99
+        fn k() -> U64:
+            return 0
+
+pub derive Val:
+    impl Poke for Self:
+        fn poke(self: &mut Self):
+            (*self).s.n = Self.k()
+        fn k() -> U64:
+            return 99

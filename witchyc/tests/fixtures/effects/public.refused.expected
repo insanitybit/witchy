@@ -1,0 +1,1 @@
+`fetch` is public and may pause here (`wait_for_data` may): its signature says so, `-> T suspends`

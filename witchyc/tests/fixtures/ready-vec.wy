@@ -1,0 +1,171 @@
+type Vec<T>:
+    data: Buffer<T>
+    length: U64
+    capacity: U64
+
+type VecPushError<T>:
+    vector: Vec<T>
+    item: T
+
+type Pair:
+    byte: U8
+    word: U64
+fn vec_push_spare<T>(input: Vec<T>, item: T) -> Result<Vec<T>, VecPushError<T>>:
+    requires memory.prefix(input.data, input.length, input.capacity)
+    ensures match result:
+        Ok(output):
+            memory.same_allocation(output.data, old(input.data))
+            output.length == old(input.length) + 1
+            output.capacity == old(input.capacity)
+            memory.prefix(output.data, output.length, output.capacity)
+            memory.cell(output.data, old(input.length), item)
+            memory.unchanged_except(output.data, old(input.data), old(input.length))
+        Err(back):
+            memory.prefix(back.vector.data, back.vector.length, back.vector.capacity)
+            back.vector.length == old(input.length)
+            back.vector.capacity == old(input.capacity)
+            old(input.length) == old(input.capacity)
+            back.item == item
+            memory.unchanged(back.vector.data, old(input.data))
+    proof:
+        auto
+    var vector = move input
+    let index = vector.length
+    let claimed_capacity = vector.capacity
+    let actual_capacity = memory.capacity(&vector.data)
+    if claimed_capacity != actual_capacity || index > actual_capacity:
+        return Err(VecPushError(move vector, item))
+    if index < actual_capacity:
+        match memory.init(&mut vector.data, index, item):
+            Ok:
+                vector.length = index + 1
+                return Ok(move vector)
+            Err(initialization_error):
+                return Err(VecPushError(move vector, item))
+    return Err(VecPushError(move vector, item))
+fn close<T>(input: Buffer<T>):
+    var buffer = move input
+    let capacity = memory.capacity(&buffer)
+    var index: U64 = 0
+    while index < capacity:
+        let _ = memory.take(&mut buffer, index)
+        index += 1
+    match memory.try_release(move buffer):
+        Ok:
+            return
+        Err(back):
+            close(move back)
+fn populate<T>(input: Buffer<T>, index: U64, item: T) -> Buffer<T>:
+    var buffer = move input
+    let _ = memory.init(&mut buffer, index, item)
+    return move buffer
+fn seed_byte(input: Buffer<U8>) -> Buffer<U8>:
+    return populate(move input, 0, 7)
+fn seed_word(input: Buffer<U64>) -> Buffer<U64>:
+    return populate(move input, 0, 18446744073709551615)
+fn seed_bool(input: Buffer<Bool>) -> Buffer<Bool>:
+    return populate(move input, 0, true)
+fn seed_pair(input: Buffer<Pair>) -> Buffer<Pair>:
+    return populate(move input, 0, Pair(3, 11))
+fn exercise_twice<T>(console: &Console<Write>, allocator: &Allocator, first: T, second: T, requested: U64):
+    let allocation: Result<Buffer<T>, U64> = memory.try_alloc(allocator, requested)
+    match move allocation:
+        Ok(buffer):
+            let empty: Vec<T> = Vec(move buffer, 0, requested)
+            match vec_push_spare(move empty, first):
+                Ok(once):
+                    var middle = move once
+                    match vec_push_spare(move middle, second):
+                        Ok(output):
+                            console.print_int(0)
+                            console.print_int(0)
+                            console.print_int(output.length)
+                            console.print_int(output.capacity)
+                            match memory.read(&output.data, 0):
+                                Ok(stored):
+                                    console.print_int(1)
+                                Err(read_error):
+                                    console.print_int(0)
+                            match memory.read(&output.data, 1):
+                                Ok(stored):
+                                    console.print_int(1)
+                                Err(read_error):
+                                    console.print_int(0)
+                            let data = move output.data
+                            close(move data)
+                        Err(failure):
+                            let back = move failure.vector
+                            console.print_int(0)
+                            console.print_int(1)
+                            console.print_int(back.length)
+                            console.print_int(back.capacity)
+                            match memory.read(&back.data, 0):
+                                Ok(stored):
+                                    console.print_int(1)
+                                Err(read_error):
+                                    console.print_int(0)
+                            match memory.read(&back.data, 1):
+                                Ok(stored):
+                                    console.print_int(1)
+                                Err(read_error):
+                                    console.print_int(0)
+                            let data = move back.data
+                            close(move data)
+                Err(failure):
+                    var retry = move failure.vector
+                    match vec_push_spare(move retry, second):
+                        Ok(retried):
+                            console.print_int(1)
+                            console.print_int(0)
+                            console.print_int(retried.length)
+                            console.print_int(retried.capacity)
+                            match memory.read(&retried.data, 0):
+                                Ok(stored):
+                                    console.print_int(1)
+                                Err(read_error):
+                                    console.print_int(0)
+                            match memory.read(&retried.data, 1):
+                                Ok(stored):
+                                    console.print_int(1)
+                                Err(read_error):
+                                    console.print_int(0)
+                            let data = move retried.data
+                            close(move data)
+                        Err(rejected):
+                            let back = move rejected.vector
+                            console.print_int(1)
+                            console.print_int(1)
+                            console.print_int(back.length)
+                            console.print_int(back.capacity)
+                            match memory.read(&back.data, 0):
+                                Ok(stored):
+                                    console.print_int(1)
+                                Err(read_error):
+                                    console.print_int(0)
+                            match memory.read(&back.data, 1):
+                                Ok(stored):
+                                    console.print_int(1)
+                                Err(read_error):
+                                    console.print_int(0)
+                            let data = move back.data
+                            close(move data)
+        Err(allocation_error):
+            console.print_int(999)
+            console.print_int(allocation_error)
+fn main(console: Console<Write>, allocator: Allocator):
+    let byte_first: U8 = 7
+    let byte_second: U8 = 9
+    let word_first: U64 = 18446744073709551615
+    let word_second: U64 = 4294967296
+    exercise_twice(&console, &allocator, byte_first, byte_second, 0)
+    exercise_twice(&console, &allocator, byte_first, byte_second, 1)
+    exercise_twice(&console, &allocator, byte_first, byte_second, 2)
+    exercise_twice(&console, &allocator, word_first, word_second, 0)
+    exercise_twice(&console, &allocator, word_first, word_second, 1)
+    exercise_twice(&console, &allocator, word_first, word_second, 2)
+    exercise_twice(&console, &allocator, true, false, 0)
+    exercise_twice(&console, &allocator, true, false, 1)
+    exercise_twice(&console, &allocator, true, false, 2)
+    exercise_twice(&console, &allocator, Pair(3, 11), Pair(7, 29), 0)
+    exercise_twice(&console, &allocator, Pair(3, 11), Pair(7, 29), 1)
+    exercise_twice(&console, &allocator, Pair(3, 11), Pair(7, 29), 2)

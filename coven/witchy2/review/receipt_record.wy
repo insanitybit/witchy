@@ -1,0 +1,79 @@
+import "../tuf/canonical.wy"
+import "../tuf/package.wy"
+import "../tuf/release_trust.wy"
+import console
+import discard
+import json_tree
+import span
+import string
+import text
+
+pub fn print_receipt(size: Result<U64, U64>, bytes: &[U8], digest: &String, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let length = size?
+    if length <= 1 || length > bytes.len():
+        return Err(1)
+    let record = bytes.part(1, length)
+    if bytes[0] == 1:
+        let reason = String.from_utf8_bytes(allocator, record)?
+        write_reply(output, "refused", &reason)
+        reason.close()
+        return Ok(())
+    if bytes[0] != 0:
+        return Err(1)
+    let checked = checked_receipt(Span.of(record), digest, allocator)
+    let Ok(receipt): String = move checked else Err(code):
+        output.line("refused")
+        if code == 2:
+            output.line("staged bytes do not match their digest")
+        else:
+            output.line("approval does not match staged coordinates")
+        return Ok(())
+    write_reply(output, "committed", &receipt)
+    receipt.close()
+    return Ok(())
+
+fn write_reply(output: &Console<Write>, status: Text, reply: &String):
+    output.line(status)
+    output.write_string(reply)
+    output.print_byte(10)
+
+fn checked_receipt(record: Span, digest: &String, allocator: &Allocator) -> Result<String, U64>:
+    let Ok(name): Halves = record.split(0) else Err(rest):
+        return Err(1)
+    let Ok(version): Halves = name.tail.split(0) else Err(rest):
+        return Err(1)
+    let Ok(parts): Halves = version.tail.split(0) else Err(rest):
+        return Err(1)
+    if parts.head.len() > 262144 || parts.tail.len() > 1048576:
+        return Err(1)
+    let actual = digest_text(parts.tail.as_bytes(), allocator)?
+    let matches = actual.eq(digest)
+    actual.close()
+    if !matches:
+        return Err(2)
+    if let Err(error) = validate_package(parts.tail.as_bytes(), name.head, version.head, allocator):
+        return Err(1)
+    let raw = String.from_utf8_bytes(allocator, parts.head.as_bytes())?
+    let parsed = parse_release_json(&raw, allocator)
+    raw.close()
+    let Ok(receipt): Json = move parsed else Err(code):
+        return Err(1)
+    let checked = write_checked(&receipt, digest, name.head, version.head, allocator)
+    receipt.discard()
+    return move checked
+
+fn write_checked(receipt: &Json, digest: &String, name: Span, version: Span, allocator: &Allocator) -> Result<String, U64>:
+    let format = string_field(receipt, "format")?
+    if !count_fields(receipt, 4) || !format.equals_text("coven-approval-1"):
+        return Err(1)
+    declared_integer(receipt, "approved_at")?
+    receipt.field("assertion")?
+    let envelope = receipt.field("envelope")?
+    let intent = envelope.field("intent")?
+    let target = string_field(intent, "digest")?
+    let package = string_field(intent, "name")?
+    let release = string_field(intent, "version")?
+    let operation = string_field(intent, "operation")?
+    if !operation.equals_text("release") || !target.eq(digest) || !package.span().same(name) || !release.span().same(version):
+        return Err(1)
+    return release_json(receipt, allocator)

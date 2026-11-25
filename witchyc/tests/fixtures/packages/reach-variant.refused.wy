@@ -1,0 +1,10 @@
+// Refused: a variant of a type of alpha's inner file, built by its name.
+import "@alpha"
+
+fn main():
+    let m = Quick
+    match m:
+        Quick:
+            return
+        Slow(n):
+            return

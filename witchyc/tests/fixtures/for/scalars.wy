@@ -1,0 +1,40 @@
+// `for scalar in &text:` walks a String's scalars. String has no `at`: its scalars are
+// decoded, not stored, so the loop asks `next(&mut cursor)`. The position is the byte
+// where each scalar starts.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-text.wy"
+import "../../../library/wasm-string.wy"
+
+// A countdown is walked the same way: any type with `next` can be.
+type Countdown:
+    from: U64
+
+impl Countdown:
+    fn next(self: &Countdown, cursor: &mut U64) -> Result<U64, U64>:
+        if *cursor >= self.from:
+            return Err(0)
+        *cursor += 1
+        return Ok(self.from - *cursor)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var text = match String.new(&allocator):
+        Ok(made):
+            move made
+        Err(reason):
+            return
+    let _ = text.push_text(&allocator, "héllo 世界")
+    var count: U64 = 0
+    for scalar in &text:
+        count += 1
+        if scalar == ' ':
+            continue
+        if scalar == 30028:
+            break
+        console.print_int(scalar)
+    console.print_int(count)
+    for position, scalar in &text:
+        if scalar > 127:
+            console.print_int(position)
+    text.close()
+    for left in Countdown(3):
+        console.print_int(left)

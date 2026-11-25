@@ -1,0 +1,184 @@
+import "coordinate.wy"
+import "package_paths.wy"
+import crypto
+import encoding
+import span
+import vec
+
+pub type PackageError:
+    InvalidRecord
+    InvalidFiles
+    InvalidImports
+    PackageResourceFailure
+
+pub type PackageFile:
+    name_at: U64
+    name_len: U64
+    content_at: U64
+    content_len: U64
+
+pub type PackageHeader:
+    name: Span
+    version: Span
+    requirements: Span
+    after_requires: Span
+    multi: Bool
+
+pub fn package_header(payload: Span) -> Result<PackageHeader, PackageError>:
+    if payload.len() > 1048576:
+        return Err(InvalidRecord)
+    let Ok(format): Halves = payload.split(10) else Err(rest):
+        return Err(InvalidRecord)
+    let multi = format.head.equals_text("witchy-package 2")
+    if !multi && !format.head.equals_text("witchy-package 1"):
+        return Err(InvalidRecord)
+    let Ok(declared): Halves = format.tail.split(10) else Err(rest):
+        return Err(InvalidRecord)
+    let Ok(exact): Halves = declared.tail.split(10) else Err(rest):
+        return Err(InvalidRecord)
+    if !declared.head.starts_with_text("name ") || !exact.head.starts_with_text("version "):
+        return Err(InvalidRecord)
+    let name = declared.head.part(5, declared.head.len())
+    let version = exact.head.part(8, exact.head.len())
+    if !package_name(name) || !release_version(version):
+        return Err(InvalidRecord)
+    let tail = skip_requirements(exact.tail, name)?
+    let requirements = exact.tail.part(0, exact.tail.len() - tail.len())
+    return Ok(PackageHeader(name, version, requirements, tail, multi))
+
+fn skip_requirements(lines: Span, package: Span) -> Result<Span, PackageError>:
+    var tail = lines
+    var previous = lines.part(0, 0)
+    while tail.starts_with_text("requires "):
+        let Ok(row): Halves = tail.split(10) else Err(rest):
+            return Err(InvalidRecord)
+        let values = row.head.part(9, row.head.len())
+        let Ok(required): Halves = values.split(32) else Err(rest):
+            return Err(InvalidRecord)
+        let name = required.head
+        if !package_name(name) || name.same(package) || !release_version(required.tail):
+            return Err(InvalidRecord)
+        if !precedes_bytes(previous, name):
+            return Err(InvalidRecord)
+        previous = name
+        tail = row.tail
+    return Ok(tail)
+
+pub fn declares_dependency(requirements: Span, name: Span) -> Bool:
+    if !package_name(name):
+        return false
+    var tail = requirements
+    while !tail.is_empty():
+        let Ok(row): Halves = tail.split(10) else Err(rest):
+            return false
+        let fields = row.head.part(9, row.head.len())
+        let Ok(required): Halves = fields.split(32) else Err(rest):
+            return false
+        if required.head.same(name):
+            return true
+        if precedes_bytes(name, required.head):
+            return false
+        tail = row.tail
+    return false
+
+pub fn file_name(payload: Span, file: &PackageFile) -> Span:
+    return payload.part((*file).name_at, (*file).name_at + (*file).name_len)
+
+pub fn file_content(payload: Span, file: &PackageFile) -> Span:
+    return payload.part((*file).content_at, (*file).content_at + (*file).content_len)
+
+pub fn package_files(payload: Span, record: Span, files: &mut Vec<PackageFile>, allocator: &Allocator) -> Result<U64, PackageError>:
+    let Ok(entry): Halves = record.split(10) else Err(rest):
+        return Err(InvalidRecord)
+    if !entry.head.starts_with_text("entry "):
+        return Err(InvalidRecord)
+    let path = entry.head.part(6, entry.head.len())
+    if !source_path(path) || path.contains_text("/"):
+        return Err(InvalidRecord)
+    let Ok(separator): U64 = record.find_text("\n\n", 0) else Err(code):
+        return Err(InvalidRecord)
+    let start = payload.len() - record.len() + separator + 2
+    let listing = record.part(entry.head.len() + 1, separator + 1)
+    read_files(payload, listing, start, files, allocator)?
+    return find_file(payload, files, path)
+
+fn read_files(payload: Span, listing: Span, body_at: U64, files: &mut Vec<PackageFile>, allocator: &Allocator) -> Result<(), PackageError>:
+    var remaining = listing
+    var data_at = body_at
+    var previous = payload.part(0, 0)
+    while !remaining.is_empty():
+        if files.len() == 64:
+            return Err(InvalidFiles)
+        let Ok(row): Halves = remaining.split(10) else Err(rest):
+            return Err(InvalidRecord)
+        // The listing ends one blank-line byte before the file body.
+        let row_at = body_at - 1 - remaining.len()
+        let path_at = row_at + 5
+        let added = add_file(payload, row.head, path_at, data_at, previous, files, allocator)?
+        previous = payload.part(path_at, path_at + added.name_len)
+        data_at += added.content_len
+        remaining = row.tail
+    if files.len() < 2 || data_at != payload.len():
+        return Err(InvalidFiles)
+    return Ok(())
+
+fn add_file(payload: Span, row: Span, path_at: U64, data_at: U64, previous: Span, files: &mut Vec<PackageFile>, allocator: &Allocator) -> Result<PackageFile, PackageError>:
+    if !row.starts_with_text("file "):
+        return Err(InvalidRecord)
+    let Ok(names): Halves = row.part(5, row.len()).split(32) else Err(rest):
+        return Err(InvalidRecord)
+    let Ok(length): Halves = names.tail.split(32) else Err(rest):
+        return Err(InvalidRecord)
+    let path = names.head
+    if !source_path(path) || !precedes_bytes(previous, path):
+        return Err(InvalidFiles)
+    for file in files:
+        if directory_prefix(file_name(payload, file), path):
+            return Err(InvalidFiles)
+    let size_text = length.head
+    if size_text.is_empty() || size_text.len() > 7 || (size_text.len() > 1 && size_text.byte_or_end(0) == 48):
+        return Err(InvalidRecord)
+    let Ok(size): U64 = size_text.parse_u64() else Err(code):
+        return Err(InvalidRecord)
+    if size > payload.len() - data_at:
+        return Err(InvalidFiles)
+    check_digest(length.tail, payload.part(data_at, data_at + size), allocator)?
+    let file = PackageFile(path_at, path.len(), data_at, size)
+    if let Err(unused) = files.push_mut(allocator, file):
+        return Err(PackageResourceFailure)
+    return Ok(file)
+
+fn check_digest(expected: Span, content: Span, allocator: &Allocator) -> Result<(), PackageError>:
+    if expected.len() != 103 || !expected.starts_with_text("sha384:"):
+        return Err(InvalidRecord)
+    let text = expected.part(7, expected.len())
+    for byte in text.as_bytes():
+        if !(*byte >= '0' && *byte <= '9') && !(*byte >= 'a' && *byte <= 'f'):
+            return Err(InvalidRecord)
+    let Ok(decoded): Vec<U8> = decode_hex(allocator, text.as_bytes()) else Err(code):
+        return Err(PackageResourceFailure)
+    var actual: [U8; 48] = [0; 48]
+    let hashed = crypto.sha384(content.as_bytes(), actual.slice_mut())
+    let matched = Span.of(decoded.as_slice()).same(Span.of(actual.slice()))
+    decoded.close()
+    if let Err(error) = hashed:
+        return Err(PackageResourceFailure)
+    if !matched:
+        return Err(InvalidFiles)
+    return Ok(())
+
+pub fn find_file(payload: Span, files: &Vec<PackageFile>, path: Span) -> Result<U64, PackageError>:
+    var low: U64 = 0
+    var high = files.len()
+    while low < high:
+        let middle = low + (high - low) / 2
+        let Ok(file): &PackageFile = files.at(middle) else Err(code):
+            return Err(InvalidFiles)
+        let name = file_name(payload, file)
+        if name.same(path):
+            return Ok(middle)
+        if precedes_bytes(name, path):
+            low = middle + 1
+        else:
+            high = middle
+    return Err(InvalidFiles)

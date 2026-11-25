@@ -1,0 +1,57 @@
+// The first client flight. A caller must authenticate the server over this
+// transcript before deriving an application session or sending application data.
+import tls_client_hello
+import tls_key_schedule
+import tls_transport
+import crypto
+import key_agreement
+import span
+
+pub type ClientExchangeError:
+    InvalidClientHello
+    InvalidServerHello
+    ClientTransportFailed
+    ClientAgreementFailed
+
+pub type ClientExchange:
+    length: U64
+    handshake: Handshake
+
+pub fn begin(socket: &Socket, random: &Rand, hostname: Span, transcript: &mut [U8]) -> Result<ClientExchange, ClientExchangeError>:
+    let capacity = transcript.len()
+    let nonce = random_bytes(random)
+    let session_id = random_bytes(random)
+    var point: [U8; 97] = [0; 97]
+    let Ok(key): P384Key = random.p384_key(point.slice_mut()) else Err(reason):
+        return Err(ClientAgreementFailed)
+    let Ok(client_len): U64 = tls_client_hello.encode(hostname, &nonce, &session_id, &point, transcript) else Err(reason):
+        key.close()
+        return Err(InvalidClientHello)
+    if let Err(reason) = tls_transport.write_client_hello(socket, transcript.part(0, client_len)):
+        key.close()
+        return Err(ClientTransportFailed)
+    let Ok(server_len): U64 = tls_transport.read_server_hello(socket, transcript.part(client_len, capacity)) else Err(reason):
+        key.close()
+        return Err(ClientTransportFailed)
+    let length = client_len + server_len
+    let response = Span.of(transcript.part(client_len, length))
+    let Ok(peer): Span = tls_client_hello.server_share(response, &session_id) else Err(reason):
+        key.close()
+        return Err(InvalidServerHello)
+    var secret: [U8; 48] = [0; 48]
+    if let Err(reason) = key.finish(peer.as_bytes(), secret.slice_mut()):
+        return Err(ClientAgreementFailed)
+    var digest: [U8; 48] = [0; 48]
+    if let Err(reason) = crypto.sha384(transcript.part(0, length), digest.slice_mut()):
+        return Err(ClientAgreementFailed)
+    let Ok(handshake): Handshake = tls_key_schedule.start384(&secret, &digest) else Err(reason):
+        return Err(ClientAgreementFailed)
+    return Ok(ClientExchange(length, move handshake))
+
+fn random_bytes(random: &Rand) -> [U8; 32]:
+    var bytes: [U8; 32] = [0; 32]
+    for i in 0..4:
+        let word = random.next_u64()
+        for j in 0..8:
+            bytes[8 * i + j] = U8.truncate(word >> (8 * j))
+    return move bytes

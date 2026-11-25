@@ -1,0 +1,19 @@
+// A closure's result type may be left out when its body shows it: a parameter or captured
+// variable in arithmetic, a comparison, a decimal number; a block returning nothing gives ().
+import console
+import float
+
+fn main(console: Console<Write>):
+    let sq = fn(n: U64): n * n
+    console.print_int(sq(5))
+    let by: U64 = 3
+    let scale = fn(n: U64): by * n + 1
+    console.print_int(scale(4))
+    let big = fn(n: U64): n > 10
+    if big(11):
+        console.print_int(1)
+    let half = fn(x: F64): x * 0.5
+    console.print_f64(half(3.0), 2)
+    let say = fn(n: U64):
+        console.print_int(n)
+    say(9)

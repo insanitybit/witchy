@@ -1,0 +1,11 @@
+// Out of order, an argument with an effect (a call) is refused: the order of evaluation would change.
+import console
+
+fn three() -> U64:
+    3
+
+fn greet(n: U64, by: U64) -> U64:
+    n * by
+
+fn main(console: Console<Write>):
+    console.print_int(greet(by: 4, n: three()))

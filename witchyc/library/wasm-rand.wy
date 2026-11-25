@@ -1,0 +1,21 @@
+// Randomness through the `Rand` capability: 64 bits at a time from the host's
+// cryptographically secure source (`rand.next_u64()`). A function that can draw
+// random numbers says so in its parameters, like any other authority.
+
+impl Rand:
+    // Another handle to the run's one source of randomness, for what must own one (a task's
+    // input): it draws nothing a lent `&Rand` could not.
+    pub fn share(rand: &Rand) -> Rand:
+        return memory.share(rand)
+
+    // A number in 0..bound, every one equally likely. Draws past the largest multiple
+    // of `bound` are thrown away, so the remainder is not biased toward small numbers.
+    pub fn below(rand: &Rand, bound: U64) -> Result<U64, ()>:
+        if bound == 0:
+            return Err(())
+        // 2^64 mod bound, computed without leaving U64: (2^64 - bound) mod bound.
+        let skip = (18446744073709551615 - bound + 1) % bound
+        var draw = rand.next_u64()
+        while draw < skip:
+            draw = rand.next_u64()
+        return Ok(draw % bound)

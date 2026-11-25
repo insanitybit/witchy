@@ -1,0 +1,13 @@
+// The value is read while a `&mut` reference into it is still to be used.
+type Pair:
+    a: U64
+    b: U64
+
+fn first(pair: &mut Pair) -> &mut U64:
+    return &mut (*pair).a
+
+fn main(console: Console<Write>):
+    var pair = Pair(1, 2)
+    let r = first(&mut pair)
+    console.print_int(pair.a)
+    *r = 5

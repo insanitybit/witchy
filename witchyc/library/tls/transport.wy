@@ -1,0 +1,158 @@
+// The bounded TLS handshake transport over a Witchy Socket.
+import net
+import tls_record
+
+pub type TransportError:
+    PeerClosed
+    HandshakeReadFailed
+    HandshakeWriteFailed
+    InvalidHandshakeRecord
+    HandshakeBufferTooSmall
+    HandshakeProtectionFailed
+
+fn read_exact(socket: &Socket, bytes: &mut [U8]) -> Result<(), TransportError>:
+    match socket.read_exact(bytes):
+        Ok:
+            return Ok(())
+        Err(UnexpectedEof(done)):
+            return Err(PeerClosed)
+        Err(ReadFailed(failure)):
+            return Err(HandshakeReadFailed)
+
+// Reassemble exactly one ClientHello across nonempty handshake records.
+// `output` sets the handshake size limit for this connection.
+pub fn read_client_hello(socket: &Socket, output: &mut [U8]) -> Result<U64, TransportError>:
+    return read_hello(socket, output, 1, false)
+
+pub fn read_retry_hello(socket: &Socket, output: &mut [U8]) -> Result<U64, TransportError>:
+    return read_hello(socket, output, 1, true)
+
+pub fn read_server_hello(socket: &Socket, output: &mut [U8]) -> Result<U64, TransportError>:
+    return read_hello(socket, output, 2, false)
+
+fn read_hello(socket: &Socket, output: &mut [U8], expected: U8, allow_ccs: Bool) -> Result<U64, TransportError>:
+    let capacity = output.len()
+    var length: U64 = 0
+    var wanted: U64 = 0
+    var header: [U8; 5] = [0; 5]
+    while wanted == 0 || length < wanted:
+        read_exact(socket, header.slice_mut())?
+        if allow_ccs && header[0] == 20:
+            read_compatibility_ccs(socket, header.slice())?
+            continue
+        // TLS 1.3 negotiates the version inside the handshake message.
+        if header[0] != 22:
+            return Err(InvalidHandshakeRecord)
+        let count = U8.to_u64(header[3]) * 256 + U8.to_u64(header[4])
+        if count == 0 || count > 16384:
+            return Err(InvalidHandshakeRecord)
+        if count > capacity - length:
+            return Err(HandshakeBufferTooSmall)
+        read_exact(socket, output.part(length, length + count))?
+        length += count
+        if wanted == 0 && length >= 4:
+            if output[0] != expected:
+                return Err(InvalidHandshakeRecord)
+            wanted = 4 + U8.to_u64(output[1]) * 65536 + U8.to_u64(output[2]) * 256 + U8.to_u64(output[3])
+            if wanted > capacity:
+                return Err(HandshakeBufferTooSmall)
+        if wanted != 0 && length > wanted:
+            return Err(InvalidHandshakeRecord)
+    return Ok(length)
+
+fn write(socket: &Socket, bytes: &[U8]) -> Result<(), TransportError>:
+    match socket.write_all(bytes):
+        Ok:
+            return Ok(())
+        Err(reason):
+            return Err(HandshakeWriteFailed)
+
+pub fn write_server_hello(socket: &Socket, message: &[U8]) -> Result<(), TransportError>:
+    return write_hello(socket, message, 2)
+
+pub fn write_client_hello(socket: &Socket, message: &[U8]) -> Result<(), TransportError>:
+    return write_hello(socket, message, 1)
+
+fn write_hello(socket: &Socket, message: &[U8], expected: U8) -> Result<(), TransportError>:
+    let length = message.len()
+    if length < 4 || length > 16384 || message[0] != expected:
+        return Err(InvalidHandshakeRecord)
+    let body = U8.to_u64(message[1]) * 65536 + U8.to_u64(message[2]) * 256 + U8.to_u64(message[3])
+    if body != length - 4:
+        return Err(InvalidHandshakeRecord)
+    let header: [U8; 5] = [22, 3, 3, U8.truncate(length / 256), U8.truncate(length % 256)]
+    write(socket, header.slice())?
+    return write(socket, message)
+
+// `scratch` builds one clear inner record and `frame` holds its ciphertext.
+// Callers close the connection on errors. A partially sent record is fatal.
+pub fn write_protected(socket: &Socket, writer: &mut WriteEpoch, content: Content, message: &[U8], scratch: &mut [U8], frame: &mut [U8]) -> Result<(), TransportError>:
+    let fragment = fragment_capacity(scratch.len(), frame.len())
+    if fragment == 0:
+        return Err(HandshakeBufferTooSmall)
+    match content:
+        Alert:
+            if message.len() != 2:
+                return Err(InvalidHandshakeRecord)
+            if fragment < 2:
+                return Err(HandshakeBufferTooSmall)
+        _:
+            ()
+    var offset: U64 = 0
+    while offset < message.len():
+        let remaining = message.len() - offset
+        let count = if remaining < fragment:
+            remaining
+        else:
+            fragment
+        let Ok(length): U64 = writer.seal(content, message.part(offset, offset + count), scratch, frame) else Err(reason):
+            return Err(HandshakeProtectionFailed)
+        write(socket, frame.part(0, length))?
+        offset += count
+    return Ok(())
+
+pub pure fn fragment_capacity(scratch: U64, frame: U64) -> U64:
+    if scratch < 2 || frame < 23:
+        return 0
+    var available = scratch - 1
+    if available > frame - 22:
+        available = frame - 22
+    if available > 16384:
+        return 16384
+    return available
+
+// Read one authenticated record. In the clear, a compatibility CCS must be
+// exactly the one-byte value 1 and is ignored only during the handshake.
+pub fn read_protected(socket: &Socket, reader: &mut ReadEpoch, frame: &mut [U8], plaintext: &mut [U8], allow_ccs: Bool) -> Result<RecordInfo, TransportError>:
+    let capacity = frame.len()
+    if capacity < 5:
+        return Err(HandshakeBufferTooSmall)
+    var compatibility = true
+    while compatibility:
+        read_exact(socket, frame.part(0, 5))?
+        compatibility = allow_ccs && frame[0] == 20
+        if compatibility:
+            read_compatibility_ccs(socket, frame.part(0, 5))?
+    let Ok(length): U64 = tls_record.ciphertext_length(frame.part(0, 5)) else Err(reason):
+        return Err(InvalidHandshakeRecord)
+    if length > capacity - 5:
+        return Err(HandshakeBufferTooSmall)
+    read_exact(socket, frame.part(5, 5 + length))?
+    match reader.open(frame.part(0, 5 + length), plaintext):
+        Ok(info):
+            return Ok(info)
+        Err(reason):
+            return Err(HandshakeProtectionFailed)
+
+fn read_compatibility_ccs(socket: &Socket, header: &[U8]) -> Result<(), TransportError>:
+    if header[3] != 0 || header[4] != 1:
+        return Err(InvalidHandshakeRecord)
+    var change: [U8; 1] = [0]
+    read_exact(socket, change.slice_mut())?
+    if change[0] != 1:
+        return Err(InvalidHandshakeRecord)
+    return Ok(())
+
+pub fn write_plain_fatal(socket: &Socket, description: U8) -> Result<(), TransportError>:
+    let alert: [U8; 7] = [21, 3, 3, 0, 2, 2, description]
+    return write(socket, alert.slice())

@@ -1,0 +1,21 @@
+// Refused (adversarial review round 13): a file enters the bundle once, by identity, so an
+// edited vec imported first as `evil.wy` (with `wasm-vec.wy` a symlink to it) was the file a
+// byte-exact library copy then got for `import "wasm-vec.wy"`; every file an on-disk library copy
+// imports must hold the library's text.
+import "vec-stand-in/evil.wy"
+import "vec-stand-in/wasm-discard.wy"
+import hash
+
+type K:
+    a: U64
+
+impl Eq for K:
+    fn eq(self: &K, other: &K) -> Bool:
+        return (*self).a == (*other).a
+
+impl HashKey for K:
+    fn feed(self: &K, state: &mut HashState):
+        (*self).a.feed(state)
+
+fn main():
+    return

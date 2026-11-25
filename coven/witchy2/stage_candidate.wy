@@ -1,0 +1,76 @@
+import "candidate_plan.wy"
+import console_bytes
+import "sqlite_reply.wy"
+import "tuf/package.wy"
+import "tuf/package_record.wy"
+import "tuf/release_trust.wy"
+import console
+import span
+import string
+import text
+import vec
+
+fn main(db: Sqlite, input: Console<Read>, output: Console<Write>, allocator: Allocator):
+    if let Err(code) = stage(&db, &input, &output, &allocator):
+        if code == 1:
+            output.line("invalid candidate")
+        else:
+            output.line("unavailable")
+
+fn stage(db: &Sqlite, input: &Console<Read>, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let Ok(length): U64 = input.read_u24_be() else Err(reason):
+        return Err(1)
+    if length == 0 || length > 1048576:
+        return Err(1)
+    let empty: Vec<U8> = Vec.filled(allocator, length, 0)?
+    var body = move empty
+    if let Err(reason) = input.read_exact_to_end(body.as_mut_slice()):
+        body.close()
+        return Err(1)
+    let checked = write_candidate(db, body.as_slice(), output, allocator)
+    body.close()
+    return checked
+
+fn write_candidate(db: &Sqlite, body: &[U8], output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let payload = Span.of(body)
+    let Ok(header): PackageHeader = package_header(payload) else Err(code):
+        return Err(1)
+    if let Err(code) = validate_package_contents(payload, header, allocator):
+        return Err(1)
+    let digest = digest_text(body, allocator)?
+    let prepared = prepare_bindings(header, digest.span(), allocator)
+    digest.close()
+    let Ok(bindings): String = move prepared else Err(code):
+        return Err(code)
+    let checked = commit(db, &bindings, body, output, allocator)
+    bindings.close()
+    return checked
+
+fn prepare_bindings(header: PackageHeader, digest: Span, allocator: &Allocator) -> Result<String, U64>:
+    let empty = String.with_capacity(allocator, 256)?
+    var bindings = move empty
+    if let Err(code) = write_bindings(header, digest, &mut bindings, allocator):
+        bindings.close()
+        return Err(code)
+    return Ok(move bindings)
+
+fn write_bindings(header: PackageHeader, digest: Span, bindings: &mut String, allocator: &Allocator) -> Result<(), U64>:
+    bindings.push_text(allocator, "name\ttext\t")?
+    bindings.push_utf8_slice(allocator, header.name.as_bytes())?
+    bindings.push_text(allocator, "\nversion\ttext\t")?
+    bindings.push_utf8_slice(allocator, header.version.as_bytes())?
+    bindings.push_text(allocator, "\ndigest\ttext\t")?
+    bindings.push_utf8_slice(allocator, digest.as_bytes())?
+    return bindings.push_text(allocator, "\n")
+
+fn commit(db: &Sqlite, bindings: &String, body: &[U8], output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let empty = String.with_capacity(allocator, 1024)?
+    var plan = move empty
+    let checked = run_plan(db, &mut plan, bindings, body, output, allocator)
+    plan.close()
+    return checked
+
+fn run_plan(db: &Sqlite, plan: &mut String, bindings: &String, body: &[U8], output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    add_candidate_write(plan, allocator)?
+    plan.push_text(allocator, "result\tcandidate result is invalid\tSELECT CAST(json_object('digest',:digest,'name',:name,'version',:version) AS BLOB)\n")?
+    return emit_transaction(db, plan, bindings, body, output, 512, allocator)

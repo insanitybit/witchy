@@ -1,0 +1,36 @@
+// Refused: no solution of the generic `from` takes a U64 and makes a `Wrapped<Bool>`.
+import console
+
+type Wrapped<E>:
+    Inner(E)
+    Other(U64)
+
+impl<E> Wrapped<E>:
+    pub fn from(error: E) -> Wrapped<E>:
+        return Inner(error)
+
+fn half(n: U64) -> Result<U64, U64>:
+    if n % 2 == 1:
+        return Err(n)
+    return Ok(n / 2)
+
+fn quarter(n: U64) -> Result<U64, Wrapped<Bool>>:
+    let h = half(n)?
+    let q = half(h)?
+    return Ok(q)
+
+fn main(console: Console<Write>):
+    match quarter(12):
+        Ok(q):
+            console.print_int(q)
+        Err(Inner(code)):
+            console.print_int(1000)
+        Err(Other(code)):
+            console.print_int(2000)
+    match quarter(6):
+        Ok(q):
+            console.print_int(q)
+        Err(Inner(code)):
+            console.print_int(1000)
+        Err(Other(code)):
+            console.print_int(2000)

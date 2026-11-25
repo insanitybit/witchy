@@ -1,0 +1,7 @@
+// Refused: two imported files both offer `area`, and the call does not say which.
+import "../../../library/wasm-console.wy"
+import "parts/area.wy"
+import "parts/other.wy"
+
+fn main(console: Console<Write>):
+    console.print_int(area(&Box(3, 4)))

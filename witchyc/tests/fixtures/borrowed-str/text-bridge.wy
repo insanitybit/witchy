@@ -1,0 +1,15 @@
+import console
+
+fn select_text(which: Bool) -> Text:
+    if which:
+        return "été"
+    return "☀"
+
+fn borrow_existing(value: Text) -> &str:
+    return value.as_str()
+
+fn main(console: Console<Write>):
+    let greeting = "été"
+    console.line(greeting)
+    console.line(borrow_existing(select_text(false)))
+    console.print_int(borrow_existing(Text(999)).len())

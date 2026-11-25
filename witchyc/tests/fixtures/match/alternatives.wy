@@ -1,0 +1,67 @@
+// `A | B:` is one arm for each pattern, with the one body.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-string.wy"
+
+type Shape:
+    Dot
+    Circle(U64)
+    Square(U64)
+    Box(U64, U64)
+
+fn size(shape: Shape) -> U64:
+    match shape:
+        Dot:
+            return 0
+        Circle(side) | Square(side):
+            return side
+        Box(width, height):
+            return width * height
+
+fn round(shape: &Shape) -> U64:
+    let answer = match shape:
+        Circle(side) | Square(side):
+            *side
+        Dot | Box(_, _):
+            0
+    return answer
+
+fn pick(found: Result<Shape, U64>) -> U64:
+    match found:
+        Ok(Circle(side)) | Ok(Square(side)):
+            return side
+        Ok(Dot) | Ok(Box(_, _)) | Err(_):
+            return 0
+
+type Named:
+    First(String)
+    Second(String)
+    Neither
+
+fn length(named: Named) -> U64:
+    match move named:
+        First(text) | Second(text):
+            let count = text.byte_len()
+            text.close()
+            return count
+        Neither:
+            return 0
+
+fn code(fault: .[Low(U64) | High(U64) | None]) -> U64:
+    match fault:
+        .Low(at) | .High(at):
+            return at
+        .None:
+            return 0
+
+fn main(console: Console<Write>, allocator: Allocator):
+    console.print_int(size(Circle(3)) + size(Square(4)) + size(Box(2, 5)) + size(Dot))
+    let shape = Square(6)
+    console.print_int(round(&shape))
+    console.print_int(pick(Ok(Square(8))) + pick(Err(3)))
+    console.print_int(code(.High(5)))
+    let text = match String.new(&allocator):
+        Ok(made):
+            move made
+        Err(code):
+            return
+    console.print_int(length(Second(move text)))

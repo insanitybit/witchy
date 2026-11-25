@@ -1,0 +1,9 @@
+// Refused: a socket moved into a group is the group's until it is taken back.
+import net
+
+fn keep(group: &Group, socket: Socket):
+    let slot = group.add(move socket)
+    socket.close()
+
+fn main():
+    return

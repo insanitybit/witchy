@@ -1,0 +1,119 @@
+// Project only the fields that authorize a Coven release. Strings are length-prefixed
+// so quoted paths and keys cannot introduce fields in the result.
+import "tuf/coordinate.wy"
+import console
+import crypto
+import fs
+import int
+import option
+import span
+import string
+import "@toml"
+
+fn field(out: &Console<Write>, value: &str):
+    out.print_int(value.as_bytes().len())
+    out.write(value)
+
+fn reject_field(out: &Console<Write>, status: Text, value: &str) -> Bool:
+    out.line(status)
+    field(out, value)
+    return false
+
+fn check_name(out: &Console<Write>, value: &str) -> Bool:
+    let name = Span.of(value.as_bytes())
+    if !coordinate.package_name(name):
+        return reject_field(out, "bad-name", value)
+    if name.equals_text("snapshot") || name.equals_text("operator-rotations"):
+        return reject_field(out, "reserved", value)
+    return true
+
+fn check_version(out: &Console<Write>, value: &str) -> Bool:
+    if !coordinate.release_version(Span.of(value.as_bytes())):
+        return reject_field(out, "bad-version", value)
+    return true
+
+fn check_dependencies<G: Brand>(out: &Console<Write>, doc: &Doc<G>, table: Table<G>, owner: &str) -> Bool:
+    let package = Span.of(owner.as_bytes())
+    var next = doc.first(table)
+    while let Some(item) = next:
+        let Some(exact) = doc.str(item) else None:
+            out.line("version")
+            return false
+        let name = doc.key(item)
+        if !check_version(out, exact) || !check_name(out, name):
+            return false
+        if package.same(Span.of(name.as_bytes())):
+            return reject_field(out, "self-dependency", owner)
+        next = doc.next(item)
+    return true
+
+fn manifest<G: Brand>(out: &Console<Write>, doc: &Doc<G>, digest: &[U8]):
+    let root = doc.root()
+    let Some(package_item) = doc.get(root, "package") else None:
+        out.line("package")
+        return
+    let Some(package) = doc.table(package_item) else None:
+        out.line("package")
+        return
+    let Some(source_item) = doc.get(package, "source") else None:
+        out.line("source")
+        return
+    let Some(source) = doc.str(source_item) else None:
+        out.line("source")
+        return
+    if source.as_bytes().len() == 0:
+        out.line("source")
+        return
+    let Some(name_item) = doc.get(package, "name") else None:
+        out.line("name")
+        return
+    let Some(name) = doc.str(name_item) else None:
+        out.line("name")
+        return
+    let Some(version_item) = doc.get(package, "version") else None:
+        out.line("version")
+        return
+    let Some(version) = doc.str(version_item) else None:
+        out.line("version")
+        return
+    var dependency_table: Option<Table<G>> = None
+    if let Some(member) = doc.get(root, "dependencies"):
+        let Some(table) = doc.table(member) else None:
+            out.line("dependencies")
+            return
+        dependency_table = Some(table)
+    if !check_name(out, name) || !check_version(out, version):
+        return
+    if let Some(dependencies) = dependency_table:
+        if !check_dependencies(out, doc, dependencies, name):
+            return
+    out.line("ok-v2")
+    out.write_bytes(digest)
+    field(out, name)
+    field(out, version)
+    field(out, source)
+    if let Some(dependencies) = dependency_table:
+        var next = doc.first(dependencies)
+        while let Some(item) = next:
+            let Some(exact) = doc.str(item) else None:
+                return
+            field(out, doc.key(item))
+            field(out, exact)
+            next = doc.next(item)
+    out.line("end")
+
+fn main(out: Console<Write>, input: File<Read>, allocator: Allocator):
+    let Ok(text): String = input.read_text_bounded(&allocator, 131072) else Err(_):
+        out.line("read")
+        return
+    var digest: [U8; 48] = [0; 48]
+    if let Err(_) = sha384(text.as_bytes(), digest.slice_mut()):
+        text.close()
+        out.line("hash")
+        return
+    let Ok(tree): Toml = Toml.parse_1_0(&allocator, move text) else Err(_):
+        out.line("syntax")
+        return
+    brand tree.doc() as doc:
+        manifest(&out, &doc, digest.slice())
+    tree.close()

@@ -1,0 +1,47 @@
+// `for entry in &map:` walks a HashMap's entries through `next`, whose cursor is a
+// `&mut U64` the returned reference cannot point into. A key can be let go while the
+// value found under it is still in use.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-hashmap.wy"
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<HashMap<U64, U64>, U64> = HashMap.new(&allocator, 8)
+    var map = match move made:
+        Ok(empty):
+            move empty
+        Err(reason):
+            return
+    for number in 1..6:
+        match map.put(&allocator, number, number * number):
+            Ok(done):
+                continue
+            Err(entry):
+                break
+    var total: U64 = 0
+    var count: U64 = 0
+    for entry in &map:
+        total += entry.key * entry.value
+        count += 1
+    console.print_int(count)
+    console.print_int(total)
+    var wanted: U64 = 3
+    match map.get(&wanted):
+        Ok(value):
+            wanted = 0
+            console.print_int(*value + wanted)
+        Err(code):
+            console.print_int(0)
+    // Once the entry is no longer in use the map may change; the walk goes on over
+    // the cells as they then are.
+    var seen: U64 = 0
+    for entry in &map:
+        let key = entry.key
+        seen += 1
+        if key == 2:
+            match map.remove(&key):
+                Ok(taken):
+                    console.print_int(taken.value)
+                Err(code):
+                    console.print_int(0)
+    console.print_int(map.len())
+    map.discard()

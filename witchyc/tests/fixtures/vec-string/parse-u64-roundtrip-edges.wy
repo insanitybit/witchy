@@ -1,0 +1,56 @@
+// `parse_u64` round trip: random values of every magnitude written into a String and parsed
+// back; and the edges: the largest U64, one past it, leading zeros, empty, a stray byte, a sign.
+import console
+import string
+import span
+
+fn check(console: &Console<Write>, allocator: &Allocator, text: Text, want: U64, code: U64) -> U64:
+    let Ok(made): String = String.new(allocator) else Err(c):
+        return 1
+    var s = move made
+    let _ = s.push_text(allocator, text)
+    var result: U64 = 1
+    match s.span().parse_u64():
+        Ok(v):
+            if code == 0 && v == want:
+                result = 0
+        Err(c):
+            if c == code:
+                result = 0
+    s.close()
+    if result == 1:
+        console.print("wrong: ${text}")
+    return result
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var seed: U64 = 17
+    var wrong: U64 = 0
+    for round in 0..2000:
+        seed = seed * 48271 % 2147483647
+        var v = seed
+        // Spread over every magnitude, the largest values included.
+        let shift = round % 64
+        v = (seed * 2654435761 + round) >> (63 - shift) >> 1
+        if round % 97 == 0:
+            v = 18446744073709551615
+        let Ok(made): String = String.new(&allocator) else Err(c):
+            return
+        var s = move made
+        if let Err(_) = push_u64(&mut s, &allocator, v):
+            wrong += 1
+        match s.span().parse_u64():
+            Ok(back):
+                if back != v:
+                    wrong += 1
+            Err(c):
+                wrong += 1
+        s.close()
+    wrong += check(&console, &allocator, "18446744073709551615", 18446744073709551615, 0)
+    wrong += check(&console, &allocator, "18446744073709551616", 0, 2)
+    wrong += check(&console, &allocator, "99999999999999999999", 0, 2)
+    wrong += check(&console, &allocator, "00000000000000000000042", 42, 0)
+    wrong += check(&console, &allocator, "0", 0, 0)
+    wrong += check(&console, &allocator, "", 0, 1)
+    wrong += check(&console, &allocator, "12a", 0, 1)
+    wrong += check(&console, &allocator, "+1", 0, 1)
+    console.print("${wrong} wrong")

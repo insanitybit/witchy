@@ -1,0 +1,16 @@
+// Captured variables whose values show their types need none written: a number, arithmetic of a
+// captured name, a comparison, a decimal; a closure whose body is a one-line `if` takes its type.
+import console
+import float
+
+fn main(console: Console<Write>):
+    let by = 3
+    let offset = by * 10
+    let on = offset > 20
+    let scale = 0.5
+    let f = fn(n: U64): n * by + offset
+    let g = fn(n: U64): if on: n else: 0
+    let h = fn(x: F64): x * scale
+    console.print_int(f(2))
+    console.print_int(g(7))
+    console.print_f64(h(4.0), 1)

@@ -1,0 +1,14 @@
+// Refused: the bits of a negative I64 are 2^63 or more.
+import console
+import int
+
+fn f(x: I64) -> U64:
+    requires x < 0
+    ensures result < 1000
+    proof:
+        auto
+    I64.bits(x)
+
+fn main(console: Console<Write>):
+    let a: I64 = -1
+    console.print_int(f(a))

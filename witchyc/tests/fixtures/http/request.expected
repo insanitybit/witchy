@@ -1,0 +1,4 @@
+GET /a?b host=x body=2
+no head yet
+refused
+refused

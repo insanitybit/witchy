@@ -1,0 +1,16 @@
+// Refused: a `gen fn` does not yield a value holding a reference (a Span).
+import console
+import span
+import string
+
+gen fn halves(text: &String) -> Span:
+    yield text.span()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var t = move made
+    let ok = t.push_text(&allocator, "ab")
+    for s in halves(&t):
+        console.print_int(s.len())
+    t.close()

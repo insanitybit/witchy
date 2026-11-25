@@ -1,0 +1,62 @@
+// Records written to a file as CSV through a Dir<Write>, read back through a Dir<Read>, split
+// into fields and totalled: ?, interpolation, field parsing, a tuple result.
+import console
+import fs
+import string
+import text
+
+type Row:
+    id: U64
+    qty: U64
+
+fn save(dir: &Dir<Write>, allocator: &Allocator, rows: [Row; 3]) -> Result<(), FsError>:
+    let Ok(made): String = String.new(allocator) else Err(code):
+        return Ok(())
+    var out = move made
+    for row in rows:
+        if let Err(_) = out.push_format(allocator, "${row.id},${row.qty}\n"):
+            out.close()
+            return Ok(())
+    let written = dir.write_text("rows.csv", &out)
+    out.close()
+    written
+
+fn load(dir: &Dir<Read>, allocator: &Allocator) -> Result<(U64, U64), FsError>:
+    let text = dir.read_text(allocator, "rows.csv")?
+    var (count, total): (U64, U64) = (0, 0)
+    var cursor: U64 = 0
+    while cursor < text.byte_len():
+        let Ok(line): String = text.field(allocator, '\n', &mut cursor) else Err(code):
+            break
+        var at: U64 = 0
+        let Ok(id): String = line.field(allocator, ',', &mut at) else Err(code):
+            line.close()
+            break
+        let Ok(qty): String = line.field(allocator, ',', &mut at) else Err(code):
+            id.close()
+            line.close()
+            break
+        if let Ok(n) = qty.parse_u64():
+            total += n
+            count += 1
+        id.close()
+        qty.close()
+        line.close()
+    text.close()
+    Ok((count, total))
+
+fn main(console: Console<Write>, dir: Dir, allocator: Allocator):
+    let rows = [
+        Row(id: 1, qty: 12),
+        Row(id: 2, qty: 30),
+        Row(id: 3, qty: 8),
+    ]
+    if save(&dir, &allocator, rows).is_err():
+        console.line("save failed")
+        return
+    match load(&dir, &allocator):
+        Ok(pair):
+            let (count, total) = pair
+            console.print("${count} rows, ${total} in all")
+        Err(error):
+            console.line("load failed")

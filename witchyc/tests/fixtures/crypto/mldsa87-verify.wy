@@ -1,0 +1,48 @@
+import console
+import crypto
+import fs
+import vec
+
+fn read_vector(file: &File<Read>, bytes: &mut [U8]) -> Bool:
+    var read: U64 = 0
+    let length = bytes.len()
+    while read < length:
+        let count = file.read_some(bytes.part(read, length))
+        if count == 0:
+            return false
+        read += count
+    return true
+
+fn verifies(bytes: &[U8]) -> Bool:
+    return crypto.mldsa87_verify(bytes.part(0, 2592), bytes.part(2592, 2630), bytes.part(2630, 7257))
+
+fn main(out: Console<Write>, allocator: Allocator, file: File<Read>):
+    let Ok(storage): Vec<U8> = Vec.filled(&allocator, 7257, 0) else Err(code):
+        file.close()
+        return
+    var bytes = move storage
+    let loaded = read_vector(&file, bytes.as_mut_slice())
+    file.close()
+    if loaded:
+        check(&out, &mut bytes)
+    bytes.close()
+
+fn check(out: &Console<Write>, bytes: &mut Vec<U8>):
+    if verifies(bytes.as_slice()):
+        out.line("correct signature")
+    let full = bytes.as_slice()
+    let key = full.part(0, 2592)
+    let message = full.part(2592, 2630)
+    if !crypto.mldsa87_verify(key, message, full.part(2630, 7256)) && !crypto.mldsa87_verify(full.part(0, 2591), message, full.part(2630, 7257)):
+        out.line("wrong sizes")
+    if !crypto.mldsa65_verify(key, message, full.part(2630, 7257)):
+        out.line("wrong suite")
+    let original = bytes.index(2592)
+    let _ = bytes.set(2592, U8.truncate(U8.to_u64(original) + 1))
+    if !verifies(bytes.as_slice()):
+        out.line("changed message")
+    let _ = bytes.set(2592, original)
+    let signature = bytes.index(2650)
+    let _ = bytes.set(2650, U8.truncate(U8.to_u64(signature) + 1))
+    if !verifies(bytes.as_slice()):
+        out.line("changed signature")

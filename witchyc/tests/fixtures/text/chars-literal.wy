@@ -1,0 +1,7 @@
+// `for c in "...".chars()`: a text literal's Unicode scalar values, of one to four bytes.
+import console
+import string
+
+fn main(console: Console<Write>):
+    for c in "héllo €😀".chars():
+        console.print_int(c)

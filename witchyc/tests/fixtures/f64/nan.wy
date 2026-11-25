@@ -1,0 +1,15 @@
+// A NaN's payload may differ between machines, and F64.bits is the only place it could show:
+// there every NaN is the canonical one. NaN is not equal to itself.
+import console
+
+fn main(console: Console<Write>):
+    let zero = 0.0
+    let nan = zero / zero
+    console.print_int(F64.bits(nan))
+    console.print_int(F64.bits(-nan))
+    console.print_int(F64.bits(nan * 3.0 + 1.0))
+    console.print_int(F64.bits(-2.0))
+    if nan == nan:
+        console.line("equal")
+    else:
+        console.line("NaN is not itself")

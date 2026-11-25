@@ -1,0 +1,36 @@
+// Leave the bytes after the requested prefix in the socket. A short read
+// reports the bytes it copied and leaves the rest of the destination alone.
+import console
+import net
+
+fn check(socket: &Socket, output: &Console<Write>):
+    var bytes: [U8; 4] = [0; 4]
+    if let Ok = socket.read_exact(bytes.slice_mut().part(0, 0)):
+        output.line("empty")
+    if let Ok = socket.read_exact(bytes.slice_mut().part(0, 2)):
+        if bytes[0] == 'a' && bytes[1] == 'b':
+            output.line("exact")
+    bytes[3] = 255
+    match socket.read_exact(bytes.slice_mut()):
+        Err(UnexpectedEof(done)):
+            output.print_int(done)
+            if bytes[0] == 'c' && bytes[1] == 'd' && bytes[2] == 'e' && bytes[3] == 255:
+                output.line("prefix")
+        Err(ReadFailed(failure)):
+            if let TooLarge = failure.error:
+                output.print_int(failure.done)
+                if bytes[0] == 'c' && bytes[1] == 'b' && bytes[2] == 0 && bytes[3] == 255:
+                    output.line("budget")
+        _:
+            output.line("wrong result")
+
+fn main(output: Console<Write>, net: Net, listener: Listener):
+    let Ok(sender): Socket = net.connect("127.0.0.1:47620") else Err(reason):
+        return
+    let Ok(receiver): Socket = listener.accept() else Err(reason):
+        sender.close()
+        return
+    let sent = sender.send("abcde")
+    sender.close()
+    check(&receiver, &output)
+    receiver.close()

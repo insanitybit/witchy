@@ -1,0 +1,1 @@
+it implements `Equivalent<String>`, and a type takes one impl of a trait

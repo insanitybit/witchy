@@ -1,0 +1,19 @@
+// A PrefixBuffer of a module's own: filled from the front, read, emptied from the back.
+pub sealed type Stack:
+    data: PrefixBuffer<U64>
+    length: U64
+    capacity: U64
+    invariant memory.prefix(data, length, capacity)
+
+fn main(out: Console<Write>, allocator: Allocator):
+    let made: Result<PrefixBuffer<U64>, U64> = memory.try_alloc_prefix(&allocator, 4)
+    match move made:
+        Ok(buffer):
+            out.print_int(memory.capacity(&buffer))
+            match memory.try_release(move buffer):
+                Ok:
+                    return
+                Err(back):
+                    unreachable
+        Err(code):
+            return

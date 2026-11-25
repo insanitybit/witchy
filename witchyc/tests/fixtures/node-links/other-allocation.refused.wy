@@ -1,0 +1,11 @@
+fn bad<T: Any>(one: &Buffer<T>, other: &mut Buffer<T>):
+    ensures memory.same_allocation(other, old(other))
+    proof:
+        auto
+    let key = memory.allocation_key(one)
+    if memory.initialized(other, 0):
+        let value = memory.ref_link(other, key)
+    return
+
+fn main():
+    return

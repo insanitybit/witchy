@@ -1,0 +1,21 @@
+// Refused by the proof, pointing at the assignment that was not proved and naming the place
+// that may still hold an owner. The first assignment is proved (the slot was just emptied);
+// the two after it are not, and the second of those is named by its line.
+type Slot<T>:
+    Vacant
+    Full(T)
+
+type Shelf<T>:
+    left: Slot<T>
+    right: Slot<T>
+
+nopanic fn refill<T: Any>(shelf: &mut Shelf<T>, a: T, b: T, c: T) -> Slot<T>:
+    var held: Slot<T> = Vacant
+    memory.exchange(&mut (*shelf).left, &mut held)
+    (*shelf).left = Full(move a)
+    (*shelf).right = Full(move b)
+    (*shelf).left = Full(move c)
+    return move held
+
+fn main(out: Console<Write>):
+    out.print_int(1)

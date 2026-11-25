@@ -1,0 +1,79 @@
+// A join continued with the entry found ready steps only the task waiting on it; a plain
+// step (word 0) steps every one; CANCELLED cancels them all. Each child reports its number
+// whenever it is stepped. Printed: a wait as itself, ALSO e as 1000 + e, a report v as
+// 2000 + v.
+import console
+import tasks
+import vec
+
+fn counter(entry: U64) suspends:
+    var going = true
+    while going:
+        if pause_for(entry) == CANCELLED:
+            going = false
+        else:
+            report(entry / 256)
+
+fn close_tasks(tasks: Vec<Task>):
+    var left = move tasks
+    while left.len() > 0:
+        match left.take_last_mut():
+            Ok(task):
+                task.close()
+            Err(code):
+                unreachable
+    left.release_empty()
+
+fn keep(tasks: &mut Vec<Task>, made: Result<Task, U64>):
+    match move made:
+        Ok(task):
+            match tasks.push_spare_mut(move task):
+                Ok:
+                    return
+                Err(back):
+                    back.close()
+        Err(input):
+            return
+
+fn parent(allocator: Allocator) suspends:
+    let Ok(made): Vec<Task> = Vec.new(&allocator, 2) else Err(code):
+        return
+    var tasks = move made
+    keep(&mut tasks, Task.spawn(&allocator, 1024, counter, 1 * 256 + 1))
+    keep(&mut tasks, Task.spawn(&allocator, 1024, counter, 2 * 256 + 1))
+    match join(tasks.as_mut_slice()):
+        Ok:
+            report(98)
+        Err(why):
+            if why == CANCELLED:
+                report(99)
+    close_tasks(move tasks)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Task = Task.spawn(&allocator, 4096, parent, move allocator) else Err(given):
+        return
+    var task = move made
+    // What each wait is answered with: the first child's entry found readable (4 added), the
+    // second's, nothing in particular, then cancellation.
+    let answers: [U64; 4] = [1 * 256 + 1 + 4, 2 * 256 + 1 + 4, 0, CANCELLED]
+    var next: U64 = 0
+    var word: U64 = 0
+    var going = true
+    while going:
+        let stepped = task.resume(word)
+        word = 0
+        match stepped:
+            Ok:
+                going = false
+            Err(token):
+                if token >= REPORTED:
+                    console.print_int(2000 + token - REPORTED)
+                else:
+                    if token >= ALSO:
+                        console.print_int(1000 + token - ALSO)
+                    else:
+                        console.print_int(token)
+                        if next < 4:
+                            word = answers[next]
+                            next += 1
+    task.close()

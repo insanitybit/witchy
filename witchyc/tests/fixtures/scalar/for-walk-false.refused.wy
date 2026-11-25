@@ -1,0 +1,17 @@
+// The count can pass 10.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-vec.wy"
+
+fn count_big(items: &Vec<U64>, bound: U64) -> U64:
+    ensures result <= 10
+    proof:
+        auto
+    var count: U64 = 0
+    for item in items:
+        invariant count <= 10
+        if *item > bound && count < 1000:
+            count += 1
+    return count
+
+fn main(console: Console<Write>):
+    console.print_int(1)

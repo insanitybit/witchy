@@ -1,0 +1,26 @@
+# Read one accepted connection and stage only a complete admitted publication.
+<standard>/wasm-vec.wy: Allocator ; digest sha384:bedaa1adef080670b74f6b45b2d8a1d4cb84c158d298b9fc9ca69a6d1bdc67425998ae44bb7f8658d66821cd3436b417
+<standard>/wasm-vec-text.wy: nothing ; digest sha384:631624647408dcdf978739698431b6e433b7effc83acd006edcc4e325eb70374135fced80d0a7ede048e811fca528aac
+<standard>/wasm-hash.wy: nothing ; no unchecked ; digest sha384:1cd64a088254b164cbe6656cdd894920f8d4b0d0c12a753c7ea5b8317d4bdb341a732303d7a48ceade360acb410016d1
+<standard>/wasm-discard-core.wy: nothing ; no unchecked ; digest sha384:22e2f3a4849f6b641017566c17a7dd1715953486462e270d1b7f0e0a697fd586e97a8e357580a44c59f6a57029e56ddb
+<standard>/wasm-discard.wy: nothing ; no unchecked ; digest sha384:6d061add8d8385896a93123e6729737ce5e91b563a9e58e28928f5e3ef419bc08fa1ba23b16c38e844f1bbd34319568d
+<standard>/wasm-result.wy: nothing ; no unchecked ; digest sha384:79a4b162a05bfb091520eae8b36710e5cd8053d3c8eb05349980b279f58c229ef4e7d53aadc9f440f45b7b7f75cadbb9
+<standard>/wasm-string.wy: nothing ; no unchecked ; digest sha384:0fa2a84a8103651b211c214589865a6cd181ac681fc13a2e03765c1fd65f69f70827bc1c9b67bfbd304d0124dcacf4e5
+<standard>/wasm-args.wy: Allocator, Args ; no unchecked ; digest sha384:8e5dd8845da141a5231ee83182cf9a8794817fd7e5856fe6d92d5d5f2f23ad6906dd6287fd48936712a52c5a390c919c
+<standard>/wasm-console.wy: Console<Write> ; no unchecked ; digest sha384:9cf7c1f12a4259890baa0e60380b789af0ce75a7390d092f78068bb5959605e1eeb8ab6e49894aa15e9b081580d1595d
+<standard>/wasm-fs.wy: File<Write> ; no unchecked ; digest sha384:00c0f78bd55b37fc4f98480640f7da28a834b6331252d67effb896b61cdd6db59ac4d6dc05903ec1f25130847a4daa2d
+<standard>/wasm-text.wy: nothing ; no unchecked ; digest sha384:c33227af14e201a7f8b38ba13498a2aa5f715972ce9cfa37a31a6491590e2cdb10bd8bc5e869cb1ca43f0204329135ec
+<standard>/wasm-ops.wy: nothing ; no unchecked ; digest sha384:fdcf769bf5fa7f077ae961cd06f669302da52f8f2a43f57427f6ff6350fc0ff028915d22da51f8f7fbb16dcda912a4a5
+<standard>/wasm-int.wy: nothing ; no unchecked ; digest sha384:d0626adff3485a27c1f6393dfae022195daa50a05beec28066d2ff83a56f30f67ec24e56cc2977d6abe3b3c1fcf928f6
+<standard>/wasm-sort.wy: nothing ; no unchecked ; digest sha384:64b458f4c10d1fdc557ca99fcb88d2e1db8eb881d0f76b781e47b010cc1eb56365c95afd8d2804072340dfe3e175dd81
+<standard>/wasm-time.wy: nothing ; no unchecked ; digest sha384:d2b03f9e6c0475c5ee5d3d8a014d3a66916e857a2eb4a97341fb035aff82b82b6c6c226c123dda7381413cc67bb3d717
+<standard>/wasm-tasks.wy: nothing ; no unchecked ; digest sha384:320d8159e4a136762e04a2fbb73cc5a0022fd0cb3207b33e5af9c7cd3e2f9b21f231d7cd3c7666a5f484a7d9239275b8
+<standard>/wasm-net.wy: nothing ; no unchecked ; digest sha384:9692c7bcf615ea09cf0ae90ec3bbf426d73567f262ff5c21ec7ee19fdc75c271417c9838711b49391f1d32156aecaa55
+<standard>/wasm-hashmap.wy: nothing ; no unchecked ; digest sha384:5f01ea1dd0d6c274b83f12f23e107cb5491d52a2c4be02b273e26ab775c8069b96a9dcb95d924d162a474a7c76c0f4fb
+<standard>/wasm-simd.wy: nothing ; no unchecked ; digest sha384:2ec8e6250d54a0dda7289f497bc58719a7f915878f7e43358bb7c80d8682d4175f27f08ccdbdb7b7d57d7aa53b9146fb
+<standard>/wasm-span.wy: nothing ; no unchecked ; digest sha384:590236a5a9981f147176f40964602e11b14c6c7c246f257ee68f256d6209219bad66f8bd0be7872b9d00fd28cad56f7e
+<standard>/wasm-http-framing.wy: nothing ; no unchecked ; digest sha384:d37e65e755ae23eb18f50d5af1bf1e124b5b23c8f55f58960fcae1cc50be59a54aa713cabe1ca2188616b11fe5c1782e
+<standard>/wasm-http-head.wy: nothing ; no unchecked ; digest sha384:46058ec29282f7abac48e299c196edf786e5d75e341a37be3dfdeae9ba3aee6e7c816678b7d4d77234650d9ed1cb2365
+<standard>/wasm-http.wy: nothing ; no unchecked ; digest sha384:35059a17dc8efc8a72022cc4fefeb75df69449d8245c356037f33bd665774b9d016768dab4f3aebaf50f08a11861b92f
+<standard>/wasm-console-bytes.wy: Console<Read> ; no unchecked ; digest sha384:58b006da06f44e8b6430163b5d51450b6705d4e7b29b3ef690f52896177cb7dfcf529d1694fc94125c9ff57fd346da62
+legacy_http_admit.wy: Allocator, Args, Console<Read>, Console<Write>, File<Write> ; no unchecked ; digest sha384:dd32ccd4c7bdc05688e11f4dbd2c1d43248cec8006899333bb6a5a3649a7001eb0fe9546f52c90c1e32797c4db4cfe06

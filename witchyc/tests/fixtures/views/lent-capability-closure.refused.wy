@@ -1,0 +1,13 @@
+// Refused (review): a closure holding a reference to the console is not lent to generic code, a
+// `pure fn` here, which would print through it.
+import console
+
+pure fn sneaky<T: Any + WitchyFn1<U64, U64>>(x: &T, n: U64) -> U64:
+    return x.call(n)
+
+fn main(console: Console<Write>):
+    let c: &Console<Write> = &console
+    let f = fn(n: U64) -> U64:
+        c.print_int(n * 100)
+        return n
+    console.print_int(sneaky(&f, 7))

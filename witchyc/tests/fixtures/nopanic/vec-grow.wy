@@ -1,0 +1,35 @@
+// A `nopanic fn` may grow a Vec and a String: the proofs of `push_mut`, `reserve_mut` and
+// `String.reserve` show each `+` and `-` of their own in range, so none is checked or traps.
+import console
+import vec
+import string
+
+nopanic fn fill(cells: &mut Vec<U64>, allocator: &Allocator, count: U64) -> Bool:
+    var index: U64 = 0
+    while index < count:
+        match cells.push_mut(allocator, index):
+            Ok:
+                index = U64.wrapping_add(index, 1)
+            Err(back):
+                return false
+    return true
+
+nopanic fn room(text: &mut String, allocator: &Allocator) -> Bool:
+    match text.reserve(allocator, 64):
+        Ok:
+            return true
+        Err(code):
+            return false
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.new(&allocator, 0) else Err(code):
+        return
+    var cells = move made
+    let Ok(start): String = String.new(&allocator) else Err(code):
+        cells.close()
+        return
+    var text = move start
+    if fill(&mut cells, &allocator, 100) && room(&mut text, &allocator):
+        console.print_int(cells.len())
+    cells.close()
+    text.close()

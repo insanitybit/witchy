@@ -1,0 +1,116 @@
+// Native corpus: method dispatch, receiver/argument order, then owned Vec.
+// Inherent methods are resolved from the receiver's named type.
+type Counter:
+    value: U64
+
+impl Counter:
+    fn get(self: Counter) -> U64:
+        return self.value
+
+type Wrapper<T>:
+    value: T
+
+impl<T> Wrapper<T>:
+    fn get(self: Wrapper<T>) -> T:
+        return move self.value
+
+fn make_counter() -> Counter:
+    return Counter(7)
+
+
+// Three explicit host roots let receiver and arguments have separate effects.
+type Receiver:
+    console: Console<Write>
+
+impl Receiver:
+    fn combine(self: Receiver, first: U64, second: U64) -> Console<Write>:
+        let console = move self.console
+        console.print_int(first)
+        console.print_int(second)
+        return move console
+
+fn make_receiver(console: Console<Write>) -> Receiver:
+    console.print_int(91)
+    return Receiver(move console)
+
+fn mark(console: Console<Write>, value: U64) -> U64:
+    console.print_int(value)
+    discard(move console)
+    return value
+
+type Box<A>:
+    value: A
+
+type Both<A, B>:
+    first: A
+    second: B
+
+impl<X> Box<X>:
+    fn get(self: Box<X>) -> X:
+        return move self.value
+
+    fn pair<U>(self: Box<X>, other: U) -> Both<X, U>:
+        return Both(move self.value, move other)
+
+
+fn main(console: Console<Write>, first: Console<Write>, second: Console<Write>):
+    console.print_int(2001)
+    console.print_int(make_counter().get())
+    console.print_int(Wrapper(42).get())
+    console.print_int(2002)
+    let suite_console = make_receiver(move console).combine(mark(move first, 11), mark(move second, 22))
+    suite_console.print_int(Box(42).get())
+    let pair: Both<U64, Bool> = Box(37).pair(true)
+    suite_console.print_int(pair.first)
+    discard(pair.second)
+    suite_console.print_int(7)
+    suite_console.print_int(2003)
+    var witness: Buffer<U64> = memory.alloc(1)
+    memory.init(&mut witness, 0, 42)
+    let saved = &witness
+    let allocation: Result<Vec<Buffer<U64>>, AllocError> = vec_new(0)
+    let Ok(vector) = move allocation else Err(reason):
+        memory.end(saved)
+        memory.release(witness)
+        discard(move suite_console)
+        return
+    var item: Buffer<U64> = memory.alloc(1)
+    memory.init(&mut item, 0, 73)
+    let Ok(pushed) = vector.push(move item) else Err(failed):
+        memory.release(failed.item)
+        discard(move failed.vector)
+        memory.end(saved)
+        memory.release(witness)
+        discard(move suite_console)
+        return
+    let Ok(grown) = vec_reserve(move pushed, 3) else Err(failed):
+        discard(move failed.vector)
+        memory.end(saved)
+        memory.release(witness)
+        discard(move suite_console)
+        return
+    let Ok(popped) = vec_pop(move grown) else Err(kept):
+        discard(move kept)
+        memory.end(saved)
+        memory.release(witness)
+        discard(move suite_console)
+        return
+    let Some(recovered) = move popped.item else None:
+        discard(move popped.vector)
+        memory.end(saved)
+        memory.release(witness)
+        discard(move suite_console)
+        return
+    suite_console.print_int(memory.read(&recovered, 0))
+    memory.release(recovered)
+    let Ok(done) = vec_release(move popped.vector) else Err(kept):
+        discard(move kept)
+        memory.end(saved)
+        memory.release(witness)
+        discard(move suite_console)
+        return
+    suite_console.print_int(74)
+    suite_console.print_int(memory.read(saved, 0))
+    memory.end(saved)
+    memory.release(witness)
+    discard(move suite_console)

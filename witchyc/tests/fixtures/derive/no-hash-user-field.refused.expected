@@ -1,0 +1,1 @@
+`Colour` (field `paint`) has no `hash`: `Colour` does not implement `Hash`

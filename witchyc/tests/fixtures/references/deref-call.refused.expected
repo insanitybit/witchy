@@ -1,0 +1,1 @@
+`*` of what a call gives is read as a whole `let` value, `let x = *v.cell(0)`; inside a larger expression, bind it first

@@ -1,0 +1,20 @@
+// Refused, saying what to write: a `for` over a `&mut Vec` by name lends shared elements.
+import console
+import vec
+
+fn walk(v: &mut Vec<U64>) -> U64:
+    var t: U64 = 0
+    for x in v:
+        t += *x
+        *x = 3
+    return t
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.filled(&allocator, 256, 3) else Err(c):
+        return
+    var v = move made
+    var acc: U64 = 0
+    for r in 0..40000:
+        acc += walk(&mut v)
+    console.print_int(acc)
+    v.close()

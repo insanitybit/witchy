@@ -1,0 +1,75 @@
+// Serve one TUF request with a granted Socket and a read-only published tree.
+import fs
+import http
+import http_framing
+import net
+import span
+import string
+import vec
+import "routes.wy"
+
+fn read_head(socket: &Socket, bytes: &mut [U8]) -> U64:
+    var size: U64 = 0
+    let capacity = bytes.len()
+    while size < capacity:
+        match socket.read_some(bytes.part(size, capacity)):
+            Ok(count):
+                if count == 0:
+                    return 0
+                let received = size + count
+                if http.head_end(Span.of(bytes.part(0, received)), size) != 0:
+                    return received
+                size = received
+            Err(failure):
+                return 0
+    return 0
+
+fn select_file(socket: &Socket, request: Span, allocator: &Allocator, root: &Dir<Read>) -> Result<Opened, U64>:
+    let Ok(head): RequestHead = http_framing.parse_request_head(request) else Err(reason):
+        return Err(400)
+    var authority: [U8; 64] = [0; 64]
+    let length = socket.accepted_on(authority.slice_mut())
+    let status = http.host_status(head.headers, Span.of(authority.slice().part(0, length)))
+    if status != 0:
+        return Err(status)
+    return routes.select_file(head, allocator, root)
+
+fn send_file(socket: &Socket, file: &File<Read>, fresh: Bool, metadata: Bool, send_body: Bool, allocator: &Allocator, bytes: &mut [U8]) -> Result<(), NetError>:
+    let length = file.snapshot_remaining()
+    let Ok(head): String = routes.tuf_head(allocator, length, fresh, metadata) else Err(code):
+        return socket.send(routes.status_line(503))
+    let sent = socket.write_all(head.as_bytes())
+    head.close()
+    if let Err(failure) = sent:
+        return Err(failure.error)
+    if !send_body:
+        return Ok(())
+    var remaining = length
+    while remaining != 0:
+        let limit = if remaining < bytes.len(): remaining else: bytes.len()
+        let count = file.read_some(bytes.part(0, limit))
+        if count == 0 || count > limit:
+            return Err(Io)
+        if let Err(failure) = socket.write_all(bytes.part(0, count)):
+            return Err(failure.error)
+        remaining -= count
+    return Ok(())
+
+fn main(connection: Socket, allocator: Allocator, root: Dir<Read>):
+    let Ok(made): Vec<U8> = Vec.filled(&allocator, 8192, 0) else Err(code):
+        connection.close()
+        root.close()
+        return
+    var buffer = move made
+    let count = read_head(&connection, buffer.as_mut_slice())
+    if count > 0:
+        match select_file(&connection, Span.of(buffer.as_slice().part(0, count)), &allocator, &root):
+            Ok(object):
+                let Opened(file, fresh, is_meta, send_body) = move object
+                let sent = send_file(&connection, &file, fresh, is_meta, send_body, &allocator, buffer.as_mut_slice())
+                file.close()
+            Err(status):
+                let sent = connection.send(routes.status_line(status))
+    buffer.close()
+    connection.close()
+    root.close()

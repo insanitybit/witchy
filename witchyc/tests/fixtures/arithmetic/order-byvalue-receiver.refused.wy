@@ -1,0 +1,32 @@
+// The by-value argument bug through a method receiver: `p.inc(reset(&mut p.left))`.
+import console
+
+type Pair:
+    left: U64
+    right: U64
+
+impl Pair:
+    fn inc(pair: Pair, z: U64) -> U64:
+        requires pair.left < 10
+        ensures true
+        proof:
+            auto
+        return pair.left + 1
+
+fn reset(n: &mut U64) -> U64:
+    ensures *n == 0
+    ensures result == 0
+    proof:
+        auto
+    *n = 0
+    return 0
+
+fn over(x: U64) -> U64:
+    ensures true
+    proof:
+        auto
+    var p = Pair(x, 0)
+    return p.inc(reset(&mut p.left))
+
+fn main(console: Console<Write>):
+    console.print_int(over(18446744073709551615))

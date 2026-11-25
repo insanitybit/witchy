@@ -1,0 +1,15 @@
+// Refused by the checker, with no proof asked: every variant of the field's type holds an
+// owner, so an assignment always loses one.
+type Either<T>:
+    Left(T)
+    Right(T)
+
+type Shelf<T>:
+    count: U64
+    slot: Either<T>
+
+fn put<T: Any>(shelf: &mut Shelf<T>, item: T):
+    (*shelf).slot = Left(move item)
+
+fn main(out: Console<Write>):
+    out.print_int(1)

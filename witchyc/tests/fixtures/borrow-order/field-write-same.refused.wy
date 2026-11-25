@@ -1,0 +1,10 @@
+// Refused: writing the field a reference points into.
+type Pair:
+    left: U64
+    right: U64
+
+fn main():
+    var p = Pair(1, 2)
+    let a = &p.left
+    p.left = 5
+    let n = *a

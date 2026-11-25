@@ -1,0 +1,39 @@
+// A kept element reference keeps the length known; a clear after the loan ends forgets it again.
+import console
+import vec
+
+sealed type Shelf:
+    items: Vec<U64>
+    room: U64
+    invariant room <= 64
+    invariant items.len() == room
+
+impl Shelf:
+    fn new(allocator: &Allocator, room: U64) -> Result<Shelf, U64>:
+        requires room <= 64
+        ensures true
+        proof:
+            auto
+        let made: Result<Vec<U64>, U64> = Vec.filled(allocator, room, 7)
+        let Ok(items): Vec<U64> = move made else Err(code):
+            return Err(code)
+        return Ok(Shelf(move items, room))
+
+    fn close(shelf: Shelf):
+        let Shelf(items, room) = move shelf
+        items.close()
+
+    // A kept element reference keeps the length; the clear after it, once the loan ends, does not.
+    fn wipe(shelf: &mut Shelf):
+        ensures true
+        proof:
+            auto
+        match (*shelf).items.at_mut(0):
+            Ok(slot):
+                *slot = 3
+            Err(code):
+                ()
+        (*shelf).items.clear_mut()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    return

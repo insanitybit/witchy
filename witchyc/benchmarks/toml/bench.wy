@@ -1,0 +1,38 @@
+// Parses input.toml `count` times (the number in the file `count`), each time from a fresh
+// copy of the text, and prints how many values were read in all. With a file `copy-only` in
+// the directory only the copies are made: run.py takes that time away from the parses.
+import console
+import fs
+import string
+import "@toml"
+
+fn main(console: Console<Write>, dir: Dir<Read>, allocator: Allocator):
+    let Ok(source): String = dir.read_text(&allocator, "input.toml") else Err(error):
+        return
+    let Ok(wanted): String = dir.read_text(&allocator, "count") else Err(error):
+        source.close()
+        return
+    var count: U64 = 0
+    let digits = wanted.as_bytes()
+    for at in 0..digits.len():
+        let digit = U8.to_u64(digits[at])
+        if digit >= 48 && digit <= 57 && count < 100000000:
+            count = count * 10 + (digit - 48)
+    wanted.close()
+    let copy_only = dir.exists("copy-only")
+    var total: U64 = 0
+    for pass in 0..count:
+        let Ok(text): String = String.from_str(&allocator, source.as_str()) else Err(code):
+            break
+        if copy_only:
+            total = U64.wrapping_add(total, text.byte_len())
+            text.close()
+            continue
+        match Toml.parse(&allocator, move text):
+            Ok(tree):
+                total = U64.wrapping_add(total, tree.count())
+                tree.close()
+            Err(error):
+                total = U64.wrapping_add(total, 1)
+    source.close()
+    console.print_int(total)

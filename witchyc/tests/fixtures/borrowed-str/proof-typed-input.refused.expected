@@ -1,0 +1,1 @@
+ensures memory.utf8(input, 0, input.len())

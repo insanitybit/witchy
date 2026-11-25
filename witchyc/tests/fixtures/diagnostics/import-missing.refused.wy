@@ -1,0 +1,6 @@
+// Refused: an import of a file that is not there, named as written and not by the path it resolved to.
+import console
+import "names.wy"
+
+fn main(out: Console<Write>):
+    out.print_int(1)

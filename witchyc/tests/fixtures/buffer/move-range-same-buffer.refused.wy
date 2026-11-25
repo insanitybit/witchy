@@ -1,0 +1,12 @@
+// Refused: a buffer moved into itself is two unique loans of one value.
+fn twice<T: Any>(source: &mut Buffer<T>, count: U64):
+    requires count <= memory.capacity(source)
+    requires memory.initialized_range(source, 0, count)
+    ensures memory.empty_range(source, 0, count)
+    proof:
+        auto
+    memory.move_prefix_unchecked(source, source, count)
+    return
+
+fn main():
+    return

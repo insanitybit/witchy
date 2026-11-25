@@ -1,0 +1,174 @@
+// Benchmarks Game regex-redux. The byte matcher handles the syntax used by
+// these patterns: literals, escapes, classes, repetition, and alternatives.
+import console
+import vec
+
+fn accepts(pattern: &[U8], start: U64, end: U64, byte: U8) -> Bool:
+    if pattern[start] == '[':
+        var at = start + 1
+        let negated = pattern[at] == '^'
+        if negated:
+            at += 1
+        var present = false
+        while at + 1 < end:
+            if pattern[at] == byte:
+                present = true
+            at += 1
+        return present != negated
+    if pattern[start] == '\\':
+        return pattern[start + 1] == byte
+    return pattern[start] == byte
+
+// Return the end of a match at the supplied offset.
+fn sequence(input: &[U8], from: U64, pattern: &[U8], start: U64, end: U64) -> Result<U64, U64>:
+    if start == end:
+        return Ok(from)
+    var next = start + 1
+    if pattern[start] == '[':
+        while next < end && pattern[next] != ']':
+            next += 1
+        if next == end:
+            return Err(1)
+        next += 1
+    else if pattern[start] == '\\':
+        next += 1
+    if next < end && (pattern[next] == '*' || pattern[next] == '+'):
+        var limit = from
+        while limit < input.len() && accepts(pattern, start, next, input[limit]):
+            limit += 1
+        let minimum = if pattern[next] == '+':
+            from + 1
+        else:
+            from
+        while limit >= minimum:
+            match sequence(input, limit, pattern, next + 1, end):
+                Ok(at):
+                    return Ok(at)
+                Err(code):
+                    if limit == minimum:
+                        return Err(code)
+            limit -= 1
+        return Err(1)
+    if from == input.len() || !accepts(pattern, start, next, input[from]):
+        return Err(1)
+    return sequence(input, from + 1, pattern, next, end)
+
+fn match_at(input: &[U8], from: U64, pattern: &[U8]) -> Result<U64, U64>:
+    var start: U64 = 0
+    var at: U64 = 0
+    while at < pattern.len():
+        let byte = pattern[at]
+        if byte == '\\':
+            at += 2
+        else if byte == '[':
+            at += 1
+            while at < pattern.len() && pattern[at] != ']':
+                at += 1
+            if at < pattern.len():
+                at += 1
+        else if byte == '|':
+            match sequence(input, from, pattern, start, at):
+                Ok(end):
+                    return Ok(end)
+                Err(code):
+                    ()
+            at += 1
+            start = at
+        else:
+            at += 1
+    return sequence(input, from, pattern, start, pattern.len())
+
+fn count(console: &Console<Write>, input: &[U8], pattern: &str):
+    var at: U64 = 0
+    var found: U64 = 0
+    while at < input.len():
+        match match_at(input, at, pattern.as_bytes()):
+            Ok(end):
+                found += 1
+                at = end
+            Err(code):
+                at += 1
+    console.write(pattern)
+    console.print_byte(' ')
+    console.print_int(found)
+
+fn replace(allocator: &Allocator, input: &[U8], pattern: &str, replacement: &str) -> Result<Vec<U8>, U64>:
+    let Ok(made): Vec<U8> = Vec.new(allocator, input.len()) else Err(code):
+        return Err(code)
+    var output = move made
+    var at: U64 = 0
+    while at < input.len():
+        match match_at(input, at, pattern.as_bytes()):
+            Ok(end):
+                for byte in replacement.as_bytes():
+                    if let Err(back) = output.push_mut(allocator, *byte):
+                        output.close()
+                        return Err(1)
+                at = end
+            Err(code):
+                if let Err(back) = output.push_mut(allocator, input[at]):
+                    output.close()
+                    return Err(1)
+                at += 1
+    return Ok(move output)
+
+fn substitutions(allocator: &Allocator, input: &[U8]) -> Result<U64, U64>:
+    let first = replace(allocator, input, "tHa[Nt]", "<4>")?
+    let second_result = replace(allocator, first.as_slice(), "aND|caN|Ha[DS]|WaS", "<3>")
+    first.close()
+    let Ok(second): Vec<U8> = move second_result else Err(code):
+        return Err(code)
+    let third_result = replace(allocator, second.as_slice(), "a[NSt]|BY", "<2>")
+    second.close()
+    let Ok(third): Vec<U8> = move third_result else Err(code):
+        return Err(code)
+    let fourth_result = replace(allocator, third.as_slice(), "<[^>]*>", "|")
+    third.close()
+    let Ok(fourth): Vec<U8> = move fourth_result else Err(code):
+        return Err(code)
+    let fifth_result = replace(allocator, fourth.as_slice(), "\\|[^|][^|]*\\|", "-")
+    fourth.close()
+    let Ok(fifth): Vec<U8> = move fifth_result else Err(code):
+        return Err(code)
+    let length = fifth.len()
+    fifth.close()
+    return Ok(length)
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    let Ok(made): Vec<U8> = Vec.new(&allocator, 16384) else Err(code):
+        return
+    var raw = move made
+    var reading = true
+    while reading:
+        match input.read_byte():
+            Ok(byte):
+                if let Err(back) = raw.push_mut(&allocator, byte):
+                    raw.close()
+                    return
+            Err(code):
+                reading = false
+    let original = raw.len()
+    // (>[^\n]+)? followed by newline is equivalent to these two alternatives.
+    let cleaned_result = replace(&allocator, raw.as_slice(), ">[^\n]+\n|\n", "")
+    raw.close()
+    let Ok(cleaned): Vec<U8> = move cleaned_result else Err(code):
+        return
+    let bytes = cleaned.as_slice()
+    count(&console, bytes, "agggtaaa|tttaccct")
+    count(&console, bytes, "[cgt]gggtaaa|tttaccc[acg]")
+    count(&console, bytes, "a[act]ggtaaa|tttacc[agt]t")
+    count(&console, bytes, "ag[act]gtaaa|tttac[agt]ct")
+    count(&console, bytes, "agg[act]taaa|ttta[agt]cct")
+    count(&console, bytes, "aggg[acg]aaa|ttt[cgt]ccct")
+    count(&console, bytes, "agggt[cgt]aa|tt[acg]accct")
+    count(&console, bytes, "agggta[cgt]a|t[acg]taccct")
+    count(&console, bytes, "agggtaa[cgt]|[acg]ttaccct")
+    let length = cleaned.len()
+    let result = substitutions(&allocator, bytes)
+    cleaned.close()
+    let Ok(final_length) = result else Err(code):
+        return
+    console.line("")
+    console.print_int(original)
+    console.print_int(length)
+    console.print_int(final_length)

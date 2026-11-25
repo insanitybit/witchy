@@ -1,0 +1,6 @@
+// Refused, saying what to write: a reference a call gives is dereferenced once it has a name.
+import console
+
+fn main(console: Console<Write>):
+    let a: [U64; 2] = [1, 2]
+    console.print_int(*a.slice().cell(0))

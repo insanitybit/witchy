@@ -1,0 +1,119 @@
+// A single fixed-length CI request on the dedicated HTTPS origin.
+import http
+import span
+import text
+
+pub type CiRoute:
+    Challenge
+    Stage
+    Receipt
+
+pub type CiRequest:
+    route: CiRoute
+    length: U64
+    initial: Span
+    headers: Span
+
+pub fn ci_request(bytes: Span, authority: Span) -> Result<CiRequest, U64>:
+    let Ok(line): Halves = bytes.split(10) else Err(rest):
+        return Err(400)
+    if !line.head.ends_with_text(" HTTP/1.1\r"):
+        return Err(400)
+    let Ok(head): RequestHead = http.request(bytes) else Err(reason):
+        return Err(400)
+    if bytes.len() - head.body.len() > 32768:
+        return Err(431)
+    if !head.method.equals_text("POST"):
+        return Err(405)
+    let route = route_of(head.target)?
+    check_headers(head.headers)?
+    let host = ci_header(head.headers, "host")?
+    if !host.same(authority):
+        return Err(421)
+    let length = body_length(head.headers)?
+    if head.body.len() > length:
+        return Err(400)
+    match route:
+        Stage:
+            let content = ci_header(head.headers, "content-type")?
+            if length == 0 || !content.equals_text("application/octet-stream"):
+                return Err(400)
+        _:
+            if length != 0:
+                return Err(400)
+    return Ok(CiRequest(route, length, head.body, head.headers))
+
+fn route_of(path: Span) -> Result<CiRoute, U64>:
+    if path.equals_text("/v1/ci/challenge"):
+        return Ok(Challenge)
+    if path.equals_text("/v1/ci/stage"):
+        return Ok(Stage)
+    if path.equals_text("/v1/ci/receipt"):
+        return Ok(Receipt)
+    return Err(404)
+
+fn body_length(headers: Span) -> Result<U64, U64>:
+    let wire = ci_header(headers, "content-length")?
+    if wire.is_empty() || wire.len() > 8 || (wire.len() > 1 && wire.byte_or_end(0) == 48):
+        return Err(400)
+    let Ok(length): U64 = wire.parse_u64() else Err(code):
+        return Err(400)
+    if length > 1048576:
+        return Err(413)
+    return Ok(length)
+
+fn field(line: Span) -> Result<Halves, U64>:
+    if !line.ends_with_text("\r"):
+        return Err(400)
+    let content = line.part(0, line.len() - 1)
+    let Ok(parts): Halves = content.split(':') else Err(rest):
+        return Err(400)
+    if parts.head.is_empty() || parts.head.len() > 64:
+        return Err(400)
+    for byte in parts.head.as_bytes():
+        if !(*byte >= 'A' && *byte <= 'Z') && !(*byte >= 'a' && *byte <= 'z') && !(*byte >= '0' && *byte <= '9') && *byte != '-':
+            return Err(400)
+    for byte in parts.tail.as_bytes():
+        if (*byte < 32 && *byte != 9) || *byte >= 127:
+            return Err(400)
+    return Ok(parts)
+
+pub fn check_headers(headers: Span) -> Result<(), U64>:
+    var rest = headers
+    var count: U64 = 0
+    while !rest.is_empty():
+        let Ok(line): Halves = rest.split(10) else Err(stopped):
+            return Err(400)
+        let pair = field(line.head)?
+        let name = pair.head
+        count += 1
+        if count > 64:
+            return Err(431)
+        if name.equals_text_ignore_ascii_case("transfer-encoding") || name.equals_text_ignore_ascii_case("content-encoding") || name.equals_text_ignore_ascii_case("expect") || name.equals_text_ignore_ascii_case("upgrade") || name.equals_text_ignore_ascii_case("trailer"):
+            return Err(400)
+        rest = line.tail
+    return Ok(())
+
+pub fn ci_header(headers: Span, name: Text) -> Result<Span, U64>:
+    let value = optional_header(headers, name)?
+    if value.is_empty():
+        return Err(400)
+    return Ok(value)
+
+pub fn optional_header(headers: Span, name: Text) -> Result<Span, U64>:
+    var rest = headers
+    var result = headers.part(0, 0)
+    var found = false
+    while !rest.is_empty():
+        let Ok(line): Halves = rest.split(10) else Err(stopped):
+            return Err(400)
+        let pair = field(line.head)?
+        if pair.head.equals_text_ignore_ascii_case(name):
+            if found:
+                return Err(400)
+            found = true
+            result = pair.tail.trim()
+            if result.is_empty():
+                return Err(400)
+        rest = line.tail
+    return Ok(result)

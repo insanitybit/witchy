@@ -1,0 +1,48 @@
+// `s.part_proved(from, to)`: a part whose range the function's proof shows, so no range test
+// is emitted and a `nopanic fn` may take it. On text an end inside a scalar gives the empty
+// text rather than a trap.
+import console
+
+// The bytes between two positions, or none where they are not in order and inside the slice.
+nopanic fn middle(bytes: &[U8], from: U64, to: U64) -> &[U8]:
+    ensures true
+    proof:
+        auto
+    if from > to || to > bytes.len():
+        return bytes.part_proved(0, 0)
+    return bytes.part_proved(from, to)
+
+// The text after its first byte and before its last, when it has two.
+nopanic fn inner(text: &str) -> &str:
+    ensures true
+    proof:
+        auto
+    if text.len() < 2:
+        return text
+    return text.part_proved(1, text.len() - 1)
+
+// Checked here, so any numbers may be given.
+nopanic fn clip(text: &str, from: U64, to: U64) -> &str:
+    ensures true
+    proof:
+        auto
+    if from > to || to > text.len():
+        return text.part_proved(0, 0)
+    return text.part_proved(from, to)
+
+fn main(console: Console<Write>):
+    let digits: [U8; 5] = [1, 2, 3, 4, 5]
+    let whole = digits.slice()
+    let part = middle(whole, 1, 4)
+    console.print_int(middle(whole, 4, 9).len())
+    console.print_int(part.len())
+    console.print_int(U8.to_u64(part[0]) * 100 + U8.to_u64(part[2]))
+    console.line(inner("\"quoted\""))
+    console.print_int(inner("x").len())
+    // `é` is two bytes: 1 is inside it, so the part is empty, and 0..2 is the scalar.
+    let accent: &str = "été"
+    console.print_int(clip(accent, 1, 3).len())
+    console.print_int(clip(accent, 0, 2).len())
+    console.line(clip(accent, 2, 5))
+    console.print_int(clip(accent, 3, 9).len())
+    console.print_int(clip(accent, 5, 5).len())

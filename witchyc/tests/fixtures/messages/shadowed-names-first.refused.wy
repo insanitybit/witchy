@@ -1,0 +1,8 @@
+// Refused, saying where the name was first bound: it said only that it is already a name here.
+import console
+
+fn main(console: Console<Write>):
+    let total: U64 = 1
+    console.print_int(total)
+    let total: U64 = 2
+    console.print_int(total)

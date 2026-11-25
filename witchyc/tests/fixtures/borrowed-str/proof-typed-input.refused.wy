@@ -1,0 +1,8 @@
+fn valid_input(buffer: &Buffer<U8>, input: &[U8]):
+    ensures memory.utf8(input, 0, input.len())
+    proof:
+        auto
+    return
+
+fn main():
+    return

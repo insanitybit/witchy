@@ -1,0 +1,19 @@
+// Inside `for item in &items:` a branch that no longer uses `item` may close the container
+// and leave.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-vec.wy"
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var items: Vec<U64> = match Vec.new(&allocator, 4):
+        Ok(made):
+            move made
+        Err(reason):
+            return
+    let _ = items.push_mut(&allocator, 4)
+    let _ = items.push_mut(&allocator, 7)
+    for item in &items:
+        if *item == 7:
+            items.close()
+            console.print_int(7)
+            return
+    items.close()

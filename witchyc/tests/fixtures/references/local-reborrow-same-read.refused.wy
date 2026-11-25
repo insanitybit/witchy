@@ -1,0 +1,16 @@
+// Refused: the field reborrowed uniquely is read through the local while that loan is in use.
+import console
+
+type P:
+    x: U64
+    y: U64
+
+fn main(console: Console<Write>):
+    var p = P(x: 1, y: 1)
+    let r = &mut p
+    let a = &mut (*r).x
+    let b = &mut (*r).y
+    let seen = (*r).x
+    *a += 1
+    *b += 2
+    console.print_int(p.x * 10 + p.y)

@@ -1,0 +1,57 @@
+import console
+import crypto
+
+fn equals(left: &[U8], right: &[U8]) -> Bool:
+    if left.len() != right.len():
+        return false
+    for i in 0..left.len():
+        if left[i] != right[i]:
+            return false
+    return true
+
+// Independent AES-GCM vectors for the two TLS suites. The fixed nonce is
+// used with each key only to check the published cipher interface.
+fn check(key: &[U8], expected: &[U8]) -> Result<Bool, CryptoError>:
+    let nonce: [U8; 12] = [0; 12]
+    let header: [U8; 5] = [23, 3, 3, 0, 19]
+    let plaintext: [U8; 3] = [0, 255, 23]
+    var sealed: [U8; 19] = [0; 19]
+    var opened: [U8; 3] = [0; 3]
+    if key.len() == 16:
+        crypto.tls13_aes128gcm_seal(key, nonce.slice(), header.slice(), plaintext.slice(), sealed.slice_mut())?
+        crypto.tls13_aes128gcm_open(key, nonce.slice(), header.slice(), sealed.slice(), opened.slice_mut())?
+    else:
+        crypto.tls13_aes256gcm_seal(key, nonce.slice(), header.slice(), plaintext.slice(), sealed.slice_mut())?
+        crypto.tls13_aes256gcm_open(key, nonce.slice(), header.slice(), sealed.slice(), opened.slice_mut())?
+    return Ok(equals(sealed.slice(), expected) && equals(opened.slice(), plaintext.slice()))
+
+fn rejected_without_output() -> Bool:
+    let key: [U8; 32] = [0; 32]
+    let nonce: [U8; 12] = [0; 12]
+    let header: [U8; 5] = [23, 3, 3, 0, 19]
+    // Last byte differs from the valid tag.
+    let bad: [U8; 19] = [206, 88, 87, 110, 101, 228, 131, 98, 96, 134, 28, 0, 199, 141, 224, 37, 215, 114, 218]
+    var untouched: [U8; 3] = [165; 3]
+    if let Err(Failed) = crypto.tls13_aes256gcm_open(key.slice(), nonce.slice(), header.slice(), bad.slice(), untouched.slice_mut()):
+        if let Err(WrongLength) = crypto.tls13_aes256gcm_open(key.slice(), nonce.slice().part(0, 11), header.slice(), bad.slice(), untouched.slice_mut()):
+            return untouched[0] == 165 && untouched[1] == 165 && untouched[2] == 165
+    return false
+
+fn main(output: Console<Write>):
+    let key128: [U8; 16] = [0; 16]
+    let key256: [U8; 32] = [0; 32]
+    let expected128: [U8; 19] = [3, 119, 205, 139, 45, 108, 119, 244, 66, 5, 196, 150, 224, 39, 136, 155, 13, 220, 99]
+    let expected256: [U8; 19] = [206, 88, 87, 110, 101, 228, 131, 98, 96, 134, 28, 0, 199, 141, 224, 37, 215, 114, 219]
+    if let Ok(matches128) = check(key128.slice(), expected128.slice()):
+        if matches128:
+            output.line("AES-128-GCM matched")
+    if let Ok(matches256) = check(key256.slice(), expected256.slice()):
+        if matches256:
+            output.line("AES-256-GCM matched")
+    if rejected_without_output():
+        output.line("invalid tag and nonce length refused without output")
+    let tag: [U8; 48] = [0; 48]
+    var changed: [U8; 48] = [0; 48]
+    changed[47] = 1
+    if crypto.verify_tag48(tag.slice(), tag.slice()) && !crypto.verify_tag48(tag.slice(), changed.slice()) && !crypto.verify_tag48(tag.slice(), tag.slice().part(0, 47)):
+        output.line("tag equality and length matched")

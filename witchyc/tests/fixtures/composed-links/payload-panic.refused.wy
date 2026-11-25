@@ -1,0 +1,18 @@
+import cell_list
+import discard
+import discard_core
+
+type Item:
+    word: U64
+
+impl Discard for Item:
+    fn discard(self: Item):
+        unreachable
+
+nopanic fn main(a: Allocator):
+    var list: DoublyLinkedList<Item> = DoublyLinkedList.new()
+    match list.push_back(&a, Item(1)):
+        Some(rejected):
+            return list.close()
+        None:
+            return list.close()

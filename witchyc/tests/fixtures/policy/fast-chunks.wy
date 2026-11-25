@@ -1,0 +1,34 @@
+// The Fast policy is chunk-invariant: bytes 0..15 fed one at a time, as two words, as four U32
+// fields of a derived Quad, and as 3 + 5 + 8 bytes give one value; a different byte, one byte
+// more, or the order of two lanes swapped give others (docs/plan-derive-laws.md).
+import "../derive/parts/keys.wy"
+import console
+import hash
+
+type Quad derive(keys.Key, keys.Fed):
+    a: U32
+    b: U32
+    c: U32
+    d: U32
+
+fn main(console: Console<Write>):
+    var one = HashState.start(Fast(9))
+    for b in 0..16:
+        one.word(b, 1)
+    var words = HashState.start(Fast(9))
+    words.word(506097522914230528, 8)
+    words.word(1084818905618843912, 8)
+    let q = Quad(a: U32.truncate(50462976), b: U32.truncate(117835012), c: U32.truncate(185207048), d: U32.truncate(252579084))
+    var split = HashState.start(Fast(9))
+    split.word(131328, 3)
+    split.word(30165763075, 5)
+    split.word(1084818905618843912, 8)
+    let h = one.finish()
+    if h == words.finish() && h == hash_key(&q, Fast(9)) && h == split.finish():
+        console.print_int(1)
+    var longer = HashState.start(Fast(9))
+    for b in 0..17:
+        longer.word(b, 1)
+    let swapped = Quad(a: U32.truncate(117835012), b: U32.truncate(50462976), c: U32.truncate(185207048), d: U32.truncate(252579084))
+    if longer.finish() != h && hash_key(&swapped, Fast(9)) != h && hash_key(&q, Fast(10)) != h:
+        console.print_int(2)

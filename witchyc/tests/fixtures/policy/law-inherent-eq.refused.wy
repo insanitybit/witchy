@@ -1,0 +1,25 @@
+// Refused: with keys in the program, no type has its own method named `eq`, `feed` or
+// `equivalent`, which `==` and the map would call in place of the trait method the key law reads
+// (adversarial review round 11's hole went through an inherent `eq`).
+import hash
+
+type X:
+    v: U64
+
+impl X:
+    pub fn eq(self: &X, other: &X) -> Bool:
+        return false
+
+type K:
+    a: U64
+
+impl Eq for K:
+    fn eq(self: &K, other: &K) -> Bool:
+        return (*self).a == (*other).a
+
+impl HashKey for K:
+    fn feed(self: &K, state: &mut HashState):
+        (*self).a.feed(state)
+
+fn main():
+    return

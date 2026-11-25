@@ -1,0 +1,23 @@
+// `Before` for U8, U16, U32 and Bool (false first): a record of them derives it and sorts.
+import console
+import sort
+import vec
+import hash
+
+type Row derive(Eq, Before):
+    done: Bool
+    rank: U8
+    group: U32
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<Row> = Vec.new(&allocator, 4) else Err(code):
+        return
+    var rows = move made
+    let a = rows.push_mut(&allocator, Row(true, 1, 7))
+    let b = rows.push_mut(&allocator, Row(false, 9, 3))
+    let c = rows.push_mut(&allocator, Row(false, 2, 8))
+    let d = rows.push_mut(&allocator, Row(true, 1, 2))
+    sort(&mut rows)
+    for row in &rows:
+        console.print("${(*row).done} ${U8.to_u64((*row).rank)} ${U32.to_u64((*row).group)}")
+    rows.close()

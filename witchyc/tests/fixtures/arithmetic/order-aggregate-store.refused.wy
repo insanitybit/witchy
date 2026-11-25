@@ -1,0 +1,27 @@
+// `q = Pair(x, reset(&mut q.left))`: the code builds the record and writes all of it after
+// `reset` ran, so q.left ends as x. The proof wrote part 0 into q's state before walking part 1,
+// and reset's `*n == 0` then overwrote it: q.left believed 0, so `q.left + 1` was emitted unchecked.
+import console
+
+type Pair:
+    left: U64
+    right: U64
+
+fn reset(n: &mut U64) -> U64:
+    ensures *n == 0
+    ensures result == 0
+    proof:
+        auto
+    *n = 0
+    return 0
+
+fn over(x: U64) -> U64:
+    ensures true
+    proof:
+        auto
+    var q = Pair(0, 0)
+    q = Pair(x, reset(&mut q.left))
+    return q.left + 1
+
+fn main(console: Console<Write>):
+    console.print_int(over(18446744073709551615))

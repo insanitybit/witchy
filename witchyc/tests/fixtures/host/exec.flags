@@ -1,0 +1,1 @@
+run: --exec={dir}/exec-bin:greet,lister,notes --deadline-ms=5000

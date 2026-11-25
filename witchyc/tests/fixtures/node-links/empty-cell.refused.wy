@@ -1,0 +1,15 @@
+fn bad<T: Any>(owner: &Buffer<T>, key: U64) -> Result<&T, U64>:
+    ensures match result:
+        Ok(value):
+            memory.cell(owner, 0, value)
+        Err(code):
+            true
+    proof:
+        auto
+    if key == memory.allocation_key(owner):
+        if memory.capacity(owner) > 0:
+            return Ok(memory.ref_link(owner, key))
+    return Err(1)
+
+fn main():
+    return

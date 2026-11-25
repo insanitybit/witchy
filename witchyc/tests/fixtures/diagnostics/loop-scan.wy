@@ -1,0 +1,18 @@
+// Library fixture, loaded after memory-ranges.wy and vec-core.wy.
+//
+// Reads every initialized element once through one shared loan taken before
+// the loop. The loop changes only `index`; the vector's contents, length and
+// capacity are untouched, so the Vec invariant is carried through unchanged.
+fn scan(input: Vec<U64>) -> Vec<U64>:
+    var vector = move input
+    if memory.loan_room(1):
+        let reader = &vector.data
+        var index: USize = 0
+        while index < vector.length:
+            invariant index <= vector.length
+            invariant BufferContents(vector.data, vector.length, vector.capacity)
+            let value = memory.read(reader, index)
+            discard(value)
+            index += 1
+        memory.end(reader)
+    return move vector

@@ -1,0 +1,25 @@
+// A refutable `let` whose written type is a reference: `&T` from `Vec.at`, `&mut T` from
+// `Vec.at_mut`, written to through the name. Both were refused (a reference cannot be moved).
+import console
+import vec
+
+fn first(v: &Vec<U64>) -> U64:
+    let Ok(x): &U64 = v.at(0) else Err(c):
+        return 0
+    return *x
+
+fn bump(v: &mut Vec<U64>, i: U64) -> Bool:
+    let Ok(x): &mut U64 = v.at_mut(i) else Err(c):
+        return false
+    *x = *x + 100
+    return true
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.new(&allocator, 0) else Err(c):
+        return
+    var v = move made
+    let r = v.push_mut(&allocator, 7)
+    console.print_int(first(&v))
+    console.print("${bump(&mut v, 0)} ${bump(&mut v, 5)}")
+    console.print_int(first(&v))
+    v.close()

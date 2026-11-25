@@ -1,0 +1,16 @@
+// Refused (adversarial review round 2): when the key law trusts the library's String, a bundled
+// file with a library file's name must hold that file's text (a copy of wasm-string.wy had
+// imported an edited wasm-vec.wy beside it, and two unequal Strings compared equal).
+import "stand-in/wasm-discard.wy"
+import console
+import hash
+import hashmap
+import keymap
+import string
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): KeyMap<String, U64> = KeyMap.new(&allocator, 4, Reference(1)) else Err(code):
+        return
+    var map = move made
+    console.print_int(map.len())
+    map.discard()

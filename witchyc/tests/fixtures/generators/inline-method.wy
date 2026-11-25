@@ -1,0 +1,11 @@
+// Another file's generators calling methods of their parameter's type: public, run in place;
+// private to that file, stepped. The same values either way.
+import console
+import "parts/meter.wy"
+
+fn main(console: Console<Write>):
+    let meter = Meter(10)
+    for v in readings(&meter, 3):
+        console.print_int(v)
+    for v in secrets(&meter, 3):
+        console.print_int(v)

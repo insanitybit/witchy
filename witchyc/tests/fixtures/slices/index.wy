@@ -1,0 +1,20 @@
+// `s[i]` copies element `i` of a slice; past the end traps (index-past-end.traps.wy).
+import console
+
+type Pad:
+    a: U8
+    b: U64
+    c: Bool
+
+fn third(items: &[Pad]) -> U64:
+    let item = items[2]
+    if item.c:
+        return item.b + U8.to_u64(item.a)
+    return 0
+
+fn main(console: Console<Write>):
+    let small: [U8; 4] = [10, 20, 30, 40]
+    let bytes = small.slice()
+    console.print_int(U8.to_u64(bytes[3]))
+    let pads: [Pad; 3] = [Pad(1, 2, false), Pad(3, 4, false), Pad(5, 30, true)]
+    console.print_int(third(pads.slice()))

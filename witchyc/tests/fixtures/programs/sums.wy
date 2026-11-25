@@ -1,0 +1,59 @@
+// Read lines of numbers from the input and print each line's sum, then the total.
+// A line that holds anything else is reported with its number and skipped.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-string.wy"
+
+// The sum of the numbers on a line. Err: where the first other character is.
+fn sum(line: &String) -> Result<U64, U64>:
+    var total: U64 = 0
+    var number: U64 = 0
+    for index in 0..line.byte_len():
+        let byte = match line.byte_at(index):
+            Ok(found):
+                U8.to_u64(found)
+            Err(code):
+                break
+        if byte >= 48 && byte <= 57:
+            number = number * 10 + (byte - 48)
+        else if byte == 32:
+            total += number
+            number = 0
+        else:
+            return Err(index)
+    return Ok(total + number)
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    var text = match String.new(&allocator):
+        Ok(empty):
+            move empty
+        Err(code):
+            return
+    var total: U64 = 0
+    var count: U64 = 0
+    while true:
+        text.clear()
+        match input.read_line(&allocator, &mut text):
+            .Line:
+                count += 1
+            .End:
+                break
+            .NotText:
+                console.line("the input is not text")
+                break
+            .NoRoom:
+                console.line("no room")
+                break
+        match sum(&text):
+            Ok(value):
+                console.write_string(&text)
+                console.write(" = ")
+                console.print_int(value)
+                total += value
+            Err(where):
+                console.write("not numbers, line ")
+                console.print_int(count)
+    console.write("lines: ")
+    console.print_int(count)
+    console.write("total: ")
+    console.print_int(total)
+    text.close()

@@ -1,0 +1,5 @@
+fn main(console: Console<Write>):
+    let triple: [U64; 3] = [1, 2, 3]
+    for index, item in &triple:
+        index = 5
+        console.print_int(*item)

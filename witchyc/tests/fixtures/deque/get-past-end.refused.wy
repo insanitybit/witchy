@@ -1,0 +1,145 @@
+// Refused: reading one past the last value reads a cell that may be empty.
+import "../../../library/wasm-console.wy"
+
+sealed type Deque<T>:
+    data: Buffer<T>
+    head: U64
+    length: U64
+    capacity: U64
+    invariant capacity == memory.capacity(data)
+    invariant length <= capacity
+    invariant head < capacity || head == 0
+    invariant forall j in (0, capacity): memory.initialized(data, j) == (head <= j && j < head + length || head <= j + capacity && j + capacity < head + length)
+
+impl<T: Any> Deque<T>:
+    fn len(deque: &Deque<T>) -> U64:
+        return (*deque).length
+
+    fn capacity(deque: &Deque<T>) -> U64:
+        return (*deque).capacity
+
+    fn push_back_mut(deque: &mut Deque<T>, item: T) -> Result<(), T>:
+        ensures memory.same_allocation(deque.data, old(deque.data))
+        ensures deque.capacity == old(deque.capacity)
+        ensures match result:
+            Ok:
+                deque.length == old(deque.length) + 1
+            Err(back):
+                deque.length == old(deque.length)
+                old(deque.length) == old(deque.capacity)
+        proof:
+            auto
+        let length = (*deque).length
+        let capacity = (*deque).capacity
+        if length < capacity:
+            let room = capacity - (*deque).head
+            var at: U64 = 0
+            if length < room:
+                at = (*deque).head + length
+            else:
+                at = length - room
+            memory.init_unchecked(&mut (*deque).data, at, move item)
+            (*deque).length = length + 1
+            return Ok(())
+        return Err(move item)
+
+    fn push_front_mut(deque: &mut Deque<T>, item: T) -> Result<(), T>:
+        ensures memory.same_allocation(deque.data, old(deque.data))
+        ensures deque.capacity == old(deque.capacity)
+        ensures match result:
+            Ok:
+                deque.length == old(deque.length) + 1
+            Err(back):
+                deque.length == old(deque.length)
+                old(deque.length) == old(deque.capacity)
+        proof:
+            auto
+        let length = (*deque).length
+        let capacity = (*deque).capacity
+        if length < capacity:
+            var at: U64 = 0
+            if (*deque).head == 0:
+                at = capacity - 1
+            else:
+                at = (*deque).head - 1
+            memory.init_unchecked(&mut (*deque).data, at, move item)
+            (*deque).head = at
+            (*deque).length = length + 1
+            return Ok(())
+        return Err(move item)
+
+    // Err(2): the deque is empty.
+    fn pop_front_mut(deque: &mut Deque<T>) -> Result<T, U64>:
+        ensures memory.same_allocation(deque.data, old(deque.data))
+        ensures deque.capacity == old(deque.capacity)
+        ensures match result:
+            Ok(item):
+                deque.length + 1 == old(deque.length)
+            Err(code):
+                code == 2
+                old(deque.length) == 0
+        proof:
+            auto
+        let length = (*deque).length
+        if length == 0:
+            return Err(2)
+        let at = (*deque).head
+        let item = memory.take_unchecked(&mut (*deque).data, at)
+        if at + 1 < (*deque).capacity:
+            (*deque).head = at + 1
+        else:
+            (*deque).head = 0
+        (*deque).length = length - 1
+        return Ok(move item)
+
+    // Err(2): the deque is empty.
+    fn pop_back_mut(deque: &mut Deque<T>) -> Result<T, U64>:
+        ensures memory.same_allocation(deque.data, old(deque.data))
+        ensures deque.capacity == old(deque.capacity)
+        ensures match result:
+            Ok(item):
+                deque.length + 1 == old(deque.length)
+            Err(code):
+                code == 2
+                old(deque.length) == 0
+        proof:
+            auto
+        let length = (*deque).length
+        if length == 0:
+            return Err(2)
+        let last = length - 1
+        let room = (*deque).capacity - (*deque).head
+        var at: U64 = 0
+        if last < room:
+            at = (*deque).head + last
+        else:
+            at = last - room
+        let item = memory.take_unchecked(&mut (*deque).data, at)
+        (*deque).length = last
+        return Ok(move item)
+
+impl<T> Deque<T>:
+    // Err(1): there is no element at `index`, counted from the front.
+    fn get(deque: &Deque<T>, index: U64) -> Result<T, U64>:
+        ensures deque.length == old(deque.length)
+        ensures match result:
+            Ok(item):
+                index < deque.length
+            Err(code):
+                code == 1
+                index >= deque.length
+        proof:
+            auto
+        if index <= (*deque).length:
+            let room = (*deque).capacity - (*deque).head
+            var at: U64 = 0
+            if index < room:
+                at = (*deque).head + index
+            else:
+                at = index - room
+            return Ok(memory.get_unchecked(&(*deque).data, at))
+        return Err(1)
+
+
+fn main():
+    return

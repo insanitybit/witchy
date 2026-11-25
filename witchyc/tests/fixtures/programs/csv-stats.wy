@@ -1,0 +1,72 @@
+// Statistics of the second column of a CSV file: count, mean, standard deviation, median,
+// least and greatest. The file is the program's one grant (`--file`).
+import console
+import fs
+import float
+import string
+import text
+import vec
+import sort
+
+fn main(console: Console<Write>, data: File<Read>, allocator: Allocator):
+    let Ok(contents): String = data.read_text(&allocator) else Err(error):
+        console.line("unreadable")
+        return
+    let Ok(made): Vec<U64> = Vec.new(&allocator, 16) else Err(code):
+        contents.close()
+        return
+    var scores = move made
+    var cursor: U64 = 0
+    var first = true
+    while cursor < contents.byte_len():
+        let Ok(line): String = contents.field(&allocator, '\n', &mut cursor) else Err(code):
+            break
+        if first:
+            first = false
+        else:
+            var at: U64 = 0
+            match line.field(&allocator, ',', &mut at):
+                Ok(name):
+                    name.close()
+                Err(code):
+                    ()
+            match line.field(&allocator, ',', &mut at):
+                Ok(score):
+                    match score.parse_u64():
+                        Ok(value):
+                            match scores.push_mut(&allocator, value):
+                                Ok:
+                                    ()
+                                Err(back):
+                                    ()
+                        Err(code):
+                            ()
+                    score.close()
+                Err(code):
+                    ()
+        line.close()
+    contents.close()
+    let count = scores.len()
+    if count == 0:
+        console.line("no rows")
+        scores.close()
+        return
+    var total: U64 = 0
+    for x in &scores:
+        total += *x
+    let mean = F64.from_u64(total) / F64.from_u64(count)
+    var squares = 0.0
+    for x in &scores:
+        let d = F64.from_u64(*x) - mean
+        squares += d * d
+    sort(&mut scores)
+    var median = F64.from_u64(scores[count / 2])
+    if count % 2 == 0:
+        median = (F64.from_u64(scores[count / 2 - 1]) + median) / 2.0
+    console.print_int(count)
+    console.print_f64(mean, 3)
+    console.print_f64(F64.sqrt(squares / F64.from_u64(count)), 3)
+    console.print_f64(median, 1)
+    console.print_int(scores[0])
+    console.print_int(scores[count - 1])
+    scores.close()

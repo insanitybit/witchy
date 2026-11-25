@@ -1,0 +1,7 @@
+// Unsigned subtraction below zero is named.
+import console
+
+fn main(console: Console<Write>):
+    let a: U64 = 3
+    let b: U64 = 5
+    console.print_int(a - b)

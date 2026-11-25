@@ -1,0 +1,2 @@
+a call to `pick` does not establish the callee's `requires`
+  not proved: requires at < count

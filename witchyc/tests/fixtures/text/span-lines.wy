@@ -1,0 +1,28 @@
+// Span.lines: lines without their `\n` or `\r\n`, an empty line kept, nothing after a last
+// newline; ends_with_text and contains_text on each.
+import console
+import string
+import span
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(e):
+        return
+    var text = move made
+    let _ = text.push_text(&allocator, "first line.txt\r\nsecond\n\nfourth has key\nlast.txt\n")
+    var n: U64 = 0
+    for line in text.span().lines():
+        n += 1
+        console.write_format("${n} [")
+        write_span(&console, line)
+        console.print("] txt ${line.ends_with_text(".txt")} key ${line.contains_text("key")}")
+    let Ok(other): String = String.new(&allocator) else Err(e):
+        text.close()
+        return
+    var tail = move other
+    let _ = tail.push_text(&allocator, "no newline at the end")
+    for line in tail.span().lines():
+        console.write("[")
+        write_span(&console, line)
+        console.line("]")
+    text.close()
+    tail.close()

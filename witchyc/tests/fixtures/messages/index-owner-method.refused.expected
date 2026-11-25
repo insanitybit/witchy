@@ -1,0 +1,1 @@
+`x[i]` copies the element, and this one is not copied (it holds an owner): call the method through a reference, `x.cell(i).eq(...)`

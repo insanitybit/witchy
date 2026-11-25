@@ -1,0 +1,18 @@
+// Refused: a callee given `&mut` the array may change any element.
+import console
+
+fn spoil(a: &mut [U64; 3]):
+    (*a)[0] = 5000
+
+fn keep(xs: [U64; 3]) -> U64:
+    requires xs[0] < 1000
+    ensures result < 1001
+    proof:
+        auto
+    var ys = xs
+    spoil(&mut ys)
+    ys[0] + 1
+
+fn main(console: Console<Write>):
+    let given = [1, 2, 3]
+    console.print_int(keep(given))

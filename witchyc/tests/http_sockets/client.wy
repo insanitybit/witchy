@@ -1,0 +1,36 @@
+import console
+import http
+import http_framing
+import net
+import span
+
+fn main(output: Console<Write>, network: Net):
+    let Ok(socket): Socket = network.connect("TEST_ADDRESS") else Err(reason):
+        output.line("connect failed")
+        return
+    if let Err(reason) = http.send_get(&socket, "TEST_ADDRESS", "/sample"):
+        socket.close()
+        output.line("write failed")
+        return
+    var head: [U8; 128] = [0; 128]
+    var body: [U8; 3] = [0; 3]
+    var line: [U8; 32] = [0; 32]
+    var input: [U8; 7] = [0; 7]
+    let result = http_framing.read_response(&socket, head.slice_mut(), body.slice_mut(), line.slice_mut(), input.slice_mut())
+    socket.close()
+    match result:
+        Ok(reply):
+            let data = Span.of(body.slice().part(0, reply.body_len))
+            if reply.status == 200 && data.equals_text("abc"):
+                output.line("ok")
+            else if reply.status == 200 && data.len() == 3 && data.byte_or_end(0) == 0 && data.byte_or_end(1) == 255 && data.byte_or_end(2) == 2:
+                output.line("binary")
+            else:
+                output.line("unexpected response")
+        Err(reason):
+            if let SocketMessageRefused(BodyLimit) = reason:
+                output.line("body limit")
+            else if let SocketMessageRefused(IncompleteResponse) = reason:
+                output.line("incomplete response")
+            else:
+                output.line("other error")

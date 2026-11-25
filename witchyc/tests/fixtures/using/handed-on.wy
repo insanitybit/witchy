@@ -1,0 +1,27 @@
+// An owner moved away inside the block is not discarded at the exits after
+// the move: it was handed on, and each exit disposes of it exactly once.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-text.wy"
+import "../../../library/wasm-string.wy"
+
+fn keep(text: String) -> U64:
+    let count = text.byte_len()
+    text.close()
+    return count
+
+fn work(allocator: &Allocator, number: U64) -> Result<U64, U64>:
+    using var text = String.new(allocator)?:
+        if let Err(_) = text.push_u64(allocator, number):
+            return Err(1)
+        let count = keep(move text)
+        if count > 2:
+            return Ok(count * 10)
+        return Ok(count)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    for n in [5, 512]:
+        match work(&allocator, *n):
+            Ok(value):
+                console.print_int(value)
+            Err(code):
+                return

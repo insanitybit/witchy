@@ -1,0 +1,12 @@
+// Refused: a recipe writing a field of the target whose type is the recipe module's sealed
+// `Token`: the fields are the user's choice, as `For` is (review round 5: it printed 999).
+import "parts/fw.wy"
+import console
+
+type T derive(fw.Each):
+    t: fw.Token
+
+fn main(console: Console<Write>):
+    var x = T(t: fw.mint())
+    x.bump()
+    console.print("${fw.redeem(&x.t)}")

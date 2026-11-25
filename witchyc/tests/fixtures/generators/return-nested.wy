@@ -1,0 +1,24 @@
+// `return` ends a generator from any depth: a `match` in a loop that does not yield, a `for`.
+
+// Stops at the first number above the limit, from inside a match in a loop, a for and a guard.
+gen fn until(limit: U64) -> U64:
+    var i: U64 = 0
+    while i < 10:
+        var probe: U64 = 0
+        while probe < 3:
+            match probe:
+                2:
+                    if i * 3 > limit:
+                        return
+                _:
+                    probe = probe
+            probe += 1
+        for k in 0..2:
+            if i + k > 100:
+                return
+        yield i * 3
+        i += 1
+
+fn main(console: Console<Write>):
+    for v in until(10):
+        console.print_int(v)

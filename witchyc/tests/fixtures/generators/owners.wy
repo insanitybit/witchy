@@ -1,0 +1,27 @@
+// A generator given several owners holds them all; `finish` hands them back as an
+// anonymous record.
+import console
+import vec
+
+// Holds two Vecs; yields their elements pairwise added, then hands both back.
+gen fn sums(left: Vec<U64>, right: Vec<U64>) -> U64:
+    for index in 0..left.len():
+        let a: U64 = left[index]
+        if index < right.len():
+            let b: U64 = right[index]
+            yield a + b
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(one): Vec<U64> = Vec.filled(&allocator, 3, 10) else Err(code):
+        return
+    let Ok(two): Vec<U64> = Vec.filled(&allocator, 2, 5) else Err(code):
+        one.close()
+        return
+    var g = sums(move one, move two)
+    for n in g:
+        console.print_int(n)
+    let back = g.finish()
+    let .{left, right} = move back
+    console.print_int(left.len() + right.len())
+    left.close()
+    right.close()

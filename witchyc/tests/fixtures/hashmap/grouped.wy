@@ -1,0 +1,50 @@
+// Compare the value and the precise insertion slot across partial groups and full tables.
+import console
+import hashmap
+import grouped_hashmap
+import discard
+
+fn exercise(allocator: &Allocator, capacity: U64, filled: U64) -> U64:
+    let Ok(made): HashMap<U64, U64> = HashMap.new(allocator, capacity) else Err(code):
+        return 1
+    var map = move made
+    for i in 0..filled:
+        let key = capacity * i + 3
+        match map.insert(key, i):
+            Ok:
+                continue
+            Err(back):
+                unreachable
+    var expected: [U64; 96] = [0; 96]
+    for i in 0..96:
+        let key = capacity * i + 3
+        match map.get(&key):
+            Ok(hit):
+                expected[i] = 100 + *hit
+            Err(slot):
+                expected[i] = slot
+    let Ok(index) = map.into_grouped(allocator) else Err(rest):
+        rest.discard()
+        return 1
+    var errors: U64 = 0
+    for i in 0..96:
+        let key = capacity * i + 3
+        match index.get(&key):
+            Ok(hit):
+                if expected[i] != 100 + *hit:
+                    errors += 1
+            Err(slot):
+                if expected[i] != slot:
+                    errors += 1
+    var restored = index.into_map()
+    if restored.len() != filled:
+        errors += 1
+    restored.discard()
+    return errors
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var errors: U64 = 0
+    for capacity in 0..35:
+        errors += exercise(&allocator, capacity, capacity)
+        errors += exercise(&allocator, capacity, capacity / 2)
+    console.print_int(errors)

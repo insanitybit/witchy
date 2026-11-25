@@ -1,0 +1,42 @@
+// A `Before` that is not an order (always true) still lets `sort` end with every element kept,
+// at every size 0..199 (review: the partition's downward scan walked past its range). 999 at the end.
+import console
+import vec
+import sort
+
+type W:
+    x: U64
+
+impl Before for W:
+    fn before(self: &W, other: &W) -> Bool:
+        return true
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var seed: U64 = 1
+    for n in 0..200:
+        let Ok(made): Vec<W> = Vec.new(&allocator, n + 1) else Err(code):
+            return
+        var v = move made
+        var sum: U64 = 0
+        var xor: U64 = 0
+        for i in 0..n:
+            seed = seed * 48271 % 2147483647
+            let x = seed % 1000
+            sum += x
+            xor += x * x * x
+            match v.push_mut(&allocator, W(x)):
+                Ok:
+                    continue
+                Err(back):
+                    continue
+        sort(&mut v)
+        var sum2: U64 = 0
+        var xor2: U64 = 0
+        for w in &v:
+            sum2 += w.x
+            xor2 += w.x * w.x * w.x
+        if v.len() != n || sum != sum2 || xor != xor2:
+            console.write("lost ")
+            console.print_int(n)
+        v.close()
+    console.print_int(999)

@@ -1,0 +1,20 @@
+// Refused: a return written while a String is still held; the refusal is at the return and says where the owner was bound.
+import console
+import string
+
+fn step(allocator: &Allocator) -> Result<U64, U64>:
+    return Ok(1)
+
+fn make(allocator: &Allocator, flag: Bool) -> Result<U64, U64>:
+    var text: String = String.new(allocator)?
+    let Ok(n): U64 = step(allocator) else Err(code):
+        return Err(code)
+    text.close()
+    return Ok(n)
+
+fn main(out: Console<Write>, allocator: Allocator):
+    match make(&allocator, true):
+        Ok(n):
+            out.print_int(n)
+        Err(code):
+            out.print_int(code)

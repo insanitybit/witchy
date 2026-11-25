@@ -1,0 +1,147 @@
+// Full ephemeral TLS 1.3 key schedule for the two AES-GCM suites. The
+// transcript contains exact handshake messages without TLS record headers.
+import crypto
+import tls_kdf
+
+pub type Peer:
+    Client
+    Server
+
+pub sealed type Handshake:
+    secret: Digest
+    client: Digest
+    server: Digest
+
+pub sealed type Application:
+    client: Digest
+    server: Digest
+
+pub sealed type RecordKeys:
+    words: [U64; 4]
+    width: U64
+    iv: [U8; 12]
+
+pure fn pack_keys(key: &[U8], iv: &[U8; 12]) -> RecordKeys:
+    var words: [U64; 4] = [0; 4]
+    for i in 0..key.len():
+        words[i / 8] = words[i / 8] | (U8.to_u64(key[i]) << (8 * (i % 8)))
+    return RecordKeys(move words, key.len(), *iv)
+
+impl RecordKeys:
+    pub pure fn key_len(self: &RecordKeys) -> U64:
+        return (*self).width
+
+    pub pure fn key_bytes(self: &RecordKeys) -> [U8; 32]:
+        var key: [U8; 32] = [0; 32]
+        for i in 0..self.key_len():
+            key[i] = U8.truncate((*self).words[i / 8] >> (8 * (i % 8)))
+        return move key
+
+    pub pure fn iv_bytes(self: &RecordKeys) -> [U8; 12]:
+        return (*self).iv
+
+pure fn derived(secret: &Digest) -> Result<Digest, CryptoError>:
+    let empty: [U8; 1] = [0]
+    let digest = tls_kdf.hash(secret.len(), empty.slice().part(0, 0))?
+    var bytes: [U8; 48] = [0; 48]
+    digest.write_bytes(&mut bytes)
+    return tls_kdf.label(secret, "derived", bytes.slice().part(0, digest.len()), digest.len())
+
+pub pure fn start(shared: &[U8; 32], hello_hash: &[U8; 32]) -> Result<Handshake, CryptoError>:
+    return start_ephemeral((*shared).slice(), (*hello_hash).slice())
+
+pub pure fn start384(shared: &[U8; 48], hello_hash: &[U8; 48]) -> Result<Handshake, CryptoError>:
+    return start_ephemeral((*shared).slice(), (*hello_hash).slice())
+
+pure fn start_ephemeral(shared: &[U8], hello_hash: &[U8]) -> Result<Handshake, CryptoError>:
+    var nonzero: U8 = 0
+    for byte in shared:
+        nonzero = nonzero | *byte
+    if nonzero == 0:
+        return Err(Failed)
+    let width = hello_hash.len()
+    let zeros = tls_kdf.zeros(width)?
+    var zero_bytes: [U8; 48] = [0; 48]
+    zeros.write_bytes(&mut zero_bytes)
+    let early = tls_kdf.mac(&zeros, zero_bytes.slice().part(0, width))?
+    let salt = derived(&early)?
+    let base = tls_kdf.mac(&salt, shared)?
+    let client = tls_kdf.label(&base, "c hs traffic", hello_hash, width)?
+    let server = tls_kdf.label(&base, "s hs traffic", hello_hash, width)?
+    return Ok(Handshake(move base, move client, move server))
+
+pure fn record_keys(traffic: &Digest) -> Result<RecordKeys, CryptoError>:
+    let empty: [U8; 1] = [0]
+    let width: U64 = if traffic.len() == 48:
+        32
+    else:
+        16
+    let key = tls_kdf.label(traffic, "key", empty.slice().part(0, 0), width)?
+    let iv = tls_kdf.label(traffic, "iv", empty.slice().part(0, 0), 12)?
+    var key_bytes: [U8; 48] = [0; 48]
+    key.write_bytes(&mut key_bytes)
+    var iv_bytes: [U8; 48] = [0; 48]
+    iv.write_bytes(&mut iv_bytes)
+    var record_iv: [U8; 12] = [0; 12]
+    record_iv.slice_mut().copy_from(iv_bytes.slice().part(0, 12))
+    return Ok(pack_keys(key_bytes.slice().part(0, width), &record_iv))
+
+impl Handshake:
+    pub pure fn keys(self: &Handshake, peer: Peer) -> Result<RecordKeys, CryptoError>:
+        match peer:
+            Client:
+                return record_keys(&(*self).client)
+            Server:
+                return record_keys(&(*self).server)
+
+    // The transcript ends immediately before this peer's Finished.
+    pub pure fn finished(self: &Handshake, peer: Peer, transcript: &[U8]) -> Result<Digest, CryptoError>:
+        match peer:
+            Client:
+                return finished_tag(&(*self).client, transcript)
+            Server:
+                return finished_tag(&(*self).server, transcript)
+
+    // The transcript includes the server Finished. The result is only key
+    // material. The connection must authenticate its peer before using it.
+    pub pure fn application(self: &Handshake, server_finished_hash: &[U8]) -> Result<Application, CryptoError>:
+        let width = (*self).secret.len()
+        if server_finished_hash.len() != width:
+            return Err(WrongLength)
+        let zero: [U8; 48] = [0; 48]
+        let salt = derived(&(*self).secret)?
+        let main = tls_kdf.mac(&salt, zero.slice().part(0, width))?
+        let client = tls_kdf.label(&main, "c ap traffic", server_finished_hash, width)?
+        let server = tls_kdf.label(&main, "s ap traffic", server_finished_hash, width)?
+        return Ok(Application(move client, move server))
+
+pure fn finished_tag(traffic: &Digest, transcript: &[U8]) -> Result<Digest, CryptoError>:
+    let width = traffic.len()
+    if transcript.len() != width:
+        return Err(WrongLength)
+    let empty: [U8; 1] = [0]
+    let key = tls_kdf.label(traffic, "finished", empty.slice().part(0, 0), width)?
+    return tls_kdf.mac(&key, transcript)
+
+impl Application:
+    pub pure fn keys(self: &Application, peer: Peer) -> Result<RecordKeys, CryptoError>:
+        match peer:
+            Client:
+                return record_keys(&(*self).client)
+            Server:
+                return record_keys(&(*self).server)
+
+    pub pure fn advance(self: &mut Application, peer: Peer) -> Result<RecordKeys, CryptoError>:
+        match peer:
+            Client:
+                return update_traffic(&mut (*self).client)
+            Server:
+                return update_traffic(&mut (*self).server)
+
+pure fn update_traffic(secret: &mut Digest) -> Result<RecordKeys, CryptoError>:
+    let empty: [U8; 1] = [0]
+    let width = secret.len()
+    let next = tls_kdf.label(secret, "traffic upd", empty.slice().part(0, 0), width)?
+    let keys = record_keys(&next)?
+    *secret = next
+    return Ok(keys)

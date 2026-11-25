@@ -1,0 +1,83 @@
+// A tokenizer: names (owned Strings), numbers, and single-byte symbols, collected in a Vec of a
+// sum type; then counted by kind and the names printed.
+import console
+import string
+import vec
+import discard
+
+type Token derive(Discard):
+    Word(String)
+    Number(U64)
+    Symbol(U8)
+
+fn is_letter(b: U8) -> Bool:
+    return (b >= 97 && b <= 122) || (b >= 65 && b <= 90) || b == 95
+
+fn is_digit(b: U8) -> Bool:
+    return b >= 48 && b <= 57
+
+fn byte(source: Text, at: U64) -> U8:
+    match source.byte_at(at):
+        Ok(b):
+            return b
+        Err(past):
+            return 0
+
+fn tokens(allocator: &Allocator, source: Text) -> Result<Vec<Token>, U64>:
+    var out: Vec<Token> = Vec.new(allocator, 8)?
+    let n = source.byte_len()
+    var at: U64 = 0
+    while at < n:
+        let b = byte(source, at)
+        if b == 32:
+            at += 1
+        else if is_digit(b):
+            var value: U64 = 0
+            while at < n && is_digit(byte(source, at)) && value < 100000000:
+                value = value * 10 + U8.to_u64(byte(source, at)) - 48
+                at += 1
+            match out.push_mut(allocator, Number(value)):
+                Ok:
+                    ()
+                Err(back):
+                    back.discard()
+        else if is_letter(b):
+            let Ok(made): String = String.new(allocator) else Err(code):
+                break
+            var word = move made
+            while at < n && is_letter(byte(source, at)):
+                let _ = word.push(allocator, U8.to_u64(byte(source, at)))
+                at += 1
+            match out.push_mut(allocator, Word(move word)):
+                Ok:
+                    ()
+                Err(back):
+                    back.discard()
+        else:
+            match out.push_mut(allocator, Symbol(b)):
+                Ok:
+                    ()
+                Err(back):
+                    back.discard()
+            at += 1
+    return Ok(move out)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(list): Vec<Token> = tokens(&allocator, "total = price * 12 + tax_rate / 4") else Err(c):
+        return
+    var words: U64 = 0
+    var numbers: U64 = 0
+    var symbols: U64 = 0
+    for token in &list:
+        match token:
+            Word(w):
+                words += 1
+                console.write_string(w)
+                console.write(" ")
+            Number(v):
+                numbers += *v
+            Symbol(s):
+                symbols += 1
+    console.line("")
+    console.print("${words} words, numbers sum ${numbers}, ${symbols} symbols")
+    list.discard()

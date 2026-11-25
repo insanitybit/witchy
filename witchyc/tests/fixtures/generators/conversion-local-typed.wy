@@ -1,0 +1,17 @@
+// A `gen fn` local whose value is a number type's conversion (`U8.to_u64`, `U8.truncate`) has
+// that type without writing it.
+import console
+
+gen fn halves(n: U64) -> U64:
+    var i: U64 = 0
+    while i < n:
+        let b = U8.truncate(i * 37)
+        let w = U8.to_u64(b)
+        i += 1
+        if w >= 0:
+            yield w
+fn main(console: Console<Write>):
+    var t: U64 = 0
+    for x in halves(10):
+        t += x
+    console.print_int(t)

@@ -1,0 +1,115 @@
+import "metadata.wy"
+import fs
+import span
+import string
+import text
+
+pub type PublicationError:
+    MissingObject
+    InvalidObject
+    ImmutableConflict
+    InvalidRootChain
+    AuthorityConflict
+    PriorGenerationInvalid
+    CandidateGenerationInvalid
+    ReleaseRejected
+    StagingFailed
+
+pub type Repository:
+    incoming: &Dir<Read>
+    published: &Dir<Read>
+    spool: &Dir<Write>
+
+pub fn prepare_spool(spool: &Dir<Write>) -> Result<(), PublicationError>:
+    if let Err(error) = spool.make_dir("metadata"):
+        return Err(StagingFailed)
+    if let Err(error) = spool.make_dir("targets"):
+        return Err(StagingFailed)
+    return Ok(())
+
+pub fn stage_object(spool: &Dir<Write>, path: &String, wire: &String) -> Result<(), PublicationError>:
+    if let Err(error) = spool.write_text_path(path, wire):
+        return Err(StagingFailed)
+    return Ok(())
+
+pub fn read_text_object(dir: &Dir<Read>, path: &String, limit: U64, allocator: &Allocator) -> Result<String, PublicationError>:
+    let file = dir.open_path(path)
+    match move file:
+        Ok(opened):
+            match opened.read_text_bounded(allocator, limit):
+                Ok(wire):
+                    return Ok(move wire)
+                Err(_):
+                    return Err(InvalidObject)
+        Err(NotFound):
+            return Err(MissingObject)
+        Err(_):
+            return Err(InvalidObject)
+
+pub fn read_immutable(repo: Repository, path: &String, limit: U64, allocator: &Allocator) -> Result<String, PublicationError>:
+    let supplied = read_text_object(repo.incoming, path, limit, allocator)
+    match move supplied:
+        Ok(bytes):
+            if let Err(error) = compare_published(repo.published, path, &bytes, limit, allocator):
+                bytes.close()
+                return Err(error)
+            return Ok(move bytes)
+        Err(MissingObject):
+            return read_text_object(repo.published, path, limit, allocator)
+        Err(_):
+            return Err(InvalidObject)
+
+pub fn compare_published(dir: &Dir<Read>, path: &String, candidate: &String, limit: U64, allocator: &Allocator) -> Result<(), PublicationError>:
+    let existing = read_text_object(dir, path, limit, allocator)
+    match move existing:
+        Ok(bytes):
+            let equal = bytes.eq(candidate)
+            bytes.close()
+            if !equal:
+                return Err(ImmutableConflict)
+            return Ok(())
+        Err(MissingObject):
+            return Ok(())
+        Err(_):
+            return Err(InvalidObject)
+
+pub fn literal_path(allocator: &Allocator, name: Text) -> Result<String, PublicationError>:
+    let Ok(empty): String = String.with_capacity(allocator, name.byte_len()) else Err(code):
+        return Err(InvalidObject)
+    var path = move empty
+    if let Err(code) = path.push_text(allocator, name):
+        path.close()
+        return Err(InvalidObject)
+    return Ok(move path)
+
+pub fn metadata_path(allocator: &Allocator, version: U64, name: Text) -> Result<String, PublicationError>:
+    let Ok(empty): String = String.with_capacity(allocator, 96) else Err(code):
+        return Err(InvalidObject)
+    var path = move empty
+    if let Err(code) = append_metadata_path(&mut path, allocator, version, name):
+        path.close()
+        return Err(InvalidObject)
+    return Ok(move path)
+
+fn append_metadata_path(path: &mut String, allocator: &Allocator, version: U64, name: Text) -> Result<(), U64>:
+    path.push_text(allocator, "metadata/")?
+    path.push_u64(allocator, version)?
+    path.push_text(allocator, ".")?
+    path.push_text(allocator, name)?
+    return path.push_text(allocator, ".json")
+
+pub fn delegated_path(allocator: &Allocator, version: U64, name: &String) -> Result<String, PublicationError>:
+    let Ok(empty): String = String.with_capacity(allocator, 96) else Err(code):
+        return Err(InvalidObject)
+    var path = move empty
+    if let Err(code) = append_delegated_path(&mut path, allocator, version, name):
+        path.close()
+        return Err(InvalidObject)
+    return Ok(move path)
+
+fn append_delegated_path(path: &mut String, allocator: &Allocator, version: U64, name: &String) -> Result<(), U64>:
+    path.push_text(allocator, "metadata/")?
+    path.push_u64(allocator, version)?
+    path.push_text(allocator, ".")?
+    path.push_part(allocator, name, 0, name.byte_len())?
+    return path.push_text(allocator, ".json")

@@ -1,0 +1,3 @@
+// Not the library's wasm-discard.wy: a file of that name with other text.
+pub fn stand_in() -> U64:
+    return 1

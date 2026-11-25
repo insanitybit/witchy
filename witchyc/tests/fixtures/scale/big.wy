@@ -1,0 +1,87 @@
+// A program that needs more than the default sizes: 50,000 pushes onto a Vec that starts
+// empty and grows, then 300 Strings alive at once. Built with a 2 MiB memory, 1024 allocation
+// slots and a 16 KiB stack; run with a larger instruction and memory grant (big.flags).
+import "../../../library/wasm-string.wy"
+import "../../../library/wasm-vec.wy"
+import "../../../library/wasm-discard.wy"
+
+fn fill(allocator: &Allocator, input: Vec<U64>, count: U64) -> Vec<U64>:
+    var items = move input
+    var index: U64 = 0
+    while index < count:
+        match items.push(allocator, index):
+            Ok(grown):
+                items = move grown
+            Err(back):
+                let VecPushError(vector, item) = move back
+                return move vector
+        index += 1
+    return move items
+
+fn total(items: &Vec<U64>) -> U64:
+    var sum: U64 = 0
+    var index: U64 = 0
+    while index < items.len():
+        match items.get(index):
+            Ok(item):
+                sum += item
+            Err(_):
+                return 0
+        index += 1
+    return sum
+
+fn word(allocator: &Allocator, scalar: U64) -> Result<String, U64>:
+    let empty = String.new(allocator)?
+    match empty.push_scalar(allocator, scalar):
+        Ok(one):
+            return Ok(move one)
+        Err(back):
+            back.close()
+            return Err(901)
+
+fn words(allocator: &Allocator, input: Vec<String>, count: U64) -> Vec<String>:
+    var names = move input
+    var index: U64 = 0
+    while index < count:
+        match word(allocator, 97 + index % 26):
+            Ok(name):
+                match names.push(allocator, move name):
+                    Ok(grown):
+                        names = move grown
+                    Err(back):
+                        let VecPushError(vector, item) = move back
+                        item.close()
+                        return move vector
+            Err(code):
+                return move names
+        index += 1
+    return move names
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let numbers: Result<Vec<U64>, U64> = Vec.new(&allocator, 0)
+    match move numbers:
+        Ok(empty):
+            let items: Vec<U64> = fill(&allocator, move empty, 50000)
+            console.print_int(items.len())
+            console.print_int(total(&items))
+            items.close()
+        Err(code):
+            console.print_int(code)
+    let strings: Result<Vec<String>, U64> = Vec.new(&allocator, 0)
+    match move strings:
+        Ok(empty):
+            var names: Vec<String> = words(&allocator, move empty, 300)
+            console.print_int(names.len())
+            var bytes: U64 = 0
+            while names.len() > 0:
+                match names.take_last_mut():
+                    Ok(name):
+                        bytes += name.byte_len()
+                        name.close()
+                    Err(_):
+                        break
+            console.print_int(bytes)
+            names.discard()
+            console.print_int(1)
+        Err(code):
+            console.print_int(code)

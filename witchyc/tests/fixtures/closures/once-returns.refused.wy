@@ -1,0 +1,13 @@
+// Work given to a task gives nothing back.
+import console
+import tasks
+import vec
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(numbers): Vec<U64> = Vec.filled(&allocator, 2, 4) else Err(code):
+        return
+    match Task.spawn(&allocator, 4096, fn() -> U64: Vec.len(&(move numbers))):
+        Ok(task):
+            task.close()
+        Err(back):
+            back.discard()

@@ -1,0 +1,88 @@
+// Shared HTTP routing and response fields for both mirror transports.
+import fs
+import http
+import http_framing
+import span
+import string
+import "paths.wy"
+
+fn open_file(allocator: &Allocator, root: &Dir<Read>, path: Span) -> Result<File<Read>, FsError>:
+    let Ok(text): String = path.to_string(allocator) else Err(code):
+        return Err(OutOfMemory)
+    let result = root.open_path(&text)
+    text.close()
+    return move result
+
+fn opened(allocator: &Allocator, root: &Dir<Read>, path: Span, fresh: Bool, metadata: Bool, send_body: Bool) -> Result<Opened, U64>:
+    let Ok(file): File<Read> = open_file(allocator, root, path) else Err(failure):
+        return Err(404)
+    return Ok(Opened(move file, fresh, metadata, send_body))
+
+// GET sends the representation. HEAD performs the same checks and sends only its headers.
+pub fn admitted_read(head: RequestHead) -> Result<Bool, U64>:
+    let send_body = head.method.equals_text("GET")
+    if !send_body && !head.method.equals_text("HEAD"):
+        return Err(405)
+    if let Err(reason) = http_framing.request_without_body(head):
+        return Err(400)
+    return Ok(send_body)
+
+pub fn select_file(head: RequestHead, allocator: &Allocator, root: &Dir<Read>) -> Result<Opened, U64>:
+    let send_body = admitted_read(head)?
+    let path = head.target.part(1, head.target.len())
+    let Ok(parts): Halves = path.split(47) else Err(rest):
+        return Err(404)
+    if parts.head.equals_text("metadata"):
+        let fresh = parts.tail.equals_text("timestamp.json")
+        if fresh || paths.metadata_path(parts.tail):
+            return opened(allocator, root, path, fresh, true, send_body)
+    if parts.head.equals_text("targets") && paths.target_path(parts.tail):
+        return opened(allocator, root, path, false, false, send_body)
+    return Err(404)
+
+pub type Opened:
+    file: File<Read>
+    fresh: Bool
+    metadata: Bool
+    send_body: Bool
+
+pub fn status_line(status: U64) -> Text:
+    if status == 503:
+        return "HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nCache-Control: no-store\r\nContent-Length: 0\r\n\r\n"
+    if status == 421:
+        return "HTTP/1.1 421 Misdirected Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+    if status == 404:
+        return "HTTP/1.1 404 Not Found\r\nConnection: close\r\nCache-Control: no-store\r\nContent-Length: 0\r\n\r\n"
+    if status == 405:
+        return "HTTP/1.1 405 Method Not Allowed\r\nAllow: GET, HEAD\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+    return "HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+
+pub fn tuf_head(allocator: &Allocator, length: U64, fresh: Bool, metadata: Bool) -> Result<String, U64>:
+    // Timestamp metadata is limited to 16 KiB. Publication bounds other objects to 2 MiB.
+    let limit = if fresh: 16384 else: 2097152
+    if length > limit:
+        return Err(503)
+    let Ok(empty): ResponseHeaders = http.response_headers(allocator) else Err(reason):
+        return Err(503)
+    var headers = move empty
+    let result = encode_tuf_head(allocator, &mut headers, length, fresh, metadata)
+    headers.close()
+    return move result
+
+fn encode_tuf_head(allocator: &Allocator, headers: &mut ResponseHeaders, length: U64, fresh: Bool, metadata: Bool) -> Result<String, U64>:
+    let no_store: Text = "no-store"
+    let immutable: Text = "public, max-age=31536000, immutable"
+    let cache = if fresh: no_store else: immutable
+    if let Err(reason) = add_tuf_fields(allocator, headers, cache):
+        return Err(503)
+    let json: Text = "application/json"
+    let binary: Text = "application/octet-stream"
+    let media = if metadata: json else: binary
+    let Ok(head): String = http.response_head_with_headers(allocator, 200, media, length, headers) else Err(reason):
+        return Err(503)
+    return Ok(move head)
+
+fn add_tuf_fields(allocator: &Allocator, headers: &mut ResponseHeaders, cache: Text) -> Result<(), HttpError>:
+    headers.add_text(allocator, "Cache-Control", cache)?
+    headers.add_text(allocator, "X-Content-Type-Options", "nosniff")?
+    return headers.add_text(allocator, "Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'")

@@ -1,0 +1,103 @@
+// Wrap a dense run across the end of the table. Some keys share both their home
+// and their fingerprint. Compare membership and values to an independent array.
+import console
+import hash
+import hashmap
+import discard
+
+type Key derive(Discard):
+    id: U64
+
+impl Hash for Key:
+    fn hash(self: &Key) -> U64:
+        return 29 + (*self).id % 9 + 37 * 131072 * ((*self).id % 7)
+
+impl Eq for Key:
+    fn eq(self: &Key, other: &Key) -> Bool:
+        return (*self).id == (*other).id
+
+fn exercise(allocator: &Allocator, initial: U64) -> U64:
+    let Ok(made): HashMap<Key, U64> = HashMap.new(allocator, 37) else Err(code):
+        return 1
+    var map = move made
+    var want: [U64; 64] = [0; 64]
+    var count: U64 = 0
+    var state = initial
+    var errors: U64 = 0
+    for step in 0..4096:
+        state = state * 48271 % 2147483647
+        let id = state % 64
+        if state % 5 < 3:
+            match map.insert(Key(id), step + 1):
+                Ok:
+                    if want[id] != 0 || count == 37:
+                        errors += 1
+                    want[id] = step + 1
+                    count += 1
+                Err(back):
+                    if want[id] == 0 && count < 37 || back.key.id != id || back.value != step + 1:
+                        errors += 1
+        else:
+            match map.remove(&Key(id)):
+                Ok(entry):
+                    if want[id] != entry.value || entry.key.id != id:
+                        errors += 1
+                    want[id] = 0
+                    count -= 1
+                Err(slot):
+                    if want[id] != 0:
+                        errors += 1
+        if map.len() != count:
+            errors += 1
+        let probe = (state / 64) % 64
+        let key = Key(probe)
+        var expected_slot: U64 = 37
+        for offset in 0..37:
+            let index = (key.hash() + offset) % 37
+            match map.entry(index):
+                Ok(entry):
+                    if (*entry).key.id == probe:
+                        expected_slot = index
+                        break
+                Err(empty):
+                    expected_slot = index
+                    break
+        match map.find_by(&key):
+            Ok(slot):
+                if want[probe] == 0 || slot != expected_slot:
+                    errors += 1
+            Err(slot):
+                if want[probe] != 0 || slot != expected_slot:
+                    errors += 1
+        match map.get(&key):
+            Ok(found):
+                if want[probe] != *found:
+                    errors += 1
+            Err(slot):
+                if want[probe] != 0 || slot != expected_slot:
+                    errors += 1
+        match map.get_mut(&key):
+            Ok(value):
+                if want[probe] == 0 || *value != want[probe]:
+                    errors += 1
+                *value += 1
+                want[probe] += 1
+            Err(slot):
+                if want[probe] != 0 || slot != expected_slot:
+                    errors += 1
+    for id in 0..64:
+        match map.get(&Key(id)):
+            Ok(found):
+                if *found != want[id]:
+                    errors += 1
+            Err(slot):
+                if want[id] != 0:
+                    errors += 1
+    map.discard()
+    return errors
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var errors: U64 = 0
+    for seed in 1..17:
+        errors += exercise(&allocator, seed)
+    console.print_int(errors)

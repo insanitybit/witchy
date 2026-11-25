@@ -1,0 +1,20 @@
+import "coordinate.wy"
+import json_tree
+import span
+import string
+
+pub type FetchScope:
+    PackageTarget(&String)
+    CatalogTargets
+
+pub fn fetch_scope(field: &Json) -> Result<FetchScope, U64>:
+    match field:
+        Null:
+            return Ok(CatalogTargets)
+        _:
+            let coordinate = field.text()?
+            let Ok(parts): Halves = coordinate.span().split('/') else Err(rest):
+                return Err(1)
+            if !package_name(parts.head) || !version_bundle(parts.tail):
+                return Err(1)
+            return Ok(PackageTarget(coordinate))

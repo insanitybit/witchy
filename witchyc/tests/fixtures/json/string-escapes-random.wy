@@ -1,0 +1,124 @@
+// JSON strings with random contents: quotes, backslashes, control bytes, and scalars of every
+// width, written as JSON with escapes (`\"`, `\\`, `\n`, `\t`, `\uXXXX`, and surrogate pairs),
+// parsed by `json_tree`, compared byte for byte with the same scalars pushed onto a String;
+// then written back by `show`, parsed again and compared again.
+import console
+import string
+import json_tree
+
+fn hex(text: &mut String, allocator: &Allocator, unit: U64) -> Bool:
+    if let Err(_) = text.push_text(allocator, "\\u"):
+        return false
+    var shift: U64 = 16
+    while shift > 0:
+        shift -= 4
+        let d = (unit >> shift) & 15
+        let digit = if d < 10: 48 + d else: 87 + d
+        if let Err(_) = text.push(allocator, digit):
+            return false
+    return true
+
+fn same(a: &String, b: &String) -> Bool:
+    if a.byte_len() != b.byte_len():
+        return false
+    for i in 0..a.byte_len():
+        let Ok(x): U8 = a.byte_at(i) else Err(e):
+            return false
+        let Ok(y): U8 = b.byte_at(i) else Err(e):
+            return false
+        if x != y:
+            return false
+    return true
+
+// 0: the document is one string equal to `want`; 1: not.
+fn holds(document: &Json, want: &String) -> U64:
+    match document:
+        Str(s):
+            if same(s, want):
+                return 0
+        _:
+            return 1
+    return 1
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var seed: U64 = 23
+    var wrong: U64 = 0
+    var scalars: U64 = 0
+    for round in 0..150:
+        let Ok(a): String = String.new(&allocator) else Err(c):
+            return
+        var source = move a
+        let Ok(b): String = String.new(&allocator) else Err(c):
+            source.close()
+            return
+        var want = move b
+        var ok = source.push(&allocator, 34).is_ok()
+        seed = seed * 48271 % 2147483647
+        let n = seed % 24
+        for k in 0..n:
+            seed = seed * 48271 % 2147483647
+            let kind = seed % 8
+            var c = 97 + seed % 26
+            if kind == 0:
+                c = 34
+            else if kind == 1:
+                c = 92
+            else if kind == 2:
+                c = seed % 32
+            else if kind == 3:
+                c = 128 + seed % 1920
+            else if kind == 4:
+                c = 2048 + seed % 53000
+            else if kind == 5:
+                c = 65536 + seed % 1000000
+            if c >= 55296 && c <= 57343:
+                c = 47
+            ok = ok && want.push(&allocator, c).is_ok()
+            scalars += 1
+            // Escaped in the source: the two that must be, control bytes, and every fourth
+            // other scalar by its `\u` form (a surrogate pair above the first plane).
+            if c == 34 || c == 92:
+                ok = ok && source.push(&allocator, 92).is_ok() && source.push(&allocator, c).is_ok()
+            else if c == 10:
+                ok = ok && source.push_text(&allocator, "\\n").is_ok()
+            else if c == 9:
+                ok = ok && source.push_text(&allocator, "\\t").is_ok()
+            else if c < 32 || seed % 4 == 0:
+                if c >= 65536:
+                    let v = c - 65536
+                    ok = ok && hex(&mut source, &allocator, 55296 + (v >> 10)) && hex(&mut source, &allocator, 56320 + (v & 1023))
+                else:
+                    ok = ok && hex(&mut source, &allocator, c)
+            else:
+                ok = ok && source.push(&allocator, c).is_ok()
+        ok = ok && source.push(&allocator, 34).is_ok()
+        if !ok:
+            wrong += 1
+        match json_tree(&source, &allocator):
+            Ok(document):
+                wrong += holds(&document, &want)
+                let Ok(e): String = String.new(&allocator) else Err(c):
+                    json_close(move document)
+                    source.close()
+                    want.close()
+                    return
+                match document.show(move e, &allocator):
+                    Ok(written):
+                        match json_tree(&written, &allocator):
+                            Ok(again):
+                                wrong += holds(&again, &want)
+                                json_close(move again)
+                            Err(at):
+                                console.print("rewritten refused at ${at}")
+                                wrong += 1
+                        written.close()
+                    Err(back):
+                        back.close()
+                        wrong += 1
+                json_close(move document)
+            Err(at):
+                console.print("refused at ${at}")
+                wrong += 1
+        source.close()
+        want.close()
+    console.print("${wrong} wrong, ${scalars} scalars")

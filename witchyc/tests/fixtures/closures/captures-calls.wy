@@ -1,0 +1,27 @@
+// A captured variable or generator local set from a plain function's call takes the type its
+// signature names, the function declared later or not.
+import console
+
+gen fn doubled(limit: U64) -> U64:
+    var top = twice(limit)
+    var i = 0
+    while i < top:
+        yield i
+        i += 3
+
+fn main(console: Console<Write>):
+    let by = ten()
+    let small = byte()
+    let add = fn(n: U64): n + by + U8.to_u64(small)
+    console.print_int(add(1))
+    for v in doubled(4):
+        console.print_int(v)
+
+fn ten() -> U64:
+    10
+
+fn byte() -> U8:
+    7
+
+fn twice(n: U64) -> U64:
+    n * 2

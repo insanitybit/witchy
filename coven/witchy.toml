@@ -1,0 +1,14 @@
+# coven — the witchy package registry, written in witchy. A content-addressed,
+# immutable, signed registry that recomputes every rune's capability footprint
+# from source (server-side enforcement, never trusting uploaded metadata) and
+# enforces the two-phase publish lifecycle (stage -> promote). It runs on the
+# interpreter (it uses `compiler.footprint`, a host intrinsic) and needs the
+# network to listen, a Dir for its store, and a Secret to sign records.
+[rune]
+name = "coven"
+version = "0.1.0"
+
+[capabilities]
+runtime = ["Console", "Net", "Dir", "Secret", "Clock"]
+
+[dependencies]

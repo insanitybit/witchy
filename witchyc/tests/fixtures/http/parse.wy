@@ -1,0 +1,32 @@
+// Parsing a whole HTTP response: its status and body; a reply that is not HTTP is refused.
+import console
+import string
+import http
+
+fn reply(allocator: &Allocator, text: Text) -> String:
+    let Ok(made): String = String.new(allocator) else Err(code):
+        unreachable
+    var whole = move made
+    if let Err(_) = whole.push_text(allocator, text):
+        unreachable
+    return move whole
+
+fn show(console: &Console<Write>, allocator: &Allocator, text: Text):
+    let whole = reply(allocator, text)
+    match http.parse(&whole, allocator):
+        Ok(response):
+            console.print_int(response.status)
+            console.print_int(response.body.byte_len())
+            response.close()
+        Err(Malformed):
+            console.print_int(0)
+        Err(_):
+            console.print_int(1)
+    whole.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    show(&console, &allocator, "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello")
+    show(&console, &allocator, "HTTP/1.0 404 Not Found\r\n\r\n")
+    show(&console, &allocator, "SSH-2.0-OpenSSH\r\n\r\n")
+    show(&console, &allocator, "HTTP/1.1X200 OK\r\n\r\n")
+    show(&console, &allocator, "HTTP/1.Z 404 X\r\n\r\n")

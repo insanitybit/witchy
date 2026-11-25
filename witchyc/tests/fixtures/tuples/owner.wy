@@ -1,0 +1,32 @@
+// A tuple may hold an owner, and moves and opens like any anonymous record; a Vec holds tuples.
+import console
+import string
+import vec
+
+fn labelled(allocator: &Allocator, n: U64) -> Result<(String, U64), U64>:
+    let Ok(made): String = String.new(allocator) else Err(code):
+        return Err(code)
+    var text = move made
+    let _ = text.push_text(allocator, "item")
+    Ok((move text, n))
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(pair): (String, U64) = labelled(&allocator, 3) else Err(code):
+        return
+    let (text, n) = move pair
+    console.print_int(text.byte_len() + n)
+    text.close()
+    let Ok(made): Vec<(U64, U64)> = Vec.new(&allocator, 2) else Err(code):
+        return
+    var points = move made
+    match points.push_mut(&allocator, (1, 2)):
+        Ok:
+            ()
+        Err(back):
+            ()
+    match points.at(0):
+        Ok(p):
+            console.print_int(p.0 + p.1)
+        Err(code):
+            ()
+    points.close()

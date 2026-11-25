@@ -1,0 +1,6 @@
+// Checked arithmetic is written in place; it still traps. A sum past the largest U64.
+fn work(left: U64, right: U64) -> U64:
+    return left + right
+
+fn main(console: Console<Write>):
+    console.print_int(work(18446744073709551615, 1))

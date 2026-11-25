@@ -1,0 +1,9 @@
+fn transfer(buffer: &Buffer<U8>, text: &str, start: U64):
+    requires memory.slice_contents(text, buffer, start)
+    ensures memory.utf8(buffer, start, text.len() + 1)
+    proof:
+        auto
+    return
+
+fn main():
+    return

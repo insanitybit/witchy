@@ -1,0 +1,15 @@
+// A proved function whose index the facts do not bound below the length keeps its check:
+// `i < 6` allows 5, past `[U64; 5]`, and the run stops there.
+import console
+
+fn at(values: &[U64; 5], i: U64) -> U64:
+    requires i < 6
+    ensures true
+    proof:
+        auto
+    return values[i]
+
+fn main(console: Console<Write>):
+    let values: [U64; 5] = [1, 2, 3, 4, 5]
+    console.print_int(at(&values, 4))
+    console.print_int(at(&values, 5))

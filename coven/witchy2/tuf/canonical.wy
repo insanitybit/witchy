@@ -1,0 +1,99 @@
+// The two canonical JSON encodings used by Coven signatures.
+import json_tree
+import json_strings
+import string
+import text
+import vec
+
+// The document was parsed with json_sorted_tree, which sorts its
+// object members and rejects duplicate decoded keys.
+pub fn canonical(value: &Json, allocator: &Allocator) -> Result<String, U64>:
+    return encode(value, allocator, false)
+
+// Compact, sorted, ASCII JSON used by the release receipt and its policy.
+pub fn release_json(value: &Json, allocator: &Allocator) -> Result<String, U64>:
+    return encode(value, allocator, true)
+
+fn encode(value: &Json, allocator: &Allocator, ascii: Bool) -> Result<String, U64>:
+    let Ok(empty): String = String.new(allocator) else Err(code):
+        return Err(code)
+    var output = move empty
+    if let Err(code) = emit(value, &mut output, allocator, ascii):
+        output.close()
+        return Err(code)
+    return Ok(move output)
+
+fn emit(value: &Json, output: &mut String, allocator: &Allocator, ascii: Bool) -> Result<(), U64>:
+    match value:
+        Null:
+            return output.push_text(allocator, "null")
+        Boolean(flag):
+            if *flag:
+                return output.push_text(allocator, "true")
+            return output.push_text(allocator, "false")
+        Whole(number):
+            return output.push_u64(allocator, *number)
+        Decimal(number):
+            return emit_integer(number, output, allocator)
+        Str(text):
+            return emit_string(text, output, allocator, ascii)
+        Array(items):
+            output.push_text(allocator, "[")?
+            var first = true
+            for item in items:
+                if !first:
+                    output.push_text(allocator, ",")?
+                emit(item, output, allocator, ascii)?
+                first = false
+            return output.push_text(allocator, "]")
+        Object(members):
+            return emit_object(members, output, allocator, ascii)
+
+fn emit_integer(number: &String, output: &mut String, allocator: &Allocator) -> Result<(), U64>:
+    let bytes = number.as_bytes()
+    if bytes.len() == 0:
+        return Err(10)
+    var start: U64 = 0
+    if bytes[0] == '-':
+        start = 1
+    for i in start..bytes.len():
+        if bytes[i] < '0' || bytes[i] > '9':
+            return Err(10)
+    if number.equals_text("-0"):
+        return output.push_text(allocator, "0")
+    return output.push_part(allocator, number, 0, bytes.len())
+
+fn emit_string(text: &String, output: &mut String, allocator: &Allocator, ascii: Bool) -> Result<(), U64>:
+    if ascii:
+        return append_json_string(output, allocator, text, JsonAscii)
+    return emit_tuf_string(text, output, allocator)
+
+// The TUF signature profile escapes only quote and backslash here.
+fn emit_tuf_string(text: &String, output: &mut String, allocator: &Allocator) -> Result<(), U64>:
+    output.push_text(allocator, "\"")?
+    let bytes = text.as_bytes()
+    var start: U64 = 0
+    var i: U64 = 0
+    while i < bytes.len():
+        let byte = bytes[i]
+        if byte == 34 || byte == 92:
+            output.push_part(allocator, text, start, i)?
+            output.push_ascii(allocator, 92 | (U8.to_u64(byte) << 8), 2)?
+            i += 1
+            start = i
+        else:
+            i += 1
+    output.push_part(allocator, text, start, bytes.len())?
+    return output.push_text(allocator, "\"")
+
+fn emit_object(members: &Vec<Member>, output: &mut String, allocator: &Allocator, ascii: Bool) -> Result<(), U64>:
+    output.push_text(allocator, "{")?
+    var first = true
+    for member in members:
+        if !first:
+            output.push_text(allocator, ",")?
+        emit_string(&member.key, output, allocator, ascii)?
+        output.push_text(allocator, ":")?
+        emit(&member.value, output, allocator, ascii)?
+        first = false
+    return output.push_text(allocator, "}")

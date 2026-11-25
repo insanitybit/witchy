@@ -1,0 +1,50 @@
+// Work that takes over what it needs and is cancelled before it starts runs nothing: it gives
+// up what it took over (here a file, abandoned, so never written). The same work stepped as
+// usual writes its file.
+import console
+import fs
+import tasks
+import discard
+
+fn record(file: File<Write>) suspends:
+    let wrote = file.write("ran")
+    let done = file.finish()
+
+fn task_for(dir: &Dir, allocator: &Allocator, path: Text) -> Result<Task, U64>:
+    let Ok(file): File<Write> = dir.create(path) else Err(error):
+        return Err(1)
+    match Task.spawn(allocator, 2048, fn() -> (): record(move file)):
+        Ok(task):
+            return Ok(move task)
+        Err(back):
+            back.discard()
+            return Err(2)
+
+fn show(console: &Console<Write>, dir: &Dir, allocator: &Allocator, path: Text):
+    match dir.read_text(allocator, path):
+        Ok(text):
+            console.write_string(&text)
+            console.line("")
+            text.close()
+        Err(error):
+            console.line("not written")
+
+fn main(console: Console<Write>, allocator: Allocator, dir: Dir):
+    let Ok(first): Task = task_for(&dir, &allocator, "cancelled.txt") else Err(code):
+        return
+    var cancelled = move first
+    let told = cancelled.cancel()
+    cancelled.close()
+    show(&console, &dir, &allocator, "cancelled.txt")
+    let Ok(second): Task = task_for(&dir, &allocator, "stepped.txt") else Err(code):
+        return
+    var stepped = move second
+    var going = true
+    while going:
+        match stepped.step():
+            Ok:
+                going = false
+            Err(token):
+                going = true
+    stepped.close()
+    show(&console, &dir, &allocator, "stepped.txt")

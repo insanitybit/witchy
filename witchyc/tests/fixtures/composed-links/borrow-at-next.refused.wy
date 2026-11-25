@@ -1,0 +1,24 @@
+import cell_list
+
+nopanic fn main(out: Console<Write>, a: Allocator):
+    var list: DoublyLinkedList<U64> = DoublyLinkedList.new()
+    if list.push_back(&a, 7).is_some():
+        list.close()
+        return
+    match list.push_back(&a, 8):
+        Some(rejected):
+            list.close()
+            return
+        None:
+            match list.front():
+                Some(node):
+                    match list.next(node):
+                        Some(next_node):
+                            let item = next_node.item()
+                            let removed = list.pop_back()
+                            out.print_int(*item)
+                        None:
+                            out.print_int(0)
+                None:
+                    out.print_int(0)
+    list.close()

@@ -1,0 +1,11 @@
+// An interpolation inside a `${...}` value: counted with the program's and its record kept
+// (review: it took the outer literal's name, and the inner literal printed the outer text).
+import console
+
+fn echo<F: Format>(m: F, console: &Console<Write>) -> U64:
+    console.print(m)
+    return 7
+
+fn main(console: Console<Write>):
+    let n: U64 = 3
+    console.print("a ${echo("b ${n}", &console)} c")

@@ -1,0 +1,14 @@
+// The reference an `if` value gave is still in use when one of the values it may point at is written.
+import console
+
+type Box:
+    n: U64
+
+fn main(console: Console<Write>):
+    var a = Box(n: 1)
+    var b = Box(n: 2)
+    let c: Bool = false
+    let chosen = if c: &a else: &b
+    let copy = chosen
+    b.n = 5
+    console.print_int((*copy).n)

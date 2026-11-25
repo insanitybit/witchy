@@ -1,0 +1,9 @@
+// Refused: `main` runs on no task, so nothing could resume it.
+import console
+import tasks
+
+fn wait_once() suspends:
+    pause(1)
+
+fn main(console: Console<Write>):
+    wait_once()

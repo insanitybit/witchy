@@ -1,0 +1,51 @@
+// The checked I64 operations answer where the plain ones trap: every pair of eight
+// values at the edges, counted and summed, against the same sums worked out apart.
+import "../../../library/wasm-int.wy"
+
+fn tally(console: &Console<Write>, which: U64, edges: &[I64; 8]):
+    var fine: U64 = 0
+    var outside: U64 = 0
+    var zero: U64 = 0
+    var sum: U64 = 0
+    for left in 0..8:
+        for right in 0..8:
+            let a = (*edges)[left]
+            let b = (*edges)[right]
+            let made = if which == 0:
+                a.checked_add(b)
+            else if which == 1:
+                a.checked_sub(b)
+            else if which == 2:
+                a.checked_mul(b)
+            else if which == 3:
+                a.checked_div(b)
+            else:
+                a.checked_rem(b)
+            match made:
+                Ok(value):
+                    fine += 1
+                    sum = (sum + value.magnitude() % 1000003) % 1000003
+                    if value < 0:
+                        sum = (sum + 1) % 1000003
+                Err(code):
+                    if code == 1:
+                        outside += 1
+                    else:
+                        zero += 1
+    console.print_int(fine)
+    console.print_int(outside)
+    console.print_int(zero)
+    console.print_int(sum)
+
+fn main(console: Console<Write>):
+    let edges: [I64; 8] = [-9223372036854775808, -9223372036854775807, -3, -1, 0, 2, 3037000500, 9223372036854775807]
+    for which in 0..5:
+        tally(&console, which, &edges)
+    var negated: U64 = 0
+    for index in 0..8:
+        match edges[index].checked_neg():
+            Ok(value):
+                negated += 1
+            Err(code):
+                continue
+    console.print_int(negated)

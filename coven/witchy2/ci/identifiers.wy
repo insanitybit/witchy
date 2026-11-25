@@ -1,0 +1,28 @@
+import span
+
+pub fn identifier(text: Span) -> Bool:
+    if text.is_empty() || text.len() > 128:
+        return false
+    for byte in text.as_bytes():
+        if !(*byte >= 'a' && *byte <= 'z') && !(*byte >= 'A' && *byte <= 'Z') && !digit(*byte) && *byte != '-' && *byte != '_' && *byte != '.':
+            return false
+    return true
+
+pub fn revision(text: Span) -> Bool:
+    if text.len() != 40:
+        return false
+    for byte in text.as_bytes():
+        if !digit(*byte) && !(*byte >= 'a' && *byte <= 'f'):
+            return false
+    return true
+
+pub fn positive_id(text: Span) -> Bool:
+    if text.is_empty() || text.len() > 25 || text.byte_or_end(0) == 48:
+        return false
+    for byte in text.as_bytes():
+        if !digit(*byte):
+            return false
+    return true
+
+fn digit(byte: U8) -> Bool:
+    return byte >= '0' && byte <= '9'

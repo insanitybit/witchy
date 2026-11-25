@@ -1,0 +1,33 @@
+// A query for one instance of a generic key (`keys.Query(for: Wrap<U64>)`): the key field `T`
+// is read as U64 for that instance (review round 16 found this lawful query refused).
+import "../derive/parts/keys.wy"
+import console
+import hash
+import hashmap
+import keymap
+
+type Wrap<T> derive(Discard, keys.Key, keys.Fed):
+    v: T
+    tag: U32
+
+type Probe derive(keys.Fed, keys.Query(for: Wrap<U64>)):
+    v: U64
+    tag: U32
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): KeyMap<Wrap<U64>, U64> = KeyMap.new(&allocator, 64, Fast(3)) else Err(code):
+        return
+    var map = move made
+    match map.put(&allocator, Wrap(v: 7, tag: U32.truncate(2)), 70):
+        Ok:
+            ()
+        Err(entry):
+            entry.discard()
+    match map.get(&Probe(v: 7, tag: U32.truncate(2))):
+        Ok(found):
+            console.print_int(*found)
+        Err(code):
+            console.print_int(0)
+    if !map.contains(&Probe(v: 7, tag: U32.truncate(3))):
+        console.print_int(1)
+    map.discard()

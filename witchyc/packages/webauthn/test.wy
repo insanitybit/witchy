@@ -1,0 +1,58 @@
+import "webauthn.wy"
+import testing
+
+// The signature covers authenticatorData followed by SHA-256(clientDataJSON).
+test fn accepts_the_assertion_and_refuses_changed_inputs() -> Result<(), Failure>:
+    var key: [U8; 77] = [
+        165, 1, 2, 3, 38, 32, 1, 33, 88, 32, 136, 197, 49, 241, 4, 83,
+        250, 37, 140, 160, 8, 181, 246, 165, 184, 124, 53, 128, 211, 162, 76, 197,
+        235, 222, 224, 67, 110, 89, 162, 234, 239, 246, 34, 88, 32, 176, 128, 93,
+        183, 44, 233, 114, 218, 208, 159, 185, 104, 83, 67, 71, 249, 176, 78, 161,
+        106, 222, 249, 161, 10, 226, 253, 72, 15, 140, 169, 238, 36,
+    ]
+    // clientDataJSON for origin https://example.test with challenge dGVzdA.
+    let client: [U8; 76] = [
+        123, 34, 116, 121, 112, 101, 34, 58, 34, 119, 101, 98, 97, 117, 116, 104,
+        110, 46, 103, 101, 116, 34, 44, 34, 99, 104, 97, 108, 108, 101, 110, 103,
+        101, 34, 58, 34, 100, 71, 86, 122, 100, 65, 34, 44, 34, 111, 114, 105,
+        103, 105, 110, 34, 58, 34, 104, 116, 116, 112, 115, 58, 47, 47, 101, 120,
+        97, 109, 112, 108, 101, 46, 116, 101, 115, 116, 34, 125,
+    ]
+    var auth: [U8; 37] = [
+        155, 38, 63, 188, 181, 137, 133, 49, 55, 179, 61, 220, 175, 165, 188, 197,
+        64, 52, 100, 234, 212, 218, 118, 109, 15, 129, 147, 72, 191, 141, 71, 44,
+        5, 0, 0, 0, 7,
+    ]
+    let signature: [U8; 71] = [
+        48, 69, 2, 33, 0, 165, 19, 233, 180, 110, 169, 115, 169, 67, 3, 141,
+        74, 36, 82, 75, 111, 158, 166, 83, 202, 248, 136, 175, 19, 134, 110, 90,
+        85, 219, 155, 215, 253, 2, 32, 31, 86, 214, 255, 50, 79, 93, 171, 154,
+        25, 109, 247, 197, 210, 164, 143, 25, 44, 148, 95, 39, 76, 2, 182, 187,
+        158, 51, 159, 196, 93, 206, 49,
+    ]
+    let rp: [U8; 12] = [
+        101, 120, 97, 109, 112, 108, 101, 46, 116, 101, 115, 116,
+    ]
+    let other: [U8; 18] = [
+        119, 114, 111, 110, 103, 46, 101, 120, 97, 109, 112, 108, 101, 46, 116, 101,
+        115, 116,
+    ]
+    let sig = signature.slice()
+    let Ok(count) = verify_es256_assertion(key.slice(), client.slice(), auth.slice(), rp.slice(), sig, 6) else Err(error):
+        return testing.ok(false)
+    testing.eq_u64(count, 7)?
+    let stale = verify_es256_assertion(key.slice(), client.slice(), auth.slice(), rp.slice(), sig, 7)
+    let wrong_rp = verify_es256_assertion(key.slice(), client.slice(), auth.slice(), other.slice(), sig, 6)
+    let truncated = verify_es256_assertion(key.slice(), client.slice(), auth.slice(), rp.slice(), sig.part(0, sig.len() - 1), 6)
+    auth[32] = 1
+    let missing_uv = verify_es256_assertion(key.slice(), client.slice(), auth.slice(), rp.slice(), sig, 6)
+    auth[32] = 5
+    key[3] = 1
+    key[4] = 2
+    let repeated_label = verify_es256_assertion(key.slice(), client.slice(), auth.slice(), rp.slice(), sig, 6)
+    return testing.ok(refused(stale) && refused(wrong_rp) && refused(truncated) && refused(missing_uv) && refused(repeated_label))
+
+fn refused(result: Result<U64, AssertionError>) -> Bool:
+    if let Err(AssertionRefused) = result:
+        return true
+    return false

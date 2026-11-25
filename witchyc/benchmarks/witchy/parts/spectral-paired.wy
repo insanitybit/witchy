@@ -1,0 +1,107 @@
+// Spectral norm with paired output rows. The scalar control shares the loop and its checks.
+import console
+import float
+import vec
+import simd
+
+const DIMENSION_LIMIT: U64 = 1048576
+const STEP_LIMIT: U64 = 4194304
+// At most DIMENSION_LIMIT / 2 outer steps of STEP_LIMIT, plus a row offset.
+const FIRST_LIMIT: U64 = 2199025352704
+
+// One lane per output row. Each row accumulates j in scalar order.
+fn times_paired(v: &[F64], out: &mut Vec<F64>, n: U64, transpose: Bool):
+    requires n < DIMENSION_LIMIT
+    ensures true
+    proof:
+        auto
+    if v.len() >= DIMENSION_LIMIT:
+        return
+    let one = 1.0
+    let step: U64 = if transpose:
+        1
+    else:
+        0
+    // T(i) = i * (i + 1) / 2. Moving two rows adds 2*i + 3.
+    var triangle: U64 = 0
+    var pair: U64 = 0
+    while pair < n / 2:
+        invariant pair <= n / 2
+        invariant triangle <= pair * STEP_LIMIT
+        let i = pair * 2
+        let row_start = if transpose:
+            0
+        else:
+            i
+        var first = triangle + row_start + 1
+        // Adjacent row denominators differ by i + j + 2 - step.
+        var gap = i + 2 - step
+        var sum = F64x2(0.0, 0.0)
+        for j in 0..v.len():
+            invariant first <= FIRST_LIMIT + j * STEP_LIMIT
+            invariant gap <= i + 2 + j
+            let second = first + gap
+            let den = F64x2(F64.from_u64(first), F64.from_u64(second))
+            let input = v[j]
+            // Change the target comparison to .Wasm to run the matched scalar control natively.
+            static if target.backend == .Native:
+                let entries = F64x2(one, one).div(den)
+                sum = sum.add(entries.mul(F64x2(input, input)))
+            else:
+                sum = F64x2(sum.low + (one / den.low) * input, sum.high + (one / den.high) * input)
+            first += i + j + 1 + step
+            gap += 1
+        let low = sum.low
+        let high = sum.high
+        out[i] = low
+        out[i + 1] = high
+        triangle += 2 * i + 3
+        pair += 1
+    if n % 2 == 1:
+        let i = n - 1
+        let row_start = if transpose:
+            0
+        else:
+            i
+        var first = triangle + row_start + 1
+        var tail = 0.0
+        for j in 0..v.len():
+            invariant first <= FIRST_LIMIT + j * STEP_LIMIT
+            tail += (one / F64.from_u64(first)) * v[j]
+            first += i + j + 1 + step
+        out[i] = tail
+
+fn times_both_paired(v: &Vec<F64>, out: &mut Vec<F64>, scratch: &mut Vec<F64>, n: U64):
+    requires n < DIMENSION_LIMIT
+    ensures true
+    proof:
+        auto
+    times_paired(v.as_slice(), scratch, n, false)
+    times_paired(scratch.as_slice(), out, n, true)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let n: U64 = 1000
+    let Ok(made_u): Vec<F64> = Vec.filled(&allocator, n, 1.0) else Err(code):
+        return
+    var u = move made_u
+    let Ok(made_v): Vec<F64> = Vec.filled(&allocator, n, 0.0) else Err(code):
+        u.close()
+        return
+    var v = move made_v
+    let Ok(made_t): Vec<F64> = Vec.filled(&allocator, n, 0.0) else Err(code):
+        u.close()
+        v.close()
+        return
+    var scratch = move made_t
+    for step in 0..10:
+        times_both_paired(&u, &mut v, &mut scratch, n)
+        times_both_paired(&v, &mut u, &mut scratch, n)
+    var vbv = 0.0
+    var vv = 0.0
+    for i in 0..n:
+        vbv += u[i] * v[i]
+        vv += v[i] * v[i]
+    console.print_f64(F64.sqrt(vbv / vv), 9)
+    u.close()
+    v.close()
+    scratch.close()

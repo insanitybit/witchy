@@ -1,0 +1,6 @@
+// A block line without its `:` says the `:` is expected.
+import console
+
+fn main(console: Console<Write>):
+    for i in 0..3
+        console.print_int(i)

@@ -1,0 +1,4 @@
+// A U8 product with a constant: in range for U64, past the U8's, still traps.
+fn main(console: Console<Write>):
+    let small: U8 = 8
+    console.print_int(U8.to_u64(small * 32))

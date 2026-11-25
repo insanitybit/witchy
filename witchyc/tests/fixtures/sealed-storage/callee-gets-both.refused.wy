@@ -1,0 +1,30 @@
+// Refused: a callee is given the kept reference and the whole value.
+import console
+import vec
+import option
+
+sealed type Bag:
+    items: Vec<U64>
+    held: Option<U64>
+    spare: U64
+    count: U64
+    limit: U64
+    invariant count <= limit
+    invariant when None = held:
+        count == 0
+
+fn both(slot: &mut U64, bag: &Bag):
+    *slot = 1
+
+impl Bag:
+    fn set(bag: &mut Bag) -> U64:
+        ensures bag.count == old(bag.count)
+        match (*bag).items.at_mut(0):
+            Ok(slot):
+                both(slot, &*bag)
+                return 1
+            Err(code):
+                return 0
+
+fn main(console: Console<Write>):
+    console.print_int(1)

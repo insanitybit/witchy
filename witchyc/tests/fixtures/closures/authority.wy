@@ -1,0 +1,14 @@
+// A callback that holds authority its maker gave it (book: capabilities-narrowing.md,
+// "Withholding authority by structure"): `log` takes over `console`, and `run_steps` uses it
+// only through the call it is lent. `wasm-caps` shows `run_steps` holding `Console<Write>`
+// through its type argument.
+import console
+
+fn run_steps(each: &fn(U64) -> (), count: U64):
+    for i in 0..count:
+        each(i)
+
+fn main(console: Console<Write>):
+    let scale: U64 = 10
+    let log = fn(n: U64) -> (): console.print_int(n * scale)
+    run_steps(&log, 3)

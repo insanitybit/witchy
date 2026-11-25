@@ -1,0 +1,186 @@
+// Select the policy, and for local release commands validate the staged package.
+import "approval_bindings.wy"
+import "challenge_bindings.wy"
+import "commit_request.wy"
+import "policy_document.wy"
+import "../tuf/canonical.wy"
+import "../tuf/package.wy"
+import "../tuf/release_trust.wy"
+import console
+import discard
+import json_tree
+import option
+import span
+import "@sqlite"
+import string
+import text
+import vec
+
+pub fn read_challenge_policy(db: &Sqlite, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    return read_challenge(db, output, None, allocator)
+
+pub fn read_staged_release(db: &Sqlite, output: &Console<Write>, digest: &String, allocator: &Allocator) -> Result<(), U64>:
+    if !valid_digest(digest):
+        return Err(1)
+    return read_challenge(db, output, Some(digest), allocator)
+
+fn read_challenge(db: &Sqlite, output: &Console<Write>, digest: Option<&String>, allocator: &Allocator) -> Result<(), U64>:
+    let empty = String.with_capacity(allocator, 768)?
+    var plan = move empty
+    let prepared = challenge_read_plan(&mut plan, digest, allocator)
+    let checked = query_challenge(db, output, &plan, digest, prepared, allocator)
+    plan.close()
+    return checked
+
+fn challenge_read_plan(plan: &mut String, digest: Option<&String>, allocator: &Allocator) -> Result<(), U64>:
+    plan.push_text(allocator, "expect\tno release policy installed\tSELECT EXISTS(SELECT document FROM policy WHERE singleton=1 AND document IS NOT NULL)\n")?
+    if let Some(reference) = digest:
+        plan.push_text(allocator, "expect\tunknown staged candidate\tSELECT EXISTS(SELECT digest FROM candidates WHERE digest=:digest)\n")?
+        return plan.push_text(allocator, "result\tinvalid staged candidate or release policy\tSELECT CAST(json_object('policy',CAST(p.document AS TEXT),'name',c.name,'version',c.version) || X'00' || c.payload AS BLOB) FROM policy p JOIN candidates c ON c.digest=:digest WHERE p.singleton=1 AND typeof(p.document)='blob' AND length(p.document) BETWEEN 1 AND 65536 AND typeof(c.payload)='blob' AND length(c.payload) BETWEEN 1 AND 1048576\n")
+    return plan.push_text(allocator, "result\tinvalid release policy\tSELECT document FROM policy WHERE singleton=1 AND typeof(document)='blob' AND length(document) BETWEEN 1 AND 65536\n")
+
+fn query_challenge(db: &Sqlite, output: &Console<Write>, plan: &String, digest: Option<&String>, prepared: Result<(), U64>, allocator: &Allocator) -> Result<(), U64>:
+    prepared?
+    let empty = String.with_capacity(allocator, 128)?
+    var bindings = move empty
+    let bound = if let Some(reference) = digest:
+        text_binding(&mut bindings, "digest", reference, allocator)
+    else:
+        Ok(())
+    let checked = fetch_challenge(db, output, plan, &bindings, digest, bound, allocator)
+    bindings.close()
+    return checked
+
+fn fetch_challenge(db: &Sqlite, output: &Console<Write>, plan: &String, bindings: &String, digest: Option<&String>, bound: Result<(), U64>, allocator: &Allocator) -> Result<(), U64>:
+    bound?
+    let capacity = if let Some(reference) = digest:
+        1310976
+    else:
+        65537
+    let empty: Vec<U8> = Vec.filled(allocator, capacity, 0)?
+    var reply = move empty
+    let bytes = bindings.as_bytes()
+    let size = db.transact(plan.as_bytes(), bytes, bytes.part(0, 0), reply.as_mut_slice())
+    let checked = emit_challenge_read(size, reply.as_slice(), digest, output, allocator)
+    reply.close()
+    return checked
+
+fn emit_challenge_read(size: Result<U64, U64>, reply: &[U8], digest: Option<&String>, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let Ok(length): U64 = size else Err(code):
+        return Err(10)
+    if length <= 1 || length > reply.len() || reply[0] > 1:
+        return Err(10)
+    let record = Span.of(reply.part(1, length))
+    if reply[0] == 1:
+        let reason = record.to_string(allocator)?
+        emit_line(output, "refused", &reason)
+        reason.close()
+        return Ok(())
+    let checked = if let Some(reference) = digest:
+        parse_candidate(record, reference, output, allocator)
+    else:
+        parse_policy(record, output, allocator)
+    if let Err(code) = checked:
+        output.line("refused")
+        if code == 3:
+            output.line("staged bytes do not match their digest")
+        else if code == 4:
+            output.line("invalid staged candidate")
+        else:
+            output.line("invalid release policy")
+    return Ok(())
+
+fn parse_document(record: Span, allocator: &Allocator) -> Result<Json, U64>:
+    let raw = record.to_string(allocator)?
+    let parsed = parse_release_json(&raw, allocator)
+    raw.close()
+    return move parsed
+
+fn parse_policy(record: Span, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let policy = parse_document(record, allocator)?
+    let checked = encode_policy(&policy, allocator)
+    policy.discard()
+    let Ok(encoded): String = move checked else Err(code):
+        return Err(code)
+    emit_line(output, "committed", &encoded)
+    encoded.close()
+    return Ok(())
+
+fn encode_policy(policy: &Json, allocator: &Allocator) -> Result<String, U64>:
+    validate_policy(policy, allocator)?
+    return release_json(policy, allocator)
+
+fn parse_candidate(record: Span, digest: &String, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let Ok(parts): Halves = record.split(0) else Err(rest):
+        return Err(4)
+    let header = parse_document(parts.head, allocator)?
+    let checked = check_candidate(&header, parts.tail, digest, output, allocator)
+    header.discard()
+    return checked
+
+fn check_candidate(header: &Json, payload: Span, digest: &String, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let name = string_field(header, "name")?
+    let version = string_field(header, "version")?
+    if !valid_coordinates(name, version, digest):
+        return Err(4)
+    let actual = digest_text(payload.as_bytes(), allocator)?
+    let matches = actual.eq(digest)
+    actual.close()
+    if !matches:
+        return Err(3)
+    if let Err(code) = validate_package(payload.as_bytes(), name.span(), version.span(), allocator):
+        return Err(4)
+    let raw = string_field(header, "policy")?
+    let policy = parse_release_json(raw, allocator)?
+    let checked = emit_candidate(header, &policy, name, output, allocator)
+    policy.discard()
+    return checked
+
+fn emit_candidate(header: &Json, policy: &Json, name: &String, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    validate_policy(policy, allocator)?
+    let prepared = candidate_wire(header, policy, name, allocator)
+    let Ok(wire): String = move prepared else Err(code):
+        return Err(code)
+    emit_line(output, "committed", &wire)
+    wire.close()
+    return Ok(())
+
+fn candidate_wire(header: &Json, policy: &Json, name: &String, allocator: &Allocator) -> Result<String, U64>:
+    let empty = String.new(allocator)?
+    var wire = move empty
+    let checked = write_candidate(&mut wire, header, policy, name, allocator)
+    if let Err(code) = checked:
+        wire.close()
+        return Err(code)
+    return Ok(move wire)
+
+fn write_candidate(wire: &mut String, header: &Json, policy: &Json, name: &String, allocator: &Allocator) -> Result<(), U64>:
+    wire.push_text(allocator, "{\"policy\":")?
+    append_json(wire, policy, allocator)?
+    wire.push_text(allocator, ",\"name\":")?
+    let package_name = header.field("name")?
+    append_json(wire, package_name, allocator)?
+    wire.push_text(allocator, ",\"version\":")?
+    let version = header.field("version")?
+    append_json(wire, version, allocator)?
+    wire.push_text(allocator, ",\"allowed\":[")?
+    let credentials = policy.field("credentials")?
+    match credentials:
+        Object(entries):
+            var first = true
+            for entry in entries:
+                if has_scope(&entry.value, name):
+                    if !first:
+                        wire.push_text(allocator, ",")?
+                    first = false
+                    wire.push_text(allocator, "\"")?
+                    wire.push_part(allocator, &entry.key, 0, entry.key.byte_len())?
+                    wire.push_text(allocator, "\"")?
+        _:
+            return Err(1)
+    return wire.push_text(allocator, "]}")
+
+fn emit_line(output: &Console<Write>, status: Text, line: &String):
+    output.line(status)
+    output.write_string(line)
+    output.print_byte(10)

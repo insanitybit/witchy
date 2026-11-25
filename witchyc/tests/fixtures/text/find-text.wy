@@ -1,0 +1,97 @@
+// String.find_text: the first match at or after a position, as a byte position; an empty needle,
+// a needle longer than what is left, a match at the very end, a needle past a word's length.
+import console
+import string
+import text
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(e):
+        return
+    var hay = move made
+    let _ = hay.push_text(&allocator, "the cat sat on the mat; héllo the end, abcdefghijabcdefghijk")
+    match hay.find_text("the", 0):
+        Ok(at):
+            console.print_int(at)
+        Err(e):
+            console.line("none")
+    match hay.find_text("the", 1):
+        Ok(at):
+            console.print_int(at)
+        Err(e):
+            console.line("none")
+    match hay.find_text("the", 16):
+        Ok(at):
+            console.print_int(at)
+        Err(e):
+            console.line("none")
+    match hay.find_text("mat", 0):
+        Ok(at):
+            console.print_int(at)
+        Err(e):
+            console.line("none")
+    match hay.find_text("héllo", 0):
+        Ok(at):
+            console.print_int(at)
+        Err(e):
+            console.line("none")
+    match hay.find_text("llo", 0):
+        Ok(at):
+            console.print_int(at)
+        Err(e):
+            console.line("none")
+    match hay.find_text("abcdefghijk", 0):
+        Ok(at):
+            console.print_int(at)
+        Err(e):
+            console.line("none")
+    match hay.find_text("abcdefghijx", 0):
+        Ok(at):
+            console.print_int(at)
+        Err(e):
+            console.line("none")
+    match hay.find_text("", 5):
+        Ok(at):
+            console.print_int(at)
+        Err(e):
+            console.line("none")
+    match hay.find_text("", 61):
+        Ok(at):
+            console.print_int(at)
+        Err(e):
+            console.line("none")
+    match hay.find_text("", 62):
+        Ok(at):
+            console.print_int(at)
+        Err(e):
+            console.line("none")
+    match hay.find_text("end", 0):
+        Ok(at):
+            console.print_int(at)
+        Err(e):
+            console.line("none")
+    match hay.find_text("d", 60):
+        Ok(at):
+            console.print_int(at)
+        Err(e):
+            console.line("none")
+    match hay.find_text("k", 0):
+        Ok(at):
+            console.print_int(at)
+        Err(e):
+            console.line("none")
+    match hay.find_text("zzz", 0):
+        Ok(at):
+            console.print_int(at)
+        Err(e):
+            console.line("none")
+    match hay.find_text("the cat sat on the mat; héllo the end, abcdefghijabcdefghijk", 0):
+        Ok(at):
+            console.print_int(at)
+        Err(e):
+            console.line("none")
+    match hay.find_text("the cat sat on the mat; héllo the end, abcdefghijabcdefghijk!", 0):
+        Ok(at):
+            console.print_int(at)
+        Err(e):
+            console.line("none")
+    hay.close()

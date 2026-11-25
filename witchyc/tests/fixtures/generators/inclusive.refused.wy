@@ -1,0 +1,8 @@
+// A generator counts with `a..b`, not `a..=b`.
+gen fn upto(n: U64) -> U64:
+    for i in 0..=n:
+        yield i
+
+fn main():
+    for v in upto(3):
+        let w = v

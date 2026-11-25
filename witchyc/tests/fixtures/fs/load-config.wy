@@ -1,0 +1,17 @@
+// A loader that can read one directory subtree and do nothing else (the user's example,
+// with the allocator that holds the text passed in).
+import fs
+import console
+import string
+
+fn load_config(dir: &Dir<Read>, allocator: &Allocator) -> Result<String, FsError>:
+    let file: File<Read> = dir.open("config.txt")?
+    return file.read_text(allocator)
+
+fn main(console: Console<Write>, dir: Dir<Read>, allocator: Allocator):
+    match load_config(&dir, &allocator):
+        Ok(text):
+            console.write_string(&text)
+            text.close()
+        Err(error):
+            console.line("no config")

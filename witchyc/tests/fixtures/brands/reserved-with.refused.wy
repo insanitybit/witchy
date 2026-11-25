@@ -1,0 +1,6 @@
+// The word with is reserved even though brand opens a brand.
+import console
+fn main(console: Console<Write>):
+    var with: U64 = 1
+    with += 2
+    console.print_int(with)

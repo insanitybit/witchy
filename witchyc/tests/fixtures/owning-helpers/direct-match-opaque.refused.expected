@@ -1,0 +1,3 @@
+proof failed: function `swap_out`
+  not proved: an owner assigned over a value that may still hold one: `*slot` (2 places)
+  not proved: an `unreachable` that some path reaches

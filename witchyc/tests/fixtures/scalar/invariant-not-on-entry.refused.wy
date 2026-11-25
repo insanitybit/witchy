@@ -1,0 +1,11 @@
+fn count(limit: U64) -> U64:
+    ensures result >= 1
+    proof:
+        auto
+    var counter = 0
+    while counter < limit:
+        invariant counter >= 1
+        counter += 1
+    return counter
+fn main(console: Console<Write>):
+    console.print_int(count(3))

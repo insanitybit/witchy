@@ -1,0 +1,21 @@
+// Refused, quoting the one callee `requires` the call does not show (`at < count`), not the one it does.
+import console
+
+fn pick(count: U64, at: U64) -> U64:
+    requires count >= 1
+    requires at < count
+    ensures result < count
+    proof:
+        auto
+    return at
+
+fn first(count: U64) -> U64:
+    requires count < 100
+    requires count >= 1
+    ensures true
+    proof:
+        auto
+    return pick(count, count)
+
+fn main(console: Console<Write>):
+    console.print_int(first(5))

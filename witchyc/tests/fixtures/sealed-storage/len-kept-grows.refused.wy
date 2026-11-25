@@ -1,0 +1,48 @@
+// A generic callee whose result cannot reach the header but says nothing of the length: nothing is known of it.
+import console
+import vec
+
+sealed type Shelf:
+    items: Vec<U64>
+    room: U64
+    invariant room <= 64
+    invariant items.len() == room
+
+impl Shelf:
+    fn new(allocator: &Allocator, room: U64) -> Result<Shelf, U64>:
+        requires room <= 64
+        ensures true
+        proof:
+            auto
+        let made: Result<Vec<U64>, U64> = Vec.filled(allocator, room, 7)
+        let Ok(items): Vec<U64> = move made else Err(code):
+            return Err(code)
+        return Ok(Shelf(move items, room))
+
+    fn close(shelf: Shelf):
+        let Shelf(items, room) = move shelf
+        items.close()
+
+// A generic callee that grows the Vec and hands back an element: its result cannot reach the
+// header, but it says nothing of the length, so nothing is known of it after the call.
+fn grow_then_cell<T: Any>(vector: &mut Vec<T>, allocator: &Allocator, item: T) -> Result<&mut T, U64>:
+    match vector.push_mut(allocator, move item):
+        Ok:
+            ()
+        Err(back):
+            unreachable
+    return vector.at_mut(0)
+
+impl Shelf:
+    fn poke(shelf: &mut Shelf, allocator: &Allocator):
+        ensures true
+        proof:
+            auto
+        match grow_then_cell(&mut (*shelf).items, allocator, 4):
+            Ok(slot):
+                *slot = 9
+            Err(code):
+                ()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    return

@@ -1,0 +1,12 @@
+// A function's name is not a value: where a function type is expected, the refusal says to
+// pass a closure that calls it (it read "ambiguous type arguments").
+import console
+
+fn double(x: U64) -> U64:
+    return x * 2
+
+fn apply(f: fn(U64) -> U64, x: U64) -> U64:
+    return f(x)
+
+fn main(console: Console<Write>):
+    console.print_int(apply(double, 4))

@@ -1,0 +1,28 @@
+// A nonzero mask of sixteen lanes has its lowest set bit below bit 16, so the lane it names is
+// inside a block of sixteen: the proof shows the index in range, and the read has no test.
+import console
+
+nopanic fn first_lane(block: &[U8], mask: U64) -> U64:
+    requires block.len() == 16
+    requires mask > 0
+    requires mask < 65536
+    ensures result < 256
+    proof:
+        auto
+    let lane = U64.trailing_zeros(mask)
+    if lane < block.len():
+        return U8.to_u64(block[lane])
+    // Never reached: the proof shows the lane is inside the block.
+    unreachable
+
+nopanic fn set_bits(mask: U64) -> U64:
+    ensures result <= 64
+    proof:
+        auto
+    return U64.count_ones(mask)
+
+fn main(console: Console<Write>):
+    let block: [U8; 16] = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+    let view = block.slice()
+    console.print_int(first_lane(view, 40960))
+    console.print_int(set_bits(40960))

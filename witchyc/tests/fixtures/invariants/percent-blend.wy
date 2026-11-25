@@ -1,0 +1,49 @@
+// A percentage that cannot pass 100, by its type's invariant: blending two of them proves the
+// result in range, so its arithmetic needs no checks, and no program can build a 101.
+import console
+
+sealed type Percent:
+    value: U64
+    invariant value <= 100
+
+impl Percent:
+    pub fn of(value: U64) -> Result<Percent, U64>:
+        ensures match result:
+            Ok(made):
+                made.value == value
+            Err(back):
+                back == value
+        proof:
+            auto
+        if value > 100:
+            return Err(value)
+        return Ok(Percent(value))
+
+    pub fn value(p: &Percent) -> U64:
+        return (*p).value
+
+    // A weighted mean: (a * w + b * (100 - w)) / 100 stays within 0..100.
+    pub fn blend(a: &Percent, b: &Percent, weight: &Percent) -> Percent:
+        ensures true
+        proof:
+            auto
+        let w = (*weight).value
+        let mixed = ((*a).value * w + (*b).value * (100 - w)) / 100
+        if mixed > 100:
+            return Percent(100)
+        return Percent(mixed)
+
+fn main(console: Console<Write>):
+    let Ok(a): Percent = Percent.of(80) else Err(v):
+        return
+    let Ok(b): Percent = Percent.of(20) else Err(v):
+        return
+    let Ok(w): Percent = Percent.of(25) else Err(v):
+        return
+    let mixed = Percent.blend(&a, &b, &w)
+    console.print_int(mixed.value())
+    match Percent.of(101):
+        Ok(p):
+            console.line("never")
+        Err(v):
+            console.print("refused ${v}")

@@ -1,0 +1,27 @@
+// A field packed and fed again: each field once (refused).
+import console
+import hash
+import discard
+import keymap
+
+type Key derive(Discard):
+    a: U32
+    b: U32
+    c: U32
+
+impl Eq for Key:
+    fn eq(self: &Key, other: &Key) -> Bool:
+        return (*self).a == (*other).a && (*self).b == (*other).b && (*self).c == (*other).c
+
+impl HashKey for Key:
+    fn feed(self: &Key, state: &mut HashState):
+        state.word(U32.to_u64((*self).a) | (U32.to_u64((*self).b) << 32), 8)
+        (*self).b.feed(state)
+        (*self).c.feed(state)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): KeyMap<Key, U64> = KeyMap.new(&allocator, 4, Fast(1)) else Err(code):
+        return
+    var map = move made
+    console.print_int(map.len())
+    map.discard()

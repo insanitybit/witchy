@@ -1,0 +1,23 @@
+// A user container chooses both its range end and the meaning of an indexed read.
+sealed type Vec<T>:
+    cells: [T; 2]
+
+impl<T> Vec<T>:
+    fn len(self: &Vec<T>) -> U64:
+        return 1
+
+    fn elements(self: &Vec<T>) -> &[T]:
+        return self.cells.slice()
+
+    fn index(self: &Vec<T>, i: U64) -> T:
+        return self.cells[1 - i]
+
+fn read(v: &Vec<U64>) -> U64:
+    var n: U64 = 0
+    for i in 0..v.len():
+        n += v[i]
+    return n
+
+fn main(console: Console<Write>):
+    let v: Vec<U64> = Vec([8, 9])
+    console.print_int(read(&v))

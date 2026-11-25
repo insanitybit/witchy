@@ -1,0 +1,1 @@
+a method on a decimal number needs it in parentheses or named: `(2.5).method(...)`

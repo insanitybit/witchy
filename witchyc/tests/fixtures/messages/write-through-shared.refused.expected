@@ -1,0 +1,1 @@
+`x` is a shared reference (`&`), and nothing is written through one

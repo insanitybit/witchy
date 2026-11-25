@@ -1,0 +1,54 @@
+// Refused, saying what to write: `&name` of a name that already holds a reference.
+// Totals per name from `name, amount` lines read from input: fields split at the comma and
+// trimmed, amounts parsed, a HashMap from name to total; lines that do not parse are counted.
+import console
+import string
+import span
+import hashmap
+import discard
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    let Ok(m): HashMap<String, U64> = HashMap.new(&allocator, 8) else Err(c):
+        return
+    var totals = move m
+    let Ok(l): String = String.new(&allocator) else Err(c):
+        totals.discard()
+        return
+    var line = move l
+    var bad: U64 = 0
+    while true:
+        line.clear()
+        match input.read_line(&allocator, &mut line):
+            .Line:
+                ()
+            _:
+                break
+        let Ok(halves): Halves = line.span().split(44) else Err(whole):
+            bad += 1
+            continue
+        let name = halves.head.trim()
+        let Ok(amount): U64 = halves.tail.trim().parse_u64() else Err(code):
+            bad += 1
+            continue
+        match totals.get_mut(&name):
+            Ok(total):
+                *total += amount
+            Err(missing):
+                match name.to_string(&allocator):
+                    Ok(owned):
+                        match totals.put(&allocator, move owned, amount):
+                            Ok:
+                                continue
+                            Err(back):
+                                back.discard()
+                    Err(code):
+                        continue
+    for name in ["alice", "bob", "carol"]:
+        match totals.get(&name):
+            Ok(total):
+                console.print("${name}: ${*total}")
+            Err(missing):
+                console.print("${name}: none")
+    console.print("${bad} bad lines")
+    line.close()
+    totals.discard()

@@ -1,0 +1,383 @@
+// A TLS session owns its socket and both application traffic epochs. This
+// type is constructed only after the peer's protected Finished is verified.
+import crypto
+import net
+import span
+import vec
+import tls_record
+import tls_transport
+import tls_server_auth
+import tls_key_schedule
+import "wasm-tls-p384.wy"
+import tls_hello
+import tls_certificates
+import tls_client_auth
+
+pub type SessionError:
+    HandshakeFailed
+    SessionNoRoom
+    SessionReadFailed
+    SessionWriteFailed
+    SessionUnexpectedRecord
+    SessionClosed
+    KeyUpdateOutstanding
+
+pub sealed type SecureSession:
+    socket: Socket
+    read_epoch: ReadEpoch
+    write_epoch: WriteEpoch
+    traffic: Application
+    sending: Peer
+    write_generation: U64
+    update_pending: Bool
+    awaiting_update: Bool
+    read_closed: Bool
+    write_closed: Bool
+    failed: Bool
+
+// Send the exact server messages prepared by tls_server_auth.encode, then wait
+// for the client Finished on this same socket. Failure consumes the socket.
+fn establish(socket: Socket, allocator: &Allocator, pending: PendingFlight, hello: &[U8], flight: &[U8], workspace: &mut [U8], frame: &mut [U8]) -> Result<SecureSession, SessionError>:
+    let authenticated = authenticate(&socket, allocator, move pending, hello, flight, workspace, frame)
+    let Ok(keys): AuthenticatedKeys = authenticated else Err(reason):
+        socket.close()
+        return Err(reason)
+    return open_application(move socket, allocator, keys.application(), Server)
+
+// The socket is owned by this call and is closed on all failures.
+pub fn connect(socket: Socket, allocator: &Allocator, random: &Rand, hostname: Span, anchors: &[U8], now: U64, transcript: &mut [U8], plaintext: &mut [U8], frame: &mut [U8]) -> Result<SecureSession, SessionError>:
+    let checked = tls_client_auth.handshake(&socket, allocator, random, hostname, anchors, now, transcript, plaintext, frame)
+    let Ok(traffic): Application = move checked else Err(reason):
+        socket.close()
+        return Err(HandshakeFailed)
+    return open_application(move socket, allocator, move traffic, Client)
+
+fn other(peer: Peer) -> Peer:
+    match peer:
+        Client:
+            return Server
+        Server:
+            return Client
+
+fn open_application(socket: Socket, allocator: &Allocator, traffic: Application, sending: Peer) -> Result<SecureSession, SessionError>:
+    let Ok(receive_keys): RecordKeys = traffic.keys(other(sending)) else Err(reason):
+        socket.close()
+        return Err(HandshakeFailed)
+    let Ok(send_keys): RecordKeys = traffic.keys(sending) else Err(reason):
+        socket.close()
+        return Err(HandshakeFailed)
+    let Ok(read_epoch): ReadEpoch = tls_record.reader(allocator, move receive_keys) else Err(reason):
+        socket.close()
+        return Err(SessionNoRoom)
+    let Ok(write_epoch): WriteEpoch = tls_record.writer(allocator, move send_keys) else Err(reason):
+        read_epoch.close()
+        socket.close()
+        return Err(SessionNoRoom)
+    return Ok(SecureSession(move socket, move read_epoch, move write_epoch, move traffic, sending, 0, false, false, false, false, false))
+
+fn authenticate(socket: &Socket, allocator: &Allocator, pending: PendingFlight, hello: &[U8], flight: &[U8], workspace: &mut [U8], frame: &mut [U8]) -> Result<AuthenticatedKeys, SessionError>:
+    if flight.len() != pending.len():
+        pending.close()
+        return Err(HandshakeFailed)
+    let Ok(keys): RecordKeys = pending.server_keys() else Err(reason):
+        pending.close()
+        return Err(HandshakeFailed)
+    if let Err(reason) = tls_transport.write_server_hello(socket, hello):
+        pending.close()
+        return Err(HandshakeFailed)
+    let Ok(made): WriteEpoch = tls_record.writer(allocator, keys) else Err(reason):
+        pending.close()
+        return Err(SessionNoRoom)
+    var writer = move made
+    let sent = tls_transport.write_protected(socket, &mut writer, HandshakeMessage, flight, workspace, frame)
+    if let Err(reason) = sent:
+        writer.close()
+        pending.close()
+        return Err(HandshakeFailed)
+    let checked = tls_server_auth.confirm(move pending, socket, allocator, workspace, frame)
+    match checked:
+        Ok(verified):
+            writer.close()
+            return Ok(verified)
+        Err(reason):
+            match reason:
+                AuthenticationPeerFinishedMismatch:
+                    fatal(socket, &mut writer, 51, workspace, frame)
+                AuthenticationUnexpectedPeerMessage:
+                    fatal(socket, &mut writer, 10, workspace, frame)
+                _:
+                    ()
+            writer.close()
+            return Err(HandshakeFailed)
+
+fn fatal(socket: &Socket, writer: &mut WriteEpoch, description: U8, workspace: &mut [U8], frame: &mut [U8]):
+    let alert: [U8; 2] = [2, description]
+    let sent = tls_transport.write_protected(socket, writer, Alert, alert.slice(), workspace, frame)
+
+impl SecureSession:
+    // Read one record of application data. Zero signifies a protected
+    // close_notify. A bare transport EOF is an error.
+    pub fn read(self: &mut SecureSession, plaintext: &mut [U8], frame: &mut [U8]) -> Result<U64, SessionError>:
+        if (*self).failed:
+            return Err(SessionClosed)
+        if (*self).read_closed:
+            return Ok(0)
+        var control = PostHandshake([0; 4], 0, 0, false)
+        let allow_tickets = client_role((*self).sending)
+        while true:
+            let received = tls_transport.read_protected(&(*self).socket, &mut (*self).read_epoch, frame, plaintext, false)
+            let Ok(info): RecordInfo = received else Err(reason):
+                (*self).failed = true
+                return Err(SessionReadFailed)
+            match info.kind:
+                ApplicationData:
+                    if control_pending(&control):
+                        return reject_update(self, 10, plaintext, frame)
+                    if info.length != 0:
+                        return Ok(info.length)
+                Alert:
+                    if control_pending(&control):
+                        return reject_update(self, 10, plaintext, frame)
+                    if info.length == 2 && plaintext[1] == 0:
+                        (*self).read_closed = true
+                        return Ok(0)
+                    (*self).failed = true
+                    return Err(SessionUnexpectedRecord)
+                HandshakeMessage:
+                    let Ok(update): ControlAction = parse_control(&mut control, allow_tickets, plaintext, info.length) else Err(description):
+                        return reject_update(self, description, plaintext, frame)
+                    match update:
+                        KeyUpdate(requested):
+                            receive_update(self, requested)?
+                        NoKeyUpdate:
+                            ()
+        return Err(SessionClosed)
+
+    pub fn write(self: &mut SecureSession, content: &[U8], scratch: &mut [U8], frame: &mut [U8]) -> Result<(), SessionError>:
+        if (*self).failed || (*self).write_closed:
+            return Err(SessionClosed)
+        let fragment = tls_transport.fragment_capacity(scratch.len(), frame.len())
+        if fragment == 0:
+            return Err(SessionWriteFailed)
+        var offset: U64 = 0
+        while offset < content.len():
+            let Ok(due): Bool = (*self).write_epoch.update_due() else Err(reason):
+                (*self).failed = true
+                return Err(SessionWriteFailed)
+            if due || (*self).update_pending:
+                send_update(self, false, frame)?
+            let left = content.len() - offset
+            let count = if left < fragment:
+                left
+            else:
+                fragment
+            if let Err(reason) = tls_transport.write_protected(&(*self).socket, &mut (*self).write_epoch, ApplicationData, content.part(offset, offset + count), scratch, frame):
+                (*self).failed = true
+                return Err(SessionWriteFailed)
+            offset += count
+        return Ok(())
+
+    // Initiate a sending-key rotation. A request for the peer to rotate
+    // may only be outstanding once. The old key protects this message.
+    pub fn update_keys(self: &mut SecureSession, request_peer: Bool, frame: &mut [U8]) -> Result<(), SessionError>:
+        if (*self).failed || (*self).write_closed:
+            return Err(SessionClosed)
+        if request_peer && (*self).awaiting_update:
+            return Err(KeyUpdateOutstanding)
+        if request_peer && (*self).update_pending:
+            send_update(self, false, frame)?
+        return send_update(self, request_peer, frame)
+
+    pub fn shutdown(self: &mut SecureSession, scratch: &mut [U8], frame: &mut [U8]) -> Result<(), SessionError>:
+        if (*self).failed:
+            return Err(SessionClosed)
+        if (*self).write_closed:
+            return Ok(())
+        (*self).write_closed = true
+        let alert: [U8; 2] = [1, 0]
+        if let Err(reason) = tls_transport.write_protected(&(*self).socket, &mut (*self).write_epoch, Alert, alert.slice(), scratch, frame):
+            (*self).failed = true
+            return Err(SessionWriteFailed)
+        return Ok(())
+
+    pub fn close(self: SecureSession):
+        let SecureSession(socket, reader, writer, traffic, sending, write_generation, update_pending, awaiting_update, read_closed, write_closed, failed) = move self
+        reader.close()
+        writer.close()
+        socket.close()
+
+// The caller routes the initial ClientHello to this server identity. The
+// retry path checks the second ClientHello before using that same identity.
+pub fn accept(socket: Socket, allocator: &Allocator, random: &Rand, signer: &TlsSigner, chain: &CertificateChain, client: ClientHello, acknowledge_name: Bool, flight: &mut [U8], workspace: &mut [U8], frame: &mut [U8]) -> Result<SecureSession, SessionError>:
+    if client.p384_share().is_empty():
+        return retry(move socket, allocator, random, signer, chain, client, acknowledge_name, flight, workspace, frame)
+    let empty: [U8; 1] = [0]
+    return accept_ready(move socket, allocator, random, signer, chain, client, acknowledge_name, empty.slice().part(0, 0), flight, workspace, frame)
+
+// Begin a fresh key exchange for this socket and consume it on every path.
+fn accept_ready(socket: Socket, allocator: &Allocator, random: &Rand, signer: &TlsSigner, chain: &CertificateChain, client: ClientHello, acknowledge_name: Bool, retry_prefix: &[U8], flight: &mut [U8], workspace: &mut [U8], frame: &mut [U8]) -> Result<SecureSession, SessionError>:
+    var hello: [U8; 187] = [0; 187]
+    let Ok(exchange): AcceptedHello = tls_p384.begin(client, random, allocator, retry_prefix, hello.slice_mut()) else Err(reason):
+        socket.close()
+        return Err(HandshakeFailed)
+    let sent = hello.slice().part(0, exchange.length)
+    let Ok(pending): PendingFlight = tls_server_auth.encode(allocator, signer, chain, client, acknowledge_name, retry_prefix, sent, &exchange.handshake, flight) else Err(reason):
+        socket.close()
+        return Err(HandshakeFailed)
+    let length = pending.len()
+    return establish(move socket, allocator, move pending, sent, flight.part(0, length), workspace, frame)
+
+fn retry(socket: Socket, allocator: &Allocator, random: &Rand, signer: &TlsSigner, chain: &CertificateChain, first: ClientHello, acknowledge_name: Bool, flight: &mut [U8], workspace: &mut [U8], frame: &mut [U8]) -> Result<SecureSession, SessionError>:
+    let Ok(bytes): Vec<U8> = Vec.filled(allocator, 65575, 0) else Err(reason):
+        socket.close()
+        return Err(SessionNoRoom)
+    var incoming = move bytes
+    let result = retry_into(move socket, allocator, random, signer, chain, first, acknowledge_name, incoming.as_mut_slice(), flight, workspace, frame)
+    incoming.close()
+    return move result
+
+fn retry_into(socket: Socket, allocator: &Allocator, random: &Rand, signer: &TlsSigner, chain: &CertificateChain, first: ClientHello, acknowledge_name: Bool, incoming: &mut [U8], flight: &mut [U8], workspace: &mut [U8], frame: &mut [U8]) -> Result<SecureSession, SessionError>:
+    var prefix: [U8; 140] = [0; 140]
+    let Ok(length): U64 = retry_request(&socket, first, prefix.slice_mut()) else Err(reason):
+        socket.close()
+        return Err(reason)
+    let Ok(received): U64 = tls_transport.read_retry_hello(&socket, incoming) else Err(reason):
+        socket.close()
+        return Err(HandshakeFailed)
+    let second = parse_retry(first, incoming.part(0, received))
+    let Ok(client): ClientHello = second else Err(reason):
+        let alert = tls_transport.write_plain_fatal(&socket, 47)
+        socket.close()
+        return Err(HandshakeFailed)
+    return accept_ready(move socket, allocator, random, signer, chain, client, acknowledge_name, prefix.slice().part(0, length), flight, workspace, frame)
+
+fn parse_retry(first: ClientHello, bytes: &[U8]) -> Result<ClientHello, HelloError>:
+    return tls_hello.parse_retry_client_hello(first, Span.of(bytes))
+
+// The synthetic message_hash replaces ClientHello1 in the transcript.
+// Retain the exact HelloRetryRequest bytes sent after it, without its TLS header.
+fn retry_request(socket: &Socket, first: ClientHello, prefix: &mut [U8]) -> Result<U64, SessionError>:
+    if !first.offered_ecdsa_p384_sha384():
+        return Err(HandshakeFailed)
+    prefix[0] = 254
+    prefix[1] = 0
+    prefix[2] = 0
+    prefix[3] = 48
+    if let Err(reason) = crypto.sha384(first.transcript_bytes().as_bytes(), prefix.part(4, 52)):
+        return Err(HandshakeFailed)
+    let Ok(written): U64 = tls_hello.encode_retry(first, prefix.part(52, 140)) else Err(reason):
+        return Err(HandshakeFailed)
+    if let Err(reason) = tls_transport.write_server_hello(socket, prefix.part(52, 52 + written)):
+        return Err(HandshakeFailed)
+    return Ok(52 + written)
+
+fn reject_update(session: &mut SecureSession, description: U8, scratch: &mut [U8], frame: &mut [U8]) -> Result<U64, SessionError>:
+    (*session).failed = true
+    if !(*session).write_closed:
+        fatal(&(*session).socket, &mut (*session).write_epoch, description, scratch, frame)
+    return Err(SessionUnexpectedRecord)
+
+type ControlAction:
+    NoKeyUpdate
+    KeyUpdate(Bool)
+
+type PostHandshake:
+    header: [U8; 4]
+    filled: U64
+    ticket_remaining: U64
+    awaiting_update_flag: Bool
+
+fn control_pending(control: &PostHandshake) -> Bool:
+    return (*control).filled != 0 || (*control).ticket_remaining != 0 || (*control).awaiting_update_flag
+
+// Clients may discard session tickets. This profile never offers resumption.
+// KeyUpdate changes record keys and must end at a record boundary.
+fn parse_control(control: &mut PostHandshake, allow_tickets: Bool, data: &[U8], length: U64) -> Result<ControlAction, U8>:
+    if length == 0:
+        return Err(10)
+    var at: U64 = 0
+    while at < length:
+        let remaining = (*control).ticket_remaining
+        if remaining != 0:
+            let available = length - at
+            let skip = if remaining < available:
+                remaining
+            else:
+                available
+            (*control).ticket_remaining = remaining - skip
+            at += skip
+        else if (*control).awaiting_update_flag:
+            if at + 1 != length:
+                return Err(10)
+            if data[at] > 1:
+                return Err(47)
+            (*control).awaiting_update_flag = false
+            return Ok(KeyUpdate(data[at] == 1))
+        else:
+            let choice = data[at]
+            let index = (*control).filled
+            if index == 0 && choice != 24 && (choice != 4 || !allow_tickets):
+                return Err(10)
+            (*control).header[index] = choice
+            (*control).filled = index + 1
+            at += 1
+            if index == 3:
+                let size = U8.to_u64((*control).header[1]) * 65536 + U8.to_u64((*control).header[2]) * 256 + U8.to_u64((*control).header[3])
+                (*control).filled = 0
+                if (*control).header[0] == 24:
+                    if size != 1:
+                        return Err(50)
+                    (*control).awaiting_update_flag = true
+                else:
+                    if size < 14 || size > 131340:
+                        return Err(50)
+                    (*control).ticket_remaining = size
+    return Ok(NoKeyUpdate)
+
+fn client_role(peer: Peer) -> Bool:
+    match peer:
+        Client:
+            return true
+        Server:
+            return false
+
+fn receive_update(session: &mut SecureSession, requested: Bool) -> Result<(), SessionError>:
+    let receiving = other((*session).sending)
+    let Ok(keys): RecordKeys = (*session).traffic.advance(receiving) else Err(reason):
+        (*session).failed = true
+        return Err(SessionReadFailed)
+    if let Err(reason) = (*session).read_epoch.install(keys):
+        (*session).failed = true
+        return Err(SessionReadFailed)
+    (*session).awaiting_update = false
+    if requested && (*session).write_generation < 281474976710655:
+        (*session).update_pending = true
+    return Ok(())
+
+fn send_update(session: &mut SecureSession, request_peer: Bool, frame: &mut [U8]) -> Result<(), SessionError>:
+    if frame.len() < 27 || (*session).write_generation == 281474976710655:
+        (*session).failed = true
+        return Err(SessionWriteFailed)
+    let flag: U8 = if request_peer:
+        1
+    else:
+        0
+    let message: [U8; 5] = [24, 0, 0, 1, flag]
+    var scratch: [U8; 6] = [0; 6]
+    // Derive and install the new key only after the old epoch's final
+    // record is sent. A failed write retires the connection.
+    if let Err(reason) = tls_transport.write_protected(&(*session).socket, &mut (*session).write_epoch, HandshakeMessage, message.slice(), scratch.slice_mut(), frame):
+        (*session).failed = true
+        return Err(SessionWriteFailed)
+    let sending = (*session).sending
+    let Ok(keys): RecordKeys = (*session).traffic.advance(sending) else Err(reason):
+        (*session).failed = true
+        return Err(SessionWriteFailed)
+    if let Err(reason) = (*session).write_epoch.install(keys):
+        (*session).failed = true
+        return Err(SessionWriteFailed)
+    (*session).write_generation = (*session).write_generation + 1
+    (*session).update_pending = false
+    if request_peer:
+        (*session).awaiting_update = true
+    return Ok(())

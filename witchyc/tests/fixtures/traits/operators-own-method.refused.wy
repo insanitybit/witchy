@@ -1,0 +1,18 @@
+// An operator calls the trait's method, not any method of that name: a `fn add(self: &mut M, ...)` of
+// the type's own is not `Add`, and is not called by `+` (review: `m + n` changed `m`).
+import console
+
+type M:
+    c: U64
+
+impl M:
+    fn add(self: &mut M, other: M) -> U64:
+        self.c = self.c + other.c
+        self.c
+
+fn main(console: Console<Write>):
+    var m = M(c: 5)
+    let n = M(c: 7)
+    let k = m + n
+    console.print_int(k)
+    console.print_int(m.c)

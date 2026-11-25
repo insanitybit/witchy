@@ -1,0 +1,19 @@
+// Refused: an implementation pauses where its trait method does not allow it.
+import console
+
+trait Tick:
+    fn tick(self: &mut Self) -> U64
+
+type Slow:
+    at: U64
+
+fn wait_for_data(at: U64) -> U64 suspends:
+    return at + 100
+
+impl Tick for Slow:
+    fn tick(self: &mut Slow) -> U64:
+        return wait_for_data((*self).at)
+
+fn main(console: Console<Write>):
+    var slow = Slow(0)
+    console.print_int(slow.tick())

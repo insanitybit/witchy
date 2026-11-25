@@ -1,0 +1,13 @@
+// A `&mut U64` could be what a `&U64` result points into, so the signature is refused.
+type Pair:
+    a: U64
+    b: U64
+
+fn step(pair: &Pair, cursor: &mut U64) -> &U64:
+    *cursor += 1
+    return &(*pair).a
+
+fn main(console: Console<Write>):
+    var pair = Pair(1, 2)
+    var flag = false
+    console.print_int(1)

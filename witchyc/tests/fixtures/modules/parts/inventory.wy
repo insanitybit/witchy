@@ -1,0 +1,10 @@
+// A module with a private helper type named like another module's.
+type Entry:
+    count: U64
+
+fn tally(entry: &Entry) -> U64:
+    return entry.count * 2
+
+pub fn inventory(count: U64) -> U64:
+    let entry = Entry(count)
+    return tally(&entry)

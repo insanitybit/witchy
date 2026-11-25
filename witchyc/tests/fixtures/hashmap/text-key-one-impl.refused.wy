@@ -1,0 +1,24 @@
+// Refused: a HashMap with Text keys looks a key up through `Equivalent<Text>`, and Text's own impl
+// is `Equivalent<String>`. A method is found by type and name, so accepting this reached the
+// String impl with a Text key (2026-11-19: the lookup missed a key it held).
+import console
+import string
+import hash
+import hashmap
+import discard
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): HashMap<Text, U64> = HashMap.new(&allocator, 8) else Err(e):
+        return
+    var map = move made
+    match map.insert("green", 2):
+        Ok:
+            ()
+        Err(entry):
+            discard(entry)
+    match map.get(&"green"):
+        Ok(n):
+            console.print_int(*n)
+        Err(e):
+            console.line("missing")
+    map.discard()

@@ -1,0 +1,14 @@
+import vec
+
+type Shelf:
+    items: Vec<U8>
+
+fn clear(shelf: &mut Shelf):
+    requires 0 < shelf.items.length
+    ensures shelf.items.length == old(shelf.items.length)
+    proof:
+        auto
+    (*shelf).items.clear_mut()
+
+fn main():
+    return

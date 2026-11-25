@@ -1,0 +1,40 @@
+// `while let Variant(x) = value:` runs while the value matches, evaluating it again each pass:
+// draining a Vec of owners, and `continue` in the body.
+import console
+import string
+import vec
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<String> = Vec.new(&allocator, 4) else Err(code):
+        return
+    var words = move made
+    for n in 1..=4:
+        let Ok(text): String = String.new(&allocator) else Err(code):
+            break
+        var word = move text
+        for i in 0..n:
+            let _ = word.push_text(&allocator, "ab")
+        match words.push_mut(&allocator, move word):
+            Ok:
+                ()
+            Err(back):
+                back.close()
+    var total: U64 = 0
+    while let Ok(word) = words.take_last_mut():
+        total += word.byte_len()
+        console.print_int(word.byte_len())
+        word.close()
+    console.print_int(total)
+    words.release_empty()
+    var count: U64 = 0
+    while let Ok(x) = small(count):
+        count += 1
+        if x == 2:
+            continue
+        console.print_int(x)
+
+fn small(n: U64) -> Result<U64, U64>:
+    if n < 5:
+        Ok(n)
+    else:
+        Err(n)

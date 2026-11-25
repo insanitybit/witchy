@@ -1,0 +1,8 @@
+// Refused: a task is never dropped unseen; it is closed once it has finished.
+import tasks
+fn once(n: U64) suspends:
+    pause(n)
+fn main(allocator: Allocator):
+    let Ok(task): Task = Task.spawn(&allocator, 1024, once, 1) else Err(given):
+        return
+    discard(move task)

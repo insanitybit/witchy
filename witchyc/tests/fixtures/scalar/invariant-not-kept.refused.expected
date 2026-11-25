@@ -1,0 +1,2 @@
+proof failed: function `count`
+  not proved: a loop invariant after a pass of the loop

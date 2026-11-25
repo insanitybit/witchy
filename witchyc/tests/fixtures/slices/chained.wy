@@ -1,0 +1,13 @@
+// A slice method may follow the call that made the slice: `buffer.as_slice().part(0, 2)`.
+import console
+import vec
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let seven: U8 = 7
+    let Ok(made): Vec<U8> = Vec.filled(&allocator, 4, seven) else Err(code):
+        return
+    var buffer = move made
+    console.print_int(buffer.as_slice().part(0, 2).len())
+    console.print_int(U8.to_u64(buffer.as_slice()[3]))
+    console.print_int(buffer.as_mut_slice().len())
+    buffer.close()

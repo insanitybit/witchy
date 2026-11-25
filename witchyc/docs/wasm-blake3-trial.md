@@ -1,0 +1,22 @@
+# BLAKE3 installation-hash trial
+
+The isolated BLAKE3 candidate was **not retained**. Twelve matched interleaved pairs on the measured Darwin arm64 host found slower SDK hashing and slower complete proof-bearing edits than the qualified CommonCrypto SHA256 implementation. The qualified integration keeps SHA256 v1; candidate source, binaries, receipts, failures and raw measurements remain held outside that branch.
+
+| Operation | Paired BLAKE3/SHA256 ratio | 95% bootstrap interval |
+| --- | --- | --- |
+| Complete installation snapshots A+B, Vec code edit |1.38341|1.17203–1.43235|
+| Full Vec runtime-code edit |1.25536|1.11324–1.32252|
+| Full authored Vec proof edit |1.14361|1.06289–1.18662|
+| Proof-free 16-function control |0.98868|0.88253–1.23021 (unresolved)|
+
+SDK A+B medians were 2.84555 s for SHA256 and 3.82575 s for BLAKE3. The paired median difference was +1.06023 s (interval +0.53974 to +1.27804). Full code-edit paired difference was +1.04531 s (+0.51408 to +1.37878); authored-proof difference was +0.63766 s (+0.29959 to +0.83700). This rejects this candidate on these workloads; it is not a universal comparison of the hash algorithms.
+
+Both binaries freshly read the same complete SDK scope before and after Lean. The candidate changed only installation hashing to official pinned blake3 1.8.5, with a distinct v2 domain and explicitly tagged fresh-v2 metadata. Source/compiler/model/audit/module/statement SHA256 identities remained unchanged. All expected statements, source/model/audit/generated module, emitted Wasm and consumed runtime output retained parity. Authored proof edits strengthened the actual postcondition while preserving runtime bytes. There was no cache, manifest trust, SDK pruning, per-file identity, admission reuse or skipped content/currentness check. Four bounded readers, file/EOF/path/symlink/size/error/lifetime guards remained.
+
+Focused correctness passed: 43 library tests (one ignored), four CLI tests, malformed/drifting identity controls, actual four-layout Vec proof/runtime parity, strict false-unused refusal, atomic publication preservation and fresh artifact/tampering controls. The initial debug dependency build hit a 45-second guard; optimizing only the BLAKE3 dependency repaired that case without enlarging compiler/Lean limits. The candidate used default std/native backend without Rayon or mmap. Separate own-process sampling confirmed execution in blake3_hash_many_neon versus CommonCrypto AccelerateCrypto_SHA256_compress. Those profiled calls were excluded from all timing rows and establish backend use, not kernel-only or hardware-counter performance.
+
+The three-pair pilot was noisy and showed no win. One frozen 12-pair campaign then passed all 72 timed rows plus 86 setup checks, taking 527.722 s including setup; all source/compiler/fixture/pilot/reaping guards passed. Independent review recomputed sample coverage, bootstrap intervals, fingerprints and available receipt bindings. The enclosing driver then mistakenly read the pilot’s 18-row result and failed its 72-row assertion. Its original FAILED record remains. Separate adjudication derives the actual result path from the executed command’s --out argument and qualifies rejection from the terminal nested evidence without rerunning or relabeling the driver as passed. Future summaries must derive that path from the command, rather than copy a preceding campaign path.
+
+These are finite-sample same-host warm-session results with normal background activity, not cold-filesystem, universal optimality, RSS, kernel-only, old native/full-Vec equivalence or a full historical-suite qualification. No SDK install/selection, protected administrator action, remote publication or unrelated source change occurred.
+
+Exact baseline: c227765690d714ba41872180954370766899197b, compiler SHA256309048e4c38f70f9e004bf7c0d00cc2328ff614eaaadd06c271ac87e0bc6043d. Optimized candidate:8f643b625709e6b94ffc6b921a8e0c76d9518dd3, compiler SHA2568581a04684c5fa59e4916a9f9e5edf0119405a87e8677efba432446f9fcd8c8c; later17b2c2f changes only development-profile optimization and metadata-helper hardening. Harness17b2c2f explicitly distinguishes SHA-v1 and BLAKE3-v2 identities. Raw evidence under generic/witchy-wasm-coordinator-94: blake3-pilot-809, blake3-paired-810, its driver/hash-phase-analysis.json and adjudication-814.json, blake3-native-backend-815, and focused qualification805–808B. Independent report: coordination results/WASM-BLAKE3-EVIDENCE-REVIEW-814-r1.md.

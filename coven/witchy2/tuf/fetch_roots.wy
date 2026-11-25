@@ -1,0 +1,103 @@
+import "root.wy"
+import "publication_files.wy"
+import "fetch_history.wy"
+import "release_trust.wy"
+import encoding
+import fs
+import span
+import string
+import text
+import vec
+
+pub fn fetch_root(source: &Dir<Read>, prefix: Text, wire: Span, pin: &String, latest: U64, floor: RootFloor, reserved: &[U8], selected: &mut String, retired_at: &mut U64, allocator: &Allocator) -> Result<TrustedRoot, U64>:
+    if latest == 0 || latest >= 9007199254740992 || pin.byte_len() != 103 || !pin.span().starts_with_text("sha384:"):
+        return Err(1)
+    let initial = wire.to_string(allocator)?
+    let recorded = check_root_pin(&initial, 1, latest, floor, selected, allocator)
+    let bootstrapped = with_initial(recorded, &initial, pin, allocator)
+    initial.close()
+    let Ok(root): TrustedRoot = move bootstrapped else Err(code):
+        return Err(code)
+    return advance(source, prefix, move root, latest, floor, reserved, selected, retired_at, allocator)
+
+fn with_initial(recorded: Result<(), U64>, initial: &String, pin: &String, allocator: &Allocator) -> Result<TrustedRoot, U64>:
+    recorded?
+    return check_initial(initial, pin, allocator)
+
+fn check_initial(initial: &String, pin: &String, allocator: &Allocator) -> Result<TrustedRoot, U64>:
+    let decoded = decode_hex(allocator, pin.as_bytes().part(7, 103))?
+    var expected: [U8; 48] = [0; 48]
+    expected.slice_mut().copy_from(decoded.as_slice())
+    decoded.close()
+    let Ok(root): TrustedRoot = bootstrap_root(initial, &expected, allocator) else Err(error):
+        return Err(1)
+    return Ok(move root)
+
+fn advance(source: &Dir<Read>, prefix: Text, initial: TrustedRoot, latest: U64, floor: RootFloor, reserved: &[U8], selected: &mut String, retired_at: &mut U64, allocator: &Allocator) -> Result<TrustedRoot, U64>:
+    var current = move initial
+    if let Err(error) = current.check_reserved(reserved, allocator):
+        current.close()
+        return Err(1)
+    for version in 2..latest + 1:
+        let next = read_next(source, prefix, &current, version, latest, floor, selected, allocator)
+        let Ok(root): TrustedRoot = move next else Err(code):
+            current.close()
+            return Err(code)
+        let retired = current.retires_metadata_authority(&root, allocator)
+        current.close()
+        current = move root
+        if let Err(error) = current.check_reserved(reserved, allocator):
+            current.close()
+            return Err(1)
+        let Ok(changed): Bool = retired else Err(error):
+            current.close()
+            return Err(1)
+        if changed:
+            *retired_at = version
+    return Ok(move current)
+
+fn read_next(source: &Dir<Read>, prefix: Text, current: &TrustedRoot, version: U64, latest: U64, floor: RootFloor, selected: &mut String, allocator: &Allocator) -> Result<TrustedRoot, U64>:
+    let empty = String.with_capacity(allocator, 64)?
+    var path = move empty
+    let written = root_path(&mut path, prefix, version, allocator)
+    let read = read_root(written, source, &path, allocator)
+    path.close()
+    let Ok(wire): String = move read else Err(code):
+        return Err(1)
+    let recorded = check_root_pin(&wire, version, latest, floor, selected, allocator)
+    let next = advance_with_pin(recorded, current, &wire, allocator)
+    wire.close()
+    return move next
+
+fn advance_with_pin(recorded: Result<(), U64>, current: &TrustedRoot, wire: &String, allocator: &Allocator) -> Result<TrustedRoot, U64>:
+    recorded?
+    let next = current.advance(wire, allocator)
+    let Ok(root): TrustedRoot = move next else Err(error):
+        return Err(1)
+    return Ok(move root)
+
+fn check_root_pin(wire: &String, version: U64, latest: U64, floor: RootFloor, selected: &mut String, allocator: &Allocator) -> Result<(), U64>:
+    let anchored = version == floor.version && !floor.pin.is_empty()
+    if !anchored && version != latest:
+        return Ok(())
+    let digest = digest_text(wire.as_bytes(), allocator)?
+    if anchored && !digest.span().same(floor.pin):
+        digest.close()
+        return Err(2)
+    if version == latest:
+        let copied = selected.push_part(allocator, &digest, 0, digest.byte_len())
+        digest.close()
+        return copied
+    digest.close()
+    return Ok(())
+
+fn root_path(path: &mut String, prefix: Text, version: U64, allocator: &Allocator) -> Result<(), U64>:
+    path.push_text(allocator, prefix)?
+    path.push_u64(allocator, version)?
+    return path.push_text(allocator, ".root.json")
+
+fn read_root(written: Result<(), U64>, source: &Dir<Read>, path: &String, allocator: &Allocator) -> Result<String, U64>:
+    written?
+    let Ok(wire): String = read_text_object(source, path, 512000, allocator) else Err(error):
+        return Err(1)
+    return Ok(move wire)

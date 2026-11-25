@@ -1,0 +1,14 @@
+// Stepping a finished task traps.
+import tasks
+
+fn once(n: U64) suspends:
+    pause(n)
+
+fn main(allocator: Allocator):
+    let Ok(made): Task = Task.spawn(&allocator, 1024, once, 1) else Err(given):
+        return
+    var task = move made
+    let first = task.step()
+    let second = task.step()
+    let third = task.step()
+    task.close()

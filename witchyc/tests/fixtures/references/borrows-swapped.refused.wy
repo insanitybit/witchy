@@ -1,0 +1,18 @@
+// An implementation is held to its clauses: `Ok` may borrow only from `left`.
+import console
+
+fn choose(left: &U64, right: &U64, flag: Bool) -> Result<&U64, &U64>:
+    borrows Ok from left
+    borrows Err from right
+    if flag:
+        return Ok(right)
+    return Err(right)
+
+fn main(console: Console<Write>):
+    let a: U64 = 1
+    let b: U64 = 2
+    match choose(&a, &b, true):
+        Ok(item):
+            console.print_int(*item)
+        Err(item):
+            console.print_int(*item)

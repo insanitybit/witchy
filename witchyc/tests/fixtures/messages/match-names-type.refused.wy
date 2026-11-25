@@ -1,0 +1,14 @@
+// Refused, naming what the value is: `cell_mut` gives the element, not a Result.
+import console
+import vec
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.filled(&allocator, 3, 7) else Err(c):
+        return
+    var v = move made
+    match v.cell_mut(1):
+        Ok(x):
+            *x = 1
+        Err(c):
+            ()
+    v.close()

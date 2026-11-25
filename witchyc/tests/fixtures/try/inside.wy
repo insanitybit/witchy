@@ -1,0 +1,80 @@
+// `?` where a value is wanted: in a `var`, an assignment, an argument, a
+// returned value, a matched value and a condition.
+import "../../../library/wasm-string.wy"
+import "../../../library/wasm-vec.wy"
+
+fn half(value: U64) -> Result<U64, U64>:
+    if value % 2 == 1:
+        return Err(value)
+    return Ok(value / 2)
+
+fn add(left: U64, right: U64) -> U64:
+    return left + right
+
+fn var_and_assign(value: U64) -> Result<U64, U64>:
+    var current = half(value)?
+    current = half(current)?
+    current += half(current)?
+    return Ok(current)
+
+fn arguments(value: U64) -> Result<U64, U64>:
+    return Ok(add(half(value)?, half(half(value)?)?))
+
+fn typed(value: U64) -> Result<U64, U64>:
+    let small: U64 = half(value)?
+    if half(small)? > 2:
+        return Ok(1)
+    return Ok(0)
+
+fn matched(value: U64) -> Result<U64, U64>:
+    match half(half(value)?):
+        Ok(quarter):
+            return Ok(quarter)
+        Err(odd):
+            return Ok(1000 + odd)
+
+// An owner made before the `?` is still the caller's to close when it fails.
+fn owner(allocator: &Allocator, value: U64) -> Result<String, U64>:
+    var text = String.new(allocator)?
+    match half(value):
+        Ok(scalar):
+            match text.push_scalar(allocator, scalar):
+                Ok(grown):
+                    return Ok(move grown)
+                Err(original):
+                    original.close()
+                    return Err(900)
+        Err(odd):
+            text.close()
+            return Err(odd)
+
+// The written type decides the generic call's type arguments.
+fn sized(allocator: &Allocator) -> Result<U64, U64>:
+    var items: Vec<U64> = Vec.new(allocator, 4)?
+    let size = items.capacity()
+    items.close()
+    return Ok(size)
+
+fn show(console: &Console<Write>, result: Result<U64, U64>):
+    match move result:
+        Ok(value):
+            console.print_int(value)
+        Err(code):
+            console.print_int(100000 + code)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    show(&console, var_and_assign(40))
+    show(&console, var_and_assign(20))
+    show(&console, arguments(12))
+    show(&console, arguments(6))
+    show(&console, typed(24))
+    show(&console, typed(8))
+    show(&console, matched(20))
+    show(&console, matched(10))
+    match owner(&allocator, 130):
+        Ok(text):
+            console.print_int(text.byte_len())
+            text.close()
+        Err(code):
+            console.print_int(code)
+    show(&console, sized(&allocator))

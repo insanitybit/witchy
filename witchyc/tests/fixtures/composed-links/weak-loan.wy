@@ -1,0 +1,14 @@
+import cell
+
+nopanic fn main(out: Console<Write>, a: Allocator):
+    let allocation: Result<VacantCell<U64>, U64> = VacantCell.new(&a)
+    match move allocation:
+        Err(code):
+            return
+        Ok(empty):
+            let live = empty.fill(71)
+            let edge = live.pointer()
+            let seen = live.read_at(edge)
+            out.print_int(*seen)
+            let TakenCell(vacant, kept) = live.extract()
+            vacant.close()

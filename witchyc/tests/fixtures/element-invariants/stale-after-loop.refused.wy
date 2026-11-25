@@ -1,0 +1,59 @@
+// Refused: a loop writes spans between two reads of the same index: what was known of the element read before the loop is not known of the one read after.
+import console
+import vec
+
+type Span:
+    start: U64
+    len: U64
+
+sealed type Index:
+    bytes: Vec<U8>
+    spans: Vec<Span>
+    invariant forall i in (0, spans.len()): spans[i].start + spans[i].len <= bytes.len()
+
+impl Index:
+    pub fn new(allocator: &Allocator) -> Result<Index, U64>:
+        ensures true
+        proof:
+            auto
+        let bytes: Vec<U8> = Vec.new(allocator, 0)?
+        let made: Result<Vec<Span>, U64> = Vec.new(allocator, 0)
+        match move made:
+            Ok(spans):
+                return Ok(Index(move bytes, move spans))
+            Err(code):
+                bytes.release_empty()
+                return Err(code)
+
+    pub fn spans_len(index: &Index) -> U64:
+        return (*index).spans.len()
+
+    pub fn same_after_loop(index: &mut Index, i: U64, times: U64) -> U64:
+        ensures result == 1
+        proof:
+            auto
+        let before = index.spans[i]
+        var done = 0
+        while done < times:
+            invariant done <= times
+            let span = Span(0, 0)
+            index.spans[i] = span
+            done += 1
+        let after = index.spans[i]
+        if after.len == before.len:
+            return 1
+        return 0
+
+    pub fn close(index: Index):
+        let Index(bytes, spans) = move index
+        bytes.close()
+        spans.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    match Index.new(&allocator):
+        Ok(made):
+            var index = move made
+            console.print_int(index.spans_len())
+            index.close()
+        Err(code):
+            console.print_int(code)

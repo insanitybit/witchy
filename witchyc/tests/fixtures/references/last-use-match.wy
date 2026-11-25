@@ -1,0 +1,26 @@
+// A reference last used as the matched value is in use in no arm. A binder that is a
+// reference into it keeps the loan until its own last use.
+type Shape:
+    Dot
+    Line(U64)
+
+type Pair:
+    a: Shape
+    b: U64
+
+fn first(pair: &Pair) -> &Shape:
+    return &(*pair).a
+
+fn second(pair: &Pair) -> &U64:
+    return &(*pair).b
+
+fn main(console: Console<Write>):
+    var pair = Pair(Line(4), 5)
+    let seen = first(&pair)
+    match seen:
+        Dot:
+            pair.b = 1
+        Line(length):
+            console.print_int(*length)
+            pair.b = 2
+    console.print_int(pair.b)

@@ -1,0 +1,10 @@
+vector: valid
+vector as targets: valid
+vector as root: invalid
+truncated message: invalid
+truncated signature: invalid
+witchy-1 sizes: invalid
+short key: invalid
+changed message: invalid
+another key: invalid
+changed signature: invalid

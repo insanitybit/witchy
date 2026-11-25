@@ -1,0 +1,4 @@
+// Refused: renaming needs Dir<Write>.
+import fs
+fn main(dir: Dir<Read>):
+    let done = dir.rename("a", "b")

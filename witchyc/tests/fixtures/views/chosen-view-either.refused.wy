@@ -1,0 +1,15 @@
+// The Span may be of `other`, which is cleared while the Span is still read.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-span.wy"
+import "../../../library/wasm-string.wy"
+
+fn longer(one: &mut String, other: &mut String) -> U64:
+    let chosen = if one.byte_len() > other.byte_len():
+        one.span()
+    else:
+        other.span()
+    other.clear()
+    return chosen.len()
+
+fn main(console: Console<Write>):
+    console.print_int(1)

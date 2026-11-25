@@ -1,0 +1,14 @@
+// Refused: Text implements Equivalent<String>, and a method is found by type and name, so a call
+// through a bound Equivalent<Text> would reach that impl with a Text (docs/decisions.md, 2026-11-19).
+import console
+import string
+import hash
+
+
+fn same<Q: Any + Equivalent<K>, K: Any>(q: &Q, k: &K) -> Bool:
+    return q.equivalent(k)
+
+fn main(console: Console<Write>):
+    let a: Text = "x"
+    let b: Text = "x"
+    console.print("${same(&a, &b)}")

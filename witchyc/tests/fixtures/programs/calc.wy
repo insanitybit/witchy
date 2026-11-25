@@ -1,0 +1,105 @@
+// An arithmetic evaluator: a tokenizer into a Vec of a sum type and a recursive-descent parser
+// whose methods take `&mut self`, with while let and match.
+import console
+import vec
+
+type Token:
+    Num(U64)
+    Plus
+    Minus
+    Times
+    Open
+    Close
+
+type Parser:
+    tokens: Vec<Token>
+    at: U64
+
+fn tokenize(allocator: &Allocator, source: Text) -> Result<Vec<Token>, U64>:
+    let Ok(made): Vec<Token> = Vec.new(allocator, 16) else Err(code):
+        return Err(code)
+    var tokens = move made
+    var number: U64 = 0
+    var reading = false
+    for i in 0..source.byte_len():
+        let Ok(byte): U8 = source.byte_at(i) else Err(code):
+            break
+        if byte >= '0' && byte <= '9':
+            number = number * 10 + U8.to_u64(byte - '0')
+            reading = true
+            continue
+        if reading:
+            let _ = tokens.push_mut(allocator, Token.Num(number))
+            number = 0
+            reading = false
+        match byte:
+            '+':
+                let _ = tokens.push_mut(allocator, Token.Plus)
+            '-':
+                let _ = tokens.push_mut(allocator, Token.Minus)
+            '*':
+                let _ = tokens.push_mut(allocator, Token.Times)
+            '(':
+                let _ = tokens.push_mut(allocator, Token.Open)
+            ')':
+                let _ = tokens.push_mut(allocator, Token.Close)
+            _:
+                ()
+    if reading:
+        let _ = tokens.push_mut(allocator, Token.Num(number))
+    Ok(move tokens)
+
+impl Parser:
+    fn peek(self: &Parser) -> Token:
+        if self.at < self.tokens.len():
+            return self.tokens[self.at]
+        Token.Close
+
+    fn factor(self: &mut Parser) -> U64:
+        let token = self.peek()
+        self.at += 1
+        match token:
+            Num(n):
+                n
+            Open:
+                let value = self.sum()
+                self.at += 1
+                value
+            _:
+                0
+
+    fn product(self: &mut Parser) -> U64:
+        var value = self.factor()
+        while let Times = self.peek():
+            self.at += 1
+            value = value * self.factor()
+        value
+
+    fn sum(self: &mut Parser) -> U64:
+        var value = self.product()
+        var going = true
+        while going:
+            match self.peek():
+                Plus:
+                    self.at += 1
+                    value = value + self.product()
+                Minus:
+                    self.at += 1
+                    let right = self.product()
+                    value = if right > value: 0 else: value - right
+                _:
+                    going = false
+        value
+
+fn evaluate(console: &Console<Write>, allocator: &Allocator, source: Text):
+    let Ok(tokens): Vec<Token> = tokenize(allocator, source) else Err(code):
+        return
+    var parser = Parser(tokens: move tokens, at: 0)
+    console.print_int(parser.sum())
+    parser.tokens.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    evaluate(&console, &allocator, "3+4*2")
+    evaluate(&console, &allocator, "(3+4)*2")
+    evaluate(&console, &allocator, "2*(10-3)*(1+1)")
+    evaluate(&console, &allocator, "100-1-1")

@@ -1,0 +1,135 @@
+// A tape machine: eight one-byte commands over a row of cells. The program
+// is the input; it prints what the program prints.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-vec.wy"
+
+type Fault:
+    NoRoom
+    Unmatched
+    OffTape
+
+fn byte(code: &Vec<U8>, index: U64) -> U64:
+    match code.get(index):
+        Ok(found):
+            return U8.to_u64(found)
+        Err(reason):
+            return 0
+
+fn number(row: &Vec<U64>, index: U64) -> U64:
+    match row.get(index):
+        Ok(found):
+            return found
+        Err(reason):
+            return 0
+
+// Where each bracket's partner is; other commands hold their own index.
+fn partners(allocator: &Allocator, code: &Vec<U8>) -> Result<Vec<U64>, Fault>:
+    var jumps: Vec<U64> = match Vec.filled(allocator, code.len(), 0):
+        Ok(made):
+            move made
+        Err(reason):
+            return Err(NoRoom)
+    var open: Vec<U64> = match Vec.new(allocator, 8):
+        Ok(made):
+            move made
+        Err(reason):
+            jumps.close()
+            return Err(NoRoom)
+    var fault: U64 = 0
+    for index in 0..code.len():
+        let command = byte(code, index)
+        if command == '[':
+            match open.push_mut(allocator, index):
+                Ok(done):
+                    continue
+                Err(item):
+                    fault = 1
+                    break
+        else if command == ']':
+            match open.take_last_mut():
+                Ok(start):
+                    let _ = jumps.set(start, index)
+                    let _ = jumps.set(index, start)
+                Err(reason):
+                    fault = 2
+                    break
+    if fault == 0 && open.len() > 0:
+        fault = 2
+    open.close()
+    if fault == 1:
+        jumps.close()
+        return Err(NoRoom)
+    if fault == 2:
+        jumps.close()
+        return Err(Unmatched)
+    return Ok(move jumps)
+
+fn run(console: &Console<Write>, code: &Vec<U8>, jumps: &Vec<U64>, cells: &mut Vec<U64>) -> Result<U64, Fault>:
+    var at: U64 = 0
+    var head: U64 = 0
+    var steps: U64 = 0
+    while at < code.len():
+        let command = byte(code, at)
+        if head >= cells.len():
+            return Err(OffTape)
+        let cell = number(cells, head)
+        match command:
+            '+':
+                let _ = cells.set(head, (cell + 1) % 256)
+            '-':
+                let _ = cells.set(head, (cell + 255) % 256)
+            '>':
+                head += 1
+            '<':
+                if head == 0:
+                    return Err(OffTape)
+                head -= 1
+            '.':
+                console.print_byte(U8.truncate(cell))
+            '[':
+                if cell == 0:
+                    at = number(jumps, at)
+            ']':
+                if cell != 0:
+                    at = number(jumps, at)
+            _:
+                ()
+        at += 1
+        steps += 1
+    return Ok(steps)
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    var code: Vec<U8> = match Vec.new(&allocator, 64):
+        Ok(made):
+            move made
+        Err(reason):
+            return
+    while true:
+        let next = input.next_byte()
+        if next > 255:
+            break
+        match code.push_mut(&allocator, U8.truncate(next)):
+            Ok(done):
+                continue
+            Err(item):
+                break
+    match partners(&allocator, &code):
+        Ok(jumps):
+            let tape: Result<Vec<U64>, U64> = Vec.filled(&allocator, 300, 0)
+            match move tape:
+                Ok(made):
+                    var cells: Vec<U64> = move made
+                    match run(&console, &code, &jumps, &mut cells):
+                        Ok(steps):
+                            console.line("")
+                            console.write_u64(steps)
+                            console.line(" steps")
+                        Err(fault):
+                            console.line("fault")
+                    cells.close()
+                Err(reason):
+                    console.line("no room")
+            jumps.close()
+        Err(fault):
+            console.line("bad program")
+    code.close()

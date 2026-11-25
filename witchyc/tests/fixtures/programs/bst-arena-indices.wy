@@ -1,0 +1,92 @@
+// A binary search tree in a Vec arena: nodes refer to children by index, none() for no child.
+import console
+import vec
+import string
+
+fn none() -> U64:
+    return 18446744073709551615
+
+type Node = .{key: U64, left: U64, right: U64}
+
+fn insert(nodes: &mut Vec<Node>, allocator: &Allocator, key: U64) -> Bool:
+    let count = nodes.len()
+    if count == 0:
+        match nodes.push_mut(allocator, .{key: key, left: none(), right: none()}):
+            Ok:
+                return true
+            Err(back):
+                return false
+    var at: U64 = 0
+    while true:
+        let Ok(node): &Node = nodes.at(at) else Err(c):
+            return false
+        let here = node.key
+        if key == here:
+            return false
+        let next = if key < here: node.left else: node.right
+        if next == none():
+            match nodes.push_mut(allocator, .{key: key, left: none(), right: none()}):
+                Ok:
+                    ()
+                Err(back):
+                    return false
+            let Ok(parent): &mut Node = nodes.at_mut(at) else Err(c):
+                return false
+            if key < here:
+                (*parent).left = count
+            else:
+                (*parent).right = count
+            return true
+        at = next
+    return false
+
+fn contains(nodes: &Vec<Node>, key: U64) -> Bool:
+    var at: U64 = 0
+    while at != none():
+        let Ok(node): &Node = nodes.at(at) else Err(c):
+            return false
+        if key == node.key:
+            return true
+        at = if key < node.key: node.left else: node.right
+    return false
+
+fn walk(out: &mut String, allocator: &Allocator, nodes: &Vec<Node>, at: U64):
+    if at == none():
+        return
+    let Ok(node): &Node = nodes.at(at) else Err(c):
+        return
+    walk(out, allocator, nodes, node.left)
+    let _ = out.push_format(allocator, "${node.key} ")
+    walk(out, allocator, nodes, node.right)
+
+fn height(nodes: &Vec<Node>, at: U64) -> U64:
+    if at == none():
+        return 0
+    let Ok(node): &Node = nodes.at(at) else Err(c):
+        return 0
+    let l = height(nodes, node.left)
+    let r = height(nodes, node.right)
+    return 1 + (if l > r: l else: r)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<Node> = Vec.new(&allocator, 0) else Err(c):
+        return
+    var nodes = move made
+    var seed: U64 = 7
+    var added: U64 = 0
+    for i in 0..20:
+        seed = (seed * 37 + 11) % 101
+        if insert(&mut nodes, &allocator, seed):
+            added += 1
+    console.print("added ${added} of 20")
+    let Ok(listed): String = String.new(&allocator) else Err(c):
+        nodes.close()
+        return
+    var out = move listed
+    walk(&mut out, &allocator, &nodes, 0)
+    console.write_string(&out)
+    console.line("")
+    out.close()
+    console.print("height ${height(&nodes, 0)}")
+    console.print("has 48: ${contains(&nodes, 48)}")
+    nodes.close()

@@ -1,0 +1,12 @@
+// Refused: the view is lent through its field while it is replaced whole.
+type Point:
+    x: U64
+type Seen:
+    point: &Point
+    n: U64
+fn main():
+    let p = Point(1)
+    var seen = Seen(&p, 1)
+    let r = &mut seen.n
+    seen = Seen(&p, 2)
+    *r = 5

@@ -1,0 +1,7 @@
+// Refused: a module is named only by a file that imports it, not one that merely shares a
+// program with it.
+import console
+import "parts/uses-other.wy"
+
+fn main(console: Console<Write>):
+    console.print_int(other.area(5))

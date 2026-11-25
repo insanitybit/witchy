@@ -1,0 +1,2 @@
+proof failed: function `has_first`
+  not proved: ensures result

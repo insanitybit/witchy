@@ -1,0 +1,23 @@
+import "../sqlite_reply.wy"
+import console
+import "@sqlite"
+import string
+
+pub fn check_ci_schema(db: &Sqlite, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let empty = String.new(allocator)?
+    var plan = move empty
+    let bindings_result = String.new(allocator)
+    let Ok(bindings): String = move bindings_result else Err(code):
+        plan.close()
+        return Err(code)
+    let checked = check(db, output, &mut plan, &bindings, allocator)
+    bindings.close()
+    plan.close()
+    return checked
+
+fn check(db: &Sqlite, output: &Console<Write>, plan: &mut String, bindings: &String, allocator: &Allocator) -> Result<(), U64>:
+    // SQLite resolves every named column without reading any stored rows.
+    plan.push_text(allocator, "expect\tCI storage unavailable\tSELECT NOT EXISTS(SELECT digest,name,version,payload FROM candidates WHERE 0) AND NOT EXISTS(SELECT jti,token_expires,nonce,nonce_expires FROM ci_requests WHERE 0) AND NOT EXISTS(SELECT digest,package,workload,run,attempt,document FROM ci_receipts WHERE 0)\n")?
+    plan.push_text(allocator, "result\tCI storage unavailable\tSELECT CAST('ready' AS BLOB)\n")?
+    let bytes = bindings.as_bytes()
+    return emit_transaction(db, plan, bindings, bytes, output, 64, allocator)

@@ -1,0 +1,12 @@
+// When a guard fails some later arm must be taken: one for the same variant, or `_`.
+import console
+
+fn pick(n: Option<U64>) -> U64:
+    match n:
+        Some(x) if x > 3:
+            x
+        None:
+            0
+
+fn main(console: Console<Write>):
+    console.print_int(pick(Some(5)))

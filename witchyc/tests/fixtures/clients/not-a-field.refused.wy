@@ -1,0 +1,18 @@
+// A clause may call only a method that returns a field: one that computes is refused.
+type Pair:
+    left: U64
+    right: U64
+
+impl Pair:
+    fn total(pair: &Pair) -> U64:
+        return (*pair).left + (*pair).right
+
+fn sum(pair: &Pair) -> U64:
+    ensures result == pair.total()
+    proof:
+        auto
+    return pair.total()
+
+fn main(console: Console<Write>):
+    let pair = Pair(1, 2)
+    console.print_int(sum(&pair))

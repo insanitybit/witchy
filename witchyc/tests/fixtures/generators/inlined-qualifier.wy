@@ -1,0 +1,11 @@
+// Another file's generator calling `util.pick` through its own import, run from a file that
+// imports another util.wy: it is stepped, not run in place, so `util` is its own file's (ninth
+// review: the caller's `util` was called, 1000 1001).
+import console
+import "parts/walk_qualified.wy"
+import "parts/other/util.wy"
+
+fn main(console: Console<Write>):
+    console.print_int(walk_qualified.own_sum())
+    for v in walk(2):
+        console.print_int(v)

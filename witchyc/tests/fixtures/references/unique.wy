@@ -1,0 +1,106 @@
+// `&mut` references as values: returned, kept, written through, passed on, held in a
+// variant, and taken from a HashMap to change a value where it is.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-hashmap.wy"
+
+type Pair:
+    a: U64
+    b: U64
+
+type Option<T>:
+    Some(T)
+    None
+
+fn first(pair: &mut Pair) -> &mut U64:
+    return &mut (*pair).a
+
+fn bump(value: &mut U64):
+    *value += 1
+
+fn show(value: &U64) -> U64:
+    return *value
+
+// A reference made from a reference: the caller's pair stays lent to the result.
+fn again(pair: &mut Pair) -> &mut U64:
+    let inner = first(pair)
+    bump(inner)
+    return inner
+
+fn find(pair: &mut Pair, which: U64) -> Result<&mut U64, U64>:
+    if which == 0:
+        return Ok(&mut (*pair).a)
+    if which == 1:
+        return Ok(&mut (*pair).b)
+    return Err(which)
+
+fn maybe(pair: &mut Pair, yes: Bool) -> Option<&mut U64>:
+    if yes:
+        return Some(&mut (*pair).b)
+    return None
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var pair = Pair(1, 2)
+    let r = first(&mut pair)
+    *r = 5
+    bump(r)
+    console.print_int(show(r))
+    // The loan ended with the last use of `r`.
+    console.print_int(pair.a + pair.b)
+    let s = again(&mut pair)
+    *s += 10
+    console.print_int(pair.a)
+    var x: U64 = 1
+    let local = &mut x
+    *local = 4
+    let passed = local
+    *passed += 1
+    *local += 1
+    console.print_int(x)
+    for index in 0..3:
+        let each = first(&mut pair)
+        *each += index
+    console.print_int(pair.a)
+    match find(&mut pair, 1):
+        Ok(found):
+            *found = 20
+        Err(code):
+            console.print_int(code)
+    match find(&mut pair, 2):
+        Ok(found):
+            *found = 30
+        Err(code):
+            console.print_int(code)
+    match maybe(&mut pair, true):
+        Some(found):
+            bump(found)
+            *found *= 2
+        None:
+            console.print_int(0)
+    console.print_int(pair.b)
+    let made: Result<HashMap<U64, U64>, U64> = HashMap.new(&allocator, 0)
+    var map = match move made:
+        Ok(empty):
+            move empty
+        Err(code):
+            return
+    match map.put(&allocator, 7, 1):
+        Ok:
+            console.line("stored")
+        Err(back):
+            back.discard()
+    match map.get_mut(&7):
+        Ok(slot):
+            *slot += 5
+        Err(code):
+            console.print_int(code)
+    match map.get_mut(&8):
+        Ok(slot):
+            *slot += 5
+        Err(code):
+            console.line("no such key")
+    match map.get(&7):
+        Ok(value):
+            console.print_int(*value)
+        Err(code):
+            console.print_int(code)
+    map.discard()

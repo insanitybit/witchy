@@ -1,0 +1,51 @@
+import "attestations.wy"
+import "metadata.wy"
+import "publication_files.wy"
+import "release_trust.wy"
+import fs
+import json_tree
+import span
+import string
+import text
+
+pub fn verify_signing_targets(source: &Dir<Read>, child: &Metadata, trust: &ReleaseTrust, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let body = child.signed()?
+    let targets = body.field("targets")?
+    match targets:
+        Object(entries):
+            for entry in entries:
+                verify_target(source, &entry.key, &entry.value, trust, now, allocator)?
+            return Ok(())
+        _:
+            return Err(4)
+
+fn verify_target(source: &Dir<Read>, coordinate: &String, offer: &Json, trust: &ReleaseTrust, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let Ok(reference): ContentReference = parse_reference(offer, allocator, 2097152) else Err(error):
+        return Err(4)
+    let empty = String.with_capacity(allocator, 103)?
+    var path = move empty
+    let prepared = target_name(&mut path, &reference, allocator)
+    let read = read_evidence(prepared, source, &path, reference.length(), allocator)
+    path.close()
+    let Ok(wire): String = move read else Err(code):
+        return Err(code)
+    let checked = verify_evidence(&wire, coordinate, &reference, trust, now, allocator)
+    wire.close()
+    return checked
+
+fn target_name(path: &mut String, reference: &ContentReference, allocator: &Allocator) -> Result<(), U64>:
+    path.push_text(allocator, "target-")?
+    return reference.append_sha384(path, allocator)
+
+fn read_evidence(prepared: Result<(), U64>, source: &Dir<Read>, path: &String, limit: U64, allocator: &Allocator) -> Result<String, U64>:
+    prepared?
+    let Ok(wire): String = read_text_object(source, path, limit, allocator) else Err(error):
+        return Err(4)
+    return Ok(move wire)
+
+fn verify_evidence(wire: &String, coordinate: &String, reference: &ContentReference, trust: &ReleaseTrust, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    if let Err(error) = reference.verify(wire.as_bytes()):
+        return Err(4)
+    if let Err(error) = verify_coordinate_attestations(wire, trust, coordinate.span(), now, allocator):
+        return Err(4)
+    return Ok(())

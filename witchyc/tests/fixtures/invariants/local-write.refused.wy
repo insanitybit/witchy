@@ -1,0 +1,21 @@
+import console
+
+sealed type Account:
+    balance: U64
+    limit: U64
+    invariant balance <= limit
+
+impl Account:
+    pub fn balance(account: &Account) -> U64:
+        return (*account).balance
+    // A field write to a local copy: refused.
+    pub fn bump(account: &Account) -> U64:
+        ensures true
+        proof:
+            auto
+        var copy = *account
+        copy.balance = 0
+        return copy.balance
+
+fn main(console: Console<Write>):
+    console.line("ran")

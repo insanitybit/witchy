@@ -1,0 +1,18 @@
+// Refused in two functions, and both are reported by one build (the second is checked although the
+// first was refused); a correct function between them is not.
+import console
+
+fn first(x: U64) -> U64:
+    return x.missing()
+
+fn second(y: U64) -> U64:
+    return unknown_name + y
+
+fn third() -> U64:
+    return 1
+
+fn fourth(t: Text) -> Bool:
+    return t.nothing_here()
+
+fn main(console: Console<Write>):
+    console.print_int(first(1) + second(2) + third())

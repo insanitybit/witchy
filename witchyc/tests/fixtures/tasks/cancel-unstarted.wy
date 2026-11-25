@@ -1,0 +1,51 @@
+// A task cancelled before it starts gets CANCELLED as its first word: its function reads it
+// (`first_word`) and gives back its input without doing anything else. Stepped as usual, the
+// first word is 0 and it does its work (a review of the concurrency semantics found that
+// cancelling a task not yet started ran its body).
+import console
+import tasks
+import vec
+
+fn work(numbers: Vec<U64>) suspends:
+    if first_word() == CANCELLED:
+        numbers.close()
+        report(1)
+        return
+    var sum: U64 = 0
+    for n in numbers.as_slice():
+        sum += *n
+    numbers.close()
+    report(100 + sum)
+
+fn made(allocator: &Allocator) -> Result<Task, U64>:
+    let Ok(numbers): Vec<U64> = Vec.filled(allocator, 3, 7) else Err(code):
+        return Err(code)
+    match Task.spawn(allocator, 2048, work, move numbers):
+        Ok(task):
+            return Ok(move task)
+        Err(back):
+            back.close()
+            return Err(0)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(first): Task = made(&allocator) else Err(code):
+        return
+    var cancelled = move first
+    match cancelled.cancel():
+        Ok(reported):
+            console.print_int(reported)
+        Err(token):
+            console.line("still waiting")
+    cancelled.close()
+    let Ok(second): Task = made(&allocator) else Err(code):
+        return
+    var stepped = move second
+    var going = true
+    while going:
+        match stepped.step():
+            Ok:
+                going = false
+            Err(token):
+                if token >= REPORTED:
+                    console.print_int(token - REPORTED)
+    stepped.close()

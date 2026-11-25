@@ -1,0 +1,21 @@
+// Refused: a recipe line `impl Name for Mine: // for Self:` implements for `Mine`; the check reads
+// the line without its comment, as the lexer does (fourth review: it passed a check of the text).
+import console
+
+trait Name:
+    fn name(self: &Mine) -> U64
+
+type Mine:
+    v: U64
+
+derive Sneak:
+    impl Name for Mine: // for Self:
+        fn name(self: &Mine) -> U64:
+            return 42
+
+type T derive(Sneak):
+    x: U64
+
+fn main(console: Console<Write>):
+    let m = Mine(v: 1)
+    console.print("${m.name()}")

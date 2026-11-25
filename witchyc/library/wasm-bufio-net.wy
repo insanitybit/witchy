@@ -1,0 +1,48 @@
+import bufio
+import net
+
+// Use a dedicated buffer per direction of a connection.
+pub fn read_socket(buffer: &mut ByteBuffer, socket: &Socket, output: &mut [U8]) -> Result<U64, StreamError>:
+    if output.len() == 0:
+        return Ok(0)
+    if buffer.buffered() == 0:
+        if output.len() >= buffer.capacity():
+            return receive(socket, output)
+        let count = receive(socket, buffer.writable())?
+        buffer.commit(count)?
+    return Ok(buffer.drain(output))
+
+pub fn write_socket(buffer: &mut ByteBuffer, socket: &Socket, input: &[U8]) -> Result<U64, WriteFailure>:
+    if input.len() == 0:
+        return Ok(0)
+    if buffer.capacity() == 0:
+        return send(socket, input)
+    let accepted = buffer.append(input)
+    if accepted != 0:
+        return Ok(accepted)
+    if let Err(error) = flush_socket(buffer, socket):
+        return Err(WriteFailure(error, 0))
+    return Ok(buffer.append(input))
+
+pub fn flush_socket(buffer: &mut ByteBuffer, socket: &Socket) -> Result<(), StreamError>:
+    while buffer.buffered() != 0:
+        let result = send(socket, buffer.readable())
+        buffer.record_write(result)?
+    return Ok(())
+
+fn receive(socket: &Socket, output: &mut [U8]) -> Result<U64, StreamError>:
+    let packed = socket.raw_recv(output)
+    let code = packed / 4294967296
+    if code != 0:
+        return Err(SourceFailed(code))
+    return Ok(packed % 4294967296)
+
+fn send(socket: &Socket, input: &[U8]) -> Result<U64, WriteFailure>:
+    let packed = socket.raw_send(input)
+    let count = packed % 4294967296
+    let code = packed / 4294967296
+    if code != 0:
+        return Err(WriteFailure(SinkFailed(code), count))
+    if count == 0:
+        return Err(WriteFailure(NoProgress, 0))
+    return Ok(count)

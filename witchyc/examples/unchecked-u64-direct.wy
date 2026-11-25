@@ -1,0 +1,30 @@
+fn main(console: Console<Write>):
+    var witness = memory.alloc(1)
+    memory.init(&mut witness, 0, 42)
+    let saved = &witness
+    let created: Result<Vec<U64>, AllocError> = vec_new(2)
+    match created:
+        Ok(empty):
+            match vec_push_spare(move empty, 73):
+                Ok(first):
+                    match vec_push_spare(move first, 74):
+                        Ok(second):
+                            match vec_get_unchecked(move second, 1):
+                                Ok(indexed):
+                                    match indexed.item:
+                                        Some(value):
+                                            console.print_int(value)
+                                        None:
+                                            console.print_int(901)
+                                    discard(move indexed.vector)
+                                Err(kept):
+                                    discard(move kept)
+                        Err(failed):
+                            discard(move failed)
+                Err(failed):
+                    discard(move failed)
+        Err(reason):
+            console.print_int(902)
+    console.print_int(memory.read(saved, 0))
+    memory.end(saved)
+    memory.release(witness)

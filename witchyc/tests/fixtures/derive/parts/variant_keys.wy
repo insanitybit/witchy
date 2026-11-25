@@ -1,0 +1,33 @@
+// Recipes over a sum's variants: equality and hashing from the active variant and its values.
+// `static for v, tag in variants:` writes its body once per variant (`v` its name, `tag` its
+// place); `v(..mine)` is the arm's pattern binding each value the variant holds (`mine0`,
+// `mine1`, ...), and `static for a, b in mine, theirs:` is written once per value. A value is
+// reached only in its own variant's arm: the recipe cannot name another variant's storage.
+import hash
+
+pub derive VariantKey:
+    impl Eq for Self:
+        fn eq(self: &Self, other: &Self) -> Bool:
+            match self:
+                static for v in variants:
+                    v(..mine):
+                        match other:
+                            v(..theirs):
+                                static for a, b in mine, theirs:
+                                    if !(*a == *b):
+                                        return false
+                                return true
+                            _:
+                                return false
+
+    impl Hash for Self:
+        fn hash(self: &Self) -> U64:
+            match self:
+                static for v, tag in variants:
+                    v(..mine):
+                        // The tag first, explicitly: two variants holding equal values differ.
+                        var folded: U64 = tag
+                        folded = folded.fold_hash(0)
+                        static for a in mine:
+                            folded = folded.fold_hash((*a).hash())
+                        return folded

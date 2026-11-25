@@ -1,0 +1,13 @@
+// Refused: a function with a contract does not return a Span, or make one from the one it
+// was given.
+import console
+import span
+import string
+
+fn head(text: Span, n: U64) -> U64:
+    ensures result == n
+    let part = text.part(0, 1)
+    return n
+
+fn main(console: Console<Write>, allocator: Allocator):
+    console.print_int(1)

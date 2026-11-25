@@ -1,0 +1,64 @@
+import encoding
+import "../tuf/release_trust.wy"
+import "../tuf/webauthn.wy"
+import discard
+import rand
+import string
+import text
+
+pub type ReviewCoordinate:
+    name: &String
+    version: &String
+    digest: &String
+    registry: &String
+
+pub fn approval_intent(coordinate: ReviewCoordinate, pin: &String, expiry: U64, out: &mut String, allocator: &Allocator) -> Result<(), U64>:
+    out.push_text(allocator, "{\"digest\":\"")?
+    out.push_part(allocator, coordinate.digest, 0, coordinate.digest.byte_len())?
+    out.push_text(allocator, "\",\"expires\":")?
+    out.push_u64(allocator, expiry)?
+    out.push_text(allocator, ",\"name\":\"")?
+    out.push_part(allocator, coordinate.name, 0, coordinate.name.byte_len())?
+    out.push_text(allocator, "\",\"operation\":\"release\",\"policy\":\"")?
+    out.push_part(allocator, pin, 0, pin.byte_len())?
+    out.push_text(allocator, "\",\"registry\":\"")?
+    out.push_part(allocator, coordinate.registry, 0, coordinate.registry.byte_len())?
+    out.push_text(allocator, "\",\"version\":\"")?
+    out.push_part(allocator, coordinate.version, 0, coordinate.version.byte_len())?
+    return out.push_text(allocator, "\"}")
+
+pub fn challenge_envelope(intent: &String, out: &mut String, random: &Rand, allocator: &Allocator) -> Result<(), U64>:
+    out.push_text(allocator, "{\"intent\":")?
+    out.push_part(allocator, intent, 0, intent.byte_len())?
+    out.push_text(allocator, ",\"nonce\":\"")?
+    var entropy: [U8; 32] = [0; 32]
+    for index in 0..4:
+        let word = random.next_u64()
+        for offset in 0..8:
+            entropy[index * 8 + offset] = U8.truncate(word >> (offset * 8))
+    encoding.push_base64url(out, allocator, entropy.slice())?
+    return out.push_text(allocator, "\"}")
+
+pub fn approval_envelope(coordinate: ReviewCoordinate, pin: &String, expiry: U64, out: &mut String, random: &Rand, allocator: &Allocator) -> Result<(), U64>:
+    let empty = String.with_capacity(allocator, 512)?
+    var intent = move empty
+    let prepared = approval_intent(coordinate, pin, expiry, &mut intent, allocator)
+    let checked = finish(prepared, &intent, out, random, allocator)
+    intent.close()
+    return checked
+
+fn finish(prepared: Result<(), U64>, intent: &String, out: &mut String, random: &Rand, allocator: &Allocator) -> Result<(), U64>:
+    prepared?
+    return challenge_envelope(intent, out, random, allocator)
+
+pub fn bind_challenge_token(bindings: &mut String, label: Text, envelope: &String, allocator: &Allocator) -> Result<(), U64>:
+    let parsed = parse_release_json(envelope, allocator)?
+    var hash: [U8; 48] = [0; 48]
+    let checked = challenge(&parsed, &mut hash, allocator)
+    parsed.discard()
+    if let Err(reason) = checked:
+        return Err(1)
+    bindings.push_text(allocator, label)?
+    bindings.push_text(allocator, "\ttext\t")?
+    encoding.push_base64url(bindings, allocator, hash.slice())?
+    return bindings.push_text(allocator, "\n")

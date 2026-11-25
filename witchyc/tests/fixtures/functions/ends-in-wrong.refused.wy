@@ -1,0 +1,8 @@
+// A body that ends in something that is not its result is refused, as one that falls through was.
+import console
+
+fn count(console: &Console<Write>) -> U64:
+    console.line("counting")
+
+fn main(console: Console<Write>):
+    console.print_int(count(&console))

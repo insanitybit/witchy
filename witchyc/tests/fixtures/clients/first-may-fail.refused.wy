@@ -1,0 +1,19 @@
+import "../../../library/wasm-vec.wy"
+fn has_first(items: &Vec<U64>) -> Bool:
+    ensures result
+    proof:
+        auto
+    match items.get(0):
+        Ok(item):
+            return true
+        Err(code):
+            return false
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<Vec<U64>, U64> = Vec.new(&allocator, 8)
+    let Ok(empty) = move made else Err(code):
+        console.print_int(code)
+        return
+    var items = move empty
+    if has_first(&items):
+        console.print_int(1)
+    Vec.close(move items)

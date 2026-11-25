@@ -1,0 +1,43 @@
+// Review round 32: a task parked by the 1024-report yield, or kept by cancel_all.
+// cancel_all on a task parked by the 1024-report yield. The task winds down with one goodbye
+// wait, as first-drain's losers do. Expected: it finishes (len 0), as it does unparked.
+import console
+import net
+import tasks
+
+fn polite(clock: Clock) suspends:
+    let start = clock.now_ms()
+    let t = clock.timer(start + 2000)
+    let g = clock.timer(start + 2000)
+    var i: U64 = 0
+    while i < 1100:
+        report(1)
+        i += 1
+    if pause_for(t) == CANCELLED:
+        let goodbye = pause_for(g)
+        report(500000)
+    clock.end_timer(t)
+    clock.end_timer(g)
+
+fn main(console: Console<Write>, listener: Listener, allocator: Allocator, clock: Clock):
+    let Ok(made): Waiting = Waiting.new(&allocator, &listener) else Err(code):
+        return
+    var waiting = move made
+    var reported: U64 = 0
+    match Task.spawn(&allocator, 4096, polite, clock.share()):
+        Ok(task):
+            match waiting.start(&allocator, move task):
+                Ok(started):
+                    reported += started.reported
+                Err(back):
+                    var lost = move back
+                    let cancelled = lost.cancel()
+                    lost.close()
+        Err(input):
+            reported += 0
+    reported += waiting.cancel_all(&allocator)
+    console.print_int(reported)
+    console.print_int(waiting.len())
+    while waiting.len() > 0:
+        let stepped = waiting.step_ready(&allocator, &listener)
+    waiting.close()

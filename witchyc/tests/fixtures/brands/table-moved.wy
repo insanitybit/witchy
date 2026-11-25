@@ -1,0 +1,32 @@
+// A table moved into a helper and back keeps its brand; the row still fits it.
+import console
+import graph
+
+// A table moved into a helper and back keeps its brand; its rows still fit it.
+fn bump<G: Brand>(table: Distances<G>, node: Node<G>) -> Distances<G>:
+    var t = move table
+    t.set(node, t.get(node) + 1)
+    return move t
+
+fn run(roads: &Graph, allocator: &Allocator, console: &Console<Write>) -> Result<(), U64>:
+    brand roads.nodes() as nodes:
+        let first_table = nodes.distances(allocator, 40)?
+        if let Some(home) = nodes.first():
+            let moved = bump(move first_table, home)
+            var again = bump(move moved, home)
+            console.print_int(again.get(home))
+            again.close()
+        else:
+            first_table.close()
+    return Ok(())
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Graph = Graph.new(&allocator, 3) else Err(code):
+        return
+    var roads = move made
+    match run(&roads, &allocator, &console):
+        Ok:
+            ()
+        Err(code):
+            console.line("no room")
+    roads.close()

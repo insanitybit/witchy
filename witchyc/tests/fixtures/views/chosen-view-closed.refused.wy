@@ -1,0 +1,17 @@
+// The Span would outlive the String it reads.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-span.wy"
+import "../../../library/wasm-string.wy"
+
+fn head(allocator: &Allocator, pick: Bool) -> Result<Span, U64>:
+    var text = String.new(allocator)?
+    let whole = text.span()
+    let first = if pick:
+        whole
+    else:
+        whole.part(0, 0)
+    text.close()
+    return Ok(first)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    console.print_int(1)

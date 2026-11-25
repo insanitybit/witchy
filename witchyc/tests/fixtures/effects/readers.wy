@@ -1,0 +1,74 @@
+// The `suspend` effect (docs/design-async.md): one generic function over a reader that never
+// pauses and one that may, checked once against its bound. Nothing pauses yet at run time.
+import console
+import tasks
+
+trait Read:
+    fn byte(self: &mut Self) -> U64 suspends
+
+type Memory:
+    at: U64
+
+type Remote:
+    at: U64
+
+impl Read for Memory:
+    fn byte(self: &mut Memory) -> U64:
+        (*self).at += 1
+        return (*self).at
+
+// A stand-in for a host read that waits for data.
+fn wait_for_data(at: U64) -> U64 suspends:
+    return at + 100
+
+impl Read for Remote:
+    fn byte(self: &mut Remote) -> U64:
+        (*self).at += 1
+        return wait_for_data((*self).at)
+
+// Pauses exactly when R's `byte` does.
+fn two<R: Read>(reader: &mut R) -> U64:
+    return reader.byte() + reader.byte()
+
+// Insists on a reader that never pauses.
+fn quiet_sum<R: Read nosuspend>(reader: &mut R) -> U64:
+    nosuspend:
+        return reader.byte() + reader.byte()
+
+// Public, and may pause: it says so.
+pub fn fetch(remote: &mut Remote) -> U64 suspends:
+    return two(remote)
+
+// A closure that pauses, through a function that calls it.
+fn apply(f: fn(U64) -> U64, value: U64) -> U64:
+    return f(value)
+
+fn countdown(n: U64) -> U64:
+    if n == 0:
+        return 0
+    return countdown(n - 1) + 1
+
+// What may pause runs in a task (`main` never pauses); it hands its results back as tokens.
+fn remote_part(start: U64) suspends:
+    var remote = Remote(start)
+    pause(fetch(&mut remote))
+    pause(apply(fn(n: U64) -> U64: wait_for_data(n), 1))
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var memory = Memory(0)
+    console.print_int(two(&mut memory))
+    console.print_int(quiet_sum(&mut memory))
+    let Ok(made): Task = Task.spawn(&allocator, 1024, remote_part, 0) else Err(given):
+        return
+    var task = move made
+    var going = true
+    while going:
+        match task.step():
+            Ok:
+                going = false
+            Err(token):
+                console.print_int(token)
+    task.close()
+    nosuspend:
+        console.print_int(countdown(3))
+        console.print_int(apply(fn(n: U64) -> U64: n + 1, 1))

@@ -1,0 +1,22 @@
+equals: yes
+equals shorter: no
+starts: yes
+starts other: no
+3
+10
+no !
+värde
+2
+2
+43
+not a number
+18446744073709551615
+too large
+n=0,18446744073709551615
+key < value: yes
+value < key: no
+key < key: no
+prefix first: yes
+equal
+key
+done

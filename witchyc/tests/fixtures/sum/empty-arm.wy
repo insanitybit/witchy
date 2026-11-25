@@ -1,0 +1,25 @@
+// `()` is the statement that does nothing: an arm or a branch with nothing to do. A variant may
+// hold several values.
+import console
+
+type Slot:
+    Empty
+    Full(U64, U64)
+
+fn weight(slot: Slot) -> U64:
+    var total: U64 = 0
+    match slot:
+        Empty:
+            ()
+        Full(key, value):
+            total = key + value
+    if total > 100:
+        ()
+    else:
+        total += 1
+    return total
+
+fn main(console: Console<Write>):
+    console.print_int(weight(Empty))
+    console.print_int(weight(Full(2, 3)))
+    console.print_int(weight(Full(60, 50)))

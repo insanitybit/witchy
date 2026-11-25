@@ -1,0 +1,3 @@
+// The input grant cannot be printed to.
+fn main(input: Console<Read>):
+    input.print_int(1)

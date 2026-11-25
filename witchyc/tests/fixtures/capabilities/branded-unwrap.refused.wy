@@ -1,0 +1,9 @@
+// Refused: nor can another file take the Dir back out.
+import fs
+import "parts/config.wy"
+fn main(root: Dir<Read>):
+    match config.config_dir(move root):
+        Ok(found):
+            let raw = found.authority.exists("secret")
+        Err(dir):
+            return

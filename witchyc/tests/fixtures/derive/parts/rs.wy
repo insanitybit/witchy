@@ -1,0 +1,41 @@
+import string
+pub trait Size:
+    fn size(self: &Self) -> U64
+
+trait Sz:
+    fn sz(self: &Self) -> U64
+
+impl Sz for String:
+    fn sz(self: &String) -> U64:
+        return self.byte_len() + 100
+
+impl Sz for U64:
+    fn sz(self: &U64) -> U64:
+        return *self + 10
+
+fn sz_it<X: Sz>(x: &X) -> U64:
+    return x.sz()
+
+fn slen(s: &String) -> U64:
+    return s.byte_len()
+
+pub derive ByMethod:
+    impl Size for Self:
+        fn size(self: &Self) -> U64:
+            var n: U64 = 0
+            static for f in fields:
+                n = n + (*self).f.sz()
+            return n
+
+pub derive ByHelper:
+    impl Size for Self:
+        fn size(self: &Self) -> U64:
+            var n: U64 = 0
+            static for f in fields:
+                n = n + sz_it(&(*self).f)
+            return n
+
+pub derive ByFree:
+    impl Size for Self:
+        fn size(self: &Self) -> U64:
+            return slen(&(*self).s)

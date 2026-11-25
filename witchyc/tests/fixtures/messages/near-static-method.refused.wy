@@ -1,0 +1,92 @@
+// Refused, naming what the type has: `I64.from_u64` is `I64.from`.
+// A stack calculator over signed numbers: each input line is a postfix expression of
+// integers (negative ones too) and `+ - * /`; its value is printed, or why it has none.
+import console
+import int
+import span
+import string
+import vec
+
+type Problem:
+    Underflow
+    DivideByZero
+    Unknown
+    Leftover(U64)
+    NoRoom
+
+impl Problem:
+    pub fn from(code: U64) -> Problem:
+        return NoRoom
+
+// A word as a signed number: an optional `-`, then digits.
+fn number(word: Span) -> Result<I64, U64>:
+    if word.is_empty():
+        return Err(0)
+    var negative = false
+    var digits = word
+    if word.byte_or_end(0) == 45 && word.len() > 1:
+        negative = true
+        digits = word.part(1, word.len())
+    let magnitude = digits.parse_u64()?
+    let value = I64.from_u64(magnitude)
+    if negative:
+        return Ok(-value)
+    return Ok(value)
+
+fn pop(stack: &mut Vec<I64>) -> Result<I64, Problem>:
+    match stack.take_last_mut():
+        Ok(value):
+            return Ok(value)
+        Err(code):
+            return Err(Underflow)
+
+fn evaluate(allocator: &Allocator, line: Span) -> Result<I64, Problem>:
+    using var stack: Vec<I64> = Vec.new(allocator, 8)?:
+        for word in line.words():
+            if word.equals_text("+") || word.equals_text("-") || word.equals_text("*") || word.equals_text("/"):
+                let right = pop(&mut stack)?
+                let left = pop(&mut stack)?
+                var value = left
+                if word.equals_text("+"):
+                    value = left + right
+                if word.equals_text("-"):
+                    value = left - right
+                if word.equals_text("*"):
+                    value = left * right
+                if word.equals_text("/"):
+                    if right == 0:
+                        return Err(DivideByZero)
+                    value = left / right
+                stack.push_mut(allocator, value)?
+            else:
+                let Ok(value): I64 = number(word) else Err(code):
+                    return Err(Unknown)
+                stack.push_mut(allocator, value)?
+        if stack.len() != 1:
+            return Err(Leftover(stack.len()))
+        return pop(&mut stack)
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    using var line: String = move made:
+        while true:
+            line.clear()
+            match input.read_line(&allocator, &mut line):
+                .Line:
+                    ()
+                _:
+                    break
+            match evaluate(&allocator, line.span()):
+                Ok(value):
+                    console.print("${value}")
+                Err(Underflow):
+                    console.line("too few numbers")
+                Err(DivideByZero):
+                    console.line("division by zero")
+                Err(Unknown):
+                    console.line("not a number or operator")
+                Err(Leftover(count)):
+                    console.print("${count} numbers left over")
+                Err(NoRoom):
+                    console.line("no room")

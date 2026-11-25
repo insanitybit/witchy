@@ -1,0 +1,54 @@
+// A generator (docs/design-generators.md): the body is an ordinary loop that yields; a call
+// runs nothing, and `for` runs it a step at a time.
+import console
+
+gen fn squares(limit: U64) -> U64:
+    var n: U64 = 1
+    while n <= limit:
+        yield n * n
+        n += 1
+
+// Several yields, a loop left early, and a value kept between steps.
+gen fn steps(start: U64) -> U64:
+    yield start
+    var total: U64 = start
+    var count: U64 = 0
+    while true:
+        count += 1
+        if count > 3:
+            break
+        total += count
+        if total % 2 == 0:
+            continue
+        yield total
+    yield 1000 + count
+
+// Fibonacci numbers up to a bound, stopping with `return`.
+gen fn fibonacci(bound: U64) -> U64:
+    var a: U64 = 0
+    var b: U64 = 1
+    while true:
+        if a > bound:
+            return
+        yield a
+        let next: U64 = a + b
+        a = b
+        b = next
+
+fn main(console: Console<Write>):
+    for square in squares(4):
+        console.print_int(square)
+    for value in steps(5):
+        console.print_int(value)
+    var sum: U64 = 0
+    for f in fibonacci(30):
+        sum += f
+    console.print_int(sum)
+    // Held in a variable and stepped by hand.
+    var by_hand = squares(2)
+    var cursor: U64 = 0
+    match by_hand.next_mut(&mut cursor):
+        Ok(first):
+            console.print_int(first)
+        Err:
+            console.print_int(0)

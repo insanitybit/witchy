@@ -1,0 +1,7 @@
+// A generic record nothing uses is still refused for holding itself other than behind a Buffer.
+type Cycle<T>:
+    value: T
+    child: Cycle<T>
+
+fn main():
+    return

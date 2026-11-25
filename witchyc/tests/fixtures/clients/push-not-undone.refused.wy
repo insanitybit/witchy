@@ -1,0 +1,76 @@
+// Functions that borrow a Vec and are proved from the contracts of the methods they call.
+// They cannot name the Vec's sealed fields: a clause reads the length through `len()`.
+import "../../../library/wasm-vec.wy"
+
+// How many elements are below `limit`. Every `get` is in range, so the Err arm is never taken:
+// the claim holds even though that arm would return too much.
+fn count_below(items: &Vec<U64>, limit: U64) -> U64:
+    ensures result <= items.len()
+    proof:
+        auto
+    var index = 0
+    var found = 0
+    while index < items.len():
+        invariant index <= items.len()
+        invariant found <= index
+        match items.get(index):
+            Ok(item):
+                if item < limit:
+                    found += 1
+            Err(code):
+                return 18446744073709551615
+        index += 1
+    return found
+
+fn last_index(items: &Vec<U64>) -> U64:
+    requires items.len() > 0
+    ensures result + 1 == items.len()
+    proof:
+        auto
+    return items.len() - 1
+
+// Push two values or none: on failure the Vec is as long as it was.
+fn push_two(items: &mut Vec<U64>, first: U64, second: U64) -> Bool:
+    ensures result == (items.len() == old(items.len()) + 2)
+    ensures result || items.len() == old(items.len())
+    proof:
+        auto
+    match items.push_spare_mut(first):
+        Ok:
+            match items.push_spare_mut(second):
+                Ok:
+                    return true
+                Err(back):
+                    return false
+        Err(back):
+            return false
+
+// Empty a Vec from the end: it finishes with no elements.
+fn drain(items: &mut Vec<U64>) -> U64:
+    ensures items.len() == 0
+    ensures result == old(items.len())
+    proof:
+        auto
+    var taken = 0
+    while items.len() > 0:
+        invariant taken + items.len() == old(items.len())
+        match items.take_last_mut():
+            Ok(item):
+                taken += 1
+            Err(code):
+                return 0
+    return taken
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<Vec<U64>, U64> = Vec.new(&allocator, 8)
+    let Ok(empty) = move made else Err(code):
+        console.print_int(code)
+        return
+    var items = move empty
+    if push_two(&mut items, 3, 40):
+        if push_two(&mut items, 5, 60):
+            console.print_int(count_below(&items, 10))
+            console.print_int(last_index(&items))
+    console.print_int(drain(&mut items))
+    console.print_int(items.len())
+    Vec.close(move items)

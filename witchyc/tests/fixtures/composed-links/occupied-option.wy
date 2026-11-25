@@ -1,0 +1,35 @@
+import cell
+import option
+
+fn inspect<T: Any>(slot: &Option<OccupiedCell<T>>) -> Option<&T>:
+    match slot:
+        None:
+            return None
+        Some(cell):
+            return Some(cell.read())
+
+fn main(out: Console<Write>, a: Allocator):
+    let fresh: Result<VacantCell<U64>, U64> = VacantCell.new(&a)
+    match move fresh:
+        Err(code):
+            out.print_int(code)
+        Ok(empty):
+            var slot: Option<OccupiedCell<U64>> = Some(empty.fill(19))
+            match &mut slot:
+                Some(full):
+                    let item = full.write()
+                    *item = 73
+                None:
+                    out.print_int(0)
+            match inspect(&slot):
+                Some(item):
+                    out.print_int(*item)
+                None:
+                    out.print_int(0)
+            match move slot:
+                Some(cell):
+                    let TakenCell(vacant, value) = cell.extract()
+                    vacant.close()
+                    out.print_int(value)
+                None:
+                    out.print_int(0)

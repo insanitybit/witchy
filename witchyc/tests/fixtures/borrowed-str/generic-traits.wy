@@ -1,0 +1,28 @@
+// Borrowed UTF-8 through the library's traits: `Show` (`console.show`, `${...}`) and a
+// String-keyed map looked up by a `&str` without copying it (`Q = str`).
+import console
+import string
+import hashmap
+import discard
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let s = "héllo"
+    console.show(s)
+    console.print(" [${s}] ${s.len()}")
+    let Ok(m): HashMap<String, U64> = HashMap.new(&allocator, 8) else Err(e):
+        return
+    var map = move m
+    let Ok(k): String = String.from_str(&allocator, s) else Err(e):
+        map.discard()
+        return
+    match map.put(&allocator, move k, 7):
+        Ok:
+            ()
+        Err(back):
+            back.discard()
+    match map.get(s):
+        Ok(v):
+            console.print("found ${*v}")
+        Err(e):
+            console.print("missing")
+    map.discard()

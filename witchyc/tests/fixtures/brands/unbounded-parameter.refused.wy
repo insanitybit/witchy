@@ -1,0 +1,27 @@
+// Refused, by name: an unbounded type parameter is not a brand (review).
+import console
+
+type Graph:
+    count: U64
+
+type Node<G>:
+    offset: U64
+
+type Nodes<G>:
+    count: U64
+
+impl Graph:
+    fn nodes<D: Fresh>(self: &Graph) -> Nodes<D>:
+        return Nodes(count: (*self).count)
+
+fn first<G: Brand>(nodes: &Nodes<G>) -> Node<G>:
+    return Node(offset: 0)
+
+fn apart<G: Brand>(a: Node<G>, b: Node<G>) -> U64:
+    return b.offset - a.offset
+
+fn relay<T>(a: Node<T>) -> U64:
+    return apart(a, a)
+fn main(console: Console<Write>):
+    let a: Node<U64> = Node(offset: 1)
+    console.print_int(relay(a))

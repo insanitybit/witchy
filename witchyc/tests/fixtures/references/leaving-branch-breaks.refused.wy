@@ -1,0 +1,34 @@
+// Refused (review): an if branch ending in return that can break first is not leaving; the span is read again after the String was rewritten.
+// The `if i == n` branch ends in `return`, so it counts as leaving; but on one path it `break`s
+// out of the loop, after which `words` is read. The branch dropped `words`' loan on entry.
+import console
+import span
+import string
+
+fn bad(allocator: &Allocator, n: U64) -> Result<U64, U64>:
+    let Ok(made): String = String.new(allocator) else Err(code):
+        return Err(code)
+    var text = move made
+    let _ = text.push_text(allocator, "12")
+    let words = text.span()
+    var i: U64 = 0
+    while i < 3:
+        if i == n:
+            text.clear()
+            let again = text.push_text(allocator, "99")
+            if n == 1:
+                break
+            text.close()
+            return Err(n)
+        i = i + 1
+    let v = words.parse_u64()
+    text.close()
+    match v:
+        Ok(x):
+            return Ok(x)
+        Err(e):
+            return Ok(0)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    if let Ok(n) = bad(&allocator, 1):
+        console.print_int(n)

@@ -1,0 +1,67 @@
+// Span.to_string packs eight bytes to a write: parts of 0 to 17 bytes, and parts at scalar
+// boundaries of a text with two, three and four byte scalars.
+import console
+import string
+import span
+
+fn show(console: &Console<Write>, allocator: &Allocator, text: &String, from: U64, to: U64):
+    match text.span().part(from, to).to_string(allocator):
+        Ok(copy):
+            console.write_u64(copy.byte_len())
+            console.write(" ")
+            console.write_string(&copy)
+            console.line("|")
+            copy.close()
+        Err(e):
+            console.line("refused")
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(a): String = String.new(&allocator) else Err(e):
+        return
+    var plain = move a
+    let Ok(b): String = String.new(&allocator) else Err(e):
+        plain.close()
+        return
+    var wide = move b
+    let _ = plain.push_text(&allocator, "abcdefghijklmnopq")
+    let _ = wide.push_text(&allocator, "aé€😀bcdefghé€😀xyzé")
+    show(&console, &allocator, &plain, 0, 0)
+    show(&console, &allocator, &plain, 0, 1)
+    show(&console, &allocator, &plain, 0, 2)
+    show(&console, &allocator, &plain, 0, 3)
+    show(&console, &allocator, &plain, 0, 4)
+    show(&console, &allocator, &plain, 0, 5)
+    show(&console, &allocator, &plain, 0, 6)
+    show(&console, &allocator, &plain, 0, 7)
+    show(&console, &allocator, &plain, 0, 8)
+    show(&console, &allocator, &plain, 0, 9)
+    show(&console, &allocator, &plain, 0, 10)
+    show(&console, &allocator, &plain, 0, 11)
+    show(&console, &allocator, &plain, 0, 12)
+    show(&console, &allocator, &plain, 0, 13)
+    show(&console, &allocator, &plain, 0, 14)
+    show(&console, &allocator, &plain, 0, 15)
+    show(&console, &allocator, &plain, 0, 16)
+    show(&console, &allocator, &plain, 0, 17)
+    show(&console, &allocator, &wide, 0, 0)
+    show(&console, &allocator, &wide, 0, 10)
+    show(&console, &allocator, &wide, 0, 14)
+    show(&console, &allocator, &wide, 0, 19)
+    show(&console, &allocator, &wide, 0, 28)
+    show(&console, &allocator, &wide, 6, 6)
+    show(&console, &allocator, &wide, 6, 13)
+    show(&console, &allocator, &wide, 6, 17)
+    show(&console, &allocator, &wide, 6, 27)
+    show(&console, &allocator, &wide, 12, 12)
+    show(&console, &allocator, &wide, 12, 16)
+    show(&console, &allocator, &wide, 12, 26)
+    show(&console, &allocator, &wide, 12, 31)
+    show(&console, &allocator, &wide, 15, 15)
+    show(&console, &allocator, &wide, 15, 22)
+    show(&console, &allocator, &wide, 15, 29)
+    show(&console, &allocator, &wide, 19, 19)
+    show(&console, &allocator, &wide, 19, 28)
+    show(&console, &allocator, &wide, 27, 27)
+    show(&console, &allocator, &wide, 31, 31)
+    plain.close()
+    wide.close()

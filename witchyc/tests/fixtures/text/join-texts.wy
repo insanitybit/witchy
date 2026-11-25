@@ -1,0 +1,40 @@
+// join_texts: none, one, several, an empty text among them, an empty separator, multi-byte text.
+import console
+import string
+import text
+import vec
+import discard
+
+fn show(console: &Console<Write>, allocator: &Allocator, items: &Vec<String>, separator: &str):
+    match join_texts(items, allocator, separator):
+        Ok(joined):
+            console.write("[")
+            console.write_string(&joined)
+            console.line("]")
+            joined.close()
+        Err(code):
+            console.line("no room")
+
+fn add(items: &mut Vec<String>, allocator: &Allocator, text: &str):
+    let Ok(s): String = String.from_str(allocator, text) else Err(e):
+        return
+    match items.push_mut(allocator, move s):
+        Ok:
+            return
+        Err(back):
+            back.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<String> = Vec.new(&allocator, 4) else Err(e):
+        return
+    var items = move made
+    show(&console, &allocator, &items, ", ")
+    add(&mut items, &allocator, "a")
+    show(&console, &allocator, &items, ", ")
+    add(&mut items, &allocator, "")
+    add(&mut items, &allocator, "héllo")
+    add(&mut items, &allocator, "€")
+    show(&console, &allocator, &items, ", ")
+    show(&console, &allocator, &items, "")
+    show(&console, &allocator, &items, " — ")
+    items.discard()

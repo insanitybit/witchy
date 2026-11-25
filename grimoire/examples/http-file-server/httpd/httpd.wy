@@ -1,0 +1,120 @@
+// An HTTP/1.0 file server package, written apart from the program that runs it: one task per
+// connection reads the request head into its own buffer, a pause at a time, reads the request
+// line in place, and answers from one read-only directory: 200 and the file, 404, or 400. It
+// answers only a request whose one `Host` header names the address the run granted the program
+// to listen on, which the connection itself says (`http.request_on`): none or two get 400, and
+// any other name 421, so a page that led a browser here under another name (DNS rebinding) is
+// served nothing. A client that is too slow is cut off by a time limit. It is given the
+// connection, the buffer, the directory, a clock and memory, and nothing else: it can dial
+// nowhere and write no file.
+import net
+import fs
+import vec
+import string
+import span
+import http
+import tasks
+import discard
+
+pub type Connection:
+    socket: Socket
+    buffer: Vec<U8>
+    root: Dir<Read>
+
+impl Connection:
+    // Given up unstarted: what it holds is closed.
+    pub fn discard(connection: Connection):
+        let Connection(socket, buffer, root) = move connection
+        socket.close()
+        buffer.close()
+        root.close()
+
+// The path of a `GET /path HTTP/1.x` request in the first `count` bytes, without its leading
+// `/`, as a String. Err is the status to answer with: 400 (not such a request, no `Host` header
+// or two, or no memory) or 421 (a `Host` that is not the granted listener's). The standard HTTP
+// module reads the head in place (`request_on`), its target already checked for spaces and
+// control bytes, and its `Host` against the address `socket` was accepted on.
+fn requested(socket: &Socket, bytes: &[U8], count: U64, allocator: &Allocator) -> Result<String, U64>:
+    let Ok(head): RequestHead = request_on(socket, Span.of(bytes.part(0, count))) else Err(status):
+        return Err(status)
+    if !head.method.equals_text("GET") || head.target.len() < 2 || head.target.byte_or_end(0) != 47:
+        return Err(400)
+    match head.target.part(1, head.target.len()).to_string(allocator):
+        Ok(path):
+            return Ok(move path)
+        Err(code):
+            return Err(400)
+
+// Answers one request; reports its status (200, 400, 404, 421), or 0 when the client went away, was
+// cut off before sending a whole head, or stopped taking the answer.
+pub fn answer(connection: Connection, allocator: Allocator) suspends:
+    let Connection(socket, made, root) = move connection
+    var buffer = move made
+    let size = buffer.len()
+    var count: U64 = 0
+    var reading = true
+    while reading && count < size:
+        match socket.read(buffer.as_mut_slice().part(count, size)):
+            Ok(got):
+                if got == 0:
+                    reading = false
+                else:
+                    count += got
+                    if has_head(Span.of(buffer.as_slice().part(0, count))):
+                        reading = false
+            Err(error):
+                socket.close()
+                buffer.close()
+                root.close()
+                report(0)
+                return
+    var status: U64 = 400
+    match requested(&socket, buffer.as_slice(), count, &allocator):
+        Ok(path):
+            match root.open_path(&path):
+                Ok(file):
+                    // Streamed a buffer at a time, a pause at each write: memory stays at the
+                    // buffer, and the time limit can stop a big file or a client that reads slowly
+                    // (reading it whole, and a blocking send, held every task up: review). Cut
+                    // short, the answer is reported as 0.
+                    let head = socket.send("HTTP/1.0 200 OK\r\n\r\n")
+                    status = 200
+                    var going = true
+                    while going:
+                        let got = file.read_some(buffer.as_mut_slice())
+                        if got == 0:
+                            going = false
+                        else:
+                            match socket.write(buffer.as_slice().part(0, got)):
+                                Ok:
+                                    going = true
+                                Err(failure):
+                                    status = 0
+                                    going = false
+                    file.close()
+                Err(error):
+                    status = 404
+                    let sent = socket.send("HTTP/1.0 404 Not Found\r\n\r\n")
+            path.close()
+        Err(refused):
+            status = refused
+            if refused == 421:
+                let sent = socket.send("HTTP/1.0 421 Misdirected Request\r\n\r\n")
+            else:
+                let sent = socket.send("HTTP/1.0 400 Bad Request\r\n\r\n")
+    socket.close()
+    buffer.close()
+    root.close()
+    report(status)
+
+fn wait(clock: Clock, ms: U64) suspends:
+    let slept = clock.sleep(ms)
+
+// `answer`, cut off after `ms` milliseconds: the connection is closed whatever happens.
+pub fn answer_within(connection: Connection, allocator: Allocator, clock: Clock, ms: U64) suspends:
+    let shared = allocator.share()
+    match race(&allocator, 8192, fn() -> (): answer(move connection, move shared), fn() -> (): wait(move clock, ms)):
+        Ok(winner):
+            report(1000 * (winner + 1))
+        Err(why):
+            report(9000)

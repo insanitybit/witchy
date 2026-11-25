@@ -1,0 +1,27 @@
+// `value?` alone: a number the success holds may be left unused.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-string.wy"
+
+fn take(left: &mut U64) -> Result<U64, U64>:
+    if *left == 0:
+        return Err(1)
+    *left -= 1
+    return Ok(*left)
+
+fn twice(from: U64) -> Result<U64, U64>:
+    var left = from
+    take(&mut left)?
+    take(&mut left)?
+    return Ok(left)
+
+fn main(console: Console<Write>):
+    match twice(5):
+        Ok(left):
+            console.print_int(left)
+        Err(code):
+            console.print_int(100)
+    match twice(1):
+        Ok(left):
+            console.print_int(left)
+        Err(code):
+            console.print_int(100)

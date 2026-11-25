@@ -1,0 +1,7 @@
+// `Twice` for `Coin`, written in neither the type's file nor the trait's.
+import "coin.wy"
+import "twice.wy"
+
+impl Twice for Coin:
+    fn twice(self: &Coin) -> U64:
+        return (*self).n * 2

@@ -1,0 +1,1 @@
+run: --input={dir}/parse-f64.txt --input-bytes=1000000 --fuel=100000000

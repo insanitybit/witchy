@@ -1,0 +1,6 @@
+// A PrefixBuffer issues no link to a cell.
+fn first<T>(buffer: &PrefixBuffer<T>, word: U64) -> &T:
+    return memory.ref_link(buffer, word)
+
+fn main(out: Console<Write>):
+    out.print_int(0)

@@ -1,0 +1,91 @@
+// UTF-8 operations assembled from the byte vector library.
+import "wasm-vec.wy"
+
+impl Vec<U8>:
+    // Lend the initialized bytes and retain their relation to the vector in proofs.
+    pub fn bytes_for_utf8(vector: &Vec<U8>) -> &[U8]:
+        ensures result.len() == vector.length
+        ensures memory.slice_contents(result, vector.data, 0)
+        proof:
+            auto
+        return memory.slice_unchecked(&(*vector).data, 0, (*vector).length)
+
+    // Lend a prefix whose UTF-8 validity the caller has already established.
+    pub fn as_proved_utf8(vector: &Vec<U8>) -> &str:
+        requires memory.utf8(vector.data, 0, vector.length)
+        ensures result.len() == vector.length
+        proof:
+            auto
+        let bytes = memory.slice_unchecked(&(*vector).data, 0, (*vector).length)
+        return memory.utf8_unchecked(bytes)
+
+    pub fn reserve_utf8_mut(vector: &mut Vec<U8>, allocator: &Allocator, requested: U64) -> Result<(), U64>:
+        requires memory.utf8(vector.data, 0, vector.length)
+        ensures memory.utf8(vector.data, 0, vector.length)
+        ensures vector.length == old(vector.length)
+        ensures match result:
+            Ok:
+                vector.capacity >= requested
+            Err(code):
+                code == 1
+        proof:
+            auto
+        return vector.reserve_mut(allocator, requested)
+
+    // Reserve room while preserving a proved UTF-8 prefix.
+    pub fn reserve_utf8(input: Vec<U8>, allocator: &Allocator, requested: U64) -> Result<Vec<U8>, Vec<U8>>:
+        requires memory.utf8(input.data, 0, input.length)
+        ensures match result:
+            Ok(output):
+                output.length == old(input.length)
+                memory.utf8(output.data, 0, output.length)
+            Err(back):
+                back.length == old(input.length)
+                memory.utf8(back.data, 0, back.length)
+        proof:
+            auto
+        return input.reserve(allocator, requested)
+
+    // Keep a shorter prefix when its end is a UTF-8 scalar boundary.
+    pub fn truncate_utf8(input: Vec<U8>, length: U64) -> Vec<U8>:
+        requires memory.utf8(input.data, 0, input.length)
+        ensures memory.utf8(result.data, 0, result.length)
+        ensures memory.same_allocation(result.data, old(input.data))
+        ensures memory.equal_prefix(result.data, old(input.data), result.length)
+        ensures result.capacity == old(input.capacity)
+        ensures result.length == old(input.length) || (result.length == length && result.length < old(input.length) && memory.utf8_boundary(old(input.data), length))
+        proof:
+            auto
+        let boundary = input.utf8_boundary(length)
+        if !boundary:
+            return move input
+        return input.truncate(length)
+
+    // Grow and append typed text, preserving the initialized UTF-8 prefix.
+    pub fn extend_utf8_mut(vector: &mut Vec<U8>, allocator: &Allocator, source: &str) -> Result<(), U64>:
+        requires memory.utf8(vector.data, 0, vector.length)
+        ensures memory.utf8(vector.data, 0, vector.length)
+        ensures match result:
+            Ok:
+                true
+            Err(code):
+                vector.length == old(vector.length)
+        proof:
+            auto
+        match vector.append_spare_utf8(source):
+            Ok:
+                return Ok(())
+            Err(code):
+                let capacity = (*vector).capacity
+                let count = source.len()
+                if capacity > 9223372036854775807:
+                    return Err(1)
+                let doubled = capacity + capacity
+                if count > 18446744073709551615 - doubled:
+                    return Err(1)
+                let requested = doubled + count
+                match vector.reserve_utf8_mut(allocator, requested):
+                    Ok:
+                        return vector.append_spare_utf8(source)
+                    Err(failure):
+                        return Err(failure)

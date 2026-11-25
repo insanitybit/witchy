@@ -1,0 +1,17 @@
+// Operators on a program's own types. On a value that is not a number, `a + b` is `a.add(b)`,
+// `a - b` is `a.sub(b)` and `a * b` is `a.mul(b)`, from these traits; `<`, `<=`, `>` and `>=`
+// are from `Before` (library/wasm-sort.wy, which `derive(Before)` makes), and `==` from `Eq`.
+// Both operands are of the one type and are copied in, as numbers are.
+
+pub trait Add:
+    fn add(self: Self, other: Self) -> Self
+
+pub trait Sub:
+    fn sub(self: Self, other: Self) -> Self
+
+pub trait Mul:
+    fn mul(self: Self, other: Self) -> Self
+
+// `a * n` with `a` of the type and `n` a U64: `Scale.scale(a, n)` (`250ms * 4`).
+pub trait Scale:
+    fn scale(self: Self, by: U64) -> Self

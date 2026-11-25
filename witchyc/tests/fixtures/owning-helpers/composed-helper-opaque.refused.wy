@@ -1,0 +1,41 @@
+// Refused by the proof: the helper `empty` calls has a branch, so neither has a summary, and
+// the caller knows nothing of the slot at the assignment.
+type Slot<T>:
+    Vacant
+    Full(T)
+
+type Shelf<T>:
+    count: U64
+    slot: Slot<T>
+
+type Both<T>:
+    first: Slot<T>
+    second: Slot<T>
+
+nopanic fn drain<T: Any>(slot: &mut Slot<T>) -> Slot<T>:
+    var previous: Slot<T> = Vacant
+    if true:
+        memory.exchange(&mut *slot, &mut previous)
+    return move previous
+
+nopanic fn put<T: Any>(slot: &mut T, next: T) -> T:
+    var held = move next
+    memory.exchange(slot, &mut held)
+    return move held
+
+// Helpers of helpers: each body is a call of one that only moves values.
+nopanic fn empty<T: Any>(slot: &mut Slot<T>) -> Slot<T>:
+    return drain(&mut *slot)
+
+nopanic fn stuff<T: Any>(slot: &mut Slot<T>, item: T) -> Slot<T>:
+    let previous = put(&mut *slot, Full(move item))
+    return move previous
+
+// The slot is proved vacant at the assignment through `empty`, which only calls `drain`.
+nopanic fn swap_in<T: Any>(shelf: &mut Shelf<T>, item: T) -> Slot<T>:
+    let held = empty(&mut (*shelf).slot)
+    (*shelf).slot = Full(move item)
+    return move held
+
+fn main(out: Console<Write>):
+    out.print_int(1)

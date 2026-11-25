@@ -1,0 +1,6 @@
+// Past the end, `&s[i]` traps, as `s[i]` does.
+fn main(console: Console<Write>):
+    let a: [U64; 3] = [1, 2, 3]
+    let s = a.slice()
+    let far = &s[5]
+    console.print_int(*far)

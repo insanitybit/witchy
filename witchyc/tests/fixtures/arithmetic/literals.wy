@@ -1,0 +1,11 @@
+// Numbers are decimal, or hexadecimal after `0x`; `_` may stand between digits.
+fn main(console: Console<Write>):
+    console.print_int(0xFF)
+    console.print_int(1_000_000)
+    console.print_int(0xFFFF_FFFF_FFFF_FFFF)
+    console.print_int(0x10 + 0)
+    console.print_int(0)
+    let t: [U64; 2] = [0xa, 0xB]
+    console.print_int(t[0] + t[1])
+    for i in 0..2:
+        console.print_int(i)

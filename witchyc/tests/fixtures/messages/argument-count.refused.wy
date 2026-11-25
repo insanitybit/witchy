@@ -1,0 +1,8 @@
+// A call with too few arguments says how many the function takes.
+import console
+
+fn add(a: U64, b: U64) -> U64:
+    a + b
+
+fn main(console: Console<Write>):
+    console.print_int(add(1))

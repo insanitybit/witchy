@@ -1,0 +1,41 @@
+import tls_certificates
+import tls_hello
+import tls
+import tls_transport
+import net
+import span
+import vec
+
+pub type ServerBuffers:
+    hello: Vec<U8>
+    flight: Vec<U8>
+    plaintext: Vec<U8>
+    wire: Vec<U8>
+
+pub fn server_buffers(allocator: &Allocator) -> Result<ServerBuffers, U64>:
+    let hello = Vec.filled(allocator, 65575, U8.truncate(0))?
+    let Ok(flight): Vec<U8> = Vec.filled(allocator, 65733, 0) else Err(reason):
+        hello.close()
+        return Err(reason)
+    let Ok(plaintext): Vec<U8> = Vec.filled(allocator, 16385, 0) else Err(reason):
+        flight.close()
+        hello.close()
+        return Err(reason)
+    let Ok(wire): Vec<U8> = Vec.filled(allocator, 16406, 0) else Err(reason):
+        plaintext.close()
+        flight.close()
+        hello.close()
+        return Err(reason)
+    return Ok(ServerBuffers(move hello, move flight, move plaintext, move wire))
+
+pub fn accept_named(socket: Socket, allocator: &Allocator, random: &Rand, signer: &TlsSigner, chain: &CertificateChain, server_name: Span, hello_bytes: &mut [U8], flight: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]) -> Result<SecureSession, SessionError>:
+    let Ok(length): U64 = tls_transport.read_client_hello(&socket, hello_bytes) else Err(reason):
+        socket.close()
+        return Err(HandshakeFailed)
+    let Ok(client): ClientHello = tls_hello.parse_p384_offer(Span.of(hello_bytes.part(0, length))) else Err(reason):
+        socket.close()
+        return Err(HandshakeFailed)
+    if !client.server_name().eq_ignore_ascii_case(server_name):
+        socket.close()
+        return Err(HandshakeFailed)
+    return tls.accept(move socket, allocator, random, signer, chain, client, true, flight, plaintext, wire)

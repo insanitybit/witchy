@@ -1,0 +1,21 @@
+type Entry:
+    byte: U8
+    word: U64
+
+fn bounce(input: Entry) -> Entry:
+    ensures result.byte == old(input.byte)
+    ensures result.word == old(input.word)
+    return move input
+
+fn main(console: Console<Write>):
+    var data: Buffer<Entry> = memory.alloc(1)
+    let zero: U8 = 0
+    let wide: U64 = 4294967297
+    let item = Entry(zero, wide)
+    memory.init(&mut data, 0, move item)
+    let taken: Entry = memory.take(&mut data, 0)
+    let first = bounce(move taken)
+    let second = bounce(move first)
+    console.print_int(U8.to_u64(second.byte))
+    console.print_int(second.word)
+    memory.release(data)

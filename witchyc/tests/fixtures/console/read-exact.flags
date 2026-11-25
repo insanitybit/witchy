@@ -1,0 +1,2 @@
+scratch-file: input 000000ffffff01020300ff0a8041424344123456abcd
+run: --input={scratch}/input

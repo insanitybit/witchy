@@ -1,0 +1,7 @@
+// Refused: a trait method alpha's inner file implements for U64.
+import console
+import "@alpha"
+
+fn main(console: Console<Write>):
+    let n: U64 = 5
+    console.print_int(n.reveal())

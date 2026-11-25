@@ -1,0 +1,382 @@
+// A JSON document as a value: a tree that owns its strings, arrays and members.
+// Built by recursive descent with the scanning functions of wasm-json.wy.
+// Plain Witchy code: no proofs, nothing unchecked. Every error path closes what was built.
+import "wasm-json.wy"
+import "wasm-json-strings.wy"
+import "wasm-format.wy"
+import "wasm-discard.wy"
+import "wasm-float.wy"
+import "wasm-string.wy"
+import "wasm-vec.wy"
+import "wasm-text.wy"
+import "wasm-discard-core.wy"
+
+pub type Json:
+    Null
+    Boolean(Bool)
+    // A number written as plain digits that fits U64; any other number keeps its text.
+    Whole(U64)
+    Decimal(String)
+    Str(String)
+    Array(Vec<Json>)
+    Object(Vec<Member>)
+
+pub type Member:
+    key: String
+    value: Json
+
+pub type JsonParsed:
+    value: Json
+    next: U64
+
+pub type JsonMember:
+    member: Member
+    next: U64
+
+// Release a document and everything it holds.
+impl Discard for Json:
+    fn discard(self: Json):
+        match move self:
+            Decimal(text):
+                text.close()
+            Str(text):
+                text.close()
+            Array(items):
+                items.discard()
+            Object(members):
+                members.discard()
+            _:
+                return
+
+impl Discard for Member:
+    fn discard(self: Member):
+        let Member(key, value) = move self
+        key.close()
+        value.discard()
+
+pub fn json_close(value: Json):
+    value.discard()
+
+// A copy of the input bytes `start` up to `end`, which must lie on scalar boundaries.
+fn json_slice(input: &String, start: U64, end: U64, allocator: &Allocator) -> Result<String, U64>:
+    let made: Result<String, U64> = String.with_capacity(allocator, end - start)
+    match move made:
+        Ok(empty):
+            var text = move empty
+            // The bytes as they are (it went a scalar at a time); the ends are boundaries, so
+            // what fails is room.
+            if let Err(_) = text.push_part(allocator, input, start, end):
+                text.close()
+                return Err(5)
+            return Ok(move text)
+        Err(code):
+            return Err(5)
+
+fn json_tree_member(input: &String, at: U64, allocator: &Allocator, depth: U64) -> Result<JsonMember, U64>:
+    let quote = json_expect(input, at, 34)?
+    match json_string(input, quote, allocator):
+        Ok(parsed):
+            let JsonText(key, after_key) = move parsed
+            match json_expect(input, json_space(input, after_key), 58):
+                Ok(colon):
+                    match json_tree_value(input, colon, allocator, depth):
+                        Ok(found):
+                            let JsonParsed(value, next) = move found
+                            return Ok(JsonMember(Member(move key, move value), next))
+                        Err(code):
+                            key.close()
+                            return Err(code)
+                Err(code):
+                    key.close()
+                    return Err(code)
+        Err(code):
+            return Err(code)
+
+fn json_tree_object(input: &String, at: U64, allocator: &Allocator, depth: U64) -> Result<JsonParsed, U64>:
+    if depth == 0:
+        return Err(4)
+    let made: Result<Vec<Member>, U64> = Vec.new(allocator, 4)
+    match move made:
+        Ok(empty):
+            var members = move empty
+            var index = json_space(input, at)
+            if json_byte(input, index) == 125:
+                return Ok(JsonParsed(Object(move members), index + 1))
+            let length = input.byte_len()
+            while index < length:
+                match json_tree_member(input, index, allocator, depth - 1):
+                    Ok(parsed):
+                        let JsonMember(member, next) = move parsed
+                        // In place (by value it took the proved path and its reserve each time).
+                        match members.push_mut(allocator, move member):
+                            Ok:
+                                ()
+                            Err(item):
+                                let Member(key, value) = move item
+                                key.close()
+                                json_close(move value)
+                                members.discard()
+                                return Err(5)
+                        index = json_space(input, next)
+                    Err(code):
+                        members.discard()
+                        return Err(code)
+                let mark = json_byte(input, index)
+                if mark == 125:
+                    return Ok(JsonParsed(Object(move members), index + 1))
+                if mark != 44:
+                    members.discard()
+                    if mark == 256:
+                        return Err(1)
+                    return Err(2)
+                index = json_space(input, index + 1)
+            members.discard()
+            return Err(1)
+        Err(code):
+            return Err(5)
+
+fn json_tree_array(input: &String, at: U64, allocator: &Allocator, depth: U64) -> Result<JsonParsed, U64>:
+    if depth == 0:
+        return Err(4)
+    let made: Result<Vec<Json>, U64> = Vec.new(allocator, 4)
+    match move made:
+        Ok(empty):
+            var items = move empty
+            var index = json_space(input, at)
+            if json_byte(input, index) == 93:
+                return Ok(JsonParsed(Array(move items), index + 1))
+            let length = input.byte_len()
+            while index < length:
+                match json_tree_value(input, index, allocator, depth - 1):
+                    Ok(parsed):
+                        let JsonParsed(value, next) = move parsed
+                        match items.push_mut(allocator, move value):
+                            Ok:
+                                ()
+                            Err(item):
+                                json_close(move item)
+                                items.discard()
+                                return Err(5)
+                        index = json_space(input, next)
+                    Err(code):
+                        items.discard()
+                        return Err(code)
+                let mark = json_byte(input, index)
+                if mark == 93:
+                    return Ok(JsonParsed(Array(move items), index + 1))
+                if mark != 44:
+                    items.discard()
+                    if mark == 256:
+                        return Err(1)
+                    return Err(2)
+                index += 1
+            items.discard()
+            return Err(1)
+        Err(code):
+            return Err(5)
+
+fn json_tree_value(input: &String, at: U64, allocator: &Allocator, depth: U64) -> Result<JsonParsed, U64>:
+    let start = json_space(input, at)
+    let byte = json_byte(input, start)
+    if byte == 256:
+        return Err(1)
+    if byte == 110:
+        let after_null = json_word(input, start, "null")?
+        return Ok(JsonParsed(Null, after_null))
+    if byte == 116:
+        let after_true = json_word(input, start, "true")?
+        return Ok(JsonParsed(Boolean(true), after_true))
+    if byte == 102:
+        let after_false = json_word(input, start, "false")?
+        return Ok(JsonParsed(Boolean(false), after_false))
+    if byte == 34:
+        match json_string(input, start + 1, allocator):
+            Ok(parsed):
+                let JsonText(text, next) = move parsed
+                return Ok(JsonParsed(Str(move text), next))
+            Err(code):
+                return Err(code)
+    if byte == 91:
+        return json_tree_array(input, start + 1, allocator, depth)
+    if byte == 123:
+        return json_tree_object(input, start + 1, allocator, depth)
+    if byte == 45 || (byte >= 48 && byte <= 57):
+        let stop = json_number(input, start)?
+        match json_u64(input, start, stop):
+            Ok(whole):
+                return Ok(JsonParsed(Whole(whole), stop))
+            Err(code):
+                let digits = json_slice(input, start, stop, allocator)?
+                return Ok(JsonParsed(Decimal(move digits), stop))
+    return Err(2)
+
+// Parse one JSON value that fills the whole input into a document. Err is a code, not a place:
+// 1 the input ended early, 2 an unexpected byte, 3 a bad escape, 4 nested too deeply, 5 no room,
+// 6 text after the value. A document holds one allocation for each string, key, array and
+// object: with the compiler's default of 64 allocation slots a few dozen members are 5; build
+// with `--slots=N` (a power of two) for more.
+pub fn json_tree(input: &String, allocator: &Allocator) -> Result<Json, U64>:
+    match json_tree_value(input, 0, allocator, 32):
+        Ok(parsed):
+            let JsonParsed(value, next) = move parsed
+            if json_byte(input, json_space(input, next)) != 256:
+                json_close(move value)
+                return Err(6)
+            return Ok(move value)
+        Err(code):
+            return Err(code)
+
+fn json_show_string(text: &String, out: String, allocator: &Allocator) -> Result<String, String>:
+    var result = move out
+    if let Err(code) = append_json_string(&mut result, allocator, text, JsonUtf8):
+        return Err(move result)
+    return Ok(move result)
+
+// A document writes itself as compact JSON text.
+impl Render for Json:
+    fn show(self: &Json, out: String, allocator: &Allocator) -> Result<String, String>:
+        let keep = out.byte_len()
+        match self:
+            Null:
+                let word: Text = "null"
+                return word.show(move out, allocator)
+            Boolean(flag):
+                return flag.show(move out, allocator)
+            Whole(number):
+                return number.show(move out, allocator)
+            Decimal(text):
+                return text.show(move out, allocator)
+            Str(text):
+                return json_show_string(text, move out, allocator)
+            Array(items):
+                var result = move out
+                match show_scalar(move result, allocator, 91, keep):
+                    Ok(grown):
+                        result = move grown
+                    Err(back):
+                        return Err(move back)
+                var first = true
+                for item in items:
+                    if !first:
+                        match show_scalar(move result, allocator, 44, keep):
+                            Ok(grown):
+                                result = move grown
+                            Err(back):
+                                return Err(move back)
+                    first = false
+                    match item.show(move result, allocator):
+                        Ok(grown):
+                            result = move grown
+                        Err(back):
+                            return Err(back.truncate(keep))
+                return show_scalar(move result, allocator, 93, keep)
+            Object(members):
+                var result = move out
+                match show_scalar(move result, allocator, 123, keep):
+                    Ok(grown):
+                        result = move grown
+                    Err(back):
+                        return Err(move back)
+                var first = true
+                for member in members:
+                    if !first:
+                        match show_scalar(move result, allocator, 44, keep):
+                            Ok(grown):
+                                result = move grown
+                            Err(back):
+                                return Err(move back)
+                    first = false
+                    match json_show_string(&(*member).key, move result, allocator):
+                        Ok(grown):
+                            result = move grown
+                        Err(back):
+                            return Err(back.truncate(keep))
+                    match show_scalar(move result, allocator, 58, keep):
+                        Ok(grown):
+                            result = move grown
+                        Err(back):
+                            return Err(move back)
+                    let value = &(*member).value
+                    match value.show(move result, allocator):
+                        Ok(grown):
+                            result = move grown
+                        Err(back):
+                            return Err(back.truncate(keep))
+                return show_scalar(move result, allocator, 125, keep)
+
+impl Json:
+    // The value of an object's member named `name` (the first, if several are). Err(1): this is
+    // not an object. Err(2): it has no such member.
+    pub fn field(self: &Json, name: &str) -> Result<&Json, U64>:
+        match self:
+            Object(members):
+                for member in members:
+                    if member.key.equals_text(name):
+                        return Ok(&member.value)
+                return Err(2)
+            _:
+                return Err(1)
+
+    // An array's element at `index`. Err(1): this is not an array. Err(2): there is none.
+    pub fn item(self: &Json, index: U64) -> Result<&Json, U64>:
+        match self:
+            Array(items):
+                match items.at(index):
+                    Ok(value):
+                        return Ok(value)
+                    Err(code):
+                        return Err(2)
+            _:
+                return Err(1)
+
+    // The text of a string value, lent. Err(1): it is not a string.
+    pub fn text(self: &Json) -> Result<&String, U64>:
+        match self:
+            Str(text):
+                return Ok(text)
+            _:
+                return Err(1)
+
+    // The value of `true` or `false`. Err(1): it is not a Boolean.
+    pub fn boolean(self: &Json) -> Result<Bool, U64>:
+        match self:
+            Boolean(value):
+                return Ok(*value)
+            _:
+                return Err(1)
+
+    // How many elements an array has, or members an object. Err(1): it is neither.
+    pub fn len(self: &Json) -> Result<U64, U64>:
+        match self:
+            Array(items):
+                return Ok(items.len())
+            Object(members):
+                return Ok(members.len())
+            _:
+                return Err(1)
+
+    // The number this value holds, as the nearest F64 (`parse_f64` for a decimal). Err(1): it is
+    // not a number.
+    pub fn number(self: &Json) -> Result<F64, U64>:
+        match self:
+            Whole(whole):
+                return Ok(F64.from_u64(*whole))
+            Decimal(text):
+                return parse_f64(text.as_bytes())
+            _:
+                return Err(1)
+
+// A JSON number for `value`: the shortest text that reads back as it (`push_f64`), so a document
+// written and read again holds the same F64. Err(1): infinite or NaN, which JSON cannot write.
+// Err(2): no room.
+pub fn json_f64(allocator: &Allocator, value: F64) -> Result<Json, U64>:
+    if value != value || value - value != 0.0:
+        return Err(1)
+    // `push_f64` writes at most 24 bytes.
+    let Ok(made): String = String.with_capacity(allocator, 24) else Err(code):
+        return Err(2)
+    var text = move made
+    if let Err(_) = text.push_f64(allocator, value):
+        text.close()
+        return Err(2)
+    return Ok(Decimal(move text))

@@ -1,0 +1,14 @@
+// A program declares nothing named `memory` (or `provider`): the name is the compiler's storage
+// operations in every file, the library's too, and a function of that name once stood between
+// `Vec` and `memory.try_alloc`. Refused at the declaration, not inside the library.
+import console
+import vec
+fn memory(n: U64) -> U64:
+    return n + 1
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.new(&allocator, 2) else Err(code):
+        return
+    var v = move made
+    let _ = v.push_mut(&allocator, memory(1))
+    console.print_int(v.len())
+    v.close()

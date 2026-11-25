@@ -1,0 +1,42 @@
+import bufio
+import fs
+
+// Use one initially empty buffer per input file.
+pub fn read_file(buffer: &mut ByteBuffer, file: &File<Read>, output: &mut [U8]) -> Result<U64, StreamError>:
+    if output.len() == 0:
+        return Ok(0)
+    if buffer.buffered() == 0:
+        if output.len() >= buffer.capacity():
+            return Ok(file.read_some(output))
+        let count = file.read_some(buffer.writable())
+        buffer.commit(count)?
+    return Ok(buffer.drain(output))
+
+// Accepts a prefix, flushing first if the buffer has no space. With
+// zero capacity, sends bytes directly and reports partial delivery.
+pub fn write_file(buffer: &mut ByteBuffer, file: &File<Write>, input: &[U8]) -> Result<U64, WriteFailure>:
+    if input.len() == 0:
+        return Ok(0)
+    if buffer.capacity() == 0:
+        return send(file, input)
+    let accepted = buffer.append(input)
+    if accepted != 0:
+        return Ok(accepted)
+    if let Err(error) = flush_file(buffer, file):
+        return Err(WriteFailure(error, 0))
+    return Ok(buffer.append(input))
+
+pub fn flush_file(buffer: &mut ByteBuffer, file: &File<Write>) -> Result<(), StreamError>:
+    while buffer.buffered() != 0:
+        let result = send(file, buffer.readable())
+        buffer.record_write(result)?
+    return Ok(())
+
+fn send(file: &File<Write>, input: &[U8]) -> Result<U64, WriteFailure>:
+    // The host reports both completion status and bytes retained by the file.
+    let packed = file.raw_write(input)
+    let count = packed % 4294967296
+    let code = packed / 4294967296
+    if code != 0:
+        return Err(WriteFailure(SinkFailed(code), count))
+    return Ok(count)

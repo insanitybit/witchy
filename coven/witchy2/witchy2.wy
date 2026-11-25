@@ -1,0 +1,227 @@
+// The `witchy-2` suite for the registry's signed objects: ML-DSA-65 (FIPS 204) over the object's
+// canonical bytes, which begin with the role's domain `witchy/v2/ROLE\0`. The engine computes it
+// with AWS-LC (`import crypto`); a key is a `Signer` the grant binds to one role, and nothing here
+// can read it. These programs use the standard library (Vec, fs), so they build with the
+// compiler's proof environment.
+import console
+import crypto
+import fs
+import vec
+
+// The most a signer takes (the engine's bound), and so the most a verifier reads per object.
+pub fn message_bound() -> U64:
+    return 1048576
+
+// The first blank line terminates the release record, including both newlines.
+// Zero means that the packed release has no complete record.
+pub fn release_record_end(bytes: &[U8]) -> U64:
+    var at: U64 = 1
+    while at < bytes.len():
+        if bytes[at] == 10 && bytes[at - 1] == 10:
+            return at + 1
+        at += 1
+    return 0
+
+// Fill `buffer` from `at` up to `end` from `file`: the count read.
+fn fill(file: &File<Read>, buffer: &mut Vec<U8>, at: U64, end: U64) -> U64:
+    var next = at
+    var more = true
+    while more && next < end:
+        let count = file.read_some(buffer.as_mut_slice().part(next, end))
+        next += count
+        more = count > 0
+    return next - at
+
+fn write_file(out: &Dir<Write>, name: Text, bytes: &[U8]) -> Bool:
+    let Ok(file): File<Write> = out.create(name) else Err(error):
+        return false
+    match file.write_bytes(bytes):
+        Ok:
+            match file.finish():
+                Ok:
+                    return true
+                Err(error):
+                    return false
+        Err(error):
+            file.abandon()
+            return false
+
+fn public_key_only(console: &Console<Write>, allocator: &Allocator, signer: &Signer, out: &Dir<Write>):
+    let Ok(made): Vec<U8> = Vec.filled(allocator, 1952, 0) else Err(code):
+        console.line("refused: out of memory")
+        return
+    var key = move made
+    match signer.public_key(key.as_mut_slice()):
+        Ok:
+            if write_file(out, "public-key", key.as_slice()):
+                console.line("public key")
+            else:
+                console.line("refused: cannot write the public key")
+        Err(_):
+            console.line("refused: no public key")
+    key.close()
+
+// Sign `work/message` (at most 1 MiB, beginning with the signer's domain) and write the signer's
+// `public-key` (1952 bytes) and the `signature` (3309) into `out`. Prints `signed`, or
+// `refused: WHY` with nothing written. The signature is verified as an object of the role whose
+// byte (`check`) is `work/role` before it is written: the launcher takes it as verified, so a
+// signed object it reads back needs no run of its own.
+// Without `work/message`, only the `public-key` is written, and it prints `public key`.
+pub fn sign_message(console: &Console<Write>, allocator: &Allocator, signer: &Signer, work: &Dir<Read>, out: &Dir<Write>):
+    if !work.exists("message"):
+        public_key_only(console, allocator, signer, out)
+        return
+    let Ok(file): File<Read> = work.open("message") else Err(error):
+        console.line("refused: no message")
+        return
+    // One byte more than the bound tells a message that is too long.
+    let Ok(message_made): Vec<U8> = Vec.filled(allocator, message_bound() + 1, 0) else Err(code):
+        file.close()
+        console.line("refused: out of memory")
+        return
+    var message = move message_made
+    let length = fill(&file, &mut message, 0, message_bound() + 1)
+    file.close()
+    if length > message_bound():
+        message.close()
+        console.line("refused: the message is too long")
+        return
+    let role = role_of(work)
+    // The public key 0..1952, the signature 1952..5261.
+    let Ok(made): Vec<U8> = Vec.filled(allocator, 5261, 0) else Err(code):
+        message.close()
+        console.line("refused: out of memory")
+        return
+    var out_bytes = move made
+    match signer.public_key(out_bytes.as_mut_slice().part(0, 1952)):
+        Ok:
+            match signer.sign(message.as_slice().part(0, length), out_bytes.as_mut_slice().part(1952, 5261)):
+                Ok:
+                    if !check(role, out_bytes.as_slice().part(0, 1952), message.as_slice().part(0, length), out_bytes.as_slice().part(1952, 5261)):
+                        console.line("refused: the signature does not verify")
+                    else if write_file(out, "public-key", out_bytes.as_slice().part(0, 1952)) && write_file(out, "signature", out_bytes.as_slice().part(1952, 5261)):
+                        console.line("signed")
+                    else:
+                        console.line("refused: cannot write the signature")
+                Err(WrongDomain):
+                    console.line("refused: the message is not in the signer's domain")
+                Err(_):
+                    console.line("refused: the signer failed")
+        Err(_):
+            console.line("refused: no public key")
+    out_bytes.close()
+    message.close()
+
+fn verdict(console: &Console<Write>, valid: Bool):
+    if valid:
+        console.line("valid")
+    else:
+        console.line("invalid")
+
+// Whether `signature` is `key`'s over `message` as an object of `role`: the role byte the
+// launcher wrote picks the domain the object must carry, from this fixed list; any other byte
+// is invalid.
+fn check(role: U64, key: &[U8], message: &[U8], signature: &[U8]) -> Bool:
+    if role == 1:
+        return witchy2_verify(key, "snapshot", message, signature)
+    if role == 2:
+        return witchy2_verify(key, "operator-rotation", message, signature)
+    if role == 3:
+        return witchy2_verify(key, "release", message, signature)
+    if role == 4:
+        return witchy2_verify(key, "index", message, signature)
+    if role == 5:
+        return witchy2_verify(key, "rotation", message, signature)
+    return false
+
+// The role byte in `work/role` (`check`'s), or 0, which no role has.
+fn role_of(work: &Dir<Read>) -> U64:
+    let Ok(file): File<Read> = work.open("role") else Err(error):
+        return 0
+    var role: U64 = 0
+    match file.next_byte():
+        Ok(byte):
+            role = U8.to_u64(byte)
+        Err:
+            role = 0
+    file.close()
+    return role
+
+// Fill `buffer` from `at` up to `end` from the launcher's input: the count read.
+fn take(input: &Console<Read>, buffer: &mut Vec<U8>, at: U64, end: U64) -> U64:
+    var next = at
+    var more = true
+    while more && next < end:
+        match input.read_byte():
+            Ok(byte):
+                if let Err(_) = buffer.set(next, byte):
+                    more = false
+                if more:
+                    next += 1
+            Err(code):
+                more = false
+    return next - at
+
+fn read_length(input: &Console<Read>) -> U64:
+    var length: U64 = 0
+    for index in 0..4:
+        match input.read_byte():
+            Ok(byte):
+                length = length * 256 + U8.to_u64(byte)
+            Err(code):
+                return 4294967295
+    return length
+
+// Verify each object of the batch the launcher writes to the program's input, in order: a role
+// byte (1 snapshot, 2 operator-rotation, 3 release, 4 index, 5 rotation), the 1952-byte public
+// key, the message's length (4 bytes, big-endian, at most 1 MiB), the message and the 3309-byte
+// signature. Prints `valid` or `invalid` for each, then `end`, or `refused: WHY` where the batch
+// is not in this form. True only if it printed `end` and every object was valid (an empty batch
+// is): a program that acts on what the launcher decided from these objects acts only then
+// (`verified_first`).
+pub fn verify_batch(console: &Console<Write>, allocator: &Allocator, input: &Console<Read>) -> Bool:
+    var all_valid = true
+    var more = true
+    while more:
+        match input.read_byte():
+            Ok(role_byte):
+                let role = U8.to_u64(role_byte)
+                let Ok(key_made): Vec<U8> = Vec.filled(allocator, 1952, 0) else Err(code):
+                    console.line("refused: out of memory")
+                    return false
+                var key = move key_made
+                let key_length = take(input, &mut key, 0, 1952)
+                let length = read_length(input)
+                if key_length != 1952 || length > message_bound():
+                    key.close()
+                    console.line("refused: malformed batch")
+                    return false
+                let Ok(message_made): Vec<U8> = Vec.filled(allocator, length + 3309, 0) else Err(code):
+                    key.close()
+                    console.line("refused: out of memory")
+                    return false
+                var message = move message_made
+                if take(input, &mut message, 0, length + 3309) != length + 3309:
+                    message.close()
+                    key.close()
+                    console.line("refused: malformed batch")
+                    return false
+                let valid = check(role, key.as_slice(), message.as_slice().part(0, length), message.as_slice().part(length, length + 3309))
+                verdict(console, valid)
+                all_valid = all_valid && valid
+                message.close()
+                key.close()
+            Err(code):
+                more = false
+    console.line("end")
+    return all_valid
+
+// What a program that acts does first: verify the launcher's batch (its input) of every signed object its
+// decision rests on (`verify_batch`), and act only if each is valid. Otherwise it prints
+// `refused: a signature does not verify` and acts on nothing; the launcher decides again with
+// each verdict known.
+pub fn verified_first(console: &Console<Write>, allocator: &Allocator, input: &Console<Read>) -> Bool:
+    if verify_batch(console, allocator, input):
+        return true
+    console.line("refused: a signature does not verify")
+    return false

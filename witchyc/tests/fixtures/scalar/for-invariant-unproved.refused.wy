@@ -1,0 +1,9 @@
+// An invariant is a claim, and only a function with a contract proves claims.
+import "../../../library/wasm-console.wy"
+
+fn main(console: Console<Write>):
+    var sum: U64 = 0
+    for index in 0..5:
+        invariant sum <= index * 10
+        sum += index
+    console.print_int(sum)

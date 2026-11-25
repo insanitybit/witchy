@@ -1,0 +1,15 @@
+// Refused: a reference read out of a view through a `&` to it still depends on the view's
+// loan of `p`, which is then written.
+type Point:
+    x: U64
+type Seen:
+    point: &Point
+    n: U64
+fn pick(seen: &Seen) -> &Point:
+    return (*seen).point
+fn main():
+    var p = Point(3)
+    let s = Seen(&p, 5)
+    let q = pick(&s)
+    p.x = 10
+    let n = (*q).x

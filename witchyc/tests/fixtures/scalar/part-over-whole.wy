@@ -1,0 +1,20 @@
+// A part scaled over its whole is at most the scale: `part * 100 / whole <= 100` from
+// `part <= whole`, proved (the divisor is a variable), so callers know the result's range.
+import console
+
+fn percent(part: U64, whole: U64) -> U64:
+    requires part <= whole && whole <= 1000000 && whole > 0
+    ensures result <= 100
+    proof:
+        auto
+    return part * 100 / whole
+
+fn per_mille(done: U64, total: U64) -> U64:
+    requires done < total && total <= 1000000
+    ensures result <= 1000
+    proof:
+        auto
+    return 1000 * done / total
+
+fn main(console: Console<Write>):
+    console.print("${percent(3, 7)} ${percent(7, 7)} ${percent(0, 9)} ${per_mille(1, 3)}")

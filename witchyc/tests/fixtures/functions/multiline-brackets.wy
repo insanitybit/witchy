@@ -1,0 +1,30 @@
+// While a bracket is open the line goes on: arguments, arrays and records over several lines,
+// with any indentation inside.
+import console
+
+type Point:
+    x: U64
+    y: U64
+
+fn total(
+    a: U64,
+    b: U64,
+    c: U64,
+) -> U64:
+    a + b + c
+
+fn main(console: Console<Write>):
+    let values = [
+        1,
+        2,
+            3,
+    ]
+    let p = Point(
+        x: values[0],
+        y: total(
+            values[1],
+            values[2],
+            10,
+        ),
+    )
+    console.print_int(p.x * 100 + p.y)

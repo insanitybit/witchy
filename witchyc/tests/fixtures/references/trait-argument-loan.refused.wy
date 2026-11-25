@@ -1,0 +1,48 @@
+// Refused (found by an adversarial review): a trait with a type parameter can hand out a
+// reference to it, so `sneak(&bag)` keeps `bag` lent while `seen` is used. Before the fix
+// this compiled, and the last line read freed memory.
+import console
+import vec
+import string
+
+trait Leak<X>:
+    fn leak(self: &Self) -> &X
+
+type Bag:
+    items: Vec<String>
+
+impl Leak<String> for Bag:
+    fn leak(self: &Bag) -> &String:
+        let items = &(*self).items
+        match items.at(0):
+            Ok(s):
+                return s
+            Err(c):
+                unreachable
+
+fn sneak<A: Any, B: Any + Leak<A>>(b: &B) -> &A:
+    return b.leak()
+
+fn text(allocator: &Allocator, t: Text) -> String:
+    let Ok(made): String = String.new(allocator) else Err(code):
+        unreachable
+    var s = move made
+    if let Err(_) = s.push_text(allocator, t):
+        unreachable
+    return move s
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<String> = Vec.new(&allocator, 1) else Err(code):
+        return
+    var names = move made
+    match names.push_mut(&allocator, text(&allocator, "victim")):
+        Ok:
+            console.print_int(1)
+        Err(back):
+            unreachable
+    var bag = Bag(move names)
+    let seen: &String = sneak(&bag)
+    console.print_int(seen.byte_len())
+    let Bag(gone) = move bag
+    gone.discard()
+    console.print_int(seen.byte_len())

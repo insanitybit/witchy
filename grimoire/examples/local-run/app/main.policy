@@ -1,0 +1,7 @@
+# What each file of main.wy may use. The compiler applies it to every build, from a checkout
+# (main.packages) or from the registry (grimoire stages it beside the entry).
+<standard>/: *
+main.wy: *
+# The config reader may read the one file main hands it, and nothing else. Its digest is the
+# reviewed source, `shasum -a 384 reader.wy`, the same from a checkout or the registry.
+@config-reader: File<Read> ; no unchecked ; digest sha384:a34caf00e91722c0faa689cdeaba7587bbb4376e1a1569066111e2c06d26e677595c7b62e816697a68798c75506d5066

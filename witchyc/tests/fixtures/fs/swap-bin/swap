@@ -1,0 +1,4 @@
+#!/bin/sh
+# Run by swap-during-run.wy while it holds its grant: $1/grant/sub, a directory the program has
+# used, becomes a symbolic link to $1/outside.
+mv "$1/grant/sub" "$1/grant/sub-real" && ln -s "$1/outside" "$1/grant/sub" && echo swapped

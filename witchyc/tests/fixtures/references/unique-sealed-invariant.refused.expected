@@ -1,0 +1,1 @@
+a function with a contract returns a `&mut` reference only when its proof is about a Buffer

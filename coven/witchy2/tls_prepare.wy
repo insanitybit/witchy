@@ -1,0 +1,58 @@
+// Check the public TLS identity against the same PKIX provider as a Witchy client.
+import tls_trust_pem
+import tls_certificates
+import "tls13/identity_match.wy"
+import "tuf/origin.wy"
+import console
+import fs
+import span
+import string
+import text
+import time
+import vec
+
+fn main(source: Dir<Read>, signer: TlsSigner, clock: Clock, output: Console<Write>, allocator: Allocator):
+    let checked = prepare(&source, &output, &signer, clock.now_ms() / 1000, &allocator)
+    source.close()
+    if let Err(reason) = checked:
+        output.line("refused TLS identity")
+
+fn prepare(source: &Dir<Read>, output: &Console<Write>, signer: &TlsSigner, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let Ok(file): File<Read> = source.open("origin") else Err(reason):
+        return Err(1)
+    let Ok(origin): String = file.read_text_bounded(allocator, 269) else Err(reason):
+        return Err(1)
+    let checked = with_origin(&origin, source, output, signer, now, allocator)
+    origin.close()
+    return checked
+
+fn with_origin(origin: &String, source: &Dir<Read>, output: &Console<Write>, signer: &TlsSigner, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    if !origin.span().starts_with_text("https://"):
+        return Err(1)
+    let hostname = relying_party(origin.span())?
+    let roots = load_pem(source, "roots.pem", allocator)?
+    let checked = with_roots(source, output, signer, hostname, roots.as_slice(), now, allocator)
+    roots.close()
+    return checked
+
+fn with_roots(source: &Dir<Read>, output: &Console<Write>, signer: &TlsSigner, hostname: Span, roots: &[U8], now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let chain = load_pem(source, "chain.pem", allocator)?
+    let checked = emit(output, signer, hostname, roots, chain.as_slice(), now, allocator)
+    chain.close()
+    return checked
+
+fn load_pem(source: &Dir<Read>, name: Text, allocator: &Allocator) -> Result<Vec<U8>, U64>:
+    let Ok(file): File<Read> = source.open(name) else Err(reason):
+        return Err(1)
+    return read_trust_bundle(move file, allocator)
+
+fn emit(output: &Console<Write>, signer: &TlsSigner, hostname: Span, roots: &[U8], chain: &[U8], now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let Ok(framed): CertificateChain = from_der_list(allocator, chain) else Err(reason):
+        return Err(1)
+    framed.close()
+    if !matches_key(signer, hostname, roots, chain, now):
+        return Err(1)
+    output.line("verified")
+    for byte in chain:
+        output.print_byte(*byte)
+    return Ok(())

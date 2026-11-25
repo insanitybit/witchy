@@ -1,0 +1,17 @@
+// A result bound with `let` and matched later: each arm has its variant's loans, as for a match
+// on the call (the name is used in the matched value only, so it holds nothing in the arms).
+import console
+import "../modules/parts/choose.wy"
+
+fn main(console: Console<Write>):
+    var a: U64 = 1
+    var b: U64 = 2
+    let got = choose(&a, &b, a < b)
+    match got:
+        Ok(item):
+            b = 3
+            console.print_int(*item)
+        Err(item):
+            a = 3
+            console.print_int(*item)
+    console.print_int(a)

@@ -1,0 +1,9 @@
+// Refused, saying what to write: `byte_at` gives a Result, and `==` with a number needs the value.
+import console
+import string
+
+fn main(console: Console<Write>):
+    let t: Text = "hi"
+    let b = t.byte_at(0)
+    if b == 104:
+        console.line("h")

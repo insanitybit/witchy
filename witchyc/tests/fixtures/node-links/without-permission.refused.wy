@@ -1,0 +1,8 @@
+import link
+
+fn bad(pointer: Link<U64>) -> U64:
+    let value = memory.ref_link(pointer, pointer.identity())
+    return *value
+
+fn main():
+    return

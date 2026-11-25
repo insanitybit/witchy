@@ -1,0 +1,13 @@
+import console
+
+fn main(console: Console<Write>):
+    let text: Text = "abcdefghi"
+    var sum: U64 = 0
+    for i in 0..1000000:
+        for at in 0..9:
+            match text.byte_at(at):
+                Ok(byte):
+                    sum += U8.to_u64(byte)
+                Err(code):
+                    sum += 1
+    console.print_int(sum)

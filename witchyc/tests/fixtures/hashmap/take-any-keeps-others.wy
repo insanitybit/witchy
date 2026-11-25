@@ -1,0 +1,30 @@
+// `take_any` closes the hole it leaves (Astra, 2026-11-18): keys 0 and 8 share a home in eight
+// cells; after one is taken, the other is still found.
+import console
+import hashmap
+import discard
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(m): HashMap<U64, U64> = HashMap.new(&allocator, 8) else Err(c):
+        return
+    var map = move m
+    let a = map.put(&allocator, 0, 10)
+    let b = map.put(&allocator, 8, 20)
+    console.print("${map.capacity()} ${map.len()}")
+    match map.take_any():
+        Ok(entry):
+            console.print("took ${entry.key}")
+        Err(e):
+            console.line("none")
+    console.print_int(map.len())
+    match map.get(&8):
+        Ok(v):
+            console.print("8 -> ${*v}")
+        Err(missing):
+            console.line("8 missing")
+    match map.get(&0):
+        Ok(v):
+            console.print("0 -> ${*v}")
+        Err(missing):
+            console.line("0 missing")
+    map.discard()

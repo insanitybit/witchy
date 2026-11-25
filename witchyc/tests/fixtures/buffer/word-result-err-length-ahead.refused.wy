@@ -1,0 +1,31 @@
+// Refused: `Err` hands the value back with a length past its filled cells (the invariant).
+pub sealed type V:
+    data: Buffer<U8>
+    length: U64
+    capacity: U64
+    invariant memory.prefix(data, length, capacity)
+
+impl V:
+    pub fn push_word(vector: &mut V, word: U64, count: U64) -> Result<(), U64>:
+        ensures memory.same_allocation(vector.data, old(vector.data))
+        ensures vector.capacity == old(vector.capacity)
+        ensures match result:
+            Ok:
+                vector.length == old(vector.length) + count
+            Err(code):
+                vector.length == old(vector.length)
+                memory.unchanged(vector.data, old(vector.data))
+        proof:
+            auto
+        let length = (*vector).length
+        if count > 8:
+            return Err(2)
+        if count >= (*vector).capacity - length:
+            (*vector).length = length + 1
+            return Err(1)
+        memory.init_word_unchecked(&mut (*vector).data, length, word, count)
+        (*vector).length = length + count
+        return Ok(())
+
+fn main():
+    return

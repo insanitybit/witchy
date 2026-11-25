@@ -1,0 +1,7 @@
+// The `_` side of a one-line `if let` may not drop an owner the other variant holds.
+import console
+import string
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let n = if let Err(code) = String.new(&allocator): code else: 0
+    console.print_int(n)

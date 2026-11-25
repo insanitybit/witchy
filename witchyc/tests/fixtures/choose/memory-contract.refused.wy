@@ -1,0 +1,17 @@
+// Not yet inside a function whose contract speaks of memory.
+type Held<T>:
+    data: Buffer<T>
+    length: U64
+
+fn longer<T: Any>(held: &mut Held<T>, count: U64):
+    ensures memory.same_allocation(held.data, old(held.data))
+    proof:
+        auto
+    let length = if count > (*held).length:
+        count
+    else:
+        (*held).length
+    (*held).length = length
+
+fn main(console: Console<Write>):
+    console.print_int(0)

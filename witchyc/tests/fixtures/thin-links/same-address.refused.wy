@@ -1,0 +1,20 @@
+fn invalid(old: Boxed<U64>, a: &Allocator) -> U64:
+    ensures true
+    proof:
+        auto
+    let stale: Weak<U64> = memory.weaken_box(&old)
+    let _ = memory.unbox(move old)
+    let result: Result<Boxed<U64>, U64> = memory.try_box(a, 42)
+    match move result:
+        Err(original):
+            return original
+        Ok(new):
+            var answer: U64 = 0
+            if memory.weak_bits(stale) == memory.box_address(&new):
+                let loan = memory.follow_weak(&new, stale)
+                answer = *loan
+            let _ = memory.unbox(move new)
+            return answer
+
+fn main():
+    return

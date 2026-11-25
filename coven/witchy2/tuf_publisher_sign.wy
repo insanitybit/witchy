@@ -1,0 +1,71 @@
+import "tuf/attestations.wy"
+import "tuf/package.wy"
+import "tuf/package_record.wy"
+import "tuf/release_trust.wy"
+import "tuf/signing_input.wy"
+import console
+import discard
+import json_tree
+import mldsa_signer
+import span
+import string
+import vec
+
+fn main(input: Console<Read>, output: Console<Write>, signer: Mldsa87Signer, allocator: Allocator):
+    let Ok(request): Json = read_signing_request(&input, &allocator) else Err(code):
+        return
+    let signed = sign_request(&request, &input, &output, &signer, &allocator)
+    request.discard()
+
+fn sign_request(request: &Json, input: &Console<Read>, output: &Console<Write>, signer: &Mldsa87Signer, allocator: &Allocator) -> Result<(), U64>:
+    let registry = string_field(request, "registry")?
+    if !count_fields(request, 2) || !registry_id(registry.as_bytes()):
+        return Err(1)
+    let package = read_signing_package(request, input, allocator)?
+    let signed = sign_package(package.as_slice(), registry, output, signer, allocator)
+    package.close()
+    return signed
+
+fn sign_package(bytes: &[U8], registry: &String, output: &Console<Write>, signer: &Mldsa87Signer, allocator: &Allocator) -> Result<(), U64>:
+    let payload = Span.of(bytes)
+    let Ok(header): PackageHeader = package_header(payload) else Err(error):
+        return Err(1)
+    if let Err(error) = validate_package_contents(payload, header, allocator):
+        return Err(1)
+    let digest = digest_text(bytes, allocator)?
+    let signed = sign_coordinate(header, &digest, registry, output, signer, allocator)
+    digest.close()
+    return signed
+
+fn sign_coordinate(header: PackageHeader, digest: &String, registry: &String, output: &Console<Write>, signer: &Mldsa87Signer, allocator: &Allocator) -> Result<(), U64>:
+    let name = header.name.to_string(allocator)?
+    let version = header.version.to_string(allocator)
+    let Ok(text): String = move version else Err(code):
+        name.close()
+        return Err(code)
+    let signed = sign_claim(ReleaseClaim(&name, &text, digest, registry), output, signer, allocator)
+    text.close()
+    name.close()
+    return signed
+
+fn sign_claim(claim: ReleaseClaim, output: &Console<Write>, signer: &Mldsa87Signer, allocator: &Allocator) -> Result<(), U64>:
+    let empty: String = String.with_capacity(allocator, 512)?
+    var message = move empty
+    let prepared = publisher_message(&mut message, claim, allocator)
+    let signed = write_signature(prepared, &message, output, signer, allocator)
+    message.close()
+    return signed
+
+fn write_signature(prepared: Result<(), U64>, message: &String, output: &Console<Write>, signer: &Mldsa87Signer, allocator: &Allocator) -> Result<(), U64>:
+    prepared?
+    let empty: Vec<U8> = Vec.filled(allocator, 4627, 0)?
+    var signature = move empty
+    if let Err(code) = signer.sign(message.as_bytes(), signature.as_mut_slice()):
+        signature.close()
+        return Err(code)
+    var writer = WordWriter.new()
+    for byte in signature.as_slice():
+        writer.put(output, *byte)
+    writer.flush(output)
+    signature.close()
+    return Ok(())

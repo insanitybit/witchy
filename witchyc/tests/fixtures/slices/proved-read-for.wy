@@ -1,0 +1,17 @@
+// `for i in 0..bytes.len()`: the loop's hidden end is the slice's length, so its reads are proved
+// in range and lose their checks.
+import console
+
+fn count_nines(bytes: &[U8]) -> U64:
+    ensures true
+    proof:
+        auto
+    var found: U64 = 0
+    for i in 0..bytes.len():
+        if bytes[i] == 9:
+            return i
+    return bytes.len()
+
+fn main(console: Console<Write>):
+    let a: [U8; 4] = [7, 8, 9, 10]
+    console.print_int(count_nines(&a))

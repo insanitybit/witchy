@@ -1,0 +1,22 @@
+import console
+import json_strings
+import string
+
+fn quote(output: &Console<Write>, allocator: &Allocator, source: &String, encoding: JsonStringEncoding):
+    let Ok(prefix): String = String.from_str(allocator, "value=") else Err(code):
+        output.line("allocation refused")
+        return
+    var text = move prefix
+    if let Ok(_) = append_json_string(&mut text, allocator, source, encoding):
+        output.write_string(&text)
+        output.print_byte(10)
+    text.close()
+
+fn main(output: Console<Write>, allocator: Allocator):
+    let Ok(source): String = String.from_str(&allocator, "é😀\t\"\\") else Err(code):
+        return
+    var input = move source
+    if let Ok(_) = input.push_ascii(&allocator, 1, 1):
+        quote(&output, &allocator, &input, JsonUtf8)
+        quote(&output, &allocator, &input, JsonAscii)
+    input.close()

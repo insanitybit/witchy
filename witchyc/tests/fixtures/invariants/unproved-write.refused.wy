@@ -1,0 +1,16 @@
+import console
+
+sealed type Account:
+    balance: U64
+    limit: U64
+    invariant balance <= limit
+
+impl Account:
+    pub fn balance(account: &Account) -> U64:
+        return (*account).balance
+    // Setting the balance to one can exceed a zero limit.
+    pub fn one(account: &mut Account):
+        (*account).balance = 1
+
+fn main(console: Console<Write>):
+    console.line("ran")

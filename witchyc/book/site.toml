@@ -1,0 +1,14 @@
+[book]
+title = "The Witchy Book"
+description = "Learn Witchy through ownership, brands, arenas, and proofs."
+src = "src"
+
+[output.html]
+default-theme = "light"
+preferred-dark-theme = "ayu"
+additional-css = ["theme/witchy.css"]
+no-section-label = true
+
+[output.html.playground]
+runnable = false
+copyable = true

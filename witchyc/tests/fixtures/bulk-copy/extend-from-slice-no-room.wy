@@ -1,0 +1,28 @@
+// No room for the block or for the growth: Err(1), and the vector is as it was.
+import console
+import vec
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var source: [U8; 40] = [7; 40]
+    let Ok(made): Vec<U8> = Vec.new(&allocator, 2) else Err(code):
+        return
+    var target = move made
+    let _ = target.push_mut(&allocator, 1)
+    var grown: U64 = 0
+    var refused: U64 = 0
+    // Until the heap is full; each refusal leaves the length as it was.
+    for round in 0..100000:
+        let before = target.len()
+        match target.extend_from_slice_mut(&allocator, source.slice()):
+            Ok:
+                grown += 1
+            Err(code):
+                refused += 1
+                if target.len() != before:
+                    console.line("changed")
+                if refused == 3:
+                    break
+    console.print_int(refused)
+    console.print_int(target.len() - grown * 40)
+    console.print_int(U8.to_u64(target[0]) + U8.to_u64(target[target.len() - 1]))
+    target.close()

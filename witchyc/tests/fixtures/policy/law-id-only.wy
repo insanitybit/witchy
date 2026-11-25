@@ -1,0 +1,27 @@
+// A declared coarser identity passes the law: Account equal by id and fed by id alone, so two
+// accounts with one id and different visits are one KeyMap key (docs/plan-derive-laws.md, slice 3).
+import "../derive/parts/keys.wy"
+import console
+import hash
+import hashmap
+import keymap
+
+type Account derive(keys.Key(by: id), keys.Fed(by: id), Discard):
+    id: U64
+    visits: U64
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): KeyMap<Account, U64> = KeyMap.new(&allocator, 4, Reference(1)) else Err(code):
+        return
+    var map = move made
+    match map.put(&allocator, Account(id: 7, visits: 1), 70):
+        Ok:
+            ()
+        Err(entry):
+            entry.discard()
+    match map.get(&Account(id: 7, visits: 99)):
+        Ok(v):
+            console.print_int(*v)
+        Err(code):
+            console.print_int(0)
+    map.discard()

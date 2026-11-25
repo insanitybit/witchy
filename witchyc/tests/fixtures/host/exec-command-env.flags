@@ -1,0 +1,1 @@
+run: --exec={dir}/exec-command-bin:showenv --exec-env=LANG,TZ

@@ -1,0 +1,46 @@
+import console
+import crypto
+import key_agreement
+
+fn exchange(random: &Rand) -> Bool:
+    var client_share: [U8; 97] = [0; 97]
+    let Ok(client): P384Key = random.p384_key(client_share.slice_mut()) else Err(reason):
+        return false
+    var server_share: [U8; 97] = [0; 97]
+    var server_secret: [U8; 48] = [0; 48]
+    if let Err(reason) = random.p384_agree(client_share.slice(), server_share.slice_mut(), server_secret.slice_mut()):
+        client.close()
+        return false
+    var client_secret: [U8; 48] = [0; 48]
+    if let Err(reason) = client.finish(server_share.slice(), client_secret.slice_mut()):
+        return false
+    return client_share[0] == 4 && server_share[0] == 4 && crypto.verify_tag48(client_secret.slice(), server_secret.slice())
+
+fn rejects(random: &Rand) -> Bool:
+    var share: [U8; 97] = [0; 97]
+    let Ok(key): P384Key = random.p384_key(share.slice_mut()) else Err(reason):
+        return false
+    // The encoding prefix is right, but (0,0) is not on the curve.
+    var invalid: [U8; 97] = [0; 97]
+    invalid[0] = 4
+    var untouched: [U8; 48] = [165; 48]
+    let sentinel: [U8; 48] = [165; 48]
+    if let Err(InvalidPeerPoint) = key.finish(invalid.slice(), untouched.slice_mut()):
+        return crypto.verify_tag48(sentinel.slice(), untouched.slice())
+    return false
+
+fn closes(random: &Rand) -> Bool:
+    for index in 0..17:
+        var share: [U8; 97] = [0; 97]
+        let Ok(key): P384Key = random.p384_key(share.slice_mut()) else Err(reason):
+            return false
+        key.close()
+    return true
+
+fn main(out: Console<Write>, random: Rand):
+    if exchange(&random):
+        out.line("P-384 peers agreed")
+    if rejects(&random):
+        out.line("off-curve point refused without output")
+    if closes(&random):
+        out.line("closing keys releases their slots")

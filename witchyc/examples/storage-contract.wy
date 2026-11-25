@@ -1,0 +1,18 @@
+// Clauses describe source places; they emit no runtime instructions.
+type StorageBox<T>:
+    backing: Buffer<T>
+    used: USize
+    limit: USize
+    invariant storage(backing, used, limit)
+
+fn keep<T>(input: StorageBox<T>) -> StorageBox<T>:
+    requires storage(input)
+    ensures storage(result)
+    var renamed = move input
+    return move renamed
+
+fn main(console: Console<Write>):
+    let empty: StorageBox<U64> = StorageBox(memory.alloc(1), 0, 1)
+    let returned = keep(move empty)
+    memory.release(returned.backing)
+    console.print_int(73)

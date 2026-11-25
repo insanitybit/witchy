@@ -1,0 +1,131 @@
+import "package_record.wy"
+import span
+import vec
+
+pub fn check_import_closure(payload: Span, requirements: Span, files: &Vec<PackageFile>, entry: U64, allocator: &Allocator) -> Result<(), PackageError>:
+    var queue: [U64; 64] = [0; 64]
+    queue[0] = entry
+    var known: U64 = 1 << entry
+    var count: U64 = 1
+    var cursor: U64 = 0
+    while cursor < count:
+        let Ok(file): &PackageFile = files.at(queue[cursor]) else Err(code):
+            return Err(InvalidImports)
+        let next = file_imports(payload, requirements, file, files, allocator)?
+        for i in 0..files.len():
+            let flag: U64 = 1 << i
+            if (next & flag) != 0 && (known & flag) == 0:
+                known = known | flag
+                queue[count] = i
+                count += 1
+        cursor += 1
+    if count != files.len():
+        return Err(InvalidImports)
+    return Ok(())
+
+fn file_imports(payload: Span, requirements: Span, file: &PackageFile, files: &Vec<PackageFile>, allocator: &Allocator) -> Result<U64, PackageError>:
+    let name = file_name(payload, file)
+    let body = file_content(payload, file)
+    if !body.is_utf8():
+        return Err(InvalidImports)
+    let lines = body.lines()
+    var imports: U64 = 0
+    for line in lines:
+        let text = trim_end(line)
+        if text.len() >= 9 && text.starts_with_text("import \"") && text.ends_with_text("\""):
+            let written = text.part(8, text.len() - 1)
+            if written.starts_with_text("@"):
+                if !declares_dependency(requirements, written.part(1, written.len())):
+                    return Err(InvalidImports)
+            else:
+                let next = imported_file(payload, files, name, written, allocator)?
+                imports = imports | (1 << next)
+        else if !text.is_empty() && !text.starts_with_text("//") && !text.starts_with_text("from ") && !standard_import(text):
+            break
+    return Ok(imports)
+
+fn standard_import(text: Span) -> Bool:
+    if text.len() <= 7 || !text.starts_with_text("import "):
+        return false
+    for byte in text.part(7, text.len()).as_bytes():
+        if !(*byte >= 'a' && *byte <= 'z') && *byte != '_' && *byte != '-':
+            return false
+    return true
+
+fn imported_file(payload: Span, files: &Vec<PackageFile>, importer: Span, written: Span, allocator: &Allocator) -> Result<U64, PackageError>:
+    if written.is_empty() || written.starts_with_text("/"):
+        return Err(InvalidImports)
+    let Ok(empty): Vec<U8> = Vec.filled(allocator, importer.len() + written.len() + 1, 0) else Err(code):
+        return Err(PackageResourceFailure)
+    var resolved = move empty
+    let checked = resolve(importer, written, resolved.as_mut_slice())
+    let found = match checked:
+        Ok(length):
+            find_file(payload, files, Span.of(resolved.as_slice().part(0, length)))
+        Err(error):
+            Err(error)
+    resolved.close()
+    if let Ok(index) = found:
+        return Ok(index)
+    return Err(InvalidImports)
+
+fn resolve(importer: Span, written: Span, output: &mut [U8]) -> Result<U64, PackageError>:
+    var used = importer.len()
+    while used > 0 && importer.byte_or_end(used - 1) != 47:
+        used -= 1
+    output.part(0, used).copy_from(importer.part(0, used).as_bytes())
+    var input = written
+    while true:
+        match input.split(47):
+            Ok(parts):
+                used = append_part(output, used, parts.head)?
+                input = parts.tail
+            Err(remainder):
+                used = append_part(output, used, remainder)?
+                break
+    if used == 0:
+        return Err(InvalidImports)
+    return Ok(used - 1)
+
+fn append_part(output: &mut [U8], used: U64, part: Span) -> Result<U64, PackageError>:
+    if part.equals_text("."):
+        return Ok(used)
+    if part.equals_text(".."):
+        if used == 0:
+            return Err(InvalidImports)
+        var end = used - 1
+        while end > 0 && output[end - 1] != '/':
+            end -= 1
+        return Ok(end)
+    let end = used + part.len()
+    output.part(used, end).copy_from(part.as_bytes())
+    output[end] = '/'
+    return Ok(end + 1)
+
+// Match the compiler's Unicode trim_end on already validated source text.
+fn trim_end(source: Span) -> Span:
+    let bytes = source.as_bytes()
+    var end = bytes.len()
+    while end > 0:
+        let width = whitespace_width(bytes, end)
+        if width == 0:
+            break
+        end -= width
+    return source.part(0, end)
+
+fn whitespace_width(bytes: &[U8], end: U64) -> U64:
+    let last = bytes[end - 1]
+    if (last >= 9 && last <= 13) || last == 32:
+        return 1
+    if end >= 2 && bytes[end - 2] == 194 && (last == 133 || last == 160):
+        return 2
+    if end >= 3:
+        let first = bytes[end - 3]
+        let second = bytes[end - 2]
+        if first == 225 && second == 154 && last == 128:
+            return 3
+        if first == 226 && second == 128 && ((last >= 128 && last <= 138) || last == 168 || last == 169 || last == 175):
+            return 3
+        if (first == 226 && second == 129 && last == 159) || (first == 227 && second == 128 && last == 128):
+            return 3
+    return 0

@@ -1,0 +1,1024 @@
+// F64 on the console (docs/wasm-f64.md): a number with a fixed count of decimals, as the
+// original Witchy's `format_float(x, decimals)` gave it, so output does not depend on how a
+// float's last digits would be chosen. The digits are exact: an F64 is m * 2^e for integers m
+// and e, and `m * 10^decimals * 2^e` is computed in 32-bit limbs, then rounded half to even, as
+// C's printf and Python's format do (a first version rounded in floating point and was wrong
+// in about one case in twenty: review of F64).
+//
+// A big number here is a non-negative integer in base 2^32, least significant limb first: an
+// array of forty limbs and how many are in use (forty hold any F64 times 10^9, under 2^1060).
+// The two are passed apart, since a record holds at most 32 numbers.
+import "wasm-console.wy"
+import "wasm-int.wy"
+import "wasm-string.wy"
+
+// n * factor, for a factor below 2^32.
+fn times(limbs: &mut [U64; 40], count: &mut U64, factor: U64):
+    var carry: U64 = 0
+    var index: U64 = 0
+    while index < *count:
+        let product = (*limbs)[index] * factor + carry
+        (*limbs)[index] = product % 4294967296
+        carry = product / 4294967296
+        index += 1
+    if carry > 0:
+        (*limbs)[*count] = carry
+        *count += 1
+
+// 2^power, for a power below 32.
+fn two_to(power: U64) -> U64:
+    return 1 << power
+
+// n * 2^shift.
+fn shifted_up(limbs: &mut [U64; 40], count: &mut U64, shift: U64):
+    let whole = shift / 32
+    var index = *count
+    while index > 0:
+        index -= 1
+        (*limbs)[index + whole] = (*limbs)[index]
+    for low in 0..whole:
+        (*limbs)[low] = 0
+    *count += whole
+    if shift % 32 > 0:
+        times(limbs, count, two_to(shift % 32))
+
+// The bit at `position` (0 is the lowest).
+fn bit(limbs: &[U64; 40], count: U64, position: U64) -> U64:
+    let limb = position / 32
+    if limb >= count:
+        return 0
+    return (*limbs)[limb] / two_to(position % 32) % 2
+
+// Whether any bit below `position` is set.
+fn any_below(limbs: &[U64; 40], count: U64, position: U64) -> Bool:
+    let limb = position / 32
+    var index: U64 = 0
+    while index < limb && index < count:
+        if (*limbs)[index] != 0:
+            return true
+        index += 1
+    if limb >= count:
+        return false
+    return (*limbs)[limb] % two_to(position % 32) != 0
+
+// Without leading zero limbs.
+fn trim(limbs: &[U64; 40], count: &mut U64):
+    while *count > 0 && (*limbs)[*count - 1] == 0:
+        *count -= 1
+
+// n / divisor (below 2^32), giving the remainder.
+fn divided(limbs: &mut [U64; 40], count: &mut U64, divisor: U64) -> U64:
+    var remainder: U64 = 0
+    var index = *count
+    while index > 0:
+        index -= 1
+        let current = remainder * 4294967296 + (*limbs)[index]
+        (*limbs)[index] = current / divisor
+        remainder = current % divisor
+    trim(limbs, count)
+    return remainder
+
+// n / 2^shift, rounded down.
+fn shifted_down(limbs: &mut [U64; 40], count: &mut U64, shift: U64):
+    let whole = shift / 32
+    if whole >= *count:
+        *count = 0
+        return
+    var index: U64 = 0
+    while index + whole < *count:
+        (*limbs)[index] = (*limbs)[index + whole]
+        index += 1
+    *count -= whole
+    if shift % 32 > 0:
+        let dropped = divided(limbs, count, two_to(shift % 32))
+    trim(limbs, count)
+
+// n + 1.
+fn incremented(limbs: &mut [U64; 40], count: &mut U64):
+    var index: U64 = 0
+    while index < *count:
+        if (*limbs)[index] < 4294967295:
+            (*limbs)[index] += 1
+            return
+        (*limbs)[index] = 0
+        index += 1
+    (*limbs)[*count] = 1
+    *count += 1
+
+// `value` in exactly `width` digits, zeros in front.
+// The digits come off the low end into at most two words in written order (`width` is at most
+// nine here), as `write_u64` packs them; a whole word in one call, the rest a byte at a time.
+fn write_padded(console: &Console<Write>, value: U64, width: U64):
+    var low: U64 = 0
+    var high: U64 = 0
+    var left = value
+    var position = width
+    while position > 0:
+        position -= 1
+        let shifted = (48 + left % 10) << (position % 8 * 8)
+        left = left / 10
+        if position < 8:
+            low = low | shifted
+        else:
+            high = high | shifted
+    if width < 8:
+        console.write_part(low, width)
+        return
+    console.print_word(low)
+    console.write_part(high, width - 8)
+
+// The decimal digits of n, which is used up.
+fn write_big(console: &Console<Write>, limbs: &mut [U64; 40], count: &mut U64):
+    if *count == 0:
+        console.print_byte('0')
+        return
+    // Nine digits at a time, least significant first.
+    var chunks: [U64; 40] = [0; 40]
+    var used: U64 = 0
+    while *count > 0:
+        chunks[used] = divided(limbs, count, 1000000000)
+        used += 1
+    used -= 1
+    console.write_u64(chunks[used])
+    while used > 0:
+        used -= 1
+        write_padded(console, chunks[used], 9)
+
+impl Console<Write>:
+    // `value` rounded to `decimals` places (at most 9), exactly, half to even, with `-` in front
+    // when its sign is negative (`-0.00` too, as printf writes it). `NaN`, `inf` and `-inf` for
+    // those.
+    pub fn write_f64(console: &Console<Write>, value: F64, decimals: U64):
+        let bits = F64.bits(value)
+        let exponent = bits / 4503599627370496 % 2048
+        let fraction = bits % 4503599627370496
+        if exponent == 2047 && fraction != 0:
+            console.write("NaN")
+            return
+        if bits >= 9223372036854775808:
+            console.print_byte('-')
+        if exponent == 2047:
+            console.write("inf")
+            return
+        var places = decimals
+        if places > 9:
+            places = 9
+        var scale: U64 = 1
+        for step in 0..places:
+            scale = scale * 10
+        // value = m * 2^(exponent - 1075), or m * 2^-1074 for the smallest.
+        var m = fraction
+        var power: U64 = 1074
+        if exponent > 0:
+            m = fraction + 4503599627370496
+            power = 1075
+        var limbs: [U64; 40] = [0; 40]
+        limbs[0] = m % 4294967296
+        limbs[1] = m / 4294967296
+        var count: U64 = 2
+        trim(&limbs, &mut count)
+        times(&mut limbs, &mut count, scale)
+        if exponent >= power:
+            shifted_up(&mut limbs, &mut count, exponent - power)
+        else:
+            // Divide by 2^k, rounding half to even on the bits shifted out.
+            let k = power - exponent
+            let half = bit(&limbs, count, k - 1)
+            let beyond = any_below(&limbs, count, k - 1)
+            shifted_down(&mut limbs, &mut count, k)
+            if half == 1 && (beyond || bit(&limbs, count, 0) == 1):
+                incremented(&mut limbs, &mut count)
+        let digits = divided(&mut limbs, &mut count, scale)
+        write_big(console, &mut limbs, &mut count)
+        if places > 0:
+            console.print_byte('.')
+            write_padded(console, digits, places)
+
+    // The same and a newline.
+    pub fn print_f64(console: &Console<Write>, value: F64, decimals: U64):
+        console.write_f64(value, decimals)
+        console.print_byte('\n')
+
+// Reading an F64 from decimal text: `parse_f64(bytes)` and `text.parse_f64()`. The nearest F64,
+// ties to the even one, as C's strtod and Python's float() give it. Up to 800 significant
+// digits are kept exactly: a point halfway between two F64s is written in at most 767, so it
+// cannot lie strictly between two numbers of 800 digits that differ in the last, and a nonzero
+// digit past them can only decide an exact tie, upward. (Forty digits, a first version, rounded
+// 684 of 5,834 test strings the wrong way: those with long expansions of halfway points.) The value is
+// N * 10^E; N * 2^s / 10^-E (or N * 10^E * 2^s) is divided to a 54-bit quotient q by binary long
+// division, and q's last bits and the remainder round it. A big number is 32-bit limbs in an
+// array of 128 (4096 bits: the widest operand, 10^1130 or N shifted to match it, is under 3900).
+
+fn big_times(limbs: &mut [U64; 128], count: &mut U64, factor: U64):
+    var carry: U64 = 0
+    var index: U64 = 0
+    while index < *count:
+        let product = (*limbs)[index] * factor + carry
+        (*limbs)[index] = product % 4294967296
+        carry = product / 4294967296
+        index += 1
+    if carry > 0:
+        (*limbs)[*count] = carry
+        *count += 1
+
+// n * 10^k, nine digits to a step (10^9 is below 2^32).
+fn times_ten(limbs: &mut [U64; 128], count: &mut U64, k: U64):
+    var left = k
+    while left >= 9:
+        big_times(limbs, count, 1000000000)
+        left -= 9
+    var factor: U64 = 1
+    for step in 0..left:
+        factor = factor * 10
+    if factor > 1:
+        big_times(limbs, count, factor)
+
+fn big_add(limbs: &mut [U64; 128], count: &mut U64, value: U64):
+    var carry = value
+    var index: U64 = 0
+    while carry > 0 && index < *count:
+        let sum = (*limbs)[index] + carry
+        (*limbs)[index] = sum % 4294967296
+        carry = sum / 4294967296
+        index += 1
+    if carry > 0:
+        (*limbs)[*count] = carry
+        *count += 1
+
+fn big_shift_up(limbs: &mut [U64; 128], count: &mut U64, bits: U64):
+    if *count == 0:
+        return
+    let rest = bits % 32
+    if rest > 0:
+        var carry: U64 = 0
+        var index: U64 = 0
+        while index < *count:
+            let moved = ((*limbs)[index] << rest) | carry
+            (*limbs)[index] = moved % 4294967296
+            carry = moved / 4294967296
+            index += 1
+        if carry > 0:
+            (*limbs)[*count] = carry
+            *count += 1
+    let words = bits / 32
+    if words > 0:
+        var index = *count
+        while index > 0:
+            index -= 1
+            (*limbs)[index + words] = (*limbs)[index]
+        for low in 0..words:
+            (*limbs)[low] = 0
+        *count += words
+
+fn big_bits(limbs: &[U64; 128], count: U64) -> U64:
+    if count == 0:
+        return 0
+    var top = (*limbs)[count - 1]
+    var bits = (count - 1) * 32
+    while top > 0:
+        bits += 1
+        top = top / 2
+    return bits
+
+// floor(num / den) and whether a remainder is left, for a quotient below 2^64, by Knuth's
+// algorithm D: both are shifted so the divisor's top limb has its high bit set; each 32-bit
+// digit of the quotient is estimated from the remainder's top two limbs (at most 2 too large),
+// den times it subtracted, and den added back while the result is below zero. Both are used up.
+// (It divided a bit at a time: 61 rounds of compare, subtract and halve, 63% of a slow parse.)
+fn big_quotient(num: &mut [U64; 128], num_count: &mut U64, den: &mut [U64; 128], den_count: U64) -> .{q: U64, rest: Bool}:
+    let n = den_count
+    var top = (*den)[n - 1]
+    var shift: U64 = 0
+    while top < 2147483648:
+        top = top * 2
+        shift += 1
+    var dc = den_count
+    big_shift_up(den, &mut dc, shift)
+    big_shift_up(num, num_count, shift)
+    if *num_count < n:
+        return .{q: 0, rest: *num_count > 0}
+    let total = *num_count
+    (*num)[total] = 0
+    let high = (*den)[n - 1]
+    var q: U64 = 0
+    var j = total - n + 1
+    while j > 0:
+        j -= 1
+        let estimate = ((*num)[j + n] * 4294967296 + (*num)[j + n - 1]) / high
+        var digit = estimate
+        if digit > 4294967295:
+            digit = 4294967295
+        // num[j..j+n] -= digit * den.
+        var carry: U64 = 0
+        var borrow: U64 = 0
+        for i in 0..n:
+            let product = digit * (*den)[i] + carry
+            carry = product / 4294967296
+            let taken = product % 4294967296 + borrow
+            if (*num)[i + j] >= taken:
+                (*num)[i + j] = (*num)[i + j] - taken
+                borrow = 0
+            else:
+                (*num)[i + j] = (*num)[i + j] + 4294967296 - taken
+                borrow = 1
+        let taken = carry + borrow
+        var negative = false
+        if (*num)[j + n] >= taken:
+            (*num)[j + n] = (*num)[j + n] - taken
+        else:
+            (*num)[j + n] = (*num)[j + n] + 4294967296 - taken
+            negative = true
+        // Too large: add den back until the carry out cancels the borrow.
+        while negative:
+            digit -= 1
+            var back: U64 = 0
+            for i in 0..n:
+                let sum = (*num)[i + j] + (*den)[i] + back
+                (*num)[i + j] = sum % 4294967296
+                back = sum / 4294967296
+            let last = (*num)[j + n] + back
+            if last >= 4294967296:
+                (*num)[j + n] = last - 4294967296
+                negative = false
+            else:
+                (*num)[j + n] = last
+        q = q * 4294967296 + digit
+    var rest = false
+    for i in 0..n:
+        if (*num)[i] != 0:
+            rest = true
+    return .{q: q, rest: rest}
+
+// N * 10^E * 2^-s divided out to a quotient and whether a remainder is left, from N * 10^up
+// (`num`) and 10^down (`den`), computed once: each is copied and shifted here.
+fn scaled(num: &[U64; 128], num_count: U64, den: &[U64; 128], den_count: U64, s_up: U64, s_down: U64) -> .{q: U64, rest: Bool}:
+    var top: [U64; 128] = [0; 128]
+    var top_count = num_count
+    for index in 0..num_count:
+        top[index] = (*num)[index]
+    var bottom: [U64; 128] = [0; 128]
+    var bottom_count = den_count
+    for index in 0..den_count:
+        bottom[index] = (*den)[index]
+    big_shift_up(&mut top, &mut top_count, s_up)
+    big_shift_up(&mut bottom, &mut bottom_count, s_down)
+    return big_quotient(&mut top, &mut top_count, &mut bottom, bottom_count)
+
+// The decimal number in `bytes`: an optional sign, digits with an optional `.`, an optional
+// exponent (`e` or `E`, a sign, digits). Err(1): not such a number. Beyond the F64 range it is
+// infinite; below the least it is zero (with its sign).
+pub fn parse_f64(bytes: &[U8]) -> Result<F64, U64>:
+    // Proved: no step of the fast path overflows, so none is checked at run time (the digit
+    // step's check took a division). The loops also stop at 10^15, which sixteen kept digits
+    // already imply (the first kept digit is not zero, so k digits are at least 10^(k-1)): the
+    // proof reads the digit step's bound from the condition alone.
+    ensures true
+    proof:
+        auto
+    // Most numbers are short: at most 15 significant digits and a power of ten up to 22, read
+    // into a U64 and rounded once (Clinger), with no big number made (each call cleared a 1 KB
+    // array of limbs first: 57% of reading 200,000 short decimals). Anything else, malformed
+    // text included, is read by `parse_f64_exact`.
+    let length = bytes.len()
+    var at: U64 = 0
+    var negative = false
+    if at < length && (bytes[at] == '-' || bytes[at] == '+'):
+        negative = bytes[at] == '-'
+        at += 1
+    var mantissa: U64 = 0
+    var kept: U64 = 0
+    var any = false
+    var down: U64 = 0
+    // Each byte read once (the loop tests read it two or three times, each through a bounds test).
+    while at < length && kept < 16 && mantissa < 1000000000000000:
+        let c = U8.to_u64(bytes[at])
+        if c < 48 || c > 57:
+            break
+        let d = c - 48
+        any = true
+        if kept > 0 || d > 0:
+            mantissa = mantissa * 10 + d
+            kept += 1
+        at += 1
+    if at < length && bytes[at] == '.':
+        at += 1
+        while at < length && kept < 16 && mantissa < 1000000000000000 && down < 23:
+            let c = U8.to_u64(bytes[at])
+            if c < 48 || c > 57:
+                break
+            let d = c - 48
+            any = true
+            if kept > 0 || d > 0:
+                mantissa = mantissa * 10 + d
+                kept += 1
+            down += 1
+            at += 1
+    // The whole text read, a digit seen, no exponent, within the fast path's bounds.
+    if at == length && any && kept <= 15 && down <= 22:
+        var power = 1.0
+        for k in 0..down:
+            power = power * 10.0
+        var value = F64.from_u64(mantissa) / power
+        if negative:
+            value = 0.0 - value
+            if mantissa == 0:
+                return Ok(F64.from_bits(9223372036854775808))
+        return Ok(value)
+    return parse_f64_exact(bytes)
+
+// The exact reading, for every decimal number `parse_f64` takes.
+fn parse_f64_exact(bytes: &[U8]) -> Result<F64, U64>:
+    let length = bytes.len()
+    var at: U64 = 0
+    var negative = false
+    if at < length && (bytes[at] == '-' || bytes[at] == '+'):
+        negative = bytes[at] == '-'
+        at += 1
+    var digits: [U64; 128] = [0; 128]
+    var count: U64 = 0
+    var kept: U64 = 0
+    // Kept digits not yet in `digits`: their value and how many (at most nine).
+    var chunk: U64 = 0
+    var chunked: U64 = 0
+    var sticky = false
+    var any = false
+    // The decimal exponent, kept as a value above and a value below zero (E = up - down).
+    var up: U64 = 0
+    var down: U64 = 0
+    while at < length && bytes[at] >= '0' && bytes[at] <= '9':
+        let d = U8.to_u64(bytes[at]) - 48
+        any = true
+        if kept == 0 && d == 0:
+            ()
+        else if kept < 800:
+            chunk = chunk * 10 + d
+            chunked += 1
+            if chunked == 9:
+                big_times(&mut digits, &mut count, 1000000000)
+                big_add(&mut digits, &mut count, chunk)
+                chunk = 0
+                chunked = 0
+            kept += 1
+        else:
+            up += 1
+            if d != 0:
+                sticky = true
+        at += 1
+    if at < length && bytes[at] == '.':
+        at += 1
+        while at < length && bytes[at] >= '0' && bytes[at] <= '9':
+            let d = U8.to_u64(bytes[at]) - 48
+            any = true
+            if kept == 0 && d == 0:
+                down += 1
+            else if kept < 800:
+                chunk = chunk * 10 + d
+                chunked += 1
+                if chunked == 9:
+                    big_times(&mut digits, &mut count, 1000000000)
+                    big_add(&mut digits, &mut count, chunk)
+                    chunk = 0
+                    chunked = 0
+                kept += 1
+                down += 1
+            else if d != 0:
+                sticky = true
+            at += 1
+    if !any:
+        return Err(1)
+    // The digits still pending.
+    if chunked > 0:
+        var factor: U64 = 1
+        for step in 0..chunked:
+            factor = factor * 10
+        big_times(&mut digits, &mut count, factor)
+        big_add(&mut digits, &mut count, chunk)
+    if at < length && (bytes[at] == 'e' || bytes[at] == 'E'):
+        at += 1
+        var below = false
+        if at < length && (bytes[at] == '-' || bytes[at] == '+'):
+            below = bytes[at] == '-'
+            at += 1
+        var exponent: U64 = 0
+        var exponent_digits = false
+        while at < length && bytes[at] >= '0' && bytes[at] <= '9':
+            exponent_digits = true
+            if exponent < 100000:
+                exponent = exponent * 10 + U8.to_u64(bytes[at]) - 48
+            at += 1
+        if !exponent_digits:
+            return Err(1)
+        if below:
+            down += exponent
+        else:
+            up += exponent
+    if at != length:
+        return Err(1)
+    var sign: U64 = 0
+    if negative:
+        sign = 9223372036854775808
+    if count == 0:
+        return Ok(F64.from_bits(sign))
+    // Most numbers (Clinger's fast path): at most 15 digits are an exact F64, and so is 10^k for
+    // k up to 22; one multiplication or division of two exact values is rounded once, correctly.
+    if kept <= 15 && up <= down + 22 && down <= up + 22:
+        let n = digits[0] + digits[1] * 4294967296
+        var power = 1.0
+        var steps: U64 = 0
+        if down > up:
+            steps = down - up
+        else:
+            steps = up - down
+        for k in 0..steps:
+            power = power * 10.0
+        var value = F64.from_u64(n) * power
+        if down > up:
+            value = F64.from_u64(n) / power
+        return Ok(F64.from_bits(F64.bits(value) + sign))
+    // The value is about 10^(kept + up - down - 1).
+    if kept + up > down + 310:
+        return Ok(F64.from_bits(sign + 9218868437227405312))
+    if kept + up + 330 < down:
+        return Ok(F64.from_bits(sign))
+    var ten_up: U64 = 0
+    var ten_down: U64 = 0
+    if up >= down:
+        ten_up = up - down
+    else:
+        ten_down = down - up
+    // N * 10^up and 10^down, once.
+    var num: [U64; 128] = [0; 128]
+    var num_count = count
+    for index in 0..count:
+        num[index] = digits[index]
+    times_ten(&mut num, &mut num_count, ten_up)
+    var den: [U64; 128] = [0; 128]
+    den[0] = 1
+    var den_count: U64 = 1
+    times_ten(&mut den, &mut den_count, ten_down)
+    // Scale so the quotient has 55 bits: q * 2^-s, s = s_up - s_down.
+    // From the two lengths the quotient is off by at most one bit, corrected below.
+    let num_bits = big_bits(&num, num_count)
+    let den_bits = big_bits(&den, den_count)
+    var s_up: U64 = 0
+    var s_down: U64 = 0
+    if den_bits + 54 >= num_bits:
+        s_up = den_bits + 54 - num_bits
+    else:
+        s_down = num_bits - den_bits - 54
+    var result = scaled(&num, num_count, &den, den_count, s_up, s_down)
+    // The quotient's own length corrects the scale.
+    var tries: U64 = 0
+    while (result.q >= 36028797018963968 || result.q < 18014398509481984) && tries < 4:
+        var width: U64 = 0
+        var left = result.q
+        while left > 0:
+            width += 1
+            left = left / 2
+        // 55 bits wanted: a longer quotient is scaled down, a shorter one up.
+        if width > 55:
+            var more = width - 55
+            while more > 0:
+                more -= 1
+                if s_up > 0:
+                    s_up -= 1
+                else:
+                    s_down += 1
+        else:
+            var fewer = 55 - width
+            while fewer > 0:
+                fewer -= 1
+                if s_down > 0:
+                    s_down -= 1
+                else:
+                    s_up += 1
+        result = scaled(&num, num_count, &den, den_count, s_up, s_down)
+        tries += 1
+    if result.q >= 36028797018963968 || result.q < 18014398509481984:
+        return Err(3)
+    // value = q * 2^(s_down - s_up), q in [2^54, 2^55): the mantissa is q / 4 with a guard bit
+    // and the rest. The biased exponent of m * 2^(s_down - s_up + 2), m in [2^52, 2^53), is
+    // 1075 + s_down - s_up + 2.
+    if 1077 + s_down <= s_up:
+        // Below the normal range: the quotient at the scale of the least F64 (2^-1074), with
+        // two more bits.
+        let fixed = scaled(&num, num_count, &den, den_count, 1076, 0)
+        return Ok(F64.from_bits(sign + rounded(fixed.q, fixed.rest || sticky)))
+    let biased = 1077 + s_down - s_up
+    if biased >= 2047:
+        return Ok(F64.from_bits(sign + 9218868437227405312))
+    var m = rounded(result.q, result.rest || sticky)
+    var field = biased
+    if m >= 9007199254740992:
+        m = m / 2
+        field += 1
+        if field >= 2047:
+            return Ok(F64.from_bits(sign + 9218868437227405312))
+    return Ok(F64.from_bits(sign + field * 4503599627370496 + (m - 4503599627370496)))
+
+// q / 4 rounded half to even, its last two bits and `rest` deciding.
+fn rounded(q: U64, rest: Bool) -> U64:
+    let m = q / 4
+    let guard = q % 4
+    if guard > 2 || (guard == 2 && (rest || m % 2 == 1)):
+        return m + 1
+    return m
+
+impl String:
+    // The F64 this text writes, as `parse_f64` reads it.
+    pub fn parse_f64(self: &String) -> Result<F64, U64>:
+        return parse_f64(self.as_bytes())
+
+// Writing an F64 as the shortest decimal that reads back as it (`parse_f64` gives the same
+// F64), in Python's `repr` form: `0.1`, `100.0`, `1e+16`, `1.5e-05`, `-0.0`, `inf`, `nan`.
+// Steele and White's digit generation, with Burger and Dybvig's exact bounds: the value is
+// r / s, the halfway points to its neighbours r - mm and r + mp (all integers here, big); a
+// digit is produced while the remaining value is outside both, and the last one is the nearer
+// end. The ends count when the mantissa is even, since reading rounds a tie to the even one.
+
+// 0: a is below b, 1: equal, 2: above.
+fn big_order(a: &[U64; 128], a_count: U64, b: &[U64; 128], b_count: U64) -> U64:
+    if a_count != b_count:
+        if a_count < b_count:
+            return 0
+        return 2
+    var index = a_count
+    while index > 0:
+        index -= 1
+        if (*a)[index] != (*b)[index]:
+            if (*a)[index] < (*b)[index]:
+                return 0
+            return 2
+    return 1
+
+// a - b, for a not below b.
+fn big_take(a: &mut [U64; 128], a_count: &mut U64, b: &[U64; 128], b_count: U64):
+    var borrow: U64 = 0
+    var index: U64 = 0
+    while index < *a_count:
+        var taken = borrow
+        if index < b_count:
+            taken += (*b)[index]
+        if (*a)[index] >= taken:
+            (*a)[index] = (*a)[index] - taken
+            borrow = 0
+        else:
+            (*a)[index] = (*a)[index] + 4294967296 - taken
+            borrow = 1
+        index += 1
+    while *a_count > 0 && (*a)[*a_count - 1] == 0:
+        *a_count -= 1
+
+// How a + b orders against c (0 below, 1 equal, 2 above). `sum` is room for a + b: only the
+// limbs written are read, so it is not cleared (a fresh zeroed array per call was most of the
+// cost).
+fn big_sum_order(a: &[U64; 128], a_count: U64, b: &[U64; 128], b_count: U64, c: &[U64; 128], c_count: U64, sum: &mut [U64; 128]) -> U64:
+    var count = a_count
+    if b_count > count:
+        count = b_count
+    var carry: U64 = 0
+    for index in 0..count:
+        var total = carry
+        if index < a_count:
+            total += (*a)[index]
+        if index < b_count:
+            total += (*b)[index]
+        (*sum)[index] = total % 4294967296
+        carry = total / 4294967296
+    if carry > 0:
+        (*sum)[count] = carry
+        count += 1
+    return big_order(sum, count, c, c_count)
+
+// a + b written into `sum`; how many limbs it has.
+fn big_sum_into(a: &[U64; 128], a_count: U64, b: &[U64; 128], b_count: U64, sum: &mut [U64; 128]) -> U64:
+    var count = a_count
+    if b_count > count:
+        count = b_count
+    var carry: U64 = 0
+    for index in 0..count:
+        var total = carry
+        if index < a_count:
+            total += (*a)[index]
+        if index < b_count:
+            total += (*b)[index]
+        (*sum)[index] = total % 4294967296
+        carry = total / 4294967296
+    if carry > 0:
+        (*sum)[count] = carry
+        count += 1
+    return count
+
+fn big_set(limbs: &mut [U64; 128], count: &mut U64, value: U64):
+    for index in 0..*count:
+        (*limbs)[index] = 0
+    (*limbs)[0] = value % 4294967296
+    (*limbs)[1] = value / 4294967296
+    *count = 2
+    while *count > 0 && (*limbs)[*count - 1] == 0:
+        *count -= 1
+
+// The shortest digits: the digits as a number, how many, and where the point goes (the value
+// is 0.digits * 10^(point - 400)).
+type Shortest = .{digits: U64, count: U64, point: U64}
+
+// For a finite F64 above zero, by its bits.
+fn shortest(bits: U64) -> Shortest:
+    let field = (bits / 4503599627370496) % 2048
+    let fraction = bits % 4503599627370496
+    var m = fraction
+    // The binary exponent e, as e_up - e_down.
+    var e_up: U64 = 0
+    var e_down: U64 = 1074
+    if field > 0:
+        m = fraction + 4503599627370496
+        if field >= 1075:
+            e_up = field - 1075
+            e_down = 0
+        else:
+            e_down = 1075 - field
+    let even = m % 2 == 0
+    // The gap below is half the gap above at a power of two (not the least normal).
+    let lowered = field > 1 && fraction == 0
+    var r: [U64; 128] = [0; 128]
+    var r_count: U64 = 0
+    var s: [U64; 128] = [0; 128]
+    var s_count: U64 = 0
+    var mp: [U64; 128] = [0; 128]
+    var mp_count: U64 = 0
+    var mm: [U64; 128] = [0; 128]
+    var mm_count: U64 = 0
+    var scratch: [U64; 128] = [0; 128]
+    var extra: U64 = 1
+    if lowered:
+        extra = 2
+    big_set(&mut r, &mut r_count, m)
+    big_set(&mut s, &mut s_count, 1)
+    big_set(&mut mp, &mut mp_count, 1)
+    big_set(&mut mm, &mut mm_count, 1)
+    // r = m * 2^(e + extra), s = 2^extra, mp = 2^(e + extra - 1), mm = 2^e when e >= 0;
+    // r = m * 2^extra, s = 2^(extra - e), mp = 2^(extra - 1), mm = 1 when e < 0.
+    big_shift_up(&mut r, &mut r_count, e_up + extra)
+    big_shift_up(&mut s, &mut s_count, e_down + extra)
+    big_shift_up(&mut mp, &mut mp_count, e_up + extra - 1)
+    big_shift_up(&mut mm, &mut mm_count, e_up)
+    // The point: an estimate from the bit length (log10(2) is about 0.30103), then exact.
+    var bits_up: U64 = 0
+    var left = m
+    while left > 0:
+        bits_up += 1
+        left = left / 2
+    var point: U64 = 400
+    if bits_up + e_up >= e_down:
+        let k = (bits_up + e_up - e_down) * 30103 / 100000
+        times_ten(&mut s, &mut s_count, k)
+        point += k
+    else:
+        let k = (e_down - bits_up - e_up) * 30103 / 100000
+        times_ten(&mut r, &mut r_count, k)
+        times_ten(&mut mp, &mut mp_count, k)
+        times_ten(&mut mm, &mut mm_count, k)
+        point -= k
+    // r + mp below s (at or below it, for an odd mantissa) ...
+    var high = big_sum_order(&r, r_count, &mp, mp_count, &s, s_count, &mut scratch)
+    while high == 2 || (high == 1 && even):
+        big_times(&mut s, &mut s_count, 10)
+        point += 1
+        high = big_sum_order(&r, r_count, &mp, mp_count, &s, s_count, &mut scratch)
+    // ... and 10 (r + mp) not.
+    // (10 (r + mp) is made in `scratch`: copying r and mp to scale them was two 128-limb array
+    // copies, written out element by element, most of this function's 18.8 KB.)
+    var low = true
+    while low:
+        var tenfold = big_sum_into(&r, r_count, &mp, mp_count, &mut scratch)
+        big_times(&mut scratch, &mut tenfold, 10)
+        let order = big_order(&scratch, tenfold, &s, s_count)
+        if order == 2 || (order == 1 && even):
+            low = false
+        else:
+            big_times(&mut r, &mut r_count, 10)
+            big_times(&mut mp, &mut mp_count, 10)
+            big_times(&mut mm, &mut mm_count, 10)
+            point -= 1
+    var digits: U64 = 0
+    var count: U64 = 0
+    var going = true
+    while going && count < 18:
+        big_times(&mut r, &mut r_count, 10)
+        big_times(&mut mp, &mut mp_count, 10)
+        big_times(&mut mm, &mut mm_count, 10)
+        var digit: U64 = 0
+        while big_order(&r, r_count, &s, s_count) != 0:
+            big_take(&mut r, &mut r_count, &s, s_count)
+            digit += 1
+        let below = big_order(&r, r_count, &mm, mm_count)
+        let near_low = below == 0 || (below == 1 && even)
+        let above = big_sum_order(&r, r_count, &mp, mp_count, &s, s_count, &mut scratch)
+        let near_high = above == 2 || (above == 1 && even)
+        if near_low || near_high:
+            going = false
+            if near_high && !near_low:
+                digit += 1
+            else if near_high && near_low:
+                // Both ends: the nearer, 2r against s; a tie to the even digit.
+                let twice = big_sum_order(&r, r_count, &r, r_count, &s, s_count, &mut scratch)
+                if twice == 2 || (twice == 1 && digit % 2 == 1):
+                    digit += 1
+        digits = digits * 10 + digit
+        count += 1
+    return .{digits: digits, count: count, point: point}
+
+// An F64's text being built: up to 32 ASCII bytes, eight to a word, the first in the low byte.
+type Written = .{words: [U64; 4], length: U64}
+
+fn put(out: &mut Written, byte: U64):
+    let at = (*out).length
+    if at < 32:
+        (*out).words[at / 8] = (*out).words[at / 8] + (byte << (at % 8 * 8))
+        (*out).length = at + 1
+
+// The shortest digits by F64 arithmetic alone, for most values: the least j for which an
+// integer d below 2^53 has d / 10^j == x. Both are exact (j up to 22) and the division rounds
+// once, so that comparison is the proof that d * 10^-j reads back as x. round(x * 10^j) may be
+// off by one, so d - 1, d and d + 1 are each tried: one of them reading back is the shortest and
+// the only one of its length, which is what `repr` writes; two (just above a power of two,
+// where the gap below is half the gap above) are left to `shortest`, which takes the nearer.
+// (Taking round(x * 10^j) alone wrote 64.00000000000002 for 64.00000000000001.) Err: none
+// found, or two (no big numbers: `shortest` clears five arrays of them for every value).
+fn quick_shortest(magnitude: U64) -> Result<Shortest, U64>:
+    let x = F64.from_bits(magnitude)
+    var power = 1.0
+    for j in 0..23:
+        let scaled = x * power
+        if scaled >= 9007199254740991.0:
+            return Err(1)
+        let middle = F64.floor(scaled + 0.5)
+        var found = 0.0
+        var hits: U64 = 0
+        for offset in 0..3:
+            let d = middle + F64.from_u64(offset) - 1.0
+            if d > 0.0 && d / power == x:
+                found = d
+                hits += 1
+        if hits > 1:
+            return Err(2)
+        if hits == 1:
+            // `found` without its trailing zeros; the point moves for each.
+            var digits = F64.to_i64(found).magnitude()
+            var stripped: U64 = 0
+            while digits % 10 == 0:
+                digits = digits / 10
+                stripped += 1
+            var count: U64 = 0
+            var left = digits
+            while left > 0:
+                count += 1
+                left = left / 10
+            return Ok(.{count: count, digits: digits, point: 400 + count + stripped - j})
+        power = power * 10.0
+    return Err(1)
+
+// The digits of `value` (below 10^18) in a fixed width, leading zeros kept.
+fn put_digits(out: &mut Written, value: U64, width: U64):
+    var power: U64 = 1
+    for k in 1..width:
+        power = power * 10
+    var left = value
+    for k in 0..width:
+        put(out, 48 + left / power % 10)
+        left = left % power
+        power = power / 10
+
+// `value` as the shortest decimal that reads back as it, in Python's `repr` form (at most 24
+// bytes: a sign, 17 digits, a point, `e-308`).
+fn written(value: F64) -> Written:
+    var out: Written = .{length: 0, words: [0; 4]}
+    let bits = F64.bits(value)
+    let magnitude = bits % 9223372036854775808
+    if magnitude > 9218868437227405312:
+        put(&mut out, 110)
+        put(&mut out, 97)
+        put(&mut out, 110)
+        return out
+    if bits >= 9223372036854775808:
+        put(&mut out, 45)
+    if magnitude == 9218868437227405312:
+        put(&mut out, 105)
+        put(&mut out, 110)
+        put(&mut out, 102)
+        return out
+    if magnitude == 0:
+        put(&mut out, 48)
+        put(&mut out, 46)
+        put(&mut out, 48)
+        return out
+    var found = .{count: 0, digits: 0, point: 0}
+    match quick_shortest(magnitude):
+        Ok(quick):
+            found = quick
+        Err(code):
+            found = shortest(magnitude)
+    let count = found.count
+    // The exponent in scientific form is point - 401: fixed from -4 to 15.
+    if found.point + 4 >= 401 && found.point < 417:
+        if found.point <= 400:
+            // 0.000ddd
+            put(&mut out, 48)
+            put(&mut out, 46)
+            for k in found.point..400:
+                put(&mut out, 48)
+            put_digits(&mut out, found.digits, count)
+            return out
+        let before = found.point - 400
+        if before >= count:
+            // ddd000.0
+            put_digits(&mut out, found.digits, count)
+            for k in count..before:
+                put(&mut out, 48)
+            put(&mut out, 46)
+            put(&mut out, 48)
+            return out
+        // dd.ddd
+        var power: U64 = 1
+        for k in before..count:
+            power = power * 10
+        put_digits(&mut out, found.digits / power, before)
+        put(&mut out, 46)
+        put_digits(&mut out, found.digits % power, count - before)
+        return out
+    // d.ddde+XX
+    var power: U64 = 1
+    for k in 1..count:
+        power = power * 10
+    put(&mut out, 48 + found.digits / power)
+    if count > 1:
+        put(&mut out, 46)
+        put_digits(&mut out, found.digits % power, count - 1)
+    put(&mut out, 101)
+    var exponent: U64 = 0
+    if found.point >= 401:
+        exponent = found.point - 401
+        put(&mut out, 43)
+    else:
+        exponent = 401 - found.point
+        put(&mut out, 45)
+    var width: U64 = 2
+    if exponent >= 100:
+        width = 3
+    put_digits(&mut out, exponent, width)
+    return out
+
+impl String:
+    // Append `value` as the shortest decimal that reads back as it, as Python's `repr` writes
+    // it. Err(1): no room (part may have been added).
+    pub fn push_f64(self: &mut String, allocator: &Allocator, value: F64) -> Result<(), U64>:
+        let out = written(value)
+        for index in 0..4:
+            if out.length > index * 8:
+                var count = out.length - index * 8
+                if count > 8:
+                    count = 8
+                self.push_ascii(allocator, out.words[index], count)?
+        return Ok(())
+
+// `"${x}"` and `console.show(x)` for an F64: as `push_f64`, the shortest text that reads back.
+// (`print_f64(x, decimals)` gives a fixed count of decimals.)
+impl Show for F64:
+    fn show_on(self: F64, console: &Console<Write>):
+        let out = written(self)
+        for index in 0..4:
+            if out.length > index * 8:
+                var count = out.length - index * 8
+                if count > 8:
+                    count = 8
+                console.write_part(out.words[index], count)
+    fn push_on(self: F64, text: &mut String, allocator: &Allocator) -> Result<(), U64>:
+        return text.push_f64(allocator, self)
+
+// IEEE 754-2019 minimum and maximum, as Wasm's `f64.min` and `f64.max`: a NaN on either side
+// gives NaN, and -0.0 is below 0.0.
+impl F64:
+    // The lesser of the two; NaN if either is, -0.0 below 0.0.
+    pub fn min(self: F64, other: F64) -> F64:
+        if self != self || other != other:
+            return self + other
+        if self < other:
+            return self
+        if other < self:
+            return other
+        // Equal: the zero with its sign bit set, if either has it.
+        if F64.bits(self) >= 9223372036854775808:
+            return self
+        return other
+
+    // The greater of the two; NaN if either is, 0.0 above -0.0.
+    pub fn max(self: F64, other: F64) -> F64:
+        if self != self || other != other:
+            return self + other
+        if self > other:
+            return self
+        if other > self:
+            return other
+        if F64.bits(self) >= 9223372036854775808:
+            return other
+        return self

@@ -1,0 +1,19 @@
+// min, max and clamp on U64 and I64, min and max on F64 (IEEE 2019: NaN wins, -0.0 below 0.0),
+// called on literals, on locals and on a built-in's result.
+import console
+import int
+import float
+
+fn main(console: Console<Write>):
+    let a: U64 = 7
+    console.print("${a.min(3)} ${a.max(3)} ${a.clamp(1, 5)} ${a.clamp(8, 9)} ${a.clamp(1, 9)} ${a.clamp(5, 1)}")
+    let n = I64.from_bits(18446744073709551611)
+    let m = I64.from_bits(4)
+    console.print("${n.min(m)} ${n.max(m)} ${n.clamp(I64.from_bits(18446744073709551614), m)}")
+    let zero = 0.0
+    let nan = zero / zero
+    let negative_zero = F64.from_bits(9223372036854775808)
+    let half = 2.5
+    let one = 1.0
+    console.print("${half.min(-1.0)} ${half.max(-1.0)} ${nan.min(1.0)} ${one.max(nan)} ${zero.min(negative_zero)} ${negative_zero.max(zero)} ${negative_zero.min(zero)}")
+    console.print("${F64.sqrt(2.0).min(1.5)} ${U8.to_u64(200).min(150)}")

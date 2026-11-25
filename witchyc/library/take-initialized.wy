@@ -1,0 +1,10 @@
+predicate ReadyCell(reader, index):
+    memory.initialized(reader, index)
+
+fn take_initialized(reader: &mut Buffer<Bool>, index: USize) -> Bool:
+    requires ReadyCell(reader, index)
+    ensures result == old(memory.read(reader, index))
+    ensures memory.empty(reader, index)
+    let value: Bool = memory.take(reader, index)
+    memory.end(reader)
+    return value

@@ -1,0 +1,145 @@
+// This ordinary helper proves its relation from the public pop summary.
+fn observed_pop(input: Vec<U64>) -> Result<Popped<U64>, Vec<U64>>:
+    ensures match result:
+        Ok(popped):
+            popped.vector.data == old(input.data)
+            popped.vector.capacity == old(input.capacity)
+            match popped.item:
+                Some(item):
+                    old(input.length) > 0
+                    popped.vector.length + 1 == old(input.length)
+                    item == old(memory.read(input.data, input.length - 1))
+                    memory.empty(popped.vector.data, popped.vector.length)
+                    memory.unchanged_except(input.data, popped.vector.length)
+                None:
+                    old(input.length) == 0
+                    popped.vector.length == 0
+                    memory.unchanged(input.data)
+        Err(kept):
+            kept.data == old(input.data)
+            kept.length == old(input.length)
+            kept.capacity == old(input.capacity)
+            memory.unchanged(input.data)
+            !memory.loan_room(1)
+    return vec_pop(move input)
+
+fn main(console: Console<Write>):
+    var witness: Buffer<U64> = memory.alloc(1)
+    memory.init(&mut witness, 0, 42)
+    var held: Buffer<U64> = memory.alloc(1)
+    memory.init(&mut held, 0, 37)
+    var third: Buffer<U64> = memory.alloc(1)
+    memory.init(&mut third, 0, 73)
+    var data: Buffer<U64> = memory.alloc(2)
+    memory.init(&mut data, 0, 73)
+    memory.init(&mut data, 1, 74)
+    let vector: Vec<U64> = Vec(move data, 2, 2)
+    let empty: Vec<U64> = Vec(memory.alloc(0), 0, 0)
+    let first_loan = &witness
+    let second_loan = &held
+    let third_loan = &third
+    let Err(kept_empty) = observed_pop(move empty) else Ok(unexpected):
+        discard(move unexpected)
+        discard(move vector)
+        memory.end(first_loan)
+        memory.end(second_loan)
+        memory.end(third_loan)
+        memory.release(witness)
+        memory.release(held)
+        memory.release(third)
+        discard(move console)
+        return
+    assert kept_empty.length == 0
+    let room: Bool = memory.loan_room(1)
+    assert room == false
+    console.print_int(70)
+    let Err(kept) = observed_pop(move vector) else Ok(unexpected):
+        discard(move unexpected)
+        discard(move kept_empty)
+        memory.end(first_loan)
+        memory.end(second_loan)
+        memory.end(third_loan)
+        memory.release(witness)
+        memory.release(held)
+        memory.release(third)
+        discard(move console)
+        return
+    assert kept.length == 2
+    assert kept.capacity == 2
+    assert memory.cell(kept.data, 0, 73)
+    assert memory.cell(kept.data, 1, 74)
+    console.print_int(71)
+    memory.end(first_loan)
+    let Ok(none) = observed_pop(move kept_empty) else Err(rejected):
+        discard(move rejected)
+        discard(move kept)
+        memory.end(second_loan)
+        memory.end(third_loan)
+        memory.release(witness)
+        memory.release(held)
+        memory.release(third)
+        discard(move console)
+        return
+    match none.item:
+        Some(unexpected):
+            console.print_int(900)
+        None:
+            console.print_int(72)
+    assert none.vector.length == 0
+    memory.release(none.vector.data)
+    let Ok(last) = observed_pop(move kept) else Err(rejected):
+        discard(move rejected)
+        memory.end(second_loan)
+        memory.end(third_loan)
+        memory.release(witness)
+        memory.release(held)
+        memory.release(third)
+        discard(move console)
+        return
+    let Some(last_item) = move last.item else None:
+        discard(move last.vector)
+        memory.end(second_loan)
+        memory.end(third_loan)
+        memory.release(witness)
+        memory.release(held)
+        memory.release(third)
+        discard(move console)
+        return
+    assert last_item == 74
+    assert last.vector.length == 1
+    assert last.vector.capacity == 2
+    assert memory.empty(last.vector.data, 1)
+    assert memory.cell(last.vector.data, 0, 73)
+    console.print_int(last_item)
+    let Ok(first) = observed_pop(move last.vector) else Err(rejected):
+        discard(move rejected)
+        memory.end(second_loan)
+        memory.end(third_loan)
+        memory.release(witness)
+        memory.release(held)
+        memory.release(third)
+        discard(move console)
+        return
+    let Some(first_item) = move first.item else None:
+        discard(move first.vector)
+        memory.end(second_loan)
+        memory.end(third_loan)
+        memory.release(witness)
+        memory.release(held)
+        memory.release(third)
+        discard(move console)
+        return
+    assert first_item == 73
+    assert first.vector.length == 0
+    assert memory.empty(first.vector.data, 0)
+    assert memory.empty(first.vector.data, 1)
+    console.print_int(first_item)
+    memory.release(first.vector.data)
+    console.print_int(memory.read(second_loan, 0))
+    console.print_int(memory.read(third_loan, 0))
+    memory.end(second_loan)
+    memory.end(third_loan)
+    console.print_int(memory.read(&witness, 0))
+    memory.release(witness)
+    memory.release(held)
+    memory.release(third)

@@ -1,0 +1,23 @@
+// An invariant over two Vec fields' lengths: one grows alone, and it fails.
+import console
+import vec
+
+sealed type Pair:
+    keys: Vec<U64>
+    values: Vec<U64>
+    invariant keys.len() == values.len()
+
+impl Pair:
+    // One of the two grows: the invariant over both lengths is not shown.
+    fn add_key(pair: &mut Pair, allocator: &Allocator, key: U64) -> Result<(), U64>:
+        ensures true
+        proof:
+            auto
+        match (*pair).keys.push_mut(allocator, key):
+            Ok:
+                return Ok(())
+            Err(back):
+                return Err(1)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    return

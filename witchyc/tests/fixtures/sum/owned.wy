@@ -1,0 +1,50 @@
+// A variant can hold an owner: the String inside `Some` is moved in, moved out by the
+// match, and still has to be closed. `Named` and `Numbered` share one declared type.
+import "../../../library/wasm-string.wy"
+
+type Option<T>:
+    Some(T)
+    None
+
+type Label:
+    Named(String)
+    Numbered(U64)
+    Blank
+
+fn letter(allocator: &Allocator, scalar: U64) -> Option<String>:
+    let made: Result<String, U64> = String.new(allocator)
+    let Ok(empty) = move made else Err(code):
+        return None
+    match empty.push_scalar(allocator, scalar):
+        Ok(text):
+            return Some(move text)
+        Err(back):
+            back.close()
+            return None
+
+fn label(allocator: &Allocator, scalar: U64) -> Label:
+    if scalar == 0:
+        return Blank
+    if scalar < 32:
+        return Numbered(scalar)
+    match letter(allocator, scalar):
+        Some(text):
+            return Named(move text)
+        None:
+            return Blank
+
+fn show(console: &Console<Write>, value: Label):
+    match move value:
+        Named(text):
+            console.print_int(text.byte_len())
+            text.close()
+        Numbered(number):
+            console.print_int(100 + number)
+        Blank:
+            console.print_int(0)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    show(&console, label(&allocator, 233))
+    show(&console, label(&allocator, 7))
+    show(&console, label(&allocator, 0))
+    show(&console, label(&allocator, 55296))

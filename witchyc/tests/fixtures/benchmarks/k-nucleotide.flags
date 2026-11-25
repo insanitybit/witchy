@@ -1,0 +1,2 @@
+build: --heap-pages=64 --slots=256
+run: --memory-pages=80 --unmetered --input={dir}/fasta.expected

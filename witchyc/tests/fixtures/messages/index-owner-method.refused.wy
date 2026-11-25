@@ -1,0 +1,19 @@
+// Refused, saying `v[i]` copies and a String is not copied: it said `eq` is a method of `Bool`,
+// `Eq`, `I64`, "call it on such a value".
+import console
+import string
+import vec
+import hash
+import discard
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<String> = Vec.new(&allocator, 4) else Err(e):
+        return
+    var v = move made
+    let Ok(k): String = String.new(&allocator) else Err(e):
+        v.discard()
+        return
+    var key = move k
+    let same = v[0].eq(&key)
+    key.close()
+    v.discard()

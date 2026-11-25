@@ -1,0 +1,6 @@
+fn choose(left: &U64, right: &U64, flag: Bool) -> Result<&U64, &U64>:
+    borrows Ok from flag
+    return Ok(left)
+
+fn main():
+    return

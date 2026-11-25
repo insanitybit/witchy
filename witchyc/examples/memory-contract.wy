@@ -1,0 +1,14 @@
+fn main(console: Console<Write>):
+    var witness = memory.alloc(1)
+    memory.init(&mut witness, 0, 42)
+    let saved = &witness
+    var data: Buffer<Bool> = memory.alloc(1)
+    let writer = &mut data
+    memory.init(writer, 0, true)
+    let value = extract_cell(writer, 0)
+    if value:
+        console.print_int(73)
+    console.print_int(memory.read(saved, 0))
+    memory.end(saved)
+    memory.release(data)
+    memory.release(witness)

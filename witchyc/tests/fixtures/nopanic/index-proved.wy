@@ -1,0 +1,26 @@
+// An indexed place cannot trap when the index is a number below the length, or when the
+// function's proof bounds its every index (the tests are then not emitted): read, written,
+// exchanged and lent, the function may still promise `nopanic`.
+import console
+
+nopanic fn first(values: &[U64; 3]) -> U64:
+    return (*values)[0]
+
+nopanic fn pick(n: U64) -> U64:
+    requires n < 3
+    ensures true
+    proof:
+        auto
+    var arr: [U64; 3] = [1, 2, 3]
+    var x: U64 = 9
+    memory.exchange(&mut arr[n], &mut x)
+    arr[2] = x
+    let r = &arr[n]
+    return *r
+
+nopanic fn main(console: Console<Write>):
+    var arr: [U64; 3] = [4, 5, 6]
+    arr[1] = 8
+    console.print_int(first(&arr))
+    console.print_int(arr[1])
+    console.print_int(pick(0))

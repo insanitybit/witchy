@@ -1,0 +1,53 @@
+import "interval.wy"
+import prop
+import testing
+
+type Sample derive(prop.Arbitrary):
+    weight: U64
+    enabled: Bool
+
+type Intervals:
+    ceiling: U64
+
+impl Strategy<Interval> for Intervals:
+    fn generate(self: &Intervals, trial: &mut Trial) -> Interval:
+        return interval.ordered(trial.next_word() % (*self).ceiling + 2, 0)
+
+    fn smaller(self: &Intervals, value: Interval, cursor: U64) -> Result<Interval, ()>:
+        if cursor == 0:
+            return Ok(interval.ordered(0, 0))
+        if cursor == 1 && value.high > 1:
+            return Ok(interval.ordered(0, value.high - 1))
+        return Err(())
+
+type BelowTwo:
+    bound: U64
+
+impl Property<Interval> for BelowTwo:
+    fn observe(self: &BelowTwo, value: Interval) -> Result<(), Failure>:
+        // Zero fails elsewhere. Shrinking to zero must preserve the first failure.
+        testing.ok(value.high > 0)?
+        return testing.ok(value.high < (*self).bound)
+
+test fn derived_draw() -> Result<(), Failure>:
+    var first = Trial(42)
+    var replay = Trial(42)
+    let value = Sample.arbitrary(&mut first)
+    let again = Sample.arbitrary(&mut replay)
+    testing.eq_u64(value.weight, again.weight)?
+    return testing.eq_bool(value.enabled, again.enabled)
+
+test fn minimized_interval() -> Result<(), Failure>:
+    let strategy = Intervals(24)
+    let property = BelowTwo(2)
+    match prop.check(&strategy, &property, 42, 32, 128):
+        Ok:
+            return testing.ok(false)
+        Err(example):
+            testing.ok(example.original.high > example.best.high)?
+            testing.eq_u64(example.best.high, 2)?
+            match property.observe(interval.ordered(0, 2)):
+                Ok:
+                    return testing.ok(false)
+                Err(replayed):
+                    return testing.eq_u64(replayed.site, example.failure.site)

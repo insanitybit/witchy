@@ -1,0 +1,14 @@
+// Refused: after the move the source's cells are empty; claiming they still hold values is false.
+fn shift<T: Any>(source: &mut Buffer<T>, target: &mut Buffer<T>, count: U64):
+    requires count <= memory.capacity(source)
+    requires count <= memory.capacity(target)
+    requires memory.initialized_range(source, 0, count)
+    requires memory.empty_range(target, 0, count)
+    ensures memory.initialized_range(source, 0, count)
+    proof:
+        auto
+    memory.move_prefix_unchecked(source, target, count)
+    return
+
+fn main():
+    return

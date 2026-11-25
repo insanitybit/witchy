@@ -1,0 +1,11 @@
+// `clock.since(start)` is the time since an earlier reading, as a Duration (import time).
+import console
+import time
+
+fn main(console: Console<Write>, clock: Clock):
+    let start = clock.now_ms()
+    let waited = clock.since(start)
+    if waited < 1m:
+        console.line("less than a minute passed")
+    if waited.ms() == 0 || waited < 5s:
+        console.line("and less than five seconds")

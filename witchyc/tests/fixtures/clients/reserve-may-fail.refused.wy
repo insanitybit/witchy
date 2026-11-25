@@ -1,0 +1,16 @@
+// reserve_mut says nothing of room when it answers Err.
+import "../../../library/wasm-vec.wy"
+
+fn room<T: Any>(items: &mut Vec<T>, allocator: &Allocator, wanted: U64):
+    ensures items.capacity() >= wanted
+    proof:
+        auto
+    match items.reserve_mut(allocator, wanted):
+        Ok:
+            return
+        Err(code):
+            return
+
+fn main(console: Console<Write>):
+    console.print_int(0)
+

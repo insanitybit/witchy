@@ -1,0 +1,38 @@
+// A query packing its fields in the other order from the key it is paired with: `(y, x)` against
+// the key's `(a, b)` feeds other bytes for an equivalent value (refused).
+import console
+import hash
+import discard
+import keymap
+
+type Key derive(Discard):
+    a: U32
+    b: U32
+
+impl Eq for Key:
+    fn eq(self: &Key, other: &Key) -> Bool:
+        return (*self).a == (*other).a && (*self).b == (*other).b
+
+impl HashKey for Key:
+    fn feed(self: &Key, state: &mut HashState):
+        state.word(U32.to_u64((*self).a) | (U32.to_u64((*self).b) << 32), 8)
+
+type Probe:
+    x: U32
+    y: U32
+
+impl Equivalent<Key> for Probe:
+    fn equivalent(self: &Probe, key: &Key) -> Bool:
+        return (*self).x == (*key).a && (*self).y == (*key).b
+
+impl HashKey for Probe:
+    fn feed(self: &Probe, state: &mut HashState):
+        state.word(U32.to_u64((*self).y) | (U32.to_u64((*self).x) << 32), 8)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): KeyMap<Key, U64> = KeyMap.new(&allocator, 4, Fast(1)) else Err(code):
+        return
+    var map = move made
+    if map.contains(&Probe(x: U32.truncate(1), y: U32.truncate(2))):
+        console.print_int(1)
+    map.discard()

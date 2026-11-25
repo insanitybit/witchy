@@ -1,0 +1,11 @@
+fn borrow_text(buffer: &Buffer<U8>, count: U64) -> &str:
+    requires count <= memory.capacity(buffer)
+    requires memory.initialized_range(buffer, 0, count)
+    ensures result.len() == count
+    proof:
+        auto
+    let bytes = memory.slice_unchecked(buffer, 0, count)
+    return memory.utf8_unchecked(bytes)
+
+fn main():
+    return

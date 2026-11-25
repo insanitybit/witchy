@@ -1,0 +1,14 @@
+// Refused by the checker: a reference to the value is not the value, and ends nothing.
+type Slot<T>:
+    Vacant
+    Full(T)
+
+type Shelf<T>:
+    count: U64
+    slot: Slot<T>
+
+nopanic fn end<T: Any>(shelf: &mut Shelf<T>):
+    memory.vacant(&(*shelf).slot)
+
+fn main(out: Console<Write>):
+    out.print_int(1)

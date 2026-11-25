@@ -1,0 +1,22 @@
+// Two fields of one value may be lent at once, one of them mutably: a loan covers the field
+// path it was taken through, and conflicts only with a path it begins or that begins it.
+import console
+
+type Inner:
+    a: U64
+    b: U64
+
+type Pair:
+    left: U64
+    right: U64
+    inner: Inner
+
+fn main(console: Console<Write>):
+    var p = Pair(1, 2, Inner(3, 4))
+    let a = &p.left
+    let b = &mut p.right
+    *b += 10
+    let c = &mut p.inner.a
+    let d = &p.inner.b
+    *c += *d
+    console.print_int(*a + p.right + p.inner.a)

@@ -1,0 +1,26 @@
+// Closures (book: tour-functions.md): `fn(n: U64) -> U64: n + by` captures `by` by value, and
+// a parameter `f: fn(U64) -> U64` takes any closure of that shape.
+import console
+
+fn apply(f: fn(U64) -> U64, x: U64) -> U64:
+    return f(x)
+
+fn twice(f: fn(U64) -> U64, x: U64) -> U64:
+    return f(f(x))
+
+fn count_where(test: fn(U64) -> Bool, limit: U64) -> U64:
+    var found: U64 = 0
+    for i in 0..limit:
+        if test(i):
+            found += 1
+    return found
+
+fn main(console: Console<Write>):
+    let by: U64 = 10
+    let add = fn(n: U64) -> U64: n + by
+    console.print_int(apply(add, 5))
+    console.print_int(apply(fn(n: U64) -> U64: n * n, 6))
+    console.print_int(twice(add, 1))
+    console.print_int(add(100))
+    let three: U64 = 3
+    console.print_int(count_where(fn(i: U64) -> Bool: i % three == 0, 10))

@@ -1,0 +1,12 @@
+// Accepted from step 2: a `&mut` to a view may change its fields that hold no reference.
+type Point:
+    x: U64
+type Seen:
+    point: &Point
+    n: U64
+fn set(seen: &mut Seen):
+    (*seen).n = 1
+fn main():
+    let p = Point(3)
+    var s = Seen(&p, 5)
+    set(&mut s)

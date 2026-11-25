@@ -1,0 +1,9 @@
+// The proof does not follow F64 values: a claim that needs one is not shown.
+fn positive(n: U64) -> Bool:
+    ensures result
+    proof:
+        auto
+    return F64.from_u64(n) + 1.0 > 0.0
+
+fn main():
+    let p = positive(3)

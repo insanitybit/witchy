@@ -1,0 +1,17 @@
+import console
+import string
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.with_capacity(&allocator, 10000000) else Err(code):
+        return
+    var text = move made
+    for i in 0..1000000:
+        if let Err(_) = text.push_text(&allocator, "abcdefghi\n"):
+            console.line("full")
+    console.print_int(text.byte_len())
+    var check: U64 = 0
+    let bytes = text.as_bytes()
+    for at in 0..bytes.len():
+        check = (check * 31 + U8.to_u64(bytes[at])) % 1000000007
+    console.print_int(check)
+    text.close()

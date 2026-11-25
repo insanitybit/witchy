@@ -1,0 +1,4 @@
+a.txt: 3
+notes/b.txt: 3
+notes/deep/c.txt: 4
+total: 10

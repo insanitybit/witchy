@@ -1,0 +1,14 @@
+// Refused (review): a generator holds no function value, which may have captured a capability.
+import console
+
+gen fn steps(each: &fn(U64) -> (), count: U64) -> U64:
+    for i in 0..count:
+        each(i)
+        yield i
+
+fn main(console: Console<Write>):
+    let log = fn(n: U64) -> (): console.print_int(n * 100)
+    var total: U64 = 0
+    for i in steps(&log, 3):
+        total += i
+    log(total)

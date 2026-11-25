@@ -1,0 +1,41 @@
+// Fisher-Yates shuffles of a 52-card deck with `rand.below`: each result is a permutation, and
+// over 20,000 shuffles the card in the first position is spread evenly (each of the 52 lands
+// there about 385 times; the chi-square statistic over 51 degrees of freedom stays under 120,
+// which an unbiased source exceeds about once in ten million runs). 20,000 shuffles are a
+// million draws: the host reads its random source in blocks (it opened it per draw, ~40 µs).
+import console
+import rand
+
+fn main(console: Console<Write>, rand: Rand):
+    var first: [U64; 52] = [0; 52]
+    var broken: U64 = 0
+    for round in 0..20000:
+        var deck: [U64; 52] = [0; 52]
+        for i in 0..52:
+            deck[i] = i
+        var i: U64 = 51
+        while i > 0:
+            match rand.below(i + 1):
+                Ok(j):
+                    let t = deck[i]
+                    deck[i] = deck[j]
+                    deck[j] = t
+                Err(none):
+                    broken += 1
+            i -= 1
+        var seen: [Bool; 52] = [false; 52]
+        for c in deck:
+            let card = *c
+            if card >= 52 || seen[card]:
+                broken += 1
+            else:
+                seen[card] = true
+        first[deck[0]] += 1
+    // 52 * sum((count - E)^2) / 20000, E = 20000 / 52, kept in whole numbers: sum((52 count - 20000)^2) / (52 * 20000).
+    var spread: U64 = 0
+    for counted in first:
+        let count = *counted
+        let d = if 52 * count > 20000: 52 * count - 20000 else: 20000 - 52 * count
+        spread += d * d
+    let chi = spread / (52 * 20000)
+    console.print("${broken} broken, even: ${chi < 120}")

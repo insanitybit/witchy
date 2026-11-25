@@ -1,0 +1,20 @@
+// Refused (review of nested generators): a generator bound by `let` is stepped (changed) by `for`.
+import console
+
+gen fn count(limit: U64) -> U64:
+    var i: U64 = 0
+    while i < limit:
+        yield i
+        i += 1
+
+gen fn g(n: U64) -> U64:
+    let c = count(n)
+    for x in c:
+        yield x
+    c = count(2)
+    for x in c:
+        yield x + 10
+
+fn main(console: Console<Write>):
+    for n in g(3):
+        console.print_int(n)

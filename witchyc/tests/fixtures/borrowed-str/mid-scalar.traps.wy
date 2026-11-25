@@ -1,0 +1,15 @@
+import console
+import string
+
+fn greeting() -> &str:
+    let full: &str = "xhélloy"
+    return full.part(3, 7)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.with_capacity(&allocator, 12) else Err(code):
+        return
+    var text = move made
+    let _ = text.push_text(&allocator, greeting())
+    let _ = text.push_text(&allocator, " ☀")
+    console.write_string(&text)
+    text.close()

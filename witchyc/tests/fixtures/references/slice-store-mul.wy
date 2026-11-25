@@ -1,0 +1,10 @@
+// A store through a unique slice whose value is arithmetic with a literal reads first.
+import console
+
+fn double(values: &mut [U64]):
+    values[1] = values[1] * 2
+
+fn main(console: Console<Write>):
+    var a: [U64; 3] = [1, 2, 3]
+    double(&mut a)
+    console.print_int(a[1])

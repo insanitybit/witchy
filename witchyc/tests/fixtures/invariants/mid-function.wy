@@ -1,0 +1,20 @@
+import console
+
+sealed type Account:
+    balance: U64
+    limit: U64
+    invariant balance <= limit
+
+impl Account:
+    pub fn balance(account: &Account) -> U64:
+        return (*account).balance
+    // Breaks the invariant in the middle and restores it before returning: accepted.
+    pub fn reset(account: &mut Account):
+        ensures account.limit == 0
+        proof:
+            auto
+        (*account).limit = 0
+        (*account).balance = 0
+
+fn main(console: Console<Write>):
+    console.line("ran")

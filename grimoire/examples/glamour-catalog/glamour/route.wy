@@ -1,0 +1,27 @@
+import string
+
+// A local path is absolute, ASCII, and composed of nonempty normal segments.
+// The first byte of every segment precludes both dot paths and URL schemes.
+pub fn valid(value: &String) -> Bool:
+    let length = value.byte_len()
+    if length == 0 || length > 128:
+        return false
+    let Ok(first): U8 = value.byte_at(0) else Err(code):
+        return false
+    if first != 47:
+        return false
+    var start = true
+    for index in 1..length:
+        let Ok(byte): U8 = value.byte_at(index) else Err(code):
+            return false
+        let alpha = (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122)
+        let digit = byte >= 48 && byte <= 57
+        if start:
+            if !alpha && !digit:
+                return false
+            start = false
+        else if byte == 47:
+            start = true
+        else if !alpha && !digit && byte != 45 && byte != 46 && byte != 95:
+            return false
+    return true

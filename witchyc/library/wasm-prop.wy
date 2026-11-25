@@ -1,0 +1,79 @@
+import "wasm-testing.wy"
+
+pub type Trial:
+    state: U64
+
+impl Trial:
+    // xorshift64. Zero is mapped to a nonzero initial state.
+    pub fn next_word(self: &mut Trial) -> U64:
+        var x = (*self).state
+        if x == 0:
+            x = 11400714819323198485
+        x = x ^ (x << 13)
+        x = x ^ (x >> 7)
+        x = x ^ (x << 17)
+        (*self).state = x
+        return x
+
+pub trait Arbitrary:
+    fn arbitrary(trial: &mut Trial) -> Self
+
+impl Arbitrary for U64:
+    fn arbitrary(trial: &mut Trial) -> U64:
+        return trial.next_word()
+
+impl Arbitrary for Bool:
+    fn arbitrary(trial: &mut Trial) -> Bool:
+        return trial.next_word() % 2 == 1
+
+pub derive Arbitrary:
+    impl Arbitrary for Self:
+        fn arbitrary(trial: &mut Trial) -> Self:
+            return Self(
+                static for field, FieldType in fields:
+                    FieldType.arbitrary(trial),
+            )
+
+pub trait Strategy<T>:
+    fn generate(self: &Self, trial: &mut Trial) -> T
+    fn smaller(self: &Self, value: T, cursor: U64) -> Result<T, ()>
+
+pub trait Property<T>:
+    fn observe(self: &Self, value: T) -> Result<(), Failure>
+
+pub type Counterexample<T>:
+    original: T
+    best: T
+    failure: Failure
+    attempts: U64
+
+// Only a candidate failing the original assertion can replace the current minimum.
+pub fn check<T, S: Strategy<T>, P: Property<T>>(strategy: &S, property: &P, seed: U64, trials: U64, steps: U64) -> Result<(), Counterexample<T>>:
+    var trial = Trial(seed)
+    for index in 0..trials:
+        let original = strategy.generate(&mut trial)
+        match property.observe(original):
+            Ok:
+                continue
+            Err(first):
+                var best = original
+                var failure = first
+                var cursor: U64 = 0
+                var attempts: U64 = 0
+                while attempts < steps:
+                    match strategy.smaller(best, cursor):
+                        Err:
+                            break
+                        Ok(candidate):
+                            attempts += 1
+                            cursor += 1
+                            match property.observe(candidate):
+                                Ok:
+                                    continue
+                                Err(observed):
+                                    if observed.site == first.site && observed.reason == first.reason:
+                                        best = candidate
+                                        failure = observed
+                                        cursor = 0
+                return Err(Counterexample(original, best, failure, attempts))
+    return Ok(())

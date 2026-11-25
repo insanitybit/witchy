@@ -1,0 +1,8 @@
+// Refused: a capability is not a type argument, so generic code never holds authority
+// its signature does not show (what makes wasm-caps and pure fn exact).
+fn keep<T: Any>(thing: T) -> T:
+    return move thing
+
+fn main(console: Console<Write>):
+    let again = keep(move console)
+    again.print_int(1)

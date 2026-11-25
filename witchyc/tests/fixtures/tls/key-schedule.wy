@@ -1,0 +1,37 @@
+// RFC 8448 section 3, Simple 1-RTT Handshake.
+// https://www.rfc-editor.org/rfc/rfc8448.html#section-3
+import console
+import crypto
+import tls_key_schedule
+
+pure fn matches(keys: &RecordKeys, key: &[U8; 16], iv: &[U8; 12]) -> Bool:
+    if keys.key_len() != 16:
+        return false
+    let material = keys.key_bytes()
+    let nonce = keys.iv_bytes()
+    for i in 0..16:
+        if material[i] != (*key)[i]:
+            return false
+    for i in 0..12:
+        if nonce[i] != (*iv)[i]:
+            return false
+    return true
+
+pure fn trace() -> Result<Bool, CryptoError>:
+    let shared: [U8; 32] = [139, 212, 5, 79, 181, 91, 157, 99, 253, 251, 172, 249, 240, 75, 159, 13, 53, 230, 214, 63, 83, 117, 99, 239, 212, 98, 114, 144, 15, 137, 73, 45]
+    let hello_hash: [U8; 32] = [134, 12, 6, 237, 192, 120, 88, 238, 142, 120, 240, 231, 66, 140, 88, 237, 214, 180, 63, 44, 163, 230, 233, 95, 2, 237, 6, 60, 240, 225, 202, 216]
+    let server_key: [U8; 16] = [63, 206, 81, 96, 9, 194, 23, 39, 208, 242, 228, 232, 110, 228, 3, 188]
+    let server_iv: [U8; 12] = [93, 49, 62, 178, 103, 18, 118, 238, 19, 0, 11, 48]
+    let finished_hash: [U8; 32] = [150, 8, 16, 42, 15, 28, 204, 109, 182, 37, 11, 123, 126, 65, 123, 26, 0, 14, 170, 218, 61, 170, 228, 119, 122, 118, 134, 201, 255, 131, 223, 19]
+    let client_key: [U8; 16] = [23, 66, 45, 218, 89, 110, 213, 217, 172, 216, 144, 227, 198, 63, 80, 81]
+    let client_iv: [U8; 12] = [91, 120, 146, 61, 238, 8, 87, 144, 51, 229, 35, 217]
+    let handshake = tls_key_schedule.start(&shared, &hello_hash)?
+    let server = handshake.keys(Server)?
+    let application = handshake.application(finished_hash.slice())?
+    let client = application.keys(Client)?
+    return Ok(matches(&server, &server_key, &server_iv) && matches(&client, &client_key, &client_iv))
+
+fn main(output: Console<Write>):
+    if let Ok(valid) = trace():
+        if valid:
+            output.line("handshake and application traffic keys match")

@@ -1,0 +1,11 @@
+// Refused by the checker: the list is sealed, and this is not its file. Lending its tail to the
+// library helper is a write of the tail, which only the declaring file may make.
+import cell_list
+
+fn steal(list: &mut DoublyLinkedList<U64>) -> U64:
+    ensures true
+    let tail = (*list).tail.take()
+    return 0
+
+nopanic fn main(out: Console<Write>, a: Allocator):
+    out.print_int(1)

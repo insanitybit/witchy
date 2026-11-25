@@ -1,0 +1,13 @@
+name = "witchy_core"
+version = "0.1.0"
+defaultTargets = ["witchy-import-graph"]
+moreLeanArgs = ["-DwarningAsError=true"]
+# Retained held native/source-routing consumers still use these module artifacts.
+restoreAllArtifacts = true
+
+[[lean_lib]]
+name = "Witchy"
+
+[[lean_exe]]
+name = "witchy-import-graph"
+root = "Witchy.DependencyGraph"

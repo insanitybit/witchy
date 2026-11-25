@@ -1,0 +1,43 @@
+// A generic record or sum holding an owner derives: `impl<T: Any + Eq>`, so `Pair<String>` compares,
+// orders, hashes and is discarded; a Copy argument as before.
+import console
+import string
+import hash
+import sort
+import discard
+
+type Pair<T> derive(Eq, Hash, Before, Discard):
+    first: T
+    second: U64
+
+type Maybe<T> derive(Eq, Discard):
+    Some(T)
+    None
+
+fn text(allocator: &Allocator, word: Text) -> Result<String, U64>:
+    var s: String = String.new(allocator)?
+    if let Err(_) = s.push_text(allocator, word):
+        s.close()
+        return Err(1)
+    return Ok(move s)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(a): String = text(&allocator, "apple") else Err(c):
+        return
+    let Ok(b): String = text(&allocator, "apple") else Err(c):
+        a.close()
+        return
+    let Ok(c): String = text(&allocator, "banana") else Err(e):
+        a.close()
+        b.close()
+        return
+    let x: Pair<String> = Pair(move a, 1)
+    let y: Pair<String> = Pair(move b, 1)
+    let z: Maybe<String> = Some(move c)
+    console.print("${x == y} ${x.before(&y)} ${x.hash() == y.hash()}")
+    x.discard()
+    y.discard()
+    z.discard()
+    let n: Pair<U64> = Pair(3, 4)
+    let m: Pair<U64> = Pair(3, 5)
+    console.print("${n == m} ${n.before(&m)}")

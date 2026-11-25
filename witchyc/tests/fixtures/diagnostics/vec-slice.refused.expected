@@ -1,0 +1,1 @@
+`Vec` has `as_slice` (`.slice()` is a fixed array's)

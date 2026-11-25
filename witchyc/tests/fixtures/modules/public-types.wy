@@ -1,0 +1,17 @@
+// Two modules each offer a `pub type Item`: each is its own type, named `orders.Item` or
+// `stock.Item`, or bare after `from ... import`.
+import console
+import "parts/orders.wy"
+import "parts/stock.wy"
+from stock import Item
+
+fn describe(item: &orders.Item) -> U64:
+    return orders.total(item)
+
+fn main(console: Console<Write>):
+    let ordered: orders.Item = orders.order(4)
+    let kept: Item = stock.shelved(7)
+    console.print_int(describe(&ordered))
+    console.print_int(stock.where_is(&kept))
+    let direct = orders.Item(2)
+    console.print_int(orders.total(&direct))

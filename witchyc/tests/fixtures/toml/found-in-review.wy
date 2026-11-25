@@ -1,0 +1,88 @@
+// Wrong answers the independent reviews found, each read directly.
+import console
+import string
+import option
+import "@toml"
+
+fn main(console: Console<Write>, allocator: Allocator):
+    // `123e-5` is a float: a date needs four digits before its `-`.
+    // A table whose key had an escape keeps that key when a header later names it.
+    let Ok(text): String = String.from_str(&allocator, "x = 123e-5\n[\"\\u0061\".b]\n[\"a\"]\ny = 1\n") else Err(code):
+        return
+    let Ok(tree): Toml = Toml.parse(&allocator, move text) else Err(error):
+        console.line("refused")
+        return
+    brand tree.doc() as doc:
+        let root = doc.root()
+        if let Some(x) = doc.get(root, "x"):
+            if let Some(number) = doc.f64(x):
+                console.print_int(F64.bits(number))
+        if let Some(item) = doc.get(root, "a"):
+            console.line(doc.key(item))
+            if let Some(table) = doc.table(item):
+                console.print_int(doc.table_len(table))
+                if let Some(y) = doc.get(table, "y"):
+                    console.line(doc.key(y))
+    tree.close()
+    // A `\` ends a line before LF or CR LF, not before a CR alone.
+    let Ok(lone): String = String.from_str(&allocator, "a = \"\"\"a\\\rb\"\"\"\n") else Err(code):
+        return
+    match Toml.parse(&allocator, move lone):
+        Ok(read):
+            console.line("read")
+            read.close()
+        Err(error):
+            console.line("refused")
+    let Ok(pair): String = String.from_str(&allocator, "a = \"\"\"a\\\r\n  b\"\"\"\n") else Err(code):
+        return
+    match Toml.parse(&allocator, move pair):
+        Ok(read):
+            console.print_int(read.count())
+            read.close()
+        Err(error):
+            console.line("refused")
+    // Digits too large for a finite number are not infinity.
+    let Ok(huge): String = String.from_str(&allocator, "a = 1e500\nb = inf\n") else Err(code):
+        return
+    match Toml.parse(&allocator, move huge):
+        Ok(read):
+            console.line("read")
+            read.close()
+        Err(error):
+            console.line("refused")
+    let Ok(most): String = String.from_str(&allocator, "a = 12345678901234567890e30\nb = inf\n") else Err(code):
+        return
+    match Toml.parse(&allocator, move most):
+        Ok(read):
+            console.print_int(read.count())
+            read.close()
+        Err(error):
+            console.line("refused")
+    // A power of a million or more is refused, never cut to its first six digits.
+    let Ok(deep): String = String.from_str(&allocator, "a = 1e-1000000\n") else Err(code):
+        return
+    match Toml.parse(&allocator, move deep):
+        Ok(read):
+            console.line("read")
+            read.close()
+        Err(error):
+            console.line("refused")
+    // A walk given the wrong table of the same document still ends, at the last value of
+    // the table the value is in.
+    let Ok(nested): String = String.from_str(&allocator, "b = 2\n[t]\nx = 1\ny = 3\nz = 4\n") else Err(code):
+        return
+    let Ok(parsed): Toml = Toml.parse(&allocator, move nested) else Err(error):
+        return
+    var walked = move parsed
+    brand walked.doc() as doc:
+        if let Some(item) = doc.get(doc.root(), "t"):
+            if let Some(t) = doc.table(item):
+                var entry = doc.first(t)
+                var steps: U64 = 0
+                while let Some(child) = entry:
+                    steps += 1
+                    if steps > 50:
+                        break
+                    entry = doc.next(child)
+                console.print_int(steps)
+    walked.close()

@@ -1,0 +1,19 @@
+// Refused: called twice, though it was consumed by the first call.
+import console
+import string
+
+fn run(f: fn(U64) -> U64, x: U64) -> U64:
+    return f(x)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var text = move made
+    let _ = text.push_text(&allocator, "abc")
+    let measure = fn(extra: U64) -> U64:
+        let held = move text
+        let n = held.byte_len() + extra
+        held.close()
+        return n
+    console.print_int(measure(4))
+    console.print_int(measure(5))

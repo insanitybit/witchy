@@ -1,0 +1,65 @@
+// Refused, naming the variable in the advice: it said `move name`.
+import console
+import string
+import text
+import span
+
+// Greedy word wrap at 30 columns (scalars, not bytes), each line padded and framed.
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    let width: U64 = 30
+    let Ok(t): String = String.new(&allocator) else Err(e):
+        return
+    var all = move t
+    let Ok(l): String = String.new(&allocator) else Err(e):
+        all.close()
+        return
+    var line = move l
+    let Ok(c): String = String.new(&allocator) else Err(e):
+        all.close()
+        line.close()
+        return
+    var current = move c
+    while true:
+        line.clear()
+        match input.read_line(&allocator, &mut line):
+            .Line:
+                if all.push_string(&allocator, &line).is_err() || all.push_text(&allocator, " ").is_err():
+                    console.line("no room")
+            .End:
+                break
+            .NotText:
+                break
+            .NoRoom:
+                break
+    var count: U64 = 0
+    for word in all.span().words():
+        let length = word.to_string(&allocator)
+        match length:
+            Ok(w):
+                let have = current.scalar_count()
+                if have > 0 && have + 1 + w.scalar_count() > width:
+                    if !current.pad_to(&allocator, width, ' '):
+                        console.line("no room")
+                    console.write("|")
+                    console.write_string(&current)
+                    console.line("|")
+                    count += 1
+                    current.clear()
+                if current.byte_len() > 0 && !current.push_text(&allocator, " "):
+                    console.line("no room")
+                if !current.push_string(&allocator, &w):
+                    console.line("no room")
+                w.close()
+            Err(e):
+                console.line("no room")
+    if current.byte_len() > 0:
+        if !current.pad_to(&allocator, width, ' '):
+            console.line("no room")
+        console.write("|")
+        console.write_string(&current)
+        console.line("|")
+        count += 1
+    console.print("${count} lines")
+    all.close()
+    line.close()
+    current.close()

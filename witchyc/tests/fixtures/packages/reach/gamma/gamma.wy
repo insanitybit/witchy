@@ -1,0 +1,3 @@
+// gamma imports nothing, and calls alpha's inner function by its bare name.
+pub fn reach() -> U64:
+    return alpha_internal(1000)

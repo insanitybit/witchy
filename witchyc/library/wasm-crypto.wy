@@ -1,0 +1,192 @@
+// Cryptography through the engine's FIPS provider (docs/wasm-capabilities.md, "Crypto").
+//
+// Public computation takes no capability: SHA-256, SHA-384, SHA-512 and ML-DSA verification
+// compute on the bytes they are given and nothing else, so any function may call them, a
+// `pure fn` too. The host computes them (AWS-LC), since the suite must come from one validated
+// module.
+//
+// Signing does need authority, and only a `Signer` has it: `main(targets: Signer)`, bound by
+// name in the grant document (`targets = { use = "sign/witchy-2/targets", from = "fd:3" }`).
+// The grant fixes its role, and the signer signs only a message that begins with that role's
+// domain, `witchy/v2/ROLE\0` (the `witchy-2` suite: ML-DSA-65 over the canonical bytes, the
+// domain inside them, with SHA-384 for digests and key IDs). Nothing reads its key. The
+// `witchy-1` suite (ML-DSA-44) is retired: nothing here verifies or signs it.
+//
+// Sizes (FIPS 204, ML-DSA-65): a public key is 1952 bytes, a signature 3309; a SHA-384 digest
+// 48, a SHA-256 digest 32, and a SHA-512 digest 64.
+
+pub type CryptoError:
+    // The message does not begin with the signer's domain, `witchy/v2/ROLE\0`.
+    WrongDomain
+    // A slice is not the length an operation takes.
+    WrongLength
+    // The input is longer than the engine takes: 64 MiB to hash, 1 MiB to sign.
+    TooLong
+    // The provider failed; nothing was written.
+    Failed
+
+pure fn crypto_error(code: U64) -> CryptoError:
+    if code == 1:
+        return WrongDomain
+    if code == 2:
+        return WrongLength
+    if code == 3:
+        return TooLong
+    return Failed
+
+// The SHA-256 digest of `data` into `digest`, which is 32 bytes.
+pub pure fn sha256(data: &[U8], digest: &mut [U8]) -> Result<(), CryptoError>:
+    let code = provider.raw_sha256(data, digest)
+    if code == 0:
+        return Ok(())
+    return Err(crypto_error(code))
+
+// The SHA-384 digest of `data` into `digest`, which is 48 bytes: the `witchy-2` profile's
+// content digests, pins and key IDs.
+pub pure fn sha384(data: &[U8], digest: &mut [U8]) -> Result<(), CryptoError>:
+    let code = provider.raw_sha384(data, digest)
+    if code == 0:
+        return Ok(())
+    return Err(crypto_error(code))
+
+// SHA-512 of `data` into a 64-byte destination.
+pub pure fn sha512(data: &[U8], digest: &mut [U8]) -> Result<(), CryptoError>:
+    let code = provider.raw_sha512(data, digest)
+    if code == 0:
+        return Ok(())
+    return Err(crypto_error(code))
+
+// Whether `signature` is a valid FIPS 204 ML-DSA-65 signature of `message` by `public_key`
+// (empty context, the whole message signed). A key or signature of another length is invalid.
+pub pure fn mldsa65_verify(public_key: &[U8], message: &[U8], signature: &[U8]) -> Bool:
+    return provider.raw_mldsa65_verify(public_key, message, signature) == 1
+
+// Pure ML-DSA-87 with empty context, a 2592-byte raw key and 4627-byte signature.
+pub pure fn mldsa87_verify(public_key: &[U8], message: &[U8], signature: &[U8]) -> Bool:
+    return provider.raw_mldsa87_verify(public_key, message, signature) == 1
+
+// ECDSA P-256 with SHA-256. The 65-byte public key is an uncompressed SEC 1
+// point, and the signature is an ASN.1 DER sequence.
+pub pure fn p256_verify(public_key: &[U8], message: &[U8], signature: &[U8]) -> Bool:
+    return provider.raw_p256_verify(public_key, message, signature) == 1
+
+// RSASSA-PKCS1-v1_5 with SHA-256. Supply unsigned big-endian components for
+// a 2048- to 8192-bit RSA public key and a modulus-sized signature.
+pub pure fn rsa_pkcs1_sha256_verify(modulus: &[U8], exponent: &[U8], message: &[U8], signature: &[U8]) -> Bool:
+    return provider.raw_rsa_pkcs1_sha256_verify(modulus, exponent, message, signature) == 1
+
+// Whether `message` is a `witchy-2` object of `role` (`targets`, `snapshot`, `release`, ...):
+// it begins with `witchy/v2/ROLE\0`, and `signature` is `public_key`'s ML-DSA-65 signature of
+// it. A signature on an object of another role, or of the retired `witchy-1` suite, never
+// verifies as this one.
+pub pure fn witchy2_verify(public_key: &[U8], role: Text, message: &[U8], signature: &[U8]) -> Bool:
+    if !witchy2_domain(role, message):
+        return false
+    return mldsa65_verify(public_key, message, signature)
+
+// Whether `message` begins with `witchy/v2/ROLE\0`, for a role of 1 to 32 lowercase letters,
+// digits and `-`.
+// `role` is a `Text`, so a literal the program wrote, never text read at run time: the role
+// separates domains only if the verifier fixes it.
+pub pure fn witchy2_domain(role: Text, message: &[U8]) -> Bool:
+    let count = role.byte_len()
+    if count == 0 || count > 32:
+        return false
+    // `witchy/v2/`
+    let prefix: [U8; 10] = [119, 105, 116, 99, 104, 121, 47, 118, 50, 47]
+    if message.len() < 11 + count:
+        return false
+    for index in 0..10:
+        if message[index] != prefix[index]:
+            return false
+    for index in 0..count:
+        match role.byte_at(index):
+            Ok(byte):
+                let plain = (byte >= 97 && byte <= 122) || (byte >= 48 && byte <= 57) || byte == 45
+                if !plain || message[10 + index] != byte:
+                    return false
+            Err(code):
+                return false
+    return message[10 + count] == 0
+
+impl Signer:
+    // The signer's ML-DSA-65 public key into `key`, which is 1952 bytes.
+    pub fn public_key(signer: &Signer, key: &mut [U8]) -> Result<(), CryptoError>:
+        let code = signer.raw_public_key(key)
+        if code == 0:
+            return Ok(())
+        return Err(crypto_error(code))
+
+    // Signs `message`, which begins with the domain of the role the grant names
+    // (`witchy/v2/ROLE\0`), into `signature`, which is 3309 bytes. Signing is hedged: two
+    // signatures of one message differ, and each verifies.
+    pub fn sign(signer: &Signer, message: &[U8], signature: &mut [U8]) -> Result<(), CryptoError>:
+        let code = signer.raw_sign(message, signature)
+        if code == 0:
+            return Ok(())
+        return Err(crypto_error(code))
+
+// TLS 1.3 AES-128-GCM with a 16-byte key, a 12-byte per-record nonce, and a
+// 5-byte record header as AAD. The output has room for the plaintext and its
+// appended 16-byte tag. The caller must ensure each nonce is unique for its key.
+pub pure fn tls13_aes128gcm_seal(key: &[U8], nonce: &[U8], header: &[U8], plaintext: &[U8], output: &mut [U8]) -> Result<(), CryptoError>:
+    let code = provider.raw_tls13_aes128gcm_seal(key, nonce, header, plaintext, output)
+    if code == 0:
+        return Ok(())
+    return Err(crypto_error(code))
+
+// Authenticate and decrypt ciphertext with an appended tag. Output is exactly
+// 16 bytes shorter than the ciphertext and is untouched on any error.
+pub pure fn tls13_aes128gcm_open(key: &[U8], nonce: &[U8], header: &[U8], ciphertext: &[U8], output: &mut [U8]) -> Result<(), CryptoError>:
+    let code = provider.raw_tls13_aes128gcm_open(key, nonce, header, ciphertext, output)
+    if code == 0:
+        return Ok(())
+    return Err(crypto_error(code))
+
+// The TLS 1.3 AES-256-GCM operations have the same nonce, AAD, tag and
+// output requirements as AES-128-GCM, with a 32-byte key.
+pub pure fn tls13_aes256gcm_seal(key: &[U8], nonce: &[U8], header: &[U8], plaintext: &[U8], output: &mut [U8]) -> Result<(), CryptoError>:
+    let code = provider.raw_tls13_aes256gcm_seal(key, nonce, header, plaintext, output)
+    if code == 0:
+        return Ok(())
+    return Err(crypto_error(code))
+
+pub pure fn tls13_aes256gcm_open(key: &[U8], nonce: &[U8], header: &[U8], ciphertext: &[U8], output: &mut [U8]) -> Result<(), CryptoError>:
+    let code = provider.raw_tls13_aes256gcm_open(key, nonce, header, ciphertext, output)
+    if code == 0:
+        return Ok(())
+    return Err(crypto_error(code))
+
+// Check two 48-byte tags. Only the length and equality result are public.
+pub pure fn verify_tag48(expected: &[U8], received: &[U8]) -> Bool:
+    return provider.raw_verify_tag48(expected, received) == 1
+
+pub type AgreementError:
+    InvalidPeerPoint
+    InvalidBufferLength
+    AgreementFailed
+
+impl Rand:
+    // Generates a fresh, single-use P-384 key. The two public points use
+    // SEC1 uncompressed encoding (97 bytes). The shared secret is 48 bytes
+    // in big-endian order. Output slices are unchanged on error.
+    pub fn p384_agree(self: &Rand, peer: &[U8], public_key: &mut [U8], shared: &mut [U8]) -> Result<(), AgreementError>:
+        let code = self.raw_p384_agree(peer, public_key, shared)
+        if code == 0:
+            return Ok(())
+        if code == 1:
+            return Err(InvalidPeerPoint)
+        if code == 2:
+            return Err(InvalidBufferLength)
+        return Err(AgreementFailed)
+
+impl TlsSigner:
+    // Sign the server CertificateVerify domain and the supplied SHA-384
+    // transcript hash. Returns the DER length. The output needs 104 bytes.
+    pub fn certificate_verify(self: &TlsSigner, transcript: &[U8], signature: &mut [U8]) -> Result<U64, CryptoError>:
+        if transcript.len() != 48 || signature.len() < 104:
+            return Err(WrongLength)
+        let count = self.raw_certificate_verify(transcript, signature)
+        if count == 0:
+            return Err(Failed)
+        return Ok(count)

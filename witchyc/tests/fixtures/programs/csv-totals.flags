@@ -1,0 +1,1 @@
+run: --input={dir}/csv-totals.txt

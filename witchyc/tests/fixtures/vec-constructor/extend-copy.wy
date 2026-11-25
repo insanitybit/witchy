@@ -1,0 +1,205 @@
+// A Vec-shaped sealed type extended from another by one proved range copy
+// (memory.copy_into_unchecked), run on real buffers: the method Vec.extend_copy_mut would be,
+// kept here while the Vec library's proof stays within its time budget (docs/decisions.md).
+import console
+
+pub sealed type V<T>:
+    data: Buffer<T>
+    length: U64
+    capacity: U64
+    invariant memory.prefix(data, length, capacity)
+
+impl<T> V<T>:
+    pub fn new(allocator: &Allocator, requested: U64) -> Result<V<T>, U64>:
+        ensures match result:
+            Ok(output):
+                output.length == 0
+                output.capacity == requested
+            Err(code):
+                true
+        proof:
+            auto
+        let allocation: Result<Buffer<T>, U64> = memory.try_alloc(allocator, requested)
+        match move allocation:
+            Ok(buffer):
+                return Ok(V(move buffer, 0, requested))
+            Err(allocation_error):
+                return Err(allocation_error)
+
+    pub fn push_mut(vector: &mut V<T>, item: T) -> Result<(), T>:
+        ensures memory.same_allocation(vector.data, old(vector.data))
+        ensures vector.capacity == old(vector.capacity)
+        ensures match result:
+            Ok:
+                vector.length == old(vector.length) + 1
+                memory.cell(vector.data, old(vector.length), item)
+                memory.unchanged_except(vector.data, old(vector.data), old(vector.length))
+            Err(back):
+                vector.length == old(vector.length)
+                old(vector.length) == old(vector.capacity)
+                memory.unchanged(vector.data, old(vector.data))
+        proof:
+            auto
+        let index = (*vector).length
+        if index < (*vector).capacity:
+            memory.init_unchecked(&mut (*vector).data, index, move item)
+            (*vector).length = index + 1
+            return Ok(())
+        return Err(move item)
+
+    pub fn get(value: &V<T>, index: U64) -> Result<T, U64>:
+        ensures memory.unchanged(value.data, old(value.data))
+        ensures value.length == old(value.length)
+        ensures value.capacity == old(value.capacity)
+        ensures match result:
+            Ok(item):
+                index < value.length
+                index < memory.capacity(value.data)
+                memory.cell(value.data, index, item)
+                memory.cell(old(value.data), index, item)
+            Err(code):
+                code == 1
+                index >= value.length
+        proof:
+            auto
+        if index < (*value).length:
+            return Ok(memory.get_unchecked(&(*value).data, index))
+        return Err(1)
+
+    pub fn len(value: &V<T>) -> U64:
+        return (*value).length
+
+    pub fn extend_copy_mut(vector: &mut V<T>, other: &V<T>) -> Result<(), U64>:
+        ensures memory.same_allocation(vector.data, old(vector.data))
+        ensures vector.capacity == old(vector.capacity)
+        ensures match result:
+            Ok:
+                vector.length == old(vector.length) + other.length
+            Err(code):
+                vector.length == old(vector.length)
+                memory.unchanged(vector.data, old(vector.data))
+        proof:
+            auto
+        let at = (*vector).length
+        let count = (*other).length
+        if count <= (*vector).capacity - at:
+            memory.copy_into_unchecked(&(*other).data, &mut (*vector).data, at, count)
+            (*vector).length = at + count
+            return Ok(())
+        return Err(1)
+
+    // Every cell taken out: length 0, the cells all empty, so the buffer can be released.
+    pub fn emptied(input: V<T>) -> V<T>:
+        ensures result.length == 0
+        ensures result.capacity == old(input.capacity)
+        proof:
+            auto
+        let length = input.length
+        let capacity = input.capacity
+        var buffer = move input.data
+        take_prefix(&mut buffer, length)
+        return V(move buffer, 0, capacity)
+
+    pub fn try_release(input: V<T>) -> Result<(), V<T>>:
+        ensures match result:
+            Ok:
+                memory.released(old(input.data))
+            Err(back):
+                memory.unchanged(back.data, old(input.data))
+                back.length == old(input.length)
+                back.capacity == old(input.capacity)
+        proof:
+            auto
+        let logical_length = input.length
+        let claimed_capacity = input.capacity
+        let buffer = move input.data
+        match memory.try_release(move buffer):
+            Ok:
+                return Ok(())
+            Err(remainder):
+                return Err(V(move remainder, logical_length, claimed_capacity))
+
+fn take_prefix<T>(buffer: &mut Buffer<T>, count: U64):
+    requires count <= memory.capacity(buffer)
+    requires memory.initialized_range(buffer, 0, count)
+    ensures memory.empty_range(buffer, 0, count)
+    ensures memory.unchanged_from(buffer, old(buffer), count)
+    proof:
+        auto
+    var index: U64 = 0
+    while index < count:
+        invariant index <= count
+        invariant memory.empty_range(buffer, 0, index)
+        invariant memory.unchanged_from(buffer, old(buffer), index)
+        memory.take_unchecked(buffer, index)
+        index += 1
+    return
+
+fn show(console: &Console<Write>, v: &V<U64>):
+    for i in 0..v.len():
+        match v.get(i):
+            Ok(x):
+                console.print_int(x)
+            Err(code):
+                console.print_int(900)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(a_made): V<U64> = V.new(&allocator, 9) else Err(code):
+        return
+    var a = move a_made
+    let Ok(b_made): V<U64> = V.new(&allocator, 3) else Err(code):
+        finish(move a)
+        return
+    var b = move b_made
+    let p1 = a.push_mut(1)
+    let p2 = b.push_mut(70000000000)
+    let p3 = b.push_mut(8)
+    let p4 = b.push_mut(9)
+    console.print_int(if a.extend_copy_mut(&b).is_ok(): 1 else: 0)
+    console.print_int(if a.extend_copy_mut(&b).is_ok(): 1 else: 0)
+    console.print_int(if a.extend_copy_mut(&b).is_ok(): 1 else: 0)
+    console.print_int(if a.extend_copy_mut(&b).is_ok(): 1 else: 0)
+    console.print_int(a.len())
+    show(&console, &a)
+    finish(move a)
+    finish(move b)
+    bytes(&console, &allocator)
+
+// Single-byte elements: the copy's byte-by-byte tail (three bytes, then six).
+fn bytes(console: &Console<Write>, allocator: &Allocator):
+    let Ok(x_made): V<U8> = V.new(allocator, 9) else Err(code):
+        return
+    var x = move x_made
+    let Ok(y_made): V<U8> = V.new(allocator, 3) else Err(code):
+        finish_bytes(move x)
+        return
+    var y = move y_made
+    let q1 = y.push_mut(65)
+    let q2 = y.push_mut(66)
+    let q3 = y.push_mut(67)
+    let r1 = x.extend_copy_mut(&y)
+    let r2 = x.extend_copy_mut(&y)
+    var total: U64 = 0
+    for i in 0..x.len():
+        match x.get(i):
+            Ok(byte):
+                total = total * 10 + U8.to_u64(byte) - 64
+            Err(code):
+                total = 0
+    console.print_int(total)
+    finish_bytes(move x)
+    finish_bytes(move y)
+
+fn finish_bytes(v: V<U8>):
+    match V.emptied(move v).try_release():
+        Ok:
+            return
+        Err(stuck):
+            finish_bytes(move stuck)
+
+fn finish(v: V<U64>):
+    match V.emptied(move v).try_release():
+        Ok:
+            return
+        Err(stuck):
+            finish(move stuck)

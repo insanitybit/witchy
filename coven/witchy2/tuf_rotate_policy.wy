@@ -1,0 +1,120 @@
+import "tuf/publication_files.wy"
+import "tuf/release_trust.wy"
+import "tuf/rotation_document.wy"
+import "tuf/rotation_targets.wy"
+import "review/commit_request.wy"
+import console
+import discard
+import fs
+import json_tree
+import sort
+import string
+import text
+import time
+import vec
+
+fn main(input: Console<Read>, output: Console<Write>, source: Dir<Read>, clock: Clock, allocator: Allocator):
+    if let Err(code) = rotate(&input, &source, &output, clock.now_ms(), &allocator):
+        if code == 20:
+            output.line("refused pin")
+        else if code == 21:
+            output.line("refused revision")
+        else if code == 22:
+            output.line("refused target")
+        else if code == 23:
+            output.line("refused size")
+        else if code == 24:
+            output.line("refused history")
+        else:
+            output.line("refused")
+    source.close()
+
+fn rotate(input: &Console<Read>, source: &Dir<Read>, output: &Console<Write>, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let request = read_commit_request(input, allocator)?
+    let result = prepare(&request, source, output, now, allocator)
+    request.discard()
+    return result
+
+fn prepare(request: &Json, source: &Dir<Read>, output: &Console<Write>, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    if !count_fields(request, 2):
+        return Err(1)
+    let pin = string_field(request, "trust")?
+    let count = declared_integer(request, "count")?
+    let wire = read_object(source, "trust.json", 262144, allocator)?
+    let parsed = pinned_trust(&wire, pin, allocator)
+    wire.close()
+    let Ok(trust): ReleaseTrust = move parsed else Err(code):
+        return Err(code)
+    let result = with_trust(source, output, &trust, count, now, allocator)
+    trust.close()
+    return result
+
+fn read_object(source: &Dir<Read>, name: Text, limit: U64, allocator: &Allocator) -> Result<String, U64>:
+    let Ok(path): String = literal_path(allocator, name) else Err(error):
+        return Err(1)
+    let read = read_text_object(source, &path, limit, allocator)
+    path.close()
+    let Ok(wire): String = move read else Err(error):
+        return Err(1)
+    return Ok(move wire)
+
+fn pinned_trust(wire: &String, pin: &String, allocator: &Allocator) -> Result<ReleaseTrust, U64>:
+    let actual = digest_text(wire.as_bytes(), allocator)?
+    let matches = actual.eq(pin)
+    actual.close()
+    if !matches:
+        return Err(20)
+    let Ok(trust): ReleaseTrust = parse_release_trust(wire, allocator) else Err(error):
+        return Err(1)
+    return Ok(move trust)
+
+fn with_trust(source: &Dir<Read>, output: &Console<Write>, trust: &ReleaseTrust, count: U64, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let wire = read_object(source, "policy.json", 65536, allocator)?
+    let parsed = parse_release_json(&wire, allocator)
+    wire.close()
+    let Ok(policy): Json = move parsed else Err(code):
+        return Err(code)
+    let result = update(source, output, trust, &policy, count, now, allocator)
+    policy.discard()
+    return result
+
+fn update(source: &Dir<Read>, output: &Console<Write>, trust: &ReleaseTrust, next: &Json, count: U64, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let active = trust.policy()?
+    let revision = check_rotation(active, next, allocator)?
+    let empty: Vec<String> = Vec.new(allocator, 4)?
+    var archived = move empty
+    let collected = existing_archive(trust, &mut archived, allocator)
+    let result = with_archive(collected, source, output, trust, next, &archived, count, revision, now, allocator)
+    archived.discard()
+    return result
+
+fn with_archive(collected: Result<(), U64>, source: &Dir<Read>, output: &Console<Write>, trust: &ReleaseTrust, next: &Json, archived: &Vec<String>, count: U64, revision: U64, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    collected?
+    let empty: Vec<String> = Vec.new(allocator, 4)?
+    var fresh = move empty
+    let retained = retain_targets(source, trust, archived, &mut fresh, count, now, allocator)
+    let result = emit_update(retained, output, trust, next, &mut fresh, archived.len(), revision, allocator)
+    fresh.discard()
+    return result
+
+fn emit_update(retained: Result<(), U64>, output: &Console<Write>, trust: &ReleaseTrust, next: &Json, fresh: &mut Vec<String>, archived: U64, revision: U64, allocator: &Allocator) -> Result<(), U64>:
+    retained?
+    sort(fresh)
+    let updated = rotated_document(trust, next, fresh, allocator)?
+    let result = emit(output, &updated, archived + fresh.len(), revision, allocator)
+    updated.close()
+    return result
+
+fn emit(output: &Console<Write>, updated: &String, count: U64, revision: U64, allocator: &Allocator) -> Result<(), U64>:
+    let pin = digest_text(updated.as_bytes(), allocator)?
+    output.line("rotated")
+    output.write("{\"archived_targets\":")
+    output.write_u64(count)
+    output.write(",\"digest\":\"")
+    output.write_string(&pin)
+    output.write("\",\"revision\":")
+    output.write_u64(revision)
+    output.line("}")
+    output.write_string(updated)
+    pin.close()
+    return Ok(())

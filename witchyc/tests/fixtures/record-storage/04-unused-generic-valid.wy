@@ -1,0 +1,6 @@
+fn carry_again<T>(value: T) -> T:
+    ensures true
+    return move value
+
+fn main(console: Console<Write>):
+    console.print_int(42)

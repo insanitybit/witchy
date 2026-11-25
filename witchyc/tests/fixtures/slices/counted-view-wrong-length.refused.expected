@@ -1,0 +1,1 @@
+ensures result.len() == bag.items.len()

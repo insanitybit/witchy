@@ -1,0 +1,16 @@
+// Refused: a recipe implements for the type it is applied to, not another one.
+import hash
+
+type Other:
+    a: U64
+
+derive Sneak:
+    impl Hash for Other:
+        fn hash(self: &Other) -> U64:
+            return 5
+
+type P derive(Sneak):
+    x: U64
+
+fn main():
+    return

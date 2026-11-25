@@ -1,0 +1,122 @@
+// An access-log summary: requests per status, total bytes, the three most requested paths
+// (by count, then path); 3,000 lines, compared with Python. let-else over Span.split, a map
+// keyed by String looked up with a Span, a record with its own Before, sort.
+import console
+import string
+import span
+import hashmap
+import sort
+import vec
+import discard
+import text
+
+type Hit derive(Discard):
+    count: U64
+    path: String
+
+// More hits first; then by path.
+impl Before for Hit:
+    fn before(self: &Hit, other: &Hit) -> Bool:
+        if (*self).count != (*other).count:
+            return (*self).count > (*other).count
+        return (*self).path.less(&(*other).path)
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    let Ok(s): HashMap<U64, U64> = HashMap.new(&allocator, 16) else Err(e):
+        return
+    var statuses = move s
+    let Ok(p): HashMap<String, U64> = HashMap.new(&allocator, 16) else Err(e):
+        statuses.discard()
+        return
+    var paths = move p
+    let Ok(l): String = String.new(&allocator) else Err(e):
+        statuses.discard()
+        paths.discard()
+        return
+    var line = move l
+    var bytes: U64 = 0
+    while true:
+        line.clear()
+        match input.read_line(&allocator, &mut line):
+            .Line:
+                // ... "GET /path HTTP/1.1" 200 1234
+                let Ok(q) = line.span().split(34) else Err(whole):
+                    continue
+                let Ok(r) = q.tail.split(34) else Err(whole):
+                    continue
+                let Ok(m) = r.head.split(32) else Err(whole):
+                    continue
+                let Ok(u) = m.tail.split(32) else Err(whole):
+                    continue
+                let Ok(n) = r.tail.trim().split(32) else Err(whole):
+                    continue
+                let Ok(code) = n.head.parse_u64() else Err(e):
+                    continue
+                let Ok(size) = n.tail.parse_u64() else Err(e):
+                    continue
+                bytes += size
+                match statuses.get_mut(&code):
+                    Ok(c):
+                        *c += 1
+                    Err(missing):
+                        match statuses.put(&allocator, code, 1):
+                            Ok:
+                                ()
+                            Err(back):
+                                back.discard()
+                match get_mut_by_span(&mut paths, u.head):
+                    Ok(c):
+                        *c += 1
+                    Err(missing):
+                        match u.head.to_string(&allocator):
+                            Ok(key):
+                                match paths.put(&allocator, move key, 1):
+                                    Ok:
+                                        ()
+                                    Err(back):
+                                        back.discard()
+                            Err(e):
+                                ()
+            .End:
+                break
+            .NotText:
+                break
+            .NoRoom:
+                break
+    line.close()
+    for code in 0..600:
+        match statuses.get(&code):
+            Ok(n):
+                console.print("${code} ${*n}")
+            Err(missing):
+                continue
+    let Ok(h): Vec<Hit> = Vec.new(&allocator, paths.len()) else Err(e):
+        statuses.discard()
+        paths.discard()
+        return
+    var hits = move h
+    var cursor: U64 = 0
+    while true:
+        match paths.take_next(&mut cursor):
+            Ok(entry):
+                let Entry(path, count) = move entry
+                match hits.push_mut(&allocator, Hit(count, move path)):
+                    Ok:
+                        ()
+                    Err(back):
+                        back.discard()
+            Err(done):
+                break
+    sort(&mut hits)
+    for index in 0..3:
+        match hits.at(index):
+            Ok(hit):
+                console.write_format("${hit.count} ")
+                console.write_string(&hit.path)
+                console.line("")
+            Err(none):
+                break
+    console.print("bytes ${bytes}")
+    hits.discard()
+    statuses.discard()
+    paths.discard()

@@ -1,0 +1,52 @@
+// The same refill with a real owner: each String is closed once, none is lost.
+import "../../../library/wasm-string.wy"
+
+type Slot:
+    Vacant
+    Full(String)
+
+type Shelf:
+    count: U64
+    slot: Slot
+
+nopanic fn swap_in(shelf: &mut Shelf, item: String) -> Slot:
+    var held: Slot = Vacant
+    memory.exchange(&mut (*shelf).slot, &mut held)
+    (*shelf).count = 5
+    (*shelf).slot = Full(move item)
+    return move held
+
+fn word(allocator: &Allocator, count: U64) -> Result<String, U64>:
+    var out = String.new(allocator)?
+    for index in 0..count:
+        match out.push_scalar(allocator, 97):
+            Ok(grown):
+                out = move grown
+            Err(original):
+                original.close()
+                return Err(900)
+    return Ok(move out)
+
+fn show(out: &Console<Write>, slot: Slot):
+    match move slot:
+        Vacant:
+            out.print_int(0)
+        Full(text):
+            out.print_int(text.byte_len())
+            text.close()
+
+fn main(out: Console<Write>, allocator: Allocator):
+    match word(&allocator, 3):
+        Err(code):
+            out.print_int(code)
+        Ok(first):
+            match word(&allocator, 4):
+                Err(code):
+                    first.close()
+                    out.print_int(code)
+                Ok(second):
+                    var shelf: Shelf = Shelf(0, Full(move first))
+                    show(&out, swap_in(&mut shelf, move second))
+                    let Shelf(count, slot) = move shelf
+                    out.print_int(count)
+                    show(&out, move slot)

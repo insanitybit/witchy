@@ -1,0 +1,753 @@
+// Test vectors from RFC 8448, section 3. The pre-Finished transcript hash
+// covers ClientHello, ServerHello, and the decrypted server flight before Finished.
+import tls_key_schedule
+import tls_certificates
+import tls_record
+import tls_hello
+import tls_client_hello
+import tls_trust_pem
+import tls_kdf
+import span
+import crypto
+import string
+import vec
+import encoding
+import testing
+
+fn check_keys(keys: RecordKeys, key: &[U8], iv: &[U8; 12]) -> Result<(), Failure>:
+    let actual_key = keys.key_bytes()
+    let actual_iv = keys.iv_bytes()
+    testing.eq_bytes(actual_key.slice().part(0, keys.key_len()), key)?
+    return testing.eq_bytes(actual_iv.slice(), (*iv).slice())
+
+fn trace_handshake() -> Result<Handshake, CryptoError>:
+    let shared: [U8; 32] = [
+        139, 212, 5, 79, 181, 91, 157, 99, 253, 251, 172, 249, 240, 75, 159, 13,
+        53, 230, 214, 63, 83, 117, 99, 239, 212, 98, 114, 144, 15, 137, 73, 45
+    ]
+    let hello_hash: [U8; 32] = [
+        134, 12, 6, 237, 192, 120, 88, 238, 142, 120, 240, 231, 66, 140, 88, 237,
+        214, 180, 63, 44, 163, 230, 233, 95, 2, 237, 6, 60, 240, 225, 202, 216
+    ]
+    return tls_key_schedule.start(&shared, &hello_hash)
+
+test fn published_tls13_handshake_keys() -> Result<(), Failure>:
+    let s_hs_key: [U8; 16] = [
+        63, 206, 81, 96, 9, 194, 23, 39, 208, 242, 228, 232, 110, 228, 3, 188
+    ]
+    let s_hs_iv: [U8; 12] = [
+        93, 49, 62, 178, 103, 18, 118, 238, 19, 0, 11, 48
+    ]
+    let c_hs_key: [U8; 16] = [
+        219, 250, 166, 147, 209, 118, 44, 91, 102, 106, 245, 217, 80, 37, 141, 1
+    ]
+    let c_hs_iv: [U8; 12] = [
+        91, 211, 199, 27, 131, 110, 11, 118, 187, 115, 38, 95
+    ]
+    let Ok(handshake): Handshake = trace_handshake() else Err(failure):
+        return testing.ok(false)
+    let Ok(server_hs): RecordKeys = handshake.keys(Server) else Err(failure):
+        return testing.ok(false)
+    let Ok(client_hs): RecordKeys = handshake.keys(Client) else Err(failure):
+        return testing.ok(false)
+    check_keys(move server_hs, s_hs_key.slice(), &s_hs_iv)?
+    return check_keys(move client_hs, c_hs_key.slice(), &c_hs_iv)
+
+test fn published_tls13_finished_tags() -> Result<(), Failure>:
+    let pre_finished: [U8; 32] = [
+        237, 183, 114, 95, 167, 163, 71, 59, 3, 30, 200, 239, 101, 162, 72, 84,
+        147, 144, 1, 56, 162, 185, 18, 145, 64, 125, 121, 81, 160, 97, 16, 237
+    ]
+    let with_finished: [U8; 32] = [
+        150, 8, 16, 42, 15, 28, 204, 109, 182, 37, 11, 123, 126, 65, 123, 26,
+        0, 14, 170, 218, 61, 170, 228, 119, 122, 118, 134, 201, 255, 131, 223, 19
+    ]
+    let s_finished: [U8; 32] = [
+        155, 155, 20, 29, 144, 99, 55, 251, 210, 203, 220, 231, 29, 244, 222, 218,
+        74, 180, 44, 48, 149, 114, 203, 127, 255, 238, 84, 84, 183, 143, 7, 24
+    ]
+    let c_finished: [U8; 32] = [
+        168, 236, 67, 109, 103, 118, 52, 174, 82, 90, 193, 252, 235, 225, 26, 3,
+        158, 193, 118, 148, 250, 198, 233, 133, 39, 182, 66, 242, 237, 213, 206, 97
+    ]
+    let Ok(handshake): Handshake = trace_handshake() else Err(failure):
+        return testing.ok(false)
+    let Ok(server_tag): Digest = handshake.finished(Server, pre_finished.slice()) else Err(failure):
+        return testing.ok(false)
+    let Ok(client_tag): Digest = handshake.finished(Client, with_finished.slice()) else Err(failure):
+        return testing.ok(false)
+    var server_bytes: [U8; 48] = [0; 48]
+    server_tag.write_bytes(&mut server_bytes)
+    var client_bytes: [U8; 48] = [0; 48]
+    client_tag.write_bytes(&mut client_bytes)
+    testing.eq_bytes(server_bytes.slice().part(0, server_tag.len()), s_finished.slice())?
+    return testing.eq_bytes(client_bytes.slice().part(0, client_tag.len()), c_finished.slice())
+
+test fn published_tls13_application_keys() -> Result<(), Failure>:
+    let with_finished: [U8; 32] = [
+        150, 8, 16, 42, 15, 28, 204, 109, 182, 37, 11, 123, 126, 65, 123, 26,
+        0, 14, 170, 218, 61, 170, 228, 119, 122, 118, 134, 201, 255, 131, 223, 19
+    ]
+    let s_ap_key: [U8; 16] = [
+        159, 2, 40, 59, 108, 156, 7, 239, 194, 107, 185, 242, 172, 146, 227, 86
+    ]
+    let s_ap_iv: [U8; 12] = [
+        207, 120, 43, 136, 221, 131, 84, 154, 173, 241, 233, 132
+    ]
+    let c_ap_key: [U8; 16] = [
+        23, 66, 45, 218, 89, 110, 213, 217, 172, 216, 144, 227, 198, 63, 80, 81
+    ]
+    let c_ap_iv: [U8; 12] = [
+        91, 120, 146, 61, 238, 8, 87, 144, 51, 229, 35, 217
+    ]
+    let Ok(handshake): Handshake = trace_handshake() else Err(failure):
+        return testing.ok(false)
+    let Ok(application): Application = handshake.application(with_finished.slice()) else Err(failure):
+        return testing.ok(false)
+    let Ok(server_ap): RecordKeys = application.keys(Server) else Err(failure):
+        return testing.ok(false)
+    let Ok(client_ap): RecordKeys = application.keys(Client) else Err(failure):
+        return testing.ok(false)
+    check_keys(move server_ap, s_ap_key.slice(), &s_ap_iv)?
+    return check_keys(move client_ap, c_ap_key.slice(), &c_ap_iv)
+
+test fn rejects_zero_key_agreement() -> Result<(), Failure>:
+    let zero: [U8; 32] = [0; 32]
+    match tls_key_schedule.start(&zero, &zero):
+        Ok(handshake):
+            return testing.ok(false)
+        Err(failure):
+            return Ok(())
+
+fn fixture(allocator: &Allocator, hex: Text) -> Result<Vec<U8>, Failure>:
+    return fixture_parts(allocator, hex, "")
+
+fn fixture_parts(allocator: &Allocator, head: Text, tail: Text) -> Result<Vec<U8>, Failure>:
+    let made = testing.set_up(String.new(allocator))?
+    var encoded = move made
+    if let Err(failure) = encoded.push_text(allocator, head):
+        encoded.close()
+        return Err(Failure(7, 0, failure, 0))
+    let appended = encoded.push_text(allocator, tail)
+    match appended:
+        Ok:
+            let bytes = encoding.decode_hex(allocator, encoded.as_bytes())
+            encoded.close()
+            return testing.set_up(move bytes)
+        Err(failure):
+            encoded.close()
+            return Err(Failure(7, 0, failure, 0))
+
+fn client_fixture(allocator: &Allocator) -> Result<Vec<U8>, Failure>:
+    return fixture(allocator, "010000c00303cb34ecb1e78163ba1c38c6dacb196a6dffa21a8d9912ec18a2ef6283024dece7000006130113031302010000910000000b0009000006736572766572ff01000100000a00140012001d0017001800190100010101020103010400230000003300260024001d002099381de560e4bd43d23d8e435a7dbafeb3c06e51c13cae4d5413691e529aaf2c002b0003020304000d0020001e040305030603020308040805080604010501060102010402050206020202002d00020101001c00024001")
+
+test fn published_tls13_hellos(allocator: &Allocator) -> Result<(), Failure>:
+    let wire = client_fixture(allocator)?
+    let Ok(expected): Vec<U8> = fixture(allocator, "020000560303a6af06a4121860dc5e6e60249cd34c95930c8ac5cb1434dac155772ed3e2692800130100002e00330024001d0020c9828876112095fe66762bdbf7c672e156d6cc253b833df1dd69b1b04e751f0f002b00020304") else Err(failure):
+        wire.close()
+        return Err(failure)
+    let result = check_hellos(wire.as_slice(), expected.as_slice())
+    expected.close()
+    wire.close()
+    return move result
+
+fn check_hellos(wire: &[U8], server_hello: &[U8]) -> Result<(), Failure>:
+    let client_key: [U8; 32] = [
+        153, 56, 29, 229, 96, 228, 189, 67, 210, 61, 142, 67, 90, 125, 186, 254,
+        179, 192, 110, 81, 193, 60, 174, 77, 84, 19, 105, 30, 82, 154, 175, 44
+    ]
+    let server_key: [U8; 32] = [
+        201, 130, 136, 118, 17, 32, 149, 254, 102, 118, 43, 219, 247, 198, 114, 225,
+        86, 214, 204, 37, 59, 131, 61, 241, 221, 105, 177, 176, 78, 117, 31, 15
+    ]
+    let server_random: [U8; 32] = [
+        166, 175, 6, 164, 18, 24, 96, 220, 94, 110, 96, 36, 156, 211, 76, 149,
+        147, 12, 138, 197, 203, 20, 52, 218, 193, 85, 119, 46, 211, 226, 105, 40
+    ]
+    for size in 0..wire.len():
+        match tls_hello.parse_client_hello(Span.of(wire.part(0, size))):
+            Ok(truncated):
+                return testing.ok(false)
+            Err(failure):
+                continue
+    let Ok(offered): ClientHello = tls_hello.parse_client_hello(Span.of(wire)) else Err(failure):
+        return testing.ok(false)
+    testing.eq_u64(offered.session_id().len(), 0)?
+    testing.eq_bytes(offered.x25519_share().as_bytes(), client_key.slice())?
+    testing.eq_bytes(offered.transcript_bytes().as_bytes(), wire)?
+    var output: [U8; 122] = [0; 122]
+    let Ok(length): U64 = tls_hello.encode_server_hello(offered, &server_random, &server_key, output.slice_mut()) else Err(failure):
+        return testing.ok(false)
+    testing.eq_u64(length, 90)?
+    return testing.eq_bytes(output.slice().part(0, length), server_hello)
+
+fn check_rejected(bytes: &[U8], malformed: Bool) -> Result<(), Failure>:
+    match tls_hello.parse_client_hello(Span.of(bytes)):
+        Ok(offered):
+            return testing.ok(false)
+        Err(problem):
+            match problem:
+                Malformed:
+                    return testing.ok(malformed)
+                Unsupported:
+                    return testing.ok(!malformed)
+                _:
+                    return testing.ok(false)
+
+fn edit_byte(wire: &mut Vec<U8>, index: U64, value: U8):
+    let bytes = wire.as_mut_slice()
+    bytes[index] = value
+
+test fn rejects_tls12_and_duplicate_extensions(allocator: &Allocator) -> Result<(), Failure>:
+    let made = client_fixture(allocator)?
+    var wire = move made
+    // The low byte of supported_versions, then the type of the last extension.
+    edit_byte(&mut wire, 147, 3)
+    match check_rejected(wire.as_slice(), false):
+        Ok:
+            edit_byte(&mut wire, 147, 4)
+            edit_byte(&mut wire, 191, 0)
+            let result = check_rejected(wire.as_slice(), true)
+            wire.close()
+            return move result
+        Err(failure):
+            wire.close()
+            return Err(failure)
+
+fn server_record_keys() -> Result<RecordKeys, CryptoError>:
+    let handshake = trace_handshake()?
+    return handshake.keys(Server)
+
+
+fn encrypted_server_flight(allocator: &Allocator) -> Result<Vec<U8>, Failure>:
+    return fixture_parts(allocator, "17030302a2d1ff334a56f5bff6594a07cc87b580233f500f45e489e7f33af35edf7869fcf40aa40aa2b8ea73f848a7ca07612ef9f945cb960b4068905123ea78b111b429ba9191cd05d2a389280f526134aadc7fc78c4b729df828b5ecf7b13bd9aefb0e57f271585b8ea9bb355c7c79020716cfb9b1183ef3ab20e37d57a6b9d7477609aee6e122a4cf51427325250c7d0e509289444c9b3a648f1d71035d2ed65b0e3cdd0cbae8bf2d0b227812cbb360987255cc744110c453baa4fcd610928d809810e4b7ed1a8fd991f06aa6248204797e36a6a73b70a2559c09ead686945ba246ab66e5edd8044b4c6de3fcf2a89441ac66272fd8fb330ef8190579b3684596c960bd596eea520a56a8d650f563aad27409960dca63d3e688611ea5e22f4415cf9538d51a200c27034272968a264ed6540c84838d89f72c24461aad6d26f59ecaba9acbbb317b66d902f4f292a36ac1b639c637ce343117b659622245317b49eeda0c6258f100d7d961ffb138647e92ea330faeea6dfa31c7a84dc3bd7e", "1b7a6c7178af36879018e3f252107f243d243dc7339d5684c8b0378bf30244da8c87c843f5e56eb4c5e8280a2b48052cf93b16499a66db7cca71e4599426f7d461e66f99882bd89fc50800becca62d6c74116dbd2972fda1fa80f85df881edbe5a37668936b335583b599186dc5c6918a396fa48a181d6b6fa4f9d62d513afbb992f2b992f67f8afe67f76913fa388cb5630c8ca01e0c65d11c66a1e2ac4c85977b7c7a6999bbf10dc35ae69f5515614636c0b9b68c19ed2e31c0b3b66763038ebba42f3b38edc0399f3a9f23faa63978c317fc9fa66a73f60f0504de93b5b845e275592c12335ee340bbc4fddd502784016e4b3be7ef04dda49f4b440a30cb5d2af939828fd4ae3794e44f94df5a631ede42c1719bfdabf0253fe5175be898e750edc53370d2b")
+
+fn server_flight_payload(allocator: &Allocator) -> Result<Vec<U8>, Failure>:
+    return fixture_parts(allocator, "080000240022000a00140012001d00170018001901000101010201030104001c00024001000000000b0001b9000001b50001b0308201ac30820115a003020102020102300d06092a864886f70d01010b0500300e310c300a06035504031303727361301e170d3136303733303031323335395a170d3236303733303031323335395a300e310c300a0603550403130372736130819f300d06092a864886f70d010101050003818d0030818902818100b4bb498f8279303d980836399b36c6988c0c68de55e1bdb826d3901a2461eafd2de49a91d015abbc9a95137ace6c1af19eaa6af98c7ced43120998e187a80ee0ccb0524b1b018c3e0b63264d449a6d38e22a5fda430846748030530ef0461c8ca9d9efbfae8ea6d1d03e2bd193eff0ab9a8002c47428a6d35a8d88d79f7f1e3f0203010001a31a301830090603551d1304023000300b0603551d0f0404030205a0300d06092a864886f70d01010b05000381810085aad2a0e5b9276b908c65f73a7267170618a54c5f8a7b337d2df7a594", "365417f2eae8f8a58c8f8172f9319cf36b7fd6c55b80f21a03015156726096fd335e5e67f2dbf102702e608ccae6bec1fc63a42a99be5c3eb7107c3c54e9b9eb2bd5203b1c3b84e0a8b2f759409ba3eac9d91d402dcc0cc8f8961229ac9187b42b4de100000f000084080400805a747c5d88fa9bd2e55ab085a61015b7211f824cd484145ab3ff52f1fda8477b0b7abc90db78e2d33a5c141a078653fa6bef780c5ea248eeaaa785c4f394cab6d30bbe8d4859ee511f602957b15411ac027671459e46445c9ea58c181e818e95b8c3fb0bf3278409d3be152a3da5043e063dda65cdf5aea20d53dfacd42f74f3140000209b9b141d906337fbd2cbdce71df4deda4ab42c309572cb7fffee5454b78f0718")
+
+// Independent AES-GCM fixture at sequence 1 with application data ending in
+// a zero byte, followed by the type and two bytes of record padding.
+fn padded_record_fixture(allocator: &Allocator) -> Result<Vec<U8>, Failure>:
+    return fixture(allocator, "17030300153c061e078a3830a788072fff463a92ea9868146a33")
+
+// A valid tag over TLSInnerPlaintext with no content type.
+fn missing_type_fixture(allocator: &Allocator) -> Result<Vec<U8>, Failure>:
+    return fixture(allocator, "1703030012d9ff91aee15072db10d7f3b179cdd4f3764e")
+
+fn check_open_flight(epoch: &mut ReadEpoch, wire: &[U8], payload: &[U8], plaintext: &mut [U8]) -> Result<(), Failure>:
+    let Ok(info): RecordInfo = epoch.open(wire, plaintext) else Err(reason):
+        return testing.ok(false)
+    match info.kind:
+        HandshakeMessage:
+            testing.eq_u64(info.length, payload.len())?
+            return testing.eq_bytes(plaintext.part(0, info.length), payload)
+        _:
+            return testing.ok(false)
+
+fn check_seal_flight(allocator: &Allocator, keys: RecordKeys, payload: &[U8], scratch: &mut [U8], sealed: &mut [U8], wire: &[U8]) -> Result<(), Failure>:
+    let Ok(owner): WriteEpoch = tls_record.writer(allocator, keys) else Err(reason):
+        return testing.ok(false)
+    var epoch = move owner
+    let encrypted = epoch.seal(HandshakeMessage, payload, scratch, sealed)
+    epoch.close()
+    let Ok(count): U64 = encrypted else Err(reason):
+        return testing.ok(false)
+    return testing.eq_bytes(sealed.part(0, count), wire)
+
+fn check_padded_record(epoch: &mut ReadEpoch, wire: &[U8]) -> Result<(), Failure>:
+    var scratch: [U8; 5] = [255; 5]
+    let Ok(info): RecordInfo = epoch.open(wire, scratch.slice_mut()) else Err(reason):
+        return testing.ok(false)
+    match info.kind:
+        ApplicationData:
+            testing.eq_u64(info.length, 2)?
+            let expected: [U8; 2] = [65, 0]
+            return testing.eq_bytes(scratch.slice().part(0, info.length), expected.slice())
+        _:
+            return testing.ok(false)
+
+fn check_record_trace(allocator: &Allocator, wire: &[U8], payload: &[U8], padded: &[U8]) -> Result<(), Failure>:
+    let Ok(keys): RecordKeys = server_record_keys() else Err(error):
+        return testing.ok(false)
+    var scratch: Vec<U8> = testing.set_up(Vec.filled(allocator, 660, 0))?
+    let Ok(sealed): Vec<U8> = Vec.filled(allocator, 679, 0) else Err(reason):
+        scratch.close()
+        return testing.ok(false)
+    var output = move sealed
+    let Ok(epoch): ReadEpoch = tls_record.reader(allocator, keys) else Err(reason):
+        scratch.close()
+        output.close()
+        return testing.ok(false)
+    var reader = move epoch
+    let opened = check_open_flight(&mut reader, wire, payload, scratch.as_mut_slice())
+    let reencryption = check_seal_flight(allocator, keys, payload, scratch.as_mut_slice(), output.as_mut_slice(), wire)
+    scratch.close()
+    output.close()
+    let padding = check_padded_record(&mut reader, padded)
+    reader.close()
+    opened?
+    reencryption?
+    return padding
+
+test fn published_handshake_record_and_next_sequence(allocator: &Allocator) -> Result<(), Failure>:
+    let wire = encrypted_server_flight(allocator)?
+    let Ok(payload): Vec<U8> = server_flight_payload(allocator) else Err(failure):
+        wire.close()
+        return Err(failure)
+    let Ok(padded): Vec<U8> = padded_record_fixture(allocator) else Err(failure):
+        wire.close()
+        payload.close()
+        return Err(failure)
+    let checked = check_record_trace(allocator, wire.as_slice(), payload.as_slice(), padded.as_slice())
+    wire.close()
+    payload.close()
+    padded.close()
+    return checked
+
+test fn bad_tag_closes_epoch_without_releasing_plaintext(allocator: &Allocator) -> Result<(), Failure>:
+    let Ok(keys): RecordKeys = server_record_keys() else Err(error):
+        return testing.ok(false)
+    let input: [U8; 2] = [65, 0]
+    var scratch: [U8; 3] = [0; 3]
+    var encrypted: [U8; 24] = [0; 24]
+    let Ok(epoch): WriteEpoch = tls_record.writer(allocator, keys) else Err(reason):
+        return testing.ok(false)
+    var writer = move epoch
+    let sealed = writer.seal(ApplicationData, input.slice(), scratch.slice_mut(), encrypted.slice_mut())
+    writer.close()
+    let Ok(length): U64 = sealed else Err(reason):
+        return testing.ok(false)
+    testing.eq_u64(length, 24)?
+    let tag_byte = encrypted[23]
+    encrypted[23] = tag_byte ^ 1
+    let Ok(read_owner): ReadEpoch = tls_record.reader(allocator, keys) else Err(reason):
+        return testing.ok(false)
+    var reader = move read_owner
+    let result = check_tampered(&mut reader, encrypted.slice(), tag_byte)
+    reader.close()
+    return result
+
+fn check_tampered(reader: &mut ReadEpoch, tampered: &[U8], tag_byte: U8) -> Result<(), Failure>:
+    var encrypted: [U8; 24] = [0; 24]
+    encrypted.slice_mut().copy_from(tampered)
+    var output: [U8; 3] = [77; 3]
+    match reader.open(encrypted.slice(), output.slice_mut()):
+        Err(FailedAuthentication):
+            let untouched: [U8; 3] = [77; 3]
+            testing.eq_bytes(output.slice(), untouched.slice())?
+        _:
+            return testing.ok(false)
+    encrypted[23] = tag_byte
+    match reader.open(encrypted.slice(), output.slice_mut()):
+        Err(ClosedEpoch):
+            return Ok(())
+        _:
+            return testing.ok(false)
+
+fn reject_inner(allocator: &Allocator, wire: &[U8]) -> Result<(), Failure>:
+    let Ok(keys): RecordKeys = server_record_keys() else Err(error):
+        return testing.ok(false)
+    let Ok(epoch): ReadEpoch = tls_record.reader(allocator, keys) else Err(reason):
+        return testing.ok(false)
+    var reader = move epoch
+    var plaintext: [U8; 2] = [255; 2]
+    let opened = reader.open(wire, plaintext.slice_mut())
+    reader.close()
+    match opened:
+        Err(BadContent):
+            return Ok(())
+        _:
+            return testing.ok(false)
+
+test fn authenticated_padding_without_content_type_is_rejected(allocator: &Allocator) -> Result<(), Failure>:
+    let wire = missing_type_fixture(allocator)?
+    let checked = reject_inner(allocator, wire.as_slice())
+    wire.close()
+    return checked
+
+test fn rejects_invalid_ciphertext_lengths_and_legacy_version() -> Result<(), Failure>:
+    let max: [U8; 5] = [23, 3, 3, 64, 17]
+    let Ok(count): U64 = tls_record.ciphertext_length(max.slice()) else Err(reason):
+        return testing.ok(false)
+    testing.eq_u64(count, 16401)?
+    var invalid: [U8; 5] = [23, 3, 3, 64, 18]
+    match tls_record.ciphertext_length(invalid.slice()):
+        Err(BadRecord):
+            invalid[3] = 0
+            invalid[4] = 16
+        _:
+            return testing.ok(false)
+    match tls_record.ciphertext_length(invalid.slice()):
+        Err(BadRecord):
+            invalid[4] = 17
+            invalid[2] = 1
+        _:
+            return testing.ok(false)
+    match tls_record.ciphertext_length(invalid.slice()):
+        Err(BadRecord):
+            return Ok(())
+        _:
+            return testing.ok(false)
+
+
+// Public handshake bytes from the OpenSSL P-384 interoperability check.
+fn p384_client_fixture(allocator: &Allocator) -> Result<Vec<U8>, Failure>:
+    return fixture(allocator, "0100014703030ed3ed395319f0bf728d54d454b135a32f5f4af3a7b1d9ca9d42b5a9175b1bfd20854c88d68044b1c8bf54bdf1f13889112505ae50e85657dab049bf1edf3cdf9e00021302010000fc000a000400020018002300000016000000170000000d0044004209050906090404030503060308070808081a081b081c0809080a080b080408050806040105010601091109120913091409150916091709180919091a091b091c0708002b0003020304002d000201010033006700650018006104b159368d8b5f04671a3b4a8234e8753867329651d7830e4c81acf28cd1b7eafc931d020f7a68c879d8ed6fadbbf5d3de70b31873f57cb98a9a3669a122f7c974c35622cf9fcfa7f5dd80f289a9aa8832dee145f8b1cfc595d1dfc321c6b1a7b400000015001300001072656769737472792e6578616d706c650010000b000908687474702f312e31")
+
+fn p384_server_fixture(allocator: &Allocator) -> Result<Vec<U8>, Failure>:
+    return fixture(allocator, "020000b70303575092a92703aec09ebd817e0d0a80679795f1b198f824007c0a3f024f0563a720854c88d68044b1c8bf54bdf1f13889112505ae50e85657dab049bf1edf3cdf9e130200006f0033006500180061043e8ed6aafdda82de9514c402d61ab663907968c323b55dd74687ce177962e48d0b6bc671cd1131d4aebd049c95971582a630bd0b323102a9a749281b4877f436f710885a1aeeafbb7099e028d029b3afc09184d6277f1d9f54309e7c34b36bc4002b00020304")
+
+fn p384_hello_encoding(client: ClientHello, expected: &[U8], random: &[U8; 32], point: &[U8; 97]) -> Result<(), Failure>:
+    var encoded: [U8; 187] = [0; 187]
+    let Ok(length): U64 = tls_hello.encode_p384_server_hello(client, random, point, encoded.slice_mut()) else Err(error):
+        return testing.ok(false)
+    return testing.eq_bytes(encoded.slice().part(0, length), expected)
+
+fn check_p384_hello(wire: &[U8], expected: &[U8]) -> Result<(), Failure>:
+    let Ok(client): ClientHello = tls_hello.parse_p384_client_hello(Span.of(wire)) else Err(error):
+        return testing.ok(false)
+    testing.ok(client.server_name().equals_text("registry.example"))?
+    testing.ok(client.offered_http11() && client.offered_ecdsa_p384_sha384())?
+    testing.ok(client.x25519_share().is_empty())?
+    testing.eq_u64(client.p384_share().len(), 97)?
+    let random: [U8; 32] = [
+        87, 80, 146, 169, 39, 3, 174, 192, 158, 189, 129, 126, 13, 10, 128, 103,
+        151, 149, 241, 177, 152, 248, 36, 0, 124, 10, 63, 2, 79, 5, 99, 167
+    ]
+    let point: [U8; 97] = [
+        4, 62, 142, 214, 170, 253, 218, 130, 222, 149, 20, 196, 2, 214, 26, 182,
+        99, 144, 121, 104, 195, 35, 181, 93, 215, 70, 135, 206, 23, 121, 98, 228,
+        141, 11, 107, 198, 113, 205, 17, 49, 212, 174, 189, 4, 156, 149, 151, 21,
+        130, 166, 48, 189, 11, 50, 49, 2, 169, 167, 73, 40, 27, 72, 119, 244,
+        54, 247, 16, 136, 90, 26, 238, 175, 187, 112, 153, 224, 40, 208, 41, 179,
+        175, 192, 145, 132, 214, 39, 127, 29, 159, 84, 48, 158, 124, 52, 179, 107,
+        196
+    ]
+    return p384_hello_encoding(client, expected, &random, &point)
+
+test fn p384_selects_aes256_and_echoes_legacy_session_id(allocator: &Allocator) -> Result<(), Failure>:
+    let wire = p384_client_fixture(allocator)?
+    let Ok(expected): Vec<U8> = p384_server_fixture(allocator) else Err(error):
+        wire.close()
+        return Err(error)
+    let checked = check_p384_hello(wire.as_slice(), expected.as_slice())
+    expected.close()
+    wire.close()
+    return checked
+
+test fn strong_profile_refuses_the_trace_profile(allocator: &Allocator) -> Result<(), Failure>:
+    let wire = client_fixture(allocator)?
+    let parsed = tls_hello.parse_p384_client_hello(Span.of(wire.as_slice()))
+    match parsed:
+        Err(Unsupported):
+            wire.close()
+            return Ok(())
+        _:
+            wire.close()
+            return testing.ok(false)
+
+
+// Independent SHA-384 HMAC and AES-256-GCM vectors generated with OpenSSL.
+fn trace384() -> Result<Handshake, CryptoError>:
+    let shared: [U8; 48] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48]
+    let hello: [U8; 48] = [28, 27, 47, 109, 185, 166, 56, 21, 116, 215, 201, 231, 239, 253, 97, 151, 108, 192, 175, 199, 34, 55, 110, 139, 201, 167, 121, 174, 233, 99, 164, 26, 49, 163, 161, 157, 213, 204, 84, 0, 161, 183, 89, 174, 178, 105, 83, 114]
+    return tls_key_schedule.start384(&shared, &hello)
+
+fn check_hash(digest: &Digest, expected: &[U8]) -> Result<(), Failure>:
+    var actual: [U8; 48] = [0; 48]
+    digest.write_bytes(&mut actual)
+    return testing.eq_bytes(actual.slice().part(0, digest.len()), expected)
+
+fn check_strong_handshake_keys(handshake: &Handshake) -> Result<(), Failure>:
+    let c_hs_key: [U8; 32] = [125, 190, 171, 133, 195, 118, 79, 102, 186, 142, 247, 19, 155, 199, 87, 115, 125, 11, 233, 167, 100, 136, 120, 176, 201, 152, 126, 21, 112, 221, 255, 252]
+    let c_hs_iv: [U8; 12] = [81, 70, 105, 113, 14, 176, 186, 148, 251, 1, 7, 92]
+    let s_hs_key: [U8; 32] = [46, 120, 49, 168, 245, 238, 103, 27, 112, 79, 251, 216, 183, 203, 165, 26, 225, 39, 123, 226, 56, 17, 175, 188, 203, 137, 127, 200, 95, 132, 151, 197]
+    let s_hs_iv: [U8; 12] = [242, 162, 42, 80, 32, 162, 54, 197, 210, 235, 14, 165]
+    let Ok(client): RecordKeys = handshake.keys(Client) else Err(error):
+        return testing.ok(false)
+    let Ok(server): RecordKeys = handshake.keys(Server) else Err(error):
+        return testing.ok(false)
+    check_keys(move client, c_hs_key.slice(), &c_hs_iv)?
+    return check_keys(move server, s_hs_key.slice(), &s_hs_iv)
+
+fn check_strong_finished(handshake: &Handshake, before: &[U8], after: &[U8]) -> Result<(), Failure>:
+    let s_finished: [U8; 48] = [182, 230, 74, 113, 157, 59, 160, 87, 160, 60, 119, 69, 205, 178, 180, 224, 193, 122, 58, 209, 164, 181, 50, 94, 61, 34, 123, 75, 89, 175, 143, 211, 223, 215, 71, 96, 199, 224, 144, 83, 115, 214, 147, 69, 188, 125, 201, 42]
+    let c_finished: [U8; 48] = [184, 165, 45, 65, 190, 216, 248, 210, 229, 176, 40, 69, 103, 234, 141, 77, 104, 16, 36, 212, 13, 92, 131, 60, 225, 235, 236, 229, 42, 43, 165, 85, 42, 93, 177, 171, 196, 215, 229, 52, 219, 214, 246, 118, 26, 47, 43, 12]
+    let Ok(server): Digest = handshake.finished(Server, before) else Err(error):
+        return testing.ok(false)
+    let Ok(client): Digest = handshake.finished(Client, after) else Err(error):
+        return testing.ok(false)
+    check_hash(&server, s_finished.slice())?
+    return check_hash(&client, c_finished.slice())
+
+fn check_strong_application(app: &Application) -> Result<(), Failure>:
+    let c_ap_key: [U8; 32] = [225, 147, 175, 77, 216, 224, 198, 101, 106, 229, 50, 214, 100, 183, 230, 44, 253, 27, 238, 254, 186, 92, 71, 52, 206, 105, 33, 238, 253, 24, 214, 147]
+    let c_ap_iv: [U8; 12] = [187, 53, 170, 95, 69, 65, 75, 206, 29, 105, 243, 141]
+    let s_ap_key: [U8; 32] = [251, 135, 79, 225, 153, 121, 125, 48, 146, 30, 92, 178, 25, 245, 8, 1, 37, 176, 242, 11, 114, 55, 82, 249, 96, 197, 130, 141, 137, 73, 5, 102]
+    let s_ap_iv: [U8; 12] = [181, 32, 131, 16, 37, 171, 103, 249, 229, 152, 31, 116]
+    let Ok(client): RecordKeys = app.keys(Client) else Err(error):
+        return testing.ok(false)
+    let Ok(server): RecordKeys = app.keys(Server) else Err(error):
+        return testing.ok(false)
+    check_keys(move client, c_ap_key.slice(), &c_ap_iv)?
+    return check_keys(move server, s_ap_key.slice(), &s_ap_iv)
+
+test fn sha384_schedule_matches_independent_handshake_and_application_vectors() -> Result<(), Failure>:
+    let before_finished: [U8; 48] = [75, 93, 84, 94, 53, 35, 85, 8, 200, 88, 102, 187, 39, 36, 74, 95, 196, 136, 207, 162, 14, 61, 148, 146, 14, 201, 120, 88, 36, 248, 183, 14, 246, 221, 44, 181, 205, 65, 163, 225, 85, 43, 137, 243, 231, 52, 153, 176]
+    let after_finished: [U8; 48] = [87, 50, 63, 7, 31, 163, 89, 45, 34, 116, 188, 103, 128, 82, 188, 231, 206, 47, 54, 156, 22, 4, 51, 52, 206, 246, 19, 138, 144, 62, 213, 87, 77, 222, 252, 96, 34, 11, 0, 130, 178, 65, 173, 15, 215, 146, 62, 182]
+    let Ok(handshake): Handshake = trace384() else Err(error):
+        return testing.ok(false)
+    check_strong_handshake_keys(&handshake)?
+    check_strong_finished(&handshake, before_finished.slice(), after_finished.slice())?
+    let Ok(app): Application = handshake.application(after_finished.slice()) else Err(error):
+        return testing.ok(false)
+    return check_strong_application(&app)
+
+test fn sha384_traffic_update_matches_independent_vectors() -> Result<(), Failure>:
+    let transcript: [U8; 48] = [87, 50, 63, 7, 31, 163, 89, 45, 34, 116, 188, 103, 128, 82, 188, 231, 206, 47, 54, 156, 22, 4, 51, 52, 206, 246, 19, 138, 144, 62, 213, 87, 77, 222, 252, 96, 34, 11, 0, 130, 178, 65, 173, 15, 215, 146, 62, 182]
+    let c_key: [U8; 32] = [35, 139, 249, 210, 220, 112, 149, 51, 93, 134, 90, 91, 15, 67, 106, 114, 64, 159, 36, 74, 119, 253, 51, 124, 183, 79, 38, 192, 230, 179, 135, 153]
+    let c_iv: [U8; 12] = [192, 181, 184, 130, 147, 8, 115, 97, 6, 174, 14, 99]
+    let s_initial_key: [U8; 32] = [251, 135, 79, 225, 153, 121, 125, 48, 146, 30, 92, 178, 25, 245, 8, 1, 37, 176, 242, 11, 114, 55, 82, 249, 96, 197, 130, 141, 137, 73, 5, 102]
+    let s_initial_iv: [U8; 12] = [181, 32, 131, 16, 37, 171, 103, 249, 229, 152, 31, 116]
+    let s_key: [U8; 32] = [108, 93, 192, 178, 207, 13, 69, 150, 191, 107, 70, 227, 23, 158, 21, 205, 184, 228, 161, 61, 9, 92, 155, 130, 212, 67, 46, 32, 63, 253, 195, 53]
+    let s_iv: [U8; 12] = [246, 77, 90, 246, 202, 58, 200, 68, 153, 149, 54, 157]
+    let Ok(handshake): Handshake = trace384() else Err(error):
+        return testing.ok(false)
+    let Ok(initial): Application = handshake.application(transcript.slice()) else Err(error):
+        return testing.ok(false)
+    var app = move initial
+    let Ok(client): RecordKeys = app.advance(Client) else Err(error):
+        return testing.ok(false)
+    check_keys(move client, c_key.slice(), &c_iv)?
+    let Ok(server_initial): RecordKeys = app.keys(Server) else Err(error):
+        return testing.ok(false)
+    check_keys(move server_initial, s_initial_key.slice(), &s_initial_iv)?
+    let Ok(server): RecordKeys = app.advance(Server) else Err(error):
+        return testing.ok(false)
+    check_keys(move server, s_key.slice(), &s_iv)?
+    let Ok(client_current): RecordKeys = app.keys(Client) else Err(error):
+        return testing.ok(false)
+    return check_keys(move client_current, c_key.slice(), &c_iv)
+
+fn check_strong_record(allocator: &Allocator, keys: RecordKeys, message: &[U8], expected: &[U8]) -> Result<(), Failure>:
+    let Ok(made): WriteEpoch = tls_record.writer(allocator, keys) else Err(error):
+        return testing.ok(false)
+    var writer = move made
+    var work: [U8; 7] = [0; 7]
+    var output: [U8; 28] = [0; 28]
+    let sealed = writer.seal(HandshakeMessage, message, work.slice_mut(), output.slice_mut())
+    writer.close()
+    let Ok(length): U64 = sealed else Err(error):
+        return testing.ok(false)
+    testing.eq_bytes(output.slice().part(0, length), expected)?
+    let Ok(opening): ReadEpoch = tls_record.reader(allocator, keys) else Err(error):
+        return testing.ok(false)
+    var reader = move opening
+    let opened = check_open_flight(&mut reader, output.slice().part(0, length), message, work.slice_mut())
+    reader.close()
+    opened?
+    let last = output[27]
+    output[27] = last ^ 1
+    return reject_strong_tag(allocator, keys, output.slice())
+
+fn reject_strong_tag(allocator: &Allocator, keys: RecordKeys, ciphertext: &[U8]) -> Result<(), Failure>:
+    let Ok(opening): ReadEpoch = tls_record.reader(allocator, keys) else Err(error):
+        return testing.ok(false)
+    var reader = move opening
+    var plaintext: [U8; 7] = [77; 7]
+    let opened = reader.open(ciphertext, plaintext.slice_mut())
+    reader.close()
+    match opened:
+        Err(FailedAuthentication):
+            let untouched: [U8; 7] = [77; 7]
+            return testing.eq_bytes(plaintext.slice(), untouched.slice())
+        _:
+            return testing.ok(false)
+
+test fn aes256_record_matches_independent_vector_and_rejects_changed_tag(allocator: &Allocator) -> Result<(), Failure>:
+    let expected: [U8; 28] = [23, 3, 3, 0, 23, 36, 96, 64, 163, 232, 95, 18, 96, 56, 219, 233, 243, 93, 47, 67, 17, 220, 173, 171, 42, 184, 110, 117]
+    let message: [U8; 6] = [8, 0, 0, 2, 0, 0]
+    let Ok(handshake): Handshake = trace384() else Err(error):
+        return testing.ok(false)
+    let Ok(keys): RecordKeys = handshake.keys(Server) else Err(error):
+        return testing.ok(false)
+    return check_strong_record(allocator, keys, message.slice(), expected.slice())
+
+fn check_certificate_chain(chain: &mut CertificateChain) -> Result<(), Failure>:
+    var wire: [U8; 22] = [0; 22]
+    match chain.encode(wire.slice_mut()):
+        Err(EmptyChain):
+            ()
+        _:
+            return testing.ok(false)
+    let leaf: [U8; 3] = [11, 12, 13]
+    let intermediate: [U8; 1] = [21]
+    if let Err(error) = chain.add(leaf.slice()):
+        return testing.ok(false)
+    if let Err(error) = chain.add(intermediate.slice()):
+        return testing.ok(false)
+    match chain.add(leaf.slice()):
+        Err(CertificateNoRoom):
+            ()
+        _:
+            return testing.ok(false)
+    let Ok(length): U64 = chain.encode(wire.slice_mut()) else Err(error):
+        return testing.ok(false)
+    testing.eq_u64(length, 22)?
+    let expected: [U8; 22] = [11, 0, 0, 18, 0, 0, 0, 14, 0, 0, 3, 11, 12, 13, 0, 0, 0, 0, 1, 21, 0, 0]
+    return testing.eq_bytes(wire.slice(), expected.slice())
+
+test fn tls_certificate_chain_is_leaf_first_and_refuses_a_partial_append(allocator: &Allocator) -> Result<(), Failure>:
+    let Ok(made): CertificateChain = tls_certificates.chain(allocator, 14) else Err(error):
+        return testing.ok(false)
+    var chain = move made
+    let checked = check_certificate_chain(&mut chain)
+    chain.close()
+    return checked
+
+test fn finished_tag_comparison_requires_all_48_bytes() -> Result<(), Failure>:
+    let expected: [U8; 48] = [19; 48]
+    var received: [U8; 48] = [19; 48]
+    testing.ok(crypto.verify_tag48(expected.slice(), received.slice()))?
+    received[47] = 20
+    testing.ok(!crypto.verify_tag48(expected.slice(), received.slice()))?
+    return testing.ok(!crypto.verify_tag48(expected.slice(), received.slice().part(0, 47)))
+
+
+// Two public ClientHello messages captured from a stock OpenSSL retry, with
+// all-zero padding added to the second message.
+fn retry_first(allocator: &Allocator) -> Result<Vec<U8>, Failure>:
+    return fixture(allocator, "0100010803031ea6c87e5f24ee6644b943e2ad12f2a61b2a053dcc1d1296d38dee64b3b2c273206b6b3cfcab95f2dc7a3cf6598ee41264cbc09469d2911b547591823c8342566200021302010000bd000a00060004001d0018002300000016000000170000000d0044004209050906090404030503060308070808081a081b081c0809080a080b080408050806040105010601091109120913091409150916091709180919091a091b091c0708002b0003020304002d00020101003300260024001d002096d3d788aeb64da0a2332bf5dbb9620b3acf3a63d63ae9c9b355aa455d83926b00000015001300001072656769737472792e6578616d706c650010000b000908687474702f312e31")
+
+fn retry_second(allocator: &Allocator) -> Result<Vec<U8>, Failure>:
+    return fixture(allocator, "0100015003031ea6c87e5f24ee6644b943e2ad12f2a61b2a053dcc1d1296d38dee64b3b2c273206b6b3cfcab95f2dc7a3cf6598ee41264cbc09469d2911b547591823c834256620002130201000105000a00060004001d0018002300000016000000170000000d0044004209050906090404030503060308070808081a081b081c0809080a080b080408050806040105010601091109120913091409150916091709180919091a091b091c0708002b0003020304002d000201010033006700650018006104a95b5cdd80688a3b5746d900e17c03631fc2b8e87306a0461698e15f5166f9f5c9c9f6fca1b913593d97ce2560b89e8bc7828ef0d0f96c543b7b06d04609bf114cdae7ffaf026dacf1cc948ffebee0f85264f4a2cb4f55ce8e32ec595e82376300000015001300001072656769737472792e6578616d706c650010000b000908687474702f312e3100150003000000")
+
+fn check_retry(first_bytes: &[U8], second_bytes: &[U8]) -> Result<(), Failure>:
+    let Ok(first): ClientHello = tls_hello.parse_p384_offer(Span.of(first_bytes)) else Err(reason):
+        return testing.ok(false)
+    testing.ok(first.p384_share().is_empty())?
+    let Ok(second): ClientHello = tls_hello.parse_retry_client_hello(first, Span.of(second_bytes)) else Err(reason):
+        return testing.ok(false)
+    testing.eq_u64(second.p384_share().len(), 97)?
+    let expected: [U8; 88] = [2, 0, 0, 84, 3, 3, 207, 33, 173, 116, 229, 154, 97, 17, 190, 29, 140, 2, 30, 101, 184, 145, 194, 162, 17, 22, 122, 187, 140, 94, 7, 158, 9, 226, 200, 168, 51, 156, 32, 107, 107, 60, 252, 171, 149, 242, 220, 122, 60, 246, 89, 142, 228, 18, 100, 203, 192, 148, 105, 210, 145, 27, 84, 117, 145, 130, 60, 131, 66, 86, 98, 19, 2, 0, 0, 12, 0, 43, 0, 2, 3, 4, 0, 51, 0, 2, 0, 24]
+    var response: [U8; 88] = [0; 88]
+    let Ok(length): U64 = tls_hello.encode_retry(first, response.slice_mut()) else Err(reason):
+        return testing.ok(false)
+    testing.eq_u64(length, 88)?
+    return testing.eq_bytes(response.slice(), expected.slice())
+
+test fn retry_accepts_the_selected_share_and_zero_padding(allocator: &Allocator) -> Result<(), Failure>:
+    let first = retry_first(allocator)?
+    let Ok(second): Vec<U8> = retry_second(allocator) else Err(reason):
+        first.close()
+        return Err(reason)
+    let checked = check_retry(first.as_slice(), second.as_slice())
+    first.close()
+    second.close()
+    return checked
+
+fn refusal(first: ClientHello, changed: &[U8]) -> Result<(), Failure>:
+    match tls_hello.parse_retry_client_hello(first, Span.of(changed)):
+        Ok(client):
+            return testing.ok(false)
+        Err(reason):
+            return Ok(())
+
+fn check_retry_changes(first_bytes: &[U8], changed: &mut [U8]) -> Result<(), Failure>:
+    let Ok(first): ClientHello = tls_hello.parse_p384_offer(Span.of(first_bytes)) else Err(reason):
+        return testing.ok(false)
+    let random = changed[6]
+    changed[6] = random ^ 1
+    refusal(first, changed)?
+    changed[6] = random
+    let name = changed[302]
+    changed[302] = name ^ 1
+    refusal(first, changed)?
+    changed[302] = name
+    let end = changed.len() - 1
+    changed[end] = 1
+    return refusal(first, changed)
+
+test fn retry_rejects_changes_to_random_name_or_padding_bytes(allocator: &Allocator) -> Result<(), Failure>:
+    let first = retry_first(allocator)?
+    let Ok(second): Vec<U8> = retry_second(allocator) else Err(reason):
+        first.close()
+        return Err(reason)
+    var changed = move second
+    let checked = check_retry_changes(first.as_slice(), changed.as_mut_slice())
+    first.close()
+    changed.close()
+    return checked
+
+test fn client_hello_and_server_selection_agree_on_the_wire(allocator: &Allocator) -> Result<(), Failure>:
+    let Ok(output): Vec<U8> = Vec.filled(allocator, 512, 0) else Err(reason):
+        return testing.ok(false)
+    var client = move output
+    let checked = client_selection(client.as_mut_slice())
+    client.close()
+    return checked
+
+fn client_selection(client: &mut [U8]) -> Result<(), Failure>:
+    let host: [U8; 9] = ['l', 'o', 'c', 'a', 'l', 'h', 'o', 's', 't']
+    let random: [U8; 32] = [1; 32]
+    let session_id: [U8; 32] = [2; 32]
+    var point: [U8; 97] = [3; 97]
+    point[0] = 4
+    let Ok(length): U64 = tls_client_hello.encode(Span.of(host.slice()), &random, &session_id, &point, client) else Err(reason):
+        return testing.ok(false)
+    let Ok(offer): ClientHello = tls_hello.parse_p384_client_hello(Span.of(client.part(0, length))) else Err(reason):
+        return testing.ok(false)
+    testing.ok(offer.server_name().equals_text("localhost") && offer.offered_http11())?
+    testing.eq_bytes(offer.session_id().as_bytes(), session_id.slice())?
+    testing.eq_bytes(offer.p384_share().as_bytes(), point.slice())?
+    var server: [U8; 187] = [0; 187]
+    let Ok(sent): U64 = tls_hello.encode_p384_server_hello(offer, &random, &point, server.slice_mut()) else Err(reason):
+        return testing.ok(false)
+    testing.ok(sent == 187)?
+    match tls_client_hello.server_share(Span.of(server.slice()), &session_id):
+        Ok(received):
+            testing.eq_bytes(received.as_bytes(), point.slice())?
+        Err(reason):
+            return testing.ok(false)
+    server[5] = 2
+    testing.ok(selection_refused(server.slice(), &session_id))?
+    server[5] = 3
+    server[186] = 3
+    testing.ok(selection_refused(server.slice(), &session_id))?
+    server[186] = 4
+    server[39] = 9
+    testing.ok(selection_refused(server.slice(), &session_id))?
+    server[39] = 2
+    server[80] = 25
+    return testing.ok(selection_refused(server.slice(), &session_id))
+
+fn selection_refused(message: &[U8], session: &[U8; 32]) -> Bool:
+    match tls_client_hello.server_share(Span.of(message), session):
+        Ok(share):
+            return false
+        Err(reason):
+            return true
+
+test fn pem_parser_requires_complete_canonical_certificate_blocks(allocator: &Allocator) -> Result<(), Failure>:
+    let pem: Text = "Bundle label\r\n-----BEGIN CERTIFICATE-----\r\nYQ==\r\n-----END CERTIFICATE-----\r\n\n-----BEGIN CERTIFICATE-----\nYmM=\n-----END CERTIFICATE-----"
+    let bytes: [U8; 9] = [0, 0, 1, 97, 0, 0, 2, 98, 99]
+    check_pem(allocator, pem, true, bytes.slice())?
+    check_pem(allocator, "-----BEGIN CERTIFICATE-----\nYQ==\n", false, bytes.slice())?
+    check_pem(allocator, "-----BEGIN CERTIFICATE-----\nY!\n-----END CERTIFICATE-----", false, bytes.slice())?
+    return check_pem(allocator, "-----BEGIN PRIVATE KEY-----\nYQ==\n-----END PRIVATE KEY-----", false, bytes.slice())
+
+fn check_pem(allocator: &Allocator, pem: Text, valid: Bool, expected: &[U8]) -> Result<(), Failure>:
+    let empty = testing.set_up(String.with_capacity(allocator, pem.byte_len()))?
+    var wire = move empty
+    if let Err(code) = wire.push_text(allocator, pem):
+        wire.close()
+        return testing.ok(false)
+    let parsed = trust_bundle(wire.span(), allocator)
+    wire.close()
+    match move parsed:
+        Ok(bundle):
+            let identical = Span.of(bundle.as_slice()).same(Span.of(expected))
+            bundle.close()
+            return testing.ok(valid && identical)
+        Err(reason):
+            return testing.ok(!valid)

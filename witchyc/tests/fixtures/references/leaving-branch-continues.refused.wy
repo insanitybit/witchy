@@ -1,0 +1,33 @@
+// Refused (review): a branch that can continue is not leaving; the span is read again after the String was rewritten.
+import console
+import span
+import string
+
+fn bad(allocator: &Allocator, n: U64) -> Result<U64, U64>:
+    let Ok(made): String = String.new(allocator) else Err(code):
+        return Err(code)
+    var text = move made
+    let _ = text.push_text(allocator, "12")
+    let words = text.span()
+    var total: U64 = 0
+    var i: U64 = 0
+    while i < 2:
+        i = i + 1
+        match words.parse_u64():
+            Ok(x):
+                total = total + x
+            Err(e):
+                total = total + 1000
+        if i == 1:
+            text.clear()
+            let again = text.push_text(allocator, "99")
+            if n == 1:
+                continue
+            text.close()
+            return Err(n)
+    text.close()
+    return Ok(total)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    if let Ok(n) = bad(&allocator, 1):
+        console.print_int(n)

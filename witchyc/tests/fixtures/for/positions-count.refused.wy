@@ -1,0 +1,3 @@
+fn main(console: Console<Write>):
+    for index, item in 0..3:
+        console.print_int(item)

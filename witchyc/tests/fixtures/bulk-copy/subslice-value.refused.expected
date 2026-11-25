@@ -1,0 +1,1 @@
+ensures memory.cell(target, 0, byte)

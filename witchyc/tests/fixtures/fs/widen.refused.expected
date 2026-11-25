@@ -1,0 +1,1 @@
+a Dir<Read> is not a Dir<Write>: a capability gives up rights, never gains them

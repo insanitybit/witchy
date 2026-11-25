@@ -1,0 +1,4 @@
+AES-128-GCM matched
+AES-256-GCM matched
+invalid tag and nonce length refused without output
+tag equality and length matched

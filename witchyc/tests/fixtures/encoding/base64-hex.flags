@@ -1,0 +1,1 @@
+run: --input={dir}/base64-hex.txt --input-bytes=1000000 --output-bytes=1000000 --fuel=300000000

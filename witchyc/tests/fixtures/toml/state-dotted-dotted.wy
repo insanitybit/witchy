@@ -1,0 +1,36 @@
+// A table made by a dotted key takes more dotted keys in the same table.
+import console
+import string
+import option
+import "@toml"
+
+fn word(what: TomlProblem) -> Text:
+    match what:
+        Duplicate:
+            return "duplicate"
+        Redefined:
+            return "redefined"
+        NotTable:
+            return "not a table"
+        Closed:
+            return "closed"
+        _:
+            return "other"
+
+// Prints `read` and how many values the text has, or `refused` and the class of the refusal.
+fn report(console: &Console<Write>, allocator: &Allocator, source: Text):
+    let Ok(text): String = String.from_str(allocator, source.as_str()) else Err(code):
+        return
+    match Toml.parse(allocator, move text):
+        Ok(tree):
+            console.write("read ")
+            console.print_int(tree.count())
+            tree.close()
+        Err(error):
+            console.write("refused ")
+            console.line(word(error.what))
+
+fn main(console: Console<Write>, allocator: Allocator):
+    report(&console, &allocator, "a.b.c = 1\na.b.d = 2\na.e = 3\n")
+    report(&console, &allocator, "a.b = 1\na.b.c = 2\n")
+    report(&console, &allocator, "a.b = 1\na.b = 2\n")

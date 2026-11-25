@@ -1,0 +1,17 @@
+// A recipe on a generic type: `impl Eq for Self` binds T by Eq, so Wrap<U64> and Wrap<Wrap<U32>>
+// have it, each instantiated from the one recipe.
+import "parts/keys.wy"
+import console
+import hash
+
+type Wrap<T> derive(keys.Key):
+    inner: T
+    tag: U64
+
+fn main(console: Console<Write>):
+    let a: Wrap<U64> = Wrap(inner: 5, tag: 1)
+    if a == Wrap(inner: 5, tag: 1) && !(a == Wrap(inner: 6, tag: 1)):
+        console.print_int(1)
+    let b: Wrap<Wrap<U32>> = Wrap(inner: Wrap(inner: U32.truncate(3), tag: 2), tag: 4)
+    if b == Wrap(inner: Wrap(inner: U32.truncate(3), tag: 2), tag: 4) && b.hash() == Wrap(inner: Wrap(inner: U32.truncate(3), tag: 2), tag: 4).hash():
+        console.print_int(2)

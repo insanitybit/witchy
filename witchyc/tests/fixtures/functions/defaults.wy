@@ -1,0 +1,23 @@
+// A parameter may have a literal default, given to a call that leaves it out; a label skips to a
+// later one.
+import console
+
+fn three() -> U64:
+    3
+
+fn scale(n: U64, by: U64 = 10, plus: U64 = 0) -> U64:
+    n * by + plus
+
+fn flag(on: Bool = true) -> U64:
+    if on:
+        1
+    else:
+        0
+
+fn main(console: Console<Write>):
+    console.print_int(scale(4))
+    console.print_int(scale(4, 2))
+    console.print_int(scale(4, 2, 1))
+    console.print_int(scale(three(), plus: three()))
+    console.print_int(flag())
+    console.print_int(flag(false))

@@ -1,0 +1,7 @@
+// In the program's own files, a method written beside its type is found by the value's type,
+// though the calling file does not import the type's file (2026-11-22, docs/wasm-modules.md).
+import console
+import "reach/spend.wy"
+
+fn main(console: Console<Write>):
+    console.print_int(spend())

@@ -1,0 +1,14 @@
+// The bits of -1 are 2^64 - 1.
+import console
+import int
+
+fn f(x: I64) -> U64:
+    requires x == -1
+    ensures result == 18446744073709551615
+    proof:
+        auto
+    I64.bits(x)
+
+fn main(console: Console<Write>):
+    let a: I64 = -1
+    console.print_int(f(a))

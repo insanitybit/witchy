@@ -1,0 +1,21 @@
+// A generator's local may leave its type out when its value shows it: a number, a decimal, a
+// comparison, a parameter or earlier local, or arithmetic of one (`small` is the parameter's U8).
+import console
+
+gen fn steps(start: U8, limit: U64) -> U64:
+    var n = 0
+    var small = start
+    var big = limit * 2
+    var done = false
+    while !done:
+        yield n + U8.to_u64(small)
+        n += 1
+        small = small + 1
+        done = n >= big
+    var half = 0.5
+    if half > 0.25:
+        yield 99
+
+fn main(console: Console<Write>):
+    for v in steps(3, 2):
+        console.print_int(v)

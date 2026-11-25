@@ -1,0 +1,78 @@
+type Storage:
+    data: Buffer<U64>
+    length: USize
+
+type Envelope:
+    storage: Storage
+    marker: U64
+
+fn filled(count: USize) -> Storage:
+    var storage = memory.alloc(count)
+    var i: USize = 0
+    while i < count:
+        memory.init(&mut storage, i, i + 40)
+        i += 1
+    return Storage(move storage, count)
+
+fn replaced(input: Storage) -> Storage:
+    var output = move input
+    var replacement = memory.alloc(output.length)
+    var i: USize = 0
+    while i < output.length:
+        memory.init(&mut replacement, i, memory.read(&output.data, i))
+        i += 1
+    output.data = move replacement
+    return move output
+
+fn take_data(storage: Storage) -> Buffer<U64>:
+    return move storage.data
+
+fn choose(storage: Storage, keep: Bool) -> Storage:
+    if keep:
+        return move storage
+    else:
+        return filled(0)
+
+fn pick(reader: &Buffer<U64>, index: USize) -> U64:
+    if index < 4:
+        return memory.read(reader, index)
+    return 0
+
+fn classify(value: U64) -> U64:
+    if value == 41:
+        return 1
+    else:
+        return 0
+
+fn sample(flag: Bool) -> U64:
+    var local = memory.alloc(1)
+    memory.init(&mut local, 0, 9)
+    while flag:
+        return memory.read(&local, 0)
+    return 0
+
+fn consume(storage: Storage):
+    return
+
+fn main(console: Console<Write>):
+    var holder = Envelope(filled(4), 1)
+    consume(filled(0))
+    consume(choose(filled(0), false))
+    consume(choose(filled(0), true))
+    let orphan = take_data(filled(0))
+    memory.release(orphan)
+    var i: USize = 0
+    while i < 2:
+        holder.storage = replaced(move holder.storage)
+        let reader = &holder.storage.data
+        let value = pick(move reader, 1)
+        if classify(value) == 0:
+            console.print_int(999)
+            return
+        i += 1
+    let fallback = sample(false)
+    let early = sample(true)
+    if fallback + early == 9:
+        console.print_int(pick(&holder.storage.data, 1))
+        return
+    console.print_int(998)

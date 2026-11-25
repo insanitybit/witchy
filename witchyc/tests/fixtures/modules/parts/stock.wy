@@ -1,0 +1,10 @@
+// Another module offering an `Item` of its own, with other fields.
+pub type Item:
+    shelf: U64
+    full: Bool
+
+pub fn shelved(shelf: U64) -> Item:
+    return Item(shelf, true)
+
+pub fn where_is(item: &Item) -> U64:
+    return (*item).shelf

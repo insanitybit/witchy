@@ -1,0 +1,20 @@
+// A Vec's elements as `&[T]` (Vec.as_slice, proved from the Vec's invariant): the same
+// `total` takes a Vec's slice or an array's.
+import console
+import vec
+
+fn total(items: &[U64]) -> U64:
+    var sum: U64 = 0
+    for item in items:
+        sum += *item
+    return sum
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.filled(&allocator, 4, 5) else Err(code):
+        return
+    var numbers = move made
+    let _ = numbers.set(1, 10)
+    console.print_int(total(numbers.as_slice()))
+    let fixed: [U64; 2] = [100, 200]
+    console.print_int(total(fixed.slice()))
+    numbers.close()

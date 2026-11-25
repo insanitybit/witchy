@@ -1,0 +1,67 @@
+// A Copy value that has no name can be borrowed where it is written: it gets a cell of its own.
+import "../../../library/wasm-format.wy"
+import "../../../library/wasm-string.wy"
+
+type Point:
+    x: U64
+    y: U64
+
+type Shape:
+    Circle(U64)
+    Square(U64)
+
+impl Point:
+    fn sum(self: &Point) -> U64:
+        return (*self).x + (*self).y
+
+fn double(value: &U64) -> U64:
+    return *value * 2
+
+fn area(shape: &Shape) -> U64:
+    match shape:
+        Circle(radius):
+            return 3 * *radius * *radius
+        Square(side):
+            return *side * *side
+
+fn both(left: &Point, right: &Point) -> U64:
+    return left.sum() * 100 + right.sum()
+
+fn pick(value: &U64) -> &U64:
+    return value
+
+fn main(console: Console<Write>, allocator: Allocator):
+    console.print_int(double(&21))
+    console.print_int(double(&(20 + 1)))
+    console.print_int(Point(3, 4).sum())
+    console.print_int(area(&Square(5)))
+    console.print_int(area(&Circle(2)))
+    // Two temporaries in one call have a cell each.
+    console.print_int(both(&Point(1, 2), &Point(30, 40)))
+    // A temporary inside a loop is written again each time round.
+    var index: U64 = 0
+    var total: U64 = 0
+    while index < 4:
+        total += double(&index) + double(&(index + 100))
+        index += 1
+    console.print_int(total)
+    // A reference that comes back out of the call still points at the cell.
+    let kept = pick(&77)
+    console.print_int(double(&5))
+    console.print_int(*kept)
+    // A literal is shown without a name.
+    let made: Result<String, U64> = String.new(&allocator)
+    match move made:
+        Ok(empty):
+            match "ok".show(move empty, &allocator):
+                Ok(text):
+                    match 42.show(move text, &allocator):
+                        Ok(more):
+                            console.print_int(more.byte_len())
+                            more.close()
+                        Err(back):
+                            back.close()
+                Err(back):
+                    back.close()
+        Err(code):
+            console.print_int(900)

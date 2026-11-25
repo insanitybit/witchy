@@ -1,0 +1,15 @@
+impl Mldsa87Signer:
+    // Writes the raw 2592-byte FIPS 204 public key.
+    pub fn public_key(self: &Mldsa87Signer, key: &mut [U8]) -> Result<(), U64>:
+        let code = self.raw_public_key(key)
+        if code == 0:
+            return Ok(())
+        return Err(code)
+
+    // Writes a raw 4627-byte signature. The message must start with
+    // the granted domain followed by NUL. The output is untouched on error.
+    pub fn sign(self: &Mldsa87Signer, message: &[U8], signature: &mut [U8]) -> Result<(), U64>:
+        let code = self.raw_sign(message, signature)
+        if code == 0:
+            return Ok(())
+        return Err(code)

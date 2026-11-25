@@ -1,0 +1,12 @@
+// Refused: in the variant's own file, a type parameter of the same name would be ambiguous.
+import console
+
+type Op:
+    E
+    Other(U64)
+
+fn first<E>(x: E) -> E:
+    return x
+
+fn main(console: Console<Write>):
+    console.print_int(first(3))

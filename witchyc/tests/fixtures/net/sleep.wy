@@ -1,0 +1,97 @@
+// Timers: a task sleeps (`clock.sleep`) on a timer entry, which `listener.poll` treats as ready
+// once the clock passes it, waiting no longer than that. The task has a clock of its own
+// (`clock.share()`); `first` races a sleeper against a longer one, which is cancelled.
+import console
+import net
+import tasks
+import vec
+
+fn nap(clock: Clock) suspends:
+    match clock.sleep(30):
+        Ok:
+            report(1)
+        Err(error):
+            report(2)
+
+fn long(clock: Clock) suspends:
+    match clock.sleep(60000):
+        Ok:
+            report(10)
+        Err(error):
+            report(20)
+
+type Pair:
+    first: Clock
+    second: Clock
+    allocator: Allocator
+
+// The shorter nap wins; the long one is cancelled (and reports 20).
+fn race(pair: Pair) suspends:
+    let Pair(one, two, allocator) = move pair
+    let Ok(made): Vec<Task> = Vec.new(&allocator, 2) else Err(code):
+        return
+    var tasks = move made
+    match Task.spawn(&allocator, 1024, long, move one):
+        Ok(task):
+            match tasks.push_spare_mut(move task):
+                Ok:
+                    report(0)
+                Err(back):
+                    back.close()
+        Err(given):
+            report(0)
+    match Task.spawn(&allocator, 1024, nap, move two):
+        Ok(task):
+            match tasks.push_spare_mut(move task):
+                Ok:
+                    report(0)
+                Err(back):
+                    back.close()
+        Err(given):
+            report(0)
+    match first(tasks.as_mut_slice()):
+        Ok(winner):
+            report(100 + winner)
+        Err(why):
+            report(999)
+    while tasks.len() > 0:
+        match tasks.take_last_mut():
+            Ok(task):
+                task.close()
+            Err(code):
+                unreachable
+    tasks.release_empty()
+
+fn main(console: Console<Write>, listener: Listener, allocator: Allocator, clock: Clock):
+    let started = clock.now_ms()
+    let Ok(made): Waiting = Waiting.new(&allocator, &listener) else Err(code):
+        return
+    var waiting = move made
+    var reported: U64 = 0
+    var finished: U64 = 0
+    let Ok(task): Task = Task.spawn(&allocator, 8192, race, Pair(clock.share(), clock.share(), allocator.share())) else Err(back):
+        waiting.close()
+        return
+    match waiting.start(&allocator, move task):
+        Ok(stepped):
+            reported += stepped.reported
+            finished += stepped.finished
+        Err(back):
+            var lost = move back
+            let cancelled = lost.cancel()
+            lost.close()
+    var rounds: U64 = 0
+    while finished == 0 && rounds < 100:
+        let stepped = waiting.step_ready(&allocator, &listener)
+        reported += stepped.reported
+        finished += stepped.finished
+        rounds += 1
+    // The nap (task 1) won, the long one reported 20 as it was cancelled, the nap 1.
+    console.print_int(reported)
+    console.print_int(finished)
+    let took = clock.now_ms() - started
+    if took >= 30 && took < 2000:
+        console.line("slept about 30 ms, not a minute")
+    else:
+        console.print_int(took)
+    waiting.close()

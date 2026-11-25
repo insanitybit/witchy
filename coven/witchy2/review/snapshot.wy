@@ -1,0 +1,62 @@
+// Select review or approval evidence without write authority.
+import "snapshot_record.wy"
+import "challenge_bindings.wy"
+import "../tuf/base64url.wy"
+import "../tuf/release_trust.wy"
+import console
+import json_tree
+import "@sqlite"
+import string
+import vec
+
+pub fn read_snapshot(request: &Json, purpose: SnapshotPurpose, db: &Sqlite, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let token = string_field(request, "token")?
+    let decoded = unpadded_base64url(token.as_bytes(), allocator, 48)?
+    let valid = decoded.len() == 48
+    decoded.close()
+    if !valid:
+        return Err(1)
+    let credential = string_field(request, "credential")?
+    let empty = String.with_capacity(allocator, 256)?
+    var bindings = move empty
+    let bound = snapshot_bindings(&mut bindings, token, credential, allocator)
+    let checked = fetch_snapshot(db, &bindings, token, purpose, output, bound, allocator)
+    bindings.close()
+    return checked
+
+fn snapshot_bindings(out: &mut String, token: &String, credential: &String, allocator: &Allocator) -> Result<(), U64>:
+    text_binding(out, "token", token, allocator)?
+    return text_binding(out, "credential", credential, allocator)
+
+fn fetch_snapshot(db: &Sqlite, bindings: &String, token: &String, purpose: SnapshotPurpose, output: &Console<Write>, bound: Result<(), U64>, allocator: &Allocator) -> Result<(), U64>:
+    bound?
+    let empty = String.with_capacity(allocator, 2048)?
+    var plan = move empty
+    let prepared = snapshot_plan(&mut plan, purpose, allocator)
+    let checked = query_snapshot(db, &plan, bindings, token, purpose, output, prepared, allocator)
+    plan.close()
+    return checked
+
+fn snapshot_plan(plan: &mut String, purpose: SnapshotPurpose, allocator: &Allocator) -> Result<(), U64>:
+    plan.push_text(allocator, "expect\tno release policy installed\tSELECT EXISTS(SELECT document FROM policy WHERE singleton=1 AND document IS NOT NULL)\n")?
+    plan.push_text(allocator, "expect\trelease challenge is unknown, expired, consumed or from an old policy\tSELECT EXISTS(SELECT envelope FROM challenges WHERE challenge=:token AND expires>:now)\n")?
+    plan.push_text(allocator, "result\trelease challenge does not match the candidate or policy\tSELECT CAST(json_object('policy',CAST(p.document AS TEXT),'envelope',CAST(h.envelope AS TEXT),'pin',h.policy,'expires',h.expires,'name',c.name,'version',c.version,'previous',k.count,'provenance',")?
+    match purpose:
+        InspectionSnapshot:
+            plan.push_text(allocator, "CAST((SELECT document FROM ci_receipts WHERE digest=c.digest ORDER BY rowid LIMIT 1) AS TEXT)")?
+        _:
+            plan.push_text(allocator, "NULL")?
+    plan.push_text(allocator, ") || X'00' || c.payload AS BLOB) ")?
+    plan.push_text(allocator, "FROM policy p JOIN challenges h ON h.challenge=:token JOIN candidates c ON c.digest=json_extract(CAST(h.envelope AS TEXT),'$.intent.digest') LEFT JOIN counters k ON k.credential=:credential ")?
+    return plan.push_text(allocator, "WHERE p.singleton=1 AND typeof(p.document)='blob' AND length(p.document) BETWEEN 1 AND 262144 AND typeof(h.envelope)='blob' AND length(h.envelope) BETWEEN 1 AND 262144 AND typeof(c.payload)='blob' AND length(c.payload) BETWEEN 1 AND 1048576\n")
+
+fn query_snapshot(db: &Sqlite, plan: &String, bindings: &String, token: &String, purpose: SnapshotPurpose, output: &Console<Write>, prepared: Result<(), U64>, allocator: &Allocator) -> Result<(), U64>:
+    prepared?
+    // One full package plus the framed policy, challenge and counter.
+    let empty: Vec<U8> = Vec.filled(allocator, 1835264, 0)?
+    var reply = move empty
+    let bytes = bindings.as_bytes()
+    let size = db.transact(plan.as_bytes(), bytes, bytes.part(0, 0), reply.as_mut_slice())
+    let checked = emit_snapshot(size, reply.as_slice(), token, purpose, output, allocator)
+    reply.close()
+    return checked

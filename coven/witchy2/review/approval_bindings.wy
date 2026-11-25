@@ -1,0 +1,117 @@
+import "challenge_bindings.wy"
+import "../tuf/coordinate.wy"
+import "../tuf/release_trust.wy"
+import "../tuf/webauthn.wy"
+import json_tree
+import span
+import string
+import text
+import vec
+
+pub fn approval_bindings(request: &Json, allocator: &Allocator) -> Result<String, U64>:
+    let empty = String.with_capacity(allocator, 1024)?
+    var bindings = move empty
+    if let Err(code) = verify_request(request, &mut bindings, allocator):
+        bindings.close()
+        return Err(code)
+    return Ok(move bindings)
+
+fn verify_request(request: &Json, out: &mut String, allocator: &Allocator) -> Result<(), U64>:
+    if !count_fields(request, 6):
+        return Err(1)
+    let envelope = request.field("envelope")?
+    let policy = request.field("policy")?
+    let token = string_field(request, "token")?
+    bind_intent(envelope, policy, token, out, allocator)?
+    let intent = envelope.field("intent")?
+    let name = string_field(intent, "name")?
+    verify_enrolled_counter(request, name, out, allocator)?
+    let browser_field = request.field("browser")?
+    let browser = browser_field.boolean()?
+    let required = if browser:
+        1
+    else:
+        0
+    return integer_binding(out, "browser", required, allocator)
+
+pub fn verify_enrolled_counter(request: &Json, name: &String, out: &mut String, allocator: &Allocator) -> Result<(), U64>:
+    let envelope = request.field("envelope")?
+    let policy = request.field("policy")?
+    let assertion = request.field("assertion")?
+    let credential_id = string_field(assertion, "rawId")?
+    let credentials = policy.field("credentials")?
+    let enrolled = member_named(credentials, credential_id)?
+    if !has_scope(enrolled, name):
+        return Err(1)
+    let origin = string_field(policy, "origin")?
+    let previous = request.field("previous")?
+    return bind_counter(envelope, assertion, enrolled, origin, previous, credential_id, out, allocator)
+
+fn bind_intent(envelope: &Json, policy: &Json, token: &String, out: &mut String, allocator: &Allocator) -> Result<(), U64>:
+    let intent = envelope.field("intent")?
+    let operation = string_field(intent, "operation")?
+    let registry = string_field(policy, "registry")?
+    let target_registry = string_field(intent, "registry")?
+    if !count_fields(intent, 7) || !operation.equals_text("release") || !registry.eq(target_registry):
+        return Err(1)
+    let pin = string_field(intent, "policy")?
+    let Ok(matches): Bool = matches_policy(policy, pin, allocator) else Err(reason):
+        return Err(1)
+    if !matches || !matches_envelope(envelope, token, allocator):
+        return Err(1)
+    let name = string_field(intent, "name")?
+    let version = string_field(intent, "version")?
+    let digest = string_field(intent, "digest")?
+    let expires = declared_integer(intent, "expires")?
+    if !valid_coordinates(name, version, digest):
+        return Err(1)
+    text_binding(out, "token", token, allocator)?
+    text_binding(out, "policy_pin", pin, allocator)?
+    text_binding(out, "name", name, allocator)?
+    text_binding(out, "version", version, allocator)?
+    text_binding(out, "digest", digest, allocator)?
+    return integer_binding(out, "expires", expires, allocator)
+
+pub fn valid_coordinates(name: &String, version: &String, digest: &String) -> Bool:
+    return package_name(name.span()) && release_version(version.span()) && valid_digest(digest)
+
+pub fn valid_digest(digest: &String) -> Bool:
+    if digest.byte_len() != 103 || !digest.span().starts_with_text("sha384:"):
+        return false
+    for byte in digest.as_bytes().part(7, 103):
+        if !(*byte >= '0' && *byte <= '9') && !(*byte >= 'a' && *byte <= 'f'):
+            return false
+    return true
+
+pub fn has_scope(enrolled: &Json, name: &String) -> Bool:
+    let Ok(packages): &Json = enrolled.field("packages") else Err(code):
+        return false
+    match packages:
+        Array(scopes):
+            for value in scopes:
+                if let Ok(package) = value.text():
+                    if package.eq(name):
+                        return true
+        _:
+            ()
+    return false
+
+fn bind_counter(envelope: &Json, assertion: &Json, enrolled: &Json, origin: &String, previous: &Json, credential_id: &String, out: &mut String, allocator: &Allocator) -> Result<(), U64>:
+    var present: U64 = 0
+    var count: U64 = 0
+    match previous:
+        Null:
+            ()
+        Whole(value):
+            present = 1
+            count = *value
+        _:
+            return Err(1)
+    let Ok(updated): U64 = verify_count(envelope, assertion, enrolled, origin, count, allocator) else Err(reason):
+        return Err(1)
+    let public = string_field(enrolled, "public_key")?
+    text_binding(out, "credential", credential_id, allocator)?
+    text_binding(out, "public_key", public, allocator)?
+    integer_binding(out, "present", present, allocator)?
+    integer_binding(out, "previous", count, allocator)?
+    return integer_binding(out, "count", updated, allocator)

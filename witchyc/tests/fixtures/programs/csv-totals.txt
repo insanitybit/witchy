@@ -1,0 +1,7 @@
+alice, 30
+bob,12
+alice,5
+carol , 7
+bad line
+bob, x
+bob,8

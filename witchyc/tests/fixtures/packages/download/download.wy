@@ -1,0 +1,290 @@
+// A download package, written apart from the programs that use it: an HTTP GET over a socket
+// the caller connected, its body streamed into a file the caller opened, a buffer's worth at a
+// time. It is given the socket, the buffer and the file and nothing else, so it can reach no
+// other address and write no other file. On every way out it closes the socket and the buffer,
+// and the file is finished only when the whole body arrived: cancelled (a time limit) or cut
+// off, the file is abandoned and nothing is written.
+import net
+import fs
+import vec
+import tasks
+
+pub type Download:
+    socket: Socket
+    buffer: Vec<U8>
+    sink: File<Write>
+
+impl Download:
+    // Given up unstarted: what it holds is closed, and the file is not written.
+    pub fn discard(download: Download):
+        let Download(socket, buffer, sink) = move download
+        socket.close()
+        buffer.close()
+        sink.abandon()
+
+// A byte, lowered if it is an ASCII capital: header names are compared without case.
+fn lower(byte: U64) -> U64:
+    if byte >= 65 && byte <= 90:
+        return byte + 32
+    return byte
+
+// Where a header line's value starts, just after `name:`, when the line is that header (any
+// case); 0 otherwise. Only the first `kept` bytes of the line were kept.
+fn value_at(line: &[U8], kept: U64, name: Text) -> U64:
+    let count = name.byte_len()
+    if kept <= count:
+        return 0
+    for index in 0..count:
+        match name.byte_at(index):
+            Ok(byte):
+                if lower(U8.to_u64(line[index])) != U8.to_u64(byte):
+                    return 0
+            Err(code):
+                return 0
+    if line[count] != 58:
+        return 0
+    return count + 1
+
+// A decimal number from `at`, after spaces, up to the line's end. Err: none, or too long.
+fn decimal(line: &[U8], kept: U64, at: U64) -> Result<U64, U64>:
+    var index = at
+    while index < kept && line[index] == 32:
+        index += 1
+    var value: U64 = 0
+    var digits: U64 = 0
+    while index < kept && line[index] >= 48 && line[index] <= 57:
+        if digits == 15:
+            return Err(1)
+        value = value * 10 + (U8.to_u64(line[index]) - 48)
+        digits += 1
+        index += 1
+    if digits == 0:
+        return Err(1)
+    return Ok(value)
+
+// Whether the value from `at` is `chunked` (any case, spaces around it).
+fn is_chunked(line: &[U8], kept: U64, at: U64) -> Bool:
+    var index = at
+    while index < kept && line[index] == 32:
+        index += 1
+    var end = kept
+    while end > index && (line[end - 1] == 32 || line[end - 1] == 13):
+        end -= 1
+    if end - index != 7:
+        return false
+    let word: [U64; 7] = [99, 104, 117, 110, 107, 101, 100]
+    for offset in 0..7:
+        if lower(U8.to_u64(line[index + offset])) != word[offset]:
+            return false
+    return true
+
+// A chunk's size: the hex digits a chunk line starts with. Err: none, or too long.
+fn hex(line: &[U8], kept: U64) -> Result<U64, U64>:
+    var value: U64 = 0
+    var digits: U64 = 0
+    var index: U64 = 0
+    var going = true
+    while going && index < kept:
+        let byte = lower(U8.to_u64(line[index]))
+        var digit: U64 = 16
+        if byte >= 48 && byte <= 57:
+            digit = byte - 48
+        else if byte >= 97 && byte <= 102:
+            digit = byte - 87
+        if digit == 16:
+            going = false
+        else:
+            if digits == 15:
+                return Err(1)
+            value = value * 16 + digit
+            digits += 1
+            index += 1
+    if digits == 0:
+        return Err(1)
+    return Ok(value)
+
+// The status of a status line `HTTP/1.x DDD ...`, or 0 when it is not one.
+fn status_of(line: &[U8], kept: U64) -> U64:
+    if kept < 12 || line[0] != 72 || line[1] != 84 || line[2] != 84 || line[3] != 80 || line[4] != 47 || line[5] != 49 || line[6] != 46 || line[8] != 32:
+        return 0
+    var status: U64 = 0
+    for index in 9..12:
+        if line[index] < 48 || line[index] > 57:
+            return 0
+        status = status * 10 + (U8.to_u64(line[index]) - 48)
+    return status
+
+// Where reading the response is.
+type Phase:
+    StatusLine
+    Headers
+    Sized
+    UntilClose
+    ChunkSize
+    ChunkData
+    ChunkEnd
+    Trailer
+    Done
+
+// Sends the request and streams the body into the file, a buffer at a time, reading the response
+// a byte at a time only where it is not body: the status line, the header lines (the first 32
+// bytes of each are kept, enough for the two that matter), and chunk lines. The body ends at
+// `Content-Length`, at the end of a `chunked` body, or, with neither, when the server closes.
+// Reports 1000 + the body's length when the file was finished; 1 when cancelled; 2 when cut off
+// before the body's end or not HTTP; 3 when the file could not be written; 4000 + the status
+// when it was not a success (2xx). On every way but the first the file is abandoned.
+pub fn fetch(download: Download, host: Text, path: Text) suspends:
+    let Download(socket, made, sink) = move download
+    var buffer = move made
+    let request = socket.send("GET ")
+    let named = socket.send(path)
+    let version = socket.send(" HTTP/1.1\r\nHost: ")
+    let hosted = socket.send(host)
+    let ended = socket.send("\r\nConnection: close\r\n\r\n")
+    var line: [U8; 32] = [0; 32]
+    var kept: U64 = 0
+    var phase = Phase.StatusLine
+    var status: U64 = 0
+    var length: U64 = 0
+    var sized = false
+    var chunked = false
+    var remaining: U64 = 0
+    var written: U64 = 0
+    var outcome: U64 = 0
+    var going = true
+    while going:
+        match socket.read(buffer.as_mut_slice()):
+            Ok(count):
+                if count == 0:
+                    // The server closed: the end of a body read until then, too early for any other.
+                    match phase:
+                        UntilClose:
+                            phase = Phase.Done
+                        Done:
+                            phase = Phase.Done
+                        _:
+                            outcome = 2
+                    going = false
+                var index: U64 = 0
+                while going && index < count:
+                    match phase:
+                        Sized | UntilClose | ChunkData:
+                            // A run of body bytes, written at once.
+                            var run = count - index
+                            match phase:
+                                UntilClose:
+                                    run = count - index
+                                _:
+                                    if remaining < run:
+                                        run = remaining
+                            match sink.write_bytes(buffer.as_slice().part(index, index + run)):
+                                Ok:
+                                    written += run
+                                Err(error):
+                                    outcome = 3
+                                    going = false
+                            index += run
+                            match phase:
+                                UntilClose:
+                                    remaining = 0
+                                _:
+                                    remaining -= run
+                                    if remaining == 0:
+                                        match phase:
+                                            Sized:
+                                                phase = Phase.Done
+                                            _:
+                                                phase = Phase.ChunkEnd
+                        Done:
+                            index = count
+                        _:
+                            let byte = buffer.as_slice()[index]
+                            index += 1
+                            if byte != 10:
+                                if kept < 32:
+                                    line[kept] = byte
+                                    kept += 1
+                            else:
+                                // A whole line (its CR, if any, kept at its end).
+                                var end = kept
+                                if end > 0 && line[end - 1] == 13:
+                                    end -= 1
+                                match phase:
+                                    StatusLine:
+                                        status = status_of(line.slice(), end)
+                                        if status == 0:
+                                            outcome = 2
+                                            going = false
+                                        phase = Phase.Headers
+                                    Headers:
+                                        if end == 0:
+                                            if status < 200 || status > 299:
+                                                outcome = 4000 + status
+                                                going = false
+                                            else if chunked:
+                                                phase = Phase.ChunkSize
+                                            else if sized:
+                                                remaining = length
+                                                phase = Phase.Sized
+                                                if length == 0:
+                                                    phase = Phase.Done
+                                            else:
+                                                phase = Phase.UntilClose
+                                        else:
+                                            let at = value_at(line.slice(), end, "content-length")
+                                            if at > 0:
+                                                match decimal(line.slice(), end, at):
+                                                    Ok(value):
+                                                        length = value
+                                                        sized = true
+                                                    Err(code):
+                                                        outcome = 2
+                                                        going = false
+                                            let coding = value_at(line.slice(), end, "transfer-encoding")
+                                            if coding > 0:
+                                                chunked = is_chunked(line.slice(), end, coding)
+                                    ChunkSize:
+                                        match hex(line.slice(), end):
+                                            Ok(size):
+                                                remaining = size
+                                                phase = Phase.ChunkData
+                                                if size == 0:
+                                                    phase = Phase.Trailer
+                                            Err(code):
+                                                outcome = 2
+                                                going = false
+                                    ChunkEnd:
+                                        if end != 0:
+                                            outcome = 2
+                                            going = false
+                                        phase = Phase.ChunkSize
+                                    Trailer:
+                                        if end == 0:
+                                            phase = Phase.Done
+                                    _:
+                                        outcome = 2
+                                        going = false
+                                kept = 0
+                match phase:
+                    Done:
+                        going = false
+                    _:
+                        going = going
+            Err(error):
+                match error:
+                    Cancelled:
+                        outcome = 1
+                    _:
+                        outcome = 2
+                going = false
+    socket.close()
+    buffer.close()
+    if outcome != 0:
+        sink.abandon()
+        report(outcome)
+        return
+    match sink.finish():
+        Ok:
+            report(1000 + written)
+        Err(error):
+            report(3)

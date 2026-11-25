@@ -1,0 +1,28 @@
+// Refused: the value is a local, not a `&mut` parameter whose invariant every return shows.
+import console
+import vec
+import option
+
+sealed type Bag:
+    items: Vec<U64>
+    held: Option<U64>
+    spare: U64
+    count: U64
+    limit: U64
+    invariant count <= limit
+    invariant when None = held:
+        count == 0
+
+impl Bag:
+    fn set(bag: Bag) -> Bag:
+        ensures result.count == 0
+        var mine = move bag
+        match mine.items.at_mut(0):
+            Ok(slot):
+                *slot = 1
+            Err(code):
+                ()
+        return move mine
+
+fn main(console: Console<Write>):
+    console.print_int(1)

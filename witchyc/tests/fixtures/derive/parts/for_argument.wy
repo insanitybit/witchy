@@ -1,0 +1,16 @@
+pub trait Make<X>:
+    fn made(self: &Self, base: X) -> X
+
+pub derive Inner:
+    impl Make<For> for Self:
+        fn made(self: &Self, base: For) -> For:
+            var t = base
+            t.b.n = (*self).a
+            return t
+
+pub derive Arr:
+    impl Make<For> for Self:
+        fn made(self: &Self, base: For) -> For:
+            var t = base
+            t[0].n = (*self).a
+            return t

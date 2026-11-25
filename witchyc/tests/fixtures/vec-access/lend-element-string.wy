@@ -1,0 +1,10 @@
+// `&v[i]` of a Vec lends the element (it was refused: `v.at(i)` was the only way).
+import console
+import string
+import vec
+
+fn show(names: &Vec<String>, console: &Console<Write>):
+    console.write_string(&names[0])
+
+fn main(console: Console<Write>):
+    console.print_int(1)

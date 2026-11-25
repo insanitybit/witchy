@@ -1,0 +1,18 @@
+// The slice lent again, uniquely, while a call's unique reference into it is being passed: refused.
+import console
+import vec
+
+fn put(a: &mut U64, n: U64):
+    *a = n
+
+fn take(t: &mut [U64]) -> U64:
+    t[0] = 9
+    return 1
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.filled(&allocator, 3, 5) else Err(code):
+        return
+    var v = move made
+    put(v.as_mut_slice().cell(0), take(v.as_mut_slice()))
+    console.print_int(v[0])
+    v.close()

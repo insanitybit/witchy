@@ -1,0 +1,27 @@
+// Refused by the proof: the storage is lent and kept, and the count is still followed, so
+// leaving it above the limit is seen at the return.
+import console
+import vec
+import option
+
+sealed type Bag:
+    items: Vec<U64>
+    held: Option<U64>
+    spare: U64
+    count: U64
+    limit: U64
+    invariant count <= limit
+    invariant when None = held:
+        count == 0
+
+impl Bag:
+    fn set(bag: &mut Bag) -> Bool:
+        ensures bag.count == 0
+        let r = &mut (*bag).spare
+        (*bag).count = 0
+        *r = 9
+        (*bag).count = (*bag).limit + 1
+        return true
+
+fn main(console: Console<Write>):
+    console.print_int(1)

@@ -1,0 +1,44 @@
+// Generators in more shapes: nested loops that both yield, both branches of an if, a
+// return from inside a loop that does not yield, one that yields nothing, and one from
+// another file.
+import console
+import "parts/seq.wy"
+gen fn grid(rows: U64, cols: U64) -> U64:
+    var r: U64 = 0
+    while r < rows:
+        var c: U64 = 0
+        while c < cols:
+            yield r * 10 + c
+            c += 1
+        r += 1
+gen fn parity(limit: U64) -> Bool:
+    var k: U64 = 0
+    while k < limit:
+        if k % 2 == 0:
+            yield true
+        else:
+            yield false
+        k += 1
+gen fn first_big(limit: U64) -> U64:
+    var x: U64 = 1
+    while x < limit:
+        x = x * 3
+        yield x
+        var t: U64 = 0
+        while t < 100:
+            t += 1
+            if t == 50:
+                return
+gen fn nothing() -> U64:
+    return
+fn main(console: Console<Write>):
+    for v in grid(2, 3):
+        console.print_int(v)
+    for p in parity(3):
+        console.print_int(if p: 1 else: 0)
+    for v in first_big(1000):
+        console.print_int(v)
+    for v in nothing():
+        console.print_int(v)
+    for v in seq.countdown(3):
+        console.print_int(v)

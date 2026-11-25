@@ -1,0 +1,5 @@
+// Refused: Corner is private to `area`.
+import "parts/area.wy"
+
+fn main():
+    let c = area.Corner(1, 2)

@@ -1,0 +1,34 @@
+// Refused, with the reason: a brand is never held as a value (review).
+import option
+import vec
+import console
+
+type Graph:
+    count: U64
+
+type Node<G>:
+    offset: U64
+
+type Nodes<G>:
+    count: U64
+
+impl Graph:
+    fn nodes<D: Fresh>(self: &Graph) -> Nodes<D>:
+        return Nodes(count: (*self).count)
+
+fn first<G: Brand>(nodes: &Nodes<G>) -> Node<G>:
+    return Node(offset: 0)
+
+fn apart<G: Brand>(a: Node<G>, b: Node<G>) -> U64:
+    return b.offset - a.offset
+
+fn z<D: Fresh>(a: &Allocator) -> Result<Vec<D>, U64>:
+    return Vec.new(a, 4)
+fn main(console: Console<Write>, allocator: Allocator):
+    brand z(&allocator) as x:
+        match move x:
+            Ok(v):
+                console.print_int(v.len())
+                v.close()
+            Err(c):
+                console.print_int(2)

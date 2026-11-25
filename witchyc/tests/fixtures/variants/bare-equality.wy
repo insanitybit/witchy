@@ -1,0 +1,11 @@
+// Bare variants on either side of == and != (`Dot == Dot` is `Shape.eq(&Dot, &Dot)`).
+import console
+import hash
+
+type Shape derive(Eq):
+    Dot
+    Line(U64)
+
+fn main(console: Console<Write>):
+    let x = Dot
+    console.print("${Dot == Dot} ${x == Dot} ${Dot == x} ${Dot != Line(1)} ${Dot != Dot} ${Dot == Line(1)}")

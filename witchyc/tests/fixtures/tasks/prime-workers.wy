@@ -1,0 +1,69 @@
+// Four workers count the primes in their own range, pausing every hundred numbers so that
+// none holds the others up; `main` steps them in turn, prints each one's count as it reports
+// it, and the total. Each worker's range is its own; nothing is shared.
+import console
+import tasks
+import vec
+
+type Range:
+    low: U64
+    high: U64
+
+fn prime(n: U64) -> Bool:
+    if n < 2:
+        return false
+    var d: U64 = 2
+    while d * d <= n:
+        if n % d == 0:
+            return false
+        d += 1
+    return true
+
+fn count(range: Range) suspends:
+    var found: U64 = 0
+    var n = range.low
+    var since: U64 = 0
+    while n < range.high:
+        if prime(n):
+            found += 1
+        n += 1
+        since += 1
+        if since == 100:
+            since = 0
+            pause(0)
+    report(found)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<Task> = Vec.new(&allocator, 4) else Err(code):
+        return
+    var workers = move made
+    for k in 0..4:
+        match Task.spawn(&allocator, 2048, count, Range(k * 1000, (k + 1) * 1000)):
+            Ok(task):
+                match workers.push_mut(&allocator, move task):
+                    Ok:
+                        ()
+                    Err(back):
+                        back.close()
+            Err(input):
+                console.line("no room for a worker")
+    var total: U64 = 0
+    var left = workers.len()
+    var turns: U64 = 0
+    while left > 0:
+        for k in 0..workers.len():
+            let worker = &mut workers[k]
+            if worker.finished():
+                continue
+            turns += 1
+            match worker.step():
+                Ok:
+                    left -= 1
+                Err(token):
+                    if token >= REPORTED:
+                        let found = token - REPORTED
+                        console.print("worker ${k}: ${found}")
+                        total += found
+    console.print("total ${total}")
+    console.print("turns ${turns}")
+    workers.close_all()

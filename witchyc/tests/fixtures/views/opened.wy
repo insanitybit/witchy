@@ -1,0 +1,14 @@
+// A record that holds a reference is opened into names: each name that holds a reference
+// keeps what the record borrowed, to its own last use.
+type Pair:
+    left: &U64
+    right: U64
+
+fn main(console: Console<Write>):
+    var n: U64 = 4
+    let pair = Pair(&n, 5)
+    let Pair(left, right) = pair
+    console.print_int(right + *left)
+    // `left` is not used again, so `n` is free.
+    n += 1
+    console.print_int(n)

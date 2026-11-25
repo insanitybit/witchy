@@ -1,0 +1,10 @@
+import simd
+import foldhash
+
+fn main(console: Console<Write>):
+    let pixels: [U8; 16] = [0, 40, 80, 120, 128, 160, 200, 255, 0, 40, 80, 120, 128, 160, 200, 255]
+    let block = U8x16.load(pixels.slice(), 0)
+    let bright = block.cmp_gt(U8x16.splat(127))
+    console.print_int(bright.bitmask())
+    let bytes: [U8; 6] = [87, 105, 116, 99, 104, 121]
+    console.print_int(foldhash(bytes.slice()))

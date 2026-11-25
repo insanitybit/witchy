@@ -1,0 +1,97 @@
+// A server with state (docs/language.md, "A server with state"): it counts the requests each
+// path has had, in a HashMap that lives across connections, and answers with the count.
+// One connection at a time; the standard `net` and `http` modules read and check the request.
+// As a fixture no client connects, so `accept` gives up after the host's wait and the program
+// says how many it served. With a client: `curl http://127.0.0.1:PORT/a` answers `/a: 1`.
+import console
+import discard
+import hashmap
+import http
+import net
+import span
+import string
+import text
+import vec
+
+// The state: owned by `main`, lent `&mut` to the one request being answered.
+type Counts:
+    hits: HashMap<String, U64>
+    served: U64
+
+// The reply for one request, written into `out`. The status answered.
+fn answer(counts: &mut Counts, allocator: &Allocator, socket: &Socket, request: Span, out: &mut String) -> U64:
+    // `request_on` checks the Host against the listener the run granted: Err is the status.
+    let Ok(head): RequestHead = http.request_on(socket, request) else Err(status):
+        if status == 421:
+            let _ = out.push_text(allocator, "HTTP/1.1 421 Misdirected Request\r\ncontent-length: 0\r\n\r\n").is_ok()
+        else:
+            let _ = out.push_text(allocator, "HTTP/1.1 400 Bad Request\r\ncontent-length: 0\r\n\r\n").is_ok()
+        return status
+    let target = head.target
+    var count: U64 = 1
+    match counts.hits.get_or_insert(allocator, &target, 0):
+        Ok(seen):
+            *seen += 1
+            count = *seen
+        Err(missed):
+            // No room for another path: the request is still answered.
+            missed.discard()
+    counts.served += 1
+    var body_length = target.len() + 3
+    var digits = count
+    while digits > 9:
+        digits = digits / 10
+        body_length += 1
+    let _ = out.push_text(allocator, "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: ").is_ok()
+    let _ = out.push_u64(allocator, body_length + 1).is_ok()
+    let _ = out.push_text(allocator, "\r\n\r\n").is_ok()
+    let _ = target.push_on(out, allocator).is_ok()
+    let _ = out.push_text(allocator, ": ").is_ok()
+    let _ = out.push_u64(allocator, count).is_ok()
+    let _ = out.push_text(allocator, "\n")
+    return 200
+
+// One connection: read until the head is whole (or the buffer is full), answer, hang up.
+// `buffer` is `main`'s too: made once, used for every request.
+fn serve(counts: &mut Counts, allocator: &Allocator, socket: &Socket, buffer: &mut Vec<U8>) -> Result<U64, NetError>:
+    let size = buffer.len()
+    var length: U64 = 0
+    var whole = false
+    while !whole && length < size:
+        let got = socket.read_some(buffer.as_mut_slice().part(length, size))?
+        if got == 0:
+            return Ok(0)
+        length += got
+        whole = http.has_head(Span.of(buffer.as_slice().part(0, length)))
+    var out = String.new(allocator)?
+    let status = answer(counts, allocator, socket, Span.of(buffer.as_slice().part(0, length)), &mut out)
+    let sent = socket.write_all(out.as_bytes())
+    out.close()
+    if sent.is_err():
+        return Ok(0)
+    return Ok(status)
+
+fn main(console: Console<Write>, listener: Listener, allocator: Allocator):
+    let Ok(made): HashMap<String, U64> = HashMap.new(&allocator, 16) else Err(code):
+        return
+    var counts = Counts(move made, 0)
+    let zero: U8 = 0
+    let Ok(room): Vec<U8> = Vec.filled(&allocator, 2048, zero) else Err(code):
+        let Counts(unused, none) = move counts
+        unused.discard()
+        return
+    var buffer = move room
+    var serving = true
+    while serving:
+        match listener.accept():
+            Ok(socket):
+                let _ = serve(&mut counts, &allocator, &socket, &mut buffer)
+                socket.close()
+            Err(failure):
+                // TimedOut: no one connected within the host's wait. A real server would go
+                // round again; the fixture stops.
+                serving = false
+    console.print("served ${counts.served} requests")
+    buffer.close()
+    let Counts(hits, served) = move counts
+    hits.discard()

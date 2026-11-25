@@ -1,0 +1,139 @@
+import "generation.wy"
+import "metadata.wy"
+import "publication_files.wy"
+import "release_trust.wy"
+import "target_path.wy"
+import fs
+import json_tree
+import span
+import string
+import text
+
+pub fn verify_repository_roles(repo: Repository, generation: &VerifiedTopLevel, trust: &ReleaseTrust, allocator: &Allocator) -> Result<U64, PublicationError>:
+    let Ok(count): U64 = generation.role_count() else Err(code):
+        return Err(CandidateGenerationInvalid)
+    var total: U64 = 0
+    for index in 0..count:
+        let Ok(name): &String = generation.role_name(index) else Err(code):
+            return Err(CandidateGenerationInvalid)
+        total += verify_role_file(repo, generation, name, trust, allocator)?
+    return Ok(total)
+
+fn verify_role_file(repo: Repository, generation: &VerifiedTopLevel, name: &String, trust: &ReleaseTrust, allocator: &Allocator) -> Result<U64, PublicationError>:
+    let Ok(reference): MetadataReference = generation.reference(name, allocator) else Err(error):
+        return Err(CandidateGenerationInvalid)
+    let path = delegated_path(allocator, reference.version(), name)?
+    let read = read_immutable(repo, &path, metadata_limit(Targets), allocator)
+    let Ok(wire): String = move read else Err(error):
+        path.close()
+        return Err(error)
+    let opened = generation.open_role(name, &wire, allocator)
+    let Ok(role): VerifiedRole = move opened else Err(error):
+        wire.close()
+        path.close()
+        return Err(CandidateGenerationInvalid)
+    let checked = verify_role_targets(repo, &role, trust, allocator)
+    role.close()
+    let staged = stage_role(repo.spool, &path, &wire, checked)
+    wire.close()
+    path.close()
+    return staged
+
+fn stage_role(spool: &Dir<Write>, path: &String, wire: &String, checked: Result<U64, PublicationError>) -> Result<U64, PublicationError>:
+    let count = checked?
+    stage_object(spool, path, wire)?
+    return Ok(count)
+
+fn verify_role_targets(repo: Repository, role: &VerifiedRole, trust: &ReleaseTrust, allocator: &Allocator) -> Result<U64, PublicationError>:
+    let Ok(offers): &Json = role.targets() else Err(code):
+        return Err(CandidateGenerationInvalid)
+    match offers:
+        Object(entries):
+            for target in entries:
+                verify_target_file(repo, role, &target.key, trust, allocator)?
+            return Ok(entries.len())
+        _:
+            return Err(CandidateGenerationInvalid)
+
+fn verify_target_file(repo: Repository, role: &VerifiedRole, coordinate: &String, trust: &ReleaseTrust, allocator: &Allocator) -> Result<(), PublicationError>:
+    let Ok(reference): ContentReference = role.reference(coordinate, allocator) else Err(error):
+        return Err(ReleaseRejected)
+    let Ok(parts): Halves = coordinate.span().split('/') else Err(rest):
+        return Err(ReleaseRejected)
+    let Ok(path): String = target_storage_path(parts, &reference, allocator) else Err(code):
+        return Err(InvalidObject)
+    let checked = read_target(repo, role, coordinate, &path, &reference, parts, trust, allocator)
+    path.close()
+    return checked
+
+fn read_target(repo: Repository, role: &VerifiedRole, coordinate: &String, path: &String, reference: &ContentReference, parts: Halves, trust: &ReleaseTrust, allocator: &Allocator) -> Result<(), PublicationError>:
+    compare_version(repo.published, parts, path.span(), allocator)?
+    let bytes = read_immutable(repo, path, reference.length(), allocator)?
+    let checked = role.verify_attestations(coordinate, &bytes, trust, allocator)
+    if let Err(error) = checked:
+        bytes.close()
+        return Err(ReleaseRejected)
+    let staged = stage_target(repo.spool, parts.head, path, &bytes)
+    bytes.close()
+    return staged
+
+fn stage_target(spool: &Dir<Write>, package: Span, path: &String, wire: &String) -> Result<(), PublicationError>:
+    let prefix: Text = "targets/"
+    for i in 0..prefix.byte_len():
+        let Ok(byte): U8 = prefix.byte_at(i) else Err(code):
+            return Err(StagingFailed)
+        spool.raw_path_byte(byte)
+    for byte in package.as_bytes():
+        spool.raw_path_byte(*byte)
+    let result = spool.raw_make_dir()
+    if result != 0 && result != 6:
+        return Err(StagingFailed)
+    return stage_object(spool, path, wire)
+
+fn append_span(output: &mut String, part: Span, allocator: &Allocator) -> Result<(), U64>:
+    for byte in part.as_bytes():
+        output.push_ascii(allocator, U8.to_u64(*byte), 1)?
+    return Ok(())
+
+fn compare_version(published: &Dir<Read>, parts: Halves, expected_path: Span, allocator: &Allocator) -> Result<(), PublicationError>:
+    let folder = literal_path(allocator, "targets/")?
+    var directory = move folder
+    if let Err(code) = append_span(&mut directory, parts.head, allocator):
+        directory.close()
+        return Err(InvalidObject)
+    let read = published.dir_path(&directory)
+    directory.close()
+    match move read:
+        Ok(held):
+            let result = held.list(allocator)
+            held.close()
+            let Ok(names): String = move result else Err(code):
+                return Err(InvalidObject)
+            let leaf_at = 9 + parts.head.len()
+            let checked = check_version_names(names.span(), parts.tail, expected_path.part(leaf_at, expected_path.len()))
+            names.close()
+            return checked
+        Err(NotFound):
+            return Ok(())
+        Err(_):
+            return Err(InvalidObject)
+
+fn check_version_names(listing: Span, version: Span, expected: Span) -> Result<(), PublicationError>:
+    let names = listing.lines()
+    for listed in names:
+        let directory = listed.ends_with_text("/")
+        let name = if directory:
+            listed.part(0, listed.len() - 1)
+        else:
+            listed
+        if name.len() != 97 + version.len() || name.byte_or_end(96) != 46 || !name.part(97, name.len()).same(version):
+            continue
+        if sha384_hex(name.part(0, 96)) && (directory || !name.same(expected)):
+            return Err(ImmutableConflict)
+    return Ok(())
+
+fn sha384_hex(text: Span) -> Bool:
+    for byte in text.as_bytes():
+        if !(*byte >= '0' && *byte <= '9') && !(*byte >= 'a' && *byte <= 'f'):
+            return false
+    return true

@@ -1,0 +1,37 @@
+// Without its own precondition the caller cannot show what the helper requires.
+import "../../../library/wasm-console.wy"
+
+type Pack<T>:
+    data: Buffer<T>
+    count: U64
+
+fn plus_one(n: U64) -> U64:
+    requires n < 1000
+    ensures result == n + 1
+    proof:
+        auto
+    return n + 1
+
+fn recount<T: Any>(input: Pack<T>, n: U64) -> Pack<T>:
+    ensures result.count == n + 1
+    proof:
+        auto
+    var pack = move input
+    pack.count = plus_one(n)
+    return move pack
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<Buffer<U64>, U64> = memory.try_alloc(&allocator, 2)
+    match move made:
+        Ok(data):
+            let filled: Pack<U64> = Pack(move data, 0)
+            let pack = recount(move filled, 6)
+            console.print_int(pack.count)
+            let Pack(buffer, count) = move pack
+            match memory.try_release(move buffer):
+                Ok:
+                    return
+                Err(stuck):
+                    unreachable
+        Err(code):
+            return

@@ -1,0 +1,14 @@
+// Refused: `bump` lends `count` mutably, and a reference to `count` is still in use.
+type Counter:
+    name: U64
+    count: U64
+
+impl Counter:
+    fn bump(self: Self { &mut count }):
+        self.count += 1
+
+fn main():
+    var c = Counter(7, 0)
+    let seen = &c.count
+    c.bump()
+    let n = *seen

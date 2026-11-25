@@ -1,0 +1,56 @@
+type RestoredBuffer:
+    vector: Vec<Buffer<USize>>
+    item: Buffer<USize>
+
+fn restore_buffer(item: Buffer<USize>, vector: Vec<Buffer<USize>>) -> RestoredBuffer:
+    ensures result.item == old(item)
+    ensures memory.unchanged(item)
+    ensures result.vector.data == old(vector.data)
+    ensures memory.unchanged(vector.data)
+    return RestoredBuffer(move vector, move item)
+
+fn recover_buffer(input: Vec<Buffer<USize>>) -> Result<RestoredBuffer, Vec<Buffer<USize>>>:
+    match vec_pop(move input):
+        Ok(popped):
+            match popped.item:
+                Some(item):
+                    return Ok(restore_buffer(move item, move popped.vector))
+                None:
+                    return Err(move popped.vector)
+        Err(kept):
+            return Err(move kept)
+
+fn main(console: Console<Write>):
+    var witness = memory.alloc(1)
+    memory.init(&mut witness, 0, 42)
+    let saved = &witness
+    let allocation: Result<Vec<Buffer<USize>>, AllocError> = vec_new(1)
+    match allocation:
+        Ok(vector):
+            var item = memory.alloc(1)
+            memory.init(&mut item, 0, 73)
+            match vec_push_spare(move vector, move item):
+                Ok(pushed):
+                    match recover_buffer(move pushed):
+                        Ok(restored):
+                            console.print_int(memory.read(&restored.item, 0))
+                            memory.release(restored.item)
+                            match vec_release(move restored.vector):
+                                Ok(done):
+                                    console.print_int(74)
+                                Err(kept):
+                                    discard(move kept)
+                        Err(kept):
+                            discard(move kept)
+                Err(failed):
+                    memory.release(failed.item)
+                    match vec_release(move failed.vector):
+                        Ok(done):
+                            console.print_int(93)
+                        Err(kept):
+                            discard(move kept)
+        Err(reason):
+            console.print_int(94)
+    console.print_int(memory.read(saved, 0))
+    memory.end(saved)
+    memory.release(witness)

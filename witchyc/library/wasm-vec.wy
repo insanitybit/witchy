@@ -1,0 +1,1044 @@
+pub sealed type Vec<T>:
+    data: PrefixBuffer<T>
+    length: U64
+    capacity: U64
+    invariant memory.prefix(data, length, capacity)
+
+pub type VecPushError<T>:
+    vector: Vec<T>
+    item: T
+
+pub type VecTaken<T>:
+    vector: Vec<T>
+    item: T
+
+impl<T: Any> Vec<T>:
+    // An empty Vec with room for `requested` elements. Err: no room.
+    pub fn new(allocator: &Allocator, requested: U64) -> Result<Vec<T>, U64>:
+        ensures match result:
+            Ok(output):
+                output.length == 0
+                output.capacity == requested
+            Err(code):
+                true
+        proof:
+            auto
+        let allocation: Result<PrefixBuffer<T>, U64> = memory.try_alloc_prefix(allocator, requested)
+        match move allocation:
+            Ok(buffer):
+                return Ok(Vec(move buffer, 0, requested))
+            Err(allocation_error):
+                return Err(allocation_error)
+
+    // How many elements it holds.
+    pub fn len(value: &Vec<T>) -> U64:
+        return (*value).length
+
+    // How many it has room for before it must grow.
+    pub fn capacity(value: &Vec<T>) -> U64:
+        return (*value).capacity
+
+impl<T> Vec<T>:
+    // A copy of the element at `index`. Err(1): not an element.
+    pub fn get(value: &Vec<T>, index: U64) -> Result<T, U64>:
+        ensures memory.unchanged(value.data, old(value.data))
+        ensures value.length == old(value.length)
+        ensures value.capacity == old(value.capacity)
+        ensures match result:
+            Ok(item):
+                index < value.length
+                index < memory.capacity(value.data)
+                memory.cell(value.data, index, item)
+                memory.cell(old(value.data), index, item)
+            Err(code):
+                code == 1
+                index >= value.length
+        proof:
+            auto
+        if index < (*value).length:
+            return Ok(memory.get_unchecked(&(*value).data, index))
+        return Err(1)
+
+impl<T: Any> Vec<T>:
+    // A reference to an element in place. The vector stays lent while the reference is used.
+    pub fn at(value: &Vec<T>, index: U64) -> Result<&T, U64>:
+        ensures match result:
+            Ok(item):
+                index < value.length
+                memory.cell(value.data, index, item)
+            Err(code):
+                code == 1
+                index >= value.length
+        proof:
+            auto
+        if index < (*value).length:
+            return Ok(memory.ref_unchecked(&(*value).data, index))
+        return Err(1)
+
+impl<T: Any> Vec<T>:
+    // A reference to an element for changing it where it is. The vector stays lent,
+    // and cannot be used otherwise, while the reference is.
+    pub fn at_mut(value: &mut Vec<T>, index: U64) -> Result<&mut T, U64>:
+        ensures memory.same_allocation(value.data, old(value.data))
+        ensures value.length == old(value.length)
+        ensures value.capacity == old(value.capacity)
+        ensures match result:
+            Ok(item):
+                index < value.length
+            Err(code):
+                code == 1
+                index >= value.length
+                memory.unchanged(value.data, old(value.data))
+        proof:
+            auto
+        if index < (*value).length:
+            return Ok(memory.mut_unchecked(&mut (*value).data, index))
+        return Err(1)
+
+// `items[index] = item` past the end: a mistake in the program, so the run stops here. It has no
+// contract, so `index_set`, which has one, shows its `ensures` on every path that returns and
+// does not have to show that this one is never taken.
+fn index_past_end():
+    unreachable
+
+fn prefix_init_unchecked<T: Any>(buffer: &mut PrefixBuffer<T>, index: U64, item: T):
+    requires index < memory.capacity(buffer)
+    requires memory.empty(buffer, index)
+    ensures memory.cell(buffer, index, item)
+    ensures memory.same_allocation(buffer, old(buffer))
+    ensures memory.capacity(buffer) == memory.capacity(old(buffer))
+    ensures memory.unchanged_except(buffer, old(buffer), index)
+    proof:
+        auto
+    memory.init_unchecked(buffer, index, move item)
+    return
+
+// Empty the first `count` cells, which are the ones that hold a value. Nothing else is touched.
+fn memory_take_prefix<T>(buffer: &mut PrefixBuffer<T>, count: U64):
+    requires count <= memory.capacity(buffer)
+    requires memory.initialized_range(buffer, 0, count)
+    ensures memory.empty_range(buffer, 0, count)
+    ensures memory.unchanged_from(buffer, old(buffer), count)
+    proof:
+        auto
+    // One range step: the elements are Copy, so emptying them loses nothing
+    // (docs/proposal-cell-ranges.md).
+    memory.take_prefix_unchecked(buffer, count)
+    return
+
+// Write the low `count` bytes of `word`, lowest first, into the empty cells from `at`, in one
+// step. The cells before `at` hold values and keep them; those after the run are unchanged.
+fn memory_init_word(buffer: &mut PrefixBuffer<U8>, at: U64, word: U64, count: U64):
+    requires count <= 8
+    requires at + count <= memory.capacity(buffer)
+    requires memory.initialized_range(buffer, 0, at)
+    requires memory.empty_range(buffer, at, at + count)
+    ensures memory.initialized_range(buffer, at, at + count)
+    ensures memory.same_prefix(buffer, old(buffer), at)
+    ensures memory.unchanged_from(buffer, old(buffer), at + count)
+    ensures memory.same_allocation(buffer, old(buffer))
+    ensures memory.capacity(buffer) == memory.capacity(old(buffer))
+    proof:
+        auto
+    memory.init_word_unchecked(buffer, at, word, count)
+    return
+
+// Copy the first `count` values of `source` into the empty cells of `target` from `at`, in one
+// step (docs/proposal-cell-ranges.md, the range copy): the cells before `at` keep their values,
+// those after the run are unchanged.
+fn memory_copy_prefix<T>(source: &PrefixBuffer<T>, target: &mut PrefixBuffer<T>, at: U64, count: U64):
+    requires count <= memory.capacity(source)
+    requires memory.initialized_range(source, 0, count)
+    requires at + count <= memory.capacity(target)
+    requires memory.initialized_range(target, 0, at)
+    requires memory.empty_range(target, at, at + count)
+    ensures memory.initialized_range(target, at, at + count)
+    ensures memory.same_prefix(target, old(target), at)
+    ensures memory.unchanged_from(target, old(target), at + count)
+    ensures memory.same_allocation(target, old(target))
+    ensures memory.capacity(target) == memory.capacity(old(target))
+    proof:
+        auto
+    memory.copy_into_unchecked(source, target, at, count)
+    return
+
+impl Vec<U8>:
+    // Append the low `count` bytes of `word`, lowest first: eight bytes in one step where one
+    // at a time would be eight (`String.push_text` copies a literal a word at a time). Err(1):
+    // no room. Err(2): more than eight. The vector is then as it was.
+    pub fn push_word_mut(vector: &mut Vec<U8>, word: U64, count: U64) -> Result<(), U64>:
+        ensures memory.same_allocation(vector.data, old(vector.data))
+        ensures vector.capacity == old(vector.capacity)
+        proof:
+            auto
+        let length = (*vector).length
+        if count > 8:
+            return Err(2)
+        if count > (*vector).capacity - length:
+            return Err(1)
+        memory_init_word(&mut (*vector).data, length, word, count)
+        (*vector).length = length + count
+        return Ok(())
+
+    // Append the `count` bytes of `source` from `at`, at most eight, in one read and one write
+    // (`String.push_string` copies a word at a time). Err(1): more than eight, past the end of
+    // `source`, or no room; the vector is as it was.
+    pub fn push_from_mut(vector: &mut Vec<U8>, source: &Vec<U8>, at: U64, count: U64) -> Result<(), U64>:
+        ensures memory.same_allocation(vector.data, old(vector.data))
+        ensures vector.capacity == old(vector.capacity)
+        proof:
+            auto
+        let length = (*vector).length
+        let available = (*source).length
+        // No allocation reaches 2^32 bytes, so a position past that is past the end; below it,
+        // `at + count` cannot overflow. The work is done where each bound holds (inside each
+        // `if`), as `extend_copy_mut` does: both vectors' invariants are in view there.
+        if count <= 8 && at <= 4294967296:
+            if count <= (*vector).capacity - length:
+                if at + count <= available:
+                    let word = memory.read_word_unchecked(&(*source).data, at, count)
+                    memory.init_word_unchecked(&mut (*vector).data, length, word, count)
+                    (*vector).length = length + count
+                    return Ok(())
+        return Err(1)
+
+    // Bytes `from..from + count` (eight when `count` is more) as one number, lowest byte first:
+    // a byte past `count` or past the end reads as zero. One load for eight bytes, no Result per
+    // byte (`Text.equivalent` compares a String a word at a time).
+    pub fn word_at(vector: &Vec<U8>, from: U64, count: U64) -> U64:
+        ensures memory.unchanged(vector.data, old(vector.data))
+        proof:
+            auto
+        let length = (*vector).length
+        if from >= length:
+            return 0
+        var take = length - from
+        if take > count:
+            take = count
+        if take > 8:
+            take = 8
+        return memory.read_word_unchecked(&(*vector).data, from, take)
+
+// Fill the first `count` cells, which are empty, with copies of `item`. Nothing else is touched.
+fn memory_fill<T>(buffer: &mut PrefixBuffer<T>, count: U64, item: T):
+    requires count <= memory.capacity(buffer)
+    requires memory.empty_range(buffer, 0, count)
+    ensures memory.initialized_range(buffer, 0, count)
+    ensures memory.unchanged_from(buffer, old(buffer), count)
+    proof:
+        auto
+    // One range step and a store per cell: the element is Copy (docs/proposal-cell-ranges.md).
+    memory.fill_unchecked(buffer, count, item)
+    return
+
+impl<T> Vec<T>:
+    // The cells past `length` are empty already, so only the first `length` are emptied.
+    pub fn close(input: Vec<T>):
+        ensures memory.released(old(input.data))
+        proof:
+            auto
+        let length = input.length
+        var buffer = move input.data
+        memory_take_prefix(&mut buffer, length)
+        prefix_release_empty(move buffer)
+
+impl<T: Any> Vec<T>:
+    // Release an empty Vec. Err: it is not empty, and comes back.
+    pub fn try_release(input: Vec<T>) -> Result<(), Vec<T>>:
+        ensures match result:
+            Ok:
+                memory.released(old(input.data))
+            Err(back):
+                memory.unchanged(back.data, old(input.data))
+                back.length == old(input.length)
+                back.capacity == old(input.capacity)
+        proof:
+            auto
+        let logical_length = input.length
+        let claimed_capacity = input.capacity
+        let buffer = move input.data
+        match memory.try_release(move buffer):
+            Ok:
+                return Ok(())
+            Err(remainder):
+                return Err(Vec(move remainder, logical_length, claimed_capacity))
+
+    // Append into room already there, by value. Err: no room left; both come back.
+    pub fn push_spare(input: Vec<T>, item: T) -> Result<Vec<T>, VecPushError<T>>:
+        ensures match result:
+            Ok(output):
+                memory.same_allocation(output.data, old(input.data))
+                output.length == old(input.length) + 1
+                output.capacity == old(input.capacity)
+                memory.cell(output.data, old(input.length), item)
+                memory.unchanged_except(output.data, old(input.data), old(input.length))
+            Err(back):
+                memory.same_allocation(back.vector.data, old(input.data))
+                back.vector.length == old(input.length)
+                back.vector.capacity == old(input.capacity)
+                back.item == item
+                memory.unchanged(back.vector.data, old(input.data))
+        proof:
+            auto
+        var vector = move input
+        let index = vector.length
+        if index < vector.capacity:
+            memory.init_unchecked(&mut vector.data, index, move item)
+            vector.length = index + 1
+            return Ok(move vector)
+        return Err(VecPushError(move vector, move item))
+
+    // Take the last element out, by value. Err: it is empty, and comes back.
+    pub fn take_last(input: Vec<T>) -> Result<VecTaken<T>, Vec<T>>:
+        ensures match result:
+            Ok(out):
+                memory.same_allocation(out.vector.data, old(input.data))
+                out.vector.length + 1 == old(input.length)
+                out.vector.capacity == old(input.capacity)
+                out.vector.length < out.vector.capacity
+                memory.cell(old(input.data), out.vector.length, out.item)
+                memory.unchanged_except(out.vector.data, old(input.data), out.vector.length)
+            Err(back):
+                memory.same_allocation(back.data, old(input.data))
+                back.length == 0
+                back.length == old(input.length)
+                back.capacity == old(input.capacity)
+                memory.unchanged(back.data, old(input.data))
+        proof:
+            auto
+        var vector = move input
+        match Vec.take_last_mut(&mut vector):
+            Ok(item):
+                return Ok(VecTaken(move vector, move item))
+            Err(code):
+                return Err(move vector)
+
+// Move the first `count` values of one buffer into the same cells of another.
+// Nothing is copied, so the values may own storage.
+fn memory_move_prefix<T: Any>(source: &mut PrefixBuffer<T>, target: &mut PrefixBuffer<T>, count: U64):
+    requires count <= memory.capacity(source)
+    requires count <= memory.capacity(target)
+    requires memory.initialized_range(source, 0, count)
+    requires memory.empty_range(target, 0, count)
+    ensures memory.empty_range(source, 0, count)
+    ensures memory.unchanged_from(source, old(source), count)
+    ensures memory.same_prefix(target, old(source), count)
+    ensures memory.unchanged_from(target, old(target), count)
+    proof:
+        auto
+    // One range operation: the allocator marks each range once, and the payloads move as
+    // bytes (docs/proposal-cell-ranges.md).
+    memory.move_prefix_unchecked(source, target, count)
+    return
+
+// Release a buffer that holds nothing. The failure arm cannot be reached.
+fn prefix_release_empty<T: Any>(input: PrefixBuffer<T>):
+    requires memory.empty_all(input)
+    ensures memory.released(old(input))
+    proof:
+        auto
+    match memory.try_release(move input):
+        Ok:
+            return
+        Err(remainder):
+            prefix_release_empty(move remainder)
+
+impl<T: Any> Vec<T>:
+    // Make room for `requested` elements in all, by value. Err: no room; the Vec comes back unchanged.
+    pub fn reserve(input: Vec<T>, allocator: &Allocator, requested: U64) -> Result<Vec<T>, Vec<T>>:
+        ensures match result:
+            Ok(output):
+                output.length == old(input.length)
+                output.capacity >= old(input.capacity)
+                output.capacity >= requested
+                memory.equal_prefix(output.data, old(input.data), old(input.length))
+                memory.same_allocation(output.data, old(input.data)) || memory.released(old(input.data))
+            Err(back):
+                memory.same_allocation(back.data, old(input.data))
+                back.length == old(input.length)
+                back.capacity == old(input.capacity)
+                memory.unchanged(back.data, old(input.data))
+        proof:
+            auto
+        let logical_length = input.length
+        if requested <= input.capacity:
+            return Ok(move input)
+        let allocation: Result<PrefixBuffer<T>, U64> = memory.try_alloc_prefix(allocator, requested)
+        match move allocation:
+            Ok(fresh):
+                var new_buffer = move fresh
+                var old_buffer = move input.data
+                memory_move_prefix(&mut old_buffer, &mut new_buffer, logical_length)
+                prefix_release_empty(move old_buffer)
+                return Ok(Vec(move new_buffer, logical_length, requested))
+            Err(allocation_error):
+                return Err(move input)
+
+    // Append, growing when full, by value. Err: no room; both come back.
+    pub fn push(input: Vec<T>, allocator: &Allocator, item: T) -> Result<Vec<T>, VecPushError<T>>:
+        ensures match result:
+            Ok(output):
+                output.length == old(input.length) + 1
+                memory.cell(output.data, old(input.length), item)
+            Err(back):
+                back.vector.length == old(input.length)
+                back.item == item
+                old(input.length) > memory.capacity(old(input.data)) || memory.equal_prefix(back.vector.data, old(input.data), old(input.length))
+        proof:
+            auto
+        let logical_length = input.length
+        let actual_capacity = input.capacity
+        if logical_length < actual_capacity:
+            return Vec.push_spare(move input, move item)
+        // Full: grow to twice the capacity and one more, so an empty vector grows too.
+        if actual_capacity > 9223372036854775806:
+            return Err(VecPushError(move input, move item))
+        let requested = actual_capacity + actual_capacity + 1
+        match Vec.reserve(move input, allocator, requested):
+            Ok(grown):
+                return Vec.push_spare(move grown, move item)
+            Err(original):
+                return Err(VecPushError(move original, move item))
+
+    // Append into room already there. Err: no room left, and the item comes back.
+    pub fn push_spare_mut(vector: &mut Vec<T>, item: T) -> Result<(), T>:
+        ensures memory.same_allocation(vector.data, old(vector.data))
+        ensures vector.capacity == old(vector.capacity)
+        ensures match result:
+            Ok:
+                vector.length == old(vector.length) + 1
+                memory.cell(vector.data, old(vector.length), item)
+                memory.unchanged_except(vector.data, old(vector.data), old(vector.length))
+            Err(back):
+                vector.length == old(vector.length)
+                old(vector.length) == old(vector.capacity)
+                memory.unchanged(vector.data, old(vector.data))
+        proof:
+            auto
+        let index = (*vector).length
+        if index < (*vector).capacity:
+            prefix_init_unchecked(&mut (*vector).data, index, move item)
+            (*vector).length = index + 1
+            return Ok(())
+        return Err(move item)
+
+    // Move the last element out. Err(2): the vector is empty.
+    pub fn take_last_mut(vector: &mut Vec<T>) -> Result<T, U64>:
+        ensures memory.same_allocation(vector.data, old(vector.data))
+        ensures vector.capacity == old(vector.capacity)
+        ensures match result:
+            Ok(item):
+                vector.length + 1 == old(vector.length)
+                memory.cell(old(vector.data), vector.length, item)
+                memory.unchanged_except(vector.data, old(vector.data), vector.length)
+                vector.length < vector.capacity
+            Err(code):
+                code == 2
+                old(vector.length) == 0
+                vector.length == 0
+                memory.unchanged(vector.data, old(vector.data))
+        proof:
+            auto
+        let length = (*vector).length
+        if length == 0:
+            return Err(2)
+        let index = length - 1
+        let item = memory.take_unchecked(&mut (*vector).data, index)
+        (*vector).length = index
+        return Ok(move item)
+
+    // Put `item` where the element at `index` was and hand that element back.
+    // Err: there is no such element; the item comes back.
+    pub fn replace_mut(vector: &mut Vec<T>, index: U64, item: T) -> Result<T, T>:
+        ensures memory.same_allocation(vector.data, old(vector.data))
+        ensures vector.capacity == old(vector.capacity)
+        ensures vector.length == old(vector.length)
+        ensures match result:
+            Ok(taken):
+                index < vector.length
+                memory.cell(old(vector.data), index, taken)
+                memory.cell(vector.data, index, item)
+                memory.unchanged_except(vector.data, old(vector.data), index)
+            Err(back):
+                index >= vector.length
+                memory.unchanged(vector.data, old(vector.data))
+        proof:
+            auto
+        if index < (*vector).length:
+            let before = memory.replace_unchecked(&mut (*vector).data, index, move item)
+            return Ok(move before)
+        return Err(move item)
+
+impl<T> Vec<T>:
+    // Drop trailing items until at most `length` remain. Returns early, without
+    // trapping, if the vector's headers do not describe its storage.
+    pub fn truncate(input: Vec<T>, length: U64) -> Vec<T>:
+        ensures memory.same_allocation(result.data, old(input.data))
+        ensures result.length <= old(input.length)
+        ensures result.length == length || (old(input.length) < length && result.length == old(input.length))
+        ensures memory.equal_prefix(result.data, old(input.data), result.length)
+        ensures result.capacity == old(input.capacity)
+        proof:
+            auto
+        if input.length < length:
+            return move input
+        var vector = move input
+        while vector.length > length:
+            invariant memory.same_allocation(vector.data, old(input.data))
+            invariant vector.length <= old(input.length)
+            invariant length <= vector.length
+            invariant memory.equal_prefix(vector.data, old(input.data), vector.length)
+            invariant vector.capacity == old(input.capacity)
+            invariant memory.prefix(vector.data, vector.length, vector.capacity)
+            match Vec.take_last(move vector):
+                Ok(taken):
+                    vector = move taken.vector
+                Err(back):
+                    return move back
+        return move vector
+
+impl<T> Vec<T>:
+    // A vector of `count` copies of `item`. Err(1): no room.
+    pub fn filled(allocator: &Allocator, count: U64, item: T) -> Result<Vec<T>, U64>:
+        ensures match result:
+            Ok(output):
+                output.length == count
+            Err(code):
+                true
+        proof:
+            auto
+        let made: Result<Vec<T>, U64> = Vec.new(allocator, count)
+        match move made:
+            Ok(empty):
+                let Vec(data, length, capacity) = move empty
+                var buffer = move data
+                memory_fill(&mut buffer, count, item)
+                return Ok(Vec(move buffer, count, count))
+            Err(code):
+                return Err(code)
+
+    // `items[index]`: the element at `index`. There being none is a mistake in the
+    // program, and the run stops with a trap; `get` is the call that asks.
+    // It is the element of `as_slice` at `index`, read with a test against the slice's length,
+    // and nothing else: so `for i in a..v.len(): ... v[i]` reads it with no test, the slice being
+    // as long as `v.len()` (`as_slice`'s `ensures`; check/methods.rs `counted_container`).
+    pub fn index(vector: &Vec<T>, index: U64) -> T:
+        return vector.as_slice()[index]
+
+    // `items[index] = item`. There being no element at `index` is a mistake in the
+    // program, and the run stops with a trap; `set` is the call that asks.
+    pub fn index_set(vector: &mut Vec<T>, index: U64, item: T):
+        ensures vector.len() == old(vector.len())
+        ensures vector.capacity() == old(vector.capacity())
+        ensures elements.kept_except(vector.data, index)
+        ensures elements.holds(vector.data, index, item)
+        proof:
+            auto
+        match vector.at_mut(index):
+            Ok(place):
+                *place = item
+            Err(code):
+                index_past_end()
+
+    // Store a value over the element at `index`. Err(1): there is no such element.
+    pub fn set(vector: &mut Vec<T>, index: U64, item: T) -> Result<(), U64>:
+        ensures vector.len() == old(vector.len())
+        ensures vector.capacity() == old(vector.capacity())
+        ensures match result:
+            Ok:
+                index < vector.len()
+                elements.kept_except(vector.data, index)
+                elements.holds(vector.data, index, item)
+            Err(code):
+                code == 1
+                index >= vector.len()
+                elements.kept(vector.data)
+        proof:
+            auto
+        // Written in place: the cell is full before and after.
+        match vector.at_mut(index):
+            Ok(place):
+                *place = item
+                return Ok(())
+            Err(code):
+                return Err(code)
+
+    // Exchange the elements at two indexes. Err(1): one of them is not an element;
+    // nothing has changed. For values that are copied; an owner is exchanged with
+    // `replace_mut`.
+    pub fn swap(vector: &mut Vec<T>, first: U64, second: U64) -> Result<(), U64>:
+        ensures vector.len() == old(vector.len())
+        ensures vector.capacity() == old(vector.capacity())
+        ensures elements.among(vector.data, vector.len())
+        proof:
+            auto
+        let one = vector.get(first)?
+        let other = vector.get(second)?
+        // Both are elements: written where they are, with no result to test between the two.
+        vector.index_set(first, other)
+        vector.index_set(second, one)
+        return Ok(())
+
+    // Drop trailing items in place until at most `length` remain.
+    pub fn truncate_mut(vector: &mut Vec<T>, length: U64):
+        while vector.len() > length:
+            match vector.take_last_mut():
+                Ok(item):
+                    continue
+                Err(code):
+                    return
+
+// Growing through a reference. These are built from the proved methods above and
+// `memory.exchange`, and never touch a field. `reserve_mut` and `push_mut` state what
+// they do to the length and capacity, and that is proved from their bodies.
+impl<T: Any> Vec<T>:
+    // Release a vector that holds no elements. One that still holds some cannot
+    // be released, so this never returns for it: the run stops in a trap.
+    pub fn release_empty(input: Vec<T>):
+        match input.try_release():
+            Ok:
+                return
+            Err(stuck):
+                unreachable
+
+    // Put `held` where the element at `index` is, and hold that element instead.
+    pub fn trade(vector: &mut Vec<T>, index: U64, held: &mut T):
+        ensures vector.len() == old(vector.len())
+        ensures vector.capacity() == old(vector.capacity())
+        proof:
+            auto
+        match vector.at_mut(index):
+            Ok(slot):
+                memory.exchange(slot, held)
+            Err(code):
+                return
+
+    // Exchange the elements at two indexes through `hand`, a spare value that ends as it began:
+    // three trades in place, so no element leaves the vector (unlike `exchange`, which takes the
+    // last one out and puts it back, two calls into the allocator). Nothing happens when an index
+    // is not an element or the two are the same.
+    pub fn swap_through(vector: &mut Vec<T>, hand: &mut T, first: U64, second: U64):
+        ensures vector.len() == old(vector.len())
+        ensures vector.capacity() == old(vector.capacity())
+        proof:
+            auto
+        if first == second || first >= vector.len() || second >= vector.len():
+            return
+        vector.trade(first, hand)
+        vector.trade(second, hand)
+        vector.trade(first, hand)
+
+    // Push into room that is known to be there. Without room this never returns.
+    pub fn put_back(vector: &mut Vec<T>, item: T):
+        match vector.push_spare_mut(move item):
+            Ok(done):
+                return
+            Err(back):
+                vector.put_back(move back)
+
+    // Exchange the elements at two indexes, owners included. Err(1): one of them is
+    // not an element; nothing has changed. The last element is held while the two
+    // change places, so nothing is copied and no element is ever missing.
+    pub fn exchange(vector: &mut Vec<T>, first: U64, second: U64) -> Result<(), U64>:
+        ensures vector.len() == old(vector.len())
+        ensures vector.capacity() == old(vector.capacity())
+        proof:
+            auto
+        let count = vector.len()
+        if first >= count || second >= count:
+            return Err(1)
+        if first == second:
+            return Ok(())
+        // Each way ends with its own return: the proof follows the length down each alone.
+        let taken: Result<T, U64> = vector.take_last_mut()
+        match move taken:
+            Ok(item):
+                var held = move item
+                if first == count - 1:
+                    vector.trade(second, &mut held)
+                    return vector.put_held(move held)
+                if second == count - 1:
+                    vector.trade(first, &mut held)
+                    return vector.put_held(move held)
+                vector.trade(first, &mut held)
+                vector.trade(second, &mut held)
+                vector.trade(first, &mut held)
+                return vector.put_held(move held)
+            Err(code):
+                return Err(1)
+
+    // Put back the element `exchange` holds, into the room that taking it out left: the push
+    // is never refused (`take_last_mut` says there is room, and `trade` keeps the length).
+    fn put_held(vector: &mut Vec<T>, held: T) -> Result<(), U64>:
+        requires vector.len() < vector.capacity()
+        ensures vector.len() == old(vector.len()) + 1
+        ensures vector.capacity() == old(vector.capacity())
+        proof:
+            auto
+        match vector.push_spare_mut(move held):
+            Ok(done):
+                return Ok(())
+            Err(back):
+                vector.put_back(move back)
+                return Ok(())
+
+    // Make room for at least `requested` elements. Err(1): the allocator had no
+    // room, and the vector is as it was.
+    pub fn reserve_mut(vector: &mut Vec<T>, allocator: &Allocator, requested: U64) -> Result<(), U64>:
+        ensures vector.length == old(vector.length)
+        ensures memory.equal_prefix(vector.data, old(vector.data), vector.length)
+        ensures vector.capacity >= old(vector.capacity)
+        ensures match result:
+            Ok:
+                vector.capacity >= requested
+            Err(code):
+                code == 1
+        proof:
+            auto
+        if requested <= (*vector).capacity:
+            return Ok(())
+        // An empty Vec stands where the real one was while `reserve` holds it by value.
+        let made: Result<Vec<T>, U64> = Vec.new(allocator, 0)
+        match move made:
+            Ok(empty):
+                var held = move empty
+                memory.exchange(vector, &mut held)
+                match held.reserve(allocator, requested):
+                    Ok(grown):
+                        var back = move grown
+                        memory.exchange(vector, &mut back)
+                        prefix_release_empty(move back.data)
+                        return Ok(())
+                    Err(original):
+                        var back = move original
+                        memory.exchange(vector, &mut back)
+                        prefix_release_empty(move back.data)
+                        return Err(1)
+            Err(code):
+                return Err(1)
+
+    // Append, doubling the capacity when the vector is full. Err: the allocator
+    // had no room; the item comes back and the vector is as it was.
+    pub fn push_mut(vector: &mut Vec<T>, allocator: &Allocator, item: T) -> Result<(), T>:
+        ensures match result:
+            Ok:
+                vector.len() == old(vector.len()) + 1
+                elements.kept_below(vector.data, old(vector.len()))
+                elements.holds(vector.data, old(vector.len()), item)
+            Err(back):
+                vector.len() == old(vector.len())
+                elements.kept_below(vector.data, vector.len())
+        proof:
+            auto
+        let capacity = vector.capacity()
+        if vector.len() == capacity:
+            // Past this, doubling would leave the range of U64.
+            if capacity > 4611686018427387903:
+                return Err(move item)
+            if let Err(code) = vector.reserve_mut(allocator, capacity * 2 + 4):
+                return Err(move item)
+        return vector.push_spare_mut(move item)
+
+impl<T: Any> Vec<T>:
+    // `&v[i]`: a reference to the element at `index`; past the end the run stops, as `v[i]`.
+    pub fn cell(vector: &Vec<T>, index: U64) -> &T:
+        match vector.at(index):
+            Ok(item):
+                return item
+            Err(code):
+                unreachable
+
+    // `&mut v[i]`: the same, to change the element where it is.
+    pub fn cell_mut(vector: &mut Vec<T>, index: U64) -> &mut T:
+        match vector.at_mut(index):
+            Ok(item):
+                return item
+            Err(code):
+                unreachable
+
+    // The elements as a slice (docs/design-slices.md): every cell below the length holds a
+    // value, which the type's invariant says and the proof uses. The vector stays lent while
+    // the slice is used.
+    pub fn as_slice(value: &Vec<T>) -> &[T]:
+        ensures value.length == old(value.length)
+        ensures result.len() == value.length
+        proof:
+            auto
+        return memory.slice_unchecked(&(*value).data, 0, (*value).length)
+
+    // The elements in order, as one slice: what `for item in &v` walks (iteration.rs: a type with
+    // `elements` is walked over it, the length read once and no test per element).
+    pub fn elements(value: &Vec<T>) -> &[T]:
+        return value.as_slice()
+
+    // The elements in order, as one unique slice: what `for item in &mut v` walks.
+    pub fn elements_mut(value: &mut Vec<T>) -> &mut [T]:
+        return value.as_mut_slice()
+
+    // The elements as a `&mut [T]`: they may be written, and the vector stays lent uniquely while
+    // the slice is used. Every cell below the length keeps a value: a slice can replace an
+    // element, never take it out, so the type's invariant still holds after.
+    pub fn as_mut_slice(value: &mut Vec<T>) -> &mut [T]:
+        ensures value.length == old(value.length)
+        proof:
+            auto
+        return memory.slice_mut_unchecked(&mut (*value).data, 0, (*value).length)
+
+// Taking out, putting in and turning around, for owners and copied values alike. Each holds
+// one element and moves the rest with `trade` (the held one in, the one there out), so nothing
+// is copied and the allocator is not called, except by `insert_at`'s `push_mut`.
+impl<T: Any> Vec<T>:
+    // Take out the element at `index`; those after it move down one. Err(1): not an element.
+    pub fn remove_at(vector: &mut Vec<T>, index: U64) -> Result<T, U64>:
+        if index >= vector.len():
+            return Err(1)
+        var held = match vector.take_last_mut():
+            Ok(item):
+                move item
+            Err(code):
+                return Err(1)
+        // The last element goes in at the end of the run and each one before it moves down.
+        var at = vector.len()
+        while at > index:
+            at -= 1
+            vector.trade(at, &mut held)
+        return Ok(move held)
+
+    // Put `item` in at `index` (up to the length); those from there move up one. Err: `index`
+    // is past the end, or there is no room, and the item comes back.
+    pub fn insert_at(vector: &mut Vec<T>, allocator: &Allocator, index: U64, item: T) -> Result<(), T>:
+        if index > vector.len():
+            return Err(move item)
+        let end = vector.len()
+        vector.push_mut(allocator, move item)?
+        if index == end:
+            return Ok(())
+        var held = match vector.take_last_mut():
+            Ok(back):
+                move back
+            Err(code):
+                unreachable
+        for at in index..end:
+            vector.trade(at, &mut held)
+        // The last element, back at the end: the room is there, as it was a moment ago.
+        vector.put_back(move held)
+        return Ok(())
+
+    // The elements in the opposite order.
+    pub fn reverse(vector: &mut Vec<T>):
+        if vector.len() < 2:
+            return
+        var held = match vector.take_last_mut():
+            Ok(item):
+                move item
+            Err(code):
+                return
+        let rest = vector.len()
+        for k in 0..rest / 2:
+            vector.swap_through(&mut held, k, rest - 1 - k)
+        // The one held goes first; the rest move up one, and the last of them is held.
+        for at in 0..rest:
+            vector.trade(at, &mut held)
+        vector.put_back(move held)
+
+impl<T> Vec<T>:
+    // Append a copy of each of `other`'s elements, in order. Room is made once (at least double,
+    // so repeated extending stays linear). Err(1): no room; the vector is as it was.
+    pub fn extend_copy_mut(vector: &mut Vec<T>, allocator: &Allocator, other: &Vec<T>) -> Result<(), U64>:
+        let count = other.len()
+        let length = vector.len()
+        if count > vector.capacity() - length:
+            var wanted = length + count
+            if wanted < vector.capacity() * 2:
+                wanted = vector.capacity() * 2
+            vector.reserve_mut(allocator, wanted)?
+        // In one copy (it went an element at a time, a checked read and write each).
+        return vector.push_all_copy_mut(other)
+
+    // Append every element of `source` into room already there, in one copy. Err(1): no room;
+    // the vector is as it was.
+    pub fn push_all_copy_mut(vector: &mut Vec<T>, source: &Vec<T>) -> Result<(), U64>:
+        ensures memory.same_allocation(vector.data, old(vector.data))
+        ensures vector.capacity == old(vector.capacity)
+        proof:
+            auto
+        let length = (*vector).length
+        let count = (*source).length
+        if count <= (*vector).capacity - length:
+            memory_copy_prefix(&(*source).data, &mut (*vector).data, length, count)
+            (*vector).length = length + count
+            return Ok(())
+        return Err(1)
+
+    // Remove every element, keeping the room. One range step (`memory_take_prefix`: the elements
+    // copy, so emptying them loses nothing), where `truncate_mut(0)` takes them one at a time.
+    pub fn clear_mut(vector: &mut Vec<T>):
+        ensures vector.length == 0
+        ensures vector.capacity == old(vector.capacity)
+        ensures memory.same_allocation(vector.data, old(vector.data))
+        proof:
+            auto
+        memory_take_prefix(&mut (*vector).data, (*vector).length)
+        (*vector).length = 0
+
+fn fill_ascii_prefix(buffer: &mut PrefixBuffer<U8>, count: U64, byte: U8):
+    requires byte < 128
+    requires count <= memory.capacity(buffer)
+    requires memory.empty_all(buffer)
+    ensures memory.initialized_range(buffer, 0, count)
+    ensures memory.empty_from(buffer, count)
+    ensures memory.utf8(buffer, 0, count)
+    proof:
+        auto
+    memory.fill_unchecked(buffer, count, byte)
+
+fn trim_suffix<T>(buffer: &mut PrefixBuffer<T>, count: U64, kept: U64):
+    requires kept <= count
+    requires count <= memory.capacity(buffer)
+    requires memory.initialized_range(buffer, 0, count)
+    requires memory.empty_from(buffer, count)
+    ensures memory.same_prefix(buffer, old(buffer), kept)
+    ensures memory.empty_from(buffer, kept)
+    proof:
+        auto
+    var end = count
+    while end > kept:
+        invariant kept <= end
+        invariant end <= count
+        invariant memory.same_prefix(buffer, old(buffer), end)
+        invariant memory.initialized_range(buffer, 0, end)
+        invariant end <= memory.capacity(buffer)
+        invariant memory.empty_from(buffer, end)
+        let index = end - 1
+        let _ = memory.take_unchecked(buffer, index)
+        end = index
+
+impl Vec<U8>:
+    // Build a UTF-8 prefix with one range fill, rejecting non-ASCII input.
+    pub fn filled_ascii(allocator: &Allocator, count: U64, byte: U8) -> Result<Vec<U8>, U64>:
+        ensures match result:
+            Ok(output):
+                memory.utf8(output.data, 0, output.length)
+                output.length == count
+            Err(code):
+                true
+        proof:
+            auto
+        if byte >= 128:
+            return Err(2)
+        let made: Result<Vec<U8>, U64> = Vec.new(allocator, count)
+        match move made:
+            Ok(empty):
+                let Vec(data, length, capacity) = move empty
+                var buffer = move data
+                fill_ascii_prefix(&mut buffer, count, byte)
+                return Ok(Vec(move buffer, count, count))
+            Err(code):
+                return Err(code)
+
+    // Check whether an initialized byte can begin a UTF-8 scalar.
+    pub fn utf8_boundary(value: &Vec<U8>, index: U64) -> Bool:
+        ensures !result || index < value.length
+        ensures !result || memory.utf8_boundary(value.data, index)
+        proof:
+            auto
+        if index >= (*value).length:
+            return false
+        let byte = U8.to_u64(memory.get_unchecked(&(*value).data, index))
+        if byte < 128:
+            return true
+        return 191 < byte
+
+    // Keep a shorter prefix in place, provided it ends at a scalar boundary.
+    pub fn truncate_utf8_mut(vector: &mut Vec<U8>, length: U64):
+        requires memory.utf8(vector.data, 0, vector.length)
+        ensures memory.utf8(vector.data, 0, vector.length)
+        ensures memory.same_prefix(vector.data, old(vector.data), vector.length)
+        proof:
+            auto
+        if !vector.utf8_boundary(length):
+            return
+        let count = (*vector).length
+        trim_suffix(&mut (*vector).data, count, length)
+        (*vector).length = length
+
+    // Write one ASCII byte into already reserved space.
+    pub fn append_ascii_spare(vector: &mut Vec<U8>, byte: U8) -> Result<(), U64>:
+        requires memory.utf8(vector.data, 0, vector.length)
+        ensures memory.utf8(vector.data, 0, vector.length)
+        proof:
+            auto
+        if byte >= 128:
+            return Err(2)
+        let index = (*vector).length
+        if index == (*vector).capacity:
+            return Err(1)
+        memory.init_unchecked(&mut (*vector).data, index, byte)
+        (*vector).length = index + 1
+        return Ok(())
+
+    // Append text into reserved space while preserving the UTF-8 prefix.
+    pub fn append_spare_utf8(vector: &mut Vec<U8>, source: &str) -> Result<(), U64>:
+        requires memory.utf8(vector.data, 0, vector.length)
+        ensures memory.utf8(vector.data, 0, vector.length)
+        ensures match result:
+            Ok:
+                true
+            Err(code):
+                vector.length == old(vector.length)
+        proof:
+            auto
+        let count = source.len()
+        let length = (*vector).length
+        if count > (*vector).capacity - length:
+            return Err(1)
+        memory.init_slice_unchecked(&mut (*vector).data, length, source.as_bytes())
+        (*vector).length = length + count
+        return Ok(())
+
+    // Append into vacant cells without allocating. On failure the vector is unchanged.
+    fn append_spare_slice(vector: &mut Vec<U8>, source: &[U8]) -> Result<(), U64>:
+        ensures memory.same_allocation(vector.data, old(vector.data))
+        ensures vector.capacity == old(vector.capacity)
+        proof:
+            auto
+        let count = source.len()
+        let length = (*vector).length
+        if count > (*vector).capacity - length:
+            return Err(1)
+        memory.init_slice_unchecked(&mut (*vector).data, length, source)
+        (*vector).length = length + count
+        return Ok(())
+
+    // Append the bytes of source in order. Grow only if the destination needs more room.
+    pub fn extend_from_slice_mut(vector: &mut Vec<U8>, allocator: &Allocator, source: &[U8]) -> Result<(), U64>:
+        match vector.append_spare_slice(source):
+            Ok:
+                return Ok(())
+            Err(code):
+                vector.reserve_mut(allocator, vector.capacity() * 2 + source.len())?
+                return vector.append_spare_slice(source)
+
+// The same two for a Buffer, which other modules call: a PrefixBuffer does not leave this one.
+pub fn memory_init_unchecked<T: Any>(buffer: &mut Buffer<T>, index: U64, item: T):
+    requires index < memory.capacity(buffer)
+    requires memory.empty(buffer, index)
+    ensures memory.cell(buffer, index, item)
+    ensures memory.same_allocation(buffer, old(buffer))
+    ensures memory.capacity(buffer) == memory.capacity(old(buffer))
+    ensures memory.unchanged_except(buffer, old(buffer), index)
+    proof:
+        auto
+    memory.init_unchecked(buffer, index, move item)
+    return
+
+pub fn memory_release_empty<T: Any>(input: Buffer<T>):
+    requires memory.empty_all(input)
+    ensures memory.released(old(input))
+    proof:
+        auto
+    match memory.try_release(move input):
+        Ok:
+            return
+        Err(remainder):
+            memory_release_empty(move remainder)

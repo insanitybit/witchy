@@ -1,0 +1,17 @@
+// Refused when the code is made concrete: generic code lending a view `&mut` could replace
+// its reference fields.
+type Point:
+    x: U64
+
+type Seen:
+    point: &Point
+    n: U64
+
+fn inner<T>(x: T) -> U64:
+    var y = x
+    let r = &mut y
+    return 1
+
+fn main():
+    let p = Point(1)
+    let n = inner(Seen(&p, 1))

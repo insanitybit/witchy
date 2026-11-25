@@ -1,0 +1,30 @@
+// A task that, told to stop, needs one more wait to wind down: `cancel` tells a task not yet
+// started only once it has reached its first pause, so both runs finish (review round 28).
+import console
+import tasks
+
+fn tidy(entry: U64) suspends:
+    var going = true
+    while going:
+        if pause_for(entry) == CANCELLED:
+            let last = pause_for(entry + 1)
+            going = false
+
+fn try(console: &Console<Write>, allocator: &Allocator, first: Bool):
+    let Ok(made): Task = Task.spawn(allocator, 1024, tidy, 256) else Err(given):
+        return
+    var task = move made
+    if first:
+        let r = task.step()
+    match task.cancel():
+        Ok(reported):
+            console.line("finished")
+            task.close()
+        Err(token):
+            console.print_int(token)
+            let r = task.step()
+            task.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    try(&console, &allocator, true)
+    try(&console, &allocator, false)

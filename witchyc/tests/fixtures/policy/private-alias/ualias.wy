@@ -1,0 +1,2 @@
+// A private alias in a local module, named like a type parameter of the main file's record.
+type U = U64

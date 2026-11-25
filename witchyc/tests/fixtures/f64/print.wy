@@ -1,0 +1,14 @@
+// Fixed decimals on the console (`import float`): exact digits rounded half to even, NaN, inf, and
+// a large value written out in full.
+import console
+import float
+
+fn main(console: Console<Write>):
+    console.print_f64(F64.sqrt(2.0), 9)
+    console.print_f64(-0.1690751638285, 9)
+    console.print_f64(2.5, 0)
+    console.print_f64(-0.0004, 3)
+    console.print_f64(1.0e30, 2)
+    console.print_f64(0.0 / 0.0, 2)
+    console.print_f64(1.0e308 * 10.0, 2)
+    console.print_f64(123.456, 1)

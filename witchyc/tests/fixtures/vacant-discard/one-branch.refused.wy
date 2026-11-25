@@ -1,0 +1,20 @@
+// Refused by the proof: the slot is emptied on one branch only.
+type Slot<T>:
+    Vacant
+    Full(T)
+
+type Shelf<T>:
+    count: U64
+    slot: Slot<T>
+
+nopanic fn unpack<T: Any>(shelf: Shelf<T>, empty: Bool) -> Slot<T>:
+    var whole = move shelf
+    var held: Slot<T> = Vacant
+    if empty:
+        memory.exchange(&mut whole.slot, &mut held)
+    let Shelf(count, slot) = move whole
+    memory.vacant(move slot)
+    return move held
+
+fn main(out: Console<Write>):
+    out.print_int(1)

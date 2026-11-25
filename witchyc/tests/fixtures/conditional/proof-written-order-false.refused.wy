@@ -1,0 +1,19 @@
+// A proof of the order the source does not say is refused: here 6 would need `x` read after `bump`.
+fn bump(x: &mut U64) -> U64:
+    requires *x < 100
+    ensures *x == old(*x) + 1 && result == 0
+    proof:
+        auto
+    *x = *x + 1
+    return 0
+
+fn calc(c: Bool) -> U64:
+    requires c
+    ensures result == 6
+    proof:
+        auto
+    var x: U64 = 5
+    return x + (if c: bump(&mut x) else: 0)
+
+fn main(console: Console<Write>):
+    console.print_int(calc(true))

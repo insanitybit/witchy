@@ -1,0 +1,29 @@
+import console
+
+sealed type Account:
+    balance: U64
+    limit: U64
+    invariant balance <= limit
+
+impl Account:
+    pub fn balance(account: &Account) -> U64:
+        return (*account).balance
+    pub fn open(limit: U64) -> Account:
+        ensures result.balance == 0
+        proof:
+            auto
+        return Account(0, limit)
+
+type Bank:
+    main: Account
+    spare: U64
+
+// The account's fields through a record that holds it: not covered, refused.
+fn raid(bank: &mut Bank):
+    ensures true
+    proof:
+        auto
+    (*bank).main.balance = 7
+
+fn main(console: Console<Write>):
+    console.line("ran")

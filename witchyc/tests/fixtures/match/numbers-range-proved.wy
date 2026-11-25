@@ -1,0 +1,13 @@
+// A proof reads a range arm as the two comparisons it is.
+fn digit(byte: U64) -> U64:
+    ensures result <= 9
+    proof:
+        auto
+    match byte:
+        '0'..='9':
+            return byte - '0'
+        _:
+            return 0
+
+fn main(console: Console<Write>):
+    console.print_int(digit('7'))

@@ -1,0 +1,32 @@
+// Refused (adversarial review round 7): without wasm-string.wy loaded, a program wrote Eq and HashKey for Text (every Text equal, only the length fed); impls for the types the law trusts must be the library's.
+import hash
+import hashmap
+import keymap
+
+impl Eq for Text:
+    fn eq(self: &Text, other: &Text) -> Bool:
+        return true
+
+impl HashKey for Text:
+    fn feed(self: &Text, state: &mut HashState):
+        state.word((*self).byte_len(), 8)
+
+fn main(allocator: Allocator):
+    let Ok(made): KeyMap<Text, U64> = KeyMap.new(&allocator, 64, Reference(1)) else Err(code):
+        return
+    var map = move made
+    match map.put(&allocator, "ab", 1):
+        Ok:
+            ()
+        Err(entry):
+            entry.discard()
+    match map.put(&allocator, "cde", 2):
+        Ok:
+            ()
+        Err(entry):
+            entry.discard()
+    let n = map.len()
+    map.discard()
+    var spin: U64 = 0
+    while spin < (n - 1) * 1000000000:
+        spin += 1

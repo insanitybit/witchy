@@ -1,0 +1,28 @@
+import bufio
+import console
+import vec
+
+fn check(out: &Console<Write>, storage: Vec<U8>):
+    var bytes = bufio.byte_buffer(move storage)
+    let data: [U8; 4] = [2, 3, 5, 7]
+    out.print_int(bytes.append(data.slice()))
+    if let Err(SinkFailed(code)) = bytes.record_write(Err(WriteFailure(SinkFailed(9), 1))):
+        out.print_int(code)
+    out.print_int(bytes.buffered())
+    if let Err(NoProgress) = bytes.record_write(Ok(0)):
+        out.print_int(bytes.buffered())
+    if let Err(InvalidCount) = bytes.record_write(Ok(4)):
+        out.print_int(bytes.buffered())
+    var output: [U8; 2] = [0; 2]
+    out.print_int(bytes.drain(output.slice_mut()))
+    out.print_int(U8.to_u64(output[0]))
+    out.print_int(U8.to_u64(output[1]))
+    out.print_int(bytes.drain(output.slice_mut()))
+    out.print_int(U8.to_u64(output[0]))
+    out.print_int(bytes.buffered())
+    out.print_int(bytes.append(data.slice()))
+    bytes.close()
+
+fn main(out: Console<Write>, allocator: Allocator):
+    if let Ok(storage) = Vec.filled(&allocator, 4, U8.truncate(0)):
+        check(&out, move storage)

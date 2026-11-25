@@ -1,0 +1,28 @@
+import console
+import https_client
+import span
+import tls
+import url
+
+fn probe(text: Text, net: &Net, clock: &Clock, rng: &Rand, allocator: &Allocator) -> U64:
+    let Ok(origin): HttpOrigin = url.parse_origin(Span.of(text.as_str().as_bytes())) else Err(code):
+        return 90
+    let trust: [U8; 1] = [0]
+    var transcript: [U8; 1] = [0]
+    var plaintext: [U8; 1] = [0]
+    var wire: [U8; 1] = [0]
+    let result = https_client.connect(net, origin, trust.slice(), rng, clock, allocator, transcript.slice_mut(), plaintext.slice_mut(), wire.slice_mut())
+    match move result:
+        Err(NotHttpsOrigin):
+            return 80
+        Err(TcpConnectFailed(status)):
+            return status
+        Err(TlsHandshakeFailed(error)):
+            return 91
+        Ok(session):
+            session.close()
+            return 92
+
+fn main(output: Console<Write>, net: Net, clock: Clock, rng: Rand, allocator: Allocator):
+    output.print_int(probe("http://localhost:1", &net, &clock, &rng, &allocator))
+    output.print_int(probe("https://localhost", &net, &clock, &rng, &allocator))

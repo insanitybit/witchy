@@ -1,0 +1,6 @@
+// A generator another file offers: called as seq.countdown.
+pub gen fn countdown(from: U64) -> U64:
+    var i: U64 = from
+    while i > 0:
+        yield i
+        i -= 1

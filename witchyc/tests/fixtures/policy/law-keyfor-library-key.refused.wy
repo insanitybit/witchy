@@ -1,0 +1,23 @@
+// Refused: a program's `KeyFor` for a library key type (review of get_or_insert: this one made
+// one String for every query, and the String keys it stored sat where no lookup finds them).
+import console
+import hash
+import hashmap
+import string
+import text
+import discard
+
+impl KeyFor<String> for Text:
+    fn key_for(self: &Text, allocator: &Allocator) -> Result<String, U64>:
+        return String.new(allocator)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): HashMap<String, U64> = HashMap.new(&allocator, 4) else Err(e):
+        return
+    var map = move made
+    match map.get_or_insert(&allocator, &"a", 1):
+        Ok(found):
+            *found += 1
+        Err(missed):
+            missed.discard()
+    map.discard()

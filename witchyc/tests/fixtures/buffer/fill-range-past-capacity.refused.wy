@@ -1,0 +1,12 @@
+// Refused: the run must fit the buffer.
+fn fill<T>(buffer: &mut Buffer<T>, count: U64, item: T):
+    requires memory.empty_range(buffer, 0, count)
+    ensures memory.initialized_range(buffer, 0, count)
+    ensures memory.unchanged_from(buffer, old(buffer), count)
+    proof:
+        auto
+    memory.fill_unchecked(buffer, count, item)
+    return
+
+fn main():
+    return

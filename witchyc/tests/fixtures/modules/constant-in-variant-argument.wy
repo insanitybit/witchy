@@ -1,0 +1,14 @@
+// A constant inside a variant inside a call is a use, not a binder (review round 28).
+import console
+
+let LIMIT = 42
+
+fn show(console: &Console<Write>, r: Result<U64, U64>):
+    match r:
+        Ok(v):
+            console.print_int(v)
+        Err(e):
+            console.print_int(e + 1000)
+
+fn main(console: Console<Write>):
+    show(&console, Ok(LIMIT))

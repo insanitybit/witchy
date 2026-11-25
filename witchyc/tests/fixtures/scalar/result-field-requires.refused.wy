@@ -1,0 +1,14 @@
+// The result does not exist where a `requires` is read.
+type Pair:
+    low: U64
+    high: U64
+
+fn make(a: U64) -> Pair:
+    requires result.low == 0
+    ensures result.low <= result.high
+    proof:
+        auto
+    return Pair(a, a)
+
+fn main(console: Console<Write>):
+    console.print_int(make(1).low)

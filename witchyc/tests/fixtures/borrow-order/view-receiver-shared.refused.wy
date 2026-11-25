@@ -1,0 +1,14 @@
+// Refused: a method that changes a field is not called through a shared reference.
+type Counter:
+    count: U64
+
+impl Counter:
+    fn bump(self: Self { &mut count }):
+        self.count += 1
+
+fn poke(c: &Counter):
+    c.bump()
+
+fn main():
+    var c = Counter(0)
+    poke(&c)

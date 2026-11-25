@@ -1,0 +1,16 @@
+// A false claim in a generic function is refused like any other.
+import "../../../library/wasm-vec.wy"
+
+fn shorter<T: Any>(items: &mut Vec<T>, allocator: &Allocator) -> Bool:
+    ensures items.len() < old(items.len())
+    proof:
+        auto
+    match items.reserve_mut(allocator, 8):
+        Ok:
+            return true
+        Err(code):
+            return false
+
+fn main(console: Console<Write>):
+    console.print_int(0)
+

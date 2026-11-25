@@ -1,0 +1,13 @@
+// Refused: `for: &mut module.Token`: `For` reaches the sealed type through the reference (review
+// round 4: nothing was recorded for a `for:` type starting with `&`).
+import "parts/mutw.wy"
+import console
+
+type T derive(mutw.Pk(for: &mut mutw.Token)):
+    a: U64
+
+fn main(console: Console<Write>):
+    let t = T(a: 999)
+    var tok = mutw.mint()
+    t.poke(&mut tok)
+    console.print("${mutw.redeem(&tok)}")

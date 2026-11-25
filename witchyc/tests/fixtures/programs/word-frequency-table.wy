@@ -1,0 +1,81 @@
+// A word-frequency report: words counted in a map, then sorted by count (most first) and word,
+// and printed as an aligned table.
+import console
+import string
+import text
+import span
+import hash
+import hashmap
+import vec
+import sort
+import int
+import discard
+
+type Row derive(Discard):
+    count: U64
+    word: String
+
+impl Before for Row:
+    fn before(self: &Row, other: &Row) -> Bool:
+        if self.count != other.count:
+            return self.count > other.count
+        return self.word.less(&other.word)
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(e):
+        return
+    var line = move made
+    let Ok(m): HashMap<String, U64> = HashMap.new(&allocator, 64) else Err(e):
+        line.close()
+        return
+    var counts = move m
+    while true:
+        line.clear()
+        match input.read_line(&allocator, &mut line):
+            .Line:
+                for word in line.span().words():
+                    match counts.get_mut(&word):
+                        Ok(count):
+                            *count += 1
+                        Err(e):
+                            let Ok(key): String = word.to_string(&allocator) else Err(e2):
+                                continue
+                            match counts.put(&allocator, move key, 1):
+                                Ok:
+                                    ()
+                                Err(entry):
+                                    entry.discard()
+            .End:
+                break
+            .NotText:
+                break
+            .NoRoom:
+                break
+    let Ok(r): Vec<Row> = Vec.new(&allocator, 16) else Err(e):
+        counts.discard()
+        line.close()
+        return
+    var rows = move r
+    var cursor: U64 = 0
+    while true:
+        match counts.take_next(&mut cursor):
+            Ok(entry):
+                let Entry(key, value) = move entry
+                match rows.push_mut(&allocator, Row(value, move key)):
+                    Ok:
+                        ()
+                    Err(row):
+                        row.discard()
+            Err(done):
+                break
+    sort(&mut rows)
+    var widest: U64 = 4
+    for row in &rows:
+        widest = widest.max(row.word.scalar_count())
+    for row in &rows:
+        console.write_string(&row.word)
+        console.write_repeated(' ', widest - row.word.scalar_count() + 6 - row.count.digit_count())
+        console.print_int(row.count)
+    rows.discard()
+    counts.discard()
+    line.close()

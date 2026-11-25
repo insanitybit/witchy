@@ -1,0 +1,67 @@
+// Loaded after the Stack's definitions (before its clients). This independently
+// named Buffer operation exposes both checked Take errors as well as its value.
+type Captured<T>:
+    buffer: Buffer<T>
+    element: T
+
+type Refused<T>:
+    buffer: Buffer<T>
+    code: U64
+
+fn extract_at<T>(input: Buffer<T>, index: U64) -> Result<Captured<T>, Refused<T>>:
+    ensures match result:
+        Ok(out):
+            index < memory.capacity(old(input))
+            memory.cell(old(input), index, out.element)
+            memory.empty(out.buffer, index)
+            memory.unchanged_except(out.buffer, old(input), index)
+        Err(back):
+            (back.code == 1 && index >= memory.capacity(old(input))) || (back.code == 2 && index < memory.capacity(old(input)) && memory.empty(old(input), index))
+            memory.unchanged(back.buffer, old(input))
+    proof:
+        auto
+    var buffer = move input
+    match memory.take(&mut buffer, index):
+        Ok(item):
+            return Ok(Captured(move buffer, item))
+        Err(code):
+            return Err(Refused(move buffer, code))
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let allocation: Result<Buffer<U64>, U64> = memory.try_alloc(&allocator, 1)
+    match move allocation:
+        Ok(buffer):
+            var slots = move buffer
+            let _ = memory.init(&mut slots, 0, 73)
+            match extract_at(move slots, 1):
+                Ok(unexpected):
+                    stack_buffer_close(move unexpected.buffer)
+                    console.print_int(991)
+                Err(bounds):
+                    console.print_int(bounds.code)
+                    match memory.read(&bounds.buffer, 0):
+                        Ok(item):
+                            console.print_int(item)
+                        Err(code):
+                            console.print_int(992)
+                    match extract_at(move bounds.buffer, 0):
+                        Ok(taken):
+                            console.print_int(taken.element)
+                            match extract_at(move taken.buffer, 0):
+                                Ok(unexpected):
+                                    stack_buffer_close(move unexpected.buffer)
+                                    console.print_int(993)
+                                Err(empty):
+                                    console.print_int(empty.code)
+                                    match extract_at(move empty.buffer, 18446744073709551615):
+                                        Ok(unexpected):
+                                            stack_buffer_close(move unexpected.buffer)
+                                            console.print_int(994)
+                                        Err(huge):
+                                            console.print_int(huge.code)
+                                            stack_buffer_close(move huge.buffer)
+                        Err(back):
+                            stack_buffer_close(move back.buffer)
+                            console.print_int(995)
+        Err(code):
+            console.print_int(996)

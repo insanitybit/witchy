@@ -1,0 +1,33 @@
+// Refused: a station of `rail` given to the road distances, though both graphs have 80 nodes and
+// the station is node 3. The message names both graphs, at `station`.
+import console
+import graph
+
+fn improve<G: Brand>(distance: &mut Distances<G>, node: Node<G>, cost: U64):
+    if cost < distance.get(node):
+        distance.set(node, cost)
+
+fn mix(roads: &Graph, rail: &Graph, allocator: &Allocator) -> Result<(), U64>:
+    brand roads.nodes() as nodes:
+        var distance = nodes.distances(allocator, 1000000)?
+        brand rail.nodes() as stations:
+            if let Some(station) = stations.node(3):
+                improve(&mut distance, station, 1)
+        distance.close()
+    return Ok(())
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made_roads): Graph = Graph.new(&allocator, 80) else Err(code):
+        return
+    var roads = move made_roads
+    let Ok(made_rail): Graph = Graph.new(&allocator, 80) else Err(code):
+        roads.close()
+        return
+    var rail = move made_rail
+    match mix(&roads, &rail, &allocator):
+        Ok:
+            console.line("done")
+        Err(code):
+            console.line("no room")
+    roads.close()
+    rail.close()

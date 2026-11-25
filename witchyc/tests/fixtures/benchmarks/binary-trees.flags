@@ -1,0 +1,2 @@
+build: --heap-pages=64 --slots=8192
+run: --memory-pages=200 --unmetered

@@ -1,0 +1,73 @@
+// A deque used from outside its file: values pushed at both ends, an insert at the
+// front that lands in the last cell, a full deque refusing, and growth.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-deque.wy"
+
+// Print every value, front to back.
+fn show(console: &Console<Write>, ring: &Deque<U64>):
+    var index: U64 = 0
+    while index < ring.len():
+        match ring.get(index):
+            Ok(item):
+                console.print_int(item)
+            Err(code):
+                console.print_int(999)
+        index += 1
+    console.print_int(0)
+
+fn back(console: &Console<Write>, ring: &mut Deque<U64>, item: U64):
+    match ring.push_back_mut(item):
+        Ok:
+            return
+        Err(refused):
+            console.print_int(900)
+
+fn front(console: &Console<Write>, ring: &mut Deque<U64>, item: U64):
+    match ring.push_front_mut(item):
+        Ok:
+            return
+        Err(refused):
+            console.print_int(901)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<Deque<U64>, U64> = Deque.new(&allocator, 3)
+    match move made:
+        Ok(empty):
+            var ring = move empty
+            back(&console, &mut ring, 1)
+            back(&console, &mut ring, 2)
+            front(&console, &mut ring, 7)
+            // Full: 7 1 2, with 7 in the last cell.
+            front(&console, &mut ring, 8)
+            show(&console, &ring)
+            match ring.pop_back_mut():
+                Ok(item):
+                    console.print_int(item)
+                Err(code):
+                    console.print_int(902)
+            back(&console, &mut ring, 3)
+            show(&console, &ring)
+            match ring.pop_front_mut():
+                Ok(item):
+                    console.print_int(item)
+                Err(code):
+                    console.print_int(903)
+            front(&console, &mut ring, 6)
+            front(&console, &mut ring, 5)
+            match Deque.reserve(move ring, &allocator, 6):
+                Ok(grown):
+                    var bigger = move grown
+                    front(&console, &mut bigger, 4)
+                    back(&console, &mut bigger, 9)
+                    show(&console, &bigger)
+                    var total: U64 = 0
+                    for item in &bigger:
+                        total += *item
+                    console.print_int(total)
+                    console.print_int(bigger.capacity())
+                    Deque.close(move bigger)
+                Err(kept):
+                    console.print_int(904)
+                    Deque.close(move kept)
+        Err(code):
+            console.print_int(905)

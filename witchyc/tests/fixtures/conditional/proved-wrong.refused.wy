@@ -1,0 +1,9 @@
+// Refused by Lean: the smaller of the two is not at least both.
+fn larger(a: U64, b: U64) -> U64:
+    ensures result >= a && result >= b
+    proof:
+        auto
+    return if a > b: b else: a
+
+fn main():
+    return

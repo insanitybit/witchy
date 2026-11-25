@@ -1,0 +1,55 @@
+[package]
+name = "witchy-two"
+version = "0.1.0"
+edition = "2024"
+autotests = false
+# The filesystem confinement fixture deliberately links to an ancestor.
+exclude = ["tests/fixtures/fs/root/outside"]
+
+[dependencies]
+
+[lib]
+test = true
+doctest = false
+
+[[bin]]
+name = "witchyc"
+path = "src/main.rs"
+test = false
+
+[[test]]
+name = "wasm_scalar"
+path = "tests/wasm_scalar.rs"
+
+[[test]]
+name = "wasm_cli"
+path = "tests/wasm_cli.rs"
+
+# Assertion failures retain their location. Use CARGO_PROFILE_TEST_DEBUG=line-tables-only
+# to resolve additional backtrace frames to source lines during debugging.
+[profile.test]
+debug = 0
+
+# Bulk-suite throughput.
+[profile.suite]
+inherits = "dev"
+opt-level = 2
+debug = 1
+debug-assertions = true
+overflow-checks = true
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(all(target_arch = "aarch64", any(target_os = "macos", all(target_os = "linux", target_env = "gnu"))))'.dependencies]
+cranelift-codegen = { version = "=0.136.3", default-features = false, features = ["std", "arm64"] }
+cranelift-frontend = "=0.136.3"
+cranelift-module = "=0.136.3"
+cranelift-object = { version = "=0.136.3", default-features = false }
+target-lexicon = "=0.13.6"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+sha2 = "=0.10.9"
+
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dev-dependencies]
+sha2 = "=0.10.9"

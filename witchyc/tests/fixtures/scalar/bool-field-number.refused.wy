@@ -1,0 +1,13 @@
+// A Bool is a proposition, not a number.
+type Flag:
+    on: Bool
+    count: U64
+
+fn read(flag: &Flag) -> U64:
+    ensures result == flag.on + 1
+    proof:
+        auto
+    return 1
+
+fn main(console: Console<Write>):
+    console.print_int(1)

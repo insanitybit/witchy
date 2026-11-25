@@ -1,0 +1,5 @@
+// An unknown name says nothing of that name is in scope.
+import console
+
+fn main(console: Console<Write>):
+    console.print_int(undefined_thing)

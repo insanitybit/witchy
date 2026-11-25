@@ -1,0 +1,9 @@
+// A module offering its own `Item`.
+pub type Item:
+    count: U64
+
+pub fn order(count: U64) -> Item:
+    return Item(count)
+
+pub fn total(item: &Item) -> U64:
+    return (*item).count * 10

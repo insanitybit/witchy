@@ -1,0 +1,9 @@
+fn main(out: Console<Write>, exec: Exec):
+    exec.raw_name_byte(U8.truncate(110))
+    exec.raw_name_byte(U8.truncate(110))
+    exec.raw_name_byte(U8.truncate(112))
+    let run = exec.raw_run()
+    var byte = run.raw_out_byte()
+    while byte < 256:
+        out.print_byte(U8.truncate(byte))
+        byte = run.raw_out_byte()

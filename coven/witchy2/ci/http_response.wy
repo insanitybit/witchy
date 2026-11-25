@@ -1,0 +1,28 @@
+// The dedicated CI endpoint uses one fixed-length JSON response per connection.
+import "http_request.wy"
+import http_framing
+import span
+import text
+
+pub type Response:
+    status: U64
+    body_at: U64
+    length: U64
+
+pub fn response(bytes: Span, fence: U64) -> Result<Response, U64>:
+    let Ok(head): IdentityResponseHead = identity_response_head(bytes, fence) else Err(reason):
+        return Err(3)
+    let Ok(content): Span = ci_header(head.headers, "content-type") else Err(code):
+        return Err(3)
+    if !content.equals_text_ignore_ascii_case("application/json"):
+        return Err(3)
+    match head.framing:
+        CloseDelimited:
+            return Err(3)
+        FixedLength(length):
+            let wire = head.length_field
+            if wire.len() > 5 || (wire.len() > 1 && wire.byte_or_end(0) == 48):
+                return Err(3)
+            if (head.status == 200 && length == 0) || length > 16384:
+                return Err(3)
+            return Ok(Response(head.status, head.body_at, length))

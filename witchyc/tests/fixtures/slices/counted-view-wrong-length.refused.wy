@@ -1,0 +1,24 @@
+// A view that says it is as long as the container and is not: refused by its own proof, so no
+// counted read relies on it.
+import console
+import vec
+
+sealed type Bag:
+    items: Vec<U64>
+
+impl Bag:
+    fn len(bag: &Bag) -> U64:
+        return (*bag).items.len()
+
+    fn view(bag: &Bag) -> &[U64]:
+        ensures result.len() == bag.items.len()
+        proof:
+            auto
+        let all = (*bag).items.as_slice()
+        return all.part(0, 1)
+
+    fn index(bag: &Bag, at: U64) -> U64:
+        return bag.view()[at]
+
+fn main(console: Console<Write>, allocator: Allocator):
+    return

@@ -1,0 +1,35 @@
+// String.replace_str against Python's str.replace: overlapping candidates, an empty needle,
+// no match, matches at both ends, multi-byte text, growth and shrinkage.
+import console
+import string
+import text
+
+fn show(console: &Console<Write>, allocator: &Allocator, input: Text, needle: &str, replacement: &str):
+    let Ok(made): String = String.new(allocator) else Err(e):
+        return
+    var source = move made
+    if let Err(_) = source.push_text(allocator, input):
+        source.close()
+        return
+    match source.replace_text(allocator, needle, replacement):
+        Ok(out):
+            console.write("[")
+            console.write_string(&out)
+            console.line("]")
+            out.close()
+        Err(code):
+            console.line("no room")
+    source.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    show(&console, &allocator, "aaa", "aa", "b")
+    show(&console, &allocator, "hello world", "o", "0")
+    show(&console, &allocator, "hello", "", "x")
+    show(&console, &allocator, "abc", "z", "y")
+    show(&console, &allocator, "abcabc", "abc", "")
+    show(&console, &allocator, "xabcx", "x", "[]")
+    show(&console, &allocator, "héllo héllo", "é", "e")
+    show(&console, &allocator, "a€b€c", "€", "EUR")
+    show(&console, &allocator, "one two  two", "two", "2")
+    show(&console, &allocator, "", "a", "b")
+    show(&console, &allocator, "aaaa", "a", "aa")

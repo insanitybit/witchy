@@ -1,0 +1,69 @@
+import "../tuf/base64url.wy"
+import "../tuf/coordinate.wy"
+import "../tuf/origin.wy"
+import "../tuf/release_trust.wy"
+import discard
+import json_tree
+import sort
+import span
+import string
+import text
+import vec
+
+pub fn validate_policy(policy: &Json, allocator: &Allocator) -> Result<(), U64>:
+    if !count_fields(policy, 4):
+        return Err(1)
+    let registry = string_field(policy, "registry")?
+    let origin = string_field(policy, "origin")?
+    let revision = declared_integer(policy, "revision")?
+    if !registry_id(registry.as_bytes()) || origin.byte_len() > 300 || revision == 0 || revision >= 9223372036854775808:
+        return Err(1)
+    if let Err(code) = relying_party(origin.span()):
+        return Err(2)
+    let credentials = policy.field("credentials")?
+    match credentials:
+        Object(entries):
+            if entries.len() > 256:
+                return Err(1)
+            for entry in entries:
+                validate_credential(entry, allocator)?
+            return Ok(())
+        _:
+            return Err(1)
+
+fn validate_credential(entry: &Member, allocator: &Allocator) -> Result<(), U64>:
+    if !count_fields(&entry.value, 2):
+        return Err(1)
+    let ident = unpadded_base64url(entry.key.as_bytes(), allocator, 1023)?
+    ident.close()
+    let key = decode_field(&entry.value, "public_key", allocator, 4096)?
+    key.close()
+    let scope = entry.value.field("packages")?
+    match scope:
+        Array(items):
+            if items.len() == 0:
+                return Err(1)
+            let Ok(empty): Vec<String> = Vec.new(allocator, items.len()) else Err(code):
+                return Err(code)
+            var names = move empty
+            let checked = unique_packages(items, &mut names, allocator)
+            names.discard()
+            return checked
+        _:
+            return Err(1)
+
+fn unique_packages(items: &Vec<Json>, names: &mut Vec<String>, allocator: &Allocator) -> Result<(), U64>:
+    for item in items:
+        let name = item.text()?
+        if !package_name(name.span()):
+            return Err(1)
+        let Ok(copy): String = String.from_utf8_bytes(allocator, name.as_bytes()) else Err(code):
+            return Err(code)
+        if let Err(unused) = names.push_mut(allocator, move copy):
+            unused.close()
+            return Err(1)
+    sort(names)
+    for index in 1..names.len():
+        if !precedes(names, index - 1, index):
+            return Err(1)
+    return Ok(())

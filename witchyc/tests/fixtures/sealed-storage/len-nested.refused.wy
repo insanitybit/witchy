@@ -1,0 +1,32 @@
+// A kept reference into a field of a field is refused, whatever the invariants read.
+import console
+import vec
+
+sealed type Inner:
+    items: Vec<U64>
+    room: U64
+    invariant items.len() == room
+
+impl Inner:
+    fn len(inner: &Inner) -> U64:
+        return (*inner).room
+
+sealed type Outer:
+    inner: Inner
+    limit: U64
+    invariant inner.len() <= limit
+
+impl Outer:
+    // A kept reference into a field of a field: refused as before, whatever its invariants read.
+    fn poke(outer: &mut Outer):
+        ensures true
+        proof:
+            auto
+        match (*outer).inner.items.at_mut(0):
+            Ok(slot):
+                *slot = 1
+            Err(code):
+                ()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    return

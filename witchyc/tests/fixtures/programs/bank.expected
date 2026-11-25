@@ -1,0 +1,9 @@
+open alice -> 0
+deposit alice 50 -> 50
+withdraw alice 20 -> 30
+withdraw alice 100 -> only 30
+deposit bob 5 -> unknown account
+deposit alice lots -> not a number
+close alice -> unknown command
+withdraw alice -> missing word
+open -> missing word

@@ -1,0 +1,10 @@
+// A program's own `Char` is its own: the console's does not stand in the way.
+import console
+
+type Char:
+    a: U64
+    b: U64
+
+fn main(console: Console<Write>):
+    let c = Char(1, 2)
+    console.print_int(c.a + c.b)

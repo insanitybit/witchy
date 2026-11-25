@@ -1,0 +1,29 @@
+// The reference policy against a Python computation of `(33 h + byte) % 4294967291` from
+// `seed % 4294967291` (docs/plan-derive-laws.md, slice 2): a derived Quad feeds its four U32s as
+// bytes 0..15, the same state as two eight-byte words (chunk invariance); seeds 0 and 1; lanes
+// with the high bit set; two swapped lanes differ; the constant policy gives 0.
+import "../derive/parts/keys.wy"
+import console
+import hash
+
+type Quad derive(keys.Key, keys.Fed):
+    a: U32
+    b: U32
+    c: U32
+    d: U32
+
+fn main(console: Console<Write>):
+    let q = Quad(a: U32.truncate(50462976), b: U32.truncate(117835012), c: U32.truncate(185207048), d: U32.truncate(252579084))
+    console.print_int(hash_key(&q, Reference(0)))
+    var w = HashState.start(Reference(0))
+    w.word(506097522914230528, 8)
+    w.word(1084818905618843912, 8)
+    console.print_int(w.finish())
+    console.print_int(hash_key(&q, Reference(1)))
+    let high = Quad(a: U32.truncate(4294967295), b: U32.truncate(2147483648), c: U32.truncate(4026531840), d: U32.truncate(2863311530))
+    console.print_int(hash_key(&high, Reference(0)))
+    console.print_int(hash_key(&high, Reference(1)))
+    let swapped = Quad(a: U32.truncate(117835012), b: U32.truncate(50462976), c: U32.truncate(185207048), d: U32.truncate(252579084))
+    if hash_key(&swapped, Reference(0)) != hash_key(&q, Reference(0)):
+        console.print_int(1)
+    console.print_int(hash_key(&q, Constant))

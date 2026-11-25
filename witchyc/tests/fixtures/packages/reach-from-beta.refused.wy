@@ -1,0 +1,9 @@
+// Refused: gamma, which imports nothing, calls a function of alpha's inner file by its bare name
+// (2026-11-22: it built and printed 1041; the dogfood report's top priority 1).
+import console
+import "@alpha"
+import "@gamma"
+
+fn main(console: Console<Write>):
+    console.print_int(alpha.shown())
+    console.print_int(gamma.reach())

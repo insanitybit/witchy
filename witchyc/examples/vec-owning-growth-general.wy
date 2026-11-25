@@ -1,0 +1,44 @@
+fn main(console: Console<Write>):
+    var witness = memory.alloc(1)
+    memory.init(&mut witness, 0, 42)
+    let saved = &witness
+    let allocation: Result<Vec<Buffer<USize>>, AllocError> = vec_new(0)
+    match allocation:
+        Ok(vector):
+            var item = memory.alloc(1)
+            memory.init(&mut item, 0, 73)
+            match vec_push(move vector, move item):
+                Ok(pushed):
+                    match vec_reserve(move pushed, 3):
+                        Ok(grown):
+                            match vec_pop(move grown):
+                                Ok(popped):
+                                    match popped.item:
+                                        Some(recovered):
+                                            console.print_int(memory.read(&recovered, 0))
+                                            memory.release(recovered)
+                                        None:
+                                            console.print_int(90)
+                                    match vec_release(move popped.vector):
+                                        Ok(done):
+                                            console.print_int(74)
+                                        Err(kept):
+                                            console.print_int(91)
+                                            discard(move kept)
+                                Err(kept):
+                                    console.print_int(92)
+                                    discard(move kept)
+                        Err(failed):
+                            discard(move failed)
+                Err(failed):
+                    memory.release(failed.item)
+                    match vec_release(move failed.vector):
+                        Ok(done):
+                            console.print_int(93)
+                        Err(kept):
+                            discard(move kept)
+        Err(reason):
+            console.print_int(94)
+    console.print_int(memory.read(saved, 0))
+    memory.end(saved)
+    memory.release(witness)

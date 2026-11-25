@@ -1,0 +1,10 @@
+// `+` on a record without `Add` names the trait to implement.
+import console
+
+type P:
+    x: U64
+
+fn main(console: Console<Write>):
+    let a = P(x: 1)
+    let b = a + a
+    console.print_int(b.x)

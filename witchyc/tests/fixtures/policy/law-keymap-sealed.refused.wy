@@ -1,0 +1,22 @@
+// Refused (adversarial review round 6): KeyMap is sealed, so a program cannot change a map's policy after inserting (a present key was then missed).
+import console
+import hash
+import hashmap
+import keymap
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): KeyMap<U64, U64> = KeyMap.new(&allocator, 64, Reference(1)) else Err(code):
+        return
+    var map = move made
+    match map.put(&allocator, 5, 70):
+        Ok:
+            ()
+        Err(entry):
+            entry.discard()
+    var p = Fast(99)
+    let other = KeyMap(move map.cells, map.count, p)
+    if map.contains(&5):
+        console.print_int(1)
+    else:
+        console.print_int(0)
+    map.discard()

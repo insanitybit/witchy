@@ -1,0 +1,7 @@
+// A private type with a public function.
+type Corner:
+    x: U64
+
+impl Corner:
+    pub fn zero() -> U64:
+        return 0

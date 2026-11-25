@@ -1,0 +1,54 @@
+// One recipe from a module, applied to two unrelated types: Quad by all four fields, Account by
+// its id alone. Quad's hash equals the built-in derive's on the same fields (the recipe writes
+// the same fold), and two Accounts with one id are one key whatever else they hold.
+import "parts/keys.wy"
+import console
+import hash
+import hashmap
+
+type Quad derive(keys.Key):
+    a: U32
+    b: U32
+    c: U32
+    d: U32
+
+type Same derive(Eq, Hash):
+    a: U32
+    b: U32
+    c: U32
+    d: U32
+
+type Account derive(keys.Key(by: id), Discard):
+    id: U64
+    visits: U64
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let q = Quad(a: 50462976, b: 117835012, c: 185207048, d: 252579084)
+    let s = Same(a: 50462976, b: 117835012, c: 185207048, d: 252579084)
+    if q.hash() == s.hash():
+        console.print_int(1)
+    if q == Quad(a: 50462976, b: 117835012, c: 185207048, d: 252579084) && !(q == Quad(a: 50462976, b: 117835012, c: 185207048, d: 0)):
+        console.print_int(2)
+    let one = Account(id: 7, visits: 1)
+    let other = Account(id: 7, visits: 99)
+    if one == other && one.hash() == other.hash() && !(one == Account(id: 8, visits: 1)):
+        console.print_int(3)
+    let Ok(made): HashMap<Account, U64> = HashMap.new(&allocator, 8) else Err(code):
+        return
+    var names = move made
+    match names.insert(one, 10):
+        Ok:
+            ()
+        Err(entry):
+            discard(entry)
+    match names.get(&other):
+        Ok(n):
+            console.print_int(*n)
+        Err(code):
+            console.print_int(0)
+    match names.get(&Account(id: 8, visits: 1)):
+        Ok(n):
+            console.print_int(*n)
+        Err(code):
+            console.print_int(0)
+    names.discard()

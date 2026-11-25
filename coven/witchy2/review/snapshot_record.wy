@@ -1,0 +1,184 @@
+import "approval_bindings.wy"
+import "challenge_bindings.wy"
+import "commit_request.wy"
+import "policy_document.wy"
+import "../tuf/package.wy"
+import "../tuf/release_trust.wy"
+import console
+import discard
+import json_tree
+import span
+import string
+import text
+
+pub type SnapshotPurpose:
+    ApprovalSnapshot
+    InspectionSnapshot
+    LegacyInspectionSnapshot
+
+pub fn emit_snapshot(size: Result<U64, U64>, reply: &[U8], token: &String, purpose: SnapshotPurpose, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let length = size?
+    if length <= 1 || length > reply.len():
+        return Err(10)
+    let record = reply.part(1, length)
+    if reply[0] == 1:
+        let reason = String.from_utf8_bytes(allocator, record)?
+        output.line("refused")
+        output.write_string(&reason)
+        output.print_byte(10)
+        reason.close()
+        return Ok(())
+    if reply[0] != 0:
+        return Err(10)
+    if let Err(code) = parse_snapshot(Span.of(record), token, purpose, output, allocator):
+        output.line("refused")
+        if code == 2:
+            output.line("release challenge is unknown, expired, consumed or from an old policy")
+        else if code == 3:
+            output.line("staged bytes do not match their digest")
+        else if code == 4:
+            output.line("staging provenance does not match the release or registry")
+        else:
+            output.line("release challenge does not match the candidate or policy")
+    return Ok(())
+
+fn parse_snapshot(record: Span, token: &String, purpose: SnapshotPurpose, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let Ok(parts): Halves = record.split(0) else Err(rest):
+        return Err(1)
+    let raw = parts.head.to_string(allocator)?
+    let parsed = parse_release_json(&raw, allocator)
+    raw.close()
+    let Ok(header): Json = move parsed else Err(code):
+        return Err(1)
+    let checked = check_policy(&header, parts.tail, token, purpose, output, allocator)
+    header.discard()
+    return checked
+
+fn check_policy(header: &Json, payload: Span, token: &String, purpose: SnapshotPurpose, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let raw = string_field(header, "policy")?
+    let pin = string_field(header, "pin")?
+    let actual = digest_text(raw.as_bytes(), allocator)?
+    let matches = actual.eq(pin)
+    actual.close()
+    if !matches:
+        return Err(2)
+    let policy = parse_release_json(raw, allocator)?
+    let checked = check_envelope(header, &policy, payload, token, purpose, output, allocator)
+    policy.discard()
+    return checked
+
+fn check_envelope(header: &Json, policy: &Json, payload: Span, token: &String, purpose: SnapshotPurpose, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    validate_policy(policy, allocator)?
+    let raw = string_field(header, "envelope")?
+    let envelope = parse_release_json(raw, allocator)?
+    let checked = check_candidate(header, policy, &envelope, payload, token, purpose, output, allocator)
+    envelope.discard()
+    return checked
+
+fn check_candidate(header: &Json, policy: &Json, envelope: &Json, payload: Span, token: &String, purpose: SnapshotPurpose, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let intent = envelope.field("intent")?
+    let stored_expiry = declared_integer(header, "expires")?
+    let expiry = declared_integer(intent, "expires")?
+    if stored_expiry != expiry || !matches_envelope(envelope, token, allocator):
+        return Err(1)
+    let name = string_field(header, "name")?
+    let version = string_field(header, "version")?
+    let digest = string_field(intent, "digest")?
+    check_intent(intent, header, policy, name, version, purpose)?
+    if !valid_coordinates(name, version, digest):
+        return Err(1)
+    let actual = digest_text(payload.as_bytes(), allocator)?
+    let matches = actual.eq(digest)
+    actual.close()
+    if !matches:
+        return Err(3)
+    if let Err(error) = validate_package(payload.as_bytes(), name.span(), version.span(), allocator):
+        return Err(1)
+    return write_snapshot(header, policy, envelope, payload, digest, purpose, output, allocator)
+
+fn check_intent(intent: &Json, header: &Json, policy: &Json, name: &String, version: &String, purpose: SnapshotPurpose) -> Result<(), U64>:
+    let operation = string_field(intent, "operation")?
+    match purpose:
+        ApprovalSnapshot:
+            let registry = string_field(policy, "registry")?
+            let scoped = string_field(intent, "registry")?
+            let pin = string_field(header, "pin")?
+            let policy_pin = string_field(intent, "policy")?
+            let intended_name = string_field(intent, "name")?
+            let intended_version = string_field(intent, "version")?
+            if !operation.equals_text("release") || !scoped.eq(registry) || !policy_pin.eq(pin) || !name.eq(intended_name) || !version.eq(intended_version):
+                return Err(1)
+        _:
+            if !count_fields(intent, 3) || !operation.equals_text("inspect"):
+                return Err(1)
+    return Ok(())
+
+fn write_snapshot(header: &Json, policy: &Json, envelope: &Json, payload: Span, digest: &String, purpose: SnapshotPurpose, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let empty = String.new(allocator)?
+    var wire = move empty
+    let checked = snapshot_json(&mut wire, header, policy, envelope, digest, purpose, allocator)
+    if let Err(code) = checked:
+        wire.close()
+        return Err(code)
+    match purpose:
+        ApprovalSnapshot:
+            output.line("committed")
+        _:
+            output.line("snapshot")
+    output.write_string(&wire)
+    output.print_byte(10)
+    wire.close()
+    match purpose:
+        ApprovalSnapshot:
+            ()
+        _:
+            var writer = WordWriter.new()
+            for byte in payload.as_bytes():
+                writer.put(output, *byte)
+            writer.flush(output)
+    return Ok(())
+
+fn snapshot_json(wire: &mut String, header: &Json, policy: &Json, envelope: &Json, digest: &String, purpose: SnapshotPurpose, allocator: &Allocator) -> Result<(), U64>:
+    wire.push_text(allocator, "{\"policy\":")?
+    append_json(wire, policy, allocator)?
+    wire.push_text(allocator, ",\"envelope\":")?
+    append_json(wire, envelope, allocator)?
+    wire.push_text(allocator, ",\"previous\":")?
+    let previous = header.field("previous")?
+    append_json(wire, previous, allocator)?
+    match purpose:
+        ApprovalSnapshot:
+            ()
+        _:
+            append_inspection_fields(wire, header, policy, digest, allocator)?
+    return wire.push_text(allocator, "}")
+
+fn append_inspection_fields(wire: &mut String, header: &Json, policy: &Json, digest: &String, allocator: &Allocator) -> Result<(), U64>:
+    let name = header.field("name")?
+    let version = header.field("version")?
+    wire.push_text(allocator, ",\"name\":")?
+    append_json(wire, name, allocator)?
+    wire.push_text(allocator, ",\"version\":")?
+    append_json(wire, version, allocator)?
+    wire.push_text(allocator, ",\"provenance\":")?
+    let raw = header.field("provenance")?
+    match raw:
+        Null:
+            return wire.push_text(allocator, "null")
+        Str(document):
+            if document.byte_len() > 16384:
+                return Err(4)
+            let provenance = parse_release_json(document, allocator)?
+            let written = append_provenance(wire, &provenance, policy, digest, allocator)
+            provenance.discard()
+            return written
+        _:
+            return Err(4)
+
+fn append_provenance(wire: &mut String, provenance: &Json, policy: &Json, digest: &String, allocator: &Allocator) -> Result<(), U64>:
+    let registry = string_field(policy, "registry")?
+    let provenance_registry = string_field(provenance, "registry")?
+    let provenance_digest = string_field(provenance, "digest")?
+    if !registry.eq(provenance_registry) || !digest.eq(provenance_digest):
+        return Err(4)
+    return append_json(wire, provenance, allocator)

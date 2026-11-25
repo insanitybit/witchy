@@ -1,0 +1,11 @@
+// A value with a reference into it still in use is not exchanged away.
+type Pair:
+    left: U64
+    right: U64
+
+fn main(console: Console<Write>):
+    var one = Pair(1, 2)
+    var two = Pair(3, 4)
+    let seen = &one.left
+    memory.exchange(&mut one, &mut two)
+    console.print_int(*seen)

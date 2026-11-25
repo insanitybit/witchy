@@ -1,0 +1,5 @@
+// A package that imports another by name, which its package list line requires.
+import "@hello-world"
+
+pub fn chained() -> U64:
+    return greeting() * 6

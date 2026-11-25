@@ -1,0 +1,27 @@
+// `Variant(x) if guard:` takes the arm only when the guard holds; otherwise the arms after it are tried.
+import console
+
+type Shape:
+    Circle(U64)
+    Square(U64)
+    Dot
+
+fn size(s: Shape) -> U64:
+    match s:
+        Dot:
+            0
+        Circle(r) if r > 10:
+            1000
+        Square(w) if w > 10:
+            2000
+        Circle(r):
+            r
+        _:
+            7
+
+fn main(console: Console<Write>):
+    console.print_int(size(Shape.Circle(20)))
+    console.print_int(size(Shape.Circle(3)))
+    console.print_int(size(Shape.Square(30)))
+    console.print_int(size(Shape.Square(3)))
+    console.print_int(size(Shape.Dot))

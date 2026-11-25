@@ -1,0 +1,7 @@
+# Everything this run may reach, bound to main's parameters by name.
+[listen]
+listener = "127.0.0.1:8417"   # main(listener: Listener): one loopback address
+[dirs]
+site = { root = "site", rights = ["Read"] }   # main(site: Dir<Read>): one directory, read-only
+[clock]
+clock = true                  # main(clock: Clock): the time limit on each connection

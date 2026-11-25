@@ -1,0 +1,52 @@
+// `for item in array:` walks an array by index and gives a reference to each element.
+import "../../../library/wasm-console.wy"
+
+fn total(values: &[U64; 4]) -> U64:
+    var sum: U64 = 0
+    for value in values:
+        sum += *value
+    return sum
+
+type Point:
+    x: U64
+    y: U64
+
+type Grid:
+    cells: [U64; 3]
+    scale: U64
+
+fn sum_cells(grid: &Grid) -> U64:
+    var total: U64 = 0
+    for cell in grid.cells:
+        total += *cell * grid.scale
+    return total
+
+fn main(console: Console<Write>):
+    let values: [U64; 4] = [3, 5, 7, 11]
+    var sum: U64 = 0
+    for value in values:
+        if *value == 5:
+            continue
+        sum += *value
+    console.print_int(sum)
+    console.print_int(total(&values))
+    for value in &values:
+        if *value > 6:
+            break
+        console.print_int(*value)
+    var tens: [U64; 3] = [1, 2, 3]
+    for value in &mut tens:
+        *value = *value * 10
+    for value in tens:
+        console.print_int(*value)
+    var written: U64 = 0
+    for value in [4, 5, 6]:
+        written += *value
+    console.print_int(written)
+    let points = [Point(1, 2), Point(3, 4)]
+    var area: U64 = 0
+    for point in points:
+        area += point.x * point.y
+    console.print_int(area)
+    let grid = Grid([1, 2, 3], 2)
+    console.print_int(sum_cells(&grid))

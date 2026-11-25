@@ -1,0 +1,29 @@
+// `run_task` is for code that is not a task: inside one, it would block every other task until
+// its work finished and never hear a cancel (review). There it refuses, Err(2), and discards the
+// work unstarted; `race`, `both` and `TaskSet` run work inside a task.
+import console
+import net
+import tasks
+import discard
+
+fn nap(clock: Clock, ms: U64) suspends:
+    let slept = clock.sleep(ms)
+    report(ms)
+
+fn inner(allocator: Allocator, net: Net, clock: Clock) suspends:
+    match run_task_net(&allocator, &net, 8192, fn() -> (): nap(move clock, 1500)):
+        Ok(reported):
+            report(reported)
+        Err(code):
+            report(code)
+
+fn main(console: Console<Write>, net: Net, allocator: Allocator, clock: Clock):
+    let shared = allocator.share()
+    let Ok(inside): Net = net.only("127.0.0.1:47628") else Err(error):
+        return
+    let timer = clock.share()
+    match run_task_net(&allocator, &net, 16384, fn() -> (): inner(move shared, move inside, move timer)):
+        Ok(reported):
+            console.print_int(reported)
+        Err(code):
+            console.line("no memory")

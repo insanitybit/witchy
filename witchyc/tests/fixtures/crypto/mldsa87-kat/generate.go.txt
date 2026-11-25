@@ -1,0 +1,30 @@
+// Generate public ML-DSA-87 test data using Go's independent implementation.
+// Run as generate.go. The seed and message are synthetic.
+package main
+
+import (
+	"crypto/mldsa"
+	"os"
+)
+
+func main() {
+	seed := make([]byte, 32)
+	for i := range seed {
+		seed[i] = byte(i)
+	}
+	key, err := mldsa.NewPrivateKey(mldsa.MLDSA87(), seed)
+	if err != nil {
+		panic(err)
+	}
+	message := []byte("Witchy ML-DSA-87 verification fixture\n")
+	signature, err := key.SignDeterministic(message, &mldsa.Options{})
+	if err != nil {
+		panic(err)
+	}
+	vector := append([]byte{}, key.PublicKey().Bytes()...)
+	vector = append(vector, message...)
+	vector = append(vector, signature...)
+	if err := os.WriteFile("vector.bin", vector, 0644); err != nil {
+		panic(err)
+	}
+}

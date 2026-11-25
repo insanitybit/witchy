@@ -1,0 +1,104 @@
+// A sealed type with invariants lends, in its own file, a field that no invariant reads: the
+// reference is kept in a local or bound by a match, and what the proof knows of the other
+// fields stays known.
+import console
+import vec
+import option
+
+sealed type Bag:
+    items: Vec<U64>
+    held: Option<U64>
+    spare: U64
+    count: U64
+    limit: U64
+    invariant count <= limit
+    invariant when None = held:
+        count == 0
+
+fn poke(slot: &mut U64):
+    *slot = 9
+
+impl Bag:
+    fn new(items: Vec<U64>) -> Bag:
+        ensures result.count == 0
+        return Bag(move items, None, 0, 0, 4)
+
+    // The element reference is bound by the match and written through.
+    fn set(bag: &mut Bag, index: U64, value: U64) -> Bool:
+        ensures bag.count == old(bag.count)
+        ensures bag.limit == old(bag.limit)
+        match (*bag).items.at_mut(index):
+            Ok(slot):
+                *slot = value
+                return true
+            Err(code):
+                return false
+
+    // The storage is kept in a local, and a field the invariant reads is written while it is.
+    fn count_one(bag: &mut Bag, value: U64) -> Bool:
+        ensures result == (bag.count == 1)
+        if (*bag).limit == 0 || (*bag).count > 1:
+            return (*bag).count == 1
+        let storage = &mut (*bag).items
+        (*bag).held = Some(value)
+        (*bag).count = 1
+        match storage.at_mut(0):
+            Ok(slot):
+                *slot = value
+            Err(code):
+                ()
+        return true
+
+    // A plain field no invariant reads, kept and handed to a callee.
+    fn respare(bag: &mut Bag) -> U64:
+        ensures result == old(bag.count)
+        let before = (*bag).count
+        let spare = &mut (*bag).spare
+        *spare = 3
+        poke(spare)
+        return before
+
+    fn first(bag: &Bag) -> U64:
+        match (*bag).items.at(0):
+            Ok(item):
+                return *item
+            Err(code):
+                return 0
+
+    fn close(bag: Bag) -> U64:
+        let Bag(items, held, spare, count, limit) = move bag
+        items.close()
+        return spare
+
+type Pair:
+    a: U64
+    b: U64
+
+// With no invariant at all: a kept reference to one field leaves the other known.
+fn sibling(pair: &mut Pair) -> U64:
+    ensures pair.b == old(pair.b)
+    ensures result == 5
+    (*pair).b = (*pair).b
+    let a = &mut (*pair).a
+    *a = 5
+    return *a
+
+fn main(console: Console<Write>, allocator: Allocator):
+    match Vec.new(&allocator, 2):
+        Ok(made):
+            var items: Vec<U64> = move made
+            let _ = items.push_mut(&allocator, 1)
+            var bag = Bag.new(move items)
+            if bag.set(0, 41):
+                console.print_int(bag.first())
+            if !bag.set(7, 1):
+                console.print_int(0)
+            if bag.count_one(42):
+                console.print_int(bag.first())
+            console.print_int(bag.respare())
+            console.print_int(bag.close())
+        Err(code):
+            console.print_int(code)
+    var pair = Pair(1, 2)
+    console.print_int(sibling(&mut pair))
+    console.print_int(pair.a + pair.b)

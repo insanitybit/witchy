@@ -1,0 +1,78 @@
+// I64: arithmetic, comparison, fields, text and a Vec of them, run in Wasmtime.
+import "../../../library/wasm-int.wy"
+import "../../../library/wasm-string.wy"
+import "../../../library/wasm-vec.wy"
+
+type Point:
+    x: I64
+    y: I64
+
+fn step(point: &mut Point, dx: I64, dy: I64):
+    point.x += dx
+    point.y -= dy
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let a: I64 = 7
+    let b = -3
+    console.print_i64(a + b)
+    console.print_i64(b - a)
+    console.print_i64(a * b)
+    console.print_i64(a / b)
+    console.print_i64(a % b)
+    console.print_i64(-a / 2)
+    console.print_i64(-a % 2)
+    console.print_i64(-b)
+    if b < 0 && a > b && b <= -3 && b >= -3 && b != a && b == -3:
+        console.print_i64(1)
+    var point = Point(0, 0)
+    step(&mut point, -5, 2)
+    step(&mut point, 2, -9)
+    console.print_i64(point.x)
+    console.print_i64(point.y)
+    let least: I64 = -9223372036854775808
+    let greatest: I64 = 9223372036854775807
+    console.print_i64(least)
+    console.print_i64(greatest)
+    console.print_i64(least + greatest)
+    console.print_int(least.magnitude())
+    console.print_i64(a.least(b))
+    console.print_i64(a.greatest(b))
+    var text = match String.new(&allocator):
+        Ok(empty):
+            move empty
+        Err(code):
+            return
+    if text.push_i64(&allocator, -1234).is_ok() && text.push(&allocator, 32).is_ok() && text.push_i64(&allocator, 56).is_ok():
+        console.write_string(&text)
+        console.print_byte(10)
+    text.clear()
+    if let Ok(_) = text.push_text(&allocator, "-9223372036854775808"):
+        match text.parse_i64():
+            Ok(value):
+                console.print_i64(value)
+            Err(code):
+                console.print_int(code)
+    text.clear()
+    if let Ok(_) = text.push_text(&allocator, "9223372036854775808"):
+        match text.parse_i64():
+            Ok(value):
+                console.print_i64(value)
+            Err(code):
+                console.print_int(code)
+    text.close()
+    var items: Vec<I64> = match Vec.new(&allocator, 0):
+        Ok(empty):
+            move empty
+        Err(code):
+            return
+    for index in 0..5:
+        match items.push_mut(&allocator, -2 * I64.from_bits(index)):
+            Ok:
+                continue
+            Err(back):
+                break
+    var sum: I64 = 0
+    for item in &items:
+        sum += *item
+    console.print_i64(sum)
+    items.close()

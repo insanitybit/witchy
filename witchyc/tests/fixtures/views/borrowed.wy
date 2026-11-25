@@ -1,0 +1,14 @@
+// A shared reference may point at a record that holds a reference (docs/design-references-to-views.md).
+import "../../../library/wasm-span.wy"
+import "../../../library/wasm-string.wy"
+
+fn size(span: &Span) -> U64:
+    return 0
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var text = match String.new(&allocator):
+        Ok(empty):
+            move empty
+        Err(code):
+            return
+    text.close()

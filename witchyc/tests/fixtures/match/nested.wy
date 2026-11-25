@@ -1,0 +1,109 @@
+// A pattern inside a pattern: `Ok(Some(x))` matches the Result and then what it holds.
+// Owners are moved level by level; through a reference every level is read in place.
+import "../../../library/wasm-string.wy"
+
+type Option<T>:
+    Some(T)
+    None
+
+type Lookup = .[Missing | Locked(U64)]
+
+fn find(key: U64) -> Result<Option<U64>, Lookup>:
+    if key == 0:
+        return Err(.Missing)
+    if key > 100:
+        return Err(.Locked(key))
+    if key % 2 == 0:
+        return Ok(Some(key / 2))
+    return Ok(None)
+
+fn describe(key: U64) -> U64:
+    match find(key):
+        Ok(Some(value)):
+            return value
+        Ok(None):
+            return 1000
+        Err(.Missing):
+            return 2000
+        Err(.Locked(by)):
+            return 3000 + by
+
+// Three levels, and a rest arm at the inner one.
+fn depth(value: Option<Option<Option<U64>>>) -> U64:
+    match value:
+        Some(Some(Some(n))):
+            return n
+        Some(Some(None)):
+            return 2
+        Some(None):
+            return 1
+        None:
+            return 0
+
+fn letter(allocator: &Allocator, scalar: U64) -> Result<Option<String>, U64>:
+    if scalar == 0:
+        return Ok(None)
+    let empty = String.new(allocator)?
+    match empty.push_scalar(allocator, scalar):
+        Ok(text):
+            return Ok(Some(move text))
+        Err(back):
+            back.close()
+            return Err(9)
+
+// The String inside is moved out through both levels and closed.
+fn bytes(allocator: &Allocator, scalar: U64) -> U64:
+    match letter(allocator, scalar):
+        Ok(Some(text)):
+            let count = text.byte_len()
+            text.close()
+            return count
+        Ok(None):
+            return 0
+        Err(code):
+            return code
+
+// Through a reference: nothing moves, each level is a reference.
+fn peek(value: &Result<Option<U64>, U64>) -> U64:
+    match value:
+        Ok(Some(n)):
+            return *n
+        Ok(None):
+            return 77
+        Err(code):
+            return *code
+
+// `Ok(_)` takes what the nested arms above it leave; the outer `_:` takes the rest of everything.
+fn first_or(value: Result<Option<U64>, U64>, otherwise: U64) -> U64:
+    match value:
+        Ok(Some(n)):
+            return n
+        Ok(_):
+            return otherwise
+        Err(_):
+            return 0
+
+fn only_deep(value: Option<Option<U64>>) -> U64:
+    match value:
+        Some(Some(n)):
+            return n
+        _:
+            return 9
+
+fn main(console: Console<Write>, allocator: Allocator):
+    console.print_int(describe(8))
+    console.print_int(describe(7))
+    console.print_int(describe(0))
+    console.print_int(describe(205))
+    console.print_int(depth(Some(Some(Some(42)))))
+    console.print_int(depth(Some(Some(None))))
+    console.print_int(depth(Some(None)))
+    console.print_int(bytes(&allocator, 233))
+    console.print_int(bytes(&allocator, 0))
+    let held: Result<Option<U64>, U64> = Ok(Some(5))
+    console.print_int(peek(&held))
+    console.print_int(first_or(Ok(None), 31))
+    console.print_int(first_or(Ok(Some(30)), 31))
+    console.print_int(only_deep(Some(None)))
+    console.print_int(only_deep(None))
+    console.print_int(only_deep(Some(Some(8))))

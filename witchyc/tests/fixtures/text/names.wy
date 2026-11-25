@@ -1,0 +1,14 @@
+// The functions that hold a literal's bytes have names no program can spell, so a
+// program's own `text_literal_0` is just a function.
+fn text_literal_0(at: U64) -> U64:
+    return at + 7
+
+fn main(console: Console<Write>):
+    let word: Text = "hi"
+    console.print_int(text_literal_0(1))
+    console.print_int(word.byte_len())
+    match word.byte_at(1):
+        Ok(byte):
+            console.print_int(U8.to_u64(byte))
+        Err(code):
+            console.print_int(900)

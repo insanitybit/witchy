@@ -1,0 +1,9 @@
+// Refused in this first version: a format copies its values, and a String is an owner.
+// (Its view, `${name.span()}`, is shown: console/print-span.wy.)
+import console
+import string
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(name): String = String.new(&allocator) else Err(code):
+        return
+    console.print("hello ${name}")
+    name.close()

@@ -1,0 +1,151 @@
+import "generation.wy"
+import "metadata.wy"
+import "publication_files.wy"
+import "publication_roots.wy"
+import "publication_targets.wy"
+import "release_trust.wy"
+import "root.wy"
+import json_tree
+import string
+import vec
+
+pub type PublicationResult:
+    snapshot: U64
+    timestamp: U64
+    targets: U64
+
+// The caller holds the publication lock and grants read-only handles to
+// incoming and the protected published tree. Any output goes to a private
+// spool. Its timestamp is written only after every other object is verified.
+pub fn prepare_repository(repo: Repository, initial: &String, pin: &[U8; 48], trust: &ReleaseTrust, now: U64, allocator: &Allocator) -> Result<PublicationResult, PublicationError>:
+    prepare_spool(repo.spool)?
+    let Ok(reserved): Vec<U8> = trust.reserved_keys(allocator) else Err(error):
+        return Err(AuthorityConflict)
+    let result = verify_with_reserved(repo, initial, pin, trust, now, reserved.as_slice(), allocator)
+    reserved.close()
+    return result
+
+fn verify_with_reserved(repo: Repository, initial: &String, pin: &[U8; 48], trust: &ReleaseTrust, now: U64, reserved: &[U8], allocator: &Allocator) -> Result<PublicationResult, PublicationError>:
+    let root = publication_root(repo, initial, pin, reserved, allocator)?
+    let checked = read_timestamp(repo, &root, trust, now, reserved, allocator)
+    root.close()
+    return checked
+
+fn read_timestamp(repo: Repository, root: &TrustedRoot, trust: &ReleaseTrust, now: U64, reserved: &[U8], allocator: &Allocator) -> Result<PublicationResult, PublicationError>:
+    let path = literal_path(allocator, "metadata/timestamp.json")?
+    let read = read_text_object(repo.incoming, &path, metadata_limit(Timestamp), allocator)
+    let Ok(timestamp): String = move read else Err(error):
+        path.close()
+        return Err(error)
+    let checked = read_snapshot(repo, root, trust, &timestamp, now, reserved, allocator)
+    let result = stage_checked(repo.spool, &path, &timestamp, checked)
+    path.close()
+    timestamp.close()
+    return result
+
+fn read_snapshot(repo: Repository, root: &TrustedRoot, trust: &ReleaseTrust, timestamp: &String, now: U64, reserved: &[U8], allocator: &Allocator) -> Result<PublicationResult, PublicationError>:
+    let reference = timestamp_link(timestamp, allocator)?
+    let path = metadata_path(allocator, reference.version(), "snapshot")?
+    let read = read_immutable(repo, &path, metadata_limit(Snapshot), allocator)
+    let Ok(snapshot): String = move read else Err(error):
+        path.close()
+        return Err(error)
+    let checked = read_targets(repo, root, trust, timestamp, &snapshot, &reference, now, reserved, allocator)
+    let result = stage_checked(repo.spool, &path, &snapshot, checked)
+    path.close()
+    snapshot.close()
+    return result
+
+fn timestamp_link(wire: &String, allocator: &Allocator) -> Result<MetadataReference, PublicationError>:
+    let Ok(timestamp): Metadata = parse_metadata(wire, allocator, Timestamp) else Err(error):
+        return Err(CandidateGenerationInvalid)
+    let found = snapshot_reference(&timestamp, allocator)
+    timestamp.close()
+    let Ok(reference): MetadataReference = found else Err(error):
+        return Err(CandidateGenerationInvalid)
+    return Ok(reference)
+
+fn read_targets(repo: Repository, root: &TrustedRoot, trust: &ReleaseTrust, timestamp: &String, snapshot: &String, link: &MetadataReference, now: U64, reserved: &[U8], allocator: &Allocator) -> Result<PublicationResult, PublicationError>:
+    let Ok(document): Metadata = link.open(Snapshot, snapshot, allocator) else Err(error):
+        return Err(CandidateGenerationInvalid)
+    let found = targets_link(&document, allocator)
+    document.close()
+    let reference = found?
+    let path = metadata_path(allocator, reference.version(), "targets")?
+    let read = read_immutable(repo, &path, metadata_limit(Targets), allocator)
+    let Ok(targets): String = move read else Err(error):
+        path.close()
+        return Err(error)
+    let checked = read_history(repo, root, trust, Candidate(timestamp, snapshot, &targets), now, reserved, allocator)
+    let result = stage_checked(repo.spool, &path, &targets, checked)
+    path.close()
+    targets.close()
+    return result
+
+fn stage_checked(spool: &Dir<Write>, path: &String, bytes: &String, checked: Result<PublicationResult, PublicationError>) -> Result<PublicationResult, PublicationError>:
+    let result = checked?
+    stage_object(spool, path, bytes)?
+    return Ok(result)
+
+fn targets_link(snapshot: &Metadata, allocator: &Allocator) -> Result<MetadataReference, PublicationError>:
+    let Ok(signed): &Json = snapshot.signed() else Err(code):
+        return Err(CandidateGenerationInvalid)
+    let Ok(meta): &Json = signed.field("meta") else Err(code):
+        return Err(CandidateGenerationInvalid)
+    let Ok(entry): &Json = meta.field("targets.json") else Err(code):
+        return Err(CandidateGenerationInvalid)
+    let Ok(found): MetadataReference = parse_metadata_reference(entry, allocator, metadata_limit(Targets)) else Err(error):
+        return Err(CandidateGenerationInvalid)
+    return Ok(found)
+
+type Candidate:
+    timestamp: &String
+    snapshot: &String
+    targets: &String
+
+fn read_history(repo: Repository, root: &TrustedRoot, trust: &ReleaseTrust, candidate: Candidate, now: U64, reserved: &[U8], allocator: &Allocator) -> Result<PublicationResult, PublicationError>:
+    let path = literal_path(allocator, "metadata/timestamp.json")?
+    let read = read_text_object(repo.published, &path, metadata_limit(Timestamp), allocator)
+    path.close()
+    match move read:
+        Ok(previous):
+            let result = with_history(repo, root, trust, candidate, &previous, now, reserved, allocator)
+            previous.close()
+            return result
+        Err(MissingObject):
+            return verify_candidate(repo, root, trust, candidate, FirstPublication, now, reserved, allocator)
+        Err(_):
+            return Err(PriorGenerationInvalid)
+
+fn with_history(repo: Repository, root: &TrustedRoot, trust: &ReleaseTrust, candidate: Candidate, previous: &String, now: U64, reserved: &[U8], allocator: &Allocator) -> Result<PublicationResult, PublicationError>:
+    let Ok(reference): MetadataReference = timestamp_link(previous, allocator) else Err(error):
+        return Err(PriorGenerationInvalid)
+    let path = metadata_path(allocator, reference.version(), "snapshot")?
+    let read = read_text_object(repo.published, &path, metadata_limit(Snapshot), allocator)
+    path.close()
+    let Ok(snapshot): String = move read else Err(error):
+        return Err(PriorGenerationInvalid)
+    let history = Published(PreviousGeneration(previous, &snapshot))
+    let result = verify_candidate(repo, root, trust, candidate, history, now, reserved, allocator)
+    snapshot.close()
+    return result
+
+fn verify_candidate(repo: Repository, root: &TrustedRoot, trust: &ReleaseTrust, candidate: Candidate, history: History, now: U64, reserved: &[U8], allocator: &Allocator) -> Result<PublicationResult, PublicationError>:
+    let verified = verify_reserved_generation(root, candidate.timestamp, candidate.snapshot, candidate.targets, history, now, reserved, allocator)
+    let Ok(generation): VerifiedTopLevel = move verified else Err(error):
+        if let InvalidHistory = error:
+            return Err(PriorGenerationInvalid)
+        return Err(CandidateGenerationInvalid)
+    let version = snapshot_version(&generation)
+    let checked = verify_repository_roles(repo, &generation, trust, allocator)
+    let timestamp = generation.timestamp_version()
+    generation.close()
+    let targets = checked?
+    return Ok(PublicationResult(version?, timestamp, targets))
+
+fn snapshot_version(generation: &VerifiedTopLevel) -> Result<U64, PublicationError>:
+    let Ok(document): &Metadata = generation.snapshot() else Err:
+        return Err(CandidateGenerationInvalid)
+    let Ok(version): U64 = document.version() else Err(error):
+        return Err(CandidateGenerationInvalid)
+    return Ok(version)

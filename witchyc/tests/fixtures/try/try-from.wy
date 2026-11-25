@@ -1,0 +1,41 @@
+// `?` converts an error the function's own error type makes from: `AppError.from(code: U64)`,
+// in a typed `using` and in an untyped `let`.
+import console
+import string
+
+type AppError:
+    NoRoom(U64)
+    Empty
+
+impl AppError:
+    pub fn from(code: U64) -> AppError:
+        return NoRoom(code)
+
+fn greet(allocator: &Allocator, name: Text) -> Result<U64, AppError>:
+    using var text: String = String.new(allocator)?:
+        if let Err(_) = text.push_text(allocator, name):
+            return Err(Empty)
+        return Ok(text.byte_len())
+
+fn fail(code: U64) -> Result<U64, U64>:
+    return Err(code)
+
+fn passes(code: U64) -> Result<U64, AppError>:
+    let n = fail(code)?
+    return Ok(n)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    match greet(&allocator, "witchy"):
+        Ok(n):
+            console.print_int(n)
+        Err(e):
+            console.line("error")
+    match passes(42):
+        Ok(n):
+            console.line("ok?")
+        Err(e):
+            match e:
+                NoRoom(code):
+                    console.print_int(code)
+                Empty:
+                    console.line("empty")

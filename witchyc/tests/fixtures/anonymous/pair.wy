@@ -1,0 +1,50 @@
+// Two Strings and a count travel together in an anonymous record, through a
+// Result and a generic function, and are opened by label at the end.
+import "../../../library/wasm-string.wy"
+
+fn text(allocator: &Allocator, scalar: U64) -> Result<String, U64>:
+    let made: Result<String, U64> = String.new(allocator)
+    match move made:
+        Ok(empty):
+            match String.push_scalar(move empty, allocator, scalar):
+                Ok(one):
+                    return Ok(move one)
+                Err(back):
+                    String.close(move back)
+                    return Err(901)
+        Err(code):
+            return Err(code)
+
+type Found = .{first: String, second: String, count: U64}
+type Pair<T> = .{first: T, second: T}
+
+fn both(allocator: &Allocator) -> Result<Found, U64>:
+    match text(allocator, 104):
+        Ok(one):
+            match text(allocator, 10003):
+                Ok(two):
+                    return Ok(.{first: move one, second: move two, count: 2})
+                Err(code):
+                    String.close(move one)
+                    return Err(code)
+        Err(code):
+            return Err(code)
+
+// Swap the two labelled values of any pair.
+fn swap<T: Any>(pair: Pair<T>) -> Pair<T>:
+    let .{first, second} = move pair
+    return .{first: move second, second: move first}
+
+fn main(console: Console<Write>, allocator: Allocator):
+    match both(&allocator):
+        Ok(found):
+            let .{count, first, second} = move found
+            console.print_int(count)
+            let swapped = swap(.{first: move first, second: move second})
+            let .{first: long, second: short} = move swapped
+            console.print_int(String.byte_len(&long))
+            console.print_int(String.byte_len(&short))
+            String.close(move long)
+            String.close(move short)
+        Err(code):
+            console.print_int(code)

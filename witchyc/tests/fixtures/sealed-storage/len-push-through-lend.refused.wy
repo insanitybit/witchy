@@ -1,0 +1,38 @@
+// An invariant reads `items.len()`; a push through a brief lend of `items` grows it, so the invariant is not shown.
+import console
+import vec
+
+sealed type Shelf:
+    items: Vec<U64>
+    room: U64
+    invariant room <= 64
+    invariant items.len() == room
+
+impl Shelf:
+    fn new(allocator: &Allocator, room: U64) -> Result<Shelf, U64>:
+        requires room <= 64
+        ensures true
+        proof:
+            auto
+        let made: Result<Vec<U64>, U64> = Vec.filled(allocator, room, 7)
+        let Ok(items): Vec<U64> = move made else Err(code):
+            return Err(code)
+        return Ok(Shelf(move items, room))
+
+    fn close(shelf: Shelf):
+        let Shelf(items, room) = move shelf
+        items.close()
+
+    // The length grows through a brief lend: the invariant is not shown.
+    fn grow(shelf: &mut Shelf, allocator: &Allocator) -> Result<(), U64>:
+        ensures true
+        proof:
+            auto
+        match (*shelf).items.push_mut(allocator, 1):
+            Ok:
+                return Ok(())
+            Err(back):
+                return Err(back)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    return

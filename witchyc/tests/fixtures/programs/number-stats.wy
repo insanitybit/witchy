@@ -1,0 +1,67 @@
+// Count, least, greatest, sum, mean and standard deviation of 1,000 signed integers, against
+// Python with a plain summing loop (Python's sum() of floats compensates: one ulp apart).
+import console
+import string
+import span
+import int
+import float
+import vec
+
+// Signed integers, one a line: count, least, greatest, sum, mean and standard deviation.
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    let Ok(v): Vec<I64> = Vec.new(&allocator, 64) else Err(e):
+        return
+    var values = move v
+    let Ok(l): String = String.new(&allocator) else Err(e):
+        values.close()
+        return
+    var line = move l
+    while true:
+        line.clear()
+        match input.read_line(&allocator, &mut line):
+            .Line:
+                let Ok(x) = line.span().trim().parse_i64() else Err(e):
+                    continue
+                match values.push_mut(&allocator, x):
+                    Ok:
+                        ()
+                    Err(back):
+                        console.line("no room")
+            .End:
+                break
+            .NotText:
+                break
+            .NoRoom:
+                break
+    line.close()
+    let n = values.len()
+    var least: I64 = 0
+    var greatest: I64 = 0
+    match values.get(0):
+        Ok(first):
+            least = first
+            greatest = first
+        Err(e):
+            ()
+    var sum: I64 = 0
+    for index in 0..n:
+        let Ok(x) = values.get(index) else Err(e):
+            continue
+        least = least.min(x)
+        greatest = greatest.max(x)
+        sum = sum + x
+    let mean = F64.from_i64(sum) / F64.from_u64(n)
+    var squares = 0.0
+    for index in 0..n:
+        let Ok(x) = values.get(index) else Err(e):
+            continue
+        let d = F64.from_i64(x) - mean
+        squares = squares + d * d
+    let stddev = F64.sqrt(squares / F64.from_u64(n))
+    console.print("n ${n}")
+    console.print("min ${least}")
+    console.print("max ${greatest}")
+    console.print("sum ${sum}")
+    console.print("mean ${mean}")
+    console.print("stddev ${stddev}")
+    values.close()

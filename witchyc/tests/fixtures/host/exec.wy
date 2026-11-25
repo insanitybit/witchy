@@ -1,0 +1,42 @@
+// Running programs through `Exec`: only the names granted, each the file of that name in
+// the granted directory. Arguments arrive whole (no shell), the environment is empty.
+import console
+import exec
+
+fn say(console: &Console<Write>, allocator: &Allocator, ran: Result<Run, ExecError>):
+    match move ran:
+        Ok(run):
+            match run.read_text(allocator):
+                Ok(text):
+                    console.write_string(&text)
+                    text.close()
+                Err(e):
+                    console.line("unreadable")
+            console.print_int(run.code())
+        Err(NotGranted):
+            console.line("not granted")
+        Err(NotFound):
+            console.line("not found")
+        Err(InvalidName):
+            console.line("invalid")
+        Err(TimedOut):
+            console.line("timed out")
+        Err(_):
+            console.line("failed")
+
+fn main(console: Console<Write>, allocator: Allocator, exec: Exec):
+    exec.arg("world; rm -rf /")
+    say(&console, &allocator, exec.run("greet"))
+    // Each run starts with no arguments.
+    say(&console, &allocator, exec.run("greet"))
+    say(&console, &allocator, exec.run("sh"))
+    say(&console, &allocator, exec.run("../bin/greet"))
+    // A link in the directory is never followed; a file that is not executable is not run.
+    say(&console, &allocator, exec.run("lister"))
+    say(&console, &allocator, exec.run("notes"))
+    match exec.only("greet"):
+        Ok(narrow):
+            say(&console, &allocator, narrow.run("lister"))
+            say(&console, &allocator, narrow.run("greet"))
+        Err(e):
+            console.line("no narrowing")

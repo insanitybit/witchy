@@ -1,0 +1,39 @@
+import encoding
+import "canonical.wy"
+import "release_trust.wy"
+import json_tree
+import string
+import text
+
+pub fn sealed_target(approval: &Json, publisher: &[U8], package: &[U8], signature: &[U8], attested_at: U64, allocator: &Allocator) -> Result<String, U64>:
+    let receipt = release_json(approval, allocator)?
+    let target = assemble(&receipt, publisher, package, signature, attested_at, allocator)
+    receipt.close()
+    return move target
+
+fn assemble(receipt: &String, publisher: &[U8], package: &[U8], signature: &[U8], attested_at: U64, allocator: &Allocator) -> Result<String, U64>:
+    let encoded = ((package.len() + signature.len() + publisher.len()) * 4 + 6) / 3
+    let capacity = encoded + receipt.byte_len() + 256
+    if capacity > 2097152:
+        return Err(1)
+    let empty = String.with_capacity(allocator, capacity)?
+    var target = move empty
+    if let Err(code) = write_target(&mut target, receipt, publisher, package, signature, attested_at, allocator):
+        target.close()
+        return Err(code)
+    return Ok(move target)
+
+fn write_target(target: &mut String, receipt: &String, publisher: &[U8], package: &[U8], signature: &[U8], attested_at: U64, allocator: &Allocator) -> Result<(), U64>:
+    target.push_text(allocator, "{\"approval\":")?
+    target.push_part(allocator, receipt, 0, receipt.byte_len())?
+    target.push_text(allocator, ",\"attested_at\":")?
+    target.push_u64(allocator, attested_at)?
+    target.push_text(allocator, ",\"format\":\"")?
+    target.push_text(allocator, release_format())?
+    target.push_text(allocator, "\",\"package\":\"")?
+    encoding.push_base64url(target, allocator, package)?
+    target.push_text(allocator, "\",\"publisher_signature\":\"")?
+    encoding.push_base64url(target, allocator, publisher)?
+    target.push_text(allocator, "\",\"witness_signature\":\"")?
+    encoding.push_base64url(target, allocator, signature)?
+    return target.push_text(allocator, "\"}")

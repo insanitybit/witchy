@@ -1,0 +1,61 @@
+fn remove_one(input: Vec<U64>) -> Vec<U64>:
+    match vec_pop(move input):
+        Ok(popped):
+            discard(move popped.item)
+            return move popped.vector
+        Err(kept):
+            return move kept
+
+fn main(console: Console<Write>):
+    var witness = memory.alloc(1)
+    memory.init(&mut witness, 0, 42)
+    var held = memory.alloc(1)
+    memory.init(&mut held, 0, 37)
+    let saved = &witness
+    let created: Result<Vec<U64>, AllocError> = vec_new(0)
+    match created:
+        Ok(empty):
+            match vec_push(move empty, 73):
+                Ok(first):
+                    match vec_push(move first, 74):
+                        Ok(second):
+                            match vec_get(move second, 1):
+                                Ok(indexed):
+                                    match indexed.item:
+                                        Some(value):
+                                            console.print_int(value)
+                                        None:
+                                            console.print_int(901)
+                                    match vec_get(move indexed.vector, 7):
+                                        Ok(missing):
+                                            match missing.item:
+                                                Some(value):
+                                                    console.print_int(902)
+                                                None:
+                                                    console.print_int(75)
+                                            let measured = vec_len(move missing.vector)
+                                            console.print_int(measured.length)
+                                            let once = remove_one(move measured.vector)
+                                            let twice = remove_one(move once)
+                                            let drained = vec_len(move twice)
+                                            console.print_int(drained.length)
+                                            match vec_release(move drained.vector):
+                                                Ok(done):
+                                                    console.print_int(76)
+                                                Err(kept):
+                                                    discard(move kept)
+                                        Err(kept):
+                                            discard(move kept)
+                                Err(kept):
+                                    discard(move kept)
+                        Err(failed):
+                            discard(move failed)
+                Err(failed):
+                    discard(move failed)
+        Err(reason):
+            console.print_int(903)
+    console.print_int(memory.read(&held, 0))
+    memory.release(held)
+    console.print_int(memory.read(saved, 0))
+    memory.end(saved)
+    memory.release(witness)

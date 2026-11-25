@@ -1,0 +1,17 @@
+// A read after a statement that may change `i` keeps its test: here the last element is 0, so `i`
+// moves past the end before `s[i]`, which traps.
+import console
+
+fn skip(s: &[U64]) -> U64:
+    var t: U64 = 0
+    var i: U64 = 0
+    while i < s.len():
+        if s[i] == 0:
+            i += 1
+        t += s[i]
+        i += 1
+    return t
+
+fn main(console: Console<Write>):
+    let b: [U64; 5] = [5, 0, 7, 8, 0]
+    console.print_int(skip(b.slice()))

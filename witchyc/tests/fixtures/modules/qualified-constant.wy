@@ -1,0 +1,12 @@
+// Two imported files offer a constant of one name: each is named by its module
+// (`small_limits.LIMIT`); a bare `LIMIT` would be refused as ambiguous.
+import console
+import "parts/small_limits.wy"
+import "parts/large_limits.wy"
+
+let SUM = small_limits.LIMIT + large_limits.LIMIT
+
+fn main(console: Console<Write>):
+    console.print_int(small_limits.LIMIT)
+    console.print_int(large_limits.LIMIT)
+    console.print_int(SUM)

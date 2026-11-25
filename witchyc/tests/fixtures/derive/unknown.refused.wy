@@ -1,0 +1,8 @@
+// derive makes Eq, Hash, Before and Discard only.
+import console
+
+type P derive(Show):
+    x: U64
+
+fn main(console: Console<Write>):
+    console.print_int(P(x: 1).x)

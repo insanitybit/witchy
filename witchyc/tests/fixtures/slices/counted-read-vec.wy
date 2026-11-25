@@ -1,0 +1,21 @@
+// A range over a library Vec uses its logical length and its index method, for shared and owned receivers.
+import console
+import vec
+
+fn spread(v: &Vec<U64>, from: U64) -> U64:
+    var t: U64 = 0
+    for j in from..v.len():
+        t += v[j] * j
+    return t
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.new(&allocator, 4) else Err(c):
+        return
+    var v = move made
+    for x in [3, 1, 4, 1, 5]:
+        let pushed = v.push_mut(&allocator, *x)
+    var grown: U64 = 0
+    for j in 0..v.len():
+        grown += v[j]
+    console.print("${spread(&v, 0)} ${spread(&v, 3)} ${spread(&v, 9)} ${grown}")
+    v.close()

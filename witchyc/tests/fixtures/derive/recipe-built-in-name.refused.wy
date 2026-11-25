@@ -1,0 +1,13 @@
+// Refused: a recipe cannot take a built-in derive's name (review: it replaced `derive(Eq)`).
+import hash
+
+derive Eq:
+    impl Eq for Self:
+        fn eq(self: &Self, other: &Self) -> Bool:
+            return true
+
+type P derive(Eq):
+    x: U64
+
+fn main():
+    return

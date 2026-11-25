@@ -1,0 +1,17 @@
+// A generator whose body calls a function private to this file: a `for` in another file cannot
+// run its body in place (it may not call `scaled`), so it steps the generator as before.
+fn scaled(n: U64) -> U64:
+    return n * 3
+
+pub gen fn tripled(limit: U64) -> U64:
+    var i: U64 = 0
+    while i < limit:
+        yield scaled(i)
+        i += 1
+
+// One that calls nothing private: run in place from anywhere.
+pub gen fn plain(limit: U64) -> U64:
+    var i: U64 = 0
+    while i < limit:
+        yield i * 2
+        i += 1

@@ -1,0 +1,54 @@
+import console_bytes
+import "review/policy_install.wy"
+import "review/policy_snapshot.wy"
+import "tuf/release_trust.wy"
+import console
+import discard
+import json_tree
+import "@sqlite"
+import string
+import text
+import vec
+
+fn main(db: Sqlite, input: Console<Read>, output: Console<Write>, allocator: Allocator):
+    if let Err(code) = run(&db, &input, &output, &allocator):
+        if code == 3:
+            output.line("release policy cannot change this store's registry or origin")
+        else if code == 4:
+            output.line("release policy revision must increase")
+        else if code == 10:
+            output.line("release policy transaction unavailable")
+        else:
+            output.line("invalid release policy")
+
+fn run(db: &Sqlite, input: &Console<Read>, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let mode = input.next_byte()
+    if mode == U8.to_u64('R') && input.next_byte() == 256:
+        return read_policy_snapshot(db, output, allocator)
+    if mode != U8.to_u64('W'):
+        return Err(1)
+    let Ok(saved_length): U64 = input.read_u24_be() else Err(reason):
+        return Err(1)
+    let Ok(next_length): U64 = input.read_u24_be() else Err(reason):
+        return Err(1)
+    if saved_length == 0 || saved_length > 65537 || next_length == 0 || next_length > 65536:
+        return Err(1)
+    let empty: Vec<U8> = Vec.filled(allocator, saved_length + next_length, 0)?
+    var body = move empty
+    if let Err(reason) = input.read_exact_to_end(body.as_mut_slice()):
+        body.close()
+        return Err(1)
+    let bytes = body.as_slice()
+    let checked = parse_policy(bytes.part(0, saved_length), bytes.part(saved_length, bytes.len()), db, output, allocator)
+    body.close()
+    return checked
+
+fn parse_policy(saved: &[U8], bytes: &[U8], db: &Sqlite, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let raw = String.from_utf8_bytes(allocator, bytes)?
+    let parsed = parse_release_json(&raw, allocator)
+    raw.close()
+    let Ok(policy): Json = move parsed else Err(code):
+        return Err(1)
+    let checked = install_policy(saved, &policy, db, output, allocator)
+    policy.discard()
+    return checked

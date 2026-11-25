@@ -1,0 +1,10 @@
+// Refused, naming the nearest field the record has.
+import console
+
+type Point:
+    x: U64
+    height: U64
+
+fn main(console: Console<Write>):
+    let p = Point(1, 2)
+    console.print_int(p.hieght)

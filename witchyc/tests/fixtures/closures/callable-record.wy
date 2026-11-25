@@ -1,0 +1,14 @@
+// A program's own callable type beside a closure of the same shape (found refused by an
+// adversarial review: closure records were named like blanket impls).
+import console
+type Plain:
+    k: U64
+impl WitchyFn1<U64, U64> for Plain:
+    fn call(self: &Plain, a0: U64) -> U64:
+        return a0 + (*self).k
+fn apply(f: fn(U64) -> U64, x: U64) -> U64:
+    return f(x)
+fn main(console: Console<Write>):
+    console.print_int(apply(Plain(7), 5))
+    let add = fn(n: U64) -> U64: n + 1
+    console.print_int(apply(add, 5))

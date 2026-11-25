@@ -1,0 +1,26 @@
+// A frame larger than the whole stack is refused when the program is built, not left to trap.
+import console
+
+fn histogram(text: &[U8; 200]) -> U64:
+    var counts: [U64; 256] = [0; 256]
+    var i: U64 = 0
+    while i < 200:
+        let b = U8.to_u64(text[i])
+        counts[b] = counts[b] + 1
+        i += 1
+    var best: U64 = 0
+    var j: U64 = 0
+    while j < 256:
+        if counts[j] > counts[best]:
+            best = j
+        j += 1
+    return best * 1000 + counts[best]
+
+fn main(console: Console<Write>):
+    var text: [U8; 200] = [97; 200]
+    var k: U64 = 0
+    while k < 200:
+        if k % 3 == 0:
+            text[k] = 98
+        k += 1
+    console.print_int(histogram(&text))

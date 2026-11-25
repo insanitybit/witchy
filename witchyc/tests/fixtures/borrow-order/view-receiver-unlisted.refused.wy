@@ -1,0 +1,12 @@
+// Refused: the body reaches a field its receiver does not list.
+type Counter:
+    name: U64
+    count: U64
+
+impl Counter:
+    fn bump(self: Self { &mut count }):
+        self.count += self.name
+
+fn main():
+    var c = Counter(7, 0)
+    c.bump()

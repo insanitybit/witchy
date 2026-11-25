@@ -1,0 +1,37 @@
+// Second review of `borrows`: a variant holding a type parameter counted as borrowing nothing,
+// so in the `Err` arm the caller closed what the `T` it passed (a view) pointed into.
+import console
+import string
+
+type View:
+    s: &String
+
+fn choose<T>(x: &String, y: T) -> Result<&String, T>:
+    borrows Ok from x
+    return Err(y)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var victim = move made
+    let _ = victim.push_text(&allocator, "victim-text")
+    let Ok(other): String = String.new(&allocator) else Err(code):
+        victim.close()
+        return
+    var input = move other
+    let Ok(fresh): String = String.new(&allocator) else Err(code):
+        victim.close()
+        input.close()
+        return
+    var reuse = move fresh
+    match choose(&input, View(&victim)):
+        Ok(x):
+            victim.close()
+        Err(v):
+            victim.close()
+            let pushed = reuse.push_text(&allocator, "OVERWRITTEN")
+            let s = v.s
+            console.write_string(s)
+            console.line("")
+    input.close()
+    reuse.close()

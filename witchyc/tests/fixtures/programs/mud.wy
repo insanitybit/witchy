@@ -1,0 +1,86 @@
+// Fewest muddy steps across a walled grid: a 0-1 breadth-first search, which puts a
+// free step at the front of the deque and a costly one at the back.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-deque.wy"
+import "../../../library/wasm-vec.wy"
+
+let WIDTH = 16
+let HEIGHT = 16
+let CELLS = WIDTH * HEIGHT
+// A distance this large means not reached.
+let FAR = 1000000
+
+// Walls run down every fourth column, with a gap every fifth row.
+fn wall(at: U64) -> Bool:
+    let x = at % WIDTH
+    let y = at / WIDTH
+    return x % 4 == 2 && y % 5 != 3
+
+fn mud(at: U64) -> Bool:
+    return (at % WIDTH + at / WIDTH) % 3 == 0
+
+// Reach `to` from `from` if that is cheaper than the best way known so far.
+fn relax(distance: &mut Vec<U64>, queue: &mut Deque<U64>, allocator: &Allocator, from: U64, to: U64) -> Bool:
+    if wall(to):
+        return true
+    var cost: U64 = 0
+    if mud(to):
+        cost = 1
+    let reached = distance[from] + cost
+    if reached >= distance[to]:
+        return true
+    distance[to] = reached
+    if cost == 0:
+        return queue.push_front(allocator, to).is_ok()
+    return queue.push_back(allocator, to).is_ok()
+
+fn search(distance: &mut Vec<U64>, queue: &mut Deque<U64>, allocator: &Allocator) -> Bool:
+    while true:
+        match queue.pop_front_mut():
+            Ok(at):
+                let x = at % WIDTH
+                let y = at / WIDTH
+                if x > 0 && !relax(distance, queue, allocator, at, at - 1):
+                    return false
+                if x + 1 < WIDTH && !relax(distance, queue, allocator, at, at + 1):
+                    return false
+                if y > 0 && !relax(distance, queue, allocator, at, at - WIDTH):
+                    return false
+                if y + 1 < WIDTH && !relax(distance, queue, allocator, at, at + WIDTH):
+                    return false
+            Err(code):
+                return true
+    return true
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let cells = CELLS
+    let table: Result<Vec<U64>, U64> = Vec.filled(&allocator, cells, FAR)
+    let made: Result<Deque<U64>, U64> = Deque.new(&allocator, 0)
+    match move table:
+        Ok(filled):
+            var distance = move filled
+            match move made:
+                Ok(empty):
+                    var queue = move empty
+                    distance[0] = 0
+                    if queue.push_back(&allocator, 0).is_ok() && search(&mut distance, &mut queue, &allocator):
+                        console.print_int(distance[cells - 1])
+                        var reached: U64 = 0
+                        for at in 0..cells:
+                            if distance[at] < FAR:
+                                reached += 1
+                        console.print_int(reached)
+                        console.print_int(queue.capacity())
+                    else:
+                        console.print_int(900)
+                    queue.close()
+                Err(failed):
+                    console.print_int(901)
+            distance.close()
+        Err(code):
+            console.print_int(902)
+            match move made:
+                Ok(spare):
+                    spare.close()
+                Err(other):
+                    return

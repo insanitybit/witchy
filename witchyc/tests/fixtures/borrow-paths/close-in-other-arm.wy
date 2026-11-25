@@ -1,0 +1,21 @@
+// The arm that gives a reference keeps the vector lent; the arm that leaves may close it.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-vec.wy"
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var items: Vec<U64> = match Vec.new(&allocator, 1):
+        Ok(v):
+            move v
+        Err(c):
+            return
+    if !items.push_mut(&allocator, 7).is_ok():
+        items.close()
+        return
+    let first = match items.at(0):
+        Ok(x):
+            x
+        Err(c):
+            items.close()
+            return
+    console.print_int(*first)
+    items.close()

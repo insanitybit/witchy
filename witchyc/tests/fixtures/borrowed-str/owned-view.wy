@@ -1,0 +1,46 @@
+import console
+import string
+import text
+
+fn view(value: &String) -> &str:
+    return value.as_str()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(value): String = String.from_str(&allocator, "xhélloyabcdefgh") else Err(code):
+        return
+    if !value.starts_with_text("xhé") || !value.equals_text("xhélloyabcdefgh") || value.equals_text("xhélloyabcdefgx"):
+        value.close()
+        return
+    match value.find_text("éll", 1):
+        Ok(at):
+            console.print_int(at)
+        Err(code):
+            value.close()
+            return
+    let text = view(&value)
+    console.line(text.part(1, 7))
+    let Ok(made): String = String.with_capacity(&allocator, 20) else Err(code):
+        value.close()
+        return
+    var copy = move made
+    let _ = copy.push_part(&allocator, &value, 1, 7)
+    if let Err(code) = copy.reserve(&allocator, 32):
+        copy.close()
+        value.close()
+        return
+    if let Ok(_) = copy.reserve(&allocator, 18446744073709551615):
+        copy.close()
+        value.close()
+        return
+    console.write_string(&copy)
+    console.print_byte(10)
+    copy.cut(2)
+    console.line(copy.as_str())
+    copy.cut(3)
+    console.line(copy.as_str())
+    copy.close()
+    let uncut = String.truncate(move value, 3)
+    console.line(uncut.as_str())
+    let shortened = String.truncate(move uncut, 4)
+    console.line(shortened.as_str())
+    shortened.close()

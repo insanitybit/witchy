@@ -1,0 +1,6 @@
+// Refused: a value kept between steps is a number or a Bool in this first version.
+gen fn pairs(limit: U64) -> U64:
+    var both: [U64; 2] = [0, 0]
+    yield 1
+fn main():
+    return

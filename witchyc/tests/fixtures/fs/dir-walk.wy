@@ -1,0 +1,61 @@
+// A small `wc -l` over a directory tree: files made through a Dir<Write>, then walked through a
+// Dir<Read>, each subdirectory opened from its parent. Allocation and file errors meet in one
+// `?`: FsError makes one of an allocator's code (`FsError.from`).
+import console
+import fs
+import string
+import text
+
+fn setup(dir: &Dir<Write>, allocator: &Allocator) -> Result<(), FsError>:
+    dir.make_dir("notes")?
+    dir.make_dir("notes/deep")?
+    using var text: String = String.new(allocator)?:
+        let a = text.push_text(allocator, "one\ntwo\nthree\n").is_ok()
+        dir.write_text("a.txt", &text)?
+        dir.write_text("notes/b.txt", &text)?
+        let _ = text.push_text(allocator, "four\n")
+        dir.write_text("notes/deep/c.txt", &text)?
+    return Ok(())
+
+fn lines(text: &String) -> U64:
+    var count: U64 = 0
+    for at in 0..text.byte_len():
+        if text.byte_or_end(at) == 10:
+            count += 1
+    return count
+
+// Lines in every file under `dir`, each printed with the path that leads to it.
+fn walk(console: &Console<Write>, dir: &Dir<Read>, allocator: &Allocator, prefix: &String) -> Result<U64, FsError>:
+    var total: U64 = 0
+    using var listing: String = dir.list(allocator)?:
+        var cursor: U64 = 0
+        while cursor < listing.byte_len():
+            using var name: String = listing.field(allocator, '\n', &mut cursor)?:
+                using var path: String = String.new(allocator)?:
+                    let _ = path.push_string(allocator, prefix)
+                    let _ = path.push_string(allocator, &name)
+                    let length = name.byte_len()
+                    if length > 0 && name.byte_or_end(length - 1) == 47:
+                        name.cut(length - 1)
+                        let sub = dir.dir_path(&name)?
+                        total += walk(console, &sub, allocator, &path)?
+                        sub.close()
+                    else:
+                        using var text: String = dir.read_text_path(allocator, &name)?:
+                            let count = lines(&text)
+                            console.write_string(&path)
+                            console.print(": ${count}")
+                            total += count
+    return Ok(total)
+
+fn run(console: &Console<Write>, dir: &Dir, allocator: &Allocator) -> Result<U64, FsError>:
+    setup(dir, allocator)?
+    using var root: String = String.new(allocator)?:
+        return walk(console, dir, allocator, &root)
+
+fn main(console: Console<Write>, dir: Dir, allocator: Allocator):
+    match run(&console, &dir, &allocator):
+        Ok(total):
+            console.print("total: ${total}")
+        Err(error):
+            console.line("failed")

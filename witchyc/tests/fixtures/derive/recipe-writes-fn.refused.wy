@@ -1,0 +1,15 @@
+// Refused: a recipe writes impls only (review: its `fn` landed in the type's module).
+import hash
+
+derive Extra:
+    impl Eq for Self:
+        fn eq(self: &Self, other: &Self) -> Bool:
+            return true
+    fn injected() -> U64:
+        return 7
+
+type P derive(Extra):
+    x: U64
+
+fn main():
+    return

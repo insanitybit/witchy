@@ -1,0 +1,14 @@
+// Refused: a generator over a local array would outlive it.
+gen fn all(items: &[U64]) -> U64:
+    var index: U64 = 0
+    while index < items.len():
+        let item: U64 = items[index]
+        yield item
+        index += 1
+
+fn make() -> All:
+    let numbers: [U64; 3] = [1, 2, 3]
+    return all(numbers.slice())
+
+fn main():
+    let g = make()

@@ -1,0 +1,116 @@
+import "delegated_input.wy"
+import "delegations.wy"
+import "fetch_history.wy"
+import "fetch_refresh.wy"
+import "fetch_catalog.wy"
+import "fetch_role_file.wy"
+import "fetch_scope.wy"
+import "generation.wy"
+import "metadata.wy"
+import "release_trust.wy"
+import "root.wy"
+import "target_path.wy"
+import console
+import fs
+import span
+import string
+import text
+
+pub fn select_fetch(source: &Dir<Read>, root: &TrustedRoot, reserved: &[U8], scope: FetchScope, output: &Console<Write>, floor: RootFloor, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    if floor.version == 0:
+        return select_generation(source, root, reserved, scope, output, FirstPublication, now, allocator)
+    let metadata = parse_fetch_floor(floor.metadata, allocator)?
+    let selected = select_generation(source, root, reserved, scope, output, metadata.history(), now, allocator)
+    metadata.close()
+    return selected
+
+fn select_generation(source: &Dir<Read>, root: &TrustedRoot, reserved: &[U8], scope: FetchScope, output: &Console<Write>, history: History, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let timestamp = read_delegated_input(source, "timestamp.json", 16384, allocator)?
+    let result = with_timestamp(source, root, reserved, scope, &timestamp, output, history, now, allocator)
+    timestamp.close()
+    return result
+
+fn with_timestamp(source: &Dir<Read>, root: &TrustedRoot, reserved: &[U8], scope: FetchScope, timestamp: &String, output: &Console<Write>, history: History, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let snapshot = read_delegated_input(source, "snapshot.json", 2097152, allocator)?
+    let result = with_snapshot(source, root, reserved, scope, timestamp, &snapshot, output, history, now, allocator)
+    snapshot.close()
+    return result
+
+fn with_snapshot(source: &Dir<Read>, root: &TrustedRoot, reserved: &[U8], scope: FetchScope, timestamp: &String, snapshot: &String, output: &Console<Write>, history: History, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let targets = read_delegated_input(source, "targets.json", 2097152, allocator)?
+    let verified = verify_reserved_generation(root, timestamp, snapshot, &targets, history, now, reserved, allocator)
+    targets.close()
+    let Ok(generation): VerifiedTopLevel = move verified else Err(error):
+        if let MetadataRollback = error:
+            return Err(2)
+        return Err(1)
+    let result = emit_selection(source, &generation, scope, snapshot, output, allocator)
+    generation.close()
+    result?
+    return write_metadata_pin(timestamp, output, allocator)
+
+fn emit_selection(source: &Dir<Read>, generation: &VerifiedTopLevel, scope: FetchScope, snapshot: &String, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let Ok(document): &Metadata = generation.snapshot() else Err:
+        return Err(1)
+    let Ok(version): U64 = document.version() else Err(error):
+        return Err(1)
+    match scope:
+        CatalogTargets:
+            output.line("catalog")
+            output.write_u64(version)
+            output.print_byte(10)
+            write_metadata_pin(snapshot, output, allocator)?
+            return emit_catalog(source, generation, output, allocator)
+        PackageTarget(coordinate):
+            if !select_role(source, generation, coordinate, snapshot, output, allocator)?:
+                output.line("absent")
+                return write_metadata_pin(snapshot, output, allocator)
+            output.write_u64(version)
+            output.print_byte(10)
+            return Ok(())
+
+fn select_role(source: &Dir<Read>, generation: &VerifiedTopLevel, coordinate: &String, snapshot: &String, output: &Console<Write>, allocator: &Allocator) -> Result<Bool, U64>:
+    let Ok(parts): Halves = coordinate.span().split('/') else Err(rest):
+        return Err(1)
+    let Ok(name): &String = role_for_package(generation.targets(), parts.head) else Err(code):
+        return Ok(false)
+    let role = open_fetch_role(source, generation, name, allocator)?
+    let selected = emit_reference(&role, coordinate, parts, snapshot, output, allocator)
+    role.close()
+    return selected
+
+fn emit_reference(role: &VerifiedRole, coordinate: &String, parts: Halves, snapshot: &String, output: &Console<Write>, allocator: &Allocator) -> Result<Bool, U64>:
+    let Ok(reference): ContentReference = role.reference(coordinate, allocator) else Err(error):
+        if let TargetNotListed = error:
+            return Ok(false)
+        return Err(1)
+    let path = target_storage_path(parts, &reference, allocator)?
+    let result = emit_target(&reference, &path, snapshot, output, allocator)
+    path.close()
+    result?
+    return Ok(true)
+
+fn emit_target(reference: &ContentReference, path: &String, snapshot: &String, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let empty = String.with_capacity(allocator, 96)?
+    var digest = move empty
+    let encoded = reference.append_sha384(&mut digest, allocator)
+    let emitted = emit(encoded, &digest, reference.length(), path, snapshot, output, allocator)
+    digest.close()
+    return emitted
+
+fn emit(encoded: Result<(), U64>, target: &String, length: U64, path: &String, snapshot: &String, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    encoded?
+    let pin = digest_text(snapshot.as_bytes(), allocator)?
+    output.line("verified")
+    output.write_string(&pin)
+    output.print_byte(10)
+    output.write("sha384:")
+    output.write_string(target)
+    output.print_byte(10)
+    output.write_u64(length)
+    output.print_byte(10)
+    output.print_byte('/')
+    output.write_string(path)
+    output.print_byte(10)
+    pin.close()
+    return Ok(())

@@ -1,0 +1,10 @@
+// Refused, naming the declaration: a function may not share its name with a predicate, here
+// `same_target` of the link library that `cell` imports.
+import cell
+
+fn same_target(left: U64, right: U64) -> Bool:
+    return left == right
+
+fn main(console: Console<Write>):
+    if same_target(1, 1):
+        console.print_int(1)

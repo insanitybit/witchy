@@ -1,0 +1,6 @@
+// Checked arithmetic is written in place; it still traps. A U8 sum past 255.
+fn work(left: U8, right: U8) -> U8:
+    return left + right
+
+fn main(console: Console<Write>):
+    console.print_int(U8.to_u64(work(200, 100)))

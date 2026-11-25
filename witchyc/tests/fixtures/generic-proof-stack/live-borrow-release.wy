@@ -1,0 +1,11 @@
+// The first argument's shared loan remains live while the release argument
+// evaluates. This unused definition must fail Source Flow before Lean runs.
+fn release_beside<T>(view: &Buffer<T>, released: Result<(), Buffer<T>>):
+    match move released:
+        Ok:
+            return
+        Err(kept):
+            stack_buffer_close(move kept)
+
+fn live_borrow_release<T>(input: Buffer<T>):
+    release_beside(&input, memory.try_release(move input))

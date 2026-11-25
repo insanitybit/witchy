@@ -1,0 +1,9 @@
+// Accepted: a literal index bound to a name.
+fn place_one<T>(buffer: &mut Buffer<T>, index: U64, item: T) -> Result<(), U64>:
+    ensures true
+    proof:
+        auto
+    let pos: U64 = 3
+    return memory.init(buffer, pos, item)
+fn main():
+    return

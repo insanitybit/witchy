@@ -1,0 +1,50 @@
+import "../tuf/package.wy"
+import "../tuf/release_trust.wy"
+import "request_transcript.wy"
+import crypto
+import json_tree
+import span
+import string
+import text
+import vec
+
+pub fn verify_request(request: &Json, enrollment: &Json, token: &String, version: Span, body: &[U8], allocator: &Allocator) -> Result<(), U64>:
+    validate_request_coordinates(request)?
+    let route = string_field(request, "route")?
+    let receipt = route.equals_text("/v1/ci/receipt")
+    let release = string_field(request, "digest")?
+    let package = string_field(request, "package")?
+    let hashing = digest_text(body, allocator)?
+    let checked = check_signed_request(request, enrollment, token, &hashing, allocator)
+    let matching = release.eq(&hashing)
+    hashing.close()
+    if let Err(code) = checked:
+        return Err(100)
+    if receipt:
+        if body.len() != 0:
+            return Err(101)
+    else:
+        if !matching:
+            return Err(101)
+        if let Err(code) = validate_package(body, package.span(), version, allocator):
+            return Err(101)
+    return Ok(())
+
+fn check_signed_request(request: &Json, enrollment: &Json, token: &String, body_digest: &String, allocator: &Allocator) -> Result<(), U64>:
+    let message = request_message(request, token, body_digest, allocator)?
+    let verified = verify_signature(&message, request, enrollment, allocator)
+    message.close()
+    return verified
+
+fn verify_signature(message: &String, request: &Json, enrollment: &Json, allocator: &Allocator) -> Result<(), U64>:
+    let key = decode_field(enrollment, "key", allocator, 2592)?
+    let decoded = decode_field(request, "proof", allocator, 4627)
+    let Ok(signature): Vec<U8> = move decoded else Err(code):
+        key.close()
+        return Err(code)
+    let valid = crypto.mldsa87_verify(key.as_slice(), message.as_bytes(), signature.as_slice())
+    signature.close()
+    key.close()
+    if !valid:
+        return Err(1)
+    return Ok(())

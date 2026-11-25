@@ -1,0 +1,6 @@
+fn main(listener: Listener, out: Console<Write>):
+    let peer = listener.raw_accept()
+    let c = peer.raw_recv_byte()
+    let sent = peer.raw_send_byte(U8.truncate(c + 1))
+    let done = peer.raw_close()
+    out.print_int(c)

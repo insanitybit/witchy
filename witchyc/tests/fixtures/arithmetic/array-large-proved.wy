@@ -1,0 +1,21 @@
+// A proved function with a 100-byte array in its frame.
+import console
+
+fn count_large(limit: U64) -> U64:
+    ensures result <= 100
+    proof:
+        auto
+    var seen: [U8; 100] = [0; 100]
+    var i: U64 = 0
+    var total: U64 = 0
+    while i < 100:
+        invariant total <= i
+        invariant i <= 100
+        seen[i] = 1
+        if i < limit:
+            total += 1
+        i += 1
+    return total
+
+fn main(console: Console<Write>):
+    console.print_int(count_large(40))

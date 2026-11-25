@@ -1,0 +1,6 @@
+// Refused: a capability block holds some authority.
+capability Settings:
+    level: U64
+    verbose: Bool
+fn main():
+    return

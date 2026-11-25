@@ -1,0 +1,9 @@
+// A text literal inside a `${...}` value is still read: a string in an interpolation.
+import console
+import "@alpha"
+
+fn label(text: Text) -> U64:
+    return text.byte_len()
+
+fn main(console: Console<Write>):
+    console.write_format("${label("pen")} ${label("a}b")} ${alpha.shown()}\n")

@@ -1,0 +1,507 @@
+// HTTP/1.1 over a granted `Net` (docs/wasm-http.md). One request per connection.
+// The client sends Connection: close and decodes a single bounded response.
+import http_framing
+import http_head
+import string
+import vec
+import text
+import net
+import span
+import "wasm-result.wy"
+
+pub type Response:
+    status: U64
+    body: String
+
+impl Response:
+    pub fn close(response: Response):
+        let Response(status, body) = move response
+        body.close()
+
+pub type HttpError:
+    Connect(NetError)
+    Malformed
+    OutOfMemory
+
+pub fn field_name_byte(byte: U8) -> Bool:
+    return http_head.field_name_byte(byte)
+
+// Application fields for a single response. The writer owns its framing fields.
+pub sealed type ResponseHeaders:
+    encoded: String
+
+pub fn response_headers(allocator: &Allocator) -> Result<ResponseHeaders, HttpError>:
+    let Ok(encoded): String = String.new(allocator) else Err(code):
+        return Err(OutOfMemory)
+    return Ok(ResponseHeaders(move encoded))
+
+impl ResponseHeaders:
+    // A refused field leaves the already-staged fields intact.
+    pub fn add(self: &mut ResponseHeaders, allocator: &Allocator, name: Span, value: Span) -> Result<(), HttpError>:
+        let Ok(field_name): &str = name.as_str() else Err(code):
+            return Err(Malformed)
+        let Ok(field_value): &str = value.as_str() else Err(code):
+            return Err(Malformed)
+        return self.add_str(allocator, field_name, field_value)
+
+    // Stage a field directly from typed text, including a literal or an owned String borrow.
+    pub fn add_str(self: &mut ResponseHeaders, allocator: &Allocator, name: &str, value: &str) -> Result<(), HttpError>:
+        let key = Span.of(name.as_bytes())
+        if key.is_empty() || reserved_response_field(key) || !valid_field(key, Span.of(value.as_bytes())):
+            return Err(Malformed)
+        let field = &mut (*self).encoded
+        let original = field.byte_len()
+        if let Err(code) = append_header_field(field, allocator, name, value):
+            field.cut(original)
+            return Err(OutOfMemory)
+        return Ok(())
+
+    // Stage literal fields with the same checks as fields borrowed from a buffer.
+    pub fn add_text(self: &mut ResponseHeaders, allocator: &Allocator, name: &str, value: &str) -> Result<(), HttpError>:
+        let Ok(empty): String = String.new(allocator) else Err(code):
+            return Err(OutOfMemory)
+        var field = move empty
+        let result = add_text_field(self, allocator, &mut field, name, value)
+        field.close()
+        return result
+
+    pub fn close(self: ResponseHeaders):
+        let ResponseHeaders(encoded) = move self
+        encoded.close()
+
+fn add_text_field(headers: &mut ResponseHeaders, allocator: &Allocator, field: &mut String, name: &str, value: &str) -> Result<(), HttpError>:
+    if let Err(code) = field.push_text(allocator, name):
+        return Err(OutOfMemory)
+    if let Err(code) = field.push_text(allocator, value):
+        return Err(OutOfMemory)
+    let bytes = field.span()
+    return headers.add(allocator, bytes.part(0, name.byte_len()), bytes.part(name.byte_len(), bytes.len()))
+
+fn reserved_response_field(name: Span) -> Bool:
+    return (
+        name.equals_text_ignore_ascii_case("content-length")
+        || name.equals_text_ignore_ascii_case("content-type")
+        || name.equals_text_ignore_ascii_case("transfer-encoding")
+        || name.equals_text_ignore_ascii_case("connection")
+        || name.equals_text_ignore_ascii_case("trailer")
+        || name.equals_text_ignore_ascii_case("upgrade")
+        || name.equals_text_ignore_ascii_case("keep-alive")
+        || name.equals_text_ignore_ascii_case("proxy-connection")
+        || name.equals_text_ignore_ascii_case("te")
+        || name.equals_text_ignore_ascii_case("http2-settings")
+        || name.equals_text_ignore_ascii_case("content_length")
+        || name.equals_text_ignore_ascii_case("transfer_encoding")
+    )
+
+fn valid_field(name: Span, value: Span) -> Bool:
+    for byte in name.as_bytes():
+        if !field_name_byte(*byte):
+            return false
+    for byte in value.as_bytes():
+        if *byte < 32 || *byte >= 127:
+            return false
+    return true
+
+fn append_header_field(output: &mut String, allocator: &Allocator, name: &str, value: &str) -> Result<(), U64>:
+    output.push_text(allocator, name)?
+    output.push_text(allocator, ": ")?
+    output.push_text(allocator, value)?
+    return output.push_text(allocator, "\r\n")
+
+pub type RequestKind:
+    GetRequest
+    PostRequest(U64)
+    HeadRequest
+
+pub sealed type RequestHeaders:
+    encoded: String
+    has_content_type: Bool
+
+pub fn request_headers(allocator: &Allocator) -> Result<RequestHeaders, HttpError>:
+    let Ok(encoded): String = String.new(allocator) else Err(code):
+        return Err(OutOfMemory)
+    return Ok(RequestHeaders(move encoded, false))
+
+impl RequestHeaders:
+    pub fn add(self: &mut RequestHeaders, allocator: &Allocator, name: &str, value: Span) -> Result<(), HttpError>:
+        if name.len() > 32768 || value.len() > 32768:
+            return Err(Malformed)
+        let Ok(text): &str = value.as_str() else Err(code):
+            return Err(Malformed)
+        return self.add_str(allocator, name, text)
+
+    pub fn add_str(self: &mut RequestHeaders, allocator: &Allocator, name: &str, text: &str) -> Result<(), HttpError>:
+        let value = Span.of(text.as_bytes())
+        let key = Span.of(name.as_bytes())
+        if key.is_empty() || key.equals_text_ignore_ascii_case("host") || key.equals_text_ignore_ascii_case("expect"):
+            return Err(Malformed)
+        let content_type = key.equals_text_ignore_ascii_case("content-type")
+        if (!content_type && reserved_response_field(key)) || (content_type && (*self).has_content_type):
+            return Err(Malformed)
+        let field = &mut (*self).encoded
+        let original = field.byte_len()
+        if key.len() > 32768 || value.len() > 32768 || original + key.len() + value.len() + 4 > 32768:
+            return Err(Malformed)
+        if !valid_field(key, value):
+            return Err(Malformed)
+        if let Err(reason) = append_header_field(field, allocator, name, text):
+            field.cut(original)
+            return Err(OutOfMemory)
+        (*self).has_content_type = (*self).has_content_type || content_type
+        return Ok(())
+
+    pub fn close(self: RequestHeaders):
+        let RequestHeaders(encoded, has_content_type) = move self
+        encoded.close()
+
+// Encode one HTTP/1.1 exchange. For POST, the caller sends exactly the declared length.
+pub fn request_head(allocator: &Allocator, kind: RequestKind, host: Span, path: Span, headers: &RequestHeaders) -> Result<String, HttpError>:
+    if host.len() > 259 || path.len() > 8192:
+        return Err(Malformed)
+    let Ok(authority): &str = host.as_str() else Err(code):
+        return Err(Malformed)
+    let Ok(target): &str = path.as_str() else Err(code):
+        return Err(Malformed)
+    return request_head_str(allocator, kind, authority, target, headers)
+
+pub fn request_head_str(allocator: &Allocator, kind: RequestKind, host: &str, path: &str, headers: &RequestHeaders) -> Result<String, HttpError>:
+    if host.len() == 0 || host.len() > 259 || path.len() == 0 || path.len() > 8192 || path.as_bytes()[0] != '/':
+        return Err(Malformed)
+    for byte in host.as_bytes():
+        if *byte <= 32 || *byte >= 127 || *byte == '/' || *byte == '@' || *byte == '#' || *byte == '?':
+            return Err(Malformed)
+    for byte in path.as_bytes():
+        if *byte <= 32 || *byte >= 127 || *byte == '#':
+            return Err(Malformed)
+    let fields = (*headers).encoded.as_str()
+    let Ok(empty): String = String.new(allocator) else Err(code):
+        return Err(OutOfMemory)
+    var head = move empty
+    if let Err(reason) = append_request_head(&mut head, allocator, kind, host, path, fields):
+        head.close()
+        return Err(OutOfMemory)
+    if head.byte_len() > 32768:
+        head.close()
+        return Err(Malformed)
+    return Ok(move head)
+
+fn append_request_head(head: &mut String, allocator: &Allocator, kind: RequestKind, host: &str, path: &str, fields: &str) -> Result<(), U64>:
+    match kind:
+        GetRequest:
+            head.push_text(allocator, "GET ")?
+        PostRequest(length):
+            head.push_text(allocator, "POST ")?
+        HeadRequest:
+            head.push_text(allocator, "HEAD ")?
+    head.push_text(allocator, path)?
+    head.push_text(allocator, " HTTP/1.1\r\nHost: ")?
+    head.push_text(allocator, host)?
+    head.push_text(allocator, "\r\nConnection: close\r\n")?
+    if let PostRequest(length) = kind:
+        head.push_text(allocator, "Content-Length: ")?
+        head.push_decimal(allocator, length)?
+        head.push_text(allocator, "\r\n")?
+    if fields.len() != 0:
+        head.push_text(allocator, fields)?
+    return head.push_text(allocator, "\r\n")
+
+pub type ResponseVersion:
+    ResponseHttp10
+    ResponseHttp11
+
+// Form a final HTTP/1.1 response head for a single exchange. The caller
+// supplies the byte length of the body and sends only those bytes.
+pub fn response_head(allocator: &Allocator, status: U64, content_type: &str, length: U64) -> Result<String, HttpError>:
+    return encode_response_head(allocator, ResponseHttp11, status, content_type.as_str(), length, "")
+
+pub fn response_head_with_headers(allocator: &Allocator, status: U64, content_type: &str, length: U64, headers: &ResponseHeaders) -> Result<String, HttpError>:
+    return response_head_for_version(allocator, ResponseHttp11, status, content_type, length, headers)
+
+// The HTTP/1.0 form uses the same fixed-length single-exchange profile.
+pub fn response_head_for_version(allocator: &Allocator, version: ResponseVersion, status: U64, content_type: &str, length: U64, headers: &ResponseHeaders) -> Result<String, HttpError>:
+    return response_head_str(allocator, version, status, content_type.as_str(), length, headers)
+
+pub fn response_head_str(allocator: &Allocator, version: ResponseVersion, status: U64, content_type: &str, length: U64, headers: &ResponseHeaders) -> Result<String, HttpError>:
+    return encode_response_head(allocator, version, status, content_type, length, (*headers).encoded.as_str())
+
+fn encode_response_head(allocator: &Allocator, version: ResponseVersion, status: U64, content_type: &str, length: U64, extra: &str) -> Result<String, HttpError>:
+    if status < 200 || status > 599:
+        return Err(Malformed)
+    if (status == 204 || status == 205 || status == 304) && length != 0:
+        return Err(Malformed)
+    if content_type.len() == 0:
+        return Err(Malformed)
+    for byte in content_type.as_bytes():
+        if *byte < 32 || *byte >= 127:
+            return Err(Malformed)
+    let Ok(empty): String = String.new(allocator) else Err(code):
+        return Err(OutOfMemory)
+    var head = move empty
+    if let Err(code) = append_response_head(&mut head, allocator, version, status, content_type, length, extra):
+        head.close()
+        return Err(OutOfMemory)
+    return Ok(move head)
+
+fn append_response_head(head: &mut String, allocator: &Allocator, version: ResponseVersion, status: U64, content_type: &str, length: U64, extra: &str) -> Result<(), U64>:
+    let prefix: &str = match version:
+        ResponseHttp10:
+            "HTTP/1.0 "
+        ResponseHttp11:
+            "HTTP/1.1 "
+    head.push_text(allocator, prefix)?
+    head.push_decimal(allocator, status)?
+    head.push_text(allocator, " \r\nConnection: close")?
+    if status != 204 && status != 304:
+        head.push_text(allocator, "\r\nContent-Type: ")?
+        head.push_text(allocator, content_type)?
+        head.push_text(allocator, "\r\nContent-Length: ")?
+        head.push_decimal(allocator, length)?
+    head.push_text(allocator, "\r\n")?
+    if extra.len() != 0:
+        head.push_text(allocator, extra)?
+    return head.push_text(allocator, "\r\n")
+
+// Split already-buffered text at the head fence, preserving the raw body.
+pub fn parse(response: &String, allocator: &Allocator) -> Result<Response, HttpError>:
+    let parts = head(response.span())?
+    let Ok(body): String = parts.body.to_string(allocator) else Err(code):
+        return Err(OutOfMemory)
+    return Ok(Response(parts.status, move body))
+
+pub type Head = .{status: U64, headers: Span, body: Span}
+pub type RequestHead = .{method: Span, target: Span, headers: Span, body: Span}
+
+// The status, header lines and raw body as slices of the supplied message.
+pub fn head(response: Span) -> Result<Head, HttpError>:
+    let Ok(parts): ParsedResponseHead = http_head.head(response) else Err(reason):
+        return Err(Malformed)
+    return Ok(.{status: parts.status, headers: parts.headers, body: parts.body})
+
+// Whether the prefix contains the head terminator.
+pub fn has_head(text: Span) -> Bool:
+    return head_end(text, 0) != 0
+
+// Offset just after the first CRLF CRLF, or zero while incomplete.
+pub fn head_end(text: Span, previous: U64) -> U64:
+    return http_head.head_end(text, previous)
+
+// The method, target, header lines and raw body as slices of the supplied message.
+pub fn request(text: Span) -> Result<RequestHead, HttpError>:
+    let Ok(parts): ParsedRequestHead = http_head.request(text) else Err(reason):
+        return Err(Malformed)
+    return Ok(.{method: parts.method, target: parts.target, headers: parts.headers, body: parts.body})
+
+// The value of the first header called `name` (any case), without the spaces around it.
+// Err(1): there is none.
+pub fn header(headers: Span, name: &str) -> Result<Span, U64>:
+    var rest = headers
+    var going = !rest.is_empty()
+    while going:
+        var line = rest
+        match rest.split(10):
+            Ok(halves):
+                line = halves.head
+                rest = halves.tail
+                going = !rest.is_empty()
+            Err(all):
+                going = false
+        match line.split(58):
+            Ok(pair):
+                if pair.head.trim().equals_text_ignore_ascii_case(name):
+                    var value = pair.tail.trim()
+                    // A line ends in CRLF: the CR stays on the value.
+                    if value.byte_or_end(value.len() - 1) == 13:
+                        value = value.part(0, value.len() - 1).trim()
+                    return Ok(value)
+            Err(whole):
+                continue
+    return Err(1)
+
+// Whether a request's headers name `authority`, the `host:port` the server answers for, in
+// exactly one `Host` header: 0 when they do; 400 when there is no `Host` header, or more than
+// one; 421 when the one there names anything else, or `authority` is empty (nothing is served).
+// Letters compare without case, and `host` alone stands for `host:80`. A server that answers
+// only for its own authority is not reached by a page that led a browser to it under another
+// name (DNS rebinding): the browser sends that name.
+pub fn host_status(headers: Span, authority: Span) -> U64:
+    return host_status_with_default(headers, authority, ":80")
+
+// The HTTPS equivalent. Supply the configured host:port. Only :443 may be omitted
+// by the client. All other ports must appear exactly in the Host header.
+pub fn https_host_status(headers: Span, authority: Span) -> U64:
+    return host_status_with_default(headers, authority, ":443")
+
+fn host_status_with_default(headers: Span, authority: Span, default_port: &str) -> U64:
+    var found: U64 = 0
+    var value = headers.part(0, 0)
+    var rest = headers
+    var going = !rest.is_empty()
+    while going:
+        var line = rest
+        match rest.split(10):
+            Ok(halves):
+                line = halves.head
+                rest = halves.tail
+                going = !rest.is_empty()
+            Err(all):
+                going = false
+        match line.split(58):
+            Ok(pair):
+                if pair.head.trim().equals_text_ignore_ascii_case("host"):
+                    found += 1
+                    value = pair.tail.trim()
+            Err(whole):
+                continue
+    if found != 1:
+        return 400
+    // A line ends in CRLF: the CR stays on the value.
+    if !value.is_empty() && value.byte_or_end(value.len() - 1) == 13:
+        value = value.part(0, value.len() - 1).trim()
+    if authority.is_empty() || value.is_empty():
+        return 421
+    if value.eq_ignore_ascii_case(authority):
+        return 0
+    let length = authority.len()
+    let suffix = default_port.byte_len()
+    if length > suffix && authority.ends_with_text(default_port) && value.eq_ignore_ascii_case(authority.part(0, length - suffix)):
+        return 0
+    return 421
+
+// The request head in `text`, which `socket` gave, if it was sent to the address the run
+// granted this program to listen on: `request`, then `host_status` against the authority of
+// the listener the socket was accepted on (`socket.accepted_on`: fixed by the grant, at most
+// 64 bytes). Err is the status to answer with: 400 (not a request, a target that does not
+// start with `/`, or not exactly one `Host` header) or 421 (a `Host` that is not this
+// listener's, or a socket no listener accepted). A target that is a whole URL names its own
+// host, which would stand in for the header: it is refused, not compared. What a server reads
+// requests with: `request` alone answers under whatever name the client used.
+pub fn request_on(socket: &Socket, text: Span) -> Result<RequestHead, U64>:
+    let Ok(head): RequestHead = request(text) else Err(error):
+        return Err(400)
+    if head.target.byte_or_end(0) != 47:
+        return Err(400)
+    var authority: [U8; 64] = [0; 64]
+    let length = socket.accepted_on(authority.slice_mut())
+    let status = host_status(head.headers, Span.of(authority.slice().part(0, length)))
+    if status != 0:
+        return Err(status)
+    return Ok(head)
+
+// Whether every byte is printable and not a space: what a request line may carry.
+fn plain(text: &str) -> Bool:
+    return printable(text, false)
+
+fn printable(text: &str, allow_space: Bool) -> Bool:
+    for index in 0..text.byte_len():
+        match text.byte_at(index):
+            Ok(byte):
+                if byte < 32 || byte >= 127 || (byte == 32 && !allow_space):
+                    return false
+            Err(code):
+                return false
+    return true
+
+// Permission to GET from one endpoint and nothing else (book: the `Fetch` capability): the
+// `Net` inside is narrowed to that endpoint, and only this file can reach it, so code given
+// a `Fetch` cannot dial elsewhere or open a raw socket. `wasm-caps` shows `Net (in Fetch)`.
+pub capability Fetch:
+    net: Net
+    address: Text
+    host: Text
+
+// A `Fetch` for `address` (named `host` in its requests), from a `Net` that may reach it.
+pub fn fetcher(net: &Net, address: Text, host: Text) -> Result<Fetch, HttpError>:
+    match net.only(address):
+        Ok(narrowed):
+            return Ok(Fetch(move narrowed, address, host))
+        Err(failure):
+            return Err(Connect(failure))
+
+impl Fetch:
+    // `GET path` from the one endpoint.
+    pub fn get(fetch: &Fetch, allocator: &Allocator, path: &str) -> Result<Response, HttpError>:
+        return get(&(*fetch).net, allocator, (*fetch).address, (*fetch).host, path)
+
+// `GET path` from `host`, dialing `address`, which the run must grant (`--net=HOST:PORT`).
+pub fn get(net: &Net, allocator: &Allocator, address: &str, host: &str, path: &str) -> Result<Response, HttpError>:
+    validate_get(host, path)?
+    let Ok(socket): Socket = net.connect(address) else Err(failure):
+        return Err(Connect(failure))
+    if let Err(failure) = write_get(&socket, host, path):
+        socket.close()
+        return Err(Connect(Io))
+    let response = receive(&socket, allocator)
+    socket.close()
+    return move response
+
+let GET_HEAD_BYTES = 16384
+let GET_BODY_BYTES = 16777216
+
+fn receive(socket: &Socket, allocator: &Allocator) -> Result<Response, HttpError>:
+    let Ok(workspace): Vec<U8> = Vec.filled(allocator, GET_HEAD_BYTES, 0) else Err(code):
+        return Err(OutOfMemory)
+    var head = move workspace
+    let result = receive_body(socket, allocator, head.as_mut_slice())
+    head.close()
+    return move result
+
+fn receive_body(socket: &Socket, allocator: &Allocator, head: &mut [U8]) -> Result<Response, HttpError>:
+    let Ok(empty): Vec<U8> = Vec.new(allocator, 0) else Err(code):
+        return Err(OutOfMemory)
+    var body = move empty
+    let Ok(status): U64 = decode_body(socket, allocator, head, &mut body) else Err(reason):
+        body.close()
+        return Err(reason)
+    match String.from_utf8(move body):
+        Ok(text):
+            return Ok(Response(status, move text))
+        Err(raw):
+            raw.close()
+            return Err(Connect(NotText))
+
+fn decode_body(socket: &Socket, allocator: &Allocator, head: &mut [U8], body: &mut Vec<U8>) -> Result<U64, HttpError>:
+    var decoder = http_framing.response_decoder()
+    var input: [U8; 256] = [0; 256]
+    var chunk: [U8; 256] = [0; 256]
+    var line: [U8; 256] = [0; 256]
+    while !decoder.complete():
+        let Ok(count): U64 = socket.read_some(input.slice_mut()) else Err(failure):
+            return Err(Connect(failure))
+        if count == 0:
+            if let Err(reason) = decoder.finish():
+                return Err(Malformed)
+        else:
+            let Ok(written): U64 = decoder.push_body_chunk(input.slice().part(0, count), head, chunk.slice_mut(), line.slice_mut(), GET_BODY_BYTES) else Err(reason):
+                return Err(Malformed)
+            if written != 0:
+                if let Err(code) = body.extend_from_slice_mut(allocator, chunk.slice().part(0, written)):
+                    return Err(OutOfMemory)
+    return Ok(decoder.status())
+
+// Write one request on a connected socket. The caller reads the response
+// and closes the socket on either result.
+pub fn send_get(socket: &Socket, host: &str, path: &str) -> Result<(), HttpError>:
+    validate_get(host, path)?
+    if let Err(failure) = write_get(socket, host, path):
+        return Err(Connect(failure))
+    return Ok(())
+
+fn validate_get(host: &str, path: &str) -> Result<(), HttpError>:
+    // A path or host with a space or a control byte could add lines to the request: refused
+    // before anything is sent. A path starts with `/`.
+    if !plain(path) || !plain(host) || path.byte_len() == 0 || host.byte_len() == 0:
+        return Err(Malformed)
+    match path.byte_at(0):
+        Ok(first):
+            if first != 47:
+                return Err(Malformed)
+        Err(code):
+            return Err(Malformed)
+    return Ok(())
+
+fn write_get(socket: &Socket, host: &str, path: &str) -> Result<(), NetError>:
+    socket.send("GET ")?
+    socket.send(path)?
+    socket.send(" HTTP/1.1\r\nHost: ")?
+    socket.send(host)?
+    return socket.send("\r\nConnection: close\r\n\r\n")

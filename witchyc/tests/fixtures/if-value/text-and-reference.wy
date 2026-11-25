@@ -1,0 +1,17 @@
+// An `if` value bound at a written type reads each path at that type (a literal is a `Text`),
+// and one that gives shared references keeps both loans to the name's last use.
+import console
+
+type Box:
+    n: U64
+
+fn main(console: Console<Write>):
+    let n: U64 = 5
+    let word: Text = if n > 3: "big" else: "small"
+    console.line(word)
+    var a = Box(n: 1)
+    var b = Box(n: 2)
+    let chosen = if n > 3: &a else: &b
+    console.print_int((*chosen).n)
+    a.n = 7
+    console.print_int(a.n)

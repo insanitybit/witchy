@@ -1,0 +1,25 @@
+// `while i < s.len():` reads `s[i]` with no test in the body's first statements, before any that
+// could change `i`; after one, reads keep their test.
+import console
+
+fn sum(s: &[U64]) -> U64:
+    var t: U64 = 0
+    var i: U64 = 0
+    while i < s.len():
+        let here = s[i]
+        t += here * s[i]
+        i += 1
+    return t
+
+fn pairs(s: &[U64]) -> U64:
+    var t: U64 = 0
+    var i: U64 = 0
+    while i < s.len():
+        if s[i] > 2:
+            t += 1
+        i += 2
+    return t
+
+fn main(console: Console<Write>):
+    let a: [U64; 5] = [1, 2, 3, 4, 5]
+    console.print("${sum(a.slice())} ${pairs(a.slice())}")

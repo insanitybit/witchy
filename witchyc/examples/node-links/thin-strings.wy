@@ -1,0 +1,62 @@
+import pointer_list
+import string
+import option
+
+fn make(a: &Allocator, label: Text) -> Option<String>:
+    match String.with_capacity(a, label.byte_len()):
+        Err(code):
+            return None
+        Ok(blank):
+            var s = move blank
+            if let Ok(_) = s.push_text(a, label):
+                return Some(move s)
+            s.close()
+            return None
+
+fn add(list: &mut DoublyLinkedList<String>, a: &Allocator, label: Text) -> Bool:
+    match make(a, label):
+        None:
+            return false
+        Some(value):
+            match list.push_back(a, move value):
+                Some(original):
+                    original.close()
+                    return false
+                None:
+                    return true
+
+fn show(value: Option<String>, out: &Console<Write>):
+    match move value:
+        Some(text):
+            for byte in text.as_bytes():
+                out.print_byte(*byte)
+            out.print_byte(10)
+            text.close()
+        None:
+            out.print_int(0)
+
+fn reuse(list: &mut DoublyLinkedList<String>, a: &Allocator, out: &Console<Write>):
+    if !add(list, a, "kept"):
+        return
+    match make(a, "new"):
+        None:
+            return
+        Some(replacement):
+            let old = list.tail_address()
+            let removed = list.pop_back()
+            match list.push_back(a, move replacement):
+                Some(original):
+                    original.close()
+                None:
+                    out.print_int(U32.to_u64(old))
+                    out.print_int(U32.to_u64(list.tail_address()))
+            show(move removed, out)
+
+fn main(out: Console<Write>, a: Allocator):
+    var list: DoublyLinkedList<String> = DoublyLinkedList.new()
+    if add(&mut list, &a, "first") && add(&mut list, &a, "second"):
+        show(list.pop_back(), &out)
+        show(list.pop_back(), &out)
+        show(list.pop_back(), &out)
+        reuse(&mut list, &a, &out)
+    list.close()

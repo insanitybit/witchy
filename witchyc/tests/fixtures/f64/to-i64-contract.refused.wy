@@ -1,0 +1,14 @@
+// A function with a contract does not call `F64.to_i64`: it traps on NaN and outside I64, and the
+// proof cannot show it does not (red-team review: this passed its proof, then trapped).
+// A scalar-proved function (`ensures result == 1`, `proof: auto`) is admitted, yet traps:
+// F64.to_i64 traps on NaN / out of range and the proof makes no obligation for it.
+import console
+fn conv(x: F64) -> U64:
+    ensures result == 1
+    proof:
+        auto
+    let i = F64.to_i64(x)
+    return 1
+fn main(console: Console<Write>):
+    let zero = 0.0
+    console.print_int(conv(zero / zero))

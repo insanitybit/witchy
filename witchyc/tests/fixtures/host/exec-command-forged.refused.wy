@@ -1,0 +1,11 @@
+// Refused: only the library builds a Command; no other file can put its own Exec, or a
+// refusal code of its choosing, in one.
+import exec
+
+fn main(exec: Exec):
+    let other = exec.only("answer")
+    match move other:
+        Ok(narrowed):
+            let command = Command(&exec, move narrowed, 0)
+        Err(e):
+            return

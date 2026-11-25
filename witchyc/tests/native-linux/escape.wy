@@ -1,0 +1,9 @@
+fn main(out: Console<Write>, exec: Exec):
+    exec.raw_name_byte(U8.truncate(101))
+    exec.raw_name_byte(U8.truncate(115))
+    exec.raw_name_byte(U8.truncate(99))
+    exec.raw_name_byte(U8.truncate(97))
+    exec.raw_name_byte(U8.truncate(112))
+    exec.raw_name_byte(U8.truncate(101))
+    let run = exec.raw_run()
+    out.print_int(run.raw_status())

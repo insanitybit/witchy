@@ -1,0 +1,41 @@
+// An event simulation: jobs repeat at Duration intervals from a Heap ordered by a derived Before
+// on a Duration field, with Duration arithmetic, spread and shown durations.
+import console
+import heap
+import vec
+import time
+
+type Event derive(Before):
+    at: Duration
+    job: U64
+
+type Job:
+    every: Duration
+    runs: U64
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let jobs = [
+        Job(every: 250ms, runs: 3),
+        Job(every: 400ms, runs: 2),
+        Job(every: 1s, runs: 1),
+    ]
+    let Ok(made): Heap<Event> = Heap.new(&allocator) else Err(code):
+        return
+    var queue = move made
+    for i in 0..3:
+        if queue.push(&allocator, Event(at: jobs[i].every, job: i)).is_err():
+            queue.into_vec().close()
+            return
+    var (now, left): (Duration, [U64; 3]) = (0ms, [3, 2, 1])
+    while let Ok(event) = queue.pop():
+        let late = event.at - now
+        now = event.at
+        console.print("${now}: job ${event.job} (${late} after the last)")
+        left[event.job] -= 1
+        if left[event.job] > 0:
+            let next = Event(..event, at: now + jobs[event.job].every)
+            if queue.push(&allocator, next).is_err():
+                queue.into_vec().close()
+                return
+    console.print("done at ${now}")
+    queue.into_vec().close()

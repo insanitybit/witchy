@@ -1,0 +1,22 @@
+// Closures of other shapes, and capture by value: a later change to `start` does not reach a
+// closure made before it.
+import console
+
+fn fold(step: fn(U64, U64) -> U64, start: U64, limit: U64) -> U64:
+    var total: U64 = start
+    for i in 0..limit:
+        total = step(total, i)
+    return total
+
+fn produce(make: fn() -> U64) -> U64:
+    return make() + make()
+
+fn main(console: Console<Write>):
+    console.print_int(fold(fn(sum: U64, i: U64) -> U64: sum + i, 0, 5))
+    var start: U64 = 7
+    let seven = fn() -> U64: start
+    start = 100
+    console.print_int(produce(seven))
+    console.print_int(start)
+    let even = fn(n: U64) -> Bool: n % 2 == 0
+    console.print_int(if even(4) && !even(5): 1 else: 0)

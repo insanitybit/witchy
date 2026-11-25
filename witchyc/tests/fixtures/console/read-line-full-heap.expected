@@ -1,0 +1,4 @@
+line [abcdefg]
+line []
+line [ab]
+no room after [abcdefg]

@@ -1,0 +1,18 @@
+// A function that returns a `&` may take a `&mut` the result cannot point into, such as a
+// cursor; it is free again when the call returns, so the function can be called twice.
+type Pair:
+    a: U64
+    b: U64
+
+fn step(pair: &Pair, cursor: &mut Bool) -> &U64:
+    *cursor = !*cursor
+    if *cursor:
+        return &(*pair).a
+    return &(*pair).b
+
+fn main(console: Console<Write>):
+    var pair = Pair(1, 2)
+    var flag = false
+    let first = step(&pair, &mut flag)
+    let second = step(&pair, &mut flag)
+    console.print_int(*first + *second)

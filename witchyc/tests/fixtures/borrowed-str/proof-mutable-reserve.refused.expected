@@ -1,0 +1,1 @@
+ensures result.length == old(input.length) + 1

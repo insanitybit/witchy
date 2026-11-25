@@ -1,0 +1,21 @@
+// A `'"'` scalar in recipe code is a scalar, not the start of a text literal: the field after
+// it is substituted (review: it was not, and the impl read the type's own field of that name).
+import console
+
+trait Total:
+    fn total(self: &Self) -> U64
+
+derive Sum:
+    impl Total for Self:
+        fn total(self: &Self) -> U64:
+            static for f in fields:
+                return '"' - 34 + (*self).f
+            return 0
+
+type T derive(Sum(by: id)):
+    f: U64
+    id: U64
+
+fn main(console: Console<Write>):
+    let v = T(f: 100, id: 5)
+    console.print("${v.total()}")

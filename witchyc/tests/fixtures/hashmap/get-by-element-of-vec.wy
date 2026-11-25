@@ -1,0 +1,46 @@
+// `map.get(&keys[i])` with `keys` a Vec of Strings: the argument lends the element (`keys.cell(i)`)
+// before the call's type parameter is inferred (it was read as a copy of a String, and refused).
+import console
+import string
+import vec
+import hashmap
+import discard
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(m): HashMap<String, U64> = HashMap.for_entries(&allocator, 4) else Err(c):
+        return
+    var map = move m
+    let Ok(k): Vec<String> = Vec.new(&allocator, 4) else Err(c):
+        map.discard()
+        return
+    var keys = move k
+    for n in 0..3:
+        let Ok(a): String = String.new(&allocator) else Err(c):
+            break
+        var key = move a
+        let _ = key.push(&allocator, 97 + n)
+        let Ok(b): String = String.new(&allocator) else Err(c):
+            key.close()
+            break
+        var copy = move b
+        let _ = copy.push_string(&allocator, &key)
+        match map.put(&allocator, move key, n * 10):
+            Ok:
+                ()
+            Err(back):
+                back.discard()
+        match keys.push_mut(&allocator, move copy):
+            Ok:
+                ()
+            Err(back):
+                back.close()
+    var total: U64 = 0
+    for i in 0..keys.len():
+        match map.get(&keys[i]):
+            Ok(v):
+                total += *v + 1
+            Err(missing):
+                ()
+    console.print_int(total)
+    map.discard()
+    keys.discard()

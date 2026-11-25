@@ -1,0 +1,30 @@
+// Variants holding several values derive too: each value in order, through its own trait.
+import console
+import hash
+import sort
+import discard
+import string
+
+type Edge derive(Eq, Hash, Before):
+    Line(U64, U64)
+    Point(U64)
+    Empty
+
+type Pair derive(Discard):
+    Both(String, U64)
+    Neither
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let a = Line(1, 2)
+    let b = Line(1, 2)
+    let c = Line(1, 3)
+    let p = Point(0)
+    let e = Empty
+    console.print("${a == b} ${a == c} ${p == e}")
+    console.print("${a.before(&c)} ${c.before(&a)} ${a.before(&b)} ${a.before(&p)} ${e.before(&a)} ${p.before(&e)}")
+    console.print("${a.hash() == b.hash()} ${a.hash() == c.hash()}")
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    let both = Both(move made, 3)
+    both.discard()
+    console.line("discarded")

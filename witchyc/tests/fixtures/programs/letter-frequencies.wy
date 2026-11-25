@@ -1,0 +1,44 @@
+// Letter frequencies: counted in a HashMap, walked with `for e in &map`, collected into a Vec of
+// a record that derives its order, sorted, and the top three printed.
+import console
+import vec
+import hashmap
+import hash
+import sort
+import discard
+
+type Freq derive(Before, Discard):
+    count: U64
+    letter: U64
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let text: Text = "the quick brown fox jumps over the lazy dog and the cat"
+    let Ok(m): HashMap<U64, U64> = HashMap.new(&allocator, 64) else Err(c):
+        return
+    var counts = move m
+    for at in 0..text.byte_len():
+        let Ok(b): U8 = text.byte_at(at) else Err(past):
+            break
+        let letter = U8.to_u64(b)
+        if letter == 32:
+            continue
+        match counts.get_mut(&letter):
+            Ok(n):
+                *n += 1
+            Err(missing):
+                match counts.put(&allocator, letter, 1):
+                    Ok:
+                        ()
+                    Err(back):
+                        back.discard()
+    let Ok(made): Vec<Freq> = Vec.new(&allocator, counts.len()) else Err(c):
+        counts.discard()
+        return
+    var list = move made
+    for e in &counts:
+        let pushed = list.push_mut(&allocator, Freq(e.value, e.key))
+    sort(&mut list)
+    let n = list.len()
+    console.print("${counts.len()} letters; top: ${list[n - 1].letter} x${list[n - 1].count}, ${list[n - 2].letter} x${list[n - 2].count}")
+    list.discard()
+    counts.discard()

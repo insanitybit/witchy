@@ -1,0 +1,12 @@
+// Refused: a Span inside a sum. A proof follows which variant a sum is, and none reads one
+// that holds a reference.
+import console
+import span
+import string
+
+fn length(found: Result<Span, U64>, n: U64) -> U64:
+    ensures result == n
+    return n
+
+fn main(console: Console<Write>, allocator: Allocator):
+    console.print_int(1)

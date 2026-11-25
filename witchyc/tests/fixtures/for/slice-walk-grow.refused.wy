@@ -1,0 +1,12 @@
+// Refused: the Vec is lent to its own walk, so the body cannot grow it.
+import console
+import vec
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.new(&allocator, 4) else Err(code):
+        return
+    var v = move made
+    let pushed = v.push_mut(&allocator, 1)
+    for x in &v:
+        let again = v.push_mut(&allocator, *x)
+    v.close()

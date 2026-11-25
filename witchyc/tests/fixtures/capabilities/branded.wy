@@ -1,0 +1,20 @@
+// A user-defined capability (book: capabilities-narrowing.md, `capability X from U`):
+// `show` takes a ConfigDir, so it can read the configuration and nothing else.
+import console
+import fs
+import "parts/config.wy"
+
+fn show(console: &Console<Write>, allocator: &Allocator, config: &ConfigDir):
+    match config.load(allocator):
+        Ok(text):
+            console.print_int(text.byte_len())
+            text.close()
+        Err(e):
+            console.line("unreadable")
+
+fn main(console: Console<Write>, allocator: Allocator, root: Dir<Read>):
+    match config.config_dir(move root):
+        Ok(found):
+            show(&console, &allocator, &found)
+        Err(dir):
+            console.line("no config.txt here")

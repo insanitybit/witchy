@@ -1,0 +1,38 @@
+import span
+
+fn digit(byte: U8) -> Bool:
+    return byte >= '0' && byte <= '9'
+
+fn letter(byte: U8) -> Bool:
+    return byte >= 'a' && byte <= 'z'
+
+pub fn package_name(name: Span) -> Bool:
+    if name.is_empty() || name.len() > 64 || !letter(U8.truncate(name.byte_or_end(0))):
+        return false
+    for byte in name.as_bytes():
+        if !letter(*byte) && !digit(*byte) && *byte != '-':
+            return false
+    return true
+
+pub fn delegated_name(name: Span) -> Bool:
+    return package_name(name) && !name.equals_text("root") && !name.equals_text("timestamp") && !name.equals_text("snapshot") && !name.equals_text("targets")
+
+fn component(word: Span) -> Bool:
+    if word.is_empty() || word.len() > 9 || (word.len() > 1 && word.byte_or_end(0) == 48):
+        return false
+    for byte in word.as_bytes():
+        if !digit(*byte):
+            return false
+    return true
+
+pub fn version_bundle(word: Span) -> Bool:
+    if !word.ends_with_text(".coven"):
+        return false
+    return release_version(word.part(0, word.len() - 6))
+
+pub fn release_version(word: Span) -> Bool:
+    let Ok(major): Halves = word.split('.') else Err(rest):
+        return false
+    let Ok(minor): Halves = major.tail.split('.') else Err(rest):
+        return false
+    return component(major.head) && component(minor.head) && component(minor.tail)

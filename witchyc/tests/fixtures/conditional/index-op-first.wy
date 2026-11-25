@@ -1,0 +1,13 @@
+// `a[i] += if c: bump(&mut i) else: 0`: the position is read before the `if` changes `i`, so one element is read and written (review: two were).
+// v[i] += if c: bump(&mut i): reads a[0] (old i) and writes a[?]
+fn bump(x: &mut U64) -> U64:
+    *x = *x + 1
+    return 100
+
+fn main(console: Console<Write>):
+    var a = [10, 20, 30]
+    var i: U64 = 0
+    let c = true
+    a[i] += if c: bump(&mut i) else: 0
+    console.print_int(a[0])
+    console.print_int(a[1])

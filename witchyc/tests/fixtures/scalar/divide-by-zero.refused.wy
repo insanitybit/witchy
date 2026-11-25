@@ -1,0 +1,7 @@
+fn ratio(a: U64, b: U64) -> Bool:
+    ensures true
+    proof:
+        auto
+    return a > 0 || 10 / b > 1
+fn main(console: Console<Write>):
+    console.print_int(0)

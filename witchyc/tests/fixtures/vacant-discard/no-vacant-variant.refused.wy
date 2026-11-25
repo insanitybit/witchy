@@ -1,0 +1,11 @@
+// Refused by the checker, with no proof asked: every variant of the type holds an owner, so
+// the value can never be ended this way.
+type Either<T>:
+    Left(T)
+    Right(T)
+
+fn end<T: Any>(either: Either<T>):
+    memory.vacant(move either)
+
+fn main(out: Console<Write>):
+    out.print_int(1)

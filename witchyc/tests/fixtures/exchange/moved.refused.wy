@@ -1,0 +1,19 @@
+// Both sides hold a value: one that was moved away does not.
+import "../../../library/wasm-vec.wy"
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<Vec<U64>, U64> = Vec.new(&allocator, 2)
+    let again: Result<Vec<U64>, U64> = Vec.new(&allocator, 2)
+    match move made:
+        Ok(first):
+            match move again:
+                Ok(second):
+                    var one = move first
+                    var two = move second
+                    one.close()
+                    memory.exchange(&mut one, &mut two)
+                    two.close()
+                Err(code):
+                    first.close()
+        Err(code):
+            console.print_int(code)

@@ -1,0 +1,51 @@
+// With the heap full, a run still goes into room the text or vector already has: the block a
+// long run is copied through cannot be made, so the bytes go a word or one at a time (review,
+// 2026-11-22: both answered Err(1) with the room there).
+import console
+import vec
+import string
+import text
+
+fn hog(console: &Console<Write>, allocator: &Allocator, text: &mut String, bytes: &mut Vec<U8>, size: U64):
+    match Vec.filled(allocator, size, 7):
+        Ok(made):
+            let held: Vec<U8> = move made
+            hog(console, allocator, text, bytes, size)
+            held.close()
+        Err(code):
+            if size > 1:
+                hog(console, allocator, text, bytes, size / 2)
+                return
+            // The heap is full now.
+            let before = text.byte_len()
+            match text.push_repeated(allocator, 122, 100):
+                Ok:
+                    console.line("ok")
+                Err(e):
+                    console.print_int(e)
+            console.print_int(text.byte_len() - before)
+            let source: [U8; 40] = [9; 40]
+            match bytes.extend_from_slice_mut(allocator, source.slice()):
+                Ok:
+                    console.line("ok")
+                Err(e):
+                    console.print_int(e)
+            console.print_int(bytes.len())
+            console.print_int(U8.to_u64(bytes[39]))
+            // And past the room there is: Err, the vector as it was.
+            for round in 0..10:
+                let _ = bytes.extend_from_slice_mut(allocator, source.slice())
+            console.print_int(bytes.len() % 40)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var text = move made
+    let _ = text.reserve(&allocator, 300)
+    let Ok(other): Vec<U8> = Vec.new(&allocator, 300) else Err(code):
+        text.close()
+        return
+    var bytes = move other
+    hog(&console, &allocator, &mut text, &mut bytes, 2048)
+    bytes.close()
+    text.close()

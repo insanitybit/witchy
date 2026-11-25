@@ -1,0 +1,118 @@
+// Words of a text: how often each appears (a map of String keys looked up by Span), which word
+// follows which (a graph, by each word's first position), and how many steps each word is from
+// the first (breadth-first, over the graph's rows).
+import console
+import graph
+import hashmap
+import span
+import string
+import vec
+import discard
+
+// Breadth-first steps from the first node; unreached nodes stay at `far`.
+fn steps<G: Brand>(nodes: &Nodes<G>, allocator: &Allocator, far: U64) -> Result<Distances<G>, U64>:
+    var distance = nodes.distances(allocator, far)?
+    let Ok(made): Vec<U64> = Vec.new(allocator, 0) else Err(code):
+        distance.close()
+        return Err(code)
+    var queue = move made
+    if let Some(home) = nodes.first():
+        distance.set(home, 0)
+        match queue.push_mut(allocator, nodes.number(home)):
+            Ok:
+                ()
+            Err(back):
+                ()
+    var at: U64 = 0
+    while at < queue.len():
+        if let Some(here) = nodes.node(queue[at]):
+            let next_step = distance.get(here) + 1
+            for next in nodes.neighbors(here):
+                if distance.get(next) == far:
+                    distance.set(next, next_step)
+                    match queue.push_mut(allocator, nodes.number(next)):
+                        Ok:
+                            ()
+                        Err(back):
+                            ()
+        at += 1
+    queue.close()
+    return Ok(move distance)
+
+// Each word's node: the order it first appeared in. False: no room.
+fn number_words(text: Span, allocator: &Allocator, index: &mut HashMap<String, U64>, names: &mut Vec<String>, counts: &mut Vec<U64>) -> Bool:
+    for word in text.words():
+        if let Ok(at) = index.get(&word):
+            counts[*at] += 1
+        else:
+            let at = names.len()
+            let Ok(key) = word.to_string(allocator) else Err(code):
+                return false
+            match index.insert(move key, at):
+                Ok:
+                    ()
+                Err(back):
+                    let Entry(k, v) = move back
+                    k.close()
+                    return false
+            let Ok(name) = word.to_string(allocator) else Err(code):
+                return false
+            match names.push_mut(allocator, move name):
+                Ok:
+                    ()
+                Err(back):
+                    back.close()
+                    return false
+            match counts.push_mut(allocator, 1):
+                Ok:
+                    ()
+                Err(back):
+                    return false
+    true
+
+// An edge from each word to the word after it.
+fn link(text: Span, allocator: &Allocator, index: &HashMap<String, U64>, roads: &mut Graph) -> Bool:
+    var before: U64 = 18446744073709551615
+    for word in text.words():
+        if let Ok(at) = index.get(&word):
+            if before != 18446744073709551615:
+                if let Err(_) = roads.connect(allocator, before, *at):
+                    return false
+            before = *at
+    true
+
+fn report(roads: &Graph, allocator: &Allocator, names: &Vec<String>, counts: &Vec<U64>, console: &Console<Write>) -> Result<(), U64>:
+    let far: U64 = 1000
+    brand roads.nodes() as nodes:
+        let distance = steps(&nodes, allocator, far)?
+        for i in 0..names.len():
+            if let Some(node) = nodes.node(i):
+                if let Ok(name) = names.at(i):
+                    console.write_string(name)
+                console.print(" x${counts[i]}, ${distance.get(node)} steps from the first word")
+        distance.close()
+    return Ok(())
+
+fn run(text: &String, allocator: &Allocator, console: &Console<Write>) -> Result<(), U64>:
+    using var index: HashMap<String, U64> = HashMap.new(allocator, 16)?:
+        using var names: Vec<String> = Vec.new(allocator, 0)?:
+            using var counts: Vec<U64> = Vec.new(allocator, 0)?:
+                if !number_words(text.span(), allocator, &mut index, &mut names, &mut counts):
+                    return Err(1)
+                using var roads: Graph = Graph.new(allocator, names.len())?:
+                    if !link(text.span(), allocator, &index, &mut roads):
+                        return Err(1)
+                    report(&roads, allocator, &names, &counts, console)?
+    return Ok(())
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made_text): String = String.new(&allocator) else Err(code):
+        return
+    var text = move made_text
+    let _ = text.push_text(&allocator, "the cat saw the dog and the dog saw a bird")
+    match run(&text, &allocator, &console):
+        Ok:
+            ()
+        Err(code):
+            console.line("no room")
+    text.close()

@@ -1,0 +1,12 @@
+// `if let` does not drop an owner another variant holds (its `_` arm may not): write the whole match.
+import console
+import string
+
+fn make(allocator: &Allocator) -> Result<U64, String>:
+    let Ok(text): String = String.new(allocator) else Err(code):
+        return Ok(code)
+    Err(move text)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    if let Ok(n) = make(&allocator):
+        console.print_int(n)

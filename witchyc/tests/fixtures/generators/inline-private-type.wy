@@ -1,0 +1,8 @@
+// Review: another file's generator calling a public method of a type private to that file steps;
+// run in place here, it would name a type this file cannot.
+import console
+import "parts/hidden-type.wy"
+
+fn main(console: Console<Write>):
+    for v in sevens(2):
+        console.print_int(v)

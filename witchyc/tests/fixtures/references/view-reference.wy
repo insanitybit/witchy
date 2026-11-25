@@ -1,0 +1,28 @@
+// A shared reference to a view (docs/design-references-to-views.md, step 1): it keeps the
+// view's loans while in use, and a reference read through it depends on the same loans.
+import console
+
+type Point:
+    x: U64
+    y: U64
+
+type Seen:
+    point: &Point
+    n: U64
+
+fn total(seen: &Seen) -> U64:
+    let point = (*seen).point
+    return point.x + point.y + (*seen).n
+
+fn pick(seen: &Seen) -> &Point:
+    return (*seen).point
+
+fn main(console: Console<Write>):
+    var p = Point(3, 4)
+    let s = Seen(&p, 5)
+    console.print_int(total(&s))
+    let r = &s
+    let q = pick(r)
+    console.print_int((*q).x)
+    p.x = 10
+    console.print_int(p.x)

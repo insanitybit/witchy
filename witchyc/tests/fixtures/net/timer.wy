@@ -1,0 +1,26 @@
+// A timer is made with the clock (`clock.timer(due)`), so code without a clock cannot ask the
+// time by polling (review round 29: a timer used to be any number with bit 60 set). A poll
+// waits no longer than its soonest timer, and finds it readable once due.
+import console
+import net
+import vec
+
+fn main(console: Console<Write>, listener: Listener, allocator: Allocator, clock: Clock):
+    let started = clock.now_ms()
+    let timer = clock.timer(started + 20)
+    let Ok(made): Vec<U64> = Vec.filled(&allocator, 2, listener.wait_entry()) else Err(code):
+        clock.end_timer(timer)
+        return
+    var entries = move made
+    let set = entries.set(1, timer)
+    let ready = listener.poll(entries.as_mut_slice())
+    console.print_int(ready)
+    if entry_readable(entries[1]):
+        console.line("the timer is due")
+    let took = clock.now_ms() - started
+    if took >= 20 && took < 2000:
+        console.line("after about 20 ms")
+    else:
+        console.print_int(took)
+    clock.end_timer(timer)
+    entries.close()

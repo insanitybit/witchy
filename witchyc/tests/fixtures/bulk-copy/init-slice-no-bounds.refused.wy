@@ -1,0 +1,9 @@
+fn append(target: &mut Buffer<U8>, source: &[U8]):
+    requires memory.empty_range(target, 0, memory.capacity(target))
+    ensures memory.same_allocation(target, old(target))
+    proof:
+        auto
+    memory.init_slice_unchecked(target, 0, source)
+
+fn main():
+    return

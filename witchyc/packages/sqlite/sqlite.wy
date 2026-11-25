@@ -1,0 +1,33 @@
+impl Sqlite:
+    // Run one bounded transaction. Reply tag 0 carries a BLOB from the final
+    // step. Tag 1 carries the failed assertion's label. Tag 2 means the host
+    // withheld the transaction. Failed steps roll back before replying.
+    pub fn transact(self: &Sqlite, plan: &[U8], bindings: &[U8], blob: &[U8], reply: &mut [U8]) -> Result<U64, U64>:
+        let count = self.raw_transact(plan, bindings, blob, reply)
+        if count == 0:
+            return Err(1)
+        return Ok(count)
+
+    // Run once. On success the body is in reply[1..1+count].
+    // On a failed assertion the label occupies that same range.
+    pub fn transact_checked(self: &Sqlite, plan: &[U8], bindings: &[U8], blob: &[U8], reply: &mut [U8]) -> Result<U64, SqliteError>:
+        let Ok(count): U64 = self.transact(plan, bindings, blob, reply) else Err(code):
+            return Err(NoReply)
+        if count > reply.len():
+            return Err(InvalidReply)
+        let tag = reply[0]
+        if tag == 2 && count == 1:
+            return Err(Unavailable)
+        if count == 1:
+            return Err(InvalidReply)
+        if tag == 0:
+            return Ok(count - 1)
+        if tag == 1:
+            return Err(AssertionFailed(count - 1))
+        return Err(InvalidReply)
+
+pub type SqliteError:
+    AssertionFailed(U64)
+    Unavailable
+    NoReply
+    InvalidReply

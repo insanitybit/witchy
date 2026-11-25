@@ -1,0 +1,8 @@
+// Refused: authority only shrinks. A `Dir<Read>` is not a full `Dir`, nor a `Dir<Write>`.
+import fs
+
+fn save(dir: &Dir<Write>):
+    return
+
+fn main(dir: Dir<Read>):
+    save(&dir)

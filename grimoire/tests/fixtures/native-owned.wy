@@ -1,0 +1,47 @@
+import fs
+import testing
+import test_runner
+
+type Packet:
+    file: File<Read>
+
+type Inputs:
+    back: Packet
+    front: Packet
+
+fn open_packet(dir: &Dir<Read>) -> Packet:
+    let Ok(file): File<Read> = dir.open("value") else Err(error):
+        unreachable
+    return Packet(move file)
+
+fn prepare(first: &Dir<Read>, second: &Dir<Read>) -> Inputs:
+    return Inputs(open_packet(second), open_packet(first))
+
+fn observe(packet: Packet) -> U64:
+    let file = move packet.file
+    let byte = file.next_byte()
+    file.close()
+    match byte:
+        Ok(value):
+            return U8.to_u64(value)
+        Err:
+            return 0
+
+using prepare
+test fn owned(front: Packet, back: Packet) -> Result<(), Failure>:
+    testing.eq_u64(observe(move front), 33)?
+    return testing.eq_u64(observe(move back), 65)
+
+test fn number(first: U64) -> Result<(), Failure>:
+    return testing.eq_u64(first, 33)
+
+fn main(tests: Tests, grants: TestGrants):
+    for case in tests.collect():
+        grants.offer_word(case, "first", 33)
+        grants.offer_fixture(case, "first", "value", "21")
+        grants.offer_fixture(case, "second", "value", "41")
+        match grants.bind(case):
+            Bound(invocation):
+                invocation.run()
+            Blocked(slot):
+                continue

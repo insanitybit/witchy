@@ -1,0 +1,25 @@
+// The same when the matched value was only computed from the reference.
+type Shape:
+    Dot
+    Line(U64)
+
+type Pair:
+    a: Shape
+    b: U64
+
+fn first(pair: &Pair) -> &Shape:
+    return &(*pair).a
+
+fn second(pair: &Pair) -> &U64:
+    return &(*pair).b
+
+fn main(console: Console<Write>):
+    var pair = Pair(Line(4), 5)
+    let count = second(&pair)
+    let wrap = Line(*count)
+    match Line(*count):
+        Dot:
+            pair.b = 1
+        Line(length):
+            pair.b = length + 1
+    console.print_int(pair.b)

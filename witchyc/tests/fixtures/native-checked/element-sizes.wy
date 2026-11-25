@@ -1,0 +1,98 @@
+// Cells of several sizes, which compiled code steps between by the size it lays the element
+// out with (native/body/cells.rs): a byte, a word, a padded pair (a byte and a word: 16
+// bytes) and three words (24 bytes: not a power of two), the last in a sparse buffer.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-vec.wy"
+import "../../../library/wasm-deque.wy"
+
+type Padded:
+    tag: U8
+    word: U64
+
+type Triple:
+    a: U64
+    b: U64
+    c: U64
+
+fn bytes(console: &Console<Write>, allocator: &Allocator):
+    let Ok(made): Vec<U8> = Vec.new(allocator, 5) else Err(code):
+        unreachable
+    var v = move made
+    for i in 0..5:
+        if let Err(_) = v.push_spare_mut(U8.truncate(i * 50 + 3)):
+            unreachable
+    var total: U64 = 0
+    for i in 0..5:
+        match v.get(i):
+            Ok(value):
+                total = total * 7 + U8.to_u64(value)
+            Err(code):
+                unreachable
+    console.print_int(total)
+    v.close()
+
+fn words(console: &Console<Write>, allocator: &Allocator):
+    let Ok(made): Vec<U64> = Vec.new(allocator, 5) else Err(code):
+        unreachable
+    var v = move made
+    for i in 0..5:
+        if let Err(_) = v.push_spare_mut(i * 1000003 + 1):
+            unreachable
+    var total: U64 = 0
+    for i in 0..5:
+        match v.get(4 - i):
+            Ok(value):
+                total = total * 7 + value
+            Err(code):
+                unreachable
+    console.print_int(total)
+    v.close()
+
+fn padded(console: &Console<Write>, allocator: &Allocator):
+    let Ok(made): Vec<Padded> = Vec.new(allocator, 4) else Err(code):
+        unreachable
+    var v = move made
+    for i in 0..4:
+        if let Err(_) = v.push_spare_mut(Padded(U8.truncate(i + 1), i * 11)):
+            unreachable
+    var total: U64 = 0
+    for i in 0..4:
+        match v.get(i):
+            Ok(value):
+                total = total * 100 + U8.to_u64(value.tag) * 10 + value.word
+            Err(code):
+                unreachable
+    console.print_int(total)
+    v.close()
+
+fn triples(console: &Console<Write>, allocator: &Allocator):
+    let Ok(made): Deque<Triple> = Deque.new(allocator, 5) else Err(code):
+        unreachable
+    var d = move made
+    for i in 0..3:
+        if let Err(_) = d.push_front_mut(Triple(i, i * 2, i * 3)):
+            unreachable
+    if let Err(_) = d.push_back_mut(Triple(7, 8, 9)):
+        unreachable
+    var total: U64 = 0
+    for i in 0..4:
+        match d.get(i):
+            Ok(value):
+                total = total * 1000 + value.a * 100 + value.b * 10 + value.c
+            Err(code):
+                unreachable
+    console.print_int(total)
+    while d.len() > 0:
+        match d.pop_back_mut():
+            Ok(value):
+                total = total - value.c
+            Err(code):
+                unreachable
+    console.print_int(total)
+    d.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    bytes(&console, &allocator)
+    words(&console, &allocator)
+    padded(&console, &allocator)
+    triples(&console, &allocator)

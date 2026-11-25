@@ -1,0 +1,24 @@
+// A closure's body may be a block: several statements, ending in `return` (or nothing, for
+// a `()` result). Captures work as for one expression; `step` takes `console` over.
+import console
+
+fn run_steps(each: &fn(U64) -> U64, count: U64) -> U64:
+    var total: U64 = 0
+    for i in 0..count:
+        total += each(i)
+    return total
+
+fn main(console: Console<Write>):
+    let base: U64 = 100
+    let step = fn(n: U64) -> U64:
+        console.print_int(n)
+        if n % 2 == 0:
+            return base + n
+        let odd: U64 = n * 10
+        return odd
+    let total: U64 = run_steps(&step, 4)
+    let report = fn(n: U64) -> ():
+        let doubled: U64 = n * 2
+        if doubled > total:
+            return
+    report(total)

@@ -1,0 +1,65 @@
+// Round trip of string escapes and of empty and nested containers.
+import "../../../library/wasm-json-tree.wy"
+import "../../../library/wasm-string.wy"
+
+fn run(console: &Console<Write>, allocator: &Allocator, source: Text, expected: Text):
+    let made: Result<String, U64> = String.new(allocator)
+    match move made:
+        Ok(empty):
+            match source.show(move empty, allocator):
+                Ok(input):
+                    match json_tree(&input, allocator):
+                        Ok(document):
+                            written(console, allocator, &document, expected)
+                            // Reading it did not consume it: write it again.
+                            written(console, allocator, &document, expected)
+                            json_close(move document)
+                        Err(code):
+                            console.print_int(900 + code)
+                    input.close()
+                Err(back):
+                    back.close()
+                    console.print_int(800)
+        Err(code):
+            console.print_int(code)
+
+// Print 1 when the document's text is exactly `expected`, else its length.
+fn written(console: &Console<Write>, allocator: &Allocator, document: &Json, expected: Text):
+    let made: Result<String, U64> = String.new(allocator)
+    match move made:
+        Ok(empty):
+            match document.show(move empty, allocator):
+                Ok(text):
+                    if same(&text, expected):
+                        console.print_int(1)
+                    else:
+                        console.print_int(text.byte_len())
+                    text.close()
+                Err(back):
+                    back.close()
+                    console.print_int(801)
+        Err(code):
+            console.print_int(code)
+
+fn same(text: &String, expected: Text) -> Bool:
+    let length = expected.byte_len()
+    if text.byte_len() != length:
+        return false
+    var index: U64 = 0
+    while index < length:
+        match expected.byte_at(index):
+            Ok(want):
+                match text.byte_at(index):
+                    Ok(have):
+                        if U8.to_u64(want) != U8.to_u64(have):
+                            return false
+                    Err(code):
+                        return false
+            Err(code):
+                return false
+        index += 1
+    return true
+
+fn main(console: Console<Write>, allocator: Allocator):
+    run(&console, &allocator, "\"a\\\"b\\\\c\\n\\u0001\\u001f\"", "\"a\\\"b\\\\c\\n\\u0001\\u001f\"")
+    run(&console, &allocator, "[[], {}, [[false]]]", "[[],{},[[false]]]")

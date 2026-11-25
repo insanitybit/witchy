@@ -1,0 +1,19 @@
+fn convert(input: U64) -> Result<U8, U64>:
+    return U8.try_from(input)
+
+fn main(console: Console<Write>):
+    match convert(0):
+        Ok(byte):
+            console.print_int(U8.to_u64(byte))
+        Err(original):
+            console.print_int(original)
+    match convert(255):
+        Ok(byte):
+            console.print_int(U8.to_u64(byte))
+        Err(original):
+            console.print_int(original)
+    match convert(256):
+        Ok(byte):
+            console.print_int(U8.to_u64(byte))
+        Err(original):
+            console.print_int(original)

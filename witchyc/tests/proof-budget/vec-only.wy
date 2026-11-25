@@ -1,0 +1,9 @@
+import console
+import vec
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.new(&allocator, 4) else Err(e):
+        return
+    var v = move made
+    console.print_int(v.len())
+    v.close()

@@ -1,0 +1,17 @@
+// `first` is a Span of `text`, whichever arm gave it.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-span.wy"
+import "../../../library/wasm-string.wy"
+
+fn head(text: &mut String) -> U64:
+    let whole = text.span()
+    let first = match whole.split(44):
+        Ok(halves):
+            halves.head
+        Err(all):
+            all
+    text.clear()
+    return first.len()
+
+fn main(console: Console<Write>):
+    console.print_int(1)

@@ -1,0 +1,16 @@
+import vec
+
+fn keep_prefix(input: Vec<U8>, allocator: &Allocator, requested: U64) -> Vec<U8>:
+    ensures result.length == old(input.length) + 1
+    ensures memory.equal_prefix(result.data, old(input.data), result.length)
+    proof:
+        auto
+    var vector = move input
+    match vector.reserve_mut(allocator, requested):
+        Ok:
+            return move vector
+        Err(code):
+            return move vector
+
+fn main():
+    return

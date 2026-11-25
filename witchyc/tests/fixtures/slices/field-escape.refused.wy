@@ -1,0 +1,11 @@
+// Refused: a window over a local array would outlive the function.
+type Window:
+    items: &[U64]
+    start: U64
+
+fn make() -> Window:
+    let numbers: [U64; 3] = [1, 2, 3]
+    return Window(numbers.slice(), 0)
+
+fn main():
+    let w = make()

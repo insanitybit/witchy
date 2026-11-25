@@ -1,0 +1,90 @@
+// Parse JSON text and tally what the parser reports.
+import "../../../library/wasm-json.wy"
+import "../../../library/wasm-format.wy"
+import "../../../library/wasm-string.wy"
+
+type Tally:
+    values: U64
+    sum: U64
+    bytes: U64
+    keys: U64
+    depth: U64
+    deepest: U64
+    last: U64
+
+impl Tally:
+    fn open(self: &mut Tally):
+        (*self).depth += 1
+        if (*self).depth > (*self).deepest:
+            (*self).deepest = (*self).depth
+
+impl JsonSink for Tally:
+    fn null(self: &mut Tally):
+        (*self).values += 1
+    fn boolean(self: &mut Tally, value: Bool):
+        (*self).values += 1
+        if value:
+            (*self).sum += 1
+    fn number(self: &mut Tally, source: &String, start: U64, end: U64):
+        (*self).values += 1
+        // Whole numbers are added up; anything else is only counted.
+        match json_u64(source, start, end):
+            Ok(value):
+                (*self).sum += value
+            Err(code):
+                return
+    fn string(self: &mut Tally, text: &String):
+        (*self).values += 1
+        (*self).bytes += text.byte_len()
+        match text.scalar_at(0):
+            Ok(first):
+                (*self).last = first.value
+            Err(code):
+                return
+    fn key(self: &mut Tally, text: &String):
+        (*self).keys += 1
+        (*self).bytes += text.byte_len()
+    fn begin_array(self: &mut Tally):
+        self.open()
+    fn end_array(self: &mut Tally):
+        (*self).depth -= 1
+    fn begin_object(self: &mut Tally):
+        self.open()
+    fn end_object(self: &mut Tally):
+        (*self).depth -= 1
+
+fn run(console: &Console<Write>, allocator: &Allocator, source: Text):
+    let made: Result<String, U64> = String.new(allocator)
+    match move made:
+        Ok(empty):
+            match source.show(move empty, allocator):
+                Ok(input):
+                    var tally = Tally(0, 0, 0, 0, 0, 0, 0)
+                    match json_parse(&input, &mut tally, allocator):
+                        Ok:
+                            console.print_int(tally.values)
+                            console.print_int(tally.sum)
+                            console.print_int(tally.bytes)
+                            console.print_int(tally.keys)
+                            console.print_int(tally.deepest)
+                            console.print_int(tally.last)
+                        Err(code):
+                            console.print_int(900 + code)
+                    input.close()
+                Err(back):
+                    back.close()
+                    console.print_int(800)
+        Err(code):
+            console.print_int(code)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    run(&console, &allocator, " {\"name\": \"h\\u00e9\", \"tags\": [1, 20, 300, true, null, -4.5e2], \"in\": {\"x\": []}} ")
+    run(&console, &allocator, "\"\\ud83d\\ude00 a\\n\"")
+    run(&console, &allocator, "[1, 2")
+    run(&console, &allocator, "[1, 2,]")
+    run(&console, &allocator, "\"\\ud83d\"")
+    run(&console, &allocator, "[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[1]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]")
+    run(&console, &allocator, "1 2")
+    run(&console, &allocator, "18446744073709551615")
+    run(&console, &allocator, "18446744073709551616")
+    run(&console, &allocator, "{\"a\": 1, \"b\"")

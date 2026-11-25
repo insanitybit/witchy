@@ -1,0 +1,7 @@
+// A type with its methods, and one more method in a trait's impl written in another file.
+pub type Coin:
+    n: U64
+
+impl Coin:
+    pub fn worth(self: &Coin) -> U64:
+        return (*self).n

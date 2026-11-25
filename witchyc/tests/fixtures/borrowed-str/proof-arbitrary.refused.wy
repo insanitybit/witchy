@@ -1,0 +1,8 @@
+fn empty_is_utf8(buffer: &Buffer<U8>):
+    ensures memory.utf8(buffer, 0, 1)
+    proof:
+        auto
+    return
+
+fn main():
+    return

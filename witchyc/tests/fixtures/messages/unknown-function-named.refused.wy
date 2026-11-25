@@ -1,0 +1,5 @@
+// Refused, naming the function that is nowhere.
+import console
+
+fn main(console: Console<Write>):
+    console.print_int(frobnicate(3))

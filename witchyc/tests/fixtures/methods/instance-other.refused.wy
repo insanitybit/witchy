@@ -1,0 +1,15 @@
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-vec.wy"
+
+impl Vec<U64>:
+    fn sum(self: &Vec<U64>) -> U64:
+        return 1
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var bytes: Vec<U8> = match Vec.new(&allocator, 4):
+        Ok(made):
+            move made
+        Err(reason):
+            return
+    console.print_int(bytes.sum())
+    bytes.close()

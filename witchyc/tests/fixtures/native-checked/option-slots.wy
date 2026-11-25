@@ -1,0 +1,76 @@
+// Sparse slots as a dense vector of options holding owners (the storage handoff of 2026-11-25):
+// filled out of order, an owner handed back when its slot is taken or past the end, a
+// neighbour kept across a take, and a second take finding nothing.
+import vec
+import option
+
+fn insert<T: Any>(rows: &mut Vec<Option<T>>, index: U64, item: T) -> Result<(), T>:
+    match rows.at_mut(index):
+        Err(code):
+            return Err(move item)
+        Ok(slot):
+            match &*slot:
+                Some(_):
+                    return Err(move item)
+                None:
+                    *slot = Some(move item)
+                    return Ok(())
+
+fn take<T: Any>(rows: &mut Vec<Option<T>>, index: U64) -> Option<T>:
+    match rows.at_mut(index):
+        Ok(slot):
+            return slot.take()
+        Err(code):
+            return None
+
+fn give(rows: &mut Vec<Option<Vec<U8>>>, allocator: &Allocator, out: &Console<Write>, index: U64, marker: U64):
+    let Ok(item): Vec<U8> = Vec.new(allocator, marker) else Err(code):
+        unreachable
+    match insert(rows, index, move item):
+        Ok:
+            out.print_int(0)
+        Err(back):
+            out.print_int(back.capacity())
+            back.close()
+
+fn show(rows: &mut Vec<Option<Vec<U8>>>, out: &Console<Write>, index: U64):
+    match take(rows, index):
+        Some(item):
+            out.print_int(item.capacity())
+            item.close()
+        None:
+            out.print_int(0)
+
+fn main(out: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<Option<Vec<U8>>> = Vec.new(&allocator, 3) else Err(code):
+        unreachable
+    var rows = move made
+    for i in 0..3:
+        match rows.push_spare_mut(None):
+            Ok:
+                ()
+            Err(back):
+                unreachable
+    give(&mut rows, &allocator, &out, 2, 11)
+    give(&mut rows, &allocator, &out, 0, 13)
+    give(&mut rows, &allocator, &out, 2, 17)
+    give(&mut rows, &allocator, &out, 3, 19)
+    show(&mut rows, &out, 1)
+    show(&mut rows, &out, 2)
+    show(&mut rows, &out, 2)
+    show(&mut rows, &out, 0)
+    while rows.len() > 0:
+        match rows.take_last_mut():
+            Ok(slot):
+                match move slot:
+                    Some(left):
+                        left.close()
+                    None:
+                        ()
+            Err(code):
+                unreachable
+    match rows.try_release():
+        Ok:
+            return
+        Err(back):
+            unreachable

@@ -1,0 +1,8 @@
+// Refused (review of nested generators): a generator named for a built-in type; the compiler recursed without end.
+import console
+
+gen fn u64(n: U64) -> U64:
+    yield n
+
+fn main(console: Console<Write>):
+    console.print_int(3)

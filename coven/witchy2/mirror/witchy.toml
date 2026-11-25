@@ -1,0 +1,13 @@
+[run]
+entry = "main.wy"
+deadline-ms = 300000
+connection-deadline-ms = 2000
+fuel-per-connection = 20000000
+net-bytes = "unlimited"
+net-bytes-per-connection = 2113536
+file-bytes = "unlimited"
+file-bytes-per-connection = 2105344
+
+[grants]
+document = "mirror.grants.toml"
+allocator = true

@@ -1,0 +1,45 @@
+:root {
+  --content-max-width: 760px;
+  --sidebar-width: 290px;
+}
+.light {
+  --bg: #fbf8f0;
+  --fg: #292821;
+  --sidebar-bg: #f1ebdc;
+  --sidebar-fg: #484334;
+  --sidebar-active: #834023;
+  --links: #834023;
+  --quote-bg: #f1ebdc;
+}
+.content main {
+  line-height: 1.7;
+  padding-bottom: 5rem;
+}
+.content h1, .content h2, .content h3 {
+  font-family: Georgia, serif;
+  line-height: 1.18;
+  letter-spacing: -.025em;
+}
+.content h1 {
+  font-size: clamp(2.5rem, 6vw, 4.5rem);
+  margin-bottom: 2rem;
+}
+.content h2 { font-size: 2.4rem; }
+.content pre {
+  border-radius: 10px;
+  border: 1px solid var(--table-border-color);
+}
+.content pre > code { padding: 1.3rem; }
+.content a { text-underline-offset: .18em; }
+
+.language-witchy .wy-keyword { color: #a02d62; font-weight: 650; }
+.language-witchy .wy-type { color: #105e83; }
+.language-witchy .wy-string { color: #366724; }
+.language-witchy .wy-number { color: #9b4113; }
+.language-witchy .wy-comment { color: #65685e; font-style: italic; }
+
+:is(.ayu, .navy, .coal) .language-witchy .wy-keyword { color: #ff91b8; }
+:is(.ayu, .navy, .coal) .language-witchy .wy-type { color: #83cdf7; }
+:is(.ayu, .navy, .coal) .language-witchy .wy-string { color: #addb85; }
+:is(.ayu, .navy, .coal) .language-witchy .wy-number { color: #ffc17b; }
+:is(.ayu, .navy, .coal) .language-witchy .wy-comment { color: #a3afa5; }

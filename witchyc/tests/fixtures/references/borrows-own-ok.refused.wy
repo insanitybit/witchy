@@ -1,0 +1,14 @@
+// The arm's own source stays lent while its reference is in use.
+import console
+import "../modules/parts/choose.wy"
+
+fn main(console: Console<Write>):
+    var a: U64 = 1
+    var b: U64 = 2
+    match choose(&a, &b, a < b):
+        Ok(item):
+            a = 3
+            console.print_int(*item)
+        Err(item):
+            console.print_int(0)
+            console.print_int(*item)

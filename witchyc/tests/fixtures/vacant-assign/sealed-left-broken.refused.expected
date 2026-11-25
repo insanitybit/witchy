@@ -1,0 +1,1 @@
+not proved: the invariant `when Vacant = slot: count == 0` of a sealed type this function changes or returns

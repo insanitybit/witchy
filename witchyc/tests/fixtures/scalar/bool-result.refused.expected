@@ -1,0 +1,2 @@
+proof failed: function `below`
+  not proved: ensures result == (a < 10)

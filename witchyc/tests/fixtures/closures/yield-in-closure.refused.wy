@@ -1,0 +1,11 @@
+// Refused, not a crash (found by an adversarial review): a closure is not its maker's
+// generator, so a `yield` in its block is outside one.
+gen fn g(limit: U64) -> U64:
+    var i: U64 = 0
+    while i < limit:
+        let f = fn(n: U64) -> U64:
+            yield n
+            return n
+        i += 1
+fn main():
+    return

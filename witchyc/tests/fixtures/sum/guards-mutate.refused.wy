@@ -1,0 +1,20 @@
+// A guard does not name the matched value (red-team review: one that changed it through `&mut`
+// left no arm to run, and a match whose every arm returned fell through).
+// guard changes the matched value; the inner match re-reads it
+import console
+import option
+
+fn flip(o: &mut Option<U64>) -> Bool:
+    *o = None
+    false
+
+fn main(console: Console<Write>):
+    var o: Option<U64> = Some(5)
+    match o:
+        None:
+            console.print_int(0)
+        Some(x) if flip(&mut o):
+            console.print_int(1)
+        Some(x):
+            console.print_int(x)
+    console.print_int(99)

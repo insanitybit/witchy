@@ -1,0 +1,79 @@
+import list
+import string
+
+fn append(list: &mut DoublyLinkedList<String>, allocator: &Allocator, label: Text) -> Bool:
+    match String.with_capacity(allocator, label.byte_len()):
+        Err(code):
+            return false
+        Ok(empty):
+            var text = move empty
+            if let Err(_) = text.push_text(allocator, label):
+                text.close()
+                return false
+            match list.insert(allocator, move text):
+                Ok:
+                    return true
+                Err(original):
+                    original.close()
+                    return false
+
+fn drain(list: &mut DoublyLinkedList<String>):
+    while list.move_prev():
+        continue
+    while true:
+        match list.remove():
+            Some(text):
+                text.close()
+            None:
+                return
+
+fn demonstrate(list: &mut DoublyLinkedList<String>, a: &Allocator, out: &Console<Write>):
+    if !append(list, a, "left") || !append(list, a, "middle") || !append(list, a, "right"):
+        return
+    list.move_prev()
+    list.move_prev()
+    var replacement = match String.with_capacity(a, 3):
+        Ok(text):
+            move text
+        Err(code):
+            return
+    if let Err(_) = replacement.push_text(a, "new"):
+        replacement.close()
+        return
+    let original = list.position()
+    match list.remove():
+        Some(removed):
+            // The replacement string is ready. The next allocation is its node.
+            match list.current():
+                Some(right):
+                    out.print_int(right.byte_len())
+                None:
+                    unreachable
+            match list.insert(a, move replacement):
+                Ok:
+                    list.move_prev()
+                    let replacement_position = list.position()
+                    out.print_int(original.identity())
+                    out.print_int(replacement_position.identity())
+                    if original.same(replacement_position):
+                        unreachable
+                    out.print_int(removed.byte_len())
+                    for byte in removed.as_bytes():
+                        out.print_byte(*byte)
+                    out.print_byte(10)
+                Err(back):
+                    back.close()
+            removed.close()
+        None:
+            replacement.close()
+            unreachable
+
+fn main(out: Console<Write>, a: Allocator):
+    var list: DoublyLinkedList<String> = DoublyLinkedList.new()
+    demonstrate(&mut list, &a, &out)
+    drain(&mut list)
+    match list.close_empty():
+        Ok:
+            out.print_int(0)
+        Err(back):
+            unreachable

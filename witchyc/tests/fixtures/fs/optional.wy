@@ -1,0 +1,33 @@
+// The book's optional capability: authority a function may or may not be given.
+// wasm-caps still lists record as able to write: optionality changes control flow,
+// not the authority on paper.
+import console
+import fs
+
+type Option<T>:
+    Some(T)
+    None
+
+fn record(out: Option<Dir<Write>>, line: Text) -> Bool:
+    match move out:
+        Some(dir):
+            match dir.create("log.txt"):
+                Ok(file):
+                    match file.write(line):
+                        Ok:
+                            return file.finish().is_ok()
+                        Err(error):
+                            file.abandon()
+                            return false
+                Err(error):
+                    return false
+        None:
+            return false
+
+fn main(console: Console<Write>, dir: Dir<Write>):
+    let wrote = record(Some(move dir), "started")
+    let skipped = record(None, "goes nowhere")
+    if wrote:
+        console.line("wrote")
+    if !skipped:
+        console.line("skipped")

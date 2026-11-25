@@ -1,0 +1,7 @@
+// Verify the registry's own signed objects (`witchy-2`), a batch the launcher writes to its
+// input: see `verify_batch`. Verification needs no authority at all. The launcher runs it only
+// when no program that acts carries the batch (`settle`: `verify-snapshot`, a refusal).
+import "witchy2.wy"
+
+fn main(console: Console<Write>, allocator: Allocator, input: Console<Read>):
+    let all_valid = verify_batch(&console, &allocator, &input)

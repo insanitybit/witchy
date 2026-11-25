@@ -1,0 +1,27 @@
+// parse_f64 against Python's float(): each line's F64 bits. Edges (zeros, the largest and least
+// F64 and past them, malformed text), exact halfway points written out in full, ties with
+// digits past the 800 kept, subnormal edges, random values (picked from 9,852 compared strings).
+import console
+import string
+import float
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(e):
+        return
+    var line = move made
+    while true:
+        line.clear()
+        match input.read_line(&allocator, &mut line):
+            .Line:
+                match line.parse_f64():
+                    Ok(value):
+                        console.print_int(F64.bits(value))
+                    Err(code):
+                        console.print("error ${code}")
+            .End:
+                break
+            .NotText:
+                break
+            .NoRoom:
+                break
+    line.close()

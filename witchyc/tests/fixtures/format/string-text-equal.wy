@@ -1,0 +1,13 @@
+// `==` and `!=` between a String and a Text literal, either way round: the library's
+// `Equivalent<String> for Text`.
+import console
+import string
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(c):
+        return
+    var s = move made
+    let _ = s.push_text(&allocator, "pen")
+    let r = &s
+    console.print("${s == \"pen\"} ${\"pen\" == s} ${s != \"pad\"} ${*r == \"pe\"} ${r == \"pen\"}")
+    s.close()

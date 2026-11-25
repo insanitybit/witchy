@@ -1,0 +1,97 @@
+// Parse JSON text into a document, walk it, and release it.
+import "../../../library/wasm-json-tree.wy"
+import "../../../library/wasm-format.wy"
+import "../../../library/wasm-discard.wy"
+import "../../../library/wasm-string.wy"
+import "../../../library/wasm-vec.wy"
+
+type Count:
+    values: U64
+    sum: U64
+    bytes: U64
+    keys: U64
+
+fn add(left: Count, right: Count) -> Count:
+    return Count(left.values + right.values, left.sum + right.sum, left.bytes + right.bytes, left.keys + right.keys)
+
+// Take the document apart, counting as it goes. Everything in it is released.
+fn weigh(value: Json) -> Count:
+    match move value:
+        Null:
+            return Count(1, 0, 0, 0)
+        Boolean(flag):
+            if flag:
+                return Count(1, 1, 0, 0)
+            return Count(1, 0, 0, 0)
+        Whole(number):
+            return Count(1, number, 0, 0)
+        Decimal(text):
+            let length = text.byte_len()
+            text.close()
+            return Count(1, 0, length, 0)
+        Str(text):
+            let length = text.byte_len()
+            text.close()
+            return Count(1, 0, length, 0)
+        Array(items):
+            var rest = move items
+            let inside = weigh_items(&mut rest)
+            rest.discard()
+            return inside
+        Object(members):
+            var rest = move members
+            let inside = weigh_members(&mut rest)
+            rest.discard()
+            return inside
+
+fn weigh_items(items: &mut Vec<Json>) -> Count:
+    var total = Count(0, 0, 0, 0)
+    while items.len() > 0:
+        match items.take_last_mut():
+            Ok(item):
+                total = add(total, weigh(move item))
+            Err(code):
+                return total
+    return total
+
+fn weigh_members(members: &mut Vec<Member>) -> Count:
+    var total = Count(0, 0, 0, 0)
+    while members.len() > 0:
+        match members.take_last_mut():
+            Ok(member):
+                let Member(key, value) = move member
+                total = add(total, Count(0, 0, key.byte_len(), 1))
+                key.close()
+                total = add(total, weigh(move value))
+            Err(code):
+                return total
+    return total
+
+fn run(console: &Console<Write>, allocator: &Allocator, source: Text):
+    let made: Result<String, U64> = String.new(allocator)
+    match move made:
+        Ok(empty):
+            match source.show(move empty, allocator):
+                Ok(input):
+                    match json_tree(&input, allocator):
+                        Ok(document):
+                            let count = weigh(move document)
+                            console.print_int(count.values)
+                            console.print_int(count.sum)
+                            console.print_int(count.bytes)
+                            console.print_int(count.keys)
+                        Err(code):
+                            console.print_int(900 + code)
+                    input.close()
+                Err(back):
+                    back.close()
+                    console.print_int(800)
+        Err(code):
+            console.print_int(code)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    run(&console, &allocator, " {\"name\": \"h\\u00e9\", \"tags\": [1, 20, 300, true, null, -4.5e2], \"in\": {\"x\": []}} ")
+    run(&console, &allocator, "[[], [[7]], {\"a\": {\"b\": [\"c\"]}}]")
+    run(&console, &allocator, "[1, [2, {\"k\": [3, \"x\"")
+    run(&console, &allocator, "{\"a\": 1, \"b\": [true, nul]}")
+    run(&console, &allocator, "[1] 2")

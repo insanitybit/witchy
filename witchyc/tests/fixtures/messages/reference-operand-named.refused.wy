@@ -1,0 +1,10 @@
+// Refused, saying what the operand is: `for c in deck` gives references to the numbers.
+import console
+
+fn main(console: Console<Write>):
+    let deck: [U64; 4] = [3, 1, 4, 1]
+    var big: U64 = 0
+    for c in deck:
+        if c >= 2:
+            big += 1
+    console.print_int(big)

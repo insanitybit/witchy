@@ -1,0 +1,16 @@
+// Refused, naming the type parameter in the bound it lacks (it read `Equivalent<>`).
+import console
+import string
+import hash
+
+
+fn inner<Q: Any + Equivalent<K>, K: Any>(q: &Q, k: &K) -> Bool:
+    return q.equivalent(k)
+
+fn outer<T: Any + Eq>(a: &T, b: &T) -> Bool:
+    return inner(a, b)
+
+fn main(console: Console<Write>):
+    let a: Text = "x"
+    let b: Text = "x"
+    console.print("${outer(&a, &b)}")

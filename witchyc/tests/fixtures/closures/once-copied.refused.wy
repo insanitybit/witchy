@@ -1,0 +1,13 @@
+// Work given to `W: WitchyOnce0<()>` without `Any` could be copied and run twice (review: it ran
+// a closure holding the console twice); such work must be Copy.
+// W bounded by WitchyOnce0 but not Any: generic code copies work that took over a Console.
+import console
+fn say(console: Console<Write>):
+    console.line("ran")
+fn twice<W: WitchyOnce0<()>>(work: W):
+    let a = work
+    a.call_once()
+    work.call_once()
+    work.discard()
+fn main(console: Console<Write>):
+    twice(fn() -> (): say(move console))

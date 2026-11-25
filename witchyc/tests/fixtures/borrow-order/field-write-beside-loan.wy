@@ -1,0 +1,36 @@
+// A reference into `b.items` stays usable while `b.other` is pushed to and `b.count` written
+// (once refused: field writes were checked against the whole value; adversarial round 13).
+import console
+import vec
+type Bag:
+    items: Vec<U64>
+    count: U64
+    other: Vec<U64>
+fn mk(allocator: &Allocator) -> Vec<U64>:
+    let Ok(made): Vec<U64> = Vec.new(allocator, 1) else Err(c):
+        unreachable
+    var v = move made
+    match v.push_mut(allocator, 41):
+        Ok:
+            return move v
+        Err(e):
+            unreachable
+fn close_bag(b: Bag):
+    let Bag(i, c, o) = move b
+    i.close()
+    o.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var b = Bag(mk(&allocator), 0, mk(&allocator))
+    match b.items.at(0):
+        Ok(x):
+            match b.other.push_mut(&allocator, 5):
+                Ok:
+                    console.print_int(*x)
+                Err(e):
+                    console.print_int(0)
+            b.count = 3
+            console.print_int(*x + b.count)
+        Err(c):
+            console.print_int(0)
+    close_bag(move b)

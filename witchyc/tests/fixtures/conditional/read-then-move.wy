@@ -1,0 +1,18 @@
+// An element read and then the Vec moved by an inline `if`, in one record: the read is bound
+// first, so the move after it is no longer refused (red-team review).
+import console
+import vec
+
+type P:
+    first: U64
+    v: Vec<U64>
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.filled(&allocator, 4, 3) else Err(code):
+        return
+    var v = move made
+    let c = true
+    let p = P(first: v[0] + 1, v: if c: move v else: move v)
+    console.print_int(p.first)
+    let P(x, y) = move p
+    y.close()

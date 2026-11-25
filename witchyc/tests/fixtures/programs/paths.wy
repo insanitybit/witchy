@@ -1,0 +1,128 @@
+// Shortest paths over a small graph: adjacency lists, the library's priority
+// queue, and a table of best distances.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-heap.wy"
+import "../../../library/wasm-vec.wy"
+import "../../../library/wasm-discard.wy"
+import "../../../library/wasm-discard-core.wy"
+import "../../../library/wasm-sort.wy"
+
+type Edge:
+    to: U64
+    cost: U64
+
+// An edge owns nothing; saying so lets a Vec<Vec<Edge>> be discarded whole.
+impl Discard for Edge:
+    fn discard(self: Edge):
+        return
+
+type Item:
+    cost: U64
+    node: U64
+
+// The cheapest first; at the same cost, the lower node.
+impl Before for Item:
+    fn before(self: &Item, other: &Item) -> Bool:
+        return self.cost < other.cost || (self.cost == other.cost && self.node < other.node)
+
+impl Discard for Item:
+    fn discard(self: Item):
+        return
+
+fn link(graph: &mut Vec<Vec<Edge>>, allocator: &Allocator, from: U64, to: U64, cost: U64) -> Bool:
+    match graph.at_mut(from):
+        Ok(edges):
+            match edges.push_mut(allocator, Edge(to, cost)):
+                Ok:
+                    return true
+                Err(back):
+                    return false
+        Err(code):
+            return false
+
+fn run(console: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let nodes: U64 = 6
+    var graph: Vec<Vec<Edge>> = Vec.new(allocator, 0)?
+    for node in 0..nodes:
+        let edges: Vec<Edge> = match Vec.new(allocator, 0):
+            Ok(empty):
+                move empty
+            Err(code):
+                graph.discard()
+                return Err(code)
+        match graph.push_mut(allocator, move edges):
+            Ok:
+                continue
+            Err(back):
+                back.close()
+                graph.discard()
+                return Err(2)
+    let linked = link(&mut graph, allocator, 0, 1, 7) && link(&mut graph, allocator, 0, 2, 9) && link(&mut graph, allocator, 0, 5, 14) && link(&mut graph, allocator, 1, 2, 10) && link(&mut graph, allocator, 1, 3, 15) && link(&mut graph, allocator, 2, 3, 11) && link(&mut graph, allocator, 2, 5, 2) && link(&mut graph, allocator, 3, 4, 6) && link(&mut graph, allocator, 5, 4, 9)
+    if !linked:
+        graph.discard()
+        return Err(3)
+    var best: Vec<U64> = match Vec.new(allocator, nodes):
+        Ok(empty):
+            move empty
+        Err(code):
+            graph.discard()
+            return Err(code)
+    for node in 0..nodes:
+        match best.push_mut(allocator, 1000000):
+            Ok:
+                continue
+            Err(back):
+                break
+    var heap: Heap<Item> = match Heap.new(allocator):
+        Ok(empty):
+            move empty
+        Err(code):
+            best.close()
+            graph.discard()
+            return Err(code)
+    let _ = best.set(0, 0)
+    let _ = heap.push(allocator, Item(0, 0))
+    while heap.len() > 0:
+        let item = match heap.pop():
+            Ok(least):
+                least
+            Err(code):
+                break
+        let known = match best.get(item.node):
+            Ok(value):
+                value
+            Err(code):
+                break
+        if item.cost > known:
+            continue
+        match graph.at(item.node):
+            Ok(edges):
+                for edge in edges:
+                    let reach = item.cost + edge.cost
+                    let old = match best.get(edge.to):
+                        Ok(value):
+                            value
+                        Err(code):
+                            continue
+                    if reach < old:
+                        let _ = best.set(edge.to, reach)
+                        let _ = heap.push(allocator, Item(reach, edge.to))
+            Err(code):
+                break
+    for node in 0..nodes:
+        match best.get(node):
+            Ok(value):
+                console.print_int(value)
+            Err(code):
+                break
+    heap.discard()
+    best.close()
+    graph.discard()
+    return Ok(())
+
+fn main(console: Console<Write>, allocator: Allocator):
+    match run(&console, &allocator):
+        Ok:
+            console.print_int(1)
+        Err(code):
+            console.print_int(code)

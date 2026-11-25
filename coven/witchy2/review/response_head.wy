@@ -1,0 +1,101 @@
+import "request.wy"
+import "integrity.wy"
+import "../response_fields.wy"
+import http
+import span
+import string
+import text
+
+pub type PagePolicy:
+    NoPage
+    PageAssets(Span, &Integrity)
+
+pub fn make_fields(headers: &mut ResponseHeaders, status: U64, route: ReviewRoute, policy: PagePolicy, allocator: &Allocator) -> Result<(), U64>:
+    let empty = String.with_capacity(allocator, 896)?
+    var field = move empty
+    let added = add_review_fields(headers, &mut field, status, route, policy, allocator)
+    field.close()
+    return added
+
+fn add_review_fields(headers: &mut ResponseHeaders, field: &mut String, status: U64, route: ReviewRoute, policy: PagePolicy, allocator: &Allocator) -> Result<(), U64>:
+    add_common_fields(headers, field, allocator)?
+    add_literal(headers, field, "Referrer-Policy", "no-referrer", allocator)?
+    add_literal(headers, field, "Cross-Origin-Opener-Policy", "same-origin", allocator)?
+    add_literal(headers, field, "Cross-Origin-Resource-Policy", "same-origin", allocator)?
+    let enrollment_permissions: Text = "publickey-credentials-get=(self), publickey-credentials-create=(self)"
+    let review_permissions: Text = "publickey-credentials-get=(self), publickey-credentials-create=()"
+    let permissions = if status == 200 && is_enrollment(route): enrollment_permissions else: review_permissions
+    add_literal(headers, field, "Permissions-Policy", permissions, allocator)?
+    field.cut(0)
+    let name: Text = "Content-Security-Policy"
+    field.push_text(allocator, name)?
+    field.push_text(allocator, "default-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'; require-trusted-types-for 'script'; trusted-types 'none'")?
+    if status == 200 && is_page(route):
+        match policy:
+            PageAssets(origin, script):
+                page_sources(field, origin, script, route, allocator)?
+            NoPage:
+                return Err(1)
+    return add_field(headers, field.span(), name.byte_len(), allocator)
+
+fn is_page(route: ReviewRoute) -> Bool:
+    match route:
+        Page:
+            return true
+        Enrollment:
+            return true
+        _:
+            return false
+
+fn is_enrollment(route: ReviewRoute) -> Bool:
+    if let Enrollment = route:
+        return true
+    return false
+
+fn page_sources(out: &mut String, origin: Span, script: &Integrity, route: ReviewRoute, allocator: &Allocator) -> Result<(), U64>:
+    if !origin.starts_with_text("https://") || origin.len() < 9 || origin.len() > 267:
+        return Err(1)
+    // TLS has verified the canonical origin. Keep CSP delimiter bytes out of this serializer.
+    for byte in origin.part(8, origin.len()).as_bytes():
+        if !(*byte >= 'a' && *byte <= 'z') && !(*byte >= '0' && *byte <= '9') && *byte != '.' && *byte != '-' && *byte != ':':
+            return Err(1)
+    out.push_text(allocator, "; script-src '")?
+    script.append(out, allocator)?
+    out.push_text(allocator, "'; style-src ")?
+    source(out, origin, "/review.css", allocator)?
+    if !is_enrollment(route):
+        out.push_text(allocator, "; connect-src ")?
+        source(out, origin, review_action_path(Challenge), allocator)?
+        out.push_text(allocator, " ")?
+        source(out, origin, review_action_path(Inspect), allocator)?
+        out.push_text(allocator, " ")?
+        source(out, origin, review_action_path(Approve), allocator)?
+    return Ok(())
+
+fn source(out: &mut String, origin: Span, path: Text, allocator: &Allocator) -> Result<(), U64>:
+    out.push_utf8_slice(allocator, origin.as_bytes())?
+    return out.push_text(allocator, path)
+
+pub fn content_type(status: U64, route: ReviewRoute) -> Text:
+    if status == 200:
+        match route:
+            Page:
+                return "text/html; charset=utf-8"
+            Enrollment:
+                return "text/html; charset=utf-8"
+            Script:
+                return "text/javascript; charset=utf-8"
+            EnrollmentScript:
+                return "text/javascript; charset=utf-8"
+            Style:
+                return "text/css; charset=utf-8"
+            _:
+                ()
+    return "application/json"
+
+pub fn review_status(status: U64) -> U64:
+    match status:
+        200 | 403 | 404 | 413 | 421 | 431 | 503:
+            return status
+        _:
+            return 400

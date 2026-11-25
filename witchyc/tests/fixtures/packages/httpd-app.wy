@@ -1,0 +1,66 @@
+// An application running the HTTP file server package (packages/httpd/httpd.wy), playing its
+// clients itself: one asks for a file that is there (200 and its text), one for a file that is
+// not (404), and one sends half a request and then nothing, so the time limit cuts it off (the
+// connection is closed with no answer). Each connection is given only the `site` subtree, so a
+// path out of it (`/../private.txt`) is not found. The package answers only for the address the
+// run granted the listener, which the accepted connection itself names: the same file asked
+// for under another name gets 421, and with no `Host` header, or two, 400. Each connection is a
+// task, its work a closure that takes over the connection; `httpd-app.policy` holds the package
+// to what it is given.
+import console
+import net
+import fs
+import vec
+import string
+import tasks
+import discard
+import "@httpd"
+
+// Serves one accepted connection to its end: what it reported, summed.
+fn serve(listener: &Listener, allocator: &Allocator, clock: &Clock, dir: &Dir<Read>, socket: Socket) -> U64:
+    let zero: U8 = 0
+    let Ok(buffer): Vec<U8> = Vec.filled(allocator, 256, zero) else Err(code):
+        socket.close()
+        return 1
+    let Ok(root): Dir<Read> = dir.dir("site") else Err(error):
+        socket.close()
+        buffer.close()
+        return 2
+    let connection: Connection = Connection(move socket, move buffer, move root)
+    let shared = allocator.share()
+    let timer = clock.share()
+    match run_task(allocator, listener, 16384, fn() -> (): answer_within(move connection, move shared, move timer, 50)):
+        Ok(reported):
+            return reported
+        Err(code):
+            return 3
+
+fn ask(console: &Console<Write>, net: &Net, listener: &Listener, allocator: &Allocator, clock: &Clock, dir: &Dir<Read>, request: Text):
+    let Ok(near): Socket = net.connect("127.0.0.1:47625") else Err(error):
+        console.line("no connection")
+        return
+    let Ok(far): Socket = listener.accept() else Err(error):
+        near.close()
+        return
+    let sent = near.send(request)
+    console.print_int(serve(listener, allocator, clock, dir, move far))
+    match near.read_text(allocator):
+        Ok(reply):
+            console.write_string(&reply)
+            console.line("|")
+            reply.close()
+        Err(error):
+            console.line("no reply")
+
+fn main(console: Console<Write>, net: Net, listener: Listener, allocator: Allocator, clock: Clock, dir: Dir<Read>):
+    ask(&console, &net, &listener, &allocator, &clock, &dir, "GET /hello.txt HTTP/1.0\r\nHost: 127.0.0.1:47625\r\n\r\n")
+    ask(&console, &net, &listener, &allocator, &clock, &dir, "GET /missing.txt HTTP/1.0\r\nHost: 127.0.0.1:47625\r\n\r\n")
+    ask(&console, &net, &listener, &allocator, &clock, &dir, "GET /hel")
+    // Outside the subtree it was given: the host refuses the path, so 404.
+    ask(&console, &net, &listener, &allocator, &clock, &dir, "GET /../private.txt HTTP/1.0\r\nHost: 127.0.0.1:47625\r\n\r\n")
+    // Not the granted listener's name (what a rebound DNS name sends), then none, then two,
+    // then a target that names a host of its own.
+    ask(&console, &net, &listener, &allocator, &clock, &dir, "GET /hello.txt HTTP/1.1\r\nHost: rebound.example:47625\r\n\r\n")
+    ask(&console, &net, &listener, &allocator, &clock, &dir, "GET /hello.txt HTTP/1.0\r\n\r\n")
+    ask(&console, &net, &listener, &allocator, &clock, &dir, "GET /hello.txt HTTP/1.1\r\nHost: 127.0.0.1:47625\r\nHost: 127.0.0.1:47625\r\n\r\n")
+    ask(&console, &net, &listener, &allocator, &clock, &dir, "GET http://rebound.example/hello.txt HTTP/1.1\r\nHost: 127.0.0.1:47625\r\n\r\n")

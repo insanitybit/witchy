@@ -1,0 +1,18 @@
+import console
+import string
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var text = move made
+    let Ok(piece_made): String = String.new(&allocator) else Err(code):
+        text.close()
+        return
+    var piece = move piece_made
+    let _ = piece.push_text(&allocator, "abcdefghi")
+    for i in 0..1000000:
+        if let Err(_) = text.push_text(&allocator, piece.as_str()):
+            console.line("full")
+    console.print_int(text.byte_len())
+    piece.close()
+    text.close()

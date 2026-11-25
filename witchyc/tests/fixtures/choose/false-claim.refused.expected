@@ -1,0 +1,2 @@
+proof failed: function `larger`
+  not proved: ensures result > right

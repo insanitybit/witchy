@@ -1,0 +1,16 @@
+line 8 100 [keptgood]
+not text [kept]
+not text [kept]
+not text [kept]
+line 9 114 [keptafter]
+not text [kept]
+line 9 13
+not text [kept]
+not text [kept]
+line 11 51 [keptthree,3]
+not text [kept]
+not text [kept]
+not text [kept]
+line 304 99 [keptcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc]
+line 8 108 [kepttail]
+end

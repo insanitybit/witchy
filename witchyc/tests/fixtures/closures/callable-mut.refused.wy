@@ -1,0 +1,11 @@
+// Refused where it is written: a callable takes values or shared references.
+fn apply(f: fn(U64) -> U64) -> U64:
+    return f(1)
+type Bump:
+    by: U64
+impl WitchyFn1<&mut U64, U64> for Bump:
+    fn call(self: &Bump, n: &mut U64) -> U64:
+        *n += (*self).by
+        return *n
+fn main():
+    return

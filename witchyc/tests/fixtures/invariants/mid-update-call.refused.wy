@@ -1,0 +1,34 @@
+// Refused (review): a proved method called on the parameter while its invariant is broken.
+import console
+
+sealed type Account:
+    balance: U64
+    limit: U64
+    invariant balance <= limit
+
+impl Account:
+    pub fn open(limit: U64) -> Account:
+        ensures result.balance == 0
+        proof:
+            auto
+        return Account(0, limit)
+
+    pub fn room(account: &Account) -> U64:
+        ensures true
+        proof:
+            auto
+        return (*account).limit - (*account).balance
+
+    pub fn trick(account: &mut Account) -> U64:
+        ensures true
+        proof:
+            auto
+        let saved = (*account).balance
+        (*account).balance = 7
+        let r = account.room()
+        (*account).balance = 0
+        return r
+
+fn main(console: Console<Write>):
+    var a = Account.open(5)
+    console.print_int(a.trick())

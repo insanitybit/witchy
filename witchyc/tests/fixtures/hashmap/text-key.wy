@@ -1,0 +1,48 @@
+// A HashMap with String keys looked up with Text literals: no String is made for
+// the lookup. `Text` hashes as the String of the same bytes and compares with one
+// (`Equivalent<String>`).
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-hashmap.wy"
+import "../../../library/wasm-text.wy"
+import "../../../library/wasm-string.wy"
+
+fn add(map: &mut HashMap<String, U64>, allocator: &Allocator, name: Text, value: U64) -> Result<(), U64>:
+    var key = String.new(allocator)?
+    if let Err(_) = key.push_text(allocator, name):
+        key.close()
+        return Err(1)
+    match map.put(allocator, move key, value):
+        Ok:
+            return Ok(())
+        Err(back):
+            back.discard()
+            return Err(1)
+
+fn show(console: &Console<Write>, map: &HashMap<String, U64>, name: Text):
+    match map.get(&name):
+        Ok(value):
+            console.print_int(*value)
+        Err(code):
+            console.line("none")
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var map: HashMap<String, U64> = match HashMap.new(&allocator, 0):
+        Ok(made):
+            move made
+        Err(code):
+            return
+    let added = add(&mut map, &allocator, "apple", 3)
+    let more = add(&mut map, &allocator, "pear", 8)
+    show(&console, &map, "pear")
+    show(&console, &map, "apple")
+    show(&console, &map, "plum")
+    let fruit: Text = "apple"
+    if map.contains(&fruit):
+        console.line("has apple")
+    match map.get_mut(&fruit):
+        Ok(count):
+            *count += 1
+        Err(code):
+            ()
+    show(&console, &map, "apple")
+    map.discard()

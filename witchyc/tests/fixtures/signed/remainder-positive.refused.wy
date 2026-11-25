@@ -1,0 +1,14 @@
+// Refused: -7 % 2 is not 1.
+import console
+import int
+
+fn f(x: I64) -> I64:
+    requires x == -7
+    ensures result == 1
+    proof:
+        auto
+    x % 2
+
+fn main(console: Console<Write>):
+    let a: I64 = -7
+    console.show(f(a))

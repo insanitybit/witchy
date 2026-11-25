@@ -1,0 +1,3 @@
+proof failed: function `pick`
+  not proved: an `unreachable` that some path reaches (2 places)
+this function's proof did not go through: some path reaches this `unreachable`: the proof could not rule out that `x == 5` holds here (not proved either: proof-points-at-unreachable.refused.wy:16)

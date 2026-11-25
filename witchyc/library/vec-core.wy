@@ -1,0 +1,319 @@
+// Ordinary library source; no container names are privileged by the compiler.
+type Vec<T>:
+    data: Buffer<T>
+    length: USize
+    capacity: USize
+    invariant BufferContents(data, length, capacity)
+
+fn vec_new<T>(capacity: USize) -> Result<Vec<T>, AllocError>:
+    ensures match result:
+        Ok(created):
+            created.length == 0
+            created.capacity == capacity
+        Err(reason):
+            true
+    let data: Buffer<T> = memory.try_alloc(capacity)?
+    return Ok(Vec(move data, 0, capacity))
+
+
+type Measured<T>:
+    vector: Vec<T>
+    length: USize
+
+fn vec_len<T>(input: Vec<T>) -> Measured<T>:
+    ensures result.length == old(input.length)
+    ensures result.vector.data == old(input.data)
+    ensures result.vector.length == old(input.length)
+    ensures result.vector.capacity == old(input.capacity)
+    ensures memory.unchanged(input.data)
+    let length = input.length
+    return Measured(move input, length)
+
+
+type Rejected<T>:
+    vector: Vec<T>
+    item: T
+    reason: AllocError
+
+
+fn vec_push_spare<T>(input: Vec<T>, item: T) -> Result<Vec<T>, Rejected<T>>:
+    ensures match result:
+        Ok(pushed):
+            pushed.data == old(input.data)
+            pushed.length == old(input.length) + 1
+            pushed.capacity == old(input.capacity)
+            memory.cell(pushed.data, old(input.length), item)
+            memory.unchanged_except(input.data, old(input.length))
+        Err(failed):
+            failed.vector.data == old(input.data)
+            failed.vector.length == old(input.length)
+            failed.vector.capacity == old(input.capacity)
+            failed.item == old(item)
+            memory.unchanged(input.data)
+            old(input.length) >= old(input.capacity) || !memory.loan_room(1)
+    var vector = move input
+    if vector.length < vector.capacity:
+        if memory.loan_room(1):
+            memory.init(&mut vector.data, vector.length, move item)
+            vector.length += 1
+            return Ok(move vector)
+        return Err(Rejected(move vector, move item, AllocError.metadata))
+    return Err(Rejected(move vector, move item, AllocError.quota))
+
+
+fn vec_release<T>(input: Vec<T>) -> Result<(), Vec<T>>:
+    ensures match result:
+        Ok(done):
+            old(input.length) == 0
+        Err(kept):
+            kept.data == old(input.data)
+            kept.length == old(input.length)
+            kept.capacity == old(input.capacity)
+            memory.unchanged(input.data)
+            old(input.length) > 0
+    if input.length == 0:
+        memory.release(input.data)
+        return Ok(())
+    return Err(move input)
+
+type Popped<T>:
+    vector: Vec<T>
+    item: Option<T>
+
+fn vec_pop<T>(input: Vec<T>) -> Result<Popped<T>, Vec<T>>:
+    ensures match result:
+        Ok(popped):
+            popped.vector.data == old(input.data)
+            popped.vector.capacity == old(input.capacity)
+            match popped.item:
+                Some(item):
+                    old(input.length) > 0
+                    popped.vector.length + 1 == old(input.length)
+                    item == old(memory.read(input.data, input.length - 1))
+                    memory.empty(popped.vector.data, popped.vector.length)
+                    memory.unchanged_except(input.data, popped.vector.length)
+                None:
+                    old(input.length) == 0
+                    popped.vector.length == 0
+                    memory.unchanged(input.data)
+        Err(kept):
+            kept.data == old(input.data)
+            kept.length == old(input.length)
+            kept.capacity == old(input.capacity)
+            memory.unchanged(input.data)
+            !memory.loan_room(1)
+    var vector = move input
+    if memory.loan_room(1):
+        if vector.length == 0:
+            return Ok(Popped(move vector, None))
+        vector.length -= 1
+        let item: T = memory.take(&mut vector.data, vector.length)
+        return Ok(Popped(move vector, Some(move item)))
+    return Err(move vector)
+
+type Replaced<T>:
+    vector: Vec<T>
+    previous: T
+
+type ReplaceFailure<T>:
+    vector: Vec<T>
+    replacement: T
+    out_of_bounds: Bool
+
+// Move-based indexed access for every eligible T: exchange one element and
+// return its ownership. Both failures retain the vector and replacement.
+// The reason flag distinguishes bounds failure from exhausted loan room.
+fn vec_replace<T>(input: Vec<T>, index: USize, replacement: T) -> Result<Replaced<T>, ReplaceFailure<T>>:
+    ensures match result:
+        Ok(changed):
+            index < old(input.length)
+            changed.previous == old(memory.read(input.data, index))
+            changed.vector.data == old(input.data)
+            changed.vector.length == old(input.length)
+            changed.vector.capacity == old(input.capacity)
+            memory.cell(input.data, index, replacement)
+            memory.unchanged_except(input.data, index)
+        Err(failed):
+            failed.vector.data == old(input.data)
+            failed.vector.length == old(input.length)
+            failed.vector.capacity == old(input.capacity)
+            failed.replacement == old(replacement)
+            (failed.out_of_bounds == true && index >= old(input.length)) || (failed.out_of_bounds == false && index < old(input.length) && !memory.loan_room(1))
+            memory.unchanged(input.data)
+    var vector = move input
+    if index < vector.length:
+        if memory.loan_room(1):
+            let previous: T = memory.swap(&mut vector.data, index, move replacement)
+            return Ok(Replaced(move vector, move previous))
+        return Err(ReplaceFailure(move vector, move replacement, false))
+    return Err(ReplaceFailure(move vector, move replacement, true))
+
+type ReserveFailure<T>:
+    vector: Vec<T>
+    reason: AllocError
+
+// The allocating operation composes only the public reserve/spare contracts.
+// Reserve needs two loans; checking that before mutation also guarantees room
+// for the final single-loan insertion after reserve returns its balanced service.
+fn vec_push<T>(input: Vec<T>, item: T) -> Result<Vec<T>, Rejected<T>>:
+    ensures match result:
+        Ok(pushed):
+            pushed.length == old(input.length) + 1
+            pushed.capacity >= old(input.capacity)
+            old(input.length) >= old(input.capacity) || (pushed.capacity == old(input.capacity) && pushed.data == old(input.data) && memory.unchanged_except(input.data, old(input.length)))
+            memory.cell(pushed.data, old(input.length), item)
+            forall cell in (0, old(input.length)): memory.cell(pushed.data, cell, old(memory.read(input.data, cell)))
+        Err(failed):
+            failed.vector.data == old(input.data)
+            failed.vector.length == old(input.length)
+            failed.vector.capacity == old(input.capacity)
+            failed.item == old(item)
+            memory.unchanged(input.data)
+    var vector = move input
+    if vector.length < vector.capacity:
+        return vec_push_spare(move vector, move item)
+    if !memory.loan_room(2):
+        return Err(Rejected(move vector, move item, AllocError.metadata))
+    var capacity: USize = 1
+    if vector.capacity > 0:
+        if vector.capacity > 9223372036854775807:
+            return Err(Rejected(move vector, move item, AllocError.overflow))
+        capacity = vector.capacity + vector.capacity
+    match vec_reserve(move vector, capacity):
+        Ok(grown):
+            return vec_push_spare(move grown, move item)
+        Err(failed):
+            return Err(Rejected(move failed.vector, move item, failed.reason))
+
+impl<T> Vec<T>:
+    fn push(self: Vec<T>, item: T) -> Result<Vec<T>, Rejected<T>>:
+        ensures match result:
+            Ok(pushed):
+                pushed.length == old(self.length) + 1
+                pushed.capacity >= old(self.capacity)
+                old(self.length) >= old(self.capacity) || (pushed.capacity == old(self.capacity) && pushed.data == old(self.data) && memory.unchanged_except(self.data, old(self.length)))
+                memory.cell(pushed.data, old(self.length), item)
+                forall cell in (0, old(self.length)): memory.cell(pushed.data, cell, old(memory.read(self.data, cell)))
+            Err(failed):
+                failed.vector.data == old(self.data)
+                failed.vector.length == old(self.length)
+                failed.vector.capacity == old(self.capacity)
+                failed.item == old(item)
+                memory.unchanged(self.data)
+        return vec_push(move self, move item)
+
+// Reserve never shrinks; requests that already fit retain the entire storage.
+fn vec_reserve<T>(input: Vec<T>, capacity: USize) -> Result<Vec<T>, ReserveFailure<T>>:
+    ensures match result:
+        Ok(reserved):
+            reserved.length == old(input.length)
+            reserved.capacity >= capacity
+            reserved.capacity >= old(input.capacity)
+            capacity > old(input.capacity) || (reserved.capacity == old(input.capacity) && reserved.data == old(input.data) && memory.unchanged(input.data))
+            forall cell in (0, old(input.length)): memory.cell(reserved.data, cell, old(memory.read(input.data, cell)))
+        Err(failed):
+            capacity > old(input.capacity)
+            failed.vector.data == old(input.data)
+            failed.vector.length == old(input.length)
+            failed.vector.capacity == old(input.capacity)
+            memory.unchanged(input.data)
+    var vector = move input
+    if capacity > vector.capacity:
+        if memory.loan_room(2):
+            let allocation: Result<Buffer<T>, AllocError> = memory.try_alloc(capacity)
+            match allocation:
+                Ok(allocated):
+                    var replacement = move allocated
+                    let reader = &mut vector.data
+                    let writer = &mut replacement
+                    var i: USize = 0
+                    while i < vector.length:
+                        invariant i <= vector.length
+                        invariant memory.size(vector.data) == vector.capacity
+                        invariant memory.size(replacement) == capacity
+                        invariant EmptyBetween(vector.data, 0, i)
+                        invariant InitializedBetween(vector.data, i, vector.length)
+                        invariant EmptyBetween(vector.data, vector.length, vector.capacity)
+                        invariant InitializedBetween(replacement, 0, i)
+                        invariant EmptyBetween(replacement, i, capacity)
+                        invariant forall cell in (i, vector.length): memory.cell(vector.data, cell, old(memory.read(input.data, cell)))
+                        invariant forall cell in (0, i): memory.cell(replacement, cell, old(memory.read(input.data, cell)))
+                        let item: T = memory.take(reader, i)
+                        memory.init(writer, i, move item)
+                        i += 1
+                    memory.end(reader)
+                    memory.end(writer)
+                    vector.data = move replacement
+                    vector.capacity = capacity
+                    return Ok(move vector)
+                Err(reason):
+                    return Err(ReserveFailure(move vector, reason))
+        return Err(ReserveFailure(move vector, AllocError.metadata))
+    return Ok(move vector)
+
+type Indexed:
+    vector: Vec<U64>
+    item: Option<U64>
+
+// Copied access is scalar-only; generic owners/capabilities use move/exchange.
+fn vec_get(input: Vec<U64>, index: USize) -> Result<Indexed, Vec<U64>>:
+    ensures match result:
+        Ok(indexed):
+            indexed.vector.data == old(input.data)
+            indexed.vector.length == old(input.length)
+            indexed.vector.capacity == old(input.capacity)
+            memory.unchanged(input.data)
+            match indexed.item:
+                Some(value):
+                    index < old(input.length)
+                    value == old(memory.read(input.data, index))
+                None:
+                    index >= old(input.length)
+        Err(kept):
+            kept.data == old(input.data)
+            kept.length == old(input.length)
+            kept.capacity == old(input.capacity)
+            memory.unchanged(input.data)
+            index < old(input.length)
+            !memory.loan_room(1)
+    var vector = move input
+    if index < vector.length:
+        if memory.loan_room(1):
+            let item = memory.read(&vector.data, index)
+            return Ok(Indexed(move vector, Some(item)))
+        return Err(move vector)
+    return Ok(Indexed(move vector, None))
+
+
+type IndexedByte:
+    vector: Vec<U8>
+    item: Option<U8>
+
+// A byte is copied through the checked read; the vector remains the owner.
+fn vec_get_byte(input: Vec<U8>, index: USize) -> Result<IndexedByte, Vec<U8>>:
+    ensures match result:
+        Ok(indexed):
+            indexed.vector.data == old(input.data)
+            indexed.vector.length == old(input.length)
+            indexed.vector.capacity == old(input.capacity)
+            memory.unchanged(input.data)
+            match indexed.item:
+                Some(value):
+                    index < old(input.length)
+                    value == old(memory.read(input.data, index))
+                None:
+                    index >= old(input.length)
+        Err(kept):
+            kept.data == old(input.data)
+            kept.length == old(input.length)
+            kept.capacity == old(input.capacity)
+            memory.unchanged(input.data)
+            index < old(input.length)
+            !memory.loan_room(1)
+    var vector = move input
+    if index < vector.length:
+        if memory.loan_room(1):
+            let item: U8 = memory.read(&vector.data, index)
+            return Ok(IndexedByte(move vector, Some(item)))
+        return Err(move vector)
+    return Ok(IndexedByte(move vector, None))

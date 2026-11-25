@@ -1,0 +1,8 @@
+import cell
+
+fn bad<T: Any>(cell: VacantCell<T>):
+    cell.close()
+    cell.close()
+
+fn main():
+    return

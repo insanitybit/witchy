@@ -1,0 +1,20 @@
+// A String grown one scalar at a time to 500 bytes, through nine reallocations.
+import "../../../library/wasm-string.wy"
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<String, U64> = String.new(&allocator)
+    match move made:
+        Ok(empty):
+            var text = move empty
+            var index: U64 = 0
+            while index < 500:
+                match text.push_scalar(&allocator, 97 + index % 26):
+                    Ok(grown):
+                        text = move grown
+                        index += 1
+                    Err(back):
+                        text = move back
+                        index = 500
+            console.print_int(text.byte_len())
+            text.close()
+        Err(code):
+            console.print_int(code)

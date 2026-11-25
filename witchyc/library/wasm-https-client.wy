@@ -1,0 +1,34 @@
+// Dial a parsed HTTPS origin through a caller-scoped Net and authenticate it.
+import net
+import time
+import tls
+import url
+
+pub type ConnectError:
+    NotHttpsOrigin
+    TcpConnectFailed(U64)
+    TlsHandshakeFailed(SessionError)
+
+// The origin binds the endpoint, the TLS server name, and the HTTP authority
+// available to the caller. The host still enforces the Net grant and deadlines.
+pub fn connect(net: &Net, origin: HttpOrigin, roots: &[U8], rng: &Rand, clock: &Clock, allocator: &Allocator, transcript: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]) -> Result<SecureSession, ConnectError>:
+    if !origin.is_https():
+        return Err(NotHttpsOrigin)
+    for byte in origin.authority().as_bytes():
+        net.raw_addr_byte(*byte)
+    // parse_origin omits the default port from the HTTP authority. The host
+    // expects an explicit port when matching a connection to a Net grant.
+    if origin.port() == 443:
+        net.raw_addr_byte(':')
+        net.raw_addr_byte('4')
+        net.raw_addr_byte('4')
+        net.raw_addr_byte('3')
+    let socket = net.raw_connect()
+    let status = socket.raw_status()
+    if status != 0:
+        socket.close()
+        return Err(TcpConnectFailed(status))
+    let session = tls.connect(move socket, allocator, rng, origin.hostname(), roots, clock.now_ms() / 1000, transcript, plaintext, wire)
+    let Ok(accepted): SecureSession = move session else Err(reason):
+        return Err(TlsHandshakeFailed(reason))
+    return Ok(move accepted)

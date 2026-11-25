@@ -1,0 +1,27 @@
+import console_bytes
+import "release_trust.wy"
+import console
+import json_tree
+import string
+import vec
+
+pub fn read_signing_request(input: &Console<Read>, allocator: &Allocator) -> Result<Json, U64>:
+    let Ok(line): String = input.read_text_frame(allocator, 1024) else Err(reason):
+        return Err(1)
+    let parsed = parse_release_json(&line, allocator)
+    line.close()
+    return move parsed
+
+pub fn read_signing_package(request: &Json, input: &Console<Read>, allocator: &Allocator) -> Result<Vec<U8>, U64>:
+    let size = declared_integer(request, "body_size")?
+    if size == 0 || size > 1048576:
+        return Err(1)
+    return read_signing_bytes(size, input, allocator)
+
+pub fn read_signing_bytes(size: U64, input: &Console<Read>, allocator: &Allocator) -> Result<Vec<U8>, U64>:
+    let empty: Vec<U8> = Vec.filled(allocator, size, 0)?
+    var package = move empty
+    if let Err(reason) = input.read_exact_to_end(package.as_mut_slice()):
+        package.close()
+        return Err(1)
+    return Ok(move package)

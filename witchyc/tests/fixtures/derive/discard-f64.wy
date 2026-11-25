@@ -1,0 +1,23 @@
+// `F64` has `Discard`, so a Vec of them is held by `using` and a record of them derives it.
+import console
+import vec
+import discard
+
+type Sample derive(Discard):
+    value: F64
+    weight: F64
+
+fn total(allocator: &Allocator) -> Result<U64, U64>:
+    using var values: Vec<F64> = Vec.new(allocator, 4)?:
+        let a = values.push_mut(allocator, 1.5)
+        let b = values.push_mut(allocator, 2.5)
+        return Ok(values.len())
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let s = Sample(1.0, 2.0)
+    s.discard()
+    match total(&allocator):
+        Ok(n):
+            console.print_int(n)
+        Err(c):
+            console.line("no room")

@@ -1,0 +1,81 @@
+// The full allocator token is copyable data. A loan of the corresponding owner
+// is required to turn it into a first-cell reference.
+// Equal addresses can belong to successive allocations. Both observations are required.
+pub predicate same_target<T>(left: Weak<T>, right: Weak<T>):
+    (memory.pointer_bits(left) == memory.pointer_bits(right) &&
+     memory.box_id(left) == memory.box_id(right))
+
+pub predicate has_address<T>(pointer: Weak<T>):
+    memory.pointer_bits(pointer) != 0
+
+pub predicate null_target<T>(pointer: Weak<T>):
+    memory.pointer_bits(pointer) == 0 && memory.box_id(pointer) == 0
+
+pub sealed type Link<T>:
+    word: U64
+
+impl<T: Any> Link<T>:
+    pub fn none() -> Link<T>:
+        return Link(0)
+
+    pub fn to(owner: &Buffer<T>) -> Link<T>:
+        return Link(memory.allocation_key(owner))
+
+    pub fn identity(link: &Link<T>) -> U64:
+        return (*link).word
+
+    pub fn same(a: Link<T>, b: Link<T>) -> Bool:
+        return a.word == b.word
+
+    pub fn get(link: Link<T>, owner: &Buffer<T>) -> Result<&T, U64>:
+        return link_get(owner, link.word)
+
+    pub fn take(link: Link<T>, owner: &mut Buffer<T>) -> Result<T, U64>:
+        return link_take(owner, link.word)
+
+    pub fn get_mut(link: Link<T>, owner: &mut Buffer<T>) -> Result<&mut T, U64>:
+        return link_get_mut(owner, link.word)
+
+fn link_get<T: Any>(owner: &Buffer<T>, word: U64) -> Result<&T, U64>:
+    ensures match result:
+        Ok(item):
+            word == memory.allocation_key(owner)
+            memory.cell(owner, 0, item)
+        Err(code):
+            true
+    proof:
+        auto
+    if word == memory.allocation_key(owner):
+        if memory.initialized(owner, 0):
+            return Ok(memory.ref_link(owner, word))
+    return Err(1)
+
+fn link_get_mut<T: Any>(owner: &mut Buffer<T>, word: U64) -> Result<&mut T, U64>:
+    ensures memory.same_allocation(owner, old(owner))
+    ensures match result:
+        Ok(item):
+            word == memory.allocation_key(owner)
+        Err(code):
+            memory.unchanged(owner, old(owner))
+    proof:
+        auto
+    if word == memory.allocation_key(owner):
+        if memory.initialized(owner, 0):
+            return Ok(memory.mut_link(owner, word))
+    return Err(1)
+
+fn link_take<T: Any>(owner: &mut Buffer<T>, word: U64) -> Result<T, U64>:
+    ensures match result:
+        Ok(item):
+            word == memory.allocation_key(owner)
+            memory.cell(old(owner), 0, item)
+            memory.empty(owner, 0)
+            memory.unchanged_except(owner, old(owner), 0)
+        Err(code):
+            memory.unchanged(owner, old(owner))
+    proof:
+        auto
+    if word == memory.allocation_key(owner):
+        if memory.initialized(owner, 0):
+            return Ok(memory.take_unchecked(owner, 0))
+    return Err(1)

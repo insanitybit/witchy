@@ -1,0 +1,40 @@
+import big
+import discard_core
+
+fn check(allocator: &Allocator) -> Result<Bool, U64>:
+    using var left = BigNat.with_capacity(allocator, 0)?:
+        using var right = BigNat.with_capacity(allocator, 0)?:
+            using var expected = BigNat.with_capacity(allocator, 0)?:
+                left.set_word(allocator, 18446744073709551615)?
+                right.set_word(allocator, 1)?
+                left.add_scaled(allocator, &right, 1)?
+                // 2^64 has limbs [0, 1]. Subtracting one borrows across them.
+                if !left.subtract(&right):
+                    return Ok(false)
+                expected.set_word(allocator, 18446744073709551615)?
+                if !equal(&left, &expected):
+                    return Ok(false)
+                left.multiply_word(allocator, 4294967295)?
+                right.set_word(allocator, 18446744073709551615)?
+                right.add_scaled(allocator, &expected, 4294967294)?
+                if !equal(&left, &right):
+                    return Ok(false)
+                expected.copy_from(allocator, &left)?
+                if !left.subtract(&right) || left.subtract(&expected):
+                    return Ok(false)
+                right.multiply_word(allocator, 0)?
+                return Ok(equal(&left, &right))
+
+fn equal(left: &BigNat, right: &BigNat) -> Bool:
+    match left.compare(right):
+        Equal:
+            return true
+        _:
+            return false
+
+fn main(console: Console<Write>, allocator: Allocator):
+    match check(&allocator):
+        Ok(true):
+            console.print_int(1)
+        _:
+            console.print_int(0)

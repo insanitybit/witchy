@@ -1,0 +1,20 @@
+// Review of the slice walk: an `elements` of another type's reference is not the walk: `at` is used.
+import console
+
+type D:
+    items: [U64; 2]
+
+type C:
+    items: [U64; 3]
+
+impl C:
+    pub fn elements(d: &D) -> &[U64]:
+        return d.items.slice()
+
+    pub fn at(c: &C, index: U64) -> Result<&U64, U64>:
+        return c.items.slice().at(index)
+
+fn main(console: Console<Write>):
+    let c = C([1, 2, 3])
+    for x in &c:
+        console.print_int(*x)

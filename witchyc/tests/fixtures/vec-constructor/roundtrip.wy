@@ -1,0 +1,90 @@
+type Padded:
+    byte: U8
+    word: U64
+
+fn independent_storage<T>(allocator: &Allocator, requested: U64) -> Result<Buffer<T>, U64>:
+    ensures match result:
+        Ok(storage):
+            memory.prefix(storage, 0, requested)
+        Err(code):
+            true
+    proof:
+        auto
+    return memory.try_alloc(allocator, requested)
+
+fn roundtrip<T>(allocator: &Allocator, item: T) -> Result<T, U64>:
+    let allocation: Result<Vec<T>, U64> = Vec.new(allocator, 0)
+    match move allocation:
+        Ok(empty):
+            match Vec.push(move empty, allocator, item):
+                Ok(vector):
+                    match Vec.get(&vector, 0):
+                        Ok(stored):
+                            match Vec.take_last(move vector):
+                                Ok(taken):
+                                    let result = taken.item
+                                    Vec.close(move taken.vector)
+                                    return Ok(result)
+                                Err(back):
+                                    Vec.close(move back)
+                                    return Err(902)
+                        Err(code):
+                            Vec.close(move vector)
+                            return Err(903)
+                Err(back):
+                    Vec.close(move back.vector)
+                    return Err(904)
+        Err(code):
+            return Err(code)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let byte: U8 = 73
+    match roundtrip(&allocator, byte):
+        Ok(value):
+            console.print_int(U8.to_u64(value))
+        Err(code):
+            console.print_int(901)
+    let wide: U64 = 18446744073709551615
+    match roundtrip(&allocator, wide):
+        Ok(value):
+            console.print_int(value)
+        Err(code):
+            console.print_int(901)
+    match roundtrip(&allocator, true):
+        Ok(value):
+            if value:
+                console.print_int(1)
+            else:
+                console.print_int(0)
+        Err(code):
+            console.print_int(901)
+    match roundtrip(&allocator, Padded(byte, 4294967296)):
+        Ok(value):
+            console.print_int(U8.to_u64(value.byte))
+            console.print_int(value.word)
+        Err(code):
+            console.print_int(901)
+    let impossible: Result<Vec<U64>, U64> = Vec.new(&allocator, 18446744073709551615)
+    match move impossible:
+        Ok(vector):
+            console.print_int(905)
+            Vec.close(move vector)
+        Err(code):
+            console.print_int(2)
+    let storage: Result<Buffer<Bool>, U64> = independent_storage(&allocator, 0)
+    match move storage:
+        Ok(buffer):
+            console.print_int(memory.capacity(&buffer))
+            vec_buffer_close(move buffer)
+        Err(code):
+            console.print_int(906)
+    var index: U64 = 0
+    while index < 80:
+        let made: Result<Vec<U8>, U64> = Vec.new(&allocator, 1)
+        match move made:
+            Ok(vector):
+                Vec.close(move vector)
+            Err(code):
+                console.print_int(907)
+        index += 1
+    console.print_int(index)

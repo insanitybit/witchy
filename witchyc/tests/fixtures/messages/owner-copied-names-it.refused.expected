@@ -1,0 +1,1 @@
+affine values require explicit move: `length` holds an owner, which is not copied; hand it on with `move length`, or lend it with `&length`

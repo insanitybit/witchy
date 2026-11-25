@@ -1,0 +1,12 @@
+// Refused: the generator holds the Vec; it is finished (and the Vec closed) or handed on.
+import vec
+
+gen fn count(items: Vec<U64>) -> U64:
+    yield items.len()
+
+fn main(allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.filled(&allocator, 2, 1) else Err(code):
+        return
+    var g = count(move made)
+    for n in g:
+        let m = n

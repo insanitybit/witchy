@@ -1,0 +1,13 @@
+// `a[i] = if c: bump(&mut i) else: 0` writes the element `i` named before the `if` (security review).
+// a[i] = if c: bump(&mut i): position i should run first (written order fix)
+fn bump(x: &mut U64) -> U64:
+    *x = *x + 1
+    return 100
+
+fn main(console: Console<Write>):
+    var a = [10, 20, 30]
+    var i: U64 = 0
+    let c = true
+    a[i] = if c: bump(&mut i) else: 0
+    console.print_int(a[0])
+    console.print_int(a[1])

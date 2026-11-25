@@ -1,0 +1,35 @@
+// F64: literals, + - * /, negation, comparisons, conversions written out, sqrt and floor, += on a
+// field through `&mut` and on an array element, an array of F64 and a record field.
+import console
+import int
+
+type Body:
+    x: F64
+    v: F64
+
+fn step(b: &mut Body, dt: F64):
+    (*b).x += (*b).v * dt
+
+fn main(console: Console<Write>):
+    let a = 1.5
+    let b: F64 = 2.25
+    let c = a * b - 0.375
+    console.print_i64(F64.to_i64(c * 1000.0))
+    console.print_i64(F64.to_i64(F64.sqrt(2.0) * 1000000.0))
+    console.print_i64(F64.to_i64(-c))
+    var arr: [F64; 3] = [0.5, 1.5, 2.5]
+    var sum = 0.0
+    var i: U64 = 0
+    while i < 3:
+        sum += arr[i]
+        i += 1
+    console.print_i64(F64.to_i64(sum))
+    var body = Body(0.0, 3.0)
+    step(&mut body, 0.5)
+    step(&mut body, 0.5)
+    console.print_i64(F64.to_i64(body.x))
+    if a < b && !(a == b):
+        console.line("less")
+    console.print_int(F64.bits(1.0))
+    console.print_i64(F64.to_i64(F64.floor(-2.5)))
+    console.print_i64(F64.to_i64(F64.from_u64(7) / 2.0 * 10.0))

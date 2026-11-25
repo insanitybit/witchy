@@ -1,0 +1,11 @@
+// The legacy oracle the derive-law handoff keeps: a derived two-U64 Point(1, 2) hashes to
+// 335675534306 (HashMap and Hash are unchanged by the policy work, docs/plan-derive-laws.md).
+import console
+import hash
+
+type Point derive(Eq, Hash):
+    x: U64
+    y: U64
+
+fn main(console: Console<Write>):
+    console.print_int(Point(x: 1, y: 2).hash())

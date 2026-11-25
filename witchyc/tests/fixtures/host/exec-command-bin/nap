@@ -1,0 +1,4 @@
+#!/bin/sh
+# Longer than the test's 200 ms command deadline and within its default.
+sleep 0.5
+echo slept

@@ -1,0 +1,114 @@
+// With three unrelated loans live, an in-range read returns its Vec unchanged.
+// An out-of-range read needs no loan; ending one loan permits recovery.
+fn drop_bytes(input: Vec<U8>):
+    requires memory.loan_room(1)
+    var vector = move input
+    let writer = &mut vector.data
+    var i: USize = 0
+    while i < vector.length:
+        invariant i <= vector.length
+        invariant memory.size(vector.data) == vector.capacity
+        invariant EmptyBetween(vector.data, 0, i)
+        invariant InitializedBetween(vector.data, i, vector.length)
+        invariant EmptyBetween(vector.data, vector.length, vector.capacity)
+        let item: U8 = memory.take(writer, i)
+        discard(item)
+        i += 1
+    memory.end(writer)
+    memory.release(vector.data)
+
+fn main(console: Console<Write>):
+    var witness: Buffer<U64> = memory.alloc(1)
+    memory.init(&mut witness, 0, 37)
+    var held: Buffer<U64> = memory.alloc(1)
+    memory.init(&mut held, 0, 42)
+    var third: Buffer<U64> = memory.alloc(1)
+    memory.init(&mut third, 0, 73)
+    let created: Result<Vec<U8>, AllocError> = vec_new(2)
+    let Ok(empty) = move created else Err(reason):
+        memory.release(witness)
+        memory.release(held)
+        memory.release(third)
+        discard(move console)
+        return
+    let byte: U8 = 255
+    let Ok(one) = vec_push(move empty, byte) else Err(failed):
+        discard(failed.item)
+        drop_bytes(move failed.vector)
+        memory.release(witness)
+        memory.release(held)
+        memory.release(third)
+        discard(move console)
+        return
+    let first_loan = &witness
+    let second_loan = &held
+    let third_loan = &third
+    let Err(retained) = vec_get_byte(move one, 0) else Ok(unexpected):
+        memory.end(first_loan)
+        memory.end(second_loan)
+        memory.end(third_loan)
+        drop_bytes(move unexpected.vector)
+        memory.release(witness)
+        memory.release(held)
+        memory.release(third)
+        discard(move console)
+        return
+    let Ok(missing) = vec_get_byte(move retained, 1) else Err(rejected):
+        memory.end(first_loan)
+        memory.end(second_loan)
+        memory.end(third_loan)
+        drop_bytes(move rejected)
+        memory.release(witness)
+        memory.release(held)
+        memory.release(third)
+        discard(move console)
+        return
+    memory.end(first_loan)
+    console.print_int(74)
+    match missing.item:
+        Some(value):
+            console.print_int(904)
+        None:
+            console.print_int(75)
+    let Ok(found) = vec_get_byte(move missing.vector, 0) else Err(rejected):
+        memory.end(second_loan)
+        memory.end(third_loan)
+        drop_bytes(move rejected)
+        memory.release(witness)
+        memory.release(held)
+        memory.release(third)
+        discard(move console)
+        return
+    let Some(value) = move found.item else None:
+        memory.end(second_loan)
+        memory.end(third_loan)
+        drop_bytes(move found.vector)
+        memory.release(witness)
+        memory.release(held)
+        memory.release(third)
+        discard(move console)
+        return
+    console.print_int(U8.to_u64(value))
+    memory.end(second_loan)
+    memory.end(third_loan)
+    console.print_int(memory.read(&witness, 0))
+    console.print_int(memory.read(&held, 0))
+    console.print_int(memory.read(&third, 0))
+    memory.release(witness)
+    memory.release(held)
+    memory.release(third)
+    let Ok(popped) = vec_pop(move found.vector) else Err(rejected):
+        drop_bytes(move rejected)
+        discard(move console)
+        return
+    let Some(last) = move popped.item else None:
+        drop_bytes(move popped.vector)
+        discard(move console)
+        return
+    console.print_int(U8.to_u64(last))
+    let Ok(done) = vec_release(move popped.vector) else Err(kept):
+        drop_bytes(move kept)
+        discard(move console)
+        return
+    console.print_int(76)
+    discard(move console)

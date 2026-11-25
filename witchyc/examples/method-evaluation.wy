@@ -1,0 +1,42 @@
+// Three explicit host roots let receiver and arguments have separate effects.
+type Receiver:
+    console: Console<Write>
+
+impl Receiver:
+    fn combine(self: Receiver, first: U64, second: U64) -> Console<Write>:
+        let console = move self.console
+        console.print_int(first)
+        console.print_int(second)
+        return move console
+
+fn make_receiver(console: Console<Write>) -> Receiver:
+    console.print_int(91)
+    return Receiver(move console)
+
+fn mark(console: Console<Write>, value: U64) -> U64:
+    console.print_int(value)
+    discard(move console)
+    return value
+
+type Box<A>:
+    value: A
+
+type Both<A, B>:
+    first: A
+    second: B
+
+impl<X> Box<X>:
+    fn get(self: Box<X>) -> X:
+        return move self.value
+
+    fn pair<U>(self: Box<X>, other: U) -> Both<X, U>:
+        return Both(move self.value, move other)
+
+fn main(console: Console<Write>, first: Console<Write>, second: Console<Write>):
+    let kept = make_receiver(move console).combine(mark(move first, 11), mark(move second, 22))
+    kept.print_int(Box(42).get())
+    let pair: Both<U64, Bool> = Box(37).pair(true)
+    kept.print_int(pair.first)
+    discard(pair.second)
+    kept.print_int(7)
+    discard(move kept)

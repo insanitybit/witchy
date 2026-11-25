@@ -1,0 +1,37 @@
+// The first step of a shortest-path search, as proposed: home, next and distance all come from
+// `roads`, and the helper `improve` says with `G: Brand` that the node and the table share a
+// numbering. No brand is written at any call.
+import console
+import graph
+
+fn improve<G: Brand>(distance: &mut Distances<G>, node: Node<G>, cost: U64):
+    if cost < distance.get(node):
+        distance.set(node, cost)
+
+fn first_step(roads: &Graph, allocator: &Allocator, console: &Console<Write>) -> Result<(), U64>:
+    let infinity: U64 = 1000000
+    brand roads.nodes() as nodes:
+        var distance = nodes.distances(allocator, infinity)?
+        if let Some(home) = nodes.first():
+            distance.set(home, 0)
+            for next in nodes.neighbors(home):
+                improve(&mut distance, next, 1)
+        for i in 0..nodes.count():
+            if let Some(node) = nodes.node(i):
+                console.print("${i}: ${distance.get(node)}")
+        distance.close()
+    return Ok(())
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Graph = Graph.new(&allocator, 4) else Err(code):
+        return
+    var roads = move made
+    let _ = roads.connect(&allocator, 0, 1)
+    let _ = roads.connect(&allocator, 0, 2)
+    let _ = roads.connect(&allocator, 2, 3)
+    match first_step(&roads, &allocator, &console):
+        Ok:
+            console.line("done")
+        Err(code):
+            console.line("no room")
+    roads.close()

@@ -1,0 +1,85 @@
+import "generation.wy"
+import "publication_files.wy"
+import fs
+import span
+import string
+
+pub fn read_fetch_history(source: &Dir<Read>, allocator: &Allocator) -> Result<String, U64>:
+    let Ok(path): String = literal_path(allocator, "coven-fetch-history") else Err(error):
+        return Err(1)
+    let opened = read_text_object(source, &path, 2113728, allocator)
+    path.close()
+    match move opened:
+        Ok(wire):
+            if wire.byte_len() == 0:
+                wire.close()
+                return Err(1)
+            return Ok(move wire)
+        Err(MissingObject):
+            return String.new(allocator)
+        Err(_):
+            return Err(1)
+
+pub type FetchFloor:
+    timestamp: String
+    snapshot: String
+
+pub type RootFloor:
+    version: U64
+    pin: Span
+    metadata: Span
+
+pub fn read_root_floor(wire: Span, latest: U64) -> Result<RootFloor, U64>:
+    if wire.is_empty():
+        return Ok(RootFloor(0, wire, wire))
+    let Ok(root): Halves = wire.split(10) else Err(rest):
+        return Err(1)
+    let version = root.head.parse_u64()?
+    if version == 0 || version > latest:
+        return Err(2)
+    let Ok(next): Halves = root.tail.split(10) else Err(rest):
+        return Err(1)
+    if next.head.starts_with_text("sha384:"):
+        if !valid_root_pin(next.head):
+            return Err(1)
+        return Ok(RootFloor(version, next.head, next.tail))
+    // Version-only checkpoints predate the exact root pin. Keep their metadata floor.
+    return Ok(RootFloor(version, wire.part(0, 0), root.tail))
+
+fn valid_root_pin(pin: Span) -> Bool:
+    if pin.len() != 103:
+        return false
+    for byte in pin.part(7, 103).as_bytes():
+        if !(*byte >= '0' && *byte <= '9') && !(*byte >= 'a' && *byte <= 'f'):
+            return false
+    return true
+
+pub type FetchFloorParts:
+    timestamp: Span
+    snapshot: Span
+
+pub fn split_fetch_floor(wire: Span) -> Result<FetchFloorParts, U64>:
+    let Ok(fields): Halves = wire.split(10) else Err(rest):
+        return Err(1)
+    let size = fields.head.parse_u64()?
+    if size == 0 || size > 16384 || size >= fields.tail.len() || fields.tail.len() - size > 2097152:
+        return Err(1)
+    return Ok(FetchFloorParts(fields.tail.part(0, size), fields.tail.part(size, fields.tail.len())))
+
+pub fn parse_fetch_floor(wire: Span, allocator: &Allocator) -> Result<FetchFloor, U64>:
+    let parts = split_fetch_floor(wire)?
+    let timestamp = parts.timestamp.to_string(allocator)?
+    let parsed = parts.snapshot.to_string(allocator)
+    let Ok(snapshot): String = move parsed else Err(code):
+        timestamp.close()
+        return Err(code)
+    return Ok(FetchFloor(move timestamp, move snapshot))
+
+impl FetchFloor:
+    pub fn history(self: &FetchFloor) -> History:
+        return Published(PreviousGeneration(&(*self).timestamp, &(*self).snapshot))
+
+    pub fn close(self: FetchFloor):
+        let FetchFloor(timestamp, snapshot) = move self
+        timestamp.close()
+        snapshot.close()

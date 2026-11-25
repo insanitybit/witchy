@@ -1,0 +1,2 @@
+fn main(console: Console<Write>):
+    console.print_int('ab')

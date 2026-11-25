@@ -1,0 +1,10 @@
+// Refused: an F64 field is not a lawful key (NaN is not equal to itself).
+import "../derive/parts/keys.wy"
+import hash
+
+type Reading derive(keys.Key, keys.Fed):
+    sensor: U64
+    value: F64
+
+fn main():
+    return

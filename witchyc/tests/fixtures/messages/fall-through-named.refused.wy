@@ -1,0 +1,9 @@
+// Refused, naming the function whose end can be reached.
+import console
+
+fn pick(b: Bool) -> U64:
+    if b:
+        return 1
+
+fn main(console: Console<Write>):
+    console.print_int(pick(true))

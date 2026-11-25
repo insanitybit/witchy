@@ -1,0 +1,8 @@
+// A shift by the width or more is named.
+import console
+
+fn main(console: Console<Write>):
+    let n: U64 = 300
+    let s: U8 = U8.truncate(n)
+    let w: U64 = 1
+    console.print_int(w << 70)

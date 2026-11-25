@@ -1,0 +1,355 @@
+// TLS 1.3 Hello negotiation for the Coven HTTP/1.1 profile. The caller
+// reassembles handshake messages across records and owns the transcript.
+import span
+
+pub type HelloError:
+    Malformed
+    Unsupported
+    ShortOutput
+
+// The trace profile remains available for the RFC 8448 interoperability tests.
+type Profile:
+    group: U64
+    share_size: U64
+    suite: U64
+    ecdsa_scheme: U64
+    rsa_scheme: U64
+
+pub sealed type ClientHello:
+    group: U64
+    session: Span
+    share: Span
+    encoded: Span
+    sni: Span
+    alpn: Bool
+    ecdsa: Bool
+    rsa: Bool
+
+impl ClientHello:
+    pub fn session_id(self: ClientHello) -> Span:
+        return self.session
+
+    pub fn x25519_share(self: ClientHello) -> Span:
+        if self.group == 29:
+            return self.share
+        return self.share.part(0, 0)
+
+    pub fn p384_share(self: ClientHello) -> Span:
+        if self.group == 24:
+            return self.share
+        return self.share.part(0, 0)
+
+    pub fn transcript_bytes(self: ClientHello) -> Span:
+        return self.encoded
+
+    pub fn server_name(self: ClientHello) -> Span:
+        return self.sni
+
+    pub fn offered_http11(self: ClientHello) -> Bool:
+        return self.alpn
+
+    pub fn offered_ecdsa_p256_sha256(self: ClientHello) -> Bool:
+        return self.group == 29 && self.ecdsa
+
+    pub fn offered_rsa_pss_rsae_sha256(self: ClientHello) -> Bool:
+        return self.group == 29 && self.rsa
+
+    pub fn offered_ecdsa_p384_sha384(self: ClientHello) -> Bool:
+        return self.group == 24 && self.ecdsa
+
+    pub fn offered_rsa_pss_rsae_sha384(self: ClientHello) -> Bool:
+        return self.group == 24 && self.rsa
+
+fn word(input: Span, offset: U64) -> U64:
+    return input.byte_or_end(offset) * 256 + input.byte_or_end(offset + 1)
+
+fn vector(input: Span, width: U64) -> Result<Halves, HelloError>:
+    if input.len() < width:
+        return Err(Malformed)
+    let size = if width == 1:
+        input.byte_or_end(0)
+    else:
+        word(input, 0)
+    if size > input.len() - width:
+        return Err(Malformed)
+    let end = width + size
+    return Ok(.{head: input.part(width, end), tail: input.part(end, input.len())})
+
+fn words(input: Span, width: U64) -> Result<Span, HelloError>:
+    let parts = vector(input, width)?
+    if !parts.tail.is_empty() || parts.head.is_empty() || parts.head.len() % 2 != 0:
+        return Err(Malformed)
+    return Ok(parts.head)
+
+fn has(input: Span, value: U64) -> Bool:
+    var at: U64 = 0
+    while at + 1 < input.len():
+        if word(input, at) == value:
+            return true
+        at += 2
+    return false
+
+fn hostname(input: Span) -> Result<Span, HelloError>:
+    let names = vector(input, 2)?
+    if !names.tail.is_empty() || names.head.len() < 3 || names.head.byte_or_end(0) != 0:
+        return Err(Malformed)
+    let dns = vector(names.head.part(1, names.head.len()), 2)?
+    if !dns.tail.is_empty() || dns.head.is_empty() || dns.head.len() > 253:
+        return Err(Malformed)
+    if dns.head.byte_or_end(dns.head.len() - 1) == 46:
+        return Err(Malformed)
+    for byte in dns.head.as_bytes():
+        if !((*byte >= 65 && *byte <= 90) || (*byte >= 97 && *byte <= 122) || (*byte >= 48 && *byte <= 57) || *byte == 45 || *byte == 46):
+            return Err(Malformed)
+    return Ok(dns.head)
+
+fn http11(input: Span) -> Result<Bool, HelloError>:
+    let protocols = vector(input, 2)?
+    if !protocols.tail.is_empty() || protocols.head.is_empty():
+        return Err(Malformed)
+    var remaining = protocols.head
+    var found = false
+    while !remaining.is_empty():
+        let name = vector(remaining, 1)?
+        if name.head.is_empty():
+            return Err(Malformed)
+        found = found || name.head.equals_text("http/1.1")
+        remaining = name.tail
+    return Ok(found)
+
+fn share(input: Span, profile: Profile) -> Result<Span, HelloError>:
+    let shares = vector(input, 2)?
+    if !shares.tail.is_empty():
+        return Err(Malformed)
+    var groups: [U64; 64] = [0; 64]
+    var count: U64 = 0
+    var remaining = shares.head
+    var found = input.part(0, 0)
+    while !remaining.is_empty():
+        if remaining.len() < 4 || count == groups.slice().len():
+            return Err(Malformed)
+        let group = word(remaining, 0)
+        for i in 0..count:
+            if groups[i] == group:
+                return Err(Malformed)
+        groups[count] = group
+        count += 1
+        let entry = vector(remaining.part(2, remaining.len()), 2)?
+        if entry.head.is_empty():
+            return Err(Malformed)
+        if group == profile.group:
+            if entry.head.len() != profile.share_size || (group == 24 && entry.head.byte_or_end(0) != 4):
+                return Err(Malformed)
+            found = entry.head
+        remaining = entry.tail
+    return Ok(found)
+
+fn negotiate(encoded: Span, session: Span, entries: Span, profile: Profile, allow_retry: Bool) -> Result<ClientHello, HelloError>:
+    var seen: [U64; 64] = [0; 64]
+    var count: U64 = 0
+    var remaining = entries
+    var selected = entries.part(0, 0)
+    var dns = selected
+    var version = false
+    var supported_group = false
+    var has_share = false
+    var ecdsa = false
+    var rsa = false
+    var alpn = false
+    while !remaining.is_empty():
+        if remaining.len() < 4 || count == seen.slice().len():
+            return Err(Malformed)
+        let kind = word(remaining, 0)
+        for i in 0..count:
+            if seen[i] == kind:
+                return Err(Malformed)
+        seen[count] = kind
+        count += 1
+        let extension = vector(remaining.part(2, remaining.len()), 2)?
+        let data = extension.head
+        if kind == 0:
+            dns = hostname(data)?
+        else if kind == 10:
+            supported_group = has(words(data, 2)?, profile.group)
+        else if kind == 13:
+            let schemes = words(data, 2)?
+            ecdsa = has(schemes, profile.ecdsa_scheme)
+            rsa = has(schemes, profile.rsa_scheme)
+        else if kind == 16:
+            alpn = http11(data)?
+            if !alpn:
+                return Err(Unsupported)
+        else if kind == 43:
+            version = has(words(data, 1)?, 772)
+        else if kind == 51:
+            selected = share(data, profile)?
+            has_share = true
+        else if kind == 21:
+            for byte in data.as_bytes():
+                if *byte != 0:
+                    return Err(Malformed)
+        else if kind == 41 || kind == 42 || (kind == 44 && profile.group == 24):
+            return Err(Unsupported)
+        remaining = extension.tail
+    if !version || !supported_group || !has_share || (selected.is_empty() && !allow_retry) || !(ecdsa || rsa):
+        return Err(Unsupported)
+    return Ok(ClientHello(profile.group, session, selected, encoded, dns, alpn, ecdsa, rsa))
+
+// One complete ClientHello handshake message, including type and length.
+pub fn parse_client_hello(message: Span) -> Result<ClientHello, HelloError>:
+    return parse(message, Profile(29, 32, 4865, 1027, 2052), false)
+
+// Require a P-384 key share and TLS_AES_256_GCM_SHA384. No fallback to the
+// trace profile if either is absent.
+pub fn parse_p384_client_hello(message: Span) -> Result<ClientHello, HelloError>:
+    return parse(message, Profile(24, 97, 4866, 1283, 2053), false)
+
+// An eligible first ClientHello can contain other groups' shares or an
+// empty share vector. The only retry this profile requests is P-384.
+pub fn parse_p384_offer(message: Span) -> Result<ClientHello, HelloError>:
+    return parse(message, Profile(24, 97, 4866, 1283, 2053), true)
+
+type HelloParts:
+    session: Span
+    suites: Span
+    stable: Span
+    extensions: Span
+
+fn parts(message: Span) -> Result<HelloParts, HelloError>:
+    let size = message.len()
+    if size < 38 || size > 65575 || message.byte_or_end(0) != 1:
+        return Err(Malformed)
+    if message.byte_or_end(1) * 65536 + word(message, 2) != size - 4 || word(message, 4) != 771:
+        return Err(Malformed)
+    let session = vector(message.part(38, size), 1)?
+    if session.head.len() > 32:
+        return Err(Malformed)
+    let suites = vector(session.tail, 2)?
+    if suites.head.is_empty() || suites.head.len() % 2 != 0:
+        return Err(Malformed)
+    let compression = vector(suites.tail, 1)?
+    if compression.head.len() != 1 || compression.head.byte_or_end(0) != 0:
+        return Err(Malformed)
+    let extensions = vector(compression.tail, 2)?
+    if !extensions.tail.is_empty():
+        return Err(Malformed)
+    let stable = message.part(4, size - compression.tail.len())
+    return Ok(HelloParts(session.head, suites.head, stable, extensions.head))
+
+fn parse(message: Span, profile: Profile, allow_retry: Bool) -> Result<ClientHello, HelloError>:
+    let layout = parts(message)?
+    if !has(layout.suites, profile.suite):
+        return Err(Unsupported)
+    return negotiate(message, layout.session, layout.extensions, profile, allow_retry)
+
+fn same(left: Span, right: Span) -> Bool:
+    if left.len() != right.len():
+        return false
+    let a = left.as_bytes()
+    let b = right.as_bytes()
+    for i in 0..left.len():
+        if a[i] != b[i]:
+            return false
+    return true
+
+fn next_stable_extension(entries: Span) -> Result<Halves, HelloError>:
+    var remaining = entries
+    while !remaining.is_empty():
+        if remaining.len() < 4:
+            return Err(Malformed)
+        let kind = word(remaining, 0)
+        let parsed = vector(remaining.part(2, remaining.len()), 2)?
+        if kind != 21 && kind != 51:
+            return Ok(.{head: remaining.part(0, 4 + parsed.head.len()), tail: parsed.tail})
+        remaining = parsed.tail
+    return Ok(.{head: remaining, tail: remaining})
+
+fn single_retry_share(entries: Span) -> Result<Bool, HelloError>:
+    var remaining = entries
+    while !remaining.is_empty():
+        if remaining.len() < 4:
+            return Err(Malformed)
+        let kind = word(remaining, 0)
+        let parsed = vector(remaining.part(2, remaining.len()), 2)?
+        if kind == 51:
+            let shares = vector(parsed.head, 2)?
+            return Ok(shares.tail.is_empty() && shares.head.len() == 101 && word(shares.head, 0) == 24 && word(shares.head, 2) == 97)
+        remaining = parsed.tail
+    return Ok(false)
+
+// No cookie, PSK or early data is negotiated here. In this profile the
+// second hello can change only key_share and zero padding.
+pub fn parse_retry_client_hello(first: ClientHello, message: Span) -> Result<ClientHello, HelloError>:
+    if first.group != 24 || !first.p384_share().is_empty():
+        return Err(Unsupported)
+    let second = parse_p384_client_hello(message)?
+    let old = parts(first.transcript_bytes())?
+    let new = parts(message)?
+    let share_is_single = single_retry_share(new.extensions)?
+    if !same(old.stable, new.stable) || !share_is_single:
+        return Err(Malformed)
+    var left = old.extensions
+    var right = new.extensions
+    while !left.is_empty() || !right.is_empty():
+        let a = next_stable_extension(left)?
+        let b = next_stable_extension(right)?
+        if !same(a.head, b.head):
+            return Err(Malformed)
+        left = a.tail
+        right = b.tail
+    return Ok(second)
+
+pub fn encode_retry(client: ClientHello, output: &mut [U8]) -> Result<U64, HelloError>:
+    if client.group != 24 || !client.p384_share().is_empty():
+        return Err(Unsupported)
+    let session = client.session_id().as_bytes()
+    let total = 56 + session.len()
+    if output.len() < total:
+        return Err(ShortOutput)
+    let header: [U8; 38] = [2, 0, 0, U8.truncate(total - 4), 3, 3,
+        207, 33, 173, 116, 229, 154, 97, 17, 190, 29, 140, 2, 30, 101, 184, 145,
+        194, 162, 17, 22, 122, 187, 140, 94, 7, 158, 9, 226, 200, 168, 51, 156]
+    output.part(0, 38).copy_from(header.slice())
+    output[38] = U8.truncate(session.len())
+    let at = 39 + session.len()
+    output.part(39, at).copy_from(session)
+    let selection: [U8; 17] = [19, 2, 0, 0, 12, 0, 43, 0, 2, 3, 4, 0, 51, 0, 2, 0, 24]
+    output.part(at, total).copy_from(selection.slice())
+    return Ok(total)
+
+// ServerHello includes exactly supported_versions and the selected key share.
+// Random and public key material are supplied by the transport's primitives.
+pub fn encode_server_hello(client: ClientHello, random: &[U8; 32], public_key: &[U8; 32], output: &mut [U8]) -> Result<U64, HelloError>:
+    if client.group != 29:
+        return Err(Unsupported)
+    return encode(client, random, (*public_key).slice(), 1, output)
+
+pub fn encode_p384_server_hello(client: ClientHello, random: &[U8; 32], public_key: &[U8; 97], output: &mut [U8]) -> Result<U64, HelloError>:
+    if client.group != 24 || (*public_key)[0] != 4:
+        return Err(Unsupported)
+    return encode(client, random, (*public_key).slice(), 2, output)
+
+fn encode(client: ClientHello, random: &[U8; 32], public_key: &[U8], suite: U8, output: &mut [U8]) -> Result<U64, HelloError>:
+    let echo = client.session_id().as_bytes()
+    let key_size = public_key.len()
+    let total = 58 + key_size + echo.len()
+    if output.len() < total:
+        return Err(ShortOutput)
+    output[0] = 2
+    output[1] = 0
+    output[2] = 0
+    output[3] = U8.truncate(total - 4)
+    output[4] = 3
+    output[5] = 3
+    for i in 0..32:
+        output[6 + i] = (*random)[i]
+    output[38] = U8.truncate(echo.len())
+    for i in 0..echo.len():
+        output[39 + i] = echo[i]
+    let at = 39 + echo.len()
+    let prefix: [U8; 13] = [19, suite, 0, 0, U8.truncate(14 + key_size), 0, 51, 0, U8.truncate(4 + key_size), 0, U8.truncate(client.group), 0, U8.truncate(key_size)]
+    output.part(at, at + 13).copy_from(prefix.slice())
+    output.part(at + 13, at + 13 + key_size).copy_from(public_key)
+    let version: [U8; 6] = [0, 43, 0, 2, 3, 4]
+    output.part(at + 13 + key_size, total).copy_from(version.slice())
+    return Ok(total)

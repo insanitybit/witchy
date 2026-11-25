@@ -1,0 +1,2 @@
+proof failed: function `drain`
+  not proved: ensures result == old(items.len()) + 1

@@ -1,0 +1,5 @@
+// A package's imports stay in its directory, so a build reads only the package's own files.
+import "@outside"
+
+fn main(console: Console<Write>):
+    console.print_int(take())

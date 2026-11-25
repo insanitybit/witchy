@@ -1,0 +1,12 @@
+// Like `<T: Hash>` without `Any`, an `impl Hash` parameter takes copied values, not an owner.
+import console
+import hash
+import string
+
+fn h(x: impl Hash) -> U64:
+    x.hash()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(s): String = String.new(&allocator) else Err(code):
+        return
+    console.print_int(h(move s))

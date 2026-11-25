@@ -1,0 +1,13 @@
+// The proof follows a chosen value: a claim one path breaks is refused.
+fn larger(left: U64, right: U64) -> U64:
+    ensures result > right
+    proof:
+        auto
+    let value = if left > right:
+        left
+    else:
+        right
+    return value
+
+fn main(console: Console<Write>):
+    console.print_int(larger(1, 2))

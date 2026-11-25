@@ -1,0 +1,1 @@
+this method's receiver borrows only `&mut count`: add `&name` or `&mut name`

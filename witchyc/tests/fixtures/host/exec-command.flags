@@ -1,0 +1,1 @@
+run: --exec={dir}/exec-command-bin:answer,nap --exec-bytes=4096 --deadline-ms=10000

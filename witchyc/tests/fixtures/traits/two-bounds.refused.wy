@@ -1,0 +1,13 @@
+trait Named:
+    fn size(self: &Self) -> U64
+trait Sized:
+    fn size(self: &Self) -> U64
+type Box:
+    side: U64
+impl Named for Box:
+    fn size(self: &Box) -> U64:
+        return 1
+fn measure<T: Named + Sized>(value: &T) -> U64:
+    return value.size()
+fn main(console: Console<Write>):
+    console.print_int(1)

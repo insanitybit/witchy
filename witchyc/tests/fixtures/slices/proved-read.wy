@@ -1,0 +1,15 @@
+// A slice read after `if index >= bytes.len(): return`, in a proved function: shown in range, so
+// emitted without its check (SLICE_PROVED).
+import console
+
+fn byte_or_end(bytes: &[U8], index: U64) -> U64:
+    ensures true
+    proof:
+        auto
+    if index >= bytes.len():
+        return 256
+    return U8.to_u64(bytes[index])
+
+fn main(console: Console<Write>):
+    let a: [U8; 3] = [7, 8, 9]
+    console.print_int(byte_or_end(&a, 1) + byte_or_end(&a, 5))

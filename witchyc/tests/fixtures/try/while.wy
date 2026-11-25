@@ -1,0 +1,32 @@
+// `while condition?:` asks before each pass; an `Err` leaves the function.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-string.wy"
+
+fn more(left: &mut U64) -> Result<Bool, U64>:
+    if *left == 7:
+        return Err(7)
+    if *left == 0:
+        return Ok(false)
+    *left -= 1
+    return Ok(true)
+
+fn count(from: U64) -> Result<U64, U64>:
+    var left = from
+    var passes: U64 = 0
+    while more(&mut left)?:
+        if left == 2:
+            continue
+        passes += 1
+    return Ok(passes)
+
+fn main(console: Console<Write>):
+    match count(5):
+        Ok(passes):
+            console.print_int(passes)
+        Err(code):
+            console.print_int(100 + code)
+    match count(9):
+        Ok(passes):
+            console.print_int(passes)
+        Err(code):
+            console.print_int(100 + code)

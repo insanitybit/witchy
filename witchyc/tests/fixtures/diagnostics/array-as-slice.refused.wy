@@ -1,0 +1,8 @@
+import console
+import vec
+import span
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var line: [U8; 4] = [0; 4]
+    let s = line.as_slice()
+    console.print_int(s.len())

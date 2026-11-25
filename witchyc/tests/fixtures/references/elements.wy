@@ -1,0 +1,101 @@
+// References to elements in place: a Vec<String> is read without taking anything out.
+import "../../../library/wasm-string.wy"
+import "../../../library/wasm-vec.wy"
+
+fn text(allocator: &Allocator, first: U64, second: U64) -> Result<String, U64>:
+    let empty = String.new(allocator)?
+    match empty.push_scalar(allocator, first):
+        Ok(one):
+            match one.push_scalar(allocator, second):
+                Ok(two):
+                    return Ok(move two)
+                Err(back):
+                    back.close()
+                    return Err(902)
+        Err(back):
+            back.close()
+            return Err(901)
+
+fn add(console: &Console<Write>, allocator: &Allocator, names: Vec<String>, first: U64, second: U64) -> Vec<String>:
+    match text(allocator, first, second):
+        Ok(name):
+            match names.push(allocator, move name):
+                Ok(grown):
+                    return move grown
+                Err(back):
+                    console.print_int(903)
+                    let VecPushError(vector, item) = move back
+                    item.close()
+                    return move vector
+        Err(code):
+            console.print_int(code)
+            return move names
+
+// Print each name's length and first byte, leaving the names where they are.
+fn show(console: &Console<Write>, names: &Vec<String>):
+    for name in names:
+        console.print_int(name.byte_len())
+        match name.byte_at(0):
+            Ok(byte):
+                console.print_int(U8.to_u64(byte))
+            Err(code):
+                console.print_int(904)
+
+// A reference can be handed back: it borrows from the `&` parameter it came from.
+fn second(names: &Vec<String>) -> Result<&String, U64>:
+    let name = names.at(1)?
+    return Ok(name)
+
+fn drain(names: &mut Vec<String>):
+    while names.len() > 0:
+        match names.take_last_mut():
+            Ok(name):
+                name.close()
+            Err(code):
+                return
+
+fn finish(console: &Console<Write>, names: Vec<String>):
+    var rest = move names
+    drain(&mut rest)
+    match rest.try_release():
+        Ok:
+            console.print_int(1)
+        Err(stuck):
+            console.print_int(907)
+            finish(console, move stuck)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<Vec<String>, U64> = Vec.new(&allocator, 0)
+    match move made:
+        Ok(empty):
+            var names = add(&console, &allocator, move empty, 104, 105)
+            names = add(&console, &allocator, move names, 233, 10003)
+            names = add(&console, &allocator, move names, 65, 66)
+            show(&console, &names)
+            // Out of range is an ordinary error.
+            match names.at(3):
+                Ok(name):
+                    console.print_int(906)
+                Err(code):
+                    console.print_int(code)
+            // The reference's last use ends the loan: the vector can grow again.
+            let first = names.at(0)
+            match first:
+                Ok(name):
+                    console.print_int(name.byte_len())
+                Err(code):
+                    console.print_int(908)
+            match second(&names):
+                Ok(name):
+                    console.print_int(name.byte_len())
+                Err(code):
+                    console.print_int(909)
+            names = add(&console, &allocator, move names, 67, 68)
+            show(&console, &names)
+            var total: U64 = 0
+            for name in &names:
+                total += name.byte_len()
+            console.print_int(total)
+            finish(&console, move names)
+        Err(code):
+            console.print_int(code)

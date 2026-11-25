@@ -1,0 +1,47 @@
+// Two tasks of one function, stepped in turn: each pauses three times in a loop and keeps
+// its locals between steps. `main` prints each token, then 1 and 2 as each finishes.
+import console
+import tasks
+
+fn count(from: U64) suspends:
+    var n = from
+    var i: U64 = 0
+    while i < 3:
+        pause(n)
+        n += 10
+        i += 1
+    pause(n + 1000)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(one): Task = Task.spawn(&allocator, 1024, count, 5) else Err(input):
+        return
+    let Ok(two): Task = Task.spawn(&allocator, 1024, count, 7) else Err(input):
+        var first = move one
+        var going = true
+        while going:
+            match first.step():
+                Ok:
+                    going = false
+                Err(token):
+                    continue
+        first.close()
+        return
+    var a = move one
+    var b = move two
+    var running = true
+    while running:
+        running = false
+        match a.step():
+            Ok:
+                console.print_int(1)
+            Err(token):
+                console.print_int(token)
+                running = true
+        match b.step():
+            Ok:
+                console.print_int(2)
+            Err(token):
+                console.print_int(token)
+                running = true
+    a.close()
+    b.close()

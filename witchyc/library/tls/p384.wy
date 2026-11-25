@@ -1,0 +1,77 @@
+// The server's P-384 exchange. Call after routing and policy checks on the
+// parsed ClientHello. The returned share and random are fresh per invocation.
+import crypto
+import tls_hello
+import tls_key_schedule
+import vec
+import span
+
+pub type ExchangeError:
+    InvalidShare
+    ExchangeBufferTooSmall
+    ExchangeFailed
+    ExchangeNoRoom
+
+pub fn accept(client: ClientHello, random: &Rand, secret: &mut [U8; 48], reply: &mut [U8]) -> Result<U64, ExchangeError>:
+    let share = client.p384_share().as_bytes()
+    if share.len() != 97:
+        return Err(InvalidShare)
+    if reply.len() < 155 + client.session_id().len():
+        return Err(ExchangeBufferTooSmall)
+    var point: [U8; 97] = [0; 97]
+    match random.p384_agree(share, point.slice_mut(), (*secret).slice_mut()):
+        Err(InvalidPeerPoint):
+            return Err(InvalidShare)
+        Err(_):
+            return Err(ExchangeFailed)
+        Ok:
+            let server_random = hello_random(random)
+            match tls_hello.encode_p384_server_hello(client, &server_random, &point, reply):
+                Ok(count):
+                    return Ok(count)
+                Err(reason):
+                    return Err(ExchangeFailed)
+
+fn hello_random(source: &Rand) -> [U8; 32]:
+    var bytes: [U8; 32] = [0; 32]
+    for i in 0..4:
+        let word = source.next_u64()
+        for j in 0..8:
+            bytes[8 * i + j] = U8.truncate(word >> (8 * j))
+    return move bytes
+
+pub type AcceptedHello:
+    length: U64
+    handshake: Handshake
+
+// Compute the first traffic secrets over the retry prefix, the accepted ClientHello and
+// emitted ServerHello. A caller retains these bytes for the rest of the transcript.
+pub fn begin(client: ClientHello, random: &Rand, allocator: &Allocator, prefix: &[U8], reply: &mut [U8]) -> Result<AcceptedHello, ExchangeError>:
+    var shared: [U8; 48] = [0; 48]
+    let length = accept(client, random, &mut shared, reply)?
+    let sent = client.transcript_bytes().as_bytes()
+    var digest: [U8; 48] = [0; 48]
+    let hashed = hash_hellos(allocator, prefix, sent, reply.part(0, length), digest.slice_mut())?
+    match tls_key_schedule.start384(&shared, &digest):
+        Err(reason):
+            return Err(ExchangeFailed)
+        Ok(handshake):
+            return Ok(AcceptedHello(length, move handshake))
+
+fn hash_hellos(allocator: &Allocator, prefix: &[U8], client: &[U8], server: &[U8], digest: &mut [U8]) -> Result<(), ExchangeError>:
+    let through_client = prefix.len() + client.len()
+    let total = through_client + server.len()
+    let Ok(made): Vec<U8> = Vec.filled(allocator, total, 0) else Err(reason):
+        return Err(ExchangeNoRoom)
+    var transcript = move made
+    let bytes = transcript.as_mut_slice()
+    bytes.part(0, prefix.len()).copy_from(prefix)
+    bytes.part(prefix.len(), through_client).copy_from(client)
+    bytes.part(through_client, total).copy_from(server)
+    let hashed = crypto.sha384(transcript.as_slice(), digest)
+    transcript.close()
+    match hashed:
+        Ok:
+            return Ok(())
+        Err(reason):
+            return Err(ExchangeFailed)

@@ -1,0 +1,92 @@
+// A Text literal finds a String key a word at a time: keys of 0, 1, 7, 8, 9, 15, 16, 17 and 40
+// bytes, each looked up by itself and by literals differing only in the first or the last byte,
+// and one byte shorter or longer.
+import console
+import string
+import hash
+import hashmap
+import discard
+
+fn add(map: &mut HashMap<String, U64>, allocator: &Allocator, key: Text, value: U64):
+    let Ok(made): String = String.new(allocator) else Err(e):
+        return
+    var s = move made
+    let _ = s.push_text(allocator, key)
+    match map.put(allocator, move s, value):
+        Ok:
+            ()
+        Err(entry):
+            entry.discard()
+
+fn look(console: &Console<Write>, map: &HashMap<String, U64>, key: Text):
+    match map.get(&key):
+        Ok(n):
+            console.write_format("${*n} ")
+        Err(e):
+            console.write("- ")
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): HashMap<String, U64> = HashMap.new(&allocator, 64) else Err(e):
+        return
+    var map = move made
+    add(&mut map, &allocator, "", 0)
+    add(&mut map, &allocator, "a", 1)
+    add(&mut map, &allocator, "abcdefg", 2)
+    add(&mut map, &allocator, "abcdefgh", 3)
+    add(&mut map, &allocator, "abcdefghi", 4)
+    add(&mut map, &allocator, "abcdefghijklmno", 5)
+    add(&mut map, &allocator, "abcdefghijklmnop", 6)
+    add(&mut map, &allocator, "abcdefghijklmnopq", 7)
+    add(&mut map, &allocator, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN", 8)
+    look(&console, &map, "")
+    look(&console, &map, "!")
+    console.line("")
+    look(&console, &map, "a")
+    look(&console, &map, "z")
+    look(&console, &map, "z")
+    look(&console, &map, "")
+    look(&console, &map, "a!")
+    console.line("")
+    look(&console, &map, "abcdefg")
+    look(&console, &map, "zbcdefg")
+    look(&console, &map, "abcdefz")
+    look(&console, &map, "abcdef")
+    look(&console, &map, "abcdefg!")
+    console.line("")
+    look(&console, &map, "abcdefgh")
+    look(&console, &map, "zbcdefgh")
+    look(&console, &map, "abcdefgz")
+    look(&console, &map, "abcdefg")
+    look(&console, &map, "abcdefgh!")
+    console.line("")
+    look(&console, &map, "abcdefghi")
+    look(&console, &map, "zbcdefghi")
+    look(&console, &map, "abcdefghz")
+    look(&console, &map, "abcdefgh")
+    look(&console, &map, "abcdefghi!")
+    console.line("")
+    look(&console, &map, "abcdefghijklmno")
+    look(&console, &map, "zbcdefghijklmno")
+    look(&console, &map, "abcdefghijklmnz")
+    look(&console, &map, "abcdefghijklmn")
+    look(&console, &map, "abcdefghijklmno!")
+    console.line("")
+    look(&console, &map, "abcdefghijklmnop")
+    look(&console, &map, "zbcdefghijklmnop")
+    look(&console, &map, "abcdefghijklmnoz")
+    look(&console, &map, "abcdefghijklmno")
+    look(&console, &map, "abcdefghijklmnop!")
+    console.line("")
+    look(&console, &map, "abcdefghijklmnopq")
+    look(&console, &map, "zbcdefghijklmnopq")
+    look(&console, &map, "abcdefghijklmnopz")
+    look(&console, &map, "abcdefghijklmnop")
+    look(&console, &map, "abcdefghijklmnopq!")
+    console.line("")
+    look(&console, &map, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN")
+    look(&console, &map, "zbcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN")
+    look(&console, &map, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMz")
+    look(&console, &map, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLM")
+    look(&console, &map, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN!")
+    console.line("")
+    map.discard()

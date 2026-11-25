@@ -1,0 +1,71 @@
+// String == String a word at a time from eight bytes, byte by byte under it: strings of 0 to
+// 40 bytes against themselves, against one differing only in the first, a middle or the last
+// byte, and against one a byte shorter.
+import console
+import string
+
+fn same(console: &Console<Write>, allocator: &Allocator, a: Text, b: Text):
+    let Ok(x): String = String.new(allocator) else Err(e):
+        return
+    var left = move x
+    let Ok(y): String = String.new(allocator) else Err(e):
+        left.close()
+        return
+    var right = move y
+    let _ = left.push_text(allocator, a)
+    let _ = right.push_text(allocator, b)
+    console.write_format("${left == right} ")
+    left.close()
+    right.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    same(&console, &allocator, "", "")
+    console.line("")
+    same(&console, &allocator, "a", "a")
+    same(&console, &allocator, "a", "z")
+    same(&console, &allocator, "a", "z")
+    same(&console, &allocator, "a", "z")
+    same(&console, &allocator, "a", "")
+    console.line("")
+    same(&console, &allocator, "abcdefg", "abcdefg")
+    same(&console, &allocator, "abcdefg", "zbcdefg")
+    same(&console, &allocator, "abcdefg", "abczefg")
+    same(&console, &allocator, "abcdefg", "abcdefz")
+    same(&console, &allocator, "abcdefg", "abcdef")
+    console.line("")
+    same(&console, &allocator, "abcdefgh", "abcdefgh")
+    same(&console, &allocator, "abcdefgh", "zbcdefgh")
+    same(&console, &allocator, "abcdefgh", "abcdzfgh")
+    same(&console, &allocator, "abcdefgh", "abcdefgz")
+    same(&console, &allocator, "abcdefgh", "abcdefg")
+    console.line("")
+    same(&console, &allocator, "abcdefghi", "abcdefghi")
+    same(&console, &allocator, "abcdefghi", "zbcdefghi")
+    same(&console, &allocator, "abcdefghi", "abcdzfghi")
+    same(&console, &allocator, "abcdefghi", "abcdefghz")
+    same(&console, &allocator, "abcdefghi", "abcdefgh")
+    console.line("")
+    same(&console, &allocator, "abcdefghijklmno", "abcdefghijklmno")
+    same(&console, &allocator, "abcdefghijklmno", "zbcdefghijklmno")
+    same(&console, &allocator, "abcdefghijklmno", "abcdefgzijklmno")
+    same(&console, &allocator, "abcdefghijklmno", "abcdefghijklmnz")
+    same(&console, &allocator, "abcdefghijklmno", "abcdefghijklmn")
+    console.line("")
+    same(&console, &allocator, "abcdefghijklmnop", "abcdefghijklmnop")
+    same(&console, &allocator, "abcdefghijklmnop", "zbcdefghijklmnop")
+    same(&console, &allocator, "abcdefghijklmnop", "abcdefghzjklmnop")
+    same(&console, &allocator, "abcdefghijklmnop", "abcdefghijklmnoz")
+    same(&console, &allocator, "abcdefghijklmnop", "abcdefghijklmno")
+    console.line("")
+    same(&console, &allocator, "abcdefghijklmnopq", "abcdefghijklmnopq")
+    same(&console, &allocator, "abcdefghijklmnopq", "zbcdefghijklmnopq")
+    same(&console, &allocator, "abcdefghijklmnopq", "abcdefghzjklmnopq")
+    same(&console, &allocator, "abcdefghijklmnopq", "abcdefghijklmnopz")
+    same(&console, &allocator, "abcdefghijklmnopq", "abcdefghijklmnop")
+    console.line("")
+    same(&console, &allocator, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN")
+    same(&console, &allocator, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN", "zbcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN")
+    same(&console, &allocator, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN", "abcdefghijklmnopqrstzvwxyzABCDEFGHIJKLMN")
+    same(&console, &allocator, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMz")
+    same(&console, &allocator, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMN", "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLM")
+    console.line("")

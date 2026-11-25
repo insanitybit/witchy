@@ -1,0 +1,18 @@
+// A capability that carries policy: a Net confined to one server, plus the table it is
+// scoped to. Only this file builds one or reaches inside, so the Net never leaks past
+// the policy in `count`.
+import net
+import console
+
+pub capability Table:
+    net: Net
+    name: U64
+
+pub fn open_table(net: &Net, name: U64) -> Result<Table, NetError>:
+    let confined = net.only("db.example:5432")?
+    return Ok(Table(move confined, name))
+
+impl Table:
+    // A query names a table; the handle answers only for its own.
+    pub fn count(table: &Table, requested: U64) -> Bool:
+        return requested == table.name

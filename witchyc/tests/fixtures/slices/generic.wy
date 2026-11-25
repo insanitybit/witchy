@@ -1,0 +1,15 @@
+// A generic function over `&[T]`: `T` is inferred from the slice it is given.
+import console
+import hash
+
+fn count_matching<T: Eq>(items: &[T], wanted: &T) -> U64:
+    var found: U64 = 0
+    for item in items:
+        if item.eq(wanted):
+            found += 1
+    return found
+
+fn main(console: Console<Write>):
+    let numbers: [U64; 5] = [1, 2, 1, 3, 1]
+    let one: U64 = 1
+    console.print_int(count_matching(numbers.slice(), &one))

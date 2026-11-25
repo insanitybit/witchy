@@ -1,0 +1,109 @@
+// A helper written in Witchy empties a field through `&mut` and hands back the owner that was
+// there; nothing about it is built into the compiler. `Slot` is this file's own type. The
+// shelf is sealed and its invariant links its two fields, so it is broken between the drain and
+// the refill, and shown again at each return. The caller gets the very String that was on the
+// shelf, closes it once, and the shelf is filled again.
+import "../../../library/wasm-string.wy"
+import replace
+
+type Slot<T>:
+    Vacant
+    Full(T)
+
+impl<T: Any> Slot<T>:
+    // Empty the slot and hand back what was in it.
+    pub nopanic fn drain(slot: &mut Slot<T>) -> Slot<T>:
+        var previous: Slot<T> = Vacant
+        memory.exchange(&mut *slot, &mut previous)
+        return move previous
+
+// A vacant shelf counts nothing: the two fields are linked.
+sealed type Shelf<T>:
+    count: U64
+    slot: Slot<T>
+    invariant when Vacant = slot:
+        count == 0
+
+impl<T: Any> Shelf<T>:
+    fn stocked(item: T) -> Shelf<T>:
+        ensures result.count == 1
+        return Shelf(1, Full(move item))
+
+    // Relies on the invariant: on a vacant shelf a count other than 0 cannot be.
+    nopanic fn audit(shelf: &Shelf<T>) -> U64:
+        match &(*shelf).slot:
+            Vacant:
+                if (*shelf).count != 0:
+                    unreachable
+                return 0
+            Full(_):
+                return (*shelf).count
+
+    // Drain, then refill by assignment: the slot is known vacant because `drain` left it so.
+    nopanic fn swap_in(shelf: &mut Shelf<T>, item: T) -> Slot<T>:
+        let held = (*shelf).slot.drain()
+        (*shelf).count = 1
+        (*shelf).slot = Full(move item)
+        return move held
+
+    // Drain and leave it empty: the count has to follow, or the return is refused.
+    nopanic fn clear(shelf: &mut Shelf<T>) -> Slot<T>:
+        let held = Slot.drain(&mut (*shelf).slot)
+        (*shelf).count = 0
+        return move held
+
+    // The general form: put a value in and get the old one, full or not. No assignment over
+    // the field, so nothing has to be shown vacant; the count is right because the slot is
+    // known to hold what was passed in.
+    nopanic fn restock(shelf: &mut Shelf<T>, item: T) -> Slot<T>:
+        let held = replace(&mut (*shelf).slot, Full(move item))
+        return move held
+
+    fn take(shelf: Shelf<T>) -> Slot<T>:
+        ensures true
+        let Shelf(count, slot) = move shelf
+        return move slot
+
+fn word(allocator: &Allocator, count: U64) -> Result<String, U64>:
+    var out = String.new(allocator)?
+    for index in 0..count:
+        match out.push_scalar(allocator, 97):
+            Ok(grown):
+                out = move grown
+            Err(original):
+                original.close()
+                return Err(900)
+    return Ok(move out)
+
+fn show(out: &Console<Write>, slot: Slot<String>):
+    match move slot:
+        Vacant:
+            out.print_int(0)
+        Full(text):
+            out.print_int(text.byte_len())
+            text.close()
+
+fn main(out: Console<Write>, allocator: Allocator):
+    match word(&allocator, 3):
+        Err(code):
+            out.print_int(code)
+        Ok(first):
+            match word(&allocator, 4):
+                Err(code):
+                    first.close()
+                    out.print_int(code)
+                Ok(second):
+                    match word(&allocator, 5):
+                        Err(code):
+                            first.close()
+                            second.close()
+                            out.print_int(code)
+                        Ok(third):
+                            var shelf: Shelf<String> = Shelf.stocked(move first)
+                            show(&out, shelf.swap_in(move second))
+                            out.print_int(shelf.audit())
+                            show(&out, shelf.clear())
+                            out.print_int(shelf.audit())
+                            show(&out, shelf.restock(move third))
+                            out.print_int(shelf.audit())
+                            show(&out, shelf.take())

@@ -1,0 +1,20 @@
+import http_framing
+import net
+import span
+
+fn main(socket: Socket):
+    var head: [U8; 128] = [0; 128]
+    var body: [U8; 3] = [0; 3]
+    var line: [U8; 32] = [0; 32]
+    var input: [U8; 7] = [0; 7]
+    let result = http_framing.read_request(&socket, head.slice_mut(), body.slice_mut(), line.slice_mut(), input.slice_mut())
+    match result:
+        Ok(request):
+            if Span.of(body.slice().part(0, request.body_len)).equals_text("abc"):
+                let sent = socket.send("HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+        Err(reason):
+            if let SocketMessageRefused(WrongAuthority) = reason:
+                let sent = socket.send("HTTP/1.1 421 Misdirected Request\r\nContent-Length: 0\r\n\r\n")
+            else if let SocketMessageRefused(BodyLimit) = reason:
+                let sent = socket.send("HTTP/1.1 413 Content Too Large\r\nContent-Length: 0\r\n\r\n")
+    socket.close()

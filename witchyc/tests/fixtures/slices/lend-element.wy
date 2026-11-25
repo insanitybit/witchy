@@ -1,0 +1,13 @@
+// `&s[i]` lends a shared slice's element, `&mut s[i]` a unique one's: the slice's `cell(i)`.
+import console
+
+fn bump(s: &mut [U64], i: U64):
+    let r = &mut s[i]
+    *r += 100
+
+fn main(console: Console<Write>):
+    var a: [U64; 3] = [1, 2, 3]
+    bump(a.slice_mut(), 1)
+    let s = a.slice()
+    let r = &s[1]
+    console.print_int(*r)

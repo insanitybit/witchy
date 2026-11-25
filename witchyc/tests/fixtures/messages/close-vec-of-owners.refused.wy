@@ -1,0 +1,9 @@
+// The fix comes first: `discard()`, not `close()`, for a Vec whose elements own something.
+import console
+import string
+import vec
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<String> = Vec.new(&allocator, 2) else Err(code):
+        return
+    var items = move made
+    items.close()

@@ -1,0 +1,16 @@
+// A part of a slice parameter may be returned: it borrows what the caller lent, and keeps
+// the caller's array lent while it is in use.
+import console
+
+fn tail(items: &[U64]) -> &[U64]:
+    return items.part(1, items.len())
+
+fn main(console: Console<Write>):
+    let numbers: [U64; 4] = [5, 6, 7, 8]
+    let rest = tail(numbers.slice())
+    console.print_int(rest.len())
+    match rest.at(0):
+        Ok(first):
+            console.print_int(*first)
+        Err(code):
+            console.print_int(999)

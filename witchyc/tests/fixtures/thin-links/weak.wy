@@ -1,0 +1,26 @@
+type Stashed<T>:
+    link: Weak<T>
+
+fn edit(owner: &mut Boxed<U64>):
+    ensures true
+    proof:
+        auto
+    let link: Weak<U64> = memory.weaken_box(&*owner)
+    let stored = Stashed(link)
+    if memory.box_address(&*owner) != 0:
+        let cell = memory.follow_weak_mut(owner, stored.link)
+        *cell = 55
+
+fn main(out: Console<Write>, a: Allocator):
+    let made: Result<Boxed<U64>, U64> = memory.try_box(&a, 12)
+    match move made:
+        Ok(item):
+            var owner = move item
+            edit(&mut owner)
+            match memory.unbox(move owner):
+                Ok(answer):
+                    out.print_int(answer)
+                Err:
+                    out.print_int(0)
+        Err(original):
+            out.print_int(original)

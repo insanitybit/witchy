@@ -1,0 +1,237 @@
+// Lines of `name = expression` and `print expression` over signed numbers, with
+// + - * / %, unary minus, parentheses and names. The parser never copies the
+// line: what is left to read is a Span, and each step hands back the value it
+// read together with the Span after it.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-hashmap.wy"
+import "../../../library/wasm-int.wy"
+import "../../../library/wasm-span.wy"
+import "../../../library/wasm-string.wy"
+
+// What a step read, and what is left of the line.
+type Read = .{rest: Span, value: I64}
+
+// Errors: 1 syntax, 2 unknown name, 3 division by zero, 4 no room, 5 number out of range.
+
+fn letter(byte: U64) -> Bool:
+    return (byte >= 97 && byte <= 122) || byte == 95
+
+fn digit(byte: U64) -> Bool:
+    return byte >= 48 && byte <= 57
+
+// Without the spaces in front.
+fn skip(input: Span) -> Span:
+    var index: U64 = 0
+    while input.byte_or_end(index) == 32:
+        index += 1
+    return input.part(index, input.len())
+
+// How many letters the Span begins with.
+fn word(input: Span) -> U64:
+    var index: U64 = 0
+    while letter(input.byte_or_end(index)):
+        index += 1
+    return index
+
+fn digits(input: Span) -> U64:
+    var index: U64 = 0
+    while digit(input.byte_or_end(index)):
+        index += 1
+    return index
+
+fn lookup(names: &HashMap<String, I64>, allocator: &Allocator, name: Span) -> Result<I64, U64>:
+    var key = match name.to_string(allocator):
+        Ok(made):
+            move made
+        Err(code):
+            return Err(4)
+    match names.get(&key):
+        Ok(value):
+            let found = *value
+            key.close()
+            return Ok(found)
+        Err(code):
+            key.close()
+            return Err(2)
+
+fn atom(names: &HashMap<String, I64>, allocator: &Allocator, input: Span) -> Result<Read, U64>:
+    let rest = skip(input)
+    let first = rest.byte_or_end(0)
+    if first == 40:
+        let inner = expression(names, allocator, rest.part(1, rest.len()))?
+        let after = skip(inner.rest)
+        if after.byte_or_end(0) != 41:
+            return Err(1)
+        return Ok(.{rest: after.part(1, after.len()), value: inner.value})
+    if digit(first):
+        let count = digits(rest)
+        let number = match rest.part(0, count).parse_u64():
+            Ok(number):
+                number
+            Err(code):
+                return Err(5)
+        match I64.from(number):
+            Ok(value):
+                return Ok(.{rest: rest.part(count, rest.len()), value: value})
+            Err(past):
+                return Err(5)
+    if letter(first):
+        let count = word(rest)
+        let value = lookup(names, allocator, rest.part(0, count))?
+        return Ok(.{rest: rest.part(count, rest.len()), value: value})
+    return Err(1)
+
+fn unary(names: &HashMap<String, I64>, allocator: &Allocator, input: Span) -> Result<Read, U64>:
+    let rest = skip(input)
+    if rest.byte_or_end(0) != 45:
+        return atom(names, allocator, rest)
+    let inner = unary(names, allocator, rest.part(1, rest.len()))?
+    match inner.value.checked_neg():
+        Ok(value):
+            return Ok(.{rest: inner.rest, value: value})
+        Err(code):
+            return Err(5)
+
+// One of * / % or + -, by its byte.
+fn combine(sign: U64, left: I64, right: I64) -> Result<I64, U64>:
+    let made = if sign == 42:
+        left.checked_mul(right)
+    else if sign == 47:
+        left.checked_div(right)
+    else if sign == 37:
+        left.checked_rem(right)
+    else if sign == 43:
+        left.checked_add(right)
+    else:
+        left.checked_sub(right)
+    match made:
+        Ok(value):
+            return Ok(value)
+        Err(code):
+            if code == 2:
+                return Err(3)
+            return Err(5)
+
+fn term(names: &HashMap<String, I64>, allocator: &Allocator, input: Span) -> Result<Read, U64>:
+    let first = unary(names, allocator, input)?
+    var rest = first.rest
+    var value = first.value
+    while true:
+        let next = skip(rest)
+        let sign = next.byte_or_end(0)
+        if sign != 42 && sign != 47 && sign != 37:
+            return Ok(.{rest: next, value: value})
+        let right = unary(names, allocator, next.part(1, next.len()))?
+        value = combine(sign, value, right.value)?
+        rest = right.rest
+    return Err(1)
+
+fn expression(names: &HashMap<String, I64>, allocator: &Allocator, input: Span) -> Result<Read, U64>:
+    let first = term(names, allocator, input)?
+    var rest = first.rest
+    var value = first.value
+    while true:
+        let next = skip(rest)
+        let sign = next.byte_or_end(0)
+        if sign != 43 && sign != 45:
+            return Ok(.{rest: next, value: value})
+        let right = term(names, allocator, next.part(1, next.len()))?
+        value = combine(sign, value, right.value)?
+        rest = right.rest
+    return Err(1)
+
+// A whole expression: nothing may follow it.
+fn evaluate(names: &HashMap<String, I64>, allocator: &Allocator, input: Span) -> Result<I64, U64>:
+    let read = expression(names, allocator, input)?
+    if !skip(read.rest).is_empty():
+        return Err(1)
+    return Ok(read.value)
+
+fn store(names: &mut HashMap<String, I64>, allocator: &Allocator, name: Span, value: I64) -> Result<(), U64>:
+    var key = match name.to_string(allocator):
+        Ok(made):
+            move made
+        Err(code):
+            return Err(4)
+    match names.get_mut(&key):
+        Ok(slot):
+            *slot = value
+            key.close()
+            return Ok(())
+        Err(code):
+            match names.put(allocator, move key, value):
+                Ok:
+                    return Ok(())
+                Err(back):
+                    back.discard()
+                    return Err(4)
+
+// Run one line. 0, or the error.
+fn run(console: &Console<Write>, allocator: &Allocator, names: &mut HashMap<String, I64>, text: &String) -> U64:
+    let whole = skip(text.span())
+    if whole.is_empty():
+        return 0
+    let count = word(whole)
+    if count == 0:
+        return 1
+    let head = whole.part(0, count)
+    let after = skip(whole.part(count, whole.len()))
+    if head.equals_text("print"):
+        match evaluate(&*names, allocator, after):
+            Ok(value):
+                console.print_i64(value)
+                return 0
+            Err(code):
+                return code
+    if after.byte_or_end(0) != 61:
+        return 1
+    let value = match evaluate(&*names, allocator, after.part(1, after.len())):
+        Ok(value):
+            value
+        Err(code):
+            return code
+    match store(names, allocator, head, value):
+        Ok:
+            return 0
+        Err(code):
+            return code
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    let made: Result<HashMap<String, I64>, U64> = HashMap.new(&allocator, 0)
+    var names = match move made:
+        Ok(empty):
+            move empty
+        Err(code):
+            return
+    var text = match String.new(&allocator):
+        Ok(empty):
+            move empty
+        Err(code):
+            names.discard()
+            return
+    while true:
+        text.clear()
+        match input.read_line(&allocator, &mut text):
+            .Line:
+                let outcome = run(&console, &allocator, &mut names, &text)
+                if outcome == 1:
+                    console.line("syntax error")
+                else if outcome == 2:
+                    console.line("unknown name")
+                else if outcome == 3:
+                    console.line("division by zero")
+                else if outcome == 4:
+                    console.line("no room")
+                    break
+                else if outcome == 5:
+                    console.line("number out of range")
+            .End:
+                break
+            .NotText:
+                console.line("the input is not text")
+                break
+            .NoRoom:
+                console.line("no room")
+                break
+    text.close()
+    names.discard()

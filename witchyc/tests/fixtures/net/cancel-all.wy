@@ -1,0 +1,77 @@
+// A server shutting down: `cancel_all` cancels every task `Waiting` holds; each one's `read`
+// returns Err(Cancelled) and it closes its own socket and buffer, so the set can be closed.
+import console
+import net
+import tasks
+import vec
+
+type Reader:
+    socket: Socket
+    buffer: Vec<U8>
+
+fn listen(reader: Reader) suspends:
+    let Reader(socket, made) = move reader
+    var buffer = move made
+    match socket.read(buffer.as_mut_slice()):
+        Ok(count):
+            report(100 + count)
+        Err(error):
+            match error:
+                Cancelled:
+                    report(1)
+                _:
+                    report(2)
+    socket.close()
+    buffer.close()
+
+// A reader task for the next connection, or nothing.
+fn reader(listener: &Listener, allocator: &Allocator) -> Result<Task, U64>:
+    let Ok(socket): Socket = listener.accept() else Err(error):
+        return Err(0)
+    let zero: U8 = 0
+    let Ok(buffer): Vec<U8> = Vec.filled(allocator, 16, zero) else Err(code):
+        socket.close()
+        return Err(code)
+    match Task.spawn(allocator, 2048, listen, Reader(move socket, move buffer)):
+        Ok(task):
+            return Ok(move task)
+        Err(back):
+            let Reader(lost, bytes) = move back
+            lost.close()
+            bytes.close()
+            return Err(1)
+
+fn main(console: Console<Write>, net: Net, listener: Listener, allocator: Allocator):
+    let Ok(one): Socket = net.connect("127.0.0.1:47615") else Err(error):
+        console.line("no connection")
+        return
+    let Ok(two): Socket = net.connect("127.0.0.1:47615") else Err(error):
+        one.close()
+        console.line("no connection")
+        return
+    let Ok(made): Waiting = Waiting.new(&allocator, &listener) else Err(code):
+        one.close()
+        two.close()
+        return
+    var waiting = move made
+    var started: U64 = 0
+    while started < 2:
+        match reader(&listener, &allocator):
+            Ok(task):
+                match waiting.start(&allocator, move task):
+                    Ok(stepped):
+                        started += 1
+                    Err(back):
+                        var lost = move back
+                        let cancelled = lost.cancel()
+                        lost.close()
+                        started = 2
+            Err(code):
+                started = 2
+    // Both wait to read; nothing is sent.
+    console.print_int(waiting.len())
+    console.print_int(waiting.cancel_all(&allocator))
+    console.print_int(waiting.len())
+    waiting.close()
+    one.close()
+    two.close()

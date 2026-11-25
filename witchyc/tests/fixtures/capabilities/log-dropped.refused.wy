@@ -1,0 +1,10 @@
+// Refused: a record holding a file being written is linear like the file.
+import fs
+sealed type Log:
+    file: File<Write>
+fn main(dir: Dir<Write>):
+    match dir.create("log.txt"):
+        Ok(file):
+            let log = Log(move file)
+        Err(e):
+            return

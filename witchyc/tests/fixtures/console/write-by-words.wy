@@ -1,0 +1,96 @@
+// Console writes a word at a time (`print_word`) and the last bytes one at a time: literals and
+// Strings of 0 to 25 bytes, and numbers of every width, each followed by `|`.
+import console
+import string
+import text
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(e):
+        return
+    var s = move made
+    console.write("")
+    console.write("|")
+    s.clear()
+    let _ = s.push_text(&allocator, "")
+    console.write_string(&s)
+    console.line("|")
+    console.write("a")
+    console.write("|")
+    s.clear()
+    let _ = s.push_text(&allocator, "a")
+    console.write_string(&s)
+    console.line("|")
+    console.write("abcdefg")
+    console.write("|")
+    s.clear()
+    let _ = s.push_text(&allocator, "abcdefg")
+    console.write_string(&s)
+    console.line("|")
+    console.write("abcdefgh")
+    console.write("|")
+    s.clear()
+    let _ = s.push_text(&allocator, "abcdefgh")
+    console.write_string(&s)
+    console.line("|")
+    console.write("abcdefghi")
+    console.write("|")
+    s.clear()
+    let _ = s.push_text(&allocator, "abcdefghi")
+    console.write_string(&s)
+    console.line("|")
+    console.write("abcdefghijklmno")
+    console.write("|")
+    s.clear()
+    let _ = s.push_text(&allocator, "abcdefghijklmno")
+    console.write_string(&s)
+    console.line("|")
+    console.write("abcdefghijklmnop")
+    console.write("|")
+    s.clear()
+    let _ = s.push_text(&allocator, "abcdefghijklmnop")
+    console.write_string(&s)
+    console.line("|")
+    console.write("abcdefghijklmnopq")
+    console.write("|")
+    s.clear()
+    let _ = s.push_text(&allocator, "abcdefghijklmnopq")
+    console.write_string(&s)
+    console.line("|")
+    console.write("abcdefghijklmnopqrstuvwx")
+    console.write("|")
+    s.clear()
+    let _ = s.push_text(&allocator, "abcdefghijklmnopqrstuvwx")
+    console.write_string(&s)
+    console.line("|")
+    console.write("abcdefghijklmnopqrstuvwxy")
+    console.write("|")
+    s.clear()
+    let _ = s.push_text(&allocator, "abcdefghijklmnopqrstuvwxy")
+    console.write_string(&s)
+    console.line("|")
+    let n0: U64 = 0
+    console.write_u64(n0)
+    console.write("|")
+    let n9: U64 = 9
+    console.write_u64(n9)
+    console.write("|")
+    let n10: U64 = 10
+    console.write_u64(n10)
+    console.write("|")
+    let n12345678: U64 = 12345678
+    console.write_u64(n12345678)
+    console.write("|")
+    let n123456789: U64 = 123456789
+    console.write_u64(n123456789)
+    console.write("|")
+    let n1234567890123456: U64 = 1234567890123456
+    console.write_u64(n1234567890123456)
+    console.write("|")
+    let n12345678901234567: U64 = 12345678901234567
+    console.write_u64(n12345678901234567)
+    console.write("|")
+    let n18446744073709551615: U64 = 18446744073709551615
+    console.write_u64(n18446744073709551615)
+    console.write("|")
+    console.line("")
+    s.close()

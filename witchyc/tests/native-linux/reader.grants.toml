@@ -1,0 +1,6 @@
+[launch]
+version = 1
+[flags]
+project = { type = "path" }
+[dirs]
+project = { root = { from = "arg", name = "project" }, rights = ["Read"] }

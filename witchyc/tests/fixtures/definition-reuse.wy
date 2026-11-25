@@ -1,0 +1,18 @@
+// Root borrowing binds this caller to current Code; both definitions are checked.
+fn checked(value: U64) -> U64:
+    ensures result == value
+    return value
+
+fn unused_checked(value: U64) -> U64:
+    ensures result == value
+    return value
+
+fn main(console: Console<Write>):
+    let observed = checked(73)
+    assert observed == 73
+    console.print_int(observed)
+    var buffer = memory.alloc(1)
+    memory.init(&mut buffer, 0, 37)
+    console.print_int(memory.read(&buffer, 0))
+    memory.release(buffer)
+    discard(move console)

@@ -1,0 +1,17 @@
+// Guards with a variant of two values, one unnamed.
+import console
+
+type Move:
+    Step(U64, U64)
+    Stay
+
+fn main(console: Console<Write>):
+    for i in 0..3:
+        let m = if i == 2: Move.Stay else: Move.Step(i, 5)
+        match m:
+            Step(a, b) if a == 0:
+                console.print_int(b)
+            Step(a, _):
+                console.print_int(a + 100)
+            Stay:
+                console.print_int(9)

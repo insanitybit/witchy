@@ -1,0 +1,1 @@
+{"name": "témoin", "port": 8080, "debug": true, "ratio": 0.75, "hosts": ["alpha", "beta", "gamma"], "limits": {"rps": 250, "burst": 1.5e3}}

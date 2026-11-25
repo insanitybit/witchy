@@ -1,0 +1,6 @@
+// A package that imports a package its list line does not require is refused, even though the
+// program's list has it.
+import "@chain"
+
+fn main(console: Console<Write>):
+    console.print_int(chained())

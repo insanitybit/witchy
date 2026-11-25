@@ -1,0 +1,8 @@
+pub sealed type Box1:
+    value: U64
+
+pub gen fn boxes(n: U64) -> Box1:
+    var i: U64 = 0
+    while i < n:
+        yield Box1(i * 7)
+        i += 1

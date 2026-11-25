@@ -1,0 +1,20 @@
+// `let x = *call()`: a reference a call gives, read as a whole `let` value (a function's or a
+// method's, `var` or annotated); its loan ends at the read, so the Vec grows right after.
+import console
+import vec
+
+fn first(v: &Vec<U64>) -> &U64:
+    return v.cell(0)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.new(&allocator, 4) else Err(c):
+        return
+    var v = move made
+    let a = v.push_mut(&allocator, 5)
+    let x = *first(&v)
+    var y = *v.cell(0)
+    y += 1
+    let z: U64 = *v.cell(0)
+    let b = v.push_mut(&allocator, x + y + z)
+    console.print_int(v[1])
+    v.close()

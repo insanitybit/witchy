@@ -1,0 +1,28 @@
+import "../tuf/canonical.wy"
+import "../tuf/release_trust.wy"
+import console
+import json_tree
+import string
+import text
+
+pub fn read_commit_request(input: &Console<Read>, allocator: &Allocator) -> Result<Json, U64>:
+    let empty = String.new(allocator)?
+    var line = move empty
+    match input.read_line(allocator, &mut line):
+        .Line:
+            ()
+        _:
+            line.close()
+            return Err(1)
+    if input.next_byte() != 256:
+        line.close()
+        return Err(1)
+    let parsed = parse_release_json(&line, allocator)
+    line.close()
+    return move parsed
+
+pub fn append_json(out: &mut String, value: &Json, allocator: &Allocator) -> Result<(), U64>:
+    let wire = release_json(value, allocator)?
+    let copied = out.push_part(allocator, &wire, 0, wire.byte_len())
+    wire.close()
+    return copied

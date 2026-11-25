@@ -1,0 +1,2 @@
+proof failed: function `ratio`
+  not proved: a `/` whose divisor may be zero

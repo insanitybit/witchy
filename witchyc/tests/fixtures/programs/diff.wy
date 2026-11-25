@@ -1,0 +1,112 @@
+// The lines of two texts, compared: the input holds the old text, a line
+// "---", then the new text. Prints each line with "  " when both keep it,
+// "- " when only the old has it and "+ " when only the new has it, choosing a
+// longest common subsequence.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-text.wy"
+import "../../../library/wasm-string.wy"
+import "../../../library/wasm-vec.wy"
+import "../../../library/wasm-discard.wy"
+
+// Reads lines until "---" or the end. Err: the input could not be read.
+fn read_part(input: &Console<Read>, allocator: &Allocator, lines: &mut Vec<String>) -> Result<(), U64>:
+    while true:
+        using var line = String.new(allocator)?:
+            match input.read_line(allocator, &mut line):
+                .Line:
+                    if line.equals_text("---"):
+                        return Ok(())
+                    match lines.push_mut(allocator, move line):
+                        Ok(done):
+                            continue
+                        Err(back):
+                            back.close()
+                            return Err(1)
+                .End:
+                    return Ok(())
+                .NotText:
+                    return Err(2)
+                .NoRoom:
+                    return Err(1)
+    return Ok(())
+
+// table[i * (columns) + j]: the length of a longest common subsequence of
+// old[i..] and new[j..].
+fn lengths(allocator: &Allocator, old: &Vec<String>, new: &Vec<String>) -> Result<Vec<U64>, U64>:
+    let columns = new.len() + 1
+    let rows = old.len() + 1
+    var table: Vec<U64> = Vec.filled(allocator, rows * columns, 0)?
+    var i = old.len()
+    while i > 0:
+        i -= 1
+        var j = new.len()
+        while j > 0:
+            j -= 1
+            let here = i * columns + j
+            let best = if lines_same(old, i, new, j):
+                table[here + columns + 1] + 1
+            else:
+                larger(table[here + columns], table[here + 1])
+            let _ = table.set(here, best)
+    return Ok(move table)
+
+fn lines_same(old: &Vec<String>, i: U64, new: &Vec<String>, j: U64) -> Bool:
+    match old.at(i):
+        Ok(left):
+            match new.at(j):
+                Ok(right):
+                    return left == right
+                Err(code):
+                    return false
+        Err(code):
+            return false
+
+fn larger(a: U64, b: U64) -> U64:
+    if a >= b:
+        return a
+    return b
+
+fn show(console: &Console<Write>, mark: Text, lines: &Vec<String>, at: U64):
+    match lines.at(at):
+        Ok(line):
+            console.write(mark)
+            console.write_string(line)
+            console.line("")
+        Err(code):
+            return
+
+fn run(console: &Console<Write>, input: &Console<Read>, allocator: &Allocator) -> Result<(), U64>:
+    using var old: Vec<String> = Vec.new(allocator, 8)?:
+        using var new: Vec<String> = Vec.new(allocator, 8)?:
+            read_part(input, allocator, &mut old)?
+            read_part(input, allocator, &mut new)?
+            using table = lengths(allocator, &old, &new)?:
+                let columns = new.len() + 1
+                var i: U64 = 0
+                var j: U64 = 0
+                while i < old.len() && j < new.len():
+                    if lines_same(&old, i, &new, j):
+                        show(console, "  ", &old, i)
+                        i += 1
+                        j += 1
+                    else:
+                        if table[(i + 1) * columns + j] >= table[i * columns + j + 1]:
+                            show(console, "- ", &old, i)
+                            i += 1
+                        else:
+                            show(console, "+ ", &new, j)
+                            j += 1
+                while i < old.len():
+                    show(console, "- ", &old, i)
+                    i += 1
+                while j < new.len():
+                    show(console, "+ ", &new, j)
+                    j += 1
+                return Ok(())
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    match run(&console, &input, &allocator):
+        Ok:
+            return
+        Err(code):
+            console.line("could not compare the texts")

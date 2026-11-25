@@ -1,0 +1,32 @@
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-string.wy"
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made = String.new(&allocator)
+    match move made:
+        Ok(empty):
+            var text = move empty
+            if let Ok(_) = text.push_text(&allocator, "héllo"):
+                console.print_int(text.byte_len())
+            if let Ok(_) = text.push(&allocator, 8364):
+                console.print_int(text.byte_len())
+            if let Ok(_) = text.push(&allocator, 128512):
+                console.print_int(text.byte_len())
+            if let Err(_) = text.push(&allocator, 55296):
+                console.print_int(0)
+            var copy = String.new(&allocator)
+            match move copy:
+                Ok(start):
+                    var other = move start
+                    for round in 0..20:
+                        if let Err(_) = other.push_string(&allocator, &text):
+                            console.print_int(999)
+                    console.print_int(other.byte_len())
+                    console.write_string(&text)
+                    console.line("")
+                    other.close()
+                Err(code):
+                    console.print_int(code)
+            text.close()
+        Err(code):
+            console.print_int(code)

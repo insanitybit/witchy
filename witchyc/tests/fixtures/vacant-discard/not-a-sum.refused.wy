@@ -1,0 +1,14 @@
+// Refused by the checker: a record has no variants, so none of them holds no owner.
+type Slot<T>:
+    Vacant
+    Full(T)
+
+type Shelf<T>:
+    count: U64
+    slot: Slot<T>
+
+fn end<T: Any>(shelf: Shelf<T>):
+    memory.vacant(move shelf)
+
+fn main(out: Console<Write>):
+    out.print_int(1)

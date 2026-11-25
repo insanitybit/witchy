@@ -1,0 +1,11 @@
+// Refused, naming the standard module that adds the method to String: it said `String` has no
+// `find_text`.
+import console
+import string
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(e):
+        return
+    var t = move made
+    let at = t.find_text("x", 0)
+    t.close()

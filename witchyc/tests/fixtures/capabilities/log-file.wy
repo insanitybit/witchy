@@ -1,0 +1,38 @@
+// A capability with policy (book: capabilities-narrowing.md): a sealed record holding a
+// file being written, and a count. Only this file builds or opens one; the file inside
+// is linear, so the record must be finished too.
+import fs
+import console
+
+sealed type Log:
+    file: File<Write>
+    lines: U64
+
+fn open_log(dir: &Dir<Write>) -> Result<Log, FsError>:
+    let file = dir.create("log.txt")?
+    return Ok(Log(move file, 0))
+
+impl Log:
+    fn line(log: &mut Log, text: Text) -> Result<(), FsError>:
+        log.lines += 1
+        log.file.write(text)?
+        return log.file.write("\n")
+
+    fn finish(log: Log) -> Result<U64, FsError>:
+        let Log(file, lines) = move log
+        file.finish()?
+        return Ok(lines)
+
+fn main(console: Console<Write>, dir: Dir<Write>):
+    match open_log(&dir):
+        Ok(made):
+            var log = move made
+            let a = log.line("first")
+            let b = log.line("second")
+            match log.finish():
+                Ok(n):
+                    console.print_int(n)
+                Err(e):
+                    console.line("failed")
+        Err(e):
+            console.line("no log")

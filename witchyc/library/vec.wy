@@ -1,0 +1,8 @@
+// Vec representation and checked construction live in vec-core.wy.
+// Remaining operations below are preserved migration source; load after that module.
+fn vec_growth_capacity(capacity: USize) -> Result<USize, AllocError>:
+    if capacity == 0:
+        return Ok(1)
+    if capacity > 9223372036854775807:
+        return Err(AllocError.overflow)
+    return Ok(capacity * 2)

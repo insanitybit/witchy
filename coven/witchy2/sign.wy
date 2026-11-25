@@ -1,0 +1,12 @@
+// A registry key signs one object (`coven snapshot`, `rotate-operator`, `publish`, `yank`,
+// `revoke`, `refresh`, `rotate`). The key is a `Signer` granted `sign/witchy-2/ROLE` for the one
+// role Coven asks, delivered by the launcher on a pipe of its own: the engine signs only a
+// message that begins `witchy/v2/ROLE\0`, whatever this program does, and nothing here reads the
+// key. Without a message it writes only the key's public key (`coven key`). It first verifies
+// the batch on its input, every signed object the launcher's decision to sign rests on, and signs nothing
+// unless each is valid (`verified_first`).
+import "witchy2.wy"
+
+fn main(console: Console<Write>, allocator: Allocator, input: Console<Read>, key: Signer, work: Dir<Read>, out: Dir<Write>):
+    if verified_first(&console, &allocator, &input):
+        sign_message(&console, &allocator, &key, &work, &out)

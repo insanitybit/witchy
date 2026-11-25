@@ -1,0 +1,20 @@
+import "metadata.wy"
+import span
+import string
+import text
+
+pub fn target_storage_path(parts: Halves, reference: &ContentReference, allocator: &Allocator) -> Result<String, U64>:
+    let empty = String.with_capacity(allocator, 208)?
+    var path = move empty
+    if let Err(code) = append_target(&mut path, parts, reference, allocator):
+        path.close()
+        return Err(code)
+    return Ok(move path)
+
+fn append_target(path: &mut String, parts: Halves, reference: &ContentReference, allocator: &Allocator) -> Result<(), U64>:
+    path.push_text(allocator, "targets/")?
+    path.push_utf8_slice(allocator, parts.head.as_bytes())?
+    path.push_text(allocator, "/")?
+    reference.append_sha384(path, allocator)?
+    path.push_text(allocator, ".")?
+    return path.push_utf8_slice(allocator, parts.tail.as_bytes())

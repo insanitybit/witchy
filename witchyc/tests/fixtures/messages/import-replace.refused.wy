@@ -1,0 +1,13 @@
+// `replace` is a `pub nopanic fn` of a standard module that is not imported.
+import console
+import string
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var a = move made
+    let Ok(made2): String = String.new(&allocator) else Err(code):
+        a.close()
+        return
+    let old = replace(&mut a, move made2)
+    old.close()
+    a.close()

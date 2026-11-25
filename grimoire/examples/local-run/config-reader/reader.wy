@@ -1,0 +1,14 @@
+// A decimal port with an optional final newline. raw_read_byte returns 256 at EOF.
+pub fn read_port(config: &File<Read>) -> Result<U64, ()>:
+    var port: U64 = 0
+    var byte = config.raw_read_byte()
+    while byte >= 48 && byte <= 57:
+        port = port * 10 + (byte - 48)
+        if port > 65535:
+            return Err(())
+        byte = config.raw_read_byte()
+    if byte == 10:
+        byte = config.raw_read_byte()
+    if byte != 256 || port == 0:
+        return Err(())
+    return Ok(port)

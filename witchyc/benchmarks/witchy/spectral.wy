@@ -1,0 +1,83 @@
+// spectral-norm (the Benchmarks Game): the largest eigenvalue of an infinite matrix, by the power
+// method on its first n rows; n = 100 gives 1.274219991. The indexes are stated below 2^20, so
+// the matrix entry's arithmetic is proved in range and emitted unchecked (Go's `int` does not
+// check it either). The kernels read a slice up to its length, so each `v[j]` is proved in
+// bounds and unchecked too; one test of the length at entry stands for every read.
+import console
+import float
+import vec
+
+fn a(i: U64, j: U64) -> F64:
+    requires i < 1048576
+    requires j < 1048576
+    ensures true
+    proof:
+        auto
+    let s = i + j
+    let t = s + 1
+    let product = s * t
+    return 1.0 / F64.from_u64(product / 2 + i + 1)
+
+// out = A v
+fn times(v: &[F64], out: &mut Vec<F64>, n: U64):
+    requires n < 1048576
+    ensures true
+    proof:
+        auto
+    if v.len() >= 1048576:
+        return
+    for i in 0..n:
+        var sum = 0.0
+        for j in 0..v.len():
+            sum += a(i, j) * v[j]
+        out[i] = sum
+
+// out = A^T v
+fn times_transposed(v: &[F64], out: &mut Vec<F64>, n: U64):
+    requires n < 1048576
+    ensures true
+    proof:
+        auto
+    if v.len() >= 1048576:
+        return
+    for i in 0..n:
+        var sum = 0.0
+        for j in 0..v.len():
+            sum += a(j, i) * v[j]
+        out[i] = sum
+
+// out = A^T A v
+fn times_both(v: &Vec<F64>, out: &mut Vec<F64>, scratch: &mut Vec<F64>, n: U64):
+    requires n < 1048576
+    ensures true
+    proof:
+        auto
+    times(v.as_slice(), scratch, n)
+    times_transposed(scratch.as_slice(), out, n)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let n: U64 = 1000
+    let Ok(made_u): Vec<F64> = Vec.filled(&allocator, n, 1.0) else Err(code):
+        return
+    var u = move made_u
+    let Ok(made_v): Vec<F64> = Vec.filled(&allocator, n, 0.0) else Err(code):
+        u.close()
+        return
+    var v = move made_v
+    let Ok(made_t): Vec<F64> = Vec.filled(&allocator, n, 0.0) else Err(code):
+        u.close()
+        v.close()
+        return
+    var scratch = move made_t
+    for step in 0..10:
+        times_both(&u, &mut v, &mut scratch, n)
+        times_both(&v, &mut u, &mut scratch, n)
+    var vbv = 0.0
+    var vv = 0.0
+    for i in 0..n:
+        vbv += u[i] * v[i]
+        vv += v[i] * v[i]
+    console.print_f64(F64.sqrt(vbv / vv), 9)
+    u.close()
+    v.close()
+    scratch.close()

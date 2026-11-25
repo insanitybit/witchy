@@ -1,0 +1,9 @@
+# Tests that start a Lean proof checker of their own take about 2.4 s of CPU each. Run all at
+# once beside the rest of the suite, they took 2.8-4.6 s each from contention alone (1.2-2.2 s
+# each run singly). Two at a time keeps each near its own cost; the suite's wall time is unchanged.
+[test-groups]
+proof-checker = { max-threads = 2 }
+
+[[profile.default.overrides]]
+filter = 'test(/diagnostic_proofs::/) | test(/a_session_never_reuses_a_helper_summary/)'
+test-group = 'proof-checker'

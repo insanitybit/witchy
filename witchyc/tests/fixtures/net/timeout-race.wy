@@ -1,0 +1,101 @@
+// The read with a time limit of `timeout.wy`, with `race` over two closures: each takes over
+// what it needs (`move reader`, `move clock`), and `race` handles a task that cannot be made
+// (what was not started is discarded) and cancels the loser. Nothing is sent, so the sleeper
+// wins; the reader is cancelled, its `read` returns Err(Cancelled), and it closes its socket and
+// buffer on its way out.
+import console
+import net
+import tasks
+import vec
+import discard
+
+type Reader:
+    socket: Socket
+    buffer: Vec<U8>
+
+impl Reader:
+    // Given up unstarted: what it holds is closed.
+    fn discard(reader: Reader):
+        let Reader(socket, buffer) = move reader
+        socket.close()
+        buffer.close()
+
+fn listen(reader: Reader) suspends:
+    let Reader(socket, made) = move reader
+    var buffer = move made
+    match socket.read(buffer.as_mut_slice()):
+        Ok(count):
+            report(100 + count)
+        Err(error):
+            match error:
+                Cancelled:
+                    report(1)
+                _:
+                    report(2)
+    socket.close()
+    buffer.close()
+
+fn nap(clock: Clock) suspends:
+    let slept = clock.sleep(40)
+
+type Limited:
+    reader: Reader
+    clock: Clock
+    allocator: Allocator
+
+// The reader or the time limit, whichever comes first.
+fn limited(job: Limited) suspends:
+    let Limited(reader, clock, allocator) = move job
+    match race(&allocator, 2048, fn() -> (): listen(move reader), fn() -> (): nap(move clock)):
+        Ok(winner):
+            report(10 * (winner + 1))
+        Err(why):
+            report(99)
+
+fn main(console: Console<Write>, net: Net, listener: Listener, allocator: Allocator, clock: Clock):
+    let Ok(near): Socket = net.connect("127.0.0.1:47621") else Err(error):
+        console.line("no connection")
+        return
+    let Ok(far): Socket = listener.accept() else Err(error):
+        near.close()
+        return
+    let zero: U8 = 0
+    let Ok(buffer): Vec<U8> = Vec.filled(&allocator, 16, zero) else Err(code):
+        far.close()
+        near.close()
+        return
+    let Ok(made): Waiting = Waiting.new(&allocator, &listener) else Err(code):
+        far.close()
+        buffer.close()
+        near.close()
+        return
+    var waiting = move made
+    var reported: U64 = 0
+    var finished: U64 = 0
+    let job = Limited(Reader(move far, move buffer), clock.share(), allocator.share())
+    match Task.spawn(&allocator, 8192, limited, move job):
+        Ok(task):
+            match waiting.start(&allocator, move task):
+                Ok(stepped):
+                    reported += stepped.reported
+                    finished += stepped.finished
+                Err(back):
+                    var lost = move back
+                    let cancelled = lost.cancel()
+                    lost.close()
+        Err(back):
+            let Limited(reader, given, shared) = move back
+            reader.discard()
+    let started = clock.now_ms()
+    var rounds: U64 = 0
+    while finished == 0 && rounds < 20:
+        let stepped = waiting.step_ready(&allocator, &listener)
+        reported += stepped.reported
+        finished += stepped.finished
+        rounds += 1
+    // The sleeper (task 2) won: 20; the reader was cancelled: 1.
+    console.print_int(reported)
+    if clock.now_ms() - started < 2000:
+        console.line("gave up after about 40 ms")
+    waiting.close()
+    near.close()

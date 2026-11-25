@@ -1,0 +1,40 @@
+// A Text literal finds the String key of the same bytes in a KeyMap (review of slice 2: the
+// docs said so and the program was refused). Text feeds its length then its bytes a word at a
+// time; a String feeds them a byte run at a time; the reference policy gives one value for both,
+// at lengths 0, 3, 8 and 13 (whole words, a partial word, both).
+import console
+import hash
+import hashmap
+import keymap
+import string
+
+fn check(console: &Console<Write>, allocator: &Allocator, literal: Text):
+    let Ok(made): String = String.new(allocator) else Err(code):
+        return
+    var owned = move made
+    let _ = owned.push_text(allocator, literal)
+    if hash_key(&owned, Reference(1)) == hash_key(&literal, Reference(1)):
+        console.print_int(owned.byte_len())
+    owned.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    check(&console, &allocator, "")
+    check(&console, &allocator, "abc")
+    check(&console, &allocator, "abcdefgh")
+    check(&console, &allocator, "héllo, wörld")
+    let Ok(made): KeyMap<String, U64> = KeyMap.new(&allocator, 4, Reference(1)) else Err(code):
+        return
+    var map = move made
+    let Ok(key_made): String = String.new(&allocator) else Err(code):
+        map.discard()
+        return
+    var key = move key_made
+    let _ = key.push_text(&allocator, "beta")
+    match map.put(&allocator, move key, 7):
+        Ok:
+            ()
+        Err(entry):
+            entry.discard()
+    if map.contains(&"beta") && !map.contains(&"bet"):
+        console.print_int(1)
+    map.discard()

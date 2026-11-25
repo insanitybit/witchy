@@ -1,0 +1,8 @@
+// The array is lent to the loop while an element is in hand.
+import "../../../library/wasm-console.wy"
+
+fn main(console: Console<Write>):
+    var values: [U64; 3] = [1, 2, 3]
+    for value in values:
+        values[0] = 9
+        console.print_int(*value)

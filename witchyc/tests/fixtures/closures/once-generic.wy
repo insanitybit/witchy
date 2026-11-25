@@ -1,0 +1,37 @@
+// Generic code is given work to run once (`W: Any + WitchyOnce0<()>`) and starts it as a task;
+// each instance runs that closure's own `call_once`. Work not started is discarded.
+import console
+import tasks
+import vec
+import discard
+
+fn total(numbers: Vec<U64>) suspends:
+    var sum: U64 = 0
+    for n in numbers.as_slice():
+        sum += *n
+    numbers.close()
+    report(sum)
+
+fn start<W: Any + WitchyOnce0<()>>(allocator: &Allocator, work: W) -> Result<Task, U64>:
+    match Task.spawn(allocator, 2048, work):
+        Ok(task):
+            return Ok(move task)
+        Err(back):
+            back.discard()
+            return Err(1)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(numbers): Vec<U64> = Vec.filled(&allocator, 3, 7) else Err(code):
+        return
+    let Ok(task): Task = start(&allocator, fn() -> (): total(move numbers)) else Err(code):
+        return
+    var running = move task
+    var going = true
+    while going:
+        match running.step():
+            Ok:
+                going = false
+            Err(token):
+                if token >= REPORTED:
+                    console.print_int(token - REPORTED)
+    running.close()

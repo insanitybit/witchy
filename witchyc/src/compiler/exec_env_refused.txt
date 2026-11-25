@@ -1,0 +1,56 @@
+# Variables never given to a program run through Exec, whatever a grant document declares: they
+# make a program, its dynamic loader, its shell or an interpreter load code or configuration
+# from a path the Witchy program (which chooses every value) could have written. One list, read
+# by the compiler, the native broker, and the Wasmtime host through the shared Rust policy.
+# A name ending in `*` is a prefix.
+LD_*
+DYLD_*
+MALLOC_*
+GIT_*
+PYTHON*
+PERL*
+RUBY*
+NODE_*
+BASH_*
+GLIBC_*
+GCONV_*
+LUA_*
+JAVA_*
+_JAVA_*
+GEM_*
+TCL*
+OPENSSL_*
+SSL_CERT*
+PATH
+IFS
+ENV
+SHELLOPTS
+BASHOPTS
+PS4
+CDPATH
+GCONV_PATH
+LOCPATH
+NLSPATH
+HOSTALIASES
+RESOLV_HOST_CONF
+RES_OPTIONS
+LOCALDOMAIN
+TMPDIR
+HOME
+SHELL
+JAVA_TOOL_OPTIONS
+_JAVA_OPTIONS
+OPENSSL_CONF
+SSL_CERT_FILE
+SSL_CERT_DIR
+CURL_CA_BUNDLE
+LESSOPEN
+LESSCLOSE
+PAGER
+EDITOR
+VISUAL
+BROWSER
+XDG_CONFIG_HOME
+XDG_CONFIG_DIRS
+XDG_DATA_DIRS
+CLASSPATH

@@ -1,0 +1,58 @@
+// A ledger: signed balances moved by proved transfers, interest by I64 division (toward zero),
+// a product of two bounded I64 values, and a total over an array of records.
+import console
+import int
+
+type Account:
+    id: U64
+    balance: I64
+
+// Move `amount` from one balance to the other; both stay within a million.
+fn transfer(from: &mut Account, to: &mut Account, amount: I64):
+    requires amount >= 0
+    requires amount <= 1000
+    requires from.balance >= -1000000
+    requires from.balance <= 1000000
+    requires to.balance >= -1000000
+    requires to.balance <= 1000000
+    ensures from.balance == old(from.balance) - amount
+    ensures to.balance == old(to.balance) + amount
+    proof:
+        auto
+    (*from).balance -= amount
+    (*to).balance += amount
+
+// Interest in basis points, rounded toward zero as I64 division does.
+fn interest(balance: I64, basis: I64) -> I64:
+    requires balance >= -1000000
+    requires balance <= 1000000
+    requires basis >= 0
+    requires basis <= 10000
+    ensures result == balance * basis / 10000
+    proof:
+        auto
+    return balance * basis / 10000
+
+fn total(accounts: [Account; 3]) -> I64:
+    requires accounts[0].balance <= 1000000
+    requires accounts[0].balance >= -1000000
+    requires accounts[1].balance <= 1000000
+    requires accounts[1].balance >= -1000000
+    requires accounts[2].balance <= 1000000
+    requires accounts[2].balance >= -1000000
+    ensures result == old(accounts[0].balance) + old(accounts[1].balance) + old(accounts[2].balance)
+    proof:
+        auto
+    return accounts[0].balance + accounts[1].balance + accounts[2].balance
+
+fn main(console: Console<Write>):
+    var alice = Account(id: 1, balance: 500)
+    var bob = Account(id: 2, balance: -200)
+    var carol = Account(id: 3, balance: 0)
+    transfer(&mut alice, &mut bob, 300)
+    transfer(&mut bob, &mut carol, 50)
+    let paid = interest(bob.balance, 250)
+    console.print("alice ${alice.balance}, bob ${bob.balance}, carol ${carol.balance}")
+    console.print("bob's interest at 2.5%: ${paid}")
+    let all = [alice, bob, carol]
+    console.print("total ${total(all)}")

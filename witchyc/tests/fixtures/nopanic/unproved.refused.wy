@@ -1,0 +1,6 @@
+// A `nopanic fn` whose sum is not shown in range: its overflow check stays, so it can trap.
+nopanic fn add(a: U64, b: U64) -> U64:
+    return a + b
+
+fn main():
+    let x = add(1, 2)

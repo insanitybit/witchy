@@ -1,0 +1,50 @@
+// A deque of Strings: owners go in at both ends, come out at both ends, and the
+// rest are discarded with the deque.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-deque.wy"
+import "../../../library/wasm-string.wy"
+
+fn word(allocator: &Allocator, text: Text) -> Result<String, U64>:
+    var made: String = String.new(allocator)?
+    if let Err(_) = made.push_text(allocator, text):
+        made.discard()
+        return Err(1)
+    return Ok(move made)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<Deque<String>, U64> = Deque.new(&allocator, 1)
+    match move made:
+        Ok(empty):
+            var words = move empty
+            for text in ["pear", "fig", "plum"]:
+                match word(&allocator, *text):
+                    Ok(fruit):
+                        match words.push_back(&allocator, move fruit):
+                            Ok:
+                                continue
+                            Err(back):
+                                back.discard()
+                    Err(code):
+                        console.print_int(900)
+            match word(&allocator, "apple"):
+                Ok(fruit):
+                    match words.push_front(&allocator, move fruit):
+                        Ok:
+                            console.print_int(words.len())
+                        Err(back):
+                            back.discard()
+                Err(code):
+                    console.print_int(901)
+            match words.pop_back_mut():
+                Ok(last):
+                    console.write_string(&last)
+                    console.line("")
+                    last.discard()
+                Err(code):
+                    console.print_int(902)
+            for each in &words:
+                console.write_string(each)
+                console.line("")
+            words.discard()
+        Err(code):
+            console.print_int(code)

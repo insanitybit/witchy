@@ -1,0 +1,16 @@
+// A push that may fail does not always add one.
+import "../../../library/wasm-vec.wy"
+
+fn one_more(items: &mut Vec<U64>, allocator: &Allocator):
+    ensures items.len() == old(items.len()) + 1
+    proof:
+        auto
+    match items.push_mut(allocator, 1):
+        Ok:
+            return
+        Err(back):
+            return
+
+fn main(console: Console<Write>):
+    console.print_int(0)
+

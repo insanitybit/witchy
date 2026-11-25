@@ -1,0 +1,3 @@
+// One input grant.
+fn main(first: Console<Read>, second: Console<Read>):
+    return

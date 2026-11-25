@@ -1,0 +1,15 @@
+// One `&mut` reference is not handed to a call twice.
+type Pair:
+    a: U64
+    b: U64
+
+fn first(pair: &mut Pair) -> &mut U64:
+    return &mut (*pair).a
+
+fn two(left: &mut U64, right: &mut U64):
+    *left += *right
+
+fn main(console: Console<Write>):
+    var pair = Pair(1, 2)
+    let r = first(&mut pair)
+    two(r, r)

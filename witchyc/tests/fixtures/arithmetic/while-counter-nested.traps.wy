@@ -1,0 +1,13 @@
+// The increment is inside a loop within the bounded one: it may run many times a pass, so it
+// is checked, and overflows.
+import console
+
+fn main(console: Console<Write>):
+    let top: U64 = 18446744073709551615
+    var i: U64 = top - 1
+    var spins: U64 = 0
+    while i < top:
+        while spins < 3:
+            i += 1
+            spins += 1
+    console.print_int(i)

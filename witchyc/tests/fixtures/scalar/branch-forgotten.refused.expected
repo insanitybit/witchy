@@ -1,0 +1,2 @@
+proof failed: function `one`
+  not proved: ensures result == 1

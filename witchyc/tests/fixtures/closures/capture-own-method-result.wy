@@ -1,0 +1,22 @@
+// As capture-method-result.wy, for the program's own record (built by name) and methods.
+import console
+
+type Box:
+    width: U64
+    height: U64
+
+impl Box:
+    pub fn area(self: &Box) -> U64:
+        return self.width * self.height
+    pub fn square(self: &Box) -> Bool:
+        return self.width == self.height
+
+fn main(console: Console<Write>):
+    let b = Box(3, 4)
+    let area = b.area()
+    let square = b.square()
+    let report = fn(extra: U64) -> U64:
+        if square:
+            return 0
+        return area + extra
+    console.print_int(report(1))

@@ -1,0 +1,8 @@
+// Refused, saying why: Witchy names no lifetimes.
+import console
+
+fn first<'a>(xs: &[U64]) -> U64:
+    return xs[0]
+
+fn main(console: Console<Write>):
+    console.print_int(0)

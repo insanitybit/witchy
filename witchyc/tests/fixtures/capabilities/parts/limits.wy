@@ -1,0 +1,11 @@
+// A library's own kind of authority: a rate-limit policy `main` is granted by the run.
+// It carries data only; nothing outside this file can make or open one.
+pub grantable capability RateLimit:
+    per_minute: U64
+    strict: Bool
+
+// Whether one more request fits after `made` this minute.
+pub fn allows(limit: &RateLimit, made: U64) -> Bool:
+    if (*limit).strict:
+        return made < (*limit).per_minute
+    return made <= (*limit).per_minute

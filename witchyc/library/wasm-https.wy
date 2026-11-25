@@ -1,0 +1,274 @@
+// HTTP/1.1 over a caller-authenticated TLS session.
+import http
+import http_framing
+import span
+import string
+import tls
+import text
+import vec
+
+pub type HttpsError:
+    RequestError(HttpError)
+    TransportError(SessionError)
+    ResponseError(FramingError)
+
+pub type Reply = .{status: U64, head_len: U64, body_len: U64}
+
+pub type PrefixReadError:
+    PrefixTransportError(SessionError)
+    PrefixFramingError(FramingError)
+
+pub type IdentityPrefix = .{fence: U64, received: U64}
+
+// Read through the first CRLF CRLF of an identity response. A TLS record may
+// carry body bytes after it; retain those bytes in the prefix for the caller.
+// The caller validates the prefix and chooses how to consume the body.
+pub fn read_identity_prefix(session: &mut SecureSession, prefix: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]) -> Result<IdentityPrefix, PrefixReadError>:
+    return read_prefix(session, prefix, 16384, IncompleteResponse, plaintext, wire)
+
+pub type RequestPrefix = .{fence: U64, received: U64}
+
+// Retain the first request head and any body bytes in the same TLS read.
+// max_head includes the CRLF CRLF delimiter. The prefix has its own capacity.
+pub fn read_request_prefix(session: &mut SecureSession, prefix: &mut [U8], max_head: U64, plaintext: &mut [U8], wire: &mut [U8]) -> Result<RequestPrefix, PrefixReadError>:
+    return read_prefix(session, prefix, max_head, IncompleteRequest, plaintext, wire)
+
+fn read_prefix(session: &mut SecureSession, prefix: &mut [U8], max_head: U64, incomplete: FramingError, plaintext: &mut [U8], wire: &mut [U8]) -> Result<RequestPrefix, PrefixReadError>:
+    let capacity = prefix.len()
+    var used: U64 = 0
+    while used < max_head && used < capacity:
+        let Ok(count): U64 = session.read(plaintext, wire) else Err(reason):
+            return Err(PrefixTransportError(reason))
+        if count == 0:
+            return Err(PrefixFramingError(incomplete))
+        if count > capacity - used:
+            return Err(PrefixFramingError(HeaderLimit))
+        copy_prefix(prefix.part(used, used + count), plaintext, count)
+        let received = used + count
+        let end = http.head_end(Span.of(prefix.part(0, received)), used)
+        if end != 0:
+            if end > max_head:
+                return Err(PrefixFramingError(HeaderLimit))
+            return Ok(.{fence: end - 4, received: received})
+        used = received
+    return Err(PrefixFramingError(HeaderLimit))
+
+fn copy_prefix(destination: &mut [U8], input: &[U8], count: U64):
+    destination.copy_from(input.part(0, count))
+
+pub type IdentityBodyLimit:
+    IdentityAtMost(U64)
+    IdentityExactly(U64)
+
+pub type IdentityBodyEnd:
+    StopAtIdentityLength
+    RequireIdentityClose
+
+pub type IdentityBodyError:
+    BodyTransportError(SessionError)
+    BodyFramingError(FramingError)
+
+pub type IdentityBody:
+    remaining: U64
+    exact: Bool
+    needs_close: Bool
+
+// Account for the body bytes already in the prefix before consuming them.
+// A close-delimited body always needs authenticated EOF.
+pub fn identity_body(framing: IdentityResponseLength, buffered: U64, limit: IdentityBodyLimit, end: IdentityBodyEnd) -> Result<IdentityBody, FramingError>:
+    let bounds = match limit:
+        IdentityAtMost(maximum):
+            .{bytes: maximum, exact: false}
+        IdentityExactly(length):
+            .{bytes: length, exact: true}
+    match framing:
+        FixedLength(length):
+            if length > bounds.bytes:
+                return Err(BodyLimit)
+            if (bounds.exact && length != bounds.bytes) || buffered > length:
+                return Err(InvalidResponse)
+            let needs_close = match end:
+                StopAtIdentityLength:
+                    false
+                RequireIdentityClose:
+                    true
+            return Ok(IdentityBody(length - buffered, true, needs_close))
+        CloseDelimited:
+            if buffered > bounds.bytes:
+                return Err(BodyLimit)
+            return Ok(IdentityBody(bounds.bytes - buffered, bounds.exact, true))
+
+// Read an authenticated chunk into plaintext. Zero means completion. Use the
+// plaintext prefix only on success, and abandon the exchange on any error.
+pub fn read_identity_chunk(body: &mut IdentityBody, session: &mut SecureSession, plaintext: &mut [U8], wire: &mut [U8]) -> Result<U64, IdentityBodyError>:
+    let remaining = (*body).remaining
+    if remaining == 0 && !(*body).needs_close:
+        return Ok(0)
+    let Ok(count): U64 = session.read(plaintext, wire) else Err(reason):
+        return Err(BodyTransportError(reason))
+    if count == 0:
+        if (*body).exact && remaining != 0:
+            return Err(BodyFramingError(IncompleteResponse))
+        (*body).remaining = 0
+        (*body).needs_close = false
+    else:
+        if count > remaining:
+            return Err(BodyFramingError(BodyLimit))
+        (*body).remaining = remaining - count
+    return Ok(count)
+
+pub type RequestReadError:
+    RequestFramingError(FramingError)
+    RequestTransportError(SessionError)
+
+pub type ReceivedRequest = .{head_len: U64, body_len: U64}
+
+// Read one request on an accepted TLS session. The caller writes the response
+// and closes the session. Use workspace contents only after a successful read.
+pub fn read_request(session: &mut SecureSession, authority: Span, head: &mut [U8], body: &mut [U8], line: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]) -> Result<ReceivedRequest, RequestReadError>:
+    var decoder = http_framing.request_decoder()
+    while !decoder.complete():
+        let Ok(count): U64 = session.read(plaintext, wire) else Err(reason):
+            return Err(RequestTransportError(reason))
+        if count == 0:
+            if let Err(reason) = decoder.finish():
+                return Err(RequestFramingError(reason))
+        else if let Err(reason) = decoder.push_bytes(authority, plaintext.part(0, count), head, body, line):
+            return Err(RequestFramingError(reason))
+    return Ok(.{body_len: decoder.body_len(), head_len: decoder.head_len()})
+
+// Read a fixed-length request after the caller validates its head and
+// chooses a destination whose length matches the declared body length.
+// Initial bytes come from the request prefix. A TLS read that overruns
+// the remaining body is refused, including bytes of a pipelined request.
+pub fn read_fixed_request_body(session: &mut SecureSession, initial: &[U8], body: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]) -> Result<(), RequestReadError>:
+    let size = body.len()
+    var used = initial.len()
+    if used > size:
+        return Err(RequestFramingError(InvalidRequest))
+    body.part(0, used).copy_from(initial)
+    while used < size:
+        let Ok(count): U64 = session.read(plaintext, wire) else Err(reason):
+            return Err(RequestTransportError(reason))
+        if count == 0:
+            return Err(RequestFramingError(IncompleteRequest))
+        if count > size - used:
+            return Err(RequestFramingError(InvalidRequest))
+        copy_prefix(body.part(used, used + count), plaintext, count)
+        used += count
+    return Ok(())
+
+pub type ResponseWriteError:
+    ResponseHeadError(HttpError)
+    ResponseTransportError(SessionError)
+
+// Write a final response and send TLS close_notify. The caller closes the
+// session on either result. This helper frames responses to GET and POST.
+pub fn write_response(session: &mut SecureSession, allocator: &Allocator, status: U64, content_type: &str, payload: &[U8], plaintext: &mut [U8], wire: &mut [U8]) -> Result<(), ResponseWriteError>:
+    let Ok(head): String = http.response_head(allocator, status, content_type, payload.len()) else Err(reason):
+        return Err(ResponseHeadError(reason))
+    return send_response(session, move head, payload, plaintext, wire)
+
+pub fn write_response_with_headers(session: &mut SecureSession, allocator: &Allocator, status: U64, content_type: &str, headers: &ResponseHeaders, payload: &[U8], plaintext: &mut [U8], wire: &mut [U8]) -> Result<(), ResponseWriteError>:
+    let Ok(head): String = http.response_head_with_headers(allocator, status, content_type, payload.len(), headers) else Err(reason):
+        return Err(ResponseHeadError(reason))
+    return send_response(session, move head, payload, plaintext, wire)
+
+fn send_response(session: &mut SecureSession, head: String, payload: &[U8], plaintext: &mut [U8], wire: &mut [U8]) -> Result<(), ResponseWriteError>:
+    let sent = session.write(head.as_bytes(), plaintext, wire)
+    head.close()
+    if let Err(reason) = sent:
+        return Err(ResponseTransportError(reason))
+    if payload.len() != 0:
+        if let Err(reason) = session.write(payload, plaintext, wire):
+            return Err(ResponseTransportError(reason))
+    if let Err(reason) = session.shutdown(plaintext, wire):
+        return Err(ResponseTransportError(reason))
+    return Ok(())
+
+type Method:
+    Get
+    Post(&str)
+    HeadMethod
+
+// One exchange on a fresh session. The caller closes it on either result.
+// Inspect the head and body workspaces only after success, up to the returned lengths.
+pub fn get(session: &mut SecureSession, allocator: &Allocator, authority: &str, path: &str, head: &mut [U8], body: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]) -> Result<Reply, HttpsError>:
+    let empty: [U8; 1] = [0]
+    return exchange(session, allocator, Get, Span.of(authority.as_str().as_bytes()), Span.of(path.as_str().as_bytes()), empty.slice().part(0, 0), head, body, plaintext, wire)
+
+// Read the final response head without a body workspace.
+pub fn head(session: &mut SecureSession, allocator: &Allocator, authority: Span, path: Span, response_head: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]) -> Result<Reply, HttpsError>:
+    let payload: [U8; 1] = [0]
+    var body: [U8; 1] = [0]
+    return exchange(session, allocator, HeadMethod, authority, path, payload.slice().part(0, 0), response_head, body.slice_mut().part(0, 0), plaintext, wire)
+
+// Send binary bytes with a Content-Type and a Content-Length, including for an empty payload.
+pub fn post(session: &mut SecureSession, allocator: &Allocator, authority: &str, path: &str, content_type: &str, payload: &[U8], head: &mut [U8], body: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]) -> Result<Reply, HttpsError>:
+    if !printable(content_type, true):
+        return Err(RequestError(Malformed))
+    return exchange(session, allocator, Post(content_type), Span.of(authority.as_str().as_bytes()), Span.of(path.as_str().as_bytes()), payload, head, body, plaintext, wire)
+
+fn exchange(session: &mut SecureSession, allocator: &Allocator, method: Method, authority: Span, path: Span, payload: &[U8], head: &mut [U8], body: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]) -> Result<Reply, HttpsError>:
+    let Ok(request): String = request_head(allocator, method, authority, path, payload.len()) else Err(reason):
+        return Err(RequestError(reason))
+    let Ok(scratch): Vec<U8> = Vec.filled(allocator, 1024, 0) else Err(reason):
+        request.close()
+        return Err(RequestError(OutOfMemory))
+    let sent = session.write(request.as_bytes(), plaintext, wire)
+    request.close()
+    var line = move scratch
+    if let Err(reason) = sent:
+        line.close()
+        return Err(TransportError(reason))
+    if payload.len() != 0:
+        if let Err(reason) = session.write(payload, plaintext, wire):
+            line.close()
+            return Err(TransportError(reason))
+    var decoder = http_framing.response_decoder()
+    if let HeadMethod = method:
+        decoder = http_framing.head_response_decoder()
+    let response = receive(session, &mut decoder, head, body, plaintext, wire, line.as_mut_slice())
+    line.close()
+    return response
+
+fn receive(session: &mut SecureSession, decoder: &mut ResponseDecoder, head: &mut [U8], body: &mut [U8], plaintext: &mut [U8], wire: &mut [U8], line: &mut [U8]) -> Result<Reply, HttpsError>:
+    while !decoder.complete():
+        let Ok(count): U64 = session.read(plaintext, wire) else Err(reason):
+            return Err(TransportError(reason))
+        if count == 0:
+            if let Err(reason) = decoder.finish():
+                return Err(ResponseError(reason))
+        else if let Err(reason) = decoder.push_bytes(plaintext.part(0, count), head, body, line):
+            return Err(ResponseError(reason))
+    // Once a framed response is complete, a write-side close error does not
+    // invalidate the response. A close-delimited response already saw close_notify.
+    let closed = session.shutdown(plaintext, wire)
+    return Ok(.{body_len: decoder.body_len(), head_len: decoder.head_len(), status: decoder.status()})
+
+fn printable(text: &str, allow_space: Bool) -> Bool:
+    if text.byte_len() == 0:
+        return false
+    for index in 0..text.byte_len():
+        match text.byte_at(index):
+            Ok(byte):
+                if byte < 32 || byte >= 127 || (byte == 32 && !allow_space):
+                    return false
+            Err(code):
+                return false
+    return true
+
+fn request_head(allocator: &Allocator, method: Method, host: Span, path: Span, length: U64) -> Result<String, HttpError>:
+    let empty = http.request_headers(allocator)?
+    var headers = move empty
+    var kind: RequestKind = GetRequest
+    if let HeadMethod = method:
+        kind = HeadRequest
+    else if let Post(content_type) = method:
+        kind = PostRequest(length)
+        if let Err(reason) = headers.add(allocator, "Content-Type", Span.of(content_type.as_str().as_bytes())):
+            headers.close()
+            return Err(reason)
+    let result = http.request_head(allocator, kind, host, path, &headers)
+    headers.close()
+    return move result

@@ -1,0 +1,12 @@
+// Refused (review of nested generators): a number local read outside its block, across a yield, read the record's start value.
+import console
+
+gen fn g(n: U64, b: Bool) -> U64:
+    if b:
+        var k: U64 = n
+        yield 100
+    yield k
+
+fn main(console: Console<Write>):
+    for n in g(7, false):
+        console.print_int(n)

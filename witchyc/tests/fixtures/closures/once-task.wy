@@ -1,0 +1,33 @@
+// A closure that moves what it captured takes it over (here a Vec) and is run once: as a
+// task's work, `Task.spawn(&allocator, bytes, closure)`. A scalar it captures is copied in.
+import console
+import tasks
+import vec
+import discard
+
+fn total(numbers: Vec<U64>) suspends:
+    var sum: U64 = 0
+    for n in numbers.as_slice():
+        sum += *n
+    numbers.close()
+    report(sum)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(numbers): Vec<U64> = Vec.filled(&allocator, 3, 7) else Err(code):
+        return
+    let bonus: U64 = 100
+    match Task.spawn(&allocator, 2048, fn() -> (): total(move numbers)):
+        Ok(task):
+            var running = move task
+            var going = true
+            while going:
+                match running.step():
+                    Ok:
+                        going = false
+                    Err(token):
+                        if token >= REPORTED:
+                            console.print_int(token - REPORTED + bonus)
+            running.close()
+        Err(back):
+            back.discard()
+            console.line("no memory")

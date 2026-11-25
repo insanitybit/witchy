@@ -1,0 +1,20 @@
+// A closure that takes over what it captured may take arguments too; it runs once, given them.
+import console
+import vec
+import discard
+
+fn total(numbers: Vec<U64>, extra: U64) -> U64:
+    var sum: U64 = extra
+    for n in numbers.as_slice():
+        sum += *n
+    numbers.close()
+    return sum
+
+fn run_with<W: Any + WitchyOnce1<U64, U64>>(work: W, given: U64) -> U64:
+    return work.call_once(given)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(numbers): Vec<U64> = Vec.filled(&allocator, 3, 7) else Err(code):
+        return
+    let once = fn(extra: U64) -> U64: total(move numbers, extra)
+    console.print_int(run_with(move once, 100))

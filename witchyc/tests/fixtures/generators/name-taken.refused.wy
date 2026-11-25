@@ -1,0 +1,9 @@
+// Refused, saying why: the generator's type would be `Counter`, which this file declares.
+// (Another module's type of that name would not collide: types are per file.)
+type Counter:
+    Ticks(U64)
+    Stopped
+gen fn counter(n: U64) -> U64:
+    yield n
+fn main():
+    return

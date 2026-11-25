@@ -1,0 +1,6 @@
+[package]
+name = "awslc-probe"
+version = "0.1.0"
+edition = "2021"
+[dependencies]
+aws-lc-fips-sys = "=0.14.4"

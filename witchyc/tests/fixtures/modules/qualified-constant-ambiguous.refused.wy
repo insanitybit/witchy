@@ -1,0 +1,7 @@
+// Refused: two imported files offer `LIMIT`; name the one meant.
+import console
+import "parts/small_limits.wy"
+import "parts/large_limits.wy"
+
+fn main(console: Console<Write>):
+    console.print_int(LIMIT)

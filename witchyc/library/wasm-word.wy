@@ -1,0 +1,14 @@
+pub fn load_word_le32(bytes: &[U8], offset: U64) -> U64:
+    let part = bytes.part(offset, offset + 4)
+    var value: U64 = 0
+    for i in 0..4:
+        value = value | (U8.to_u64(part[i]) << (8 * i))
+    return value
+
+pub type WideProduct:
+    low: U64
+    high: U64
+
+impl U64:
+    pub fn widening_mul(self: U64, other: U64) -> WideProduct:
+        return WideProduct(U64.wrapping_mul(self, other), U64.mul_high(self, other))

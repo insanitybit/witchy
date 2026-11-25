@@ -1,0 +1,123 @@
+// Construct SQLite bindings from the authorized request and claims.
+import "../tuf/canonical.wy"
+import "../tuf/release_trust.wy"
+import "identifiers.wy"
+import "scope.wy"
+import json_tree
+import span
+import string
+import text
+
+pub fn receipt_bindings(request: &Json, enrollment: &Json, claims: &Json, version: Span, nonce_expiry: U64, token_expiry: U64, allocator: &Allocator) -> Result<String, U64>:
+    let registry = string_field(request, "registry")?
+    if !identifier(registry.span()):
+        return Err(1)
+    let workload = workload_key(registry, enrollment, allocator)?
+    let built = bindings(request, enrollment, claims, version, &workload, nonce_expiry, token_expiry, allocator)
+    workload.close()
+    return move built
+
+// Preserve the SQLite key of existing receipts, including its issuer domain
+// and the complete, normalized enrollment.
+fn workload_key(registry: &String, enrollment: &Json, allocator: &Allocator) -> Result<String, U64>:
+    let encoded = release_json(enrollment, allocator)?
+    let hashed = digest_workload(registry, &encoded, allocator)
+    encoded.close()
+    return move hashed
+
+fn digest_workload(registry: &String, enrollment: &String, allocator: &Allocator) -> Result<String, U64>:
+    let empty = String.with_capacity(allocator, enrollment.byte_len() + registry.byte_len() + 64)?
+    var encoded = move empty
+    if let Err(code) = append_workload(&mut encoded, registry, enrollment, allocator):
+        encoded.close()
+        return Err(code)
+    let hashed = digest_text(encoded.as_bytes(), allocator)
+    encoded.close()
+    return move hashed
+
+fn append_workload(out: &mut String, registry: &String, enrollment: &String, allocator: &Allocator) -> Result<(), U64>:
+    out.push_text(allocator, "[\"")?
+    out.push_text(allocator, github_oidc_issuer())?
+    out.push_text(allocator, "\",\"")?
+    out.push_part(allocator, registry, 0, registry.byte_len())?
+    out.push_text(allocator, "\",")?
+    out.push_part(allocator, enrollment, 0, enrollment.byte_len())?
+    return out.push_text(allocator, "]")
+
+fn bindings(request: &Json, enrollment: &Json, claims: &Json, version: Span, workload: &String, nonce_expiry: U64, token_expiry: U64, allocator: &Allocator) -> Result<String, U64>:
+    let empty = String.with_capacity(allocator, 1200)?
+    var parameters = move empty
+    if let Err(code) = append_bindings(&mut parameters, request, enrollment, claims, version, workload, nonce_expiry, token_expiry, allocator):
+        parameters.close()
+        return Err(code)
+    return Ok(move parameters)
+
+fn append_bindings(out: &mut String, request: &Json, enrollment: &Json, claims: &Json, version: Span, workload: &String, nonce_expiry: U64, token_expiry: U64, allocator: &Allocator) -> Result<(), U64>:
+    let digest = string_field(request, "digest")?
+    let package = string_field(request, "package")?
+    let registry = string_field(request, "registry")?
+    let nonce = string_field(request, "nonce")?
+    let jti = string_field(claims, "jti")?
+    let repository = string_field(enrollment, "repository_id")?
+    let revision_id = string_field(claims, "sha")?
+    let workflow = string_field(claims, "workflow_ref")?
+    let workflow_commit = string_field(enrollment, "job_workflow_sha")?
+    if !positive_id(repository.span()) || !revision(workflow_commit.span()) || !workflow_reference(workflow.span()):
+        return Err(1)
+    text_binding(out, "digest", digest.span(), allocator)?
+    text_binding(out, "name", package.span(), allocator)?
+    text_binding(out, "registry", registry.span(), allocator)?
+    text_binding(out, "nonce", nonce.span(), allocator)?
+    text_binding(out, "jti", jti.span(), allocator)?
+    text_binding(out, "repository_id", repository.span(), allocator)?
+    text_binding(out, "revision", revision_id.span(), allocator)?
+    text_binding(out, "workflow", workflow.span(), allocator)?
+    text_binding(out, "workflow_commit", workflow_commit.span(), allocator)?
+    text_binding(out, "workload", workload.span(), allocator)?
+    text_binding(out, "version", version, allocator)?
+    let check = claims.field("check_run_id")?
+    id_binding(out, "check_run_id", check, allocator)?
+    let attempt = claims.field("run_attempt")?
+    id_binding(out, "run_attempt", attempt, allocator)?
+    let run = claims.field("run_id")?
+    id_binding(out, "run_id", run, allocator)?
+    integer_binding(out, "nonce_expiry", nonce_expiry, allocator)?
+    return integer_binding(out, "token_expiry", token_expiry, allocator)
+
+fn text_binding(out: &mut String, name: Text, value: Span, allocator: &Allocator) -> Result<(), U64>:
+    for byte in value.as_bytes():
+        if *byte < 32 || *byte >= 127:
+            return Err(1)
+    out.push_text(allocator, name)?
+    out.push_text(allocator, "\ttext\t")?
+    out.push_utf8_slice(allocator, value.as_bytes())?
+    return out.push_text(allocator, "\n")
+
+fn id_binding(out: &mut String, name: Text, value: &Json, allocator: &Allocator) -> Result<(), U64>:
+    out.push_text(allocator, name)?
+    out.push_text(allocator, "\ttext\t")?
+    append_id(out, value, allocator)?
+    return out.push_text(allocator, "\n")
+
+fn integer_binding(out: &mut String, name: Text, value: U64, allocator: &Allocator) -> Result<(), U64>:
+    out.push_text(allocator, name)?
+    out.push_text(allocator, "\tint\t")?
+    out.push_u64(allocator, value)?
+    return out.push_text(allocator, "\n")
+
+fn append_id(out: &mut String, value: &Json, allocator: &Allocator) -> Result<(), U64>:
+    match value:
+        Whole(number):
+            return out.push_u64(allocator, *number)
+        Str(digits):
+            return out.push_part(allocator, digits, 0, digits.byte_len())
+        Decimal(digits):
+            return out.push_part(allocator, digits, 0, digits.byte_len())
+        _:
+            return Err(1)
+
+fn workflow_reference(value: Span) -> Bool:
+    for byte in value.as_bytes():
+        if !(*byte >= 'A' && *byte <= 'Z') && !(*byte >= 'a' && *byte <= 'z') && !(*byte >= '0' && *byte <= '9') && *byte != '.' && *byte != '_' && *byte != '-' && *byte != '/' && *byte != '@':
+            return false
+    return true

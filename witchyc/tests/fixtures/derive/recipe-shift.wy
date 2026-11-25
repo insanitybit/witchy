@@ -1,0 +1,22 @@
+// `<<` and `>>` in a recipe's code and inside `${...}`: the written tokens share one span, and a
+// shift was read as two comparisons (found by the four-U32 grouping experiment).
+import console
+
+trait Packed:
+    fn packed(self: &Self) -> U64
+
+derive Pack:
+    impl Packed for Self:
+        fn packed(self: &Self) -> U64:
+            var out: U64 = 0
+            static for f in fields:
+                out = (out << 8) | U8.to_u64((*self).f)
+            return out
+
+type Two derive(Pack):
+    a: U8
+    b: U8
+
+fn main(console: Console<Write>):
+    let two = Two(a: 1, b: 2)
+    console.print("${two.packed()} ${two.packed() >> 4} ${two.packed() << 1}")

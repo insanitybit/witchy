@@ -1,0 +1,28 @@
+// `let _ = ...` says a Result is ignored on purpose. `_` names nothing, so it is written as
+// often as needed in one block; a Result that is handled or passed on needs no such thing.
+import console
+
+fn risky(n: U64) -> Result<U64, U64>:
+    if n > 3:
+        return Err(n)
+    return Ok(n)
+
+fn twice(n: U64) -> Result<U64, U64>:
+    let first = risky(n)?
+    let _ = risky(n + 9)
+    return Ok(first * 2)
+
+fn main(console: Console<Write>):
+    let _ = risky(9)
+    let _ = risky(1)
+    let _: Result<U64, U64> = risky(2)
+    match twice(2):
+        Ok(n):
+            console.print_int(n)
+        Err(n):
+            console.print_int(100 + n)
+    match twice(7):
+        Ok(n):
+            console.print_int(n)
+        Err(n):
+            console.print_int(100 + n)

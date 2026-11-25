@@ -1,0 +1,242 @@
+import "metadata.wy"
+import "public_key.wy"
+import crypto
+import encoding
+import json_tree
+import string
+import text
+import vec
+
+pub type ThresholdError:
+    InvalidRole
+    InvalidSignatures
+    InsufficientSignatures
+    SignatureResourceFailure
+
+// The role and key map must come from the applicable trusted root or
+// delegating targets document. For a root's self-check they can come from
+// that root only after a bootstrap pin or the prior root authorizes it.
+pub fn verify_threshold(document: &Metadata, role: &Json, keys: &Json, allocator: &Allocator) -> Result<(), ThresholdError>:
+    let Ok(sigs): &Json = document.signatures() else Err(code):
+        return Err(InvalidSignatures)
+    return verify_signature_set(document, role, keys, sigs, allocator)
+
+pub fn verify_signature_set(document: &Metadata, role: &Json, keys: &Json, sigs: &Json, allocator: &Allocator) -> Result<(), ThresholdError>:
+    let Ok(keyids): &Json = role.field("keyids") else Err(code):
+        return Err(InvalidRole)
+    let Ok(required): &Json = role.field("threshold") else Err(code):
+        return Err(InvalidRole)
+    match keyids:
+        Array(assigned):
+            return verify_assigned(document.signature_message(), sigs, assigned, required, keys, allocator)
+        _:
+            return Err(InvalidRole)
+
+fn verify_assigned(canonical: &[U8], sigs: &Json, assigned: &Vec<Json>, required: &Json, keys: &Json, allocator: &Allocator) -> Result<(), ThresholdError>:
+    let threshold = role_threshold(required, assigned.len())?
+    match keys:
+        Object(members):
+            if assigned.len() > members.len():
+                return Err(InvalidRole)
+        _:
+            return Err(InvalidRole)
+    validate_signatures(sigs)?
+    var message: [U8; 68] = [0; 68]
+    message[0] = 't'
+    message[1] = 'u'
+    message[2] = 'f'
+    message[3] = 1
+    if let Err(error) = crypto.sha512(canonical, message.slice_mut().part(4, 68)):
+        return Err(SignatureResourceFailure)
+    let Ok(empty): Vec<U8> = Vec.filled(allocator, assigned.len() * 48, 0) else Err(code):
+        return Err(SignatureResourceFailure)
+    var fingerprints = move empty
+    let found = count_signatures(message.slice(), sigs, assigned, keys, fingerprints.as_mut_slice(), allocator)
+    fingerprints.close()
+    if found? < threshold:
+        return Err(InsufficientSignatures)
+    return Ok(())
+
+fn role_threshold(required: &Json, count: U64) -> Result<U64, ThresholdError>:
+    match required:
+        Whole(threshold):
+            if *threshold != 0 && *threshold <= count:
+                return Ok(*threshold)
+        _:
+            ()
+    return Err(InvalidRole)
+
+fn validate_signatures(sigs: &Json) -> Result<(), ThresholdError>:
+    match sigs:
+        Array(entries):
+            for i in 0..entries.len():
+                let Ok(item): &Json = entries.at(i) else Err(code):
+                    return Err(InvalidSignatures)
+                let Ok(id): &String = signature_id(item) else Err(code):
+                    return Err(InvalidSignatures)
+                let Ok(hex): &String = signature_hex(item) else Err(code):
+                    return Err(InvalidSignatures)
+                if id.byte_len() != 64 || !lower_hex(id.as_bytes()) || hex.byte_len() != 9254 || !lower_hex(hex.as_bytes()):
+                    return Err(InvalidSignatures)
+                for earlier in 0..i:
+                    let Ok(entry): &Json = entries.at(earlier) else Err(code):
+                        return Err(InvalidSignatures)
+                    let Ok(other): &String = signature_id(entry) else Err(code):
+                        return Err(InvalidSignatures)
+                    if id.eq(other):
+                        return Err(InvalidSignatures)
+            return Ok(())
+        _:
+            return Err(InvalidSignatures)
+
+fn signature_id(entry: &Json) -> Result<&String, U64>:
+    let field = entry.field("keyid")?
+    return field.text()
+
+fn signature_hex(entry: &Json) -> Result<&String, U64>:
+    let field = entry.field("sig")?
+    return field.text()
+
+fn lower_hex(value: &[U8]) -> Bool:
+    for byte in value:
+        if !(*byte >= '0' && *byte <= '9') && !(*byte >= 'a' && *byte <= 'f'):
+            return false
+    return true
+
+fn count_signatures(message: &[U8], signatures: &Json, ids: &Vec<Json>, keys: &Json, seen: &mut [U8], allocator: &Allocator) -> Result<U64, ThresholdError>:
+    var count: U64 = 0
+    var used: U64 = 0
+    for entry in ids:
+        let Ok(id): &String = entry.text() else Err(code):
+            return Err(InvalidRole)
+        let key = load_key(id, keys, allocator)?
+        let checked = verify_member(message, signatures, id, key.as_slice().part(22, 2614), seen, used, allocator)
+        key.close()
+        if checked?:
+            count += 1
+        used += 48
+    return Ok(count)
+
+fn load_key(id: &String, keys: &Json, allocator: &Allocator) -> Result<Vec<U8>, ThresholdError>:
+    if id.byte_len() != 64 || !lower_hex(id.as_bytes()):
+        return Err(InvalidRole)
+    let Ok(raw): &Json = object_member(keys, id) else Err(code):
+        return Err(InvalidRole)
+    let Ok(key): Vec<U8> = mldsa87_key(raw, allocator) else Err(code):
+        return Err(InvalidRole)
+    return Ok(move key)
+
+fn object_member(object: &Json, name: &String) -> Result<&Json, U64>:
+    borrows Ok from object
+    match object:
+        Object(entries):
+            for entry in entries:
+                if entry.key.eq(name):
+                    return Ok(&entry.value)
+        _:
+            ()
+    return Err(1)
+
+fn signature_for(signatures: &Json, name: &String) -> Result<&String, U64>:
+    borrows Ok from signatures
+    match signatures:
+        Array(entries):
+            for entry in entries:
+                let id = signature_id(entry)?
+                if id.eq(name):
+                    return signature_hex(entry)
+        _:
+            ()
+    return Err(1)
+
+fn verify_member(message: &[U8], signatures: &Json, id: &String, key: &[U8], seen: &mut [U8], used: U64, allocator: &Allocator) -> Result<Bool, ThresholdError>:
+    remember_key(key, seen, used)?
+    let Ok(hex): &String = signature_for(signatures, id) else Err(code):
+        return Ok(false)
+    let Ok(decoded): Vec<U8> = decode_hex(allocator, hex.as_bytes()) else Err(code):
+        return Err(SignatureResourceFailure)
+    let verified = crypto.mldsa87_verify(key, message, decoded.as_slice())
+    decoded.close()
+    return Ok(verified)
+
+fn remember_key(key: &[U8], seen: &mut [U8], used: U64) -> Result<(), ThresholdError>:
+    if used > seen.len() || seen.len() - used < 48 || used % 48 != 0:
+        return Err(InvalidRole)
+    var fingerprint: [U8; 48] = [0; 48]
+    if let Err(error) = crypto.sha384(key, fingerprint.slice_mut()):
+        return Err(SignatureResourceFailure)
+    var at: U64 = 0
+    while at < used:
+        if same_fingerprint(seen.part(at, at + 48), fingerprint.slice()):
+            return Err(InvalidRole)
+        at += 48
+    seen.part(used, used + 48).copy_from(fingerprint.slice())
+    return Ok(())
+
+// Coven assigns a public key to just one root authority. Compare the raw
+// keys, since distinct identifiers or PEM encodings can carry the same key.
+pub fn validate_role_keys(role: &Json, keys: &Json, seen: &mut [U8], used: &mut U64, allocator: &Allocator) -> Result<(), ThresholdError>:
+    let Ok(keyids): &Json = role.field("keyids") else Err(code):
+        return Err(InvalidRole)
+
+    let Ok(required): &Json = role.field("threshold") else Err(code):
+        return Err(InvalidRole)
+    match keyids:
+        Array(ids):
+            let threshold = role_threshold(required, ids.len())?
+            for entry in ids:
+                let Ok(id): &String = entry.text() else Err(code):
+                    return Err(InvalidRole)
+                let key = load_key(id, keys, allocator)?
+                let remembered = remember_key(key.as_slice().part(22, 2614), seen, *used)
+                key.close()
+                remembered?
+                *used += 48
+            return Ok(())
+        _:
+            return Err(InvalidRole)
+
+fn same_fingerprint(left: &[U8], right: &[U8]) -> Bool:
+    for i in 0..48:
+        if left[i] != right[i]:
+            return false
+    return true
+
+pub fn authority_still_trusted(previous: &Json, previous_keys: &Json, current: &Json, current_keys: &Json, allocator: &Allocator) -> Result<Bool, ThresholdError>:
+    let old = role_fingerprints(previous, previous_keys, allocator)?
+    let result = compare_role_fingerprints(old.as_slice(), current, current_keys, allocator)
+    old.close()
+    return result
+
+fn role_fingerprints(role: &Json, keys: &Json, allocator: &Allocator) -> Result<Vec<U8>, ThresholdError>:
+    let Ok(ids): &Json = role.field("keyids") else Err(code):
+        return Err(InvalidRole)
+    let Ok(count): U64 = ids.len() else Err(code):
+        return Err(InvalidRole)
+    let Ok(empty): Vec<U8> = Vec.filled(allocator, count * 48, 0) else Err(code):
+        return Err(SignatureResourceFailure)
+    var fingerprints = move empty
+    var used: U64 = 0
+    if let Err(error) = validate_role_keys(role, keys, fingerprints.as_mut_slice(), &mut used, allocator):
+        fingerprints.close()
+        return Err(error)
+    return Ok(move fingerprints)
+
+fn compare_role_fingerprints(previous: &[U8], current: &Json, keys: &Json, allocator: &Allocator) -> Result<Bool, ThresholdError>:
+    let Ok(required): &Json = current.field("threshold") else Err(code):
+        return Err(InvalidRole)
+    let found = role_fingerprints(current, keys, allocator)?
+    let threshold = role_threshold(required, found.len() / 48)
+    let overlap = count_shared_fingerprints(previous, found.as_slice())
+    found.close()
+    return Ok(overlap >= threshold?)
+
+fn count_shared_fingerprints(previous: &[U8], current: &[U8]) -> U64:
+    var shared: U64 = 0
+    for i in 0..current.len() / 48:
+        let fingerprint = current.part(i * 48, (i + 1) * 48)
+        for j in 0..previous.len() / 48:
+            if same_fingerprint(fingerprint, previous.part(j * 48, (j + 1) * 48)):
+                shared += 1
+                break
+    return shared

@@ -1,0 +1,21 @@
+import console
+import vec
+import sort
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let n: U64 = 1000000
+    let Ok(made): Vec<U64> = Vec.filled(&allocator, n, 0) else Err(code):
+        return
+    var v = move made
+    var seed: U64 = 42
+    for i in 0..n:
+        seed = seed * 48271 % 2147483647
+        v[i] = seed % 1000000000
+    sort(&mut v)
+    var check: U64 = 0
+    for i in 0..n:
+        check = (check * 31 + v[i]) % 1000000007
+    console.print_int(check)
+    console.print_int(v[0])
+    console.print_int(v[n - 1])
+    v.close()

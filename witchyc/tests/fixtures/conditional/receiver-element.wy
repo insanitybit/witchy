@@ -1,0 +1,14 @@
+// A receiver that is an element or `*r` stays in place beside an inline `if` that does not use it.
+// receiver a[0] (not a place): bound to a copy, &mut self method mutates the copy?
+type C:
+    n: U64
+
+impl C:
+    fn add(self: &mut C, k: U64):
+        (*self).n = (*self).n + k
+
+fn main(console: Console<Write>):
+    var a = [C(1), C(2)]
+    let t = true
+    a[0].add(if t: 10 else: 20)
+    console.print_int(a[0].n)

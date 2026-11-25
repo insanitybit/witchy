@@ -1,0 +1,18 @@
+// Refused: nor is a record that holds one, so a trait bound cannot smuggle a
+// capability's operations into generic code.
+trait Shout:
+    fn shout(self: &Self, x: U64)
+
+type Logger:
+    out: Console<Write>
+
+impl Shout for Logger:
+    fn shout(self: &Logger, x: U64):
+        self.out.print_int(x)
+
+fn sneaky<T: Shout>(thing: &T):
+    thing.shout(7)
+
+fn main(console: Console<Write>):
+    let logger = Logger(move console)
+    sneaky(&logger)

@@ -1,0 +1,11 @@
+// A function computed by an inline `if` is not called; refused, not a crash (red-team review).
+fn one(n: U64) -> U64:
+    return n + 1
+
+fn two(n: U64) -> U64:
+    return n + 2
+
+fn main(console: Console<Write>):
+    let c = true
+    let y = (if c: one else: two)(5)
+    console.print_int(y)

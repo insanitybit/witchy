@@ -1,0 +1,47 @@
+// The whole Vec exchanged for one as long as `room`: what is known goes with the value, and the invariant holds.
+import console
+import vec
+
+sealed type Shelf:
+    items: Vec<U64>
+    room: U64
+    invariant room <= 64
+    invariant items.len() == room
+
+impl Shelf:
+    fn new(allocator: &Allocator, room: U64) -> Result<Shelf, U64>:
+        requires room <= 64
+        ensures true
+        proof:
+            auto
+        let made: Result<Vec<U64>, U64> = Vec.filled(allocator, room, 7)
+        let Ok(items): Vec<U64> = move made else Err(code):
+            return Err(code)
+        return Ok(Shelf(move items, room))
+
+    fn close(shelf: Shelf):
+        let Shelf(items, room) = move shelf
+        items.close()
+
+    // The same exchange with a Vec as long as the room: what is known goes with the value.
+    fn swap_in(shelf: &mut Shelf, allocator: &Allocator) -> Result<(), U64>:
+        ensures true
+        proof:
+            auto
+        let made: Result<Vec<U64>, U64> = Vec.filled(allocator, (*shelf).room, 5)
+        let Ok(other): Vec<U64> = move made else Err(code):
+            return Err(code)
+        var same = move other
+        memory.exchange(&mut (*shelf).items, &mut same)
+        same.close()
+        return Ok(())
+
+fn main(console: Console<Write>, allocator: Allocator):
+    match Shelf.new(&allocator, 3):
+        Ok(made):
+            var shelf = move made
+            let _ = shelf.swap_in(&allocator)
+            console.print_int(shelf.items[2])
+            shelf.close()
+        Err(code):
+            console.print_int(code)

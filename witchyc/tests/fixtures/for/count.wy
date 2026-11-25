@@ -1,0 +1,33 @@
+// `for` over a range, and over a type of the program's own that answers `at`.
+type Triple:
+    first: U64
+    second: U64
+    third: U64
+
+impl Triple:
+    fn at(self: &Triple, index: U64) -> Result<U64, U64>:
+        if index == 0:
+            return Ok((*self).first)
+        if index == 1:
+            return Ok((*self).second)
+        if index == 2:
+            return Ok((*self).third)
+        return Err(index)
+
+fn sum(low: U64, high: U64) -> U64:
+    var total: U64 = 0
+    for value in low..high:
+        total += value
+    return total
+
+fn main(console: Console<Write>):
+    console.print_int(sum(0, 5))
+    console.print_int(sum(3, 3))
+    for row in 1..3:
+        for column in 0..2:
+            console.print_int(row + column)
+    let triple = Triple(7, 8, 9)
+    for item in &triple:
+        console.print_int(item)
+    for item in triple:
+        console.print_int(item + 1)

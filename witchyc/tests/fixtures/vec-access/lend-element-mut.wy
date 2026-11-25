@@ -1,0 +1,12 @@
+// `&mut v[i]` changes the element where it is (`Vec.cell_mut`).
+import console
+import vec
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.filled(&allocator, 3, 5) else Err(code):
+        return
+    var v = move made
+    let r = &mut v[1]
+    *r += 10
+    console.print_int(v[1])
+    v.close()

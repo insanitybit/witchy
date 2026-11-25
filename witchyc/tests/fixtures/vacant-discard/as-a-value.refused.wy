@@ -1,0 +1,15 @@
+// Refused by the checker: it is a statement, and gives nothing back.
+type Slot<T>:
+    Vacant
+    Full(T)
+
+type Shelf<T>:
+    count: U64
+    slot: Slot<T>
+
+nopanic fn end<T: Any>(slot: Slot<T>) -> U64:
+    let nothing = memory.vacant(move slot)
+    return 0
+
+fn main(out: Console<Write>):
+    out.print_int(1)

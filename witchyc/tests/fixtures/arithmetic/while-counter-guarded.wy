@@ -1,0 +1,13 @@
+// A `while` counter bounded by its condition (`i < limit`) and changed only by one `i += 1`
+// a pass: the increment needs no overflow check (guarded.rs). Up to the largest U64.
+import console
+
+fn main(console: Console<Write>):
+    let top: U64 = 18446744073709551615
+    var i: U64 = top - 3
+    var passes: U64 = 0
+    while i < top:
+        i += 1
+        passes += 1
+    console.print_int(passes)
+    console.print_int(i - (top - 3))

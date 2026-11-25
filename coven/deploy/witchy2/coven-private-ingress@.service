@@ -1,0 +1,19 @@
+[Unit]
+Description=TCP ingress for Coven %i
+BindsTo=coven-%i.service
+Requires=coven-private-ingress@%i.socket
+After=coven-%i.service coven-private-ingress@%i.socket
+JoinsNamespaceOf=coven-%i.service
+
+[Service]
+Type=notify
+ExecStart=/usr/lib/systemd/systemd-socket-proxyd --connections-max=16 127.0.0.1:8443
+DynamicUser=yes
+PrivateNetwork=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+InaccessiblePaths=/etc/coven /var/lib/coven-private -/srv/coven
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX

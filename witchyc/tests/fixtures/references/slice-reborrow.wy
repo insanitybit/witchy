@@ -1,0 +1,8 @@
+// `&*s` of a slice reference is the slice lent again (it overflowed the compiler's stack).
+import console
+
+fn f(s: &[U64]) -> &[U64]:
+    return &*s
+
+fn main(console: Console<Write>):
+    console.print_int(0)

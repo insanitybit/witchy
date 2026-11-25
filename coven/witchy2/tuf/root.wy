@@ -1,0 +1,191 @@
+import "expiry.wy"
+import "metadata.wy"
+import "signatures.wy"
+import crypto
+import json_tree
+import string
+import vec
+
+pub type RootError:
+    RootPinMismatch
+    RootVersionMismatch
+    RootPolicyInvalid
+    RootThresholdFailed
+
+pub sealed type TrustedRoot:
+    metadata: Metadata
+
+// The pin is provisioned out of band. It covers the original file bytes,
+// including the envelope, before the file can supply any trusted keys.
+pub fn bootstrap_root(input: &String, expected: &[U8; 48], allocator: &Allocator) -> Result<TrustedRoot, RootError>:
+    if input.byte_len() > metadata_limit(Root):
+        return Err(RootPolicyInvalid)
+    var actual: [U8; 48] = [0; 48]
+    if let Err(error) = crypto.sha384(input.as_bytes(), actual.slice_mut()):
+        return Err(RootPinMismatch)
+    for i in 0..48:
+        if actual[i] != (*expected)[i]:
+            return Err(RootPinMismatch)
+    let root = load_root(input, allocator, 1)?
+    return establish_root(move root, allocator)
+
+impl TrustedRoot:
+    pub fn check_reserved(self: &TrustedRoot, reserved: &[U8], allocator: &Allocator) -> Result<(), RootError>:
+        let count = self.key_count()?
+        let Ok(empty): Vec<U8> = Vec.filled(allocator, reserved.len() + count * 48, 0) else Err(code):
+            return Err(RootPolicyInvalid)
+        var seen = move empty
+        seen.as_mut_slice().part(0, reserved.len()).copy_from(reserved)
+        var used = reserved.len()
+        let checked = self.record_authority_keys(seen.as_mut_slice(), &mut used, allocator)
+        seen.close()
+        return checked
+
+    pub fn key_count(self: &TrustedRoot) -> Result<U64, RootError>:
+        let Ok(body): &Json = (*self).metadata.signed() else Err(code):
+            return Err(RootPolicyInvalid)
+        let Ok(keys): &Json = body.field("keys") else Err(code):
+            return Err(RootPolicyInvalid)
+        match keys:
+            Object(entries):
+                return Ok(entries.len())
+            _:
+                return Err(RootPolicyInvalid)
+
+    pub fn record_authority_keys(self: &TrustedRoot, seen: &mut [U8], used: &mut U64, allocator: &Allocator) -> Result<(), RootError>:
+        let Ok(body): &Json = (*self).metadata.signed() else Err(code):
+            return Err(RootPolicyInvalid)
+        let Ok(keys): &Json = body.field("keys") else Err(code):
+            return Err(RootPolicyInvalid)
+        let Ok(roles): &Json = body.field("roles") else Err(code):
+            return Err(RootPolicyInvalid)
+        return check_roles(roles, keys, seen, used, allocator)
+
+    pub fn fresh_at(self: &TrustedRoot, now_ms: U64) -> Result<(), FreshnessError>:
+        return check_freshness(&(*self).metadata, now_ms)
+
+    pub fn verify(self: &TrustedRoot, document: &Metadata, allocator: &Allocator) -> Result<(), RootError>:
+        return verify_root_role(&(*self).metadata, document, allocator)
+
+    pub fn retires_metadata_authority(self: &TrustedRoot, next: &TrustedRoot, allocator: &Allocator) -> Result<Bool, RootError>:
+        let Ok(previous): &Json = (*self).metadata.signed() else Err(code):
+            return Err(RootPolicyInvalid)
+        let Ok(current): &Json = (*next).metadata.signed() else Err(code):
+            return Err(RootPolicyInvalid)
+        return retires_role(previous, current, allocator)
+
+    pub fn advance(self: &TrustedRoot, input: &String, allocator: &Allocator) -> Result<TrustedRoot, RootError>:
+        let Ok(previous): U64 = (*self).metadata.version() else Err(error):
+            return Err(RootPolicyInvalid)
+        let root = load_root(input, allocator, previous + 1)?
+        if let Err(error) = self.verify(&root, allocator):
+            root.close()
+            return Err(error)
+        return establish_root(move root, allocator)
+
+    pub fn close(self: TrustedRoot):
+        let TrustedRoot(metadata) = move self
+        metadata.close()
+
+fn load_root(input: &String, allocator: &Allocator, version: U64) -> Result<Metadata, RootError>:
+    let Ok(root): Metadata = parse_metadata(input, allocator, Root) else Err(error):
+        return Err(RootPolicyInvalid)
+    let result = check_root(&root, version)
+    if let Err(error) = result:
+        root.close()
+        return Err(error)
+    return Ok(move root)
+
+fn check_root(root: &Metadata, expected: U64) -> Result<(), RootError>:
+    let Ok(version): U64 = root.version() else Err(error):
+        return Err(RootVersionMismatch)
+    if version != expected:
+        return Err(RootVersionMismatch)
+    let Ok(body): &Json = root.signed() else Err(code):
+        return Err(RootPolicyInvalid)
+    let Ok(consistent): &Json = body.field("consistent_snapshot") else Err(code):
+        return Err(RootPolicyInvalid)
+    let Ok(enabled): Bool = consistent.boolean() else Err(code):
+        return Err(RootPolicyInvalid)
+    if !enabled:
+        return Err(RootPolicyInvalid)
+    let Ok(role): &Json = root_role(body, Root) else Err(code):
+        return Err(RootPolicyInvalid)
+    let Ok(threshold): &Json = role.field("threshold") else Err(code):
+        return Err(RootPolicyInvalid)
+    match threshold:
+        Whole(value):
+            if *value >= 2:
+                return Ok(())
+        _:
+            ()
+    return Err(RootPolicyInvalid)
+
+fn establish_root(root: Metadata, allocator: &Allocator) -> Result<TrustedRoot, RootError>:
+    if let Err(error) = verify_root_role(&root, &root, allocator):
+        root.close()
+        return Err(error)
+    if let Err(error) = check_authorities(&root, allocator):
+        root.close()
+        return Err(error)
+    return Ok(TrustedRoot(move root))
+
+fn check_authorities(root: &Metadata, allocator: &Allocator) -> Result<(), RootError>:
+    let Ok(body): &Json = root.signed() else Err(code):
+        return Err(RootPolicyInvalid)
+    let Ok(keys): &Json = body.field("keys") else Err(code):
+        return Err(RootPolicyInvalid)
+    let Ok(roles): &Json = body.field("roles") else Err(code):
+        return Err(RootPolicyInvalid)
+    match keys:
+        Object(entries):
+            let Ok(empty): Vec<U8> = Vec.filled(allocator, entries.len() * 48, 0) else Err(code):
+                return Err(RootPolicyInvalid)
+            var fingerprints = move empty
+            var used: U64 = 0
+            let checked = check_roles(roles, keys, fingerprints.as_mut_slice(), &mut used, allocator)
+            fingerprints.close()
+            return checked
+        _:
+            return Err(RootPolicyInvalid)
+
+fn check_roles(roles: &Json, keys: &Json, seen: &mut [U8], used: &mut U64, allocator: &Allocator) -> Result<(), RootError>:
+    let names: [Text; 4] = ["root", "targets", "snapshot", "timestamp"]
+    for name in names.slice():
+        let Ok(role): &Json = roles.field(*name) else Err(code):
+            return Err(RootPolicyInvalid)
+        if let Err(error) = validate_role_keys(role, keys, seen, used, allocator):
+            return Err(RootPolicyInvalid)
+    return Ok(())
+
+fn verify_root_role(root: &Metadata, document: &Metadata, allocator: &Allocator) -> Result<(), RootError>:
+    let Ok(authority): &Json = root.signed() else Err(code):
+        return Err(RootPolicyInvalid)
+    let Ok(role): &Json = root_role(authority, document.kind()) else Err(code):
+        return Err(RootPolicyInvalid)
+    let Ok(keys): &Json = authority.field("keys") else Err(code):
+        return Err(RootPolicyInvalid)
+    if let Err(error) = verify_threshold(document, role, keys, allocator):
+        return Err(RootThresholdFailed)
+    return Ok(())
+
+fn root_role(signed: &Json, kind: MetadataKind) -> Result<&Json, U64>:
+    let roles = signed.field("roles")?
+    return roles.field(kind_name(kind))
+
+fn retires_role(previous: &Json, current: &Json, allocator: &Allocator) -> Result<Bool, RootError>:
+    let Ok(old_keys): &Json = previous.field("keys") else Err(code):
+        return Err(RootPolicyInvalid)
+    let Ok(keys): &Json = current.field("keys") else Err(code):
+        return Err(RootPolicyInvalid)
+    let kinds: [MetadataKind; 2] = [Timestamp, Snapshot]
+    for kind in kinds.slice():
+        let Ok(old_role): &Json = root_role(previous, *kind) else Err(code):
+            return Err(RootPolicyInvalid)
+        let Ok(role): &Json = root_role(current, *kind) else Err(code):
+            return Err(RootPolicyInvalid)
+        let Ok(still_trusted): Bool = authority_still_trusted(old_role, old_keys, role, keys, allocator) else Err(error):
+            return Err(RootPolicyInvalid)
+        if !still_trusted:
+            return Ok(true)
+    return Ok(false)

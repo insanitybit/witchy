@@ -1,0 +1,9 @@
+// Refused: a type of alpha's inner file named in an annotation and a parameter.
+import "@alpha"
+
+fn look(h: &Hidden) -> U64:
+    return alpha.read(h)
+
+fn main():
+    let h: Hidden = alpha.hidden(1)
+    let _ = look(&h)

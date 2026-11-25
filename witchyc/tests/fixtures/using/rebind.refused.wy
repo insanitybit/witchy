@@ -1,0 +1,10 @@
+// The name a `using` binds is not bound again inside its block.
+import "../../../library/wasm-text.wy"
+
+fn work(allocator: &Allocator) -> Result<U64, U64>:
+    using text = String.new(allocator)?:
+        let text = 5
+        return Ok(text)
+
+fn main(allocator: Allocator):
+    let x = work(&allocator)

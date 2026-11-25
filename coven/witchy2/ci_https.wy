@@ -1,0 +1,86 @@
+import "ci/http_request.wy"
+import "ci/https_origin.wy"
+import "ci/https_response.wy"
+import "ci/https_stream.wy"
+import "ci/https_transaction.wy"
+import "mirror/identity.wy"
+import tls_certificates
+import tls_server_socket
+import tls
+import "tuf/origin.wy"
+import fs
+import net
+import span
+import string
+import vec
+
+fn main(connection: Socket, allocator: Allocator, root: Dir<Read>, random: Rand, issuer: TlsSigner, transactions: LocalService):
+    match server_buffers(&allocator):
+        Err(reason):
+            connection.close()
+        Ok(made):
+            let ServerBuffers(client, flight, plaintext, ciphertext) = move made
+            var hello = move client
+            var data = move flight
+            var scratch = move plaintext
+            var wire = move ciphertext
+            handle(move connection, &root, &allocator, &random, &issuer, &transactions, hello.as_mut_slice(), data.as_mut_slice(), scratch.as_mut_slice(), wire.as_mut_slice())
+            wire.close()
+            scratch.close()
+            data.close()
+            hello.close()
+    root.close()
+
+fn handle(connection: Socket, root: &Dir<Read>, allocator: &Allocator, random: &Rand, issuer: &TlsSigner, transactions: &LocalService, hello: &mut [U8], data: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]):
+    let Ok(origin): String = ci_origin(root, allocator, data.part(0, 261)) else Err(reason):
+        connection.close()
+        return
+    serve_origin(move connection, root, &origin, allocator, random, issuer, transactions, hello, data, plaintext, wire)
+    origin.close()
+
+fn serve_origin(connection: Socket, root: &Dir<Read>, origin: &String, allocator: &Allocator, random: &Rand, issuer: &TlsSigner, transactions: &LocalService, hello: &mut [U8], data: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]):
+    let Ok(host): Span = relying_party(origin.span()) else Err(reason):
+        connection.close()
+        return
+    let Ok(size): U64 = identity.read_file(root, "chain", data) else Err(reason):
+        connection.close()
+        return
+    let Ok(chain): CertificateChain = tls_certificates.from_der_list(allocator, data.part(0, size)) else Err(reason):
+        connection.close()
+        return
+    let accepted = accept_named(move connection, allocator, random, issuer, &chain, host, hello, data, plaintext, wire)
+    chain.close()
+    let Ok(session): SecureSession = move accepted else Err(reason):
+        return
+    var stream = move session
+    serve(&mut stream, origin, allocator, transactions, data, hello.part(0, 16384), plaintext, wire)
+    stream.close()
+
+fn serve(stream: &mut SecureSession, origin: &String, allocator: &Allocator, transactions: &LocalService, data: &mut [U8], reply: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]):
+    let Ok(size): U64 = receive_ci_head(stream, data, plaintext, wire) else Err(status):
+        send_empty(stream, status, plaintext, wire, allocator)
+        return
+    let authority = origin.span().part(8, origin.byte_len())
+    let Ok(request): CiRequest = ci_request(Span.of(data.part(0, size)), authority) else Err(status):
+        send_empty(stream, status, plaintext, wire, allocator)
+        return
+    match request.route:
+        Challenge:
+            match request_challenge(transactions, reply):
+                Ok(length):
+                    send_reply(stream, 200, reply.part(1, length), plaintext, wire, allocator)
+                Err(status):
+                    send_empty(stream, status, plaintext, wire, allocator)
+        _:
+            match transact(transactions, stream, request, reply, plaintext, wire, allocator):
+                Ok(length):
+                    send_reply(stream, 200, reply.part(1, length), plaintext, wire, allocator)
+                Err(status):
+                    send_empty(stream, status, plaintext, wire, allocator)
+
+fn send_reply(stream: &mut SecureSession, status: U64, reply: &[U8], plaintext: &mut [U8], wire: &mut [U8], allocator: &Allocator):
+    let sent = send_ci_response(stream, status, Span.of(reply), plaintext, wire, allocator)
+
+fn send_empty(stream: &mut SecureSession, status: U64, plaintext: &mut [U8], wire: &mut [U8], allocator: &Allocator):
+    let empty: [U8; 1] = [0]
+    let sent = send_ci_response(stream, status, Span.of(empty.slice().part(0, 0)), plaintext, wire, allocator)

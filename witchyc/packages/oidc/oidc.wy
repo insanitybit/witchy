@@ -1,0 +1,71 @@
+import "compact.wy"
+import "jwk_fields.wy"
+import "rs256_keys.wy"
+import discard
+import json_sorted
+import json_tree
+import string
+import text
+
+pub sealed type Rs256Keys:
+    document: Json
+
+pub sealed type VerifiedIdToken:
+    document: Json
+    expiration: U64
+
+// The caller provisions the key set from the configured issuer's trust channel.
+pub fn read_rs256_jwks(input: &String, allocator: &Allocator) -> Result<Rs256Keys, U64>:
+    if input.byte_len() > 262144:
+        return Err(1)
+    let keys = json_sorted_tree(input, allocator)?
+    if let Err(code) = validate_rs256_keys(&keys, allocator):
+        keys.discard()
+        return Err(code)
+    return Ok(Rs256Keys(move keys))
+
+impl Rs256Keys:
+    pub fn close(self: Rs256Keys):
+        let Rs256Keys(document) = move self
+        document.discard()
+
+// Grant the caller access to claims only after checking signature, issuer,
+// single-string audience, and the allowed time window.
+pub fn verify_rs256_id_token(token: &String, keys: &Rs256Keys, issuer: Text, audience: &String, now: U64, maximum_lifetime: U64, allocator: &Allocator) -> Result<VerifiedIdToken, U64>:
+    let claims = signed_rs256_claims(token, &(*keys).document, allocator)?
+    let Ok(expiration) = checked_expiration(&claims, issuer, audience, now, maximum_lifetime) else Err(code):
+        claims.discard()
+        return Err(code)
+    return Ok(VerifiedIdToken(move claims, expiration))
+
+impl VerifiedIdToken:
+    pub fn claims(self: &VerifiedIdToken) -> &Json:
+        return &(*self).document
+
+    pub fn expires_at(self: &VerifiedIdToken) -> U64:
+        return (*self).expiration
+
+    pub fn close(self: VerifiedIdToken):
+        let VerifiedIdToken(document, expiration) = move self
+        document.discard()
+
+fn checked_expiration(claims: &Json, issuer: Text, audience: &String, now: U64, maximum_lifetime: U64) -> Result<U64, U64>:
+    if !jwt_string_is(claims, "iss", issuer):
+        return Err(1)
+    let target = jwt_string(claims, "aud")?
+    if !target.eq(audience):
+        return Err(1)
+    let expiry = seconds(claims, "exp")?
+    let issued = seconds(claims, "iat")?
+    let valid_after = seconds(claims, "nbf")?
+    if expiry <= now || issued > now || valid_after > now || expiry <= issued || expiry - issued > maximum_lifetime:
+        return Err(1)
+    return Ok(expiry)
+
+fn seconds(claims: &Json, field: Text) -> Result<U64, U64>:
+    let value = claims.field(field)?
+    match value:
+        Whole(number):
+            return Ok(*number)
+        _:
+            return Err(1)

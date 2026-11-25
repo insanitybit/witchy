@@ -1,0 +1,30 @@
+// A blanket impl of a `suspends` trait method may pause: the trait allows it (adversarial
+// review round 24 found it refused).
+import console
+import tasks
+
+trait Tick:
+    fn tick(self: &Self) -> U64 suspends
+
+fn wait_for_data(at: U64) -> U64 suspends:
+    return at + 100
+
+impl<T: Any> Tick for T:
+    fn tick(self: &T) -> U64:
+        return wait_for_data(1)
+
+fn ticked(n: U64) suspends:
+    pause(n.tick())
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Task = Task.spawn(&allocator, 1024, ticked, 3) else Err(given):
+        return
+    var task = move made
+    let first = task.step()
+    match first:
+        Ok:
+            console.print_int(0)
+        Err(token):
+            console.print_int(token)
+    let second = task.step()
+    task.close()

@@ -1,0 +1,16 @@
+// A recipe's parameter `other` used where the program declares `fn other`: a parameter shadows
+// every other name in its method, so this is not refused (fifth review: it was).
+import "parts/keys.wy"
+import console
+import hash
+
+fn other(x: U64) -> U64:
+    return x
+
+type P derive(keys.Key):
+    a: U64
+
+fn main(console: Console<Write>):
+    let p = P(a: 1)
+    if p == P(a: 1):
+        console.print_int(other(1))

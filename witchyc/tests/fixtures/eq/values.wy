@@ -1,0 +1,49 @@
+// `==` and `!=` on values other than numbers and Bools call the type's `eq`.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-text.wy"
+import "../../../library/wasm-string.wy"
+import "../../../library/wasm-hash.wy"
+
+type Point:
+    x: U64
+    y: U64
+
+impl Eq for Point:
+    fn eq(self: &Point, other: &Point) -> Bool:
+        return (*self).x == (*other).x && (*self).y == (*other).y
+
+fn flag(console: &Console<Write>, value: Bool):
+    if value:
+        console.print_int(1)
+    else:
+        console.print_int(0)
+
+fn same_text(left: &String, right: &String) -> Bool:
+    return left == right
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let a = Point(1, 2)
+    let b = Point(1, 2)
+    let c = Point(2, 1)
+    flag(&console, a == b)
+    flag(&console, a != c)
+    flag(&console, a == c)
+    var one = match String.new(&allocator):
+        Ok(made):
+            move made
+        Err(code):
+            return
+    var two = match String.new(&allocator):
+        Ok(made):
+            move made
+        Err(code):
+            one.close()
+            return
+    let _ = one.push_text(&allocator, "word")
+    let _ = two.push_text(&allocator, "word")
+    flag(&console, one == two)
+    flag(&console, same_text(&one, &two))
+    let _ = two.push_text(&allocator, "s")
+    flag(&console, one != two)
+    one.close()
+    two.close()

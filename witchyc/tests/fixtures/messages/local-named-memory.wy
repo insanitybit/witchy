@@ -1,0 +1,20 @@
+// A local or a parameter named `memory` is its own function's alone: the library's
+// `memory.try_alloc` (inside `Vec.new`) is untouched by it.
+import console
+import vec
+
+fn twice(memory: U64) -> U64:
+    return memory * 2
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let memory: U64 = 3
+    let Ok(made): Vec<U64> = Vec.new(&allocator, 2) else Err(code):
+        return
+    var v = move made
+    let _ = v.push_mut(&allocator, twice(memory))
+    match v.get(0):
+        Ok(n):
+            console.print_int(n)
+        Err(e):
+            console.print_int(0)
+    v.close()

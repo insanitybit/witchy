@@ -1,0 +1,12 @@
+// Refused: a clause's index is within the array.
+import console
+
+fn last(xs: [U64; 3]) -> U64:
+    requires xs[3] < 10
+    ensures result < 10
+    proof:
+        auto
+    xs[2]
+
+fn main(console: Console<Write>):
+    console.print_int(last([1, 2, 3]))

@@ -1,0 +1,20 @@
+:root { color-scheme: dark; font: 16px/1.55 system-ui, sans-serif; background: #15121b; color: #f4eef9; }
+body { margin: 0; }
+main { width: min(100% - 2.5rem, 52rem); margin: 0 auto; padding: clamp(2rem, 8vw, 5rem) 0; }
+h1 { font: 400 clamp(2.5rem, 8vw, 4.4rem)/1 Georgia, serif; margin: 0 0 1.2rem; }
+h2 { font: 400 2rem/1.15 Georgia, serif; overflow-wrap: anywhere; }
+dd, pre { font-family: ui-monospace, monospace; }
+dl { display: grid; grid-template-columns: 12rem minmax(0, 1fr); gap: .65rem .8rem; padding: 1.25rem 0; }
+dd { margin: 0; overflow-wrap: anywhere; }
+dt, #status { color: #c4b8d2; }
+pre { direction: ltr; unicode-bidi: isolate; white-space: pre-wrap; overflow-wrap: anywhere; background: #211b2b; border: 1px solid #4b3d5d; padding: 1rem; border-radius: .45rem; }
+button { background: #e2bef9; color: #22142c; border: 0; border-radius: .45rem; padding: .7rem 1rem; font: inherit; font-weight: 650; }
+button:disabled { opacity: .6; }
+button:focus-visible { outline: 2px solid #e2bef9; outline-offset: .25rem; }
+label[for="request"] { display: block; margin-block-end: .45rem; }
+#request { display: block; max-width: 100%; font: inherit; }
+#response { box-sizing: border-box; width: 100%; padding: .75rem; resize: vertical; color: inherit; background: #211b2b; border: 1px solid #4b3d5d; border-radius: .45rem; font: .875rem ui-monospace, monospace; }
+@media (max-width: 41rem) {
+    dl { grid-template-columns: minmax(0, 1fr); gap: .15rem; }
+    dd { margin-block-end: .75rem; }
+}

@@ -1,0 +1,18 @@
+// Refused: a type parameter named like a word the recipe writes (`Pair<Unit>` and the recipe's
+// private `Unit`): it took the word's place, and another type's impl ran (seventh review: 7001).
+import "parts/recipe_private_unit.wy"
+import console
+
+type Other:
+    v: U64
+
+impl recipe_private_unit.Scale for Other:
+    fn scaled(self: &Other) -> U64:
+        return 7000
+
+type Pair<Unit> derive(recipe_private_unit.Scaled):
+    b: Unit
+
+fn main(console: Console<Write>):
+    let p = Pair(b: Other(v: 3))
+    console.print("${p.scaled()}")

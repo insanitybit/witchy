@@ -1,0 +1,28 @@
+// A policy kept beside the program (`overreach.refused.policy` here) holds every build to it:
+// it allows the config package nothing, but decoding a value allocates, so the build is refused
+// before anything is proved, with no separate `wasm-caps` step.
+import console
+import span
+import string
+import "config/config.wy"
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var scratch = move made
+    let Ok(made_text): String = String.new(&allocator) else Err(code):
+        scratch.close()
+        return
+    var text = move made_text
+    let _ = text.push_text(&allocator, "a = 1")
+    match raw(text.span(), "a"):
+        Ok(found):
+            match value(found, &mut scratch, &allocator):
+                Invalid:
+                    console.line("invalid")
+                _:
+                    console.line("found")
+        Err(code):
+            console.line("missing")
+    scratch.close()
+    text.close()

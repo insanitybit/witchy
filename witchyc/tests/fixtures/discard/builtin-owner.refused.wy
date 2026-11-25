@@ -1,0 +1,64 @@
+// The built-in `discard(value)` drops a value holding no owner; it names the way to close one.
+import console
+import hash
+import hashmap
+import sort
+import string
+import text
+import vec
+
+type Line:
+    who: Text
+    amount: U64
+    credit: Bool
+
+fn name(allocator: &Allocator, who: Text) -> Result<String, U64>:
+    let Ok(made): String = String.new(allocator) else Err(code):
+        return Err(code)
+    var text = move made
+    if let Err(_) = text.push_text(allocator, who):
+        text.close()
+        return Err(1)
+    Ok(move text)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let entries = [
+        Line(who: "carol", amount: 50, credit: true),
+        Line(who: "alice", amount: 20, credit: true),
+        Line(who: "bob", amount: 5, credit: false),
+        Line(who: "alice", amount: 7, credit: false),
+        Line(who: "carol", amount: 25, credit: true),
+    ]
+    let Ok(made): HashMap<String, U64> = HashMap.new(&allocator, 8) else Err(code):
+        return
+    var balances = move made
+    for e in entries:
+        let Ok(key): String = name(&allocator, e.who) else Err(code):
+            break
+        if let Ok(balance) = balances.get_mut(&key):
+            *balance = if e.credit: *balance + e.amount else: *balance - e.amount
+            key.close()
+        else:
+            match balances.insert(move key, if e.credit: 100 + e.amount else: 100 - e.amount):
+                Ok:
+                    ()
+                Err(entry):
+                    discard(move entry)
+    let Ok(made_names): Vec<String> = Vec.new(&allocator, 4) else Err(code):
+        balances.discard()
+        return
+    var names = move made_names
+    while let Ok(entry) = balances.take_any():
+        let Entry(who, balance) = move entry
+        console.print("${balance}")
+        match names.push_mut(&allocator, move who):
+            Ok:
+                ()
+            Err(back):
+                back.close()
+    balances.discard()
+    sort(&mut names)
+    for i in 0..names.len():
+        if let Ok(n) = names.at(i):
+            console.print("${i}: ${n.byte_len()}")
+    names.discard()

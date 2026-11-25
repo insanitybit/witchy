@@ -1,0 +1,84 @@
+// Cleartext transport for an explicitly granted IPv4 loopback test mirror.
+import "tuf/download_request.wy"
+import "tuf/request_head.wy"
+import "tuf/release_trust.wy"
+import console
+import discard
+import fs
+import http_framing
+import json_tree
+import net
+import span
+import string
+import url
+import vec
+
+fn main(output: Console<Write>, input: Console<Read>, net: Net, file: File<Write>, allocator: Allocator):
+    let result = download(&input, &net, &file, &allocator)
+    finish_download(move file, &output, result)
+
+fn download(input: &Console<Read>, net: &Net, file: &File<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let request = read_download_request(input, allocator)?
+    let result = send(&request, net, file, allocator)
+    request.discard()
+    return result
+
+fn send(request: &Json, net: &Net, file: &File<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let origin = string_field(request, "origin")?
+    let value = origin.span()
+    if !value.starts_with_text("http://"):
+        return Err(1)
+    let authority = value.part(7, value.len())
+    let Ok(endpoint): HttpAuthority = url.parse_authority(authority) else Err(reason):
+        return Err(1)
+    if !endpoint.hostname().equals_text("127.0.0.1") || endpoint.explicit_port() == 0:
+        return Err(1)
+    let path = string_field(request, "path")?
+    let bounds = download_bounds(request, 2)?
+    let head = get_headers(authority, path, allocator)?
+    let result = exchange(&head, authority, bounds, net, file, allocator)
+    head.close()
+    return result
+
+fn exchange(request: &String, authority: Span, bounds: DownloadBounds, net: &Net, file: &File<Write>, allocator: &Allocator) -> Result<(), U64>:
+    for byte in authority.as_bytes():
+        net.raw_addr_byte(*byte)
+    let socket = net.raw_connect()
+    if socket.raw_status() != 0:
+        socket.close()
+        return Err(2)
+    if let Err(reason) = socket.write_all(request.as_bytes()):
+        socket.close()
+        return Err(2)
+    let result = receive(&socket, file, bounds, allocator)
+    socket.close()
+    return result
+
+fn receive(socket: &Socket, file: &File<Write>, bounds: DownloadBounds, allocator: &Allocator) -> Result<(), U64>:
+    let empty: Vec<U8> = Vec.filled(allocator, bounds.limit, 0)?
+    var body = move empty
+    let result = read_reply(socket, file, bounds, body.as_mut_slice(), allocator)
+    body.close()
+    return result
+
+fn read_reply(socket: &Socket, file: &File<Write>, bounds: DownloadBounds, body: &mut [U8], allocator: &Allocator) -> Result<(), U64>:
+    let empty: Vec<U8> = Vec.filled(allocator, 16384, 0)?
+    var header = move empty
+    var line: [U8; 256] = [0; 256]
+    var scratch: [U8; 256] = [0; 256]
+    let decoded = http_framing.read_response(socket, header.as_mut_slice(), body, line.slice_mut(), scratch.slice_mut())
+    header.close()
+    let Ok(reply): SocketResponse = decoded else Err(reason):
+        if let SocketReadFailed(code) = reason:
+            return Err(2)
+        return Err(3)
+    if reply.status != 200:
+        return Err(reply.status)
+    if bounds.exact && reply.body_len != bounds.limit:
+        return Err(3)
+    return write_response(file, body, reply.body_len)
+
+fn write_response(file: &File<Write>, body: &[U8], count: U64) -> Result<(), U64>:
+    if let Err(reason) = file.write_bytes(body.part(0, count)):
+        return Err(6)
+    return Ok(())

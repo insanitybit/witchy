@@ -1,0 +1,12 @@
+nopanic fn read_nonzero(n: U64) -> U64:
+    ensures true
+    proof:
+        auto
+    if n != 0:
+        if n == 0:
+            unreachable
+        return n
+    return 17
+
+nopanic fn main(out: Console<Write>):
+    out.print_int(read_nonzero(0))

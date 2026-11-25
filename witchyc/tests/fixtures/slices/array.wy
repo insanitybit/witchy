@@ -1,0 +1,27 @@
+// `&[T]` over a fixed array (docs/design-slices.md): `slice()`, `len()`, `at(i)` (a Result,
+// as a Vec's), `part(from, to)` and `for item in slice`; a function taking `&[U64]` takes any
+// run of U64s. No allocator.
+import console
+
+fn total(items: &[U64]) -> U64:
+    var sum: U64 = 0
+    for item in items:
+        sum += *item
+    return sum
+
+fn main(console: Console<Write>):
+    let numbers: [U64; 5] = [1, 2, 3, 4, 5]
+    let all = numbers.slice()
+    console.print_int(all.len())
+    console.print_int(total(all))
+    console.print_int(total(all.part(1, 4)))
+    match all.at(0):
+        Ok(first):
+            console.print_int(*first)
+        Err(code):
+            console.print_int(999)
+    match all.at(5):
+        Ok(past):
+            console.print_int(*past)
+        Err(code):
+            console.print_int(code)

@@ -1,0 +1,9 @@
+// Refused: a blanket impl of a private trait is private to its file too (review round 7: `n.z()`
+// from another file minted the sealed Token).
+import "parts/pe.wy"
+import console
+
+fn main(console: Console<Write>):
+    let n: U64 = 3
+    let u = n.z()
+    console.print("${pe.redeem(&u)}")

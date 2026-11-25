@@ -1,0 +1,14 @@
+// Refused: after the copy the target's run holds values, not empty cells.
+fn copy<T>(source: &Buffer<T>, target: &mut Buffer<T>, at: U64, count: U64):
+    requires count <= memory.capacity(source)
+    requires at + count <= memory.capacity(target)
+    requires memory.initialized_range(source, 0, count)
+    requires memory.empty_range(target, at, at + count)
+    ensures memory.empty_range(target, at, at + count)
+    proof:
+        auto
+    memory.copy_into_unchecked(source, target, at, count)
+    return
+
+fn main():
+    return

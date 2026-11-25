@@ -1,0 +1,4 @@
+// Refused: a Listener accepts; it cannot dial out.
+import net
+fn main(listener: Listener):
+    let socket = listener.connect("example.com:80")

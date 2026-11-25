@@ -1,0 +1,11 @@
+// Every value a variant holds is named, or `_`.
+type Shape:
+    Dot
+    Box(U64, U64, U64)
+
+fn main(console: Console<Write>):
+    match Box(1, 2, 3):
+        Box(width, height):
+            console.print_int(width)
+        Dot:
+            console.print_int(0)

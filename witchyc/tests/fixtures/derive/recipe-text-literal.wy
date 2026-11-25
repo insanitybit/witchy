@@ -1,0 +1,25 @@
+// A recipe's text literal is the program's own (it once compiled to another literal's text, so
+// recipes refused literals): the program prints its literals before and after, the recipe's
+// `"named by a recipe"` and `"first"` (also the program's), each its own text.
+import console
+
+trait Named:
+    fn name(self: &Self) -> Text
+    fn first(self: &Self) -> Text
+
+derive Label:
+    impl Named for Self:
+        fn name(self: &Self) -> Text:
+            return "named by a recipe"
+        fn first(self: &Self) -> Text:
+            return "first"
+
+type Point derive(Label):
+    x: U64
+
+fn main(console: Console<Write>):
+    console.line("first")
+    let p = Point(x: 1)
+    console.line(p.name())
+    console.line(p.first())
+    console.line("last")

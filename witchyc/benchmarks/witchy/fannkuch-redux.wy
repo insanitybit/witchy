@@ -1,0 +1,52 @@
+// Enumerate permutations in the Benchmarks Game's fannkuch order.
+import console
+import int
+
+fn main(console: Console<Write>):
+    let n: U64 = 10
+    var order: [U64; 12] = [0; 12]
+    var counts: [U64; 12] = [0; 12]
+    for i in 0..n:
+        order[i] = i
+    var r = n
+    var rank: U64 = 0
+    var maximum: U64 = 0
+    var checksum: I64 = 0
+    while r > 0:
+        while r > 1:
+            counts[r - 1] = r
+            r -= 1
+        var work = order
+        var flips: U64 = 0
+        while work[0] != 0:
+            var low: U64 = 0
+            var high = work[0]
+            while low < high:
+                let saved = work[low]
+                work[low] = work[high]
+                work[high] = saved
+                low += 1
+                high -= 1
+            flips += 1
+        if rank % 2 == 0:
+            checksum += I64.from_bits(flips)
+        else:
+            checksum -= I64.from_bits(flips)
+        if flips > maximum:
+            maximum = flips
+        var advanced = false
+        while !advanced && r < n:
+            let first = order[0]
+            for i in 0..r:
+                order[i] = order[i + 1]
+            order[r] = first
+            counts[r] -= 1
+            if counts[r] > 0:
+                advanced = true
+            else:
+                r += 1
+        if r == n:
+            console.print_i64(checksum)
+            console.print("Pfannkuchen(${n}) = ${maximum}")
+            return
+        rank += 1

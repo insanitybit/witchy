@@ -1,0 +1,74 @@
+// The `Host` check a server makes (`http.host_status`): a request is answered only when its one
+// `Host` header names the authority the server was granted, so a page that led a browser to a
+// loopback server under another name (DNS rebinding) gets nothing. 0: answer; 400: no `Host`
+// header, or more than one; 421: a `Host` that names anything else.
+import console
+import string
+import span
+import http
+
+fn check(console: &Console<Write>, allocator: &Allocator, authority: Text, sent: Text):
+    check_with_scheme(console, allocator, authority, sent, false)
+
+fn check_with_scheme(console: &Console<Write>, allocator: &Allocator, authority: Text, sent: Text, secure: Bool):
+    let Ok(made): String = String.new(allocator) else Err(code):
+        unreachable
+    var whole = move made
+    let Ok(named): String = String.new(allocator) else Err(code):
+        unreachable
+    var granted = move named
+    if whole.push_text(allocator, sent).is_err() || granted.push_text(allocator, authority).is_err():
+        unreachable
+    match http.request(whole.span()):
+        Ok(head):
+            let status = if secure:
+                http.https_host_status(head.headers, granted.span())
+            else:
+                http.host_status(head.headers, granted.span())
+            console.print_int(status)
+        Err(error):
+            console.line("not a request")
+    whole.close()
+    granted.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let four: Text = "127.0.0.1:8417"
+    let six: Text = "[::1]:8417"
+    // The granted authority, exactly; with other headers around it; whatever the header's case.
+    check(&console, &allocator, four, "GET / HTTP/1.1\r\nHost: 127.0.0.1:8417\r\n\r\n")
+    check(&console, &allocator, four, "GET / HTTP/1.1\r\nAccept: */*\r\nhOsT:127.0.0.1:8417  \r\nUser-Agent: x\r\n\r\n")
+    check(&console, &allocator, six, "GET / HTTP/1.1\r\nHost: [::1]:8417\r\n\r\n")
+    console.line("absent or repeated")
+    check(&console, &allocator, four, "GET / HTTP/1.0\r\n\r\n")
+    check(&console, &allocator, four, "GET / HTTP/1.1\r\nAccept: */*\r\nX-Host: 127.0.0.1:8417\r\n\r\n")
+    check(&console, &allocator, four, "GET / HTTP/1.1\r\nHost: 127.0.0.1:8417\r\nHost: 127.0.0.1:8417\r\n\r\n")
+    check(&console, &allocator, four, "GET / HTTP/1.1\r\nHost: 127.0.0.1:8417\r\nhost: evil.example\r\n\r\n")
+    check(&console, &allocator, four, "GET / HTTP/1.1\r\nHost: evil.example\r\n Host: 127.0.0.1:8417\r\n\r\n")
+    console.line("another name")
+    check(&console, &allocator, four, "GET / HTTP/1.1\r\nHost: evil.example:8417\r\n\r\n")
+    check(&console, &allocator, four, "GET / HTTP/1.1\r\nHost: localhost:8417\r\n\r\n")
+    check(&console, &allocator, four, "GET / HTTP/1.1\r\nHost: 127.0.0.1:8418\r\n\r\n")
+    check(&console, &allocator, four, "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+    check(&console, &allocator, four, "GET / HTTP/1.1\r\nHost: 127.0.0.1:8417.evil.example\r\n\r\n")
+    check(&console, &allocator, four, "GET / HTTP/1.1\r\nHost: 127.0.0.1:8417, evil.example\r\n\r\n")
+    check(&console, &allocator, four, "GET / HTTP/1.1\r\nHost:\r\n\r\n")
+    check(&console, &allocator, four, "GET / HTTP/1.1\r\nHost: [::1]:8417\r\n\r\n")
+    check(&console, &allocator, six, "GET / HTTP/1.1\r\nHost: ::1:8417\r\n\r\n")
+    check(&console, &allocator, six, "GET / HTTP/1.1\r\nHost: [0:0:0:0:0:0:0:1]:8417\r\n\r\n")
+    check(&console, &allocator, six, "GET / HTTP/1.1\r\nHost: 127.0.0.1:8417\r\n\r\n")
+    // Nothing is granted to answer for: nothing is answered.
+    check(&console, &allocator, "", "GET / HTTP/1.1\r\nHost: 127.0.0.1:8417\r\n\r\n")
+    console.line("port 80 may be left out, and only port 80")
+    check(&console, &allocator, "127.0.0.1:80", "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+    check(&console, &allocator, "[::1]:80", "GET / HTTP/1.1\r\nHost: [::1]\r\n\r\n")
+    check(&console, &allocator, "127.0.0.1:80", "GET / HTTP/1.1\r\nHost: 127.0.0.1:80\r\n\r\n")
+    check(&console, &allocator, "127.0.0.1:8080", "GET / HTTP/1.1\r\nHost: 127.0.0.1:80\r\n\r\n")
+    check(&console, &allocator, "127.0.0.1:80", "GET / HTTP/1.1\r\nHost: evil.example\r\n\r\n")
+
+    console.line("HTTPS omits only port 443")
+    check_with_scheme(&console, &allocator, "registry.test:443", "GET / HTTP/1.1\r\nHost: REGISTRY.test\r\n\r\n", true)
+    check_with_scheme(&console, &allocator, "registry.test:443", "GET / HTTP/1.1\r\nHost: registry.test:443\r\n\r\n", true)
+    check_with_scheme(&console, &allocator, "registry.test:80", "GET / HTTP/1.1\r\nHost: registry.test:80\r\n\r\n", true)
+    check_with_scheme(&console, &allocator, "registry.test:80", "GET / HTTP/1.1\r\nHost: registry.test\r\n\r\n", true)
+    check_with_scheme(&console, &allocator, "registry.test:8443", "GET / HTTP/1.1\r\nHost: registry.test\r\n\r\n", true)
+    check_with_scheme(&console, &allocator, "registry.test:443", "GET / HTTP/1.1\r\nHost: registry.test\r\nHost: registry.test:443\r\n\r\n", true)

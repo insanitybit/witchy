@@ -1,0 +1,37 @@
+// `index` reads the view, but the view's `ensures` speaks of `cap`, not of `used`, which `len`
+// returns: the reads keep their test, and the fifth traps.
+sealed type Vec:
+    cells: [U64; 4]
+    used: U64
+    cap: U64
+    invariant cap == 4
+
+impl Vec:
+    fn new(cells: [U64; 4], used: U64, cap: U64) -> Vec:
+        requires cap == 4
+        ensures true
+        proof:
+            auto
+        return Vec(cells, used, cap)
+
+    fn len(v: &Vec) -> U64:
+        return (*v).used
+
+    fn view(v: &Vec) -> &[U64]:
+        ensures result.len() == v.cap
+        proof:
+            auto
+        return (*v).cells.slice()
+
+    fn index(v: &Vec, at: U64) -> U64:
+        return v.view()[at]
+
+fn total(v: &Vec) -> U64:
+    var n: U64 = 0
+    for i in 0..v.len():
+        n += v[i]
+    return n
+
+fn main(console: Console<Write>):
+    let v = Vec.new([1, 2, 3, 4], 5, 4)
+    console.print_int(total(&v))

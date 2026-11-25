@@ -1,0 +1,14 @@
+// A program's own types named `R` and `A0` beside closures: the call traits the compiler
+// writes name their type parameters so as not to meet a program's names (they were `R` and
+// `A0`, and a program type `R` was refused with an error pointing past its source).
+import console
+
+type R:
+    x: U64
+
+type A0:
+    y: U64
+
+fn main(console: Console<Write>):
+    let f = fn(n: U64) -> U64: n + 1
+    console.print_int(f(R(4).x) + A0(10).y)

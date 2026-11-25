@@ -1,0 +1,12 @@
+fn check(buffer: &Buffer<U8>, bytes: &[U8]) -> Bool:
+    ensures !result || memory.utf8(bytes, 0, bytes.len())
+    proof:
+        auto
+    match str.from_utf8_bytes(bytes):
+        Ok(text):
+            return true
+        Err(code):
+            return false
+
+fn main():
+    return

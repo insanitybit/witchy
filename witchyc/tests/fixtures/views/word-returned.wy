@@ -1,0 +1,26 @@
+// A word found by `for word in fields.words()` is returned: it is part of the String, not of
+// the loop's own `Words` value.
+import console
+import span
+import string
+
+fn second(fields: Span) -> Result<Span, U64>:
+    var at: U64 = 0
+    for word in fields.words():
+        if at == 1:
+            return Ok(word)
+        at += 1
+    return Err(0)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var text = move made
+    let _ = text.push_text(&allocator, "bolt hardware 100")
+    match second(text.span()):
+        Ok(word):
+            write_span(&console, word)
+            console.line("")
+        Err(code):
+            console.line("none")
+    text.close()

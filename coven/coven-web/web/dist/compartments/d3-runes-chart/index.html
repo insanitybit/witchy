@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>D3 Runes Chart</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      font-family: system-ui, sans-serif;
+      background: transparent;
+    }
+    body {
+      margin: 0;
+      padding: 12px;
+    }
+    #chart {
+      min-height: 140px;
+    }
+    svg {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+  </style>
+</head>
+<body>
+  <main id="chart" aria-label="Runes published over time"></main>
+  <script>
+(() => {
+  "use strict";
+
+  const WIDTH = 640;
+  const HEIGHT = 180;
+  const PAD = 20;
+  const GAP = 8;
+
+  function cleanCount(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n) || n < 0) return 0;
+    return Math.floor(n);
+  }
+
+  function normalizePoints(input) {
+    const points = Array.isArray(input) ? input : [];
+    return points.map((point) => ({ count: cleanCount(point && point.count) }));
+  }
+
+  function parseGrant(grant) {
+    if (typeof grant !== "string") return [];
+    try {
+      return normalizePoints(JSON.parse(grant));
+    } catch (_err) {
+      return [];
+    }
+  }
+
+  function barChartSvg(points) {
+    const clean = normalizePoints(points);
+    const max = Math.max(1, ...clean.map((point) => point.count));
+    const plotWidth = WIDTH - PAD * 2;
+    const plotHeight = HEIGHT - PAD * 2;
+    const slot = clean.length === 0 ? plotWidth : plotWidth / clean.length;
+    const barWidth = Math.max(1, slot - GAP);
+    const bars = clean.map((point, index) => {
+      const h = Math.round((point.count / max) * plotHeight);
+      const x = Math.round(PAD + index * slot + GAP / 2);
+      const y = HEIGHT - PAD - h;
+      return `<rect class="bar" data-index="${index}" data-count="${point.count}" x="${x}" y="${y}" width="${Math.round(barWidth)}" height="${h}"></rect>`;
+    }).join("");
+    return `<svg viewBox="0 0 ${WIDTH} ${HEIGHT}" role="img" aria-label="Runes published over time">${bars}</svg>`;
+  }
+
+  function renderGrant(grant) {
+    const root = globalThis.document && document.getElementById("chart");
+    if (!root) return;
+    root.innerHTML = barChartSvg(parseGrant(grant));
+    const height = Math.ceil(root.getBoundingClientRect ? root.getBoundingClientRect().height : HEIGHT);
+    if (activePort) activePort.postMessage({ kind: "event", values: [height] });
+  }
+
+  let activePort = null;
+  globalThis.__runesChart = { barChartSvg, parseGrant, normalizePoints };
+
+  globalThis.addEventListener && globalThis.addEventListener("message", (event) => {
+    if (event.data && event.data.kind === "init" && event.ports && event.ports[0]) {
+      activePort = event.ports[0];
+      activePort.onmessage = (portEvent) => {
+        if (portEvent.data && portEvent.data.kind === "grant") renderGrant(portEvent.data.data);
+      };
+      activePort.start && activePort.start();
+    }
+  });
+})();
+  </script>
+</body>
+</html>

@@ -1,0 +1,37 @@
+// The standard `Option`: built where an Option is expected, asked about, and turned into a
+// Result. An owner inside is moved out, never copied.
+import console
+import option
+import string
+
+fn find(values: [U64; 4], wanted: U64) -> Option<U64>:
+    for index in 0..4:
+        if values[index] == wanted:
+            return Some(index)
+    return None
+
+fn name(allocator: &Allocator, wanted: Bool) -> Option<String>:
+    if !wanted:
+        return None
+    let Ok(made): String = String.new(allocator) else Err(code):
+        return None
+    var text = move made
+    let _ = text.push(allocator, 65)
+    return Some(move text)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let values = [5, 7, 9, 11]
+    console.print_int(find(values, 9).unwrap_or(100))
+    console.print_int(find(values, 8).unwrap_or(100))
+    console.print_int(if find(values, 5).is_some(): 1 else: 0)
+    match name(&allocator, true).ok_or(3):
+        Ok(text):
+            console.print_int(text.byte_len())
+            text.close()
+        Err(code):
+            console.print_int(code)
+    match name(&allocator, false).ok_or(3):
+        Ok(text):
+            text.close()
+        Err(code):
+            console.print_int(code)

@@ -1,0 +1,15 @@
+// `inner` is gone when its path ends.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-span.wy"
+
+fn pick(first: Bool) -> U64:
+    var a: U64 = 1
+    let r = if first:
+        &a
+    else:
+        let inner: U64 = 7
+        &inner
+    return *r
+
+fn main(console: Console<Write>):
+    console.print_int(pick(false))

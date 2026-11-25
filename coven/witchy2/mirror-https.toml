@@ -1,0 +1,17 @@
+[run]
+entry = "mirror_https.wy"
+module-bytes = 131072
+heap-pages = 9
+slots = 64
+stack-bytes = 16384
+deadline-ms = 300000
+connection-deadline-ms = 2000
+fuel-per-connection = 30000000
+net-bytes = "unlimited"
+net-bytes-per-connection = 2260992
+file-bytes = "unlimited"
+file-bytes-per-connection = 2163200
+
+[grants]
+document = "mirror-https.grants.toml"
+allocator = true

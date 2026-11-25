@@ -1,0 +1,20 @@
+// Refused (adversarial review of the key law, q_self_second): accepted before, with two equal keys hashing apart.
+import console
+import hash
+
+type K:
+    a: U64
+
+impl Eq for K:
+    fn eq(other: &K, self: &K) -> Bool:
+        return (*self).a == (*self).a
+
+impl HashKey for K:
+    fn feed(self: &K, state: &mut HashState):
+        (*self).a.feed(state)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    if K(a: 1) == K(a: 2):
+        console.print_int(1)
+    console.print_int(hash_key(&K(a: 1), Reference(1)))
+    console.print_int(hash_key(&K(a: 2), Reference(1)))

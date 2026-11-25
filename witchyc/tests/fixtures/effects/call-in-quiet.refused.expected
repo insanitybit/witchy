@@ -1,0 +1,1 @@
+a call inside `nosuspend:` that may pause its task: `wait_for_data` may pause

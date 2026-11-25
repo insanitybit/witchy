@@ -1,0 +1,33 @@
+// As caller-arm-facts.wy, for the fields of a record the `Ok` variant holds.
+import console
+
+type Pair:
+    low: U64
+    high: U64
+
+fn make(a: U64, b: U64) -> Result<Pair, U64>:
+    ensures match result:
+        Ok(made):
+            made.low <= made.high
+        Err(code):
+            true
+    proof:
+        auto
+    if a > b:
+        return Err(1)
+    return Ok(Pair(a, b))
+
+// `high - low` cannot go below zero: the callee says `low <= high` of what `Ok` holds.
+fn width(a: U64, b: U64) -> U64:
+    ensures true
+    proof:
+        auto
+    match make(a, b):
+        Ok(pair):
+            return pair.high - pair.low
+        Err(code):
+            return 0
+
+fn main(console: Console<Write>):
+    console.print_int(width(2, 9))
+    console.print_int(width(9, 2))

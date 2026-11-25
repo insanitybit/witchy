@@ -1,0 +1,16 @@
+// Numbers written without a newline, and at the right of a column.
+import "../../../library/wasm-console.wy"
+
+fn main(console: Console<Write>):
+    console.write_u64(0)
+    console.line("")
+    console.write_u64(9)
+    console.write_u64(10)
+    console.write_u64(1000)
+    console.line("")
+    console.write_u64(18446744073709551615)
+    console.line("")
+    console.write_u64_right(7, 4)
+    console.write_u64_right(12345, 4)
+    console.write_u64_right(18446744073709551615, 22)
+    console.line("|")

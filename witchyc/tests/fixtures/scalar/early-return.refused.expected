@@ -1,0 +1,2 @@
+proof failed: function `count`
+  not proved: ensures result == limit

@@ -1,0 +1,10 @@
+// Refused, naming what the value's type has: `write_int` is `write_u64`.
+import console
+
+fn main(console: Console<Write>):
+    for i in 0..300000:
+        console.write("n=")
+        console.write_int(i)
+        console.write(" sq=")
+        console.write_int(i * 3)
+        console.line("")

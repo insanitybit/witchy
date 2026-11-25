@@ -1,0 +1,9 @@
+// Refused: two element references from one unique slice at once.
+import console
+fn main(console: Console<Write>):
+    var numbers: [U64; 4] = [1, 2, 3, 4]
+    let s = numbers.slice_mut()
+    let c = s.cell(0)
+    let d = s.cell(1)
+    *c = 1
+    *d = 2

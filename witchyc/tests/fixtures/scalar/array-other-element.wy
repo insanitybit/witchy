@@ -1,0 +1,15 @@
+// A store to another literal index keeps what is known of `ys[0]`.
+import console
+
+fn bump(xs: [U64; 3]) -> U64:
+    requires xs[0] < 1000
+    ensures result < 1001
+    proof:
+        auto
+    var ys = xs
+    ys[1] = 5000
+    ys[0] + 1
+
+fn main(console: Console<Write>):
+    let given = [1, 2, 3]
+    console.print_int(bump(given))

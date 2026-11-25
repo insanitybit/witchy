@@ -1,0 +1,33 @@
+// Span.parse_i64 over parts of a line: signs, the least and greatest I64, one past each, no
+// digits, a stray byte. String.parse_i64 is the same, through its Span.
+import console
+import string
+import span
+import int
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(e):
+        return
+    var text = move made
+    let _ = text.push_text(&allocator, "12,-7,0,-0,9223372036854775807,-9223372036854775808,9223372036854775808,-9223372036854775809,,-,4x")
+    var rest = text.span()
+    var going = true
+    while going:
+        let part = match rest.split(','):
+            Ok(halves):
+                rest = halves.tail
+                halves.head
+            Err(last):
+                going = false
+                last
+        match part.parse_i64():
+            Ok(value):
+                console.print_i64(value)
+            Err(code):
+                console.print("error ${code}")
+    match text.parse_i64():
+        Ok(value):
+            console.print_i64(value)
+        Err(code):
+            console.print("whole: error ${code}")
+    text.close()

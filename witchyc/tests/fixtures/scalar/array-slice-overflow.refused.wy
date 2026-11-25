@@ -1,0 +1,16 @@
+// Refused (review): after a callee stores through a mutable slice, `xs[0] + 1` may overflow.
+import console
+
+fn fill(s: &mut [U64]):
+    s[0] = 18446744073709551615
+
+fn f() -> U64:
+    ensures result == 2
+    proof:
+        auto
+    var xs: [U64; 2] = [1, 2]
+    fill(xs.slice_mut())
+    return xs[0] + 1
+
+fn main(console: Console<Write>):
+    console.print_int(f())

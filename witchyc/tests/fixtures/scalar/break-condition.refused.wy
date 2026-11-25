@@ -1,0 +1,18 @@
+// The loop may be left at 5 with the condition still true.
+import "../../../library/wasm-console.wy"
+
+fn stop(n: U64) -> U64:
+    requires n < 1000
+    ensures result == n
+    proof:
+        auto
+    var index: U64 = 0
+    while index < n:
+        invariant index <= n
+        if index == 5:
+            break
+        index += 1
+    return index
+
+fn main(console: Console<Write>):
+    console.print_int(stop(9))

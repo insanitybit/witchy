@@ -1,0 +1,1 @@
+`memory.vacant` ends the value itself, not a reference to it

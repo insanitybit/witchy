@@ -1,0 +1,38 @@
+// A parser-shaped function takes `&mut` scratch, which no variant borrows from: the signature is
+// allowed (it was refused: a `&` result might have pointed into the `&mut`), and in the `Source`
+// arm the scratch is free while the text from the input is used.
+import console
+import string
+
+type Piece:
+    Source(&String)
+    Decoded
+
+// Text from `input` as it is, or a note that it was decoded into `scratch`.
+fn piece(input: &String, scratch: &mut String, allocator: &Allocator) -> Piece:
+    borrows Source from input
+    if input.byte_len() > 3:
+        let _ = scratch.push_text(allocator, "decoded")
+        return Decoded
+    return Source(input)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var held = move made
+    let _ = held.push_text(&allocator, "abc")
+    let Ok(other): String = String.new(&allocator) else Err(code):
+        held.close()
+        return
+    var space = move other
+    match piece(&held, &mut space, &allocator):
+        Source(text):
+            space.clear()
+            console.write_string(text)
+            console.line("")
+        Decoded:
+            held.clear()
+            console.write_string(&space)
+            console.line("")
+    held.close()
+    space.close()

@@ -1,0 +1,48 @@
+import "../ci/client_reply.wy"
+import discard
+import json_tree
+import string
+import text
+import testing
+
+test fn ci_client_checks_replies_before_exporting_them(allocator: &Allocator) -> Result<(), Failure>:
+    let stage: Text = "{\"route\":\"/v1/ci/stage\",\"package\":\"demo\",\"digest\":\"bound-digest\"}"
+    let receipt: Text = "{\"route\":\"/v1/ci/receipt\",\"package\":\"demo\",\"digest\":\"bound-digest\"}"
+    let challenge: Text = "{\"route\":\"/v1/ci/challenge\"}"
+    checks_reply(allocator, stage, "{\"name\":\"demo\",\"digest\":\"bound-digest\"}", 0)?
+    checks_reply(allocator, stage, "{\"name\":\"wrong\",\"digest\":\"bound-digest\"}", 7)?
+    checks_reply(allocator, receipt, "{\"name\":\"demo\",\"digest\":\"wrong\"}", 7)?
+    checks_reply(allocator, challenge, "{\"nonce\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.123.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}", 0)?
+    return checks_reply(allocator, challenge, "{\"nonce\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.123.bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.\"}", 6)
+
+fn checks_reply(allocator: &Allocator, request: Text, response: Text, code: U64) -> Result<(), Failure>:
+    let raw = testing.set_up(reply_text(allocator, request))?
+    let parsed = json_tree(&raw, allocator)
+    raw.close()
+    let Ok(document): Json = move parsed else Err(reason):
+        return testing.ok(false)
+    let made = reply_text(allocator, response)
+    let Ok(body): String = move made else Err(reason):
+        document.discard()
+        return testing.ok(false)
+    let decoded = json_tree(&body, allocator)
+    body.close()
+    let Ok(reply): Json = move decoded else Err(reason):
+        document.discard()
+        return testing.ok(false)
+    let checked = check_client_reply(&document, &reply)
+    reply.discard()
+    document.discard()
+    match checked:
+        Ok(value):
+            return testing.eq_u64(code, 0)
+        Err(reason):
+            return testing.eq_u64(code, reason)
+
+fn reply_text(allocator: &Allocator, text: Text) -> Result<String, U64>:
+    let empty = String.with_capacity(allocator, text.byte_len())?
+    var raw = move empty
+    if let Err(code) = raw.push_text(allocator, text):
+        raw.close()
+        return Err(code)
+    return Ok(move raw)

@@ -1,0 +1,27 @@
+// A `yield` inside `for item in container`: the generator keeps the position between steps;
+// `continue` takes the next element, and each element here yields twice.
+import console
+
+gen fn doubled(items: &[U64]) -> U64:
+    for item in items:
+        let value: U64 = *item
+        if value == 3:
+            continue
+        yield value * 2
+        yield value * 2 + 1
+
+fn main(console: Console<Write>):
+    let numbers: [U64; 4] = [1, 2, 3, 4]
+    for n in doubled(numbers.slice()):
+        console.print_int(n)
+    report(&console)
+
+gen fn positions(items: &[U64], wanted: U64) -> U64:
+    for index, item in items:
+        if *item == wanted:
+            yield index
+
+fn report(console: &Console<Write>):
+    let numbers: [U64; 5] = [7, 1, 7, 2, 7]
+    for at in positions(numbers.slice(), 7):
+        console.print_int(at)

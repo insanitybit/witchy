@@ -1,0 +1,8 @@
+// The least I64 divided by -1 is outside I64.
+import "../../../library/wasm-int.wy"
+
+fn work(a: I64, b: I64) -> I64:
+    return a / b
+
+fn main(console: Console<Write>):
+    console.print_i64(work(-9223372036854775808, -1))

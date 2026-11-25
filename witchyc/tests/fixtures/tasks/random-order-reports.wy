@@ -1,0 +1,76 @@
+// Eight tasks, each reporting its own sequence (task k: k*1000, k*1000+1, ..., with a length of
+// its own and an F64 and an array kept across pauses), stepped in a random order: each task's
+// reports arrive in order and complete, and the sums it returns at the end agree.
+import console
+import tasks
+import vec
+
+fn work(seed: U64) suspends:
+    let k = seed % 8
+    let length = 20 + seed % 37
+    var kept: [U64; 16] = [0; 16]
+    var weight: F64 = 0.5
+    for i in 0..length:
+        kept[i % 16] += i
+        weight = weight * 2.0
+        if weight > 1000.0:
+            weight = 0.5
+        report(k * 1000 + i)
+    var total: U64 = 0
+    for v in kept:
+        total += *v
+    // Last report: the sum of 0..length, kept across every pause in the array.
+    report(900000 + total)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(v): Vec<Task> = Vec.new(&allocator, 8) else Err(c):
+        return
+    var running = move v
+    var lengths: [U64; 8] = [0; 8]
+    for k in 0..8:
+        let seed = k + 8 * (k * 7 % 5)
+        lengths[k] = 20 + seed % 37
+        let Ok(t): Task = Task.spawn(&allocator, 4096, work, seed) else Err(given):
+            // Tasks already made have not finished, so cannot be closed: stop the run.
+            unreachable
+        match running.push_mut(&allocator, move t):
+            Ok:
+                continue
+            Err(back):
+                unreachable
+    var next: [U64; 8] = [0; 8]
+    var done: [Bool; 8] = [false; 8]
+    var sums: [Bool; 8] = [false; 8]
+    var wrong: U64 = 0
+    var left: U64 = 8
+    var seed: U64 = 4242
+    var steps: U64 = 0
+    while left > 0:
+        seed = seed * 48271 % 2147483647
+        let k = seed % 8
+        if done[k]:
+            continue
+        steps += 1
+        match running.at_mut(k):
+            Ok(task):
+                match task.step():
+                    Ok:
+                        done[k] = true
+                        left -= 1
+                        if next[k] != lengths[k] || !sums[k]:
+                            wrong += 1
+                    Err(token):
+                        let value = token - REPORTED
+                        if value >= 900000:
+                            let n = lengths[k]
+                            if value - 900000 != n * (n - 1) / 2:
+                                wrong += 1
+                            sums[k] = true
+                        else:
+                            if value != k * 1000 + next[k]:
+                                wrong += 1
+                            next[k] += 1
+            Err(c):
+                wrong += 1
+    console.print("${wrong} wrong, ${steps} steps")
+    running.close_all()

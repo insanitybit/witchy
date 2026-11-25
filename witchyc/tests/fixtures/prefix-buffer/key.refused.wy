@@ -1,0 +1,6 @@
+// A PrefixBuffer issues no key.
+fn key<T>(buffer: &PrefixBuffer<T>) -> U64:
+    return memory.allocation_key(buffer)
+
+fn main(out: Console<Write>):
+    out.print_int(0)

@@ -1,0 +1,1 @@
+`add` is `nopanic`, but it can trap: overflow in its own body

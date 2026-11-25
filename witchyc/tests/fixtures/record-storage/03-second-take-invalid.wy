@@ -1,0 +1,17 @@
+type Entry:
+    byte: U8
+    word: U64
+
+fn main(console: Console<Write>):
+    var data: Buffer<Entry> = memory.alloc(1)
+    let zero: U8 = 0
+    memory.init(&mut data, 0, Entry(zero, 4294967297))
+    let first: Entry = memory.take(&mut data, 0)
+    console.print_int(first.word)
+    discard(move first)
+    // Deliberately leave the element uninitialized after the first take.
+    let second: Entry = memory.take(&mut data, 0)
+    console.print_int(second.word)
+    discard(move second)
+    memory.release(data)
+    console.print_int(42)

@@ -1,0 +1,41 @@
+// Refused by the checker: the shelf is lent whole while it is half repaired, its slot drained by
+// the helper and its count still 1. Lending a field to a helper is a write of that field.
+type Slot<T>:
+    Vacant
+    Full(T)
+
+impl<T: Any> Slot<T>:
+    // Empty the slot and hand back what was in it.
+    pub nopanic fn drain(slot: &mut Slot<T>) -> Slot<T>:
+        var previous: Slot<T> = Vacant
+        memory.exchange(&mut *slot, &mut previous)
+        return move previous
+
+// A vacant shelf counts nothing: the two fields are linked.
+sealed type Shelf<T>:
+    count: U64
+    slot: Slot<T>
+    invariant when Vacant = slot:
+        count == 0
+
+
+impl<T: Any> Shelf<T>:
+    // Relies on the invariant: on a vacant shelf a count other than 0 cannot be.
+    nopanic fn audit(shelf: &Shelf<T>) -> U64:
+        match &(*shelf).slot:
+            Vacant:
+                if (*shelf).count != 0:
+                    unreachable
+                return 0
+            Full(_):
+                return (*shelf).count
+
+    nopanic fn swap_in(shelf: &mut Shelf<T>, item: T) -> Slot<T>:
+        let held = (*shelf).slot.drain()
+        let seen = Shelf.audit(&*shelf)
+        (*shelf).slot = Full(move item)
+        return move held
+
+fn main(out: Console<Write>):
+    out.print_int(1)
+

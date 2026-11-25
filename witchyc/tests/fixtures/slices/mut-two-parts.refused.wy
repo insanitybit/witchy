@@ -1,0 +1,17 @@
+// Refused: two parts of one unique slice in use at once (no split yet).
+import console
+fn fill(s: &mut [U64], value: U64):
+    for i in 0..s.len():
+        match s.at(i):
+            Ok(cell):
+                *cell = value + i
+            Err(code):
+                return
+
+fn main(console: Console<Write>):
+    var numbers: [U64; 4] = [0, 0, 0, 0]
+    let s = numbers.slice_mut()
+    let a = s.part(0, 2)
+    let b = s.part(2, 4)
+    fill(a, 1)
+    fill(b, 2)

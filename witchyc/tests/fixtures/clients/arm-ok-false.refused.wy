@@ -1,0 +1,28 @@
+// The Ok clause must hold where Ok is returned.
+type Pair:
+    left: U64
+    right: U64
+
+impl Pair:
+    fn first(pair: &Pair) -> U64:
+        return (*pair).left
+
+    fn second(pair: &Pair) -> U64:
+        return (*pair).right
+
+fn raise(pair: &mut Pair, by: U64) -> Result<(), U64>:
+    ensures match result:
+        Ok:
+            pair.first() == old(pair.first()) + by
+        Err(code):
+            pair.first() == old(pair.first())
+    proof:
+        auto
+    if by > 1000 || (*pair).left > 1000:
+        return Err(by)
+    (*pair).left += 1
+    return Ok(())
+
+fn main(console: Console<Write>):
+    console.print_int(0)
+

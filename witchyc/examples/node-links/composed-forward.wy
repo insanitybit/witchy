@@ -1,0 +1,51 @@
+import cell_list
+
+nopanic fn third(list: &DoublyLinkedList<U64>, other: &DoublyLinkedList<U64>) -> U64:
+    match list.front():
+        Some(first):
+            match list.next(first):
+                Some(second):
+                    match list.next(second):
+                        Some(third_node):
+                            let value = *third_node.item()
+                            return value
+                        None:
+                            return 0
+                None:
+                    return 0
+        None:
+            return 0
+
+nopanic fn main(out: Console<Write>, a: Allocator):
+    var list: DoublyLinkedList<U64> = DoublyLinkedList.new()
+    var other: DoublyLinkedList<U64> = DoublyLinkedList.new()
+    let miss_a = list.push_back(&a, 11)
+    if miss_a.is_some():
+        other.close()
+        list.close()
+        return
+    let miss_b = list.push_back(&a, 22)
+    if miss_b.is_some():
+        other.close()
+        list.close()
+        return
+    let miss_c = list.push_back(&a, 33)
+    if miss_c.is_some():
+        other.close()
+        list.close()
+        return
+    let miss_d = list.push_back(&a, 44)
+    if miss_d.is_some():
+        other.close()
+        list.close()
+        return
+    let miss_other = other.push_back(&a, 99)
+    if miss_other.is_some():
+        other.close()
+        list.close()
+        return
+    out.print_int(third(&list, &other))
+    out.print_int(list.pop_penultimate().unwrap_or(0))
+    out.print_int(third(&list, &other))
+    other.close()
+    list.close()

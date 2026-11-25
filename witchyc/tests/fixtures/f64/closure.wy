@@ -1,0 +1,12 @@
+// A closure captures an F64 (its type evident from a float literal) and a function type takes and
+// gives F64.
+import console
+import float
+
+fn apply(f: fn(F64) -> F64, x: F64) -> F64:
+    return f(x)
+
+fn main(console: Console<Write>):
+    let scale = 2.5
+    let g = fn(x: F64) -> F64: x * scale
+    console.print_f64(apply(g, 4.0), 2)

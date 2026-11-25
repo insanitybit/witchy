@@ -1,0 +1,77 @@
+// `cut` at random byte lengths of a String of mixed widths: the length changes only at a scalar
+// boundary below the current length, and what is left is the scalars before it.
+import console
+import string
+import vec
+
+fn width(c: U64) -> U64:
+    if c < 128:
+        return 1
+    if c < 2048:
+        return 2
+    if c < 65536:
+        return 3
+    return 4
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var seed: U64 = 77
+    var wrong: U64 = 0
+    var cuts: U64 = 0
+    for round in 0..200:
+        let Ok(made): String = String.new(&allocator) else Err(c):
+            return
+        var s = move made
+        let Ok(w): Vec<U64> = Vec.new(&allocator, 16) else Err(c):
+            s.close()
+            return
+        var want = move w
+        // The byte offset where each scalar starts, and the total.
+        let Ok(o): Vec<U64> = Vec.new(&allocator, 16) else Err(c):
+            s.close()
+            want.close()
+            return
+        var starts = move o
+        var total: U64 = 0
+        for k in 0..12:
+            seed = seed * 48271 % 2147483647
+            var c = 32 + seed % 95
+            let kind = seed % 4
+            if kind == 1:
+                c = 128 + seed % 1920
+            else if kind == 2:
+                c = 2048 + seed % 50000
+            else if kind == 3:
+                c = 65536 + seed % 1000000
+            if c >= 55296 && c <= 57343:
+                c = 66
+            if let Ok(_) = s.push(&allocator, c):
+                let a = want.push_mut(&allocator, c)
+                let b = starts.push_mut(&allocator, total)
+                total += width(c)
+        seed = seed * 48271 % 2147483647
+        let at = seed % (total + 3)
+        // A boundary below the length: the first scalar starting there.
+        var boundary = false
+        var keep: U64 = 0
+        for i in 0..starts.len():
+            if starts[i] == at:
+                boundary = true
+                keep = i
+        s.cut(at)
+        if boundary && at < total:
+            cuts += 1
+            if s.byte_len() != at:
+                wrong += 1
+            var i: U64 = 0
+            for c in s.chars():
+                if i >= keep || c != want[i]:
+                    wrong += 1
+                i += 1
+            if i != keep:
+                wrong += 1
+        else if s.byte_len() != total:
+            wrong += 1
+        s.close()
+        want.close()
+        starts.close()
+    console.print("${wrong} wrong, ${cuts} cuts")

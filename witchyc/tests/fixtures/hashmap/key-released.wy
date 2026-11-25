@@ -1,0 +1,40 @@
+// The precision kept by the same rule: `get<Q: Equivalent<K>>` can hand out a reference
+// to a K, never to a V, so the key is free while the value is still used.
+import console
+import string
+import hashmap
+fn word(allocator: &Allocator, c: U64) -> String:
+    let Ok(made): String = String.new(allocator) else Err(code):
+        unreachable
+    var s = move made
+    if let Err(_) = s.push(allocator, c):
+        unreachable
+    return move s
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<HashMap<String, U64>, U64> = HashMap.new(&allocator, 4)
+    match move made:
+        Ok(start):
+            var map = move start
+            match map.insert(word(&allocator, 104), 7):
+                Ok:
+                    console.print_int(1)
+                Err(back):
+                    let Entry(k, v) = move back
+                    k.close()
+            let key = word(&allocator, 104)
+            match map.get(&key):
+                Ok(value):
+                    key.close()
+                    console.print_int(*value)
+                Err(code):
+                    key.close()
+            while map.len() > 0:
+                match map.take_any():
+                    Ok(entry):
+                        let Entry(k, v) = move entry
+                        k.close()
+                    Err(code):
+                        console.print_int(code)
+            map.release()
+        Err(code):
+            console.print_int(code)

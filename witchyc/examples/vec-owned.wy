@@ -1,0 +1,53 @@
+fn append_owner(input: Vec<Buffer<U64>>, item: Buffer<U64>) -> Vec<Buffer<U64>>:
+    match vec_push(move input, move item):
+        Ok(grown):
+            return move grown
+        Err(failed):
+            memory.release(failed.item)
+            return move failed.vector
+
+// This concrete application owns the element disposition. The generic library
+// never chooses how to destroy T. No representation or proof is exposed here.
+fn drain_owners(input: Vec<Buffer<U64>>) -> U64:
+    var vector = move input
+    var total: U64 = 0
+    while true:
+        match vec_pop(move vector):
+            Ok(popped):
+                vector = move popped.vector
+                match popped.item:
+                    Some(child):
+                        total += memory.read(&child, 0)
+                        memory.release(child)
+                    None:
+                        match vec_release(move vector):
+                            Ok(done):
+                                return total
+                            Err(remaining):
+                                vector = move remaining
+            Err(unchanged):
+                vector = move unchanged
+
+fn main(console: Console<Write>):
+    let created: Result<Vec<Buffer<U64>>, AllocError> = vec_new(0)
+    match created:
+        Ok(empty):
+            var vector = move empty
+            var i: USize = 0
+            while i < 8:
+                var child = memory.alloc(1)
+                memory.init(&mut child, 0, i)
+                vector = append_owner(move vector, move child)
+                i += 1
+            var replacement = memory.alloc(1)
+            memory.init(&mut replacement, 0, 100)
+            match vec_replace(move vector, 3, move replacement):
+                Ok(changed):
+                    console.print_int(memory.read(&changed.previous, 0))
+                    memory.release(changed.previous)
+                    console.print_int(drain_owners(move changed.vector))
+                Err(unchanged):
+                    memory.release(unchanged.replacement)
+                    console.print_int(drain_owners(move unchanged.vector))
+        Err(reason):
+            console.print_int(0)

@@ -1,0 +1,38 @@
+// mandelbrot (the Benchmarks Game): an n by n bitmap of the Mandelbrot set, eight pixels to a byte,
+// at most 50 iterations a pixel. Writes a binary PBM.
+import console
+
+fn main(console: Console<Write>):
+    let n: U64 = 2000
+    let size = F64.from_u64(n)
+    console.write("P4\n2000 2000\n")
+    var output = WordWriter.new()
+    for y in 0..n:
+        let ci = 2.0 * F64.from_u64(y) / size - 1.0
+        var byte: U64 = 0
+        var bit: U64 = 0
+        for x in 0..n:
+            let cr = 2.0 * F64.from_u64(x) / size - 1.5
+            var zr = 0.0
+            var zi = 0.0
+            var tr = 0.0
+            var ti = 0.0
+            var i: U64 = 0
+            while i < 50 && tr + ti <= 4.0:
+                zi = 2.0 * zr * zi + ci
+                zr = tr - ti + cr
+                tr = zr * zr
+                ti = zi * zi
+                i += 1
+            byte = byte * 2
+            if tr + ti <= 4.0:
+                byte += 1
+            bit += 1
+            if bit == 8 || x == n - 1:
+                while bit < 8:
+                    byte = byte * 2
+                    bit += 1
+                output.put(&console, U8.truncate(byte))
+                byte = 0
+                bit = 0
+    output.flush(&console)

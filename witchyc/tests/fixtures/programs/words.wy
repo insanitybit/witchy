@@ -1,0 +1,52 @@
+// Word statistics over text: while let over scalars, spread updating a record from itself, inline
+// ifs in a record, bit operations.
+import console
+import string
+import text
+
+type Stats:
+    words: U64
+    longest: U64
+    vowels: U64
+    mask: U64
+
+fn kind(byte: U8) -> U64:
+    match byte:
+        ' ' | '\n':
+            0
+        'a' | 'e' | 'i' | 'o' | 'u':
+            2
+        _:
+            1
+
+fn scan(text: &String) -> Stats:
+    var stats = Stats(words: 0, longest: 0, vowels: 0, mask: 0)
+    var run: U64 = 0
+    var cursor: U64 = 0
+    while let Ok(scalar) = text.next(&mut cursor):
+        let k = if scalar == 32 || scalar == 10: 0 else: 1
+        if k == 0:
+            if run > 0:
+                stats = Stats(..stats, words: stats.words + 1, longest: if run > stats.longest: run else: stats.longest)
+            run = 0
+        else:
+            run += 1
+            if scalar == 97 || scalar == 101 || scalar == 105 || scalar == 111 || scalar == 117:
+                stats.vowels += 1
+            if scalar >= 97 && scalar <= 122:
+                stats.mask = stats.mask | (1 << (scalar - 97))
+    if run > 0:
+        stats = Stats(..stats, words: stats.words + 1, longest: if run > stats.longest: run else: stats.longest)
+    stats
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var text = move made
+    let _ = text.push_text(&allocator, "the quick brown fox\njumps over the lazy dog")
+    let s = scan(&text)
+    console.print_int(s.words)
+    console.print_int(s.longest)
+    console.print_int(s.vowels)
+    console.print_int(if s.mask == 0x3FFFFFF: 1 else: 0)
+    text.close()

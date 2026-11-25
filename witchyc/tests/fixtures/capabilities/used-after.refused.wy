@@ -1,0 +1,14 @@
+// Refused: the console was handed to the logger.
+import "../../../library/wasm-console.wy"
+import "parts/logger.wy"
+
+fn work(log: &mut Logger):
+    for n in 0..3:
+        log.log(n * n)
+
+fn main(console: Console<Write>):
+    var log = logger(move console)
+    work(&mut log)
+    let total = log.lines()
+    log.log(total)
+    console.print_int(1)

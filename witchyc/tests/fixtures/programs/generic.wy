@@ -1,0 +1,124 @@
+// A program's own generic container and trait, over the library's.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-sort.wy"
+import "../../../library/wasm-text.wy"
+import "../../../library/wasm-vec.wy"
+import "../../../library/wasm-discard.wy"
+import "../../../library/wasm-discard-core.wy"
+
+trait Area:
+    fn area(self: &Self) -> U64
+
+type Shape:
+    Square(U64)
+    Box(U64, U64)
+
+impl Area for Shape:
+    fn area(self: &Shape) -> U64:
+        match self:
+            Square(side):
+                return *side * *side
+            Box(wide, high):
+                return *wide * *high
+
+impl Before for Shape:
+    fn before(self: &Shape, other: &Shape) -> Bool:
+        return self.area() < other.area()
+
+impl Discard for Shape:
+    fn discard(self: Shape):
+        return
+
+sealed type Stack<T>:
+    items: Vec<T>
+
+impl<T: Any> Stack<T>:
+    fn new(allocator: &Allocator) -> Result<Stack<T>, U64>:
+        let items: Vec<T> = Vec.new(allocator, 4)?
+        return Ok(Stack(move items))
+
+    fn push(self: &mut Stack<T>, allocator: &Allocator, item: T) -> Result<(), T>:
+        return self.items.push_mut(allocator, move item)
+
+    fn pop(self: &mut Stack<T>) -> Result<T, U64>:
+        return self.items.take_last_mut()
+
+    fn top(self: &Stack<T>) -> Result<&T, U64>:
+        if self.items.len() == 0:
+            return Err(1)
+        return self.items.at(self.items.len() - 1)
+
+    fn depth(self: &Stack<T>) -> U64:
+        return self.items.len()
+
+impl<T: Any + Discard> Stack<T>:
+    fn close(self: Stack<T>):
+        let Stack(items) = move self
+        items.discard()
+
+// The greatest element, by the type's own order.
+fn greatest<T: Any + Before>(items: &Vec<T>) -> Result<&T, U64>:
+    var best: U64 = 0
+    for index in 1..items.len():
+        if precedes(items, best, index):
+            best = index
+    return items.at(best)
+
+fn total<T: Any + Area>(items: &Vec<T>) -> U64:
+    var sum: U64 = 0
+    for item in items:
+        sum += item.area()
+    return sum
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<Stack<Shape>, U64> = Stack.new(&allocator)
+    var shapes = match move made:
+        Ok(empty):
+            move empty
+        Err(reason):
+            return
+    let _ = shapes.push(&allocator, Square(3))
+    let _ = shapes.push(&allocator, Box(2, 8))
+    let _ = shapes.push(&allocator, Square(2))
+    console.write_u64(shapes.depth())
+    console.line(" shapes")
+    match shapes.top():
+        Ok(shape):
+            console.write_u64(shape.area())
+            console.line(" on top")
+        Err(code):
+            console.line("empty")
+    match shapes.pop():
+        Ok(shape):
+            console.write_u64(shape.area())
+            console.line(" popped")
+        Err(code):
+            console.line("empty")
+    var plain: Vec<Shape> = match Vec.new(&allocator, 4):
+        Ok(empty):
+            move empty
+        Err(reason):
+            shapes.close()
+            return
+    while true:
+        match shapes.pop():
+            Ok(shape):
+                let _ = plain.push_mut(&allocator, shape)
+            Err(code):
+                break
+    console.write_u64(total(&plain))
+    console.line(" in all")
+    match greatest(&plain):
+        Ok(shape):
+            console.write_u64(shape.area())
+            console.line(" is the greatest")
+        Err(code):
+            console.line("none")
+    sort(&mut plain)
+    for index, shape in &plain:
+        console.write_u64(index)
+        console.write(": ")
+        console.write_u64(shape.area())
+        console.line("")
+    plain.close()
+    shapes.close()

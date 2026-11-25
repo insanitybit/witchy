@@ -1,0 +1,6 @@
+// A result type a call or a bare integer would decide is not inferred: state it.
+import console
+
+fn main(console: Console<Write>):
+    let f = fn(): 7
+    console.print_int(f())

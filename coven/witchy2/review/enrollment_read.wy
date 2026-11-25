@@ -1,0 +1,137 @@
+// Read the policy for issuance or the exact enrollment envelope for completion.
+import "challenge_bindings.wy"
+import "commit_request.wy"
+import "policy_document.wy"
+import "../tuf/base64url.wy"
+import "../tuf/canonical.wy"
+import "../tuf/release_trust.wy"
+import console
+import discard
+import json_tree
+import "@sqlite"
+import string
+import text
+import vec
+
+pub fn read_enrollment(request: &Json, snapshot: Bool, db: &Sqlite, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let empty = String.with_capacity(allocator, 128)?
+    var bindings = move empty
+    let bound = bind_read(request, snapshot, &mut bindings, allocator)
+    let checked = fetch_enrollment(db, &bindings, request, snapshot, output, bound, allocator)
+    bindings.close()
+    return checked
+
+fn bind_read(request: &Json, snapshot: Bool, bindings: &mut String, allocator: &Allocator) -> Result<(), U64>:
+    if !snapshot:
+        return Ok(())
+    let token = string_field(request, "token")?
+    let decoded = unpadded_base64url(token.as_bytes(), allocator, 48)?
+    let valid = decoded.len() == 48
+    decoded.close()
+    if !valid:
+        return Err(1)
+    return text_binding(bindings, "token", token, allocator)
+
+fn fetch_enrollment(db: &Sqlite, bindings: &String, request: &Json, snapshot: Bool, output: &Console<Write>, bound: Result<(), U64>, allocator: &Allocator) -> Result<(), U64>:
+    bound?
+    let empty = String.with_capacity(allocator, 1024)?
+    var plan = move empty
+    let written = read_plan(&mut plan, snapshot, allocator)
+    let checked = query_enrollment(db, &plan, bindings, request, snapshot, output, written, allocator)
+    plan.close()
+    return checked
+
+fn read_plan(plan: &mut String, snapshot: Bool, allocator: &Allocator) -> Result<(), U64>:
+    plan.push_text(allocator, "expect\tno release policy installed\tSELECT EXISTS(SELECT document FROM policy WHERE singleton=1 AND document IS NOT NULL)\n")?
+    if snapshot:
+        plan.push_text(allocator, "expect\trelease challenge is unknown, expired, consumed or from an old policy\tSELECT EXISTS(SELECT envelope FROM challenges WHERE challenge=:token AND expires>:now)\n")?
+        return plan.push_text(allocator, "result\tinvalid maintainer enrollment snapshot\tSELECT CAST(json_object('policy',CAST(p.document AS TEXT),'envelope',CAST(h.envelope AS TEXT),'pin',h.policy,'expires',h.expires) AS BLOB) FROM policy p JOIN challenges h ON h.challenge=:token WHERE p.singleton=1 AND typeof(p.document)='blob' AND length(p.document) BETWEEN 1 AND 65536 AND typeof(h.envelope)='blob' AND length(h.envelope) BETWEEN 1 AND 131072\n")
+    return plan.push_text(allocator, "result\tinvalid release policy\tSELECT CAST(json_object('policy',CAST(document AS TEXT)) AS BLOB) FROM policy WHERE singleton=1 AND typeof(document)='blob' AND length(document) BETWEEN 1 AND 65536\n")
+
+fn query_enrollment(db: &Sqlite, plan: &String, bindings: &String, request: &Json, snapshot: Bool, output: &Console<Write>, written: Result<(), U64>, allocator: &Allocator) -> Result<(), U64>:
+    written?
+    let empty: Vec<U8> = Vec.filled(allocator, 262144, 0)?
+    var reply = move empty
+    let bytes = bindings.as_bytes()
+    let size = db.transact(plan.as_bytes(), bytes, bytes.part(0, 0), reply.as_mut_slice())
+    let checked = emit_read(size, reply.as_slice(), request, snapshot, output, allocator)
+    reply.close()
+    return checked
+
+fn emit_read(size: Result<U64, U64>, reply: &[U8], request: &Json, snapshot: Bool, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let Ok(length): U64 = size else Err(code):
+        return Err(10)
+    if length <= 1 || length > reply.len() || reply[0] > 1:
+        return Err(10)
+    let raw = String.from_utf8_bytes(allocator, reply.part(1, length))?
+    if reply[0] == 1:
+        reply_line(output, "refused", &raw)
+        raw.close()
+        return Ok(())
+    let parsed = parse_release_json(&raw, allocator)
+    raw.close()
+    let Ok(row): Json = move parsed else Err(code):
+        return Err(1)
+    let checked = read_row(&row, request, snapshot, output, allocator)
+    row.discard()
+    return checked
+
+fn reply_line(output: &Console<Write>, status: Text, message: &String):
+    output.line(status)
+    output.write_string(message)
+    output.print_byte(10)
+
+fn read_row(row: &Json, request: &Json, snapshot: Bool, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let raw = string_field(row, "policy")?
+    let policy = parse_release_json(raw, allocator)?
+    let checked = validated_row(row, raw, &policy, request, snapshot, output, allocator)
+    policy.discard()
+    return checked
+
+fn validated_row(row: &Json, raw: &String, policy: &Json, request: &Json, snapshot: Bool, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    validate_policy(policy, allocator)?
+    if !snapshot:
+        let encoded = release_json(policy, allocator)?
+        reply_line(output, "committed", &encoded)
+        encoded.close()
+        return Ok(())
+    let pin = string_field(row, "pin")?
+    let actual = digest_text(raw.as_bytes(), allocator)?
+    let matches = actual.eq(pin)
+    actual.close()
+    if !matches:
+        output.line("refused")
+        output.line("release challenge is unknown, expired, consumed or from an old policy")
+        return Ok(())
+    let token = string_field(request, "token")?
+    let wire = string_field(row, "envelope")?
+    let envelope = parse_release_json(wire, allocator)?
+    let checked = emit_enrollment(row, policy, &envelope, token, output, allocator)
+    envelope.discard()
+    return checked
+
+fn emit_enrollment(row: &Json, policy: &Json, envelope: &Json, token: &String, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let intent = envelope.field("intent")?
+    let operation = string_field(intent, "operation")?
+    let expires = declared_integer(intent, "expires")?
+    let stored_expiry = declared_integer(row, "expires")?
+    if !operation.equals_text("enroll-maintainer") || expires != stored_expiry || !matches_envelope(envelope, token, allocator):
+        output.line("refused")
+        output.line("release challenge does not match its intent")
+        return Ok(())
+    let empty = String.new(allocator)?
+    var wire = move empty
+    let checked = encode_enrollment(&mut wire, policy, envelope, allocator)
+    if let Err(code) = checked:
+        wire.close()
+        return Err(code)
+    reply_line(output, "committed", &wire)
+    wire.close()
+    return Ok(())
+
+fn encode_enrollment(wire: &mut String, policy: &Json, envelope: &Json, allocator: &Allocator) -> Result<(), U64>:
+    wire.push_text(allocator, "{\"policy\":")?
+    append_json(wire, policy, allocator)?
+    wire.push_text(allocator, ",\"envelope\":")?
+    append_json(wire, envelope, allocator)?
+    return wire.push_text(allocator, "}")

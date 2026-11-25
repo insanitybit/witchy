@@ -1,0 +1,83 @@
+import "../tuf/coordinate.wy"
+import "../tuf/release_trust.wy"
+import "identifiers.wy"
+import json_tree
+import span
+import string
+import text
+import vec
+
+pub fn validate_enrollments(packages: &Json, allocator: &Allocator) -> Result<(), U64>:
+    match packages:
+        Object(members):
+            if members.len() == 0 || members.len() > 256:
+                return Err(103)
+            for member in members:
+                if !package_name(member.key.span()):
+                    return Err(103)
+                validate_enrollment(&member.value, allocator)?
+            return Ok(())
+        _:
+            return Err(103)
+
+fn validate_enrollment(enrollment: &Json, allocator: &Allocator) -> Result<(), U64>:
+    if !count_fields(enrollment, 8):
+        return Err(103)
+    let owner = string_field(enrollment, "repository_owner_id")?
+    let repository = string_field(enrollment, "repository_id")?
+    let environment = string_field(enrollment, "environment")?
+    let caller = string_field(enrollment, "caller_workflow")?
+    let job = string_field(enrollment, "job_workflow_ref")?
+    let revision_id = string_field(enrollment, "job_workflow_sha")?
+    let subject = string_field(enrollment, "sub")?
+    if !positive_id(owner.span()) || !positive_id(repository.span()) || !identifier(environment.span()) || !revision(revision_id.span()) || !workflow(caller.span()) || !visible(subject.span()):
+        return Err(103)
+    let Ok(ref): Halves = job.span().split('@') else Err(rest):
+        return Err(103)
+    if !visible(job.span()) || !workflow(ref.head) || !ref.tail.same(revision_id.span()):
+        return Err(103)
+    let public_key = decode_field(enrollment, "key", allocator, 2592)?
+    let valid = public_key.len() == 2592
+    public_key.close()
+    if !valid:
+        return Err(103)
+    return Ok(())
+
+pub fn select_enrollment(request: &Json) -> Result<&Json, U64>:
+    let package = string_field(request, "package")?
+    let packages = request.field("packages")?
+    match member_named(packages, package):
+        Ok(row):
+            return Ok(row)
+        Err(code):
+            return Err(103)
+
+fn workflow(path: Span) -> Bool:
+    let Ok(owner): Halves = path.split('/') else Err(rest):
+        return false
+    let Ok(repository): Halves = owner.tail.split('/') else Err(rest):
+        return false
+    if !component(owner.head) || !component(repository.head) || !repository.tail.starts_with_text(".github/workflows/"):
+        return false
+    let source = repository.tail.part(18, repository.tail.len())
+    if source.ends_with_text(".yml"):
+        return component(source.part(0, source.len() - 4))
+    if source.ends_with_text(".yaml"):
+        return component(source.part(0, source.len() - 5))
+    return false
+
+fn component(text: Span) -> Bool:
+    if text.is_empty():
+        return false
+    for byte in text.as_bytes():
+        if !(*byte >= 'a' && *byte <= 'z') && !(*byte >= 'A' && *byte <= 'Z') && !(*byte >= '0' && *byte <= '9') && *byte != '-' && *byte != '_' && *byte != '.':
+            return false
+    return true
+
+fn visible(text: Span) -> Bool:
+    if text.is_empty() || text.len() > 512:
+        return false
+    for byte in text.as_bytes():
+        if *byte < 33 || *byte > 126:
+            return false
+    return true

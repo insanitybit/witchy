@@ -1,0 +1,4 @@
+<standard>/: *
+named-app.wy: *
+# The package by its name, wherever its copy is: nothing, and nothing unchecked.
+@hello-world/: nothing ; no unchecked

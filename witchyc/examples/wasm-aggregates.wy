@@ -1,0 +1,27 @@
+// Fully initialized copyable values, scalarized into Wasm locals and calls.
+// No allocation, pointer, loan, owning field, or linear memory is involved.
+type Pair:
+    small: U8
+    wide: U64
+    valid: Bool
+
+type Packet:
+    prefix: U16
+    pairs: [Pair; 2]
+
+fn make(n: U64) -> Packet:
+    return Packet(7, [Pair(3, n, true), Pair(4, n + 1, false)])
+
+fn pick(packet: Packet, index: U64) -> Pair:
+    return packet.pairs[index]
+
+fn main(console: Console<Write>):
+    var packet = make(40)
+    let original = pick(packet, 0)
+    packet.pairs = [Pair(9, 90, true), Pair(8, 80, false)]
+    packet.prefix += 1
+    console.print_int(original.wide)
+    console.print_int(U16.to_u64(packet.prefix))
+    console.print_int(pick(packet, 1).wide)
+    if original.valid && !pick(packet, 1).valid:
+        console.print_int(U8.to_u64(original.small))

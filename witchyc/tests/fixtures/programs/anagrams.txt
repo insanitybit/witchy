@@ -1,0 +1,9 @@
+listen
+silent
+apple
+enlist
+stone
+notes
+pear
+reap
+tones

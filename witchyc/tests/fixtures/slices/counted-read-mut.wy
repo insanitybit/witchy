@@ -1,0 +1,12 @@
+// A `&mut` slice's reads in `for j in a..s.len()` keep their test and their usual loans: a write
+// to the element read in the same statement compiles as before.
+import console
+
+fn running(s: &mut [U64]):
+    for j in 1..s.len():
+        s[j] = s[j] + s[j - 1]
+
+fn main(console: Console<Write>):
+    var a: [U64; 4] = [1, 2, 3, 4]
+    running(a.slice_mut())
+    console.print_int(a[3])

@@ -1,0 +1,8 @@
+// Refused: a file's private function is not reachable from another, even when two files
+// have one of that name.
+import console
+import "parts/first.wy"
+import "parts/second.wy"
+
+fn main(console: Console<Write>):
+    console.print_int(helper(5))

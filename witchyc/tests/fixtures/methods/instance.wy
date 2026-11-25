@@ -1,0 +1,31 @@
+// `impl Name<U64>:` gives methods to one instance of a generic type. The
+// console library adds its methods to `Console<Write>` this way.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-vec.wy"
+
+impl Vec<U64>:
+    fn sum(self: &Vec<U64>) -> U64:
+        var total: U64 = 0
+        for item in self:
+            total += *item
+        return total
+
+impl Console<Write>:
+    fn shout(self: &Console<Write>, text: Text):
+        self.write(text)
+        self.line("!")
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var numbers: Vec<U64> = match Vec.new(&allocator, 4):
+        Ok(made):
+            move made
+        Err(reason):
+            return
+    let _ = numbers.push_mut(&allocator, 4)
+    let _ = numbers.push_mut(&allocator, 5)
+    console.write_u64(numbers.sum())
+    console.line("")
+    console.shout("done")
+    let lent = &console
+    lent.shout("again")
+    numbers.close()

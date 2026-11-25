@@ -1,0 +1,16 @@
+// Without `index <= n` nothing says where the loop stops.
+import "../../../library/wasm-console.wy"
+
+fn thrice(n: U64) -> U64:
+    requires n < 1000
+    ensures result == n * 3
+    proof:
+        auto
+    var sum: U64 = 0
+    for index in 0..n:
+        invariant sum == index * 3
+        sum += 3
+    return sum
+
+fn main(console: Console<Write>):
+    console.print_int(thrice(7))

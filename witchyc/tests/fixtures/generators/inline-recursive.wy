@@ -1,0 +1,13 @@
+// Review of in-place generators: a generator looping over itself is not run in place inside itself.
+import console
+
+gen fn g(n: U64) -> U64:
+    var s: U64 = 0
+    if n > 0:
+        for x in g(n - 1):
+            s += x
+    yield s + n
+
+fn main(console: Console<Write>):
+    for a in g(3):
+        console.print_int(a)

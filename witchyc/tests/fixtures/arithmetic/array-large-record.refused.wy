@@ -1,0 +1,7 @@
+// Within a record the limit of 32 numbers holds: a record travels as its numbers.
+type Line:
+    length: U64
+    bytes: [U8; 40]
+
+fn main():
+    return

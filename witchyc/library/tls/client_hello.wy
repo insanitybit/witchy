@@ -1,0 +1,98 @@
+// TLS 1.3 client negotiation for the Coven P-384, AES-256-GCM profile.
+import span
+import tls_hello
+
+pub fn encode(host: Span, random: &[U8; 32], session_id: &[U8; 32], point: &[U8; 97], output: &mut [U8]) -> Result<U64, HelloError>:
+    if !dns_name(host) || (*point)[0] != 4:
+        return Err(Unsupported)
+    let total = 263 + host.len()
+    if output.len() < total:
+        return Err(ShortOutput)
+    let header: [U8; 6] = [1, 0, U8.truncate((total - 4) / 256), U8.truncate((total - 4) % 256), 3, 3]
+    output.part(0, 6).copy_from(header.slice())
+    output.part(6, 38).copy_from((*random).slice())
+    output[38] = 32
+    output.part(39, 71).copy_from((*session_id).slice())
+    let fixed: [U8; 8] = [0, 2, 19, 2, 1, 0, U8.truncate((total - 79) / 256), U8.truncate((total - 79) % 256)]
+    output.part(71, 79).copy_from(fixed.slice())
+    let end_name = write_sni(host, output)
+    let extensions: [U8; 78] = [
+        0, 16, 0, 11, 0, 9, 8, 104, 116, 116, 112, 47, 49, 46, 49, // ALPN http/1.1
+        0, 43, 0, 3, 2, 3, 4, // supported_versions, TLS 1.3 only
+        0, 10, 0, 4, 0, 2, 0, 24, // supported_groups
+        0, 13, 0, 4, 0, 2, 5, 3, // signature_algorithms, ECDSA P-384/SHA-384
+        0, 50, 0, 26, 0, 24, // signature_algorithms_cert
+        4, 3, 5, 3, 6, 3, 4, 1, 5, 1, 6, 1,
+        8, 4, 8, 5, 8, 6, 8, 9, 8, 10, 8, 11,
+        0, 51, 0, 103, 0, 101, 0, 24, 0, 97 // key_share
+    ]
+    output.part(end_name, end_name + 78).copy_from(extensions.slice())
+    output.part(end_name + 78, total).copy_from((*point).slice())
+    return Ok(total)
+
+fn write_sni(host: Span, output: &mut [U8]) -> U64:
+    let size = host.len()
+    let header: [U8; 9] = [0, 0, U8.truncate((size + 5) / 256), U8.truncate((size + 5) % 256),
+        U8.truncate((size + 3) / 256), U8.truncate((size + 3) % 256), 0, 0, U8.truncate(size)]
+    output.part(79, 88).copy_from(header.slice())
+    output.part(88, 88 + size).copy_from(host.as_bytes())
+    return 88 + size
+
+fn dns_name(host: Span) -> Bool:
+    if host.is_empty() || host.len() > 253:
+        return false
+    var label: U64 = 0
+    var last_dash = false
+    var has_letter = false
+    for byte in host.as_bytes():
+        if *byte == '.':
+            if label == 0 || last_dash:
+                return false
+            label = 0
+        else:
+            let letter = (*byte >= 'a' && *byte <= 'z') || (*byte >= 'A' && *byte <= 'Z')
+            let digit = *byte >= '0' && *byte <= '9'
+            last_dash = *byte == '-'
+            if !letter && !digit && (!last_dash || label == 0):
+                return false
+            has_letter = has_letter || letter
+            label += 1
+            if label > 63:
+                return false
+    return label > 0 && !last_dash && has_letter
+
+// The client offered one group and a share for it. The server must select it
+// directly with the echoed compatibility session ID and the same TLS suite.
+pub fn server_share(message: Span, session_id: &[U8; 32]) -> Result<Span, HelloError>:
+    if message.len() != 187 || message.byte_or_end(0) != 2 || message.byte_or_end(1) != 0 || word(message, 2) != 183:
+        return Err(Malformed)
+    if word(message, 4) != 771 || message.byte_or_end(38) != 32 || word(message, 71) != 4866 || message.byte_or_end(73) != 0 || word(message, 74) != 111:
+        return Err(Unsupported)
+    for i in 0..32:
+        if message.byte_or_end(39 + i) != U8.to_u64((*session_id)[i]):
+            return Err(Unsupported)
+    let retry: [U8; 32] = [207, 33, 173, 116, 229, 154, 97, 17, 190, 29, 140, 2, 30, 101, 184, 145,
+        194, 162, 17, 22, 122, 187, 140, 94, 7, 158, 9, 226, 200, 168, 51, 156]
+    var retry_match = true
+    for i in 0..32:
+        retry_match = retry_match && message.byte_or_end(6 + i) == U8.to_u64(retry[i])
+    if retry_match:
+        return Err(Unsupported)
+    if word(message, 76) == 43:
+        check_version(message, 76)?
+        return point_at(message, 82)
+    check_version(message, 181)?
+    return point_at(message, 76)
+
+fn word(message: Span, at: U64) -> U64:
+    return message.byte_or_end(at) * 256 + message.byte_or_end(at + 1)
+
+fn check_version(message: Span, at: U64) -> Result<(), HelloError>:
+    if word(message, at) != 43 || word(message, at + 2) != 2 || word(message, at + 4) != 772:
+        return Err(Unsupported)
+    return Ok(())
+
+fn point_at(message: Span, at: U64) -> Result<Span, HelloError>:
+    if word(message, at) != 51 || word(message, at + 2) != 101 || word(message, at + 4) != 24 || word(message, at + 6) != 97 || message.byte_or_end(at + 8) != 4:
+        return Err(Unsupported)
+    return Ok(message.part(at + 8, at + 105))

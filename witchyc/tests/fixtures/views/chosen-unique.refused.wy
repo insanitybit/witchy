@@ -1,0 +1,17 @@
+// `r` may be the one `&mut` to `a`, which is read while `r` is still used.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-span.wy"
+
+fn bump(first: Bool) -> U64:
+    var a: U64 = 1
+    var b: U64 = 2
+    let r = if first:
+        &mut a
+    else:
+        &mut b
+    let seen = a
+    *r += 5
+    return seen + b
+
+fn main(console: Console<Write>):
+    console.print_int(bump(true))

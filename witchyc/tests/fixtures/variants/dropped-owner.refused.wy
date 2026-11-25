@@ -1,0 +1,16 @@
+// `_` does not drop an owner held by a variant.
+import "../../../library/wasm-string.wy"
+
+type Entry:
+    Missing
+    Named(String, U64)
+
+fn count(entry: Entry) -> U64:
+    match move entry:
+        Named(_, count):
+            return count
+        Missing:
+            return 0
+
+fn main(console: Console<Write>, allocator: Allocator):
+    console.print_int(count(Missing))

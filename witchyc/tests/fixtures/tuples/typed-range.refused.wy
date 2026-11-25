@@ -1,0 +1,6 @@
+// A stated tuple type is checked: 300 is not a U8.
+import console
+
+fn main(console: Console<Write>):
+    let (small, big): (U8, U64) = (300, 1)
+    console.print_int(big)

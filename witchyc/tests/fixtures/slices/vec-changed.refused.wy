@@ -1,0 +1,11 @@
+// Refused: the Vec is lent to its slice while the slice is in use.
+import vec
+
+fn main(allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.filled(&allocator, 3, 1) else Err(code):
+        return
+    var numbers = move made
+    let all = numbers.as_slice()
+    numbers.set(0, 5)
+    let n = all.len()
+    numbers.close()

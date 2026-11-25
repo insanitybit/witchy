@@ -1,0 +1,8 @@
+[paths]
+links = false
+
+[listen]
+connection = "127.0.0.1:8418"
+
+[dirs]
+root = { root = "published", rights = ["Read"] }

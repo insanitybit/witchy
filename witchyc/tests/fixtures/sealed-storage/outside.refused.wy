@@ -1,0 +1,17 @@
+// Refused: another file reaches into the sealed type's storage.
+import console
+import vec
+import option
+import "outside/lib.wy"
+
+fn tamper(bag: &mut Bag) -> Bool:
+    ensures result
+    match (*bag).items.at_mut(0):
+        Ok(slot):
+            *slot = 1
+        Err(code):
+            ()
+    return true
+
+fn main(console: Console<Write>):
+    console.print_int(1)

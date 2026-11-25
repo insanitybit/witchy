@@ -1,0 +1,74 @@
+// Select the candidate, active policy, and exact approval in one read transaction.
+import "review/approval_bindings.wy"
+import "review/challenge_bindings.wy"
+import "review/commit_request.wy"
+import "tuf/release_trust.wy"
+import console
+import discard
+import json_tree
+import "@sqlite"
+import string
+import vec
+
+fn main(db: Sqlite, input: Console<Read>, output: Console<Write>, allocator: Allocator):
+    if let Err(code) = run(&db, &input, &output, &allocator):
+        output.line("unavailable")
+
+fn run(db: &Sqlite, input: &Console<Read>, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let request = read_commit_request(input, allocator)?
+    let checked = lookup(&request, db, output, allocator)
+    request.discard()
+    return checked
+
+fn lookup(request: &Json, db: &Sqlite, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let digest = string_field(request, "digest")?
+    if !count_fields(request, 1) || !valid_digest(digest):
+        return Err(1)
+    let empty = String.with_capacity(allocator, 128)?
+    var bindings = move empty
+    let bound = text_binding(&mut bindings, "digest", digest, allocator)
+    let checked = fetch(db, &bindings, output, bound, allocator)
+    bindings.close()
+    return checked
+
+fn fetch(db: &Sqlite, bindings: &String, output: &Console<Write>, bound: Result<(), U64>, allocator: &Allocator) -> Result<(), U64>:
+    bound?
+    let empty = String.with_capacity(allocator, 2048)?
+    var plan = move empty
+    let written = statements(&mut plan, allocator)
+    let checked = query(db, &plan, bindings, output, written, allocator)
+    plan.close()
+    return checked
+
+fn statements(plan: &mut String, allocator: &Allocator) -> Result<(), U64>:
+    plan.push_text(allocator, "expect\tunknown staged candidate\tSELECT EXISTS(SELECT 1 FROM candidates WHERE digest=:digest)\n")?
+    plan.push_text(allocator, "expect\tno release policy installed\tSELECT EXISTS(SELECT 1 FROM policy WHERE singleton=1 AND document IS NOT NULL)\n")?
+    plan.push_text(allocator, "expect\tmissing maintainer approval\tSELECT EXISTS(SELECT 1 FROM candidates c JOIN approvals a ON c.digest=a.digest AND c.name=a.name AND c.version=a.version WHERE c.digest=:digest)\n")?
+    plan.push_text(allocator, "result\tinvalid staged release snapshot\tSELECT CAST(c.name || X'00' || c.version || X'00' || length(c.payload) || X'00' || length(p.document) || X'00' || length(a.receipt) || X'00' || c.payload || p.document || a.receipt AS BLOB) ")?
+    plan.push_text(allocator, "FROM candidates c JOIN approvals a ON c.digest=a.digest AND c.name=a.name AND c.version=a.version JOIN policy p ON p.singleton=1 WHERE c.digest=:digest ")?
+    return plan.push_text(allocator, "AND typeof(c.name)='text' AND typeof(c.version)='text' AND typeof(c.payload)='blob' AND length(c.payload) BETWEEN 1 AND 1048576 AND typeof(p.document)='blob' AND length(p.document) BETWEEN 1 AND 262144 AND typeof(a.receipt)='blob' AND length(a.receipt) BETWEEN 1 AND 262144\n")
+
+fn query(db: &Sqlite, plan: &String, bindings: &String, output: &Console<Write>, written: Result<(), U64>, allocator: &Allocator) -> Result<(), U64>:
+    written?
+    // One full package, two documents, and the record header.
+    let empty: Vec<U8> = Vec.filled(allocator, 1573120, 0)?
+    var reply = move empty
+    let bytes = bindings.as_bytes()
+    let size = db.transact(plan.as_bytes(), bytes, bytes.part(0, 0), reply.as_mut_slice())
+    let checked = emit(size, reply.as_slice(), output)
+    reply.close()
+    return checked
+
+fn emit(size: Result<U64, U64>, reply: &[U8], output: &Console<Write>) -> Result<(), U64>:
+    let length = size?
+    if length <= 1 || length > reply.len() || reply[0] > 1:
+        return Err(1)
+    if reply[0] == 1:
+        output.line("refused")
+    else:
+        output.line("snapshot")
+    var writer = WordWriter.new()
+    for byte in reply.part(1, length):
+        writer.put(output, *byte)
+    writer.flush(output)
+    return Ok(())

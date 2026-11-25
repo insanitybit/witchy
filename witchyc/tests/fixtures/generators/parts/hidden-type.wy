@@ -1,0 +1,15 @@
+type Hidden:
+    base: U64
+
+fn helper(x: U64) -> U64:
+    return x + 7
+
+impl Hidden:
+    pub fn seven(x: U64) -> U64:
+        return helper(x)
+
+pub gen fn sevens(count: U64) -> U64:
+    var at: U64 = 0
+    while at < count:
+        yield Hidden.seven(at)
+        at += 1

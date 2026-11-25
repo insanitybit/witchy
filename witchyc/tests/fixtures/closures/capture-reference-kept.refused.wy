@@ -1,0 +1,7 @@
+// Refused: the closure holds `&limit`, so `limit` stays lent while the closure is in use.
+fn main():
+    var limit: U64 = 4
+    let r: &U64 = &limit
+    let over = fn(n: U64) -> Bool: n > *r
+    limit = 9
+    let b = over(5)

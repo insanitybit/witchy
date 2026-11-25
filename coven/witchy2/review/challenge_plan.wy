@@ -1,0 +1,23 @@
+import string
+import text
+
+pub fn challenge_plan(release: Bool, allocator: &Allocator) -> Result<String, U64>:
+    let empty = String.with_capacity(allocator, 2048)?
+    var plan = move empty
+    if let Err(code) = steps(&mut plan, release, allocator):
+        plan.close()
+        return Err(code)
+    return Ok(move plan)
+
+fn steps(plan: &mut String, release: Bool, allocator: &Allocator) -> Result<(), U64>:
+    plan.push_text(allocator, "expect\trelease policy changed during challenge issuance\tSELECT EXISTS(SELECT document FROM policy WHERE singleton=1 AND CAST(document AS TEXT)=json_extract(CAST(:blob AS TEXT),'$.policy'))\n")?
+    if release:
+        plan.push_text(allocator, "expect\trelease challenge does not match the candidate\tSELECT EXISTS(SELECT 1 FROM candidates WHERE digest=:digest AND name=:name AND version=:version)\n")?
+        plan.push_text(allocator, "expect\tthis coordinate already has an approval\tSELECT NOT EXISTS(SELECT 1 FROM approvals WHERE name=:name AND version=:version)\n")?
+    plan.push_text(allocator, "exec\t\tDELETE FROM challenges WHERE expires <= :now\n")?
+    plan.push_text(allocator, "exec\t\tDELETE FROM browser_approvals WHERE challenge NOT IN (SELECT challenge FROM challenges)\n")?
+    plan.push_text(allocator, "expect\ttoo many pending maintainer challenges\tSELECT NOT EXISTS(SELECT challenge FROM challenges LIMIT 1 OFFSET 4095)\n")?
+    plan.push_text(allocator, "change\tmaintainer challenge was not stored\tINSERT INTO challenges (challenge,policy,expires,envelope) VALUES (:token,:policy_pin,:expires,CAST(json_extract(CAST(:blob AS TEXT),'$.envelope') AS BLOB))\n")?
+    if release:
+        return plan.push_text(allocator, "result\tmaintainer challenge result is invalid\tSELECT CAST(json_object('token',:token,'envelope',json_extract(CAST(:blob AS TEXT),'$.envelope')) AS BLOB)\n")
+    return plan.push_text(allocator, "result\tmaintainer challenge result is invalid\tSELECT CAST(json_object('token',:token,'expires',:expires,'nonce',json_extract(CAST(:blob AS TEXT),'$.envelope.nonce')) AS BLOB)\n")

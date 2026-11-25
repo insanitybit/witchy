@@ -1,0 +1,2 @@
+build: --heap-pages=3 --slots=64
+run: --fuel=400000000

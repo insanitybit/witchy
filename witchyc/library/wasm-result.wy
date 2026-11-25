@@ -1,0 +1,21 @@
+// Questions a Result answers about itself.
+impl<T: Any, E: Any> Result<T, E>:
+    // Whether it is Ok. It is only looked at, so it may hold an owner.
+    pub fn is_ok(value: &Result<T, E>) -> Bool:
+        match value:
+            Ok(_):
+                return true
+            Err(_):
+                return false
+
+    pub fn is_err(value: &Result<T, E>) -> Bool:
+        return !value.is_ok()
+
+impl<T, E> Result<T, E>:
+    // The Ok value, or `otherwise`. For Results whose values are copied.
+    pub fn unwrap_or(value: Result<T, E>, otherwise: T) -> T:
+        match value:
+            Ok(item):
+                return item
+            Err(error):
+                return otherwise

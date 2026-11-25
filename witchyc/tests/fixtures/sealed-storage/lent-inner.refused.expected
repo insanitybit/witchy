@@ -1,0 +1,1 @@
+not proved: ensures o.inner.b == old(o.inner.b)

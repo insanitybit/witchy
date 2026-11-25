@@ -1,0 +1,21 @@
+// Refused where the helper is proved, pointing at the first claim that is false (the helper
+// says it leaves the slot vacant, and fills it) and naming the line of the other. Its first
+// claim is true.
+type Slot:
+    Vacant
+    Full(U64)
+
+fn stuff(slot: &mut Slot, item: U64) -> U64:
+    ensures result == item
+    ensures when Full = *slot:
+        false
+    ensures result == item + 1
+    proof:
+        auto
+    var next: Slot = Full(item)
+    memory.exchange(&mut *slot, &mut next)
+    return item
+
+fn main(out: Console<Write>):
+    var slot: Slot = Vacant
+    out.print_int(stuff(&mut slot, 3))

@@ -1,0 +1,20 @@
+import vec
+
+fn replace_empty(input: &mut Buffer<U8>, allocator: &Allocator):
+    requires memory.empty_all(input)
+    ensures memory.empty_all(input)
+    proof:
+        auto
+    if memory.capacity(&*input) == 1:
+        return
+    let made: Result<Buffer<U8>, U64> = memory.try_alloc(allocator, 1)
+    match move made:
+        Ok(fresh):
+            var replacement = move fresh
+            memory.exchange(input, &mut replacement)
+            memory_release_empty(move replacement)
+        Err(code):
+            return
+
+fn main():
+    return

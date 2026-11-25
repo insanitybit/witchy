@@ -1,0 +1,31 @@
+// A task that waits on a number naming none of the program's sockets (closed, or never one):
+// the poll reads that entry as closed, so this task is stepped again, and nothing else is
+// disturbed. It used to fail the whole poll, so any task could stop every other (review
+// round 27).
+import console
+import net
+import tasks
+import vec
+
+fn stray(entry: U64) suspends:
+    pause(entry)
+    report(1)
+
+fn main(console: Console<Write>, listener: Listener, allocator: Allocator):
+    let Ok(waited): Waiting = Waiting.new(&allocator, &listener) else Err(code):
+        return
+    var waiting = move waited
+    match Task.spawn(&allocator, 1024, stray, wait_entry(999, true, false)):
+        Ok(task):
+            match waiting.start(&allocator, move task):
+                Ok(started):
+                    console.print_int(waiting.len())
+                Err(back):
+                    back.close()
+        Err(input):
+            console.line("no task")
+    let stepped = waiting.step_ready(&allocator, &listener)
+    console.print_int(stepped.reported)
+    console.print_int(stepped.finished)
+    console.print_int(waiting.len())
+    waiting.close()

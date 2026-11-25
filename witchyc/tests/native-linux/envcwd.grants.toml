@@ -1,0 +1,6 @@
+[launch]
+version = 1
+[exec]
+exec = { dir = "/w/bin", programs = ["where", "showenv"], env = ["LANG", "TZ"] }
+[dirs]
+data = { root = { from = "cwd", path = "ecdata" }, rights = ["Read"] }

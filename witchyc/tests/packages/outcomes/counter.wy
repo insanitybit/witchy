@@ -1,0 +1,8 @@
+sealed type Counter:
+    value: U64
+
+fn counter(value: U64) -> Counter:
+    return Counter(value)
+
+fn count(c: &Counter) -> U64:
+    return (*c).value

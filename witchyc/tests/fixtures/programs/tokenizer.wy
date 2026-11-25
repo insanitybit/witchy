@@ -1,0 +1,141 @@
+// A tokenizer over `chars()` into a Vec of a sum type, then precedence climbing over the tokens
+// as a slice, lending each with `&tokens[i]`.
+import console
+import vec
+
+type Token:
+    Number(U64)
+    Plus
+    Minus
+    Times
+    Divide
+    Open
+    Close
+
+fn tokens(allocator: &Allocator, source: Text) -> Result<Vec<Token>, U64>:
+    var out: Vec<Token> = Vec.new(allocator, 16)?
+    var number: U64 = 0
+    var reading = false
+    for c in source.chars():
+        if c >= 48 && c <= 57:
+            number = number * 10 + (c - 48)
+            reading = true
+            continue
+        if reading:
+            if !push(&mut out, allocator, Number(number)):
+                out.close()
+                return Err(1)
+            number = 0
+            reading = false
+        var token = Plus
+        if c == 32:
+            continue
+        else if c == 43:
+            token = Plus
+        else if c == 45:
+            token = Minus
+        else if c == 42:
+            token = Times
+        else if c == 47:
+            token = Divide
+        else if c == 40:
+            token = Open
+        else if c == 41:
+            token = Close
+        else:
+            out.close()
+            return Err(2)
+        if !push(&mut out, allocator, token):
+            out.close()
+            return Err(1)
+    if reading:
+        if !push(&mut out, allocator, Number(number)):
+            out.close()
+            return Err(1)
+    return Ok(move out)
+
+fn push(out: &mut Vec<Token>, allocator: &Allocator, token: Token) -> Bool:
+    match out.push_mut(allocator, move token):
+        Ok:
+            return true
+        Err(back):
+            return false
+
+fn precedence(token: &Token) -> U64:
+    match token:
+        Plus:
+            return 1
+        Minus:
+            return 1
+        Times:
+            return 2
+        Divide:
+            return 2
+        _:
+            return 0
+
+// Evaluates from `at`; `at` moves past what was used.
+fn expression(tokens: &[Token], at: &mut U64, least: U64) -> Result<U64, U64>:
+    var left = primary(tokens, at)?
+    while *at < tokens.len():
+        let level = precedence(&tokens[*at])
+        if level == 0 || level < least:
+            return Ok(left)
+        let operator = *at
+        *at += 1
+        let right = expression(tokens, at, level + 1)?
+        match &tokens[operator]:
+            Plus:
+                left = left + right
+            Minus:
+                if right > left:
+                    return Err(3)
+                left = left - right
+            Times:
+                left = left * right
+            Divide:
+                if right == 0:
+                    return Err(4)
+                left = left / right
+            _:
+                return Err(5)
+    return Ok(left)
+
+fn primary(tokens: &[Token], at: &mut U64) -> Result<U64, U64>:
+    if *at >= tokens.len():
+        return Err(6)
+    let here = *at
+    *at += 1
+    match &tokens[here]:
+        Number(value):
+            return Ok(*value)
+        Open:
+            let inside = expression(tokens, at, 1)?
+            if *at >= tokens.len():
+                return Err(7)
+            *at += 1
+            return Ok(inside)
+        _:
+            return Err(8)
+
+fn run(console: &Console<Write>, allocator: &Allocator, source: Text):
+    match tokens(allocator, source):
+        Ok(list):
+            var at: U64 = 0
+            match expression(list.as_slice(), &mut at, 1):
+                Ok(value):
+                    console.print("${value}")
+                Err(code):
+                    console.print("error ${code}")
+            list.close()
+        Err(code):
+            console.print("bad input ${code}")
+
+fn main(console: Console<Write>, allocator: Allocator):
+    run(&console, &allocator, "1 + 2 * 3")
+    run(&console, &allocator, "(1 + 2) * 3")
+    run(&console, &allocator, "100 / (7 - 2) - 4")
+    run(&console, &allocator, "2 * (3 + 4) * 5")
+    run(&console, &allocator, "8 / 0")
+    run(&console, &allocator, "1 + x")
+    run(&console, &allocator, "(1 + 2")

@@ -1,0 +1,43 @@
+// A Heap pushed until the allocator has no room: the refused item comes back unchanged, and the
+// heap still holds exactly what was pushed before, popped least first. Push finds the item's
+// place and makes room before moving anything (wasm-heap.wy).
+import console
+import heap
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Heap<U64> = Heap.new(&allocator) else Err(code):
+        return
+    var queue = move made
+    var seed: U64 = 7
+    var pushed: U64 = 0
+    var sum: U64 = 0
+    var refused = false
+    while !refused:
+        seed = seed * 48271 % 2147483647
+        let value = seed % 1000
+        match queue.push(&allocator, value):
+            Ok:
+                pushed += 1
+                sum += value
+            Err(back):
+                refused = true
+                if back == value:
+                    console.line("refused item came back")
+    var popped: U64 = 0
+    var total: U64 = 0
+    var last: U64 = 0
+    var ordered = true
+    var going = true
+    while going:
+        match queue.pop():
+            Ok(x):
+                if x < last:
+                    ordered = false
+                last = x
+                popped += 1
+                total += x
+            Err(code):
+                going = false
+    if popped == pushed && total == sum && ordered && pushed > 100:
+        console.line("all popped in order")
+    queue.into_vec().close()

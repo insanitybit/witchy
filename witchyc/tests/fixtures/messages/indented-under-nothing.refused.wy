@@ -1,0 +1,6 @@
+// Refused, saying when a line may be indented further: under a line that opens a block.
+import console
+
+fn main(console: Console<Write>):
+    console.print_int(1)
+        console.print_int(2)

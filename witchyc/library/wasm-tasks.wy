@@ -1,0 +1,389 @@
+// Tasks: computations that may pause, each on its own stack (docs/design-async.md).
+//
+// `Task.spawn(&allocator, bytes, work, input)` makes a task that will run the function
+// `work(input)` with a stack of `bytes` (512 to 1 MiB, a multiple of 16; the save area paused
+// calls keep their locals in is as large). The input is moved in, so a task refers to nothing
+// outside itself and can be kept anywhere; it may be a capability, or a record holding several
+// values. `step` runs it until it finishes,
+// Ok(()), or pauses, Err(token). `close` gives back the memory of a task that has finished.
+//
+// Inside a task, `pause(token)` ends the step: the token says what the task waits for, in
+// whatever meaning the code stepping it gives tokens. The next step continues from there, with
+// every local as it was. A function that may pause says so, `-> T suspends`, and `main` never
+// pauses: the effect check (docs/design-async.md) follows every call that may.
+import "wasm-vec.wy"
+
+// Ends this step of the running task; the next one continues here.
+pub fn pause(token: U64) suspends:
+    let woke = memory.pause(token)
+
+// Ends this step like `pause`, and returns what the step that continues the task handed it:
+// 0 from `step`, the word given to `resume` otherwise. `Waiting` hands the entry it found
+// ready; `cancel` hands CANCELLED, which asks the task to wind down and finish.
+pub fn pause_for(token: U64) -> U64 suspends:
+    return memory.pause(token)
+
+// What a cancelled task's pauses return.
+pub let CANCELLED = 9223372036854775808
+
+// In a task, before its first pause: the word its first step handed in. CANCELLED when it was
+// cancelled before it began (`cancel`), so its function can give back its input and return
+// without doing anything else:
+//
+//     fn serve(connection: Connection) suspends:
+//         if first_word() == CANCELLED:
+//             ... close what `connection` holds
+//             return
+//
+// Outside a task it is 0.
+pub fn first_word() -> U64:
+    return memory.first_word()
+
+// Tokens from here up are reports: `report(value)` pauses with one, handing `value` to
+// whatever steps the task, which steps it again at once (`Waiting` in library/wasm-net.wy).
+pub let REPORTED = 4611686018427387904
+
+// Hands `value` to the code stepping this task, and continues.
+pub fn report(value: U64) suspends:
+    pause(REPORTED + value % REPORTED)
+
+// Tokens from here up to REPORTED say "also wait for `token - ALSO`": the stepping code
+// records that and steps the task again at once, until a plain token ends the step. A task
+// waits on several things this way, and is stepped again when any of them is ready.
+pub let ALSO = 2305843009213693952
+
+// Whether `woke`, an entry found ready, is the one `wait` asked for: the same handle, wanting
+// the same.
+fn answers(woke: U64, wait: U64) -> Bool:
+    return woke / 256 == wait / 256 && woke % 4 == wait % 4
+
+// Runs `tasks` concurrently inside the running task, until every one has finished (up to 32:
+// Err(how many) otherwise, nothing stepped). Each one waits on its own; the running task
+// waits on all of what they wait for, and when it is continued with the entry found ready
+// (as `Waiting` does) only the tasks waiting on it are stepped (all of them after a plain
+// `step`, which says nothing). What they report is reported on; what a task waits for
+// together (a `join` inside it) is handed on as well, and such a task is stepped at every
+// turn. None may have finished already: stepping a finished task traps.
+//
+// Cancelled, it cancels each task in turn (`cancel`) and returns Err(CANCELLED); a task that
+// keeps waiting is left as it is.
+pub fn join(tasks: &mut [Task]) -> Result<(), U64> suspends:
+    match run(tasks, false):
+        Ok(count):
+            return Ok(())
+        Err(why):
+            return Err(why)
+
+// Runs `tasks` as `join` does until the first one finishes, then cancels the others:
+// Ok(which finished first). Err as `join`, and Err(0) when there are none.
+pub fn first(tasks: &mut [Task]) -> Result<U64, U64> suspends:
+    if tasks.len() == 0:
+        return Err(0)
+    return run(tasks, true)
+
+
+// Starts `work` as a task with a stack of `bytes` and keeps it in `tasks`. False: there was no
+// memory, and `work` was given up unstarted (discarded) or, once started, cancelled.
+fn start<W: Any + WitchyOnce0<()>>(tasks: &mut Vec<Task>, allocator: &Allocator, bytes: U64, work: W) -> Bool:
+    match Task.spawn(allocator, bytes, move work):
+        Ok(task):
+            match tasks.push_spare_mut(move task):
+                Ok:
+                    return true
+                Err(back):
+                    var lost = move back
+                    let told = lost.cancel()
+                    lost.close()
+                    return false
+        Err(back):
+            back.discard()
+            return false
+
+// Every task in `tasks` is cancelled, then all are closed.
+fn give_up(tasks: Vec<Task>):
+    var rest = move tasks
+    var going = true
+    while going:
+        match rest.take_last_mut():
+            Ok(task):
+                var lost = move task
+                let told = lost.cancel()
+                lost.close()
+            Err(_):
+                going = false
+    rest.close_all()
+
+// Up to 32 tasks started together and then raced or joined, all or nothing:
+//
+//     let Ok(made): TaskSet = TaskSet.new(&allocator, 3, 2048) else Err(code):
+//         ...                                  // nothing was taken over yet
+//     var set = move made
+//     set.add(fn() -> (): fetch(move first_job))
+//     set.add(fn() -> (): fetch(move second_job))
+//     set.add(fn() -> (): nap(move clock))
+//     match set.first():                       // Ok(which), or Err(1) if any could not start
+//
+// `add` never hands work back: work that cannot be started is discarded, and the set
+// remembers, so `first` and `join` cancel what did start and give Err(1).
+pub sealed type TaskSet:
+    tasks: Vec<Task>
+    allocator: Allocator
+    bytes: U64
+    failed: Bool
+
+impl TaskSet:
+    // Room for `count` tasks with stacks of `bytes`. Err: no memory for the room.
+    pub fn new(allocator: &Allocator, count: U64, bytes: U64) -> Result<TaskSet, U64>:
+        let Ok(made): Vec<Task> = Vec.new(allocator, count) else Err(code):
+            return Err(code)
+        return Ok(TaskSet(move made, allocator.share(), bytes, false))
+
+    // Starts `work` as a task in the set. If it cannot be (no memory, no room), the work is
+    // discarded and the set will give Err(1).
+    pub fn add<W: Any + WitchyOnce0<()>>(set: &mut TaskSet, work: W):
+        // `first` and `join` run at most 32 (review: a 33rd would have been closed unfinished).
+        if set.tasks.len() >= 32:
+            work.discard()
+            set.failed = true
+            return
+        let bytes = set.bytes
+        if !start(&mut set.tasks, &set.allocator, bytes, move work):
+            set.failed = true
+
+    // Runs the tasks until one finishes, `Ok(which)` in the order added; the rest are told to
+    // stop and waited for. Err(1): some work could not start, and what did was cancelled.
+    pub fn first(set: TaskSet) -> Result<U64, U64> suspends:
+        let TaskSet(tasks, allocator, bytes, failed) = move set
+        if failed:
+            give_up(move tasks)
+            return Err(1)
+        var running = move tasks
+        let won = first(running.as_mut_slice())
+        running.close_all()
+        return won
+
+    // Runs the tasks until all finish. Err(1): some work could not start, and what did was
+    // cancelled.
+    pub fn join(set: TaskSet) -> Result<(), U64> suspends:
+        let TaskSet(tasks, allocator, bytes, failed) = move set
+        if failed:
+            give_up(move tasks)
+            return Err(1)
+        var running = move tasks
+        let joined = join(running.as_mut_slice())
+        running.close_all()
+        return joined
+
+// Runs `a` and `b` as tasks, each with a stack of `bytes`, until one finishes; the other is
+// told to stop and waited for (`first`). Ok(0): `a` finished first; Ok(1): `b` did. Err(1): there
+// was no memory, and neither ran far: unstarted work is discarded, started work cancelled.
+// Err(CANCELLED): the task running the race was cancelled, and so were both.
+//
+//     match race(&allocator, 2048, fn() -> (): listen(move reader), fn() -> (): nap(move clock)):
+pub fn race<A: Any + WitchyOnce0<()>, B: Any + WitchyOnce0<()>>(allocator: &Allocator, bytes: U64, a: A, b: B) -> Result<U64, U64> suspends:
+    let Ok(made): Vec<Task> = Vec.new(allocator, 2) else Err(code):
+        a.discard()
+        b.discard()
+        return Err(1)
+    var tasks = move made
+    if !start(&mut tasks, allocator, bytes, move a):
+        b.discard()
+        give_up(move tasks)
+        return Err(1)
+    if !start(&mut tasks, allocator, bytes, move b):
+        give_up(move tasks)
+        return Err(1)
+    let won = first(tasks.as_mut_slice())
+    tasks.close_all()
+    return won
+
+// Runs `a` and `b` as tasks, each with a stack of `bytes`, until both finish (`join`). Err(1):
+// there was no memory, as for `race`; Err(CANCELLED): the task running them was cancelled.
+pub fn both<A: Any + WitchyOnce0<()>, B: Any + WitchyOnce0<()>>(allocator: &Allocator, bytes: U64, a: A, b: B) -> Result<(), U64> suspends:
+    let Ok(made): Vec<Task> = Vec.new(allocator, 2) else Err(code):
+        a.discard()
+        b.discard()
+        return Err(1)
+    var tasks = move made
+    if !start(&mut tasks, allocator, bytes, move a):
+        b.discard()
+        give_up(move tasks)
+        return Err(1)
+    if !start(&mut tasks, allocator, bytes, move b):
+        give_up(move tasks)
+        return Err(1)
+    let joined = join(tasks.as_mut_slice())
+    tasks.close_all()
+    return joined
+// How far a turn of a joined task got: finished, or waiting on `wait`, and whether it handed
+// on other waits (ALSO) as well.
+type Turn:
+    finished: Bool
+    wait: U64
+    several: Bool
+
+// Steps a joined task until it waits or finishes, handing on what it reports and what else it
+// waits for; its pause returns `woke`.
+fn turn(task: &mut Task, woke: U64) -> Turn suspends:
+    var outcome = Turn(false, 0, false)
+    var word = woke
+    var stepping = true
+    while stepping:
+        let stepped = task.resume(word)
+        word = 0
+        match stepped:
+            Ok:
+                outcome.finished = true
+                stepping = false
+            Err(token):
+                if token >= ALSO:
+                    if token < REPORTED:
+                        outcome.several = true
+                    pause(token)
+                else:
+                    outcome.wait = token
+                    stepping = false
+    return outcome
+
+// `join` (`race` false: Ok(how many)) and `first` (`race`: Ok(which finished first)). Once
+// the race is decided or the running task is cancelled, every task not finished is told
+// (stepped with CANCELLED, all of them in the same round) and waited for until it finishes:
+// no task is left running when this returns. A task that keeps waiting holds it up until the
+// run's limits end it.
+fn run(tasks: &mut [Task], race: Bool) -> Result<U64, U64> suspends:
+    let count = tasks.len()
+    if count > 32:
+        return Err(count)
+    // What each task waits for, as it last said; `several` marks those that wait on more than
+    // one thing (handed on as ALSO when they are stepped), `done` those that finished.
+    var waits: [U64; 32] = [0; 32]
+    var several: U64 = 0
+    var done: U64 = 0
+    var finished: U64 = 0
+    var woke: U64 = 0
+    var stopping = false
+    var cancelled = false
+    var winner: U64 = 0
+    while finished < count:
+        // A wait not yet handed on: each is handed on as ALSO once another follows, and the
+        // last one ends this step of the running task.
+        var pending: U64 = 0
+        var holding = false
+        // A round that starts stopping tells every task not finished.
+        let told = stopping
+        var bit: U64 = 1
+        var i: U64 = 0
+        while i < count:
+            if (done / bit) % 2 == 0:
+                if stopping || woke == 0 || (several / bit) % 2 == 1 || answers(woke, waits[i]):
+                    if (several / bit) % 2 == 1:
+                        several -= bit
+                    var word = woke
+                    if stopping:
+                        word = CANCELLED
+                    let task = tasks.cell(i)
+                    let outcome = turn(task, word)
+                    if outcome.finished:
+                        done += bit
+                        finished += 1
+                        if race && !stopping:
+                            winner = i
+                            stopping = true
+                    else:
+                        waits[i] = outcome.wait
+                        if outcome.several:
+                            several += bit
+                if (done / bit) % 2 == 0:
+                    if holding:
+                        pause(ALSO + pending)
+                    pending = waits[i]
+                    holding = true
+            bit = bit * 2
+            i += 1
+        // Stopping began in this round: those before it are told in the next, at once.
+        if holding && (told || !stopping):
+            woke = pause_for(pending)
+            if woke == CANCELLED:
+                stopping = true
+                cancelled = true
+    if cancelled:
+        return Err(CANCELLED)
+    if race:
+        return Ok(winner)
+    return Ok(count)
+
+impl Allocator:
+    // Another handle to the program's one heap, for what must own one: a task's input, when
+    // the code that starts the task allocates as well. It adds no authority: lending
+    // `&Allocator` already lets the borrower allocate.
+    pub fn share(allocator: &Allocator) -> Allocator:
+        return memory.share(allocator)
+
+impl Task:
+    // Runs the task until it finishes, Ok(()), or pauses, Err(the token it paused with).
+    // Stepping a finished task traps.
+    pub fn step(task: &mut Task) -> Result<(), U64>:
+        return memory.step(task, 0)
+
+    // `step`, and the pause the task continues from returns `word` (`pause_for`).
+    pub fn resume(task: &mut Task, word: U64) -> Result<(), U64>:
+        return memory.step(task, word)
+
+    // Asks the task to stop: steps it with CANCELLED until it finishes, Ok(the sum of what
+    // it reported on the way), or still waits after being told twice, Err(what it waits for).
+    // A task not yet stepped starts with CANCELLED as its first word (`first_word`): one that
+    // reads it can stop before doing anything; one that does not runs to its first pause and
+    // is told there. One that has finished is left as it is (Ok(0)). Library operations that pause return an
+    // error when cancelled, so a task written with them winds down through its ordinary
+    // paths, closing what it holds.
+    pub fn cancel(task: &mut Task) -> Result<U64, U64>:
+        var reported: U64 = 0
+        var told: U64 = 0
+        var word = CANCELLED
+        // Whether the pause being resumed is a plain wait: only telling it there counts (a
+        // report's or an ALSO's pause takes no word).
+        var at_wait = false
+        let status = memory.status(task)
+        if status == 2:
+            return Ok(0)
+        while true:
+            match memory.step(task, word):
+                Ok:
+                    return Ok(reported)
+                Err(token):
+                    if token >= REPORTED:
+                        reported += token - REPORTED
+                        at_wait = false
+                    else:
+                        if token < ALSO:
+                            if at_wait && word == CANCELLED:
+                                told += 1
+                                if told == 2:
+                                    return Err(token)
+                            at_wait = true
+                        else:
+                            at_wait = false
+                    word = CANCELLED
+        return Ok(reported)
+
+    // Whether the task has finished: then it can only be closed.
+    pub fn finished(task: &Task) -> Bool:
+        return memory.status(task) == 2
+
+    // Gives back a finished task's memory; closing one that has not finished traps.
+    pub fn close(task: Task):
+        memory.finish(move task)
+
+// Tasks kept in a Vec.
+impl Vec<Task>:
+    // Closes every task in it, then it: each must have finished, as after `join` or `first`
+    // (closing one that has not traps).
+    pub fn close_all(tasks: Vec<Task>):
+        var left = move tasks
+        while left.len() > 0:
+            match left.take_last_mut():
+                Ok(task):
+                    task.close()
+                Err(code):
+                    unreachable
+        left.release_empty()

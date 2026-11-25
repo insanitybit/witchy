@@ -1,0 +1,2 @@
+proof failed: function `trade`
+  not proved: ensures here.first() == old(here.first())

@@ -1,0 +1,41 @@
+import "identifiers.wy"
+import json_tree
+import span
+import string
+import text
+
+pub fn check_client_reply(request: &Json, reply: &Json) -> Result<(), U64>:
+    let route = string_field(request, "route")?
+    if route.equals_text("/v1/ci/challenge"):
+        return check_nonce(reply)
+    return check_receipt(request, reply)
+
+fn string_field(object: &Json, name: Text) -> Result<&String, U64>:
+    let field = object.field(name)?
+    return field.text()
+
+fn check_nonce(reply: &Json) -> Result<(), U64>:
+    let Ok(nonce): &String = string_field(reply, "nonce") else Err(reason):
+        return Err(6)
+    let Ok(prefix): Halves = nonce.span().split('.') else Err(reason):
+        return Err(6)
+    let Ok(suffix): Halves = prefix.tail.split('.') else Err(reason):
+        return Err(6)
+    if prefix.head.len() != 43 || suffix.head.len() > 12 || suffix.tail.len() != 64:
+        return Err(6)
+    if !identifier(prefix.head) || !positive_id(suffix.head) || !identifier(suffix.tail):
+        return Err(6)
+    if let Ok(parts) = suffix.tail.split('.'):
+        return Err(6)
+    return Ok(())
+
+fn check_receipt(request: &Json, reply: &Json) -> Result<(), U64>:
+    let expected_name = string_field(request, "package")?
+    let expected_digest = string_field(request, "digest")?
+    let Ok(name): &String = string_field(reply, "name") else Err(reason):
+        return Err(7)
+    let Ok(digest): &String = string_field(reply, "digest") else Err(reason):
+        return Err(7)
+    if !name.eq(expected_name) || !digest.eq(expected_digest):
+        return Err(7)
+    return Ok(())

@@ -1,0 +1,8 @@
+// Refused: the module declares no recipe of that name.
+import "parts/keys.wy"
+
+type P derive(keys.Lock):
+    x: U64
+
+fn main():
+    return

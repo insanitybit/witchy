@@ -1,0 +1,62 @@
+# Read-only TUF mirror verification with a private comparison output file.
+<standard>/wasm-vec.wy: Allocator ; digest sha384:bedaa1adef080670b74f6b45b2d8a1d4cb84c158d298b9fc9ca69a6d1bdc67425998ae44bb7f8658d66821cd3436b417
+<standard>/wasm-vec-text.wy: Allocator ; digest sha384:631624647408dcdf978739698431b6e433b7effc83acd006edcc4e325eb70374135fced80d0a7ede048e811fca528aac
+<standard>/wasm-hash.wy: nothing ; no unchecked ; digest sha384:1cd64a088254b164cbe6656cdd894920f8d4b0d0c12a753c7ea5b8317d4bdb341a732303d7a48ceade360acb410016d1
+<standard>/wasm-discard-core.wy: nothing ; no unchecked ; digest sha384:22e2f3a4849f6b641017566c17a7dd1715953486462e270d1b7f0e0a697fd586e97a8e357580a44c59f6a57029e56ddb
+<standard>/wasm-discard.wy: nothing ; no unchecked ; digest sha384:6d061add8d8385896a93123e6729737ce5e91b563a9e58e28928f5e3ef419bc08fa1ba23b16c38e844f1bbd34319568d
+<standard>/wasm-result.wy: nothing ; no unchecked ; digest sha384:79a4b162a05bfb091520eae8b36710e5cd8053d3c8eb05349980b279f58c229ef4e7d53aadc9f440f45b7b7f75cadbb9
+<standard>/wasm-string.wy: Allocator ; no unchecked ; digest sha384:0fa2a84a8103651b211c214589865a6cd181ac681fc13a2e03765c1fd65f69f70827bc1c9b67bfbd304d0124dcacf4e5
+<standard>/wasm-console.wy: Allocator, Console<Read>, Console<Write> ; no unchecked ; digest sha384:9cf7c1f12a4259890baa0e60380b789af0ce75a7390d092f78068bb5959605e1eeb8ab6e49894aa15e9b081580d1595d
+<standard>/wasm-text.wy: Allocator ; no unchecked ; digest sha384:c33227af14e201a7f8b38ba13498a2aa5f715972ce9cfa37a31a6491590e2cdb10bd8bc5e869cb1ca43f0204329135ec
+<standard>/wasm-hashmap.wy: nothing ; no unchecked ; digest sha384:5f01ea1dd0d6c274b83f12f23e107cb5491d52a2c4be02b273e26ab775c8069b96a9dcb95d924d162a474a7c76c0f4fb
+<standard>/wasm-int.wy: nothing ; no unchecked ; digest sha384:d0626adff3485a27c1f6393dfae022195daa50a05beec28066d2ff83a56f30f67ec24e56cc2977d6abe3b3c1fcf928f6
+<standard>/wasm-simd.wy: nothing ; no unchecked ; digest sha384:2ec8e6250d54a0dda7289f497bc58719a7f915878f7e43358bb7c80d8682d4175f27f08ccdbdb7b7d57d7aa53b9146fb
+<standard>/wasm-span.wy: Allocator ; no unchecked ; digest sha384:590236a5a9981f147176f40964602e11b14c6c7c246f257ee68f256d6209219bad66f8bd0be7872b9d00fd28cad56f7e
+tuf/coordinate.wy: nothing ; no unchecked ; digest sha384:f9fc5a5f564c5511338a9e1bce78055c123feda6495377545a31b7a9a0dc1f16246e7e8d5e1f4d4bde4999ef18720b62
+<standard>/wasm-json.wy: Allocator ; no unchecked ; digest sha384:a928eff5f63a9e833a8c936a65f80db1f1081bedcba48c67dcf18051f1b05df3045b839b176a5306079e3ed19ac8cd0c
+<standard>/wasm-format.wy: nothing ; no unchecked ; digest sha384:c83bf0a103b237266500b0b0384d57bcf6de06d2b8a2eed53dee3f11c67358bd573a507ecb2b365432bf970619cdb63a
+<standard>/wasm-float.wy: nothing ; no unchecked ; digest sha384:bc6d29aa76d3ce2ecebf79a653a59ccb17664b44f840a9d9564dee7b9d2466e343dbb220294848f404faa052181408a9
+<standard>/wasm-json-sorted.wy: Allocator ; no unchecked ; digest sha384:72c900552ab494d6290e81ad1647793f1f4c4050ec5ed93cc7110d530bc031bfcadf8137aee51640c342b5ea9aa1fae4
+<standard>/wasm-json-strings.wy: Allocator ; no unchecked ; digest sha384:926356af28b32eb1776666663a04059d28913ee2894b7b06c4d57063146d010333fe25467b7021fd389d4c41aa3f1603
+<standard>/wasm-json-tree.wy: Allocator ; no unchecked ; digest sha384:e1d7746a2df3ba4ac77fe1f21a2b5b77873fae1fe1f9e1bfde05b7d492a1928fc990da6107e11b9f3fa87450ab965b4f
+<standard>/wasm-sort.wy: nothing ; no unchecked ; digest sha384:64b458f4c10d1fdc557ca99fcb88d2e1db8eb881d0f76b781e47b010cc1eb56365c95afd8d2804072340dfe3e175dd81
+tuf/canonical.wy: Allocator ; no unchecked ; digest sha384:3be900df2b79d1ef1357f78271e7f2c29512fce8c779e98cf10ccd68715e10bd33cb5a433f02de8a0dc15579861783aa
+<standard>/wasm-crypto.wy: nothing ; no unchecked ; digest sha384:41b93a483331dd8776c3ecf2b0c49c24707fe0173390378e49f47aa6d7f73ff0563923cb6c21e6cc616cb7fda744d3e5
+<standard>/wasm-encoding.wy: Allocator ; no unchecked ; digest sha384:f83f9c37db8c199cec7e87059270ae8797aea0414cde8db41d62ea3252b743f93a177c62aecaf4ccad0468c387583052
+tuf/metadata.wy: Allocator ; no unchecked ; digest sha384:89470370e2c1cf2c5cda9aa9191989b471b48ad37ee5ad549c1334421a4c24ee1d3b6e5ad17b095cb344a4707d1cf2d5
+<standard>/wasm-fs.wy: Allocator, Dir<Read>, File<Read>, File<Write> ; no unchecked ; digest sha384:00c0f78bd55b37fc4f98480640f7da28a834b6331252d67effb896b61cdd6db59ac4d6dc05903ec1f25130847a4daa2d
+tuf/publication_files.wy: Allocator, Dir<Read> ; no unchecked ; digest sha384:db657de4e32fe415aad9ce256045dec273dcaa8ebadbb217bff76e6e4927bcefe5aa33982bd7ebd1353dcac980a1a071
+tuf/base64url.wy: Allocator ; no unchecked ; digest sha384:641cdc64eeb5883cb12d949a82f18216978832a8c606d13a7426dfee310ba6efa1934d07b7f90c9940e8650d52383302
+<standard>/wasm-url.wy: nothing ; no unchecked ; digest sha384:0cb27d44b8061331171d13167ec1070f10406880a526dc8fca4291541e3665d9e4a04bfba5b93207ad1ff77f620f4db2
+tuf/origin.wy: nothing ; no unchecked ; digest sha384:7785a5fcf8283728fd902399175be81de42e5d92886f27864e71021f0ad4cc7af74e66001f24e49dd18c5ab9d451137c
+tuf/release_trust.wy: Allocator ; no unchecked ; digest sha384:9b9bea9e73a8730848a85a8d134c2ad6c55a40fe88753c454e346e16d30af6497d36d0224b415258af48fa304502a62a
+tuf/delegated_input.wy: Allocator ; no unchecked ; digest sha384:7ac4f1f2fc415e340b40c608fdfe50c6ad09bbb8f1e52ae9f45e16e1d6c5988d7e3ccccdbef0e53aefa17e36e003fda9
+tuf/package_paths.wy: nothing ; no unchecked ; digest sha384:37adc8b5b9e240f75ef2f7045c4eae4147d179edf23f5b147bc14b90edf150c774c667e8724378bd59db14e91fef4ff9
+tuf/package_record.wy: Allocator ; no unchecked ; digest sha384:728258c593187433ae09a5564d733a81c0ea19fbd66ebb8de3a26b02e4778b668e04614ef0e8a3e8b9a50de7a4e1987b
+tuf/package_imports.wy: Allocator ; no unchecked ; digest sha384:de2e741c7fe2ef1af6d0a1a60be0ad491b74b3ca2cd748c0979fce730fd10768d0a018a1b35fb11af2d50998da774832
+tuf/package.wy: Allocator ; no unchecked ; digest sha384:bee6d266354aecf38485345d46e6088835498a9dffa56d75f2e6988d875a7ee17eb726e9004d16f738140856a095709d
+@webauthn/cose.wy: nothing ; no unchecked ; digest sha384:35ac282f06ec89d858e72dc58db2b8a01c6a4e844929c57a6ce5e08a8f60a2c1cdc6a764ab65de688d2b0be8afa3a299
+@webauthn: nothing ; no unchecked ; digest sha384:54a4fef3280dd616d86a69943378fd661b7813aa1062ae69361b5b246837404831c4450b698a90c97bc47bae4abefd0e
+tuf/webauthn.wy: Allocator ; no unchecked ; digest sha384:13f01d2a8c105af04e7e73523be614a369fd0bc67644c9b407ef7e5a15abf229835400c7a7a51f2532fe90cad06eee48
+tuf/attestations.wy: Allocator ; no unchecked ; digest sha384:13cbb9190ea28a056103e1a04b3f83f419b24d62479a5308d5d3889625dde7a5d2f2026792a4d7b4162301a8db5dd607
+tuf/expiry.wy: nothing ; no unchecked ; digest sha384:cabc94c2d628cd0e8fd55df316152a33c3f2b4228210216f99fba304a2a2d4f9108cd4f0e084ac8f916d51a1117d4c23
+tuf/public_key.wy: Allocator ; no unchecked ; digest sha384:1d8942de663f3dca46e96e144926d481926a57d2153a20defb9c1c3f252f37cbfdd3844e1d47fd8556d678941275b585
+tuf/signatures.wy: Allocator ; no unchecked ; digest sha384:f48251784bf2775a7c777df2357503f25753c44f2b0e91224c9db7853631e5bd498ce4cea9e7fae2358ae25e78b0235b
+tuf/root.wy: Allocator ; no unchecked ; digest sha384:2443ee551b513dfcc12f25348bb2a8895a77536acdb257660a62db19d4c4bc97ce79cad67cfc34d74ccb475409961c3a
+tuf/delegations.wy: Allocator ; no unchecked ; digest sha384:9e53bc04f1297a3c44004952caf6c29f3df3808bf431acb3eef33f1263b9227921104afda337ebba6a35936a72d9e159
+tuf/generation.wy: Allocator ; no unchecked ; digest sha384:aae7380e74edf401f8e7f7afe5c7dbbc80733951b5b78f85af610ccdf394f07114d0100324247be12b71e18dba57d1b0
+tuf/fetch_history.wy: Allocator ; no unchecked ; digest sha384:d3a75c8e114df0b2a78285c80b3ff5ac0a39f567991a997f0d2c5dfd60f2696ce9d320c4a0b8b3457476a00b6093aa2f
+tuf/fetch_role_file.wy: nothing ; no unchecked ; digest sha384:1dbca85bf0165e62f801d299861d1b2f4c937380f69fb77696afbcb42ae9615dd3b5da69e936eb6f7c790b9a325183be
+tuf/fetch_scope.wy: nothing ; no unchecked ; digest sha384:86ceb791c438acede6117b4818c704457d563a112b931cd3f4b3fad840b03dbbacfe01c2a373ffc1b214ba7372ce8974
+tuf/fetch_refresh.wy: Allocator, Dir<Read> ; no unchecked ; digest sha384:ecddbe37de6c6d3d773006869f1b51290d1da7edfa0887832ccafa70244cb7e9b04adfd5d265ca6787d1c164b2be33a4
+tuf/fetch_roots.wy: Allocator, Dir<Read> ; no unchecked ; digest sha384:c50b10fa8f00d3f06d7b6d796b2129576902c027ea7ba6e85b3d6cea27fe6e2903b435f0fbf7213501b0595e2a4642bd
+tuf/publication_roots.wy: nothing ; no unchecked ; digest sha384:9bb19d889b4177312ba6b2f8681791fdc0e21f20206d93f451f023c805b586ec3a4a9d5591ef24158731d3a02c16a95a
+tuf/review_generation.wy: Allocator, Dir<Read>, File<Write> ; no unchecked ; digest sha384:f9c1277c2d19e9650614f04f746957c7f7b1a0c959a9fbe731649aa71a748aba5caa6a402151118a552e0ae36555ea96
+tuf/review_choice.wy: Allocator ; no unchecked ; digest sha384:760ceaafaff589dda10dc43c865e6d51717232955c35e0f875df6017980dac9c8746bb90ad15dbf32d4241caec3c0d1f
+tuf/target_path.wy: Allocator ; no unchecked ; digest sha384:d3140a4401aed00cb34c213d5b14585ce9892fa10123ae46ee978a2be891634a60e715432e5f20477d749e1c6f04a3c6
+tuf/review_target.wy: Allocator, Console<Write>, Dir<Read>, File<Write> ; no unchecked ; digest sha384:678712f1d247b70f25ba27fcc2740bcecc957e26d7943d420f1d8034a851483e07d1d58338540558c8c5ef228b0cc838
+<standard>/wasm-console-bytes.wy: Allocator, Console<Read> ; no unchecked ; digest sha384:58b006da06f44e8b6430163b5d51450b6705d4e7b29b3ef690f52896177cb7dfcf529d1694fc94125c9ff57fd346da62
+tuf/signing_input.wy: Allocator, Console<Read> ; no unchecked ; digest sha384:ac6176a5671edd09e7b5d943b103bc4c461c2d82b65021abd47527a8a122ce4d9a2725f1755f274d43eebaccf333b2c0
+<standard>/wasm-ops.wy: nothing ; no unchecked ; digest sha384:fdcf769bf5fa7f077ae961cd06f669302da52f8f2a43f57427f6ff6350fc0ff028915d22da51f8f7fbb16dcda912a4a5
+<standard>/wasm-time.wy: nothing ; no unchecked ; digest sha384:d2b03f9e6c0475c5ee5d3d8a014d3a66916e857a2eb4a97341fb035aff82b82b6c6c226c123dda7381413cc67bb3d717
+tuf_review_baseline.wy: Allocator, Clock, Console<Read>, Console<Write>, Dir<Read>, File<Write> ; no unchecked ; digest sha384:39a59583b032031bad58a7fa24d09d2a0b5671d555202556ece55472dfc2d6087b2ef8c06a6a7aa1638732a10ba5edf2

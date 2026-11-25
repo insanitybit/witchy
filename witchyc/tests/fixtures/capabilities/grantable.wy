@@ -1,0 +1,11 @@
+// A grantable capability (book: capabilities-narrowing.md): `main` takes a `RateLimit` and
+// the run grants it with values (`--grant=RateLimit.per_minute=3`). `wasm-caps` lists it
+// as a user capability, so requiring a new one counts as widening.
+import console
+import "parts/limits.wy"
+
+fn main(console: Console<Write>, limit: RateLimit):
+    var made: U64 = 0
+    while limits.allows(&limit, made):
+        made += 1
+    console.print_int(made)

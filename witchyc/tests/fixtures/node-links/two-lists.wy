@@ -1,0 +1,36 @@
+import list
+
+fn main(out: Console<Write>, a: Allocator):
+    var first: DoublyLinkedList<U64> = DoublyLinkedList.new()
+    var second: DoublyLinkedList<U64> = DoublyLinkedList.new()
+    match first.insert(&a, 10):
+        Ok:
+            first.move_prev()
+        Err(back):
+            unreachable
+    match second.insert(&a, 20):
+        Ok:
+            second.move_prev()
+        Err(back):
+            unreachable
+    if first.position().same(second.position()):
+        unreachable
+    match first.remove():
+        Some(v):
+            out.print_int(v)
+        None:
+            unreachable
+    match second.remove():
+        Some(v):
+            out.print_int(v)
+        None:
+            unreachable
+    match first.close_empty():
+        Ok:
+            match second.close_empty():
+                Ok:
+                    return
+                Err(back):
+                    unreachable
+        Err(back):
+            unreachable

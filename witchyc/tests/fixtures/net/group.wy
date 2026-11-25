@@ -1,0 +1,20 @@
+// A group made from the listener; with no client, `try_accept` finds nothing waiting and
+// says so instead of waiting. examples/echo/server.wy is the server built on this, driven
+// by scripts/bench-echo-concurrent.py.
+import console
+import net
+
+fn main(console: Console<Write>, listener: Listener):
+    let group = listener.group()
+    match listener.try_accept():
+        Ok(socket):
+            console.print_int(0)
+            socket.close()
+        Err(error):
+            match error:
+                WouldBlock:
+                    console.print_int(7)
+                _:
+                    console.print_int(1)
+    console.print_int(wait_entry(LISTENER_SLOT, true, false) / 256)
+    group.close()

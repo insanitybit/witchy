@@ -1,0 +1,12 @@
+fn allocation_code(count: USize) -> U64:
+    let result = memory.try_alloc(count)
+    match result:
+        Ok(storage):
+            memory.release(storage)
+            return 0
+        Err(reason):
+            return 1
+
+fn main(console: Console<Write>):
+    console.print_int(allocation_code(1))
+    console.print_int(allocation_code(65537))

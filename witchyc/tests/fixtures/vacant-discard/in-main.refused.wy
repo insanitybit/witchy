@@ -1,0 +1,11 @@
+// Refused by the checker: `main` has no contract, so nothing in it can be given the proof.
+import "../../../library/wasm-string.wy"
+
+type Slot:
+    Vacant
+    Full(String)
+
+fn main(out: Console<Write>, allocator: Allocator):
+    let slot: Slot = Vacant
+    memory.vacant(move slot)
+    out.print_int(1)

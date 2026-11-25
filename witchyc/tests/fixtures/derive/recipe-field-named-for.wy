@@ -1,0 +1,25 @@
+// A field named `For` under a recipe with `for:`: the loop's field, `Self` and `For` are replaced
+// in one pass, so the field is read, not the field named by `for:` (third review: 100, not 5).
+import console
+
+trait Total:
+    fn total(self: &Self) -> U64
+
+type Other:
+    v: U64
+
+derive Sum:
+    impl Total for Self:
+        fn total(self: &Self) -> U64:
+            let o = For(v: 1)
+            static for f in fields:
+                return (*self).f
+            return 0
+
+type T derive(Sum(for: Other, by: For)):
+    For: U64
+    Other: U64
+
+fn main(console: Console<Write>):
+    let v = T(For: 5, Other: 100)
+    console.print("${v.total()}")

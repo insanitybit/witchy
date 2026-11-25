@@ -1,0 +1,28 @@
+// The operand of `?` may itself hold calls: they run before it, as written.
+// A call that would run before the operand begins is still refused
+// (`after-call.refused.wy`).
+fn half(value: U64) -> Result<U64, U64>:
+    if value % 2 == 1:
+        return Err(value)
+    return Ok(value / 2)
+
+fn twice(value: U64) -> U64:
+    return value * 2
+
+fn run(console: &Console<Write>, start: U64) -> Result<U64, U64>:
+    let first = half(twice(start) + twice(1))?
+    console.print_int(first)
+    let second = half(half(first)? + twice(first))?
+    return Ok(second)
+
+fn main(console: Console<Write>):
+    match run(&console, 3):
+        Ok(value):
+            console.print_int(value)
+        Err(code):
+            console.print_int(code + 1000)
+    match run(&console, 5):
+        Ok(value):
+            console.print_int(value)
+        Err(code):
+            console.print_int(code + 1000)

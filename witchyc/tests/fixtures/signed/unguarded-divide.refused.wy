@@ -1,0 +1,11 @@
+// `||` evaluates its right side when the left is false: here that divides by zero.
+fn f(x: I64) -> U64:
+    ensures result <= 1
+    proof:
+        auto
+    if x != 0 || 10 / x > 0:
+        return 1
+    return 0
+
+fn main(console: Console<Write>):
+    console.print_int(f(4))

@@ -1,0 +1,168 @@
+// One exchange with a granted IPv4 loopback compatibility registry.
+import console
+import fs
+import http
+import http_framing
+import net
+import span
+import string
+import text
+import url
+import vec
+
+fn body_limit() -> U64:
+    return 16777216
+
+fn main(input: Console<Read>, output: Console<Write>, net: Net, upload: File<Read>, reply: File<Write>, allocator: Allocator):
+    let result = request(&input, &net, &upload, &reply, &allocator)
+    upload.close()
+    let Ok(status): U64 = result else Err(reason):
+        reply.abandon()
+        output.write("refused ")
+        output.write_u64(reason)
+        output.print_byte(10)
+        return
+    if let Err(reason) = reply.finish():
+        output.line("refused 4")
+        return
+    output.write("status ")
+    output.write_u64(status)
+    output.print_byte(10)
+
+fn line(input: &Console<Read>, allocator: &Allocator) -> Result<String, U64>:
+    let empty = String.new(allocator)?
+    var value = move empty
+    if let .Line = input.read_line(allocator, &mut value):
+        return Ok(move value)
+    value.close()
+    return Err(1)
+
+fn request(input: &Console<Read>, net: &Net, upload: &File<Read>, reply: &File<Write>, allocator: &Allocator) -> Result<U64, U64>:
+    let authority = line(input, allocator)?
+    let result = request_at(input, authority.span(), net, upload, reply, allocator)
+    authority.close()
+    return result
+
+fn request_at(input: &Console<Read>, authority: Span, net: &Net, upload: &File<Read>, reply: &File<Write>, allocator: &Allocator) -> Result<U64, U64>:
+    let Ok(endpoint): HttpAuthority = url.parse_authority(authority) else Err(reason):
+        return Err(1)
+    if !endpoint.hostname().equals_text("127.0.0.1") || endpoint.explicit_port() == 0:
+        return Err(1)
+    let target = line(input, allocator)?
+    let result = read_method(input, authority, &target, net, upload, reply, allocator)
+    target.close()
+    return result
+
+fn read_method(input: &Console<Read>, authority: Span, target: &String, net: &Net, upload: &File<Read>, reply: &File<Write>, allocator: &Allocator) -> Result<U64, U64>:
+    if !valid_target(target.span()):
+        return Err(1)
+    let mode = line(input, allocator)?
+    let get = mode.equals_text("GET")
+    let parsed = upload_length(mode.span(), get)
+    mode.close()
+    let length = parsed?
+    if length > body_limit() || input.next_byte() != 256:
+        return Err(1)
+    let kind = if get: GetRequest else: PostRequest(length)
+    let head = request_head(allocator, authority, target, kind)?
+    let result = exchange(&head, allocator, authority, length, net, upload, reply)
+    head.close()
+    return result
+
+fn upload_length(mode: Span, get: Bool) -> Result<U64, U64>:
+    if get:
+        return Ok(0)
+    return mode.parse_u64()
+
+fn valid_target(target: Span) -> Bool:
+    if !target.starts_with_text("/v1/") || target.len() <= 4 || target.len() > 384:
+        return false
+    for byte in target.as_bytes():
+        if !(*byte >= 'a' && *byte <= 'z') && !(*byte >= '0' && *byte <= '9') && *byte != '/' && *byte != '-' && *byte != '.' && *byte != ':':
+            return false
+    return true
+
+fn exchange(head: &String, allocator: &Allocator, authority: Span, length: U64, net: &Net, upload: &File<Read>, reply: &File<Write>) -> Result<U64, U64>:
+    for byte in authority.as_bytes():
+        net.raw_addr_byte(*byte)
+    let socket = net.raw_connect()
+    if socket.raw_status() != 0:
+        socket.close()
+        return Err(2)
+    let result = transfer(&socket, head.as_bytes(), upload, length, reply, allocator)
+    socket.close()
+    return result
+
+fn request_head(allocator: &Allocator, authority: Span, target: &String, kind: RequestKind) -> Result<String, U64>:
+    let Ok(empty): RequestHeaders = http.request_headers(allocator) else Err(reason):
+        return Err(1)
+    var fields = move empty
+    let result = encode_request(allocator, authority, target, kind, &mut fields)
+    fields.close()
+    let Ok(head): String = move result else Err(reason):
+        return Err(1)
+    return Ok(move head)
+
+fn encode_request(allocator: &Allocator, authority: Span, target: &String, kind: RequestKind, fields: &mut RequestHeaders) -> Result<String, HttpError>:
+    fields.add_str(allocator, "Accept-Encoding", "identity")?
+    if let PostRequest(length) = kind:
+        fields.add_str(allocator, "Content-Type", "application/json")?
+    return http.request_head(allocator, kind, authority, target.span(), fields)
+
+fn transfer(socket: &Socket, request: &[U8], upload: &File<Read>, length: U64, reply: &File<Write>, allocator: &Allocator) -> Result<U64, U64>:
+    let empty: Vec<U8> = Vec.filled(allocator, 8192, 0)?
+    var input = move empty
+    let result = exchange_body(socket, request, upload, length, reply, allocator, input.as_mut_slice())
+    input.close()
+    return result
+
+fn exchange_body(socket: &Socket, request: &[U8], upload: &File<Read>, length: U64, reply: &File<Write>, allocator: &Allocator, scratch: &mut [U8]) -> Result<U64, U64>:
+    if let Err(failure) = socket.write_all(request):
+        return Err(2)
+    send_body(socket, upload, length, scratch)?
+    return receive(socket, reply, scratch, allocator)
+
+fn send_body(socket: &Socket, upload: &File<Read>, length: U64, buffer: &mut [U8]) -> Result<(), U64>:
+    var remaining = length
+    while remaining > 0:
+        let limit = if remaining < buffer.len(): remaining else: buffer.len()
+        let count = upload.read_some(buffer.part(0, limit))
+        if count == 0:
+            return Err(1)
+        if let Err(failure) = socket.write_all(buffer.part(0, count)):
+            return Err(2)
+        remaining -= count
+    if let Ok(extra) = upload.next_byte():
+        return Err(1)
+    return Ok(())
+
+fn receive(socket: &Socket, reply: &File<Write>, input: &mut [U8], allocator: &Allocator) -> Result<U64, U64>:
+    let empty_head: Vec<U8> = Vec.filled(allocator, 16384, 0)?
+    var head = move empty_head
+    let Ok(empty_body): Vec<U8> = Vec.filled(allocator, input.len(), 0) else Err(reason):
+        head.close()
+        return Err(4)
+    var body = move empty_body
+    let result = read_reply(socket, reply, input, head.as_mut_slice(), body.as_mut_slice())
+    body.close()
+    head.close()
+    return result
+
+fn read_reply(socket: &Socket, reply: &File<Write>, input: &mut [U8], head: &mut [U8], body: &mut [U8]) -> Result<U64, U64>:
+    var chunk_line: [U8; 256] = [0; 256]
+    var decoder = http_framing.response_decoder()
+    while !decoder.complete():
+        let Ok(count): U64 = socket.read_some(input) else Err(failure):
+            return Err(2)
+        if count == 0:
+            if let Err(reason) = decoder.finish():
+                return Err(3)
+        else:
+            let Ok(written): U64 = decoder.push_body_chunk(input.part(0, count), head, body, chunk_line.slice_mut(), body_limit()) else Err(reason):
+                if let BodyLimit = reason:
+                    return Err(5)
+                return Err(3)
+            if written != 0:
+                if let Err(reason) = reply.write_bytes(body.part(0, written)):
+                    return Err(4)
+    return Ok(decoder.status())

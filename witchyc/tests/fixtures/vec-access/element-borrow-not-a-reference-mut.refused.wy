@@ -1,0 +1,13 @@
+// Refused (Astra audit): the same for `&mut shelf[0]` and `cell_mut`.
+import console
+
+type Shelf:
+    top: U64
+
+impl Shelf:
+    pub fn cell_mut(self: &mut Shelf, i: U64) -> U64:
+        return self.top + i
+
+fn main(console: Console<Write>):
+    var shelf = Shelf(43)
+    console.print_int(&mut shelf[0])

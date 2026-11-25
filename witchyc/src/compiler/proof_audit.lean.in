@@ -1,0 +1,41 @@
+open Lean
+#eval ((do
+  unless Lean.versionString == "4.36.0" do
+    throwError "WASM_PROOF: expected Lean 4.36.0"
+  let env ← getEnv
+  unless env.header.trustLevel == 0 do
+    throwError "WASM_PROOF: nonzero kernel trust level"
+  if debug.skipKernelTC.get (← getOptions) then
+    throwError "WASM_PROOF: kernel type checking disabled"
+  let selected : Array (Name × Name) := #[__GOALS__]
+  let mut count := 0
+  for (name, expected) in selected do
+    let some (.thmInfo theoremInfo) := env.find? name
+      | throwError "WASM_PROOF: missing expected theorem {name}"
+    let some (.defnInfo definitionInfo) := env.find? expected
+      | throwError "WASM_PROOF: missing expected proposition {expected}"
+    unless definitionInfo.type == mkSort .zero do
+      throwError "WASM_PROOF: expected proposition has wrong type"
+    unless theoremInfo.type == mkConst expected do
+      throwError "WASM_PROOF: theorem statement mismatch {name}"
+    let dependencies ← collectAxioms name
+    for dependency in dependencies do
+      unless #[`propext, `Classical.choice, `Quot.sound].contains dependency do
+        throwError "WASM_PROOF: forbidden axiom {dependency}"
+    let bits := String.ofList [if dependencies.contains `propext then '1' else '0',
+      if dependencies.contains `Classical.choice then '1' else '0',
+      if dependencies.contains `Quot.sound then '1' else '0']
+    logInfo m!"WITCHY_SCALAR_AXIOMS:{name}:{bits}"
+    count := count + 1
+  for (name, info) in env.constants.toList do
+    if (`WitchyScalar).isPrefixOf name then
+      match info with
+      | .axiomInfo _ => throwError "WASM_PROOF: new axiom {name}"
+      | .thmInfo _ =>
+        unless selected.any (fun pair => pair.1 == name) do
+          throwError "WASM_PROOF: uninventoried theorem {name}"
+      | _ => pure ()
+  unless count == selected.size && count > 0 do
+    throwError "WASM_PROOF: incomplete inventory"
+  logInfo m!"__MARKER__"
+) : Lean.CoreM Unit)

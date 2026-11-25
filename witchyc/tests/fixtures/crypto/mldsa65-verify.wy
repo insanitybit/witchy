@@ -1,0 +1,60 @@
+// Public ML-DSA-65 verification needs no secret: `main` takes a directory holding a key, a
+// message and a signature made by an independent FIPS 204 implementation from NIST's ACVP
+// key-generation seed (mldsa65-kat/generate.go.txt). The vector verifies; a changed message,
+// another role's domain, another key, and a truncated or changed signature do not.
+import console
+import crypto
+import fs
+import vec
+
+// The file's bytes into `bytes` from `at`, up to `end`: how many.
+fn load(dir: &Dir<Read>, bytes: &mut Vec<U8>, name: Text, at: U64, end: U64) -> U64:
+    let Ok(file): File<Read> = dir.open(name) else Err(error):
+        return 0
+    var next = at
+    var more = true
+    while more && next < end:
+        let count = file.read_some(bytes.as_mut_slice().part(next, end))
+        next += count
+        more = count > 0
+    file.close()
+    return next - at
+
+fn say(console: &Console<Write>, what: Text, valid: Bool):
+    console.write(what)
+    if valid:
+        console.line(": valid")
+    else:
+        console.line(": invalid")
+
+// Key 0..1952, message 1952..1988, signature 1988..5297.
+fn check(console: &Console<Write>, all: &mut Vec<U8>):
+    say(console, "vector", mldsa65_verify(all.as_slice().part(0, 1952), all.as_slice().part(1952, 1988), all.as_slice().part(1988, 5297)))
+    say(console, "vector as targets", witchy2_verify(all.as_slice().part(0, 1952), "targets", all.as_slice().part(1952, 1988), all.as_slice().part(1988, 5297)))
+    say(console, "vector as root", witchy2_verify(all.as_slice().part(0, 1952), "root", all.as_slice().part(1952, 1988), all.as_slice().part(1988, 5297)))
+    say(console, "truncated message", mldsa65_verify(all.as_slice().part(0, 1952), all.as_slice().part(1952, 1987), all.as_slice().part(1988, 5297)))
+    say(console, "truncated signature", mldsa65_verify(all.as_slice().part(0, 1952), all.as_slice().part(1952, 1988), all.as_slice().part(1988, 5296)))
+    say(console, "witchy-1 sizes", mldsa65_verify(all.as_slice().part(0, 1312), all.as_slice().part(1952, 1988), all.as_slice().part(1988, 4408)))
+    say(console, "short key", mldsa65_verify(all.as_slice().part(0, 1951), all.as_slice().part(1952, 1988), all.as_slice().part(1988, 5297)))
+    // One byte changed at a time, then put back.
+    let kept = all.index(1987)
+    let _ = all.set(1987, 11)
+    say(console, "changed message", mldsa65_verify(all.as_slice().part(0, 1952), all.as_slice().part(1952, 1988), all.as_slice().part(1988, 5297)))
+    let _ = all.set(1987, kept)
+    let key_byte = all.index(40)
+    let _ = all.set(40, 1)
+    say(console, "another key", mldsa65_verify(all.as_slice().part(0, 1952), all.as_slice().part(1952, 1988), all.as_slice().part(1988, 5297)))
+    let _ = all.set(40, key_byte)
+    let _ = all.set(2088, 0)
+    say(console, "changed signature", mldsa65_verify(all.as_slice().part(0, 1952), all.as_slice().part(1952, 1988), all.as_slice().part(1988, 5297)))
+
+fn main(console: Console<Write>, allocator: Allocator, kat: Dir<Read>):
+    let Ok(made): Vec<U8> = Vec.filled(&allocator, 5297, 0) else Err(code):
+        return
+    var all = move made
+    let read = load(&kat, &mut all, "public-key.bin", 0, 1952) + load(&kat, &mut all, "message.bin", 1952, 1988) + load(&kat, &mut all, "signature.bin", 1988, 5297)
+    if read == 5297:
+        check(&console, &mut all)
+    else:
+        console.line("short read")
+    all.close()

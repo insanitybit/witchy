@@ -1,0 +1,7 @@
+// Refused: two different closures are two types; one function returns one of them.
+fn pick(up: Bool) -> fn(U64) -> U64:
+    if up:
+        return fn(n: U64) -> U64: n + 1
+    return fn(n: U64) -> U64: n - 1
+fn main():
+    return

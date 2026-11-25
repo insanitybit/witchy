@@ -1,0 +1,1 @@
+ensures memory.utf8(buffer, 0, 1)

@@ -1,0 +1,41 @@
+// Refused by the proof: the helper reaches its own body again through the one it calls, so
+// it has no summary and the caller forgets what it lent.
+type Slot<T>:
+    Vacant
+    Full(T)
+
+type Shelf<T>:
+    count: U64
+    slot: Slot<T>
+
+type Both<T>:
+    first: Slot<T>
+    second: Slot<T>
+
+nopanic fn drain<T: Any>(slot: &mut Slot<T>) -> Slot<T>:
+    var previous: Slot<T> = Vacant
+    memory.exchange(&mut *slot, &mut previous)
+    return move previous
+
+nopanic fn put<T: Any>(slot: &mut T, next: T) -> T:
+    var held = move next
+    memory.exchange(slot, &mut held)
+    return move held
+
+// A helper that may call itself: what it leaves is not a fixed rearrangement.
+fn empty<T: Any>(slot: &mut Slot<T>, again: Bool) -> Slot<T>:
+    return settle(slot, again)
+
+fn settle<T: Any>(slot: &mut Slot<T>, again: Bool) -> Slot<T>:
+    if again:
+        return empty(slot, false)
+    return drain(slot)
+
+// The slot is proved vacant at the assignment through `empty`, which only calls `drain`.
+nopanic fn swap_in<T: Any>(shelf: &mut Shelf<T>, item: T) -> Slot<T>:
+    let held = empty(&mut (*shelf).slot, true)
+    (*shelf).slot = Full(move item)
+    return move held
+
+fn main(out: Console<Write>):
+    out.print_int(1)

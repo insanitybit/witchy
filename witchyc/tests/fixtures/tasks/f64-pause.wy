@@ -1,0 +1,29 @@
+// An F64 live across a pause is saved and restored as an F64 (it went through i32: review).
+import console
+import int
+import tasks
+
+fn run(console: &Console<Write>, allocator: &Allocator)  suspends:
+    let local = 0.125
+    pause(7)
+    console.print_i64(F64.to_i64(local * 1000.0))
+
+type TaskEnvZ:
+    console: Console<Write>
+    allocator: Allocator
+
+fn work(env: TaskEnvZ) suspends:
+    run(&env.console, &env.allocator)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Task = Task.spawn(&allocator, 4096, work, TaskEnvZ(move console, move allocator)) else Err(back):
+        return
+    var task = move made
+    var going = true
+    while going:
+        match task.step():
+            Ok:
+                going = false
+            Err(token):
+                going = true
+    task.close()

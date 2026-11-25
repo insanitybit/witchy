@@ -1,0 +1,1 @@
+`double` is a function, not a value: pass a closure that calls it

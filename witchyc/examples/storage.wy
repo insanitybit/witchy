@@ -1,0 +1,12 @@
+// Initial executable subset: U64 slots, scoped loans, host Console root.
+fn main(console: Console<Write>):
+    var storage = memory.alloc(4)
+    var i: USize = 0
+    while i < 4:
+        memory.init(&mut storage, i, i + 40)
+        i += 1
+    let reader = &storage
+    let value = memory.read(reader, 1)
+    console.print_int(value)
+    memory.end(reader)
+    memory.release(storage)

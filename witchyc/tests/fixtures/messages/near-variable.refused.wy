@@ -1,0 +1,6 @@
+// Refused, naming the nearest variable in scope.
+import console
+
+fn main(console: Console<Write>):
+    let total: U64 = 5
+    console.print_int(totl + 1)

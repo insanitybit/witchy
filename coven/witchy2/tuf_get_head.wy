@@ -1,0 +1,21 @@
+import http_framing
+import span
+import text
+
+pub type GetHead:
+    status: U64
+    body_at: U64
+    fixed: Bool
+    length: U64
+
+pub fn get_head(bytes: Span, fence: U64) -> Result<GetHead, U64>:
+    let Ok(head): IdentityResponseHead = identity_response_head(bytes, fence) else Err(reason):
+        return Err(3)
+    match head.framing:
+        CloseDelimited:
+            return Ok(GetHead(head.status, head.body_at, false, 0))
+        FixedLength(length):
+            let wire = head.length_field
+            if wire.len() > 7 || length > 2097152:
+                return Err(3)
+            return Ok(GetHead(head.status, head.body_at, true, length))

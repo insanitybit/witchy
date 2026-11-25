@@ -1,0 +1,29 @@
+// A method that borrows only some fields (`self: Self { &mut count }`): calling it lends just
+// those, so a reference to another field stays usable across the call.
+import console
+
+type Counter:
+    name: U64
+    count: U64
+    step: U64
+
+impl Counter:
+    fn bump(self: Self { &mut count, &step }):
+        self.count += self.step
+
+    fn total(self: Self { &count, &step }) -> U64:
+        return self.count * self.step
+
+fn twice(c: &mut Counter):
+    c.bump()
+    c.bump()
+
+fn main(console: Console<Write>):
+    var c = Counter(7, 0, 5)
+    let name = &c.name
+    c.bump()
+    c.bump()
+    console.print_int(*name + c.count)
+    twice(&mut c)
+    console.print_int(c.total())
+    console.print_int(Counter.total(&c.count, &c.step))

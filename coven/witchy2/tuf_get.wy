@@ -1,0 +1,96 @@
+import "tuf/http_get.wy"
+import "tuf/download_request.wy"
+import "tuf/request_head.wy"
+import url
+import "tuf/release_trust.wy"
+import "tls13/http_client.wy"
+import tls
+import tls_trust_pem
+import console
+import discard
+import fs
+import json_tree
+import net
+import span
+import string
+import text
+import time
+import vec
+
+fn main(output: Console<Write>, input: Console<Read>, net: Net, roots: File<Read>, file: File<Write>, clock: Clock, rng: Rand, allocator: Allocator):
+    let result = download(&input, &net, move roots, &file, &clock, &rng, &allocator)
+    finish_download(move file, &output, result)
+
+fn download(input: &Console<Read>, net: &Net, roots: File<Read>, file: &File<Write>, clock: &Clock, rng: &Rand, allocator: &Allocator) -> Result<(), U64>:
+    let Ok(pem): String = read_trust_pem(move roots, allocator) else Err(reason):
+        return Err(5)
+    let Ok(request): Json = read_download_request(input, allocator) else Err(reason):
+        pem.close()
+        return Err(reason)
+    let result = fetch_with_roots(&request, net, file, clock, rng, move pem, allocator)
+    request.discard()
+    return result
+
+fn fetch_with_roots(request: &Json, net: &Net, file: &File<Write>, clock: &Clock, rng: &Rand, pem: String, allocator: &Allocator) -> Result<(), U64>:
+    let checked = inspect_request(request, &pem, allocator)
+    let Ok(bounds): DownloadBounds = checked else Err(reason):
+        pem.close()
+        return Err(reason)
+    let parsed = trust_bundle(pem.span(), allocator)
+    pem.close()
+    let Ok(anchors): Vec<U8> = move parsed else Err(reason):
+        return Err(5)
+    let result = send(request, net, file, clock, rng, anchors.as_slice(), bounds, allocator)
+    anchors.close()
+    return result
+
+fn inspect_request(request: &Json, pem: &String, allocator: &Allocator) -> Result<DownloadBounds, U64>:
+    let fields: U64 = if let Ok(pin) = request.field("ca_pin"):
+        let expected = pin.text()?
+        let actual = digest_text(pem.as_bytes(), allocator)?
+        let matches = actual.eq(expected)
+        actual.close()
+        if !matches:
+            return Err(7)
+        3
+    else:
+        2
+    return download_bounds(request, fields)
+
+fn send(request: &Json, net: &Net, file: &File<Write>, clock: &Clock, rng: &Rand, roots: &[U8], bounds: DownloadBounds, allocator: &Allocator) -> Result<(), U64>:
+    let origin = string_field(request, "origin")?
+    let path = string_field(request, "path")?
+    let endpoint = https_origin(origin.span())?
+    let authority = endpoint.authority()
+    let head = get_headers(authority, path, allocator)?
+    let result = prepare(&head, net, file, clock, rng, endpoint, roots, bounds, allocator)
+    head.close()
+    return result
+
+fn prepare(head: &String, net: &Net, file: &File<Write>, clock: &Clock, rng: &Rand, endpoint: HttpOrigin, roots: &[U8], bounds: DownloadBounds, allocator: &Allocator) -> Result<(), U64>:
+    let empty: Vec<U8> = Vec.filled(allocator, 72704, 0)?
+    var buffer = move empty
+    let Ok(clear): Vec<U8> = Vec.filled(allocator, 16385, 0) else Err(code):
+        buffer.close()
+        return Err(code)
+    var plaintext = move clear
+    let Ok(ciphertext): Vec<U8> = Vec.filled(allocator, 16406, 0) else Err(code):
+        plaintext.close()
+        buffer.close()
+        return Err(code)
+    var wire = move ciphertext
+    let result = exchange(head, net, file, clock, rng, endpoint, roots, bounds, allocator, buffer.as_mut_slice(), plaintext.as_mut_slice(), wire.as_mut_slice())
+    wire.close()
+    plaintext.close()
+    buffer.close()
+    return result
+
+fn exchange(head: &String, net: &Net, file: &File<Write>, clock: &Clock, rng: &Rand, endpoint: HttpOrigin, roots: &[U8], bounds: DownloadBounds, allocator: &Allocator, buffer: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]) -> Result<(), U64>:
+    let accepted = connect_https(net, endpoint, roots, rng, clock, allocator, buffer, plaintext, wire)?
+    var stream = move accepted
+    if let Err(reason) = stream.write(head.as_bytes(), plaintext, wire):
+        stream.close()
+        return Err(2)
+    let result = receive_get(&mut stream, file, bounds, buffer, plaintext, wire)
+    stream.close()
+    return result

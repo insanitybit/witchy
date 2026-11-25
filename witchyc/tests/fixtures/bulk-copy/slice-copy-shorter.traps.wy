@@ -1,0 +1,5 @@
+// A source shorter than the target stops the run too: the lengths are equal or nothing is copied.
+fn main():
+    var target: [U8; 9] = [0; 9]
+    let source: [U8; 8] = [1; 8]
+    target.slice_mut().copy_from(source.slice())

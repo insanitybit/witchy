@@ -1,0 +1,16 @@
+// Refused: a loop storing at its counter may change `ys[0]`.
+import console
+
+fn keep(xs: [U64; 3]) -> U64:
+    requires xs[0] < 1000
+    ensures result < 1001
+    proof:
+        auto
+    var ys = xs
+    for i in 0..3:
+        ys[i] = 5000
+    ys[0] + 1
+
+fn main(console: Console<Write>):
+    let given = [1, 2, 3]
+    console.print_int(keep(given))

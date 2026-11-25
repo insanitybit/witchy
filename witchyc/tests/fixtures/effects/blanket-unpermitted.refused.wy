@@ -1,0 +1,16 @@
+// Refused: a blanket impl pauses where its trait method does not allow it.
+import console
+
+trait Tick:
+    fn tick(self: &Self) -> U64
+
+fn wait_for_data(at: U64) -> U64 suspends:
+    return at + 100
+
+impl<T: Any> Tick for T:
+    fn tick(self: &T) -> U64:
+        return wait_for_data(1)
+
+fn main(console: Console<Write>):
+    let n: U64 = 3
+    console.print_int(n.tick())

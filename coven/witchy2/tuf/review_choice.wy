@@ -1,0 +1,55 @@
+import "coordinate.wy"
+import "generation.wy"
+import json_tree
+import span
+import string
+
+pub fn previous_coordinate(role: &VerifiedRole, name: Span, version: Span, allocator: &Allocator) -> Result<String, U64>:
+    let offered = role.targets()?
+    match offered:
+        Object(entries):
+            var choice: U64 = entries.len()
+            for i in 0..entries.len():
+                let Ok(entry): &Member = entries.at(i) else Err(code):
+                    return Err(1)
+                let Ok(parts): Halves = entry.key.span().split('/') else Err(rest):
+                    return Err(1)
+                if parts.head.same(name):
+                    let candidate = parts.tail.part(0, parts.tail.len() - 6)
+                    if version_less(candidate, version)?:
+                        if choice == entries.len():
+                            choice = i
+                        else:
+                            let Ok(earlier): &Member = entries.at(choice) else Err(code):
+                                return Err(1)
+                            let end = earlier.key.byte_len() - 6
+                            if version_less(earlier.key.span().part(name.len() + 1, end), candidate)?:
+                                choice = i
+            if choice == entries.len():
+                return String.new(allocator)
+            let Ok(picked): &Member = entries.at(choice) else Err(code):
+                return Err(1)
+            return picked.key.span().to_string(allocator)
+        _:
+            return Err(1)
+
+fn version_less(left: Span, right: Span) -> Result<Bool, U64>:
+    let Ok(a): Halves = left.split('.') else Err(rest):
+        return Err(1)
+    let Ok(b): Halves = right.split('.') else Err(rest):
+        return Err(1)
+    let major_a = a.head.parse_u64()?
+    let major_b = b.head.parse_u64()?
+    if major_a != major_b:
+        return Ok(major_a < major_b)
+    let Ok(c): Halves = a.tail.split('.') else Err(rest):
+        return Err(1)
+    let Ok(d): Halves = b.tail.split('.') else Err(rest):
+        return Err(1)
+    let minor_a = c.head.parse_u64()?
+    let minor_b = d.head.parse_u64()?
+    if minor_a != minor_b:
+        return Ok(minor_a < minor_b)
+    let patch_a = c.tail.parse_u64()?
+    let patch_b = d.tail.parse_u64()?
+    return Ok(patch_a < patch_b)

@@ -1,0 +1,53 @@
+import "paths.wy"
+import span
+import string
+import testing
+
+fn check(allocator: &Allocator, path: Text, is_metadata: Bool, allowed: Bool) -> Result<(), Failure>:
+    let made = testing.set_up(String.new(allocator))?
+    var text = move made
+    match text.push_text(allocator, path):
+        Ok:
+            let found = if is_metadata:
+                paths.metadata_path(text.span())
+            else:
+                paths.target_path(text.span())
+            text.close()
+            return testing.eq_bool(found, allowed)
+        Err(code):
+            text.close()
+            return testing.ok(false)
+
+test fn metadata_requires_a_canonical_versioned_role(allocator: &Allocator) -> Result<(), Failure>:
+    check(allocator, "1.root.json", true, true)?
+    check(allocator, "53.app-scope.json", true, true)?
+    check(allocator, "01.root.json", true, false)?
+    check(allocator, "1.timestamp.json", true, false)?
+    check(allocator, "1.role.json?query", true, false)?
+    check(allocator, "../metadata/1.root.json", true, false)?
+    return check(allocator, "%31.root.json", true, false)
+
+test fn target_requires_a_package_full_digest_and_exact_version(allocator: &Allocator) -> Result<(), Failure>:
+    check(allocator, "demo/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.1.0.0.coven", false, true)?
+    check(allocator, "demo/aaaa.1.0.0.coven", false, false)?
+    check(allocator, "demo/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.1.00.0.coven", false, false)?
+    check(allocator, "../aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.1.0.0.coven", false, false)?
+    return check(allocator, "demo/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.1.0.0.coven/other", false, false)
+
+fn check_page(allocator: &Allocator, path: Text, allowed: Bool) -> Result<(), Failure>:
+    let empty = testing.set_up(String.new(allocator))?
+    var target = move empty
+    if let Err(error) = target.push_text(allocator, path):
+        target.close()
+        return testing.ok(false)
+    let admitted = paths.package_page(target.span())
+    target.close()
+    return testing.eq_bool(allowed, admitted)
+
+test fn package_pages_require_exact_coordinates_and_the_trailing_slash(allocator: &Allocator) -> Result<(), Failure>:
+    check_page(allocator, "glamour/0.3.0/", true)?
+    check_page(allocator, "glamour/0.03.0/", false)?
+    check_page(allocator, "glamour/0.3.0/index.html", false)?
+    check_page(allocator, "glamour/0.3.0/?q", false)?
+    check_page(allocator, "%67lamour/0.3.0/", false)?
+    return check_page(allocator, "../0.3.0/", false)

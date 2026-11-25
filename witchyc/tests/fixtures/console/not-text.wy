@@ -1,0 +1,30 @@
+// Input that is not UTF-8 is refused by `read_line`, wherever the fault is: a stray
+// continuation byte, an overlong form, a surrogate, a scalar cut short by the end. Each bad line
+// is skipped whole and counted once (2026-11-22: its tail came back as a good line).
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-string.wy"
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    var text = match String.new(&allocator):
+        Ok(empty):
+            move empty
+        Err(code):
+            return
+    var faults: U64 = 0
+    var lines: U64 = 0
+    for round in 0..20:
+        text.clear()
+        match input.read_line(&allocator, &mut text):
+            .Line:
+                lines += 1
+                console.write_string(&text)
+                console.line("")
+            .End:
+                break
+            .NotText:
+                faults += 1
+            .NoRoom:
+                break
+    console.print_int(lines)
+    console.print_int(faults)
+    text.close()

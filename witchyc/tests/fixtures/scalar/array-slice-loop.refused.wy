@@ -1,0 +1,14 @@
+// Refused (review): a loop storing through each cell of a mutable slice changes the array.
+import console
+
+fn f() -> U64:
+    ensures result == 1
+    proof:
+        auto
+    var xs: [U64; 2] = [1, 2]
+    for c in xs.slice_mut():
+        *c = 99
+    return xs[0]
+
+fn main(console: Console<Write>):
+    console.print_int(f())

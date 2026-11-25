@@ -1,0 +1,243 @@
+// I64 beside the rest of the library: conversions that check, text, and the traits a
+// map key needs. Safe code throughout; the compiler supplies only the arithmetic and
+// `I64.from_bits` / `I64.bits`, which keep the 64 bits as they are.
+import "wasm-console.wy"
+import "wasm-text.wy"
+import "wasm-hash.wy"
+import "wasm-discard-core.wy"
+import "wasm-string.wy"
+
+impl I64:
+    // The I64 equal to `value`. Err: it is above the greatest I64, and comes back.
+    pub fn from(value: U64) -> Result<I64, U64>:
+        if value > 9223372036854775807:
+            return Err(value)
+        return Ok(I64.from_bits(value))
+
+    // Whether it is below zero.
+    pub fn negative(self: I64) -> Bool:
+        return self < 0
+
+    // The distance from zero. The least I64 has no positive twin, so the answer is a U64.
+    pub fn magnitude(self: I64) -> U64:
+        if self >= 0:
+            return I64.bits(self)
+        return (18446744073709551615 - I64.bits(self)) + 1
+
+    // The I64 that far below zero. Err: it is past the least I64.
+    pub fn below_zero(magnitude: U64) -> Result<I64, U64>:
+        if magnitude > 9223372036854775808:
+            return Err(magnitude)
+        if magnitude == 0:
+            return Ok(0)
+        return Ok(I64.from_bits((18446744073709551615 - magnitude) + 1))
+
+    // The value as a U64. Err: it is negative, and its magnitude comes back.
+    pub fn to_u64(self: I64) -> Result<U64, U64>:
+        if self < 0:
+            return Err(self.magnitude())
+        return Ok(I64.bits(self))
+
+    // The lesser of the two; the same as `min`.
+    pub fn least(self: I64, other: I64) -> I64:
+        return self.min(other)
+
+    // The greater of the two; the same as `max`.
+    pub fn greatest(self: I64, other: I64) -> I64:
+        return self.max(other)
+
+    // Arithmetic that answers instead of trapping. Err(1): the result is outside I64.
+    // Err(2): the divisor is zero.
+    pub fn checked_add(self: I64, other: I64) -> Result<I64, U64>:
+        if other > 0 && self > 9223372036854775807 - other:
+            return Err(1)
+        if other < 0 && self < -9223372036854775808 - other:
+            return Err(1)
+        return Ok(self + other)
+
+    // self - other. Err: outside I64.
+    pub fn checked_sub(self: I64, other: I64) -> Result<I64, U64>:
+        if other < 0 && self > 9223372036854775807 + other:
+            return Err(1)
+        if other > 0 && self < -9223372036854775808 + other:
+            return Err(1)
+        return Ok(self - other)
+
+    // self * other. Err: outside I64.
+    pub fn checked_mul(self: I64, other: I64) -> Result<I64, U64>:
+        if self == 0 || other == 0:
+            return Ok(0)
+        let left = self.magnitude()
+        let right = other.magnitude()
+        // Past this the product of the magnitudes is above 2^63, the largest one an I64 has.
+        if left > 9223372036854775808 / right:
+            return Err(1)
+        let product = left * right
+        if (self < 0 && other > 0) || (self > 0 && other < 0):
+            match I64.below_zero(product):
+                Ok(value):
+                    return Ok(value)
+                Err(past):
+                    return Err(1)
+        match I64.from(product):
+            Ok(value):
+                return Ok(value)
+            Err(past):
+                return Err(1)
+
+    // self / other, toward zero. Err: other is zero, or the least I64 divided by -1.
+    pub fn checked_div(self: I64, other: I64) -> Result<I64, U64>:
+        if other == 0:
+            return Err(2)
+        if other == -1 && self == -9223372036854775808:
+            return Err(1)
+        return Ok(self / other)
+
+    // The remainder of `checked_div`, with the sign of self. Err: as `checked_div`.
+    pub fn checked_rem(self: I64, other: I64) -> Result<I64, U64>:
+        if other == 0:
+            return Err(2)
+        if other == -1:
+            return Ok(0)
+        return Ok(self % other)
+
+    // -self. Err: self is the least I64.
+    pub fn checked_neg(self: I64) -> Result<I64, U64>:
+        if self == -9223372036854775808:
+            return Err(1)
+        return Ok(-self)
+
+impl Hash for I64:
+    fn hash(self: &I64) -> U64:
+        // Both factors are below 2^32, so the product cannot overflow: that is proved.
+        ensures true
+        proof:
+            auto
+        return (I64.bits(*self) % 4294967291) * 2654435761
+
+impl Eq for I64:
+    fn eq(self: &I64, other: &I64) -> Bool:
+        return *self == *other
+
+impl Discard for I64:
+    fn discard(self: I64):
+        return
+
+impl Console<Write>:
+    // The number in decimal, with `-` in front when it is below zero.
+    pub fn write_i64(console: &Console<Write>, value: I64):
+        if value < 0:
+            console.print_byte('-')
+        console.write_u64(value.magnitude())
+
+    // The same and a newline.
+    pub fn print_i64(console: &Console<Write>, value: I64):
+        console.write_i64(value)
+        console.print_byte('\n')
+
+impl String:
+    // Append a number in decimal. Err(1): no room; the text is as it was.
+    pub fn push_i64(self: &mut String, allocator: &Allocator, number: I64) -> Result<(), U64>:
+        let keep = self.byte_len()
+        if number < 0:
+            self.push(allocator, 45)?
+        if let Err(code) = self.push_u64(allocator, number.magnitude()):
+            self.cut(keep)
+            return Err(code)
+        return Ok(())
+
+    // The number written as decimal digits, with `-` first when it is below zero.
+    // Err(1): no digits, or a byte that is not one. Err(2): it does not fit in an I64.
+    pub fn parse_i64(self: &String) -> Result<I64, U64>:
+        let count = self.byte_len()
+        var index: U64 = 0
+        let negative = self.byte_or_end(0) == 45
+        if negative:
+            index = 1
+        if index == count:
+            return Err(1)
+        // One past the greatest I64 is the magnitude of the least.
+        var limit: U64 = 9223372036854775807
+        if negative:
+            limit = 9223372036854775808
+        var magnitude: U64 = 0
+        while index < count:
+            let byte = self.byte_or_end(index)
+            if byte < 48 || byte > 57:
+                return Err(1)
+            let digit = byte - 48
+            if magnitude > (limit - digit) / 10:
+                return Err(2)
+            magnitude = magnitude * 10 + digit
+            index += 1
+        if negative:
+            match I64.below_zero(magnitude):
+                Ok(value):
+                    return Ok(value)
+                Err(past):
+                    return Err(2)
+        match I64.from(magnitude):
+            Ok(value):
+                return Ok(value)
+            Err(past):
+                return Err(2)
+
+// `"${n}"` for a signed number: `-12`.
+impl Show for I64:
+    fn show_on(self: I64, console: &Console<Write>):
+        console.write_i64(self)
+    fn push_on(self: I64, text: &mut String, allocator: &Allocator) -> Result<(), U64>:
+        return text.push_i64(allocator, self)
+
+// The lesser and greater of two numbers, and a number held between two (programs wrote their
+// own `larger` eight times).
+impl U64:
+    // The lesser of the two.
+    pub fn min(self: U64, other: U64) -> U64:
+        if other < self:
+            return other
+        return self
+
+    // The greater of the two.
+    pub fn max(self: U64, other: U64) -> U64:
+        if other > self:
+            return other
+        return self
+
+    // How many decimal digits it is written with (1 for zero): its width in a column.
+    pub fn digit_count(self: U64) -> U64:
+        var count: U64 = 1
+        var left = self
+        while left >= 10:
+            left = left / 10
+            count += 1
+        return count
+
+    // `low` if below it, `high` if above it (for `low` not above `high`; otherwise `low`).
+    pub fn clamp(self: U64, low: U64, high: U64) -> U64:
+        if self < low || high < low:
+            return low
+        if self > high:
+            return high
+        return self
+
+impl I64:
+    // The lesser of the two.
+    pub fn min(self: I64, other: I64) -> I64:
+        if other < self:
+            return other
+        return self
+
+    // The greater of the two.
+    pub fn max(self: I64, other: I64) -> I64:
+        if other > self:
+            return other
+        return self
+
+    // As `U64.clamp`.
+    pub fn clamp(self: I64, low: I64, high: I64) -> I64:
+        if self < low || high < low:
+            return low
+        if self > high:
+            return high
+        return self

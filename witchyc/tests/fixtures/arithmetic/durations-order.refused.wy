@@ -1,0 +1,5 @@
+// Duration units go largest first, each once.
+import console
+
+fn main(console: Console<Write>):
+    console.print_int(30s1m)

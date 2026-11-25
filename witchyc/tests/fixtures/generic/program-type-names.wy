@@ -1,0 +1,21 @@
+// A program may name its types like the library's type parameters (`T`, `K`, `V`, `F`, `E`, `Q`):
+// a type private to the program cannot be named in the library, so nothing there means it.
+import console
+import hashmap
+import sort
+import string
+import deque
+import heap
+import json
+
+type T:
+    v: U64
+
+type K:
+    v: U64
+
+type F:
+    v: U64
+
+fn main(console: Console<Write>):
+    console.print_int(T(v: 1).v + K(v: 2).v + F(v: 3).v)

@@ -1,0 +1,12 @@
+// Releasing a vector that still holds an element stops the run at once,
+// rather than retrying until the budget is spent.
+import "../../../library/wasm-vec.wy"
+
+fn main(allocator: Allocator):
+    var items: Vec<U64> = match Vec.new(&allocator, 4):
+        Ok(made):
+            move made
+        Err(code):
+            return
+    let _ = items.push_mut(&allocator, 7)
+    items.release_empty()

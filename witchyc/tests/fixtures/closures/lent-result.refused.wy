@@ -1,0 +1,26 @@
+// Refused: through the call trait an argument and the result are different type parameters,
+// so a callable returning a reference could keep one past its loan. A reference is an
+// argument of a function type, never its result.
+import string
+
+// (A function type of one argument makes the program declare `WitchyFn1`.)
+fn apply(f: fn(U64) -> U64) -> U64:
+    return f(1)
+
+type Echo:
+    unused: U64
+
+impl WitchyFn1<&String, &String> for Echo:
+    fn call(self: &Echo, given: &String) -> &String:
+        return given
+
+fn through<F: Any + WitchyFn1<&String, &String>>(f: &F, s: &String) -> &String:
+    return f.call(s)
+
+fn main(allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    let echo = Echo(1)
+    let kept = through(&echo, &made)
+    made.close()
+    let n = kept.byte_len()

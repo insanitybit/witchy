@@ -1,0 +1,52 @@
+import "release_trust.wy"
+import console
+import console_bytes
+import fs
+import json_tree
+import string
+
+pub fn read_download_request(input: &Console<Read>, allocator: &Allocator) -> Result<Json, U64>:
+    let Ok(line): String = input.read_text_frame(allocator, 1024) else Err(reason):
+        return Err(1)
+    if input.next_byte() != 256:
+        line.close()
+        return Err(1)
+    let parsed = parse_release_json(&line, allocator)
+    line.close()
+    let Ok(request): Json = move parsed else Err(reason):
+        return Err(1)
+    return Ok(move request)
+
+pub type DownloadBounds = .{limit: U64, exact: Bool}
+
+pub fn download_bounds(request: &Json, other_fields: U64) -> Result<DownloadBounds, U64>:
+    if count_fields(request, other_fields):
+        return Ok(.{limit: 2097152, exact: false})
+    if !count_fields(request, other_fields + 1):
+        return Err(1)
+    let exact = match request.field("length"):
+        Ok(value):
+            true
+        Err(error):
+            false
+    let limit = if exact:
+        declared_integer(request, "length")?
+    else:
+        declared_integer(request, "max_length")?
+    if limit == 0 || limit > 2097152:
+        return Err(1)
+    return Ok(.{limit: limit, exact: exact})
+
+pub fn finish_download(file: File<Write>, output: &Console<Write>, result: Result<(), U64>):
+    if let Err(code) = result:
+        file.abandon()
+        refuse(output, code)
+    else if let Err(reason) = file.finish():
+        refuse(output, 6)
+    else:
+        output.line("ok")
+
+fn refuse(output: &Console<Write>, code: U64):
+    output.write("refused ")
+    output.write_u64(code)
+    output.print_byte(10)

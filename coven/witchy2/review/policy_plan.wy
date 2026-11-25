@@ -1,0 +1,28 @@
+import string
+import text
+
+pub fn policy_snapshot_plan(allocator: &Allocator) -> Result<String, U64>:
+    let empty = String.with_capacity(allocator, 320)?
+    var plan = move empty
+    if let Err(code) = plan.push_text(allocator, "result\tinvalid release policy\tSELECT CAST('P' || CAST(document AS TEXT) AS BLOB) FROM policy WHERE singleton=1 AND typeof(document)='blob' AND length(document) BETWEEN 1 AND 65536 UNION ALL SELECT X'4E' WHERE NOT EXISTS(SELECT document FROM policy WHERE singleton=1)\n"):
+        plan.close()
+        return Err(code)
+    return Ok(move plan)
+
+pub fn policy_plan(changed: Bool, allocator: &Allocator) -> Result<String, U64>:
+    let empty = String.with_capacity(allocator, 2048)?
+    var plan = move empty
+    if let Err(code) = steps(&mut plan, changed, allocator):
+        plan.close()
+        return Err(code)
+    return Ok(move plan)
+
+fn steps(plan: &mut String, changed: Bool, allocator: &Allocator) -> Result<(), U64>:
+    plan.push_text(allocator, "expect\trelease policy changed during installation\tSELECT (:initial=1 AND NOT EXISTS(SELECT document FROM policy WHERE singleton=1)) OR (:initial=0 AND EXISTS(SELECT 1 FROM policy WHERE singleton=1 AND document=CAST(json_extract(CAST(:blob AS TEXT),'$.previous') AS BLOB)))\n")?
+    if changed:
+        plan.push_text(allocator, "expect\ta replacement credential needs a new ID\tSELECT NOT EXISTS(SELECT 1 FROM counters WHERE json_extract(CAST(:blob AS TEXT),'$.next.credentials.\"' || credential || '\".public_key') <> public_key)\n")?
+        plan.push_text(allocator, "exec\t\tDELETE FROM policy WHERE singleton=1\n")?
+        plan.push_text(allocator, "change\tmaintainer policy was not stored\tINSERT INTO policy (singleton,document) VALUES (1,CAST(json_extract(CAST(:blob AS TEXT),'$.next') AS BLOB))\n")?
+        plan.push_text(allocator, "exec\t\tDELETE FROM browser_approvals\n")?
+        plan.push_text(allocator, "exec\t\tDELETE FROM challenges\n")?
+    return plan.push_text(allocator, "result\tpolicy digest is unavailable\tSELECT CAST(json_object('digest',:digest,'revision',json_extract(CAST(:blob AS TEXT),'$.next.revision')) AS BLOB)\n")

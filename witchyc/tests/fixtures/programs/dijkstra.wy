@@ -1,0 +1,78 @@
+// Dijkstra on an n by n grid with weights 1..16 from a generator: the cost of the cheapest path
+// from the top left to the bottom right, and a checksum of every cell's cost.
+import console
+import vec
+import heap
+import sort
+
+// A cell to visit and the cost of reaching it; the cheapest comes first.
+type Visit:
+    cost: U64
+    cell: U64
+
+impl Before for Visit:
+    fn before(self: &Visit, other: &Visit) -> Bool:
+        self.cost < other.cost
+
+fn relax(queue: &mut Heap<Visit>, allocator: &Allocator, cost: &mut Vec<U64>, weight: &Vec<U64>, from: U64, to: U64) -> Bool:
+    let next = cost[from] + weight[to]
+    if next < cost[to]:
+        cost[to] = next
+        match queue.push(allocator, Visit(next, to)):
+            Ok:
+                return true
+            Err(back):
+                return false
+    true
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let n: U64 = 60
+    let infinite: U64 = 1000000000000000000
+    let Ok(made_w): Vec<U64> = Vec.filled(&allocator, n * n, 0) else Err(code):
+        return
+    var weight = move made_w
+    var seed: U64 = 7
+    for i in 0..n * n:
+        seed = seed * 48271 % 2147483647
+        weight[i] = 1 + ((seed >> 8) & 15)
+    let Ok(made_c): Vec<U64> = Vec.filled(&allocator, n * n, infinite) else Err(code):
+        weight.close()
+        return
+    var cost = move made_c
+    let Ok(made_q): Heap<Visit> = Heap.new(&allocator) else Err(code):
+        weight.close()
+        cost.close()
+        return
+    var queue = move made_q
+    cost[0] = weight[0]
+    var ok = true
+    match queue.push(&allocator, Visit(weight[0], 0)):
+        Ok:
+            ()
+        Err(back):
+            ok = false
+    while ok:
+        match queue.pop():
+            Ok(visit):
+                let u = visit.cell
+                if visit.cost == cost[u]:
+                    let row = u / n
+                    let col = u % n
+                    if row + 1 < n:
+                        ok = ok && relax(&mut queue, &allocator, &mut cost, &weight, u, u + n)
+                    if row > 0:
+                        ok = ok && relax(&mut queue, &allocator, &mut cost, &weight, u, u - n)
+                    if col + 1 < n:
+                        ok = ok && relax(&mut queue, &allocator, &mut cost, &weight, u, u + 1)
+                    if col > 0:
+                        ok = ok && relax(&mut queue, &allocator, &mut cost, &weight, u, u - 1)
+            Err(empty):
+                ok = false
+    console.print_int(cost[n * n - 1])
+    var sum: U64 = 0
+    for i in 0..n * n:
+        sum = (sum + cost[i]) % 1000000007
+    console.print_int(sum)
+    queue.into_vec().close()
+    weight.close()
+    cost.close()

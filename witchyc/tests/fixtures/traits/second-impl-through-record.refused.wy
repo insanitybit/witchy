@@ -1,0 +1,16 @@
+// Refused, as through a generic function: the bound is met by no impl of Text's, through a record too.
+import console
+import string
+import hash
+
+
+type Holder<Q> derive(Discard):
+    q: Q
+
+fn check<Q: Any + Equivalent<K>, K: Any>(h: &Holder<Q>, k: &K) -> Bool:
+    return (*h).q.equivalent(k)
+
+fn main(console: Console<Write>):
+    let h: Holder<Text> = Holder(q: "x")
+    let b: Text = "x"
+    console.print("${check(&h, &b)}")

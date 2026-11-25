@@ -1,0 +1,23 @@
+// Generators over a parameter of a declared type, calling its methods: `Meter.reading` is public,
+// so a `for` in another file runs `readings` in place; `Meter.secret` is not, so `secrets` steps.
+pub type Meter:
+    base: U64
+
+impl Meter:
+    pub fn reading(meter: &Meter, at: U64) -> U64:
+        return (*meter).base + at
+
+    fn secret(meter: &Meter, at: U64) -> U64:
+        return (*meter).base * at
+
+pub gen fn readings(meter: &Meter, count: U64) -> U64:
+    var at: U64 = 0
+    while at < count:
+        yield meter.reading(at)
+        at += 1
+
+pub gen fn secrets(meter: &Meter, count: U64) -> U64:
+    var at: U64 = 0
+    while at < count:
+        yield meter.secret(at)
+        at += 1

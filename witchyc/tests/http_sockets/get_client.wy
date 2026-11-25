@@ -1,0 +1,17 @@
+import console
+import http
+
+fn main(output: Console<Write>, network: Net, allocator: Allocator):
+    let received = http.get(&network, &allocator, "TEST_ADDRESS", "TEST_ADDRESS", "/sample")
+    match move received:
+        Ok(reply):
+            output.print_int(reply.status)
+            output.write_string(&reply.body)
+            reply.close()
+        Err(reason):
+            if let Connect(NotText) = reason:
+                output.line("non-text response")
+            else if let Malformed = reason:
+                output.line("malformed response")
+            else:
+                output.line("unexpected error")

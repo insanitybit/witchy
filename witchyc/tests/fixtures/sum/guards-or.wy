@@ -1,0 +1,25 @@
+// `A(x) | B(x) if guard:` guards each pattern.
+import console
+
+type Tg:
+    A(U64)
+    B(U64)
+    C
+
+fn f(t: Tg) -> U64:
+    match t:
+        A(x) | B(x) if x > 5:
+            x
+        A(y):
+            y + 1000
+        B(y):
+            y + 2000
+        C:
+            9
+
+fn main(console: Console<Write>):
+    console.print_int(f(Tg.A(7)))
+    console.print_int(f(Tg.B(7)))
+    console.print_int(f(Tg.A(1)))
+    console.print_int(f(Tg.B(1)))
+    console.print_int(f(Tg.C))

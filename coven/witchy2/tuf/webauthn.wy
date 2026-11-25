@@ -1,0 +1,145 @@
+import "base64url.wy"
+import "canonical.wy"
+import "@webauthn"
+import "origin.wy"
+import "release_trust.wy"
+import crypto
+import discard
+import json_tree
+import span
+import string
+import text
+import vec
+
+pub fn verify_assertion(receipt: &Json, policy: &Json, allocator: &Allocator) -> Result<(), ReleaseError>:
+    let Ok(envelope): &Json = receipt.field("envelope") else Err(code):
+        return Err(AuthenticatorRefused)
+    let Ok(assertion): &Json = receipt.field("assertion") else Err(code):
+        return Err(AuthenticatorRefused)
+    let Ok(credential): &Json = enrolled(assertion, policy) else Err(code):
+        return Err(AuthenticatorRefused)
+    let Ok(origin): &String = string_field(policy, "origin") else Err(code):
+        return Err(AuthenticatorRefused)
+    let checked = verify_count(envelope, assertion, credential, origin, 0, allocator)?
+    return Ok(())
+
+pub fn verify_count(envelope: &Json, assertion: &Json, credential: &Json, origin: &String, previous: U64, allocator: &Allocator) -> Result<U64, ReleaseError>:
+    let Ok(kind): &String = string_field(assertion, "type") else Err(code):
+        return Err(AuthenticatorRefused)
+    if !kind.equals_text("public-key"):
+        return Err(AuthenticatorRefused)
+    if let Err(code) = assertion_id(assertion, allocator):
+        return Err(AuthenticatorRefused)
+    let Ok(response): &Json = assertion.field("response") else Err(code):
+        return Err(AuthenticatorRefused)
+    let Ok(client): Vec<U8> = decode_field(response, "clientDataJSON", allocator, 65536) else Err(code):
+        return Err(AuthenticatorRefused)
+    let checked = check_response(credential, response, client.as_slice(), origin, envelope, previous, allocator)
+    client.close()
+    return checked
+
+fn enrolled(assertion: &Json, policy: &Json) -> Result<&Json, U64>:
+    borrows Ok from policy
+    let id = string_field(assertion, "rawId")?
+    let credentials = policy.field("credentials")?
+    return member_named(credentials, id)
+
+fn assertion_id(assertion: &Json, allocator: &Allocator) -> Result<(), U64>:
+    let id = string_field(assertion, "rawId")?
+    let visible = string_field(assertion, "id")?
+    if !id.eq(visible):
+        return Err(1)
+    let parsed = unpadded_base64url(id.as_bytes(), allocator, 1023)?
+    parsed.close()
+    return Ok(())
+
+fn check_response(credential: &Json, response: &Json, client: &[U8], origin: &String, envelope: &Json, previous: U64, allocator: &Allocator) -> Result<U64, ReleaseError>:
+    let Ok(host): Span = relying_party(origin.span()) else Err(code):
+        return Err(AuthenticatorRefused)
+    var expected: [U8; 48] = [0; 48]
+    if let Err(error) = challenge(envelope, &mut expected, allocator):
+        return Err(error)
+    check_client(client, origin, expected.slice(), allocator)?
+    let Ok(auth): Vec<U8> = decode_field(response, "authenticatorData", allocator, 37) else Err(code):
+        return Err(AuthenticatorRefused)
+    let checked = check_authenticator(credential, response, client, auth.as_slice(), host, previous, allocator)
+    auth.close()
+    return checked
+
+pub fn challenge(envelope: &Json, destination: &mut [U8; 48], allocator: &Allocator) -> Result<(), ReleaseError>:
+    let Ok(encoded): String = release_json(envelope, allocator) else Err(code):
+        return Err(AuthenticatorRefused)
+    let checked = hash_challenge(&encoded, destination, allocator)
+    encoded.close()
+    return checked
+
+fn hash_challenge(encoded: &String, destination: &mut [U8; 48], allocator: &Allocator) -> Result<(), ReleaseError>:
+    let Ok(empty): String = String.with_capacity(allocator, encoded.byte_len() + 25) else Err(code):
+        return Err(EvidenceResourceFailure)
+    var message = move empty
+    if let Err(code) = append_challenge(&mut message, encoded, allocator):
+        message.close()
+        return Err(EvidenceResourceFailure)
+    let hashed = crypto.sha384(message.as_bytes(), (*destination).slice_mut())
+    message.close()
+    if let Err(error) = hashed:
+        return Err(EvidenceResourceFailure)
+    return Ok(())
+
+fn append_challenge(output: &mut String, body: &String, allocator: &Allocator) -> Result<(), U64>:
+    output.push_text(allocator, "coven release approval 1")?
+    output.push_ascii(allocator, 0, 1)?
+    return output.push_part(allocator, body, 0, body.byte_len())
+
+fn check_client(client: &[U8], origin: &String, expected: &[U8], allocator: &Allocator) -> Result<(), ReleaseError>:
+    let Ok(input): String = String.from_utf8_bytes(allocator, client) else Err(code):
+        return Err(AuthenticatorRefused)
+    let parsed = parse_release_json(&input, allocator)
+    input.close()
+    let Ok(fields): Json = move parsed else Err(code):
+        return Err(AuthenticatorRefused)
+    let result = check_client_fields(&fields, origin, expected, allocator)
+    fields.discard()
+    return result
+
+fn check_client_fields(fields: &Json, origin: &String, expected: &[U8], allocator: &Allocator) -> Result<(), ReleaseError>:
+    let Ok(kind): &String = string_field(fields, "type") else Err(code):
+        return Err(AuthenticatorRefused)
+    let Ok(observed): &String = string_field(fields, "origin") else Err(code):
+        return Err(AuthenticatorRefused)
+    if !kind.equals_text("webauthn.get") || !observed.eq(origin):
+        return Err(AuthenticatorRefused)
+    if let Ok(top) = fields.field("topOrigin"):
+        return Err(AuthenticatorRefused)
+    if let Ok(cross) = fields.field("crossOrigin"):
+        let Ok(flag): Bool = cross.boolean() else Err(code):
+            return Err(AuthenticatorRefused)
+        if flag:
+            return Err(AuthenticatorRefused)
+    let Ok(actual): Vec<U8> = decode_field(fields, "challenge", allocator, 48) else Err(code):
+        return Err(AuthenticatorRefused)
+    let same = Span.of(actual.as_slice()).same(Span.of(expected))
+    actual.close()
+    if !same:
+        return Err(AuthenticatorRefused)
+    return Ok(())
+
+fn check_authenticator(credential: &Json, response: &Json, client: &[U8], auth: &[U8], host: Span, previous: U64, allocator: &Allocator) -> Result<U64, ReleaseError>:
+    let Ok(cose): Vec<U8> = decode_field(credential, "public_key", allocator, 77) else Err(code):
+        return Err(AuthenticatorRefused)
+    let checked = verify_credential(&cose, response, client, auth, host, previous, allocator)
+    cose.close()
+    return checked
+
+fn verify_credential(cose: &Vec<U8>, response: &Json, client: &[U8], auth: &[U8], host: Span, previous: U64, allocator: &Allocator) -> Result<U64, ReleaseError>:
+    let Ok(signature): Vec<U8> = decode_field(response, "signature", allocator, 72) else Err(code):
+        return Err(AuthenticatorRefused)
+    let checked = verify_es256_assertion(cose.as_slice(), client, auth, host.as_bytes(), signature.as_slice(), previous)
+    signature.close()
+    match checked:
+        Ok(count):
+            return Ok(count)
+        Err(AssertionCryptoFailed):
+            return Err(EvidenceResourceFailure)
+        Err(AssertionRefused):
+            return Err(AuthenticatorRefused)

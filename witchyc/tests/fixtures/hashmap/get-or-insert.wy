@@ -1,0 +1,53 @@
+// `get_or_insert`: one search, then the stored value to change in place or a new entry. U64 keys
+// counted from a table of one cell (grown on the way), and words counted by a Span query whose
+// String key is made only for a word not yet there (`KeyFor`).
+import console
+import hashmap
+import span
+import string
+import discard
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): HashMap<U64, U64> = HashMap.new(&allocator, 1) else Err(code):
+        return
+    var map = move made
+    for i in 0..50:
+        match map.get_or_insert(&allocator, &(i % 7), 0):
+            Ok(found):
+                *found += 1
+            Err(missed):
+                missed.discard()
+                console.line("missed")
+    console.print("${map.len()} ${map.capacity()}")
+    for k in 0..7:
+        match map.get(&k):
+            Ok(v):
+                console.print_int(*v)
+            Err(e):
+                console.line("absent")
+    map.discard()
+    let Ok(t): String = String.new(&allocator) else Err(code):
+        return
+    var text = move t
+    if let Err(_) = text.push_text(&allocator, "a b a c b a"):
+        text.close()
+        return
+    let Ok(m2): HashMap<String, U64> = HashMap.new(&allocator, 4) else Err(code):
+        text.close()
+        return
+    var counts = move m2
+    for word in text.span().words():
+        match counts.get_or_insert(&allocator, &word, 0):
+            Ok(found):
+                *found += 1
+            Err(missed):
+                missed.discard()
+                console.line("missed")
+    console.print_int(counts.len())
+    match counts.get(&"a"):
+        Ok(n):
+            console.print_int(*n)
+        Err(e):
+            console.line("absent")
+    counts.discard()
+    text.close()

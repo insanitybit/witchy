@@ -1,0 +1,14 @@
+// `${Char(n)}` shows a Unicode scalar as its character (one to four bytes of UTF-8; not a scalar:
+// U+FFFD), and `push_on` appends it to a String.
+import console
+import string
+
+fn main(console: Console<Write>, allocator: Allocator):
+    console.print("${Char(116)}${Char(233)}${Char(8364)}${Char(128512)}${Char(55296)} done")
+    let Ok(made): String = String.new(&allocator) else Err(c):
+        return
+    var s = move made
+    let _ = Char(955).push_on(&mut s, &allocator)
+    console.write_string(&s)
+    console.line("")
+    s.close()

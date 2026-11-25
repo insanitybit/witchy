@@ -1,0 +1,22 @@
+// A `&mut` held in a local, in a function with a contract: what is stored through it is known.
+import console
+
+type Shape:
+    Rect(U64, U64)
+    Dot
+
+type P:
+    x: U64
+    y: U64
+
+fn f(x: U64) -> U64:
+    ensures result == 5
+    proof:
+        auto
+    var v = x
+    let r = &mut v
+    *r = 5
+    return *r
+
+fn main(console: Console<Write>):
+    console.print_int(f(3))

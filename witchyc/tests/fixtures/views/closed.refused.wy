@@ -1,0 +1,14 @@
+// A String cannot be closed while a Span of it is in use.
+import "../../../library/wasm-span.wy"
+import "../../../library/wasm-string.wy"
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var text = match String.new(&allocator):
+        Ok(empty):
+            move empty
+        Err(code):
+            return
+    let whole = text.span()
+    let first = whole.part(0, 1)
+    text.close()
+    console.print_int(first.len())

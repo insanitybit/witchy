@@ -1,0 +1,95 @@
+import "tuf/delegated_evidence.wy"
+import "tuf/delegated_input.wy"
+import "tuf/delegated_signing.wy"
+import "tuf/metadata.wy"
+import "tuf/release_trust.wy"
+import console
+import discard
+import encoding
+import fs
+import json_tree
+import mldsa_signer
+import string
+import text
+import time
+import vec
+
+fn main(source: Dir<Read>, output: Console<Write>, signer: Mldsa87Signer, clock: Clock, allocator: Allocator):
+    let checked = run(&source, &output, &signer, clock.now_ms(), &allocator)
+    source.close()
+    if let Err(error) = checked:
+        if error == 2:
+            output.line("refused independent key")
+        else if error == 3:
+            output.line("refused unassigned key")
+        else if error == 4:
+            output.line("refused target evidence")
+        else:
+            output.line("refused delegated metadata")
+
+fn run(source: &Dir<Read>, output: &Console<Write>, signer: &Mldsa87Signer, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let wire = read_delegated_input(source, "request.json", 512, allocator)?
+    let parsed = parse_release_json(&wire, allocator)
+    wire.close()
+    let Ok(request): Json = move parsed else Err(code):
+        return Err(1)
+    let checked = with_request(&request, source, output, signer, now, allocator)
+    request.discard()
+    return checked
+
+fn with_request(request: &Json, source: &Dir<Read>, output: &Console<Write>, signer: &Mldsa87Signer, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    if !count_fields(request, 3):
+        return Err(1)
+    let pin = string_field(request, "parent_pin")?
+    let parent = read_delegated_parent(source, pin, allocator)?
+    let checked = with_parent(request, source, output, signer, &parent, now, allocator)
+    parent.close()
+    return checked
+
+fn with_parent(request: &Json, source: &Dir<Read>, output: &Console<Write>, signer: &Mldsa87Signer, parent: &Metadata, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let pin = string_field(request, "trust_pin")?
+    let Ok(trust): ReleaseTrust = read_delegated_trust(source, pin, allocator) else Err(code):
+        return Err(1)
+    let checked = with_trust(request, source, output, signer, parent, &trust, now, allocator)
+    trust.close()
+    return checked
+
+fn with_trust(request: &Json, source: &Dir<Read>, output: &Console<Write>, signer: &Mldsa87Signer, parent: &Metadata, trust: &ReleaseTrust, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let name = string_field(request, "role")?
+    let child = read_unsigned_targets(source, allocator)?
+    let checked = sign_child(parent, &child, name, trust, source, output, signer, now, allocator)
+    child.close()
+    return checked
+
+fn sign_child(parent: &Metadata, child: &Metadata, name: &String, trust: &ReleaseTrust, source: &Dir<Read>, output: &Console<Write>, signer: &Mldsa87Signer, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let role = checked_signing_role(parent, child, name, now, allocator)?
+    verify_signing_targets(source, child, trust, now, allocator)?
+    let empty: Vec<U8> = Vec.filled(allocator, 2592, 0)?
+    var public = move empty
+    let checked = identify_and_sign(parent, child, role, trust, public.as_mut_slice(), output, signer, allocator)
+    public.close()
+    return checked
+
+fn identify_and_sign(parent: &Metadata, child: &Metadata, role: &Json, trust: &ReleaseTrust, public: &mut [U8], output: &Console<Write>, signer: &Mldsa87Signer, allocator: &Allocator) -> Result<(), U64>:
+    signer.public_key(public)?
+    let key = signing_key(parent, role, trust, public, allocator)?
+    let empty: Vec<U8> = Vec.filled(allocator, 4627, 0)?
+    var signature = move empty
+    let signed = signer.sign(child.signature_message(), signature.as_mut_slice())
+    let checked = emit(output, key, signature.as_slice(), signed, allocator)
+    signature.close()
+    return checked
+
+fn emit(output: &Console<Write>, key: &String, signature: &[U8], signed: Result<(), U64>, allocator: &Allocator) -> Result<(), U64>:
+    signed?
+    let empty = String.with_capacity(allocator, 9254)?
+    var hex = move empty
+    if let Err(code) = push_hex(&mut hex, allocator, signature):
+        hex.close()
+        return Err(code)
+    output.write_string(key)
+    output.print_byte(10)
+    output.write_string(&hex)
+    output.print_byte(10)
+    hex.close()
+    return Ok(())

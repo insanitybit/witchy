@@ -1,0 +1,1 @@
+a type argument here is a stored value, and this one is a reference (as in `Result<&T, E>`)

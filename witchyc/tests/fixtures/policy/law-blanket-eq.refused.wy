@@ -1,0 +1,69 @@
+// Refused (adversarial review round 3): a blanket Eq was filed under its parameter, so a key's irreflexive eq went unread.
+import console
+import hash
+import hashmap
+import keymap
+import discard
+
+trait Marker:
+    fn mark(self: &Self) -> U64
+
+impl<T: Any + Marker> Eq for T:
+    fn eq(self: &T, other: &T) -> Bool:
+        return false
+
+type Other derive(Discard):
+    id: U64
+
+impl Eq for Other:
+    fn eq(self: &Other, other: &Other) -> Bool:
+        return (*self).id == (*other).id
+
+impl HashKey for Other:
+    fn feed(self: &Other, state: &mut HashState):
+        (*self).id.feed(state)
+
+type Key derive(Discard):
+    id: U64
+
+impl Marker for Key:
+    fn mark(self: &Key) -> U64:
+        return 0
+
+impl HashKey for Key:
+    fn feed(self: &Key, state: &mut HashState):
+        (*self).id.feed(state)
+
+impl Equivalent<Key> for Key:
+    fn equivalent(self: &Key, key: &Key) -> Bool:
+        return (*self).id == (*key).id
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): KeyMap<Key, U64> = KeyMap.new(&allocator, 64, Reference(1)) else Err(code):
+        return
+    var map = move made
+    match map.put(&allocator, Key(id: 7), 70):
+        Ok:
+            ()
+        Err(entry):
+            entry.discard()
+    match map.put(&allocator, Key(id: 7), 71):
+        Ok:
+            ()
+        Err(entry):
+            entry.discard()
+    let probe = Key(id: 7)
+    let again = Key(id: 7)
+    if probe == again:
+        console.print_int(1)
+    else:
+        console.print_int(2)
+    again.discard()
+    match map.get(&probe):
+        Ok(v):
+            console.print_int(*v)
+        Err(code):
+            console.print_int(0)
+    console.print_int(map.len())
+    probe.discard()
+    map.discard()

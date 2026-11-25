@@ -1,0 +1,19 @@
+// Refused: a recipe writing into `Vault`, a sealed type of the deriving file that is not the type it
+// is derived for (review round 2: an index holding `Self.k()` made the write look like the user's).
+import "parts/stale.wy"
+import console
+
+sealed type Vault:
+    xs: [U64; 2]
+    n: U64
+
+pub fn reveal(s: &Vault) -> U64:
+    return s.xs[0] + s.n
+
+type T derive(stale.Idx):
+    s: Vault
+
+fn main(console: Console<Write>):
+    var t = T(s: Vault(xs: [1, 2], n: 0))
+    t.poke()
+    console.print("${reveal(&t.s)}")

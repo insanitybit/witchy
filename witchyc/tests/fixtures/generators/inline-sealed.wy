@@ -1,0 +1,7 @@
+// Review of in-place generators: another file's generator building its sealed type steps, where the construction is allowed.
+import console
+import "parts/sealed-box.wy"
+
+fn main(console: Console<Write>):
+    for v in boxes(3):
+        console.print_int(v.value)

@@ -1,0 +1,6 @@
+// Refused: the type named has no such variant.
+type Left:
+    Io
+    Other
+fn main():
+    let x = Left.Nope

@@ -1,0 +1,115 @@
+import "metadata.wy"
+import "publication_files.wy"
+import "root.wy"
+import fs
+import span
+import string
+
+pub fn publication_root(repo: Repository, initial: &String, pin: &[U8; 48], reserved: &[U8], allocator: &Allocator) -> Result<TrustedRoot, PublicationError>:
+    let path = metadata_path(allocator, 1, "root")?
+    let checked = check_initial(repo, &path, initial, allocator)
+    if let Err(error) = checked:
+        path.close()
+        return Err(error)
+    let staged = stage_initial(repo, &path, initial, pin, reserved, allocator)
+    path.close()
+    let Ok(root): TrustedRoot = move staged else Err(error):
+        return Err(error)
+    return advance_after_initial(repo, move root, reserved, allocator)
+
+fn advance_after_initial(repo: Repository, root: TrustedRoot, reserved: &[U8], allocator: &Allocator) -> Result<TrustedRoot, PublicationError>:
+    let counts = latest_root(repo, allocator)
+    let Ok(latest): U64 = counts else Err(error):
+        root.close()
+        return Err(error)
+    return advance_roots(repo, move root, latest, reserved, allocator)
+
+fn latest_root(repo: Repository, allocator: &Allocator) -> Result<U64, PublicationError>:
+    let from_incoming = count_roots(repo.incoming, allocator)?
+    let from_mirror = count_roots(repo.published, allocator)?
+    if from_incoming > from_mirror:
+        return Ok(from_incoming)
+    return Ok(from_mirror)
+
+fn stage_initial(repo: Repository, path: &String, initial: &String, pin: &[U8; 48], reserved: &[U8], allocator: &Allocator) -> Result<TrustedRoot, PublicationError>:
+    let Ok(root): TrustedRoot = bootstrap_root(initial, pin, allocator) else Err(error):
+        return Err(InvalidRootChain)
+    if let Err(error) = root.check_reserved(reserved, allocator):
+        root.close()
+        return Err(AuthorityConflict)
+    if let Err(error) = stage_object(repo.spool, path, initial):
+        root.close()
+        return Err(error)
+    return Ok(move root)
+
+fn check_initial(repo: Repository, path: &String, initial: &String, allocator: &Allocator) -> Result<(), PublicationError>:
+    compare_published(repo.incoming, path, initial, metadata_limit(Root), allocator)?
+    return compare_published(repo.published, path, initial, metadata_limit(Root), allocator)
+
+fn count_roots(dir: &Dir<Read>, allocator: &Allocator) -> Result<U64, PublicationError>:
+    let opened = dir.dir("metadata")
+    match move opened:
+        Ok(folder):
+            let listing = folder.list(allocator)
+            folder.close()
+            let Ok(names): String = move listing else Err(error):
+                return Err(InvalidRootChain)
+            let latest = last_root(names.span())
+            names.close()
+            return latest
+        Err(NotFound):
+            return Ok(1)
+        Err(_):
+            return Err(InvalidRootChain)
+
+pub fn last_root(names: Span) -> Result<U64, PublicationError>:
+    var latest: U64 = 1
+    let lines = names.lines()
+    for line in lines:
+        if line.ends_with_text(".root.json/"):
+            return Err(InvalidRootChain)
+        if line.ends_with_text(".root.json"):
+            let number = line.part(0, line.len() - 10)
+            if number.is_empty() || number.byte_or_end(0) == 48:
+                continue
+            let Ok(version): U64 = number.parse_u64() else Err(code):
+                continue
+            if version >= 9007199254740992:
+                return Err(InvalidRootChain)
+            if version > latest:
+                latest = version
+    return Ok(latest)
+
+fn advance_roots(repo: Repository, used: TrustedRoot, latest: U64, reserved: &[U8], allocator: &Allocator) -> Result<TrustedRoot, PublicationError>:
+    var current = move used
+    for version in 2..latest + 1:
+        let next = read_next(repo, &current, version, reserved, allocator)
+        current.close()
+        let Ok(root): TrustedRoot = move next else Err(error):
+            return Err(error)
+        current = move root
+    return Ok(move current)
+
+fn read_next(repo: Repository, current: &TrustedRoot, version: U64, reserved: &[U8], allocator: &Allocator) -> Result<TrustedRoot, PublicationError>:
+    let path = metadata_path(allocator, version, "root")?
+    let result = advance_from_file(repo, current, &path, reserved, allocator)
+    path.close()
+    return move result
+
+fn advance_from_file(repo: Repository, current: &TrustedRoot, path: &String, reserved: &[U8], allocator: &Allocator) -> Result<TrustedRoot, PublicationError>:
+    let bytes = read_immutable(repo, path, metadata_limit(Root), allocator)?
+    let next = advance_with_bytes(repo, current, path, &bytes, reserved, allocator)
+    bytes.close()
+    return move next
+
+fn advance_with_bytes(repo: Repository, current: &TrustedRoot, path: &String, bytes: &String, reserved: &[U8], allocator: &Allocator) -> Result<TrustedRoot, PublicationError>:
+    let advanced = current.advance(bytes, allocator)
+    let Ok(root): TrustedRoot = move advanced else Err(error):
+        return Err(InvalidRootChain)
+    if let Err(error) = root.check_reserved(reserved, allocator):
+        root.close()
+        return Err(AuthorityConflict)
+    if let Err(error) = stage_object(repo.spool, path, bytes):
+        root.close()
+        return Err(error)
+    return Ok(move root)

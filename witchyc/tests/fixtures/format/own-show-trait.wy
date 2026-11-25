@@ -1,0 +1,18 @@
+// A program's own `trait Show` does not change what `${n}` means: the format's code names the
+// library's (Astra audit: interpolation was refused once a file declared a `Show`).
+import console
+
+trait Show:
+    fn show_on(self: &Self, console: &Console<Write>)
+
+type Point:
+    x: U64
+
+impl Show for Point:
+    fn show_on(self: &Point, console: &Console<Write>):
+        console.write("POINT")
+
+fn main(console: Console<Write>):
+    let n: U64 = 5
+    let p = Point(3)
+    console.print("n=${n}")

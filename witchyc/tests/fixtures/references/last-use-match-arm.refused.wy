@@ -1,0 +1,23 @@
+// A reference an arm still reads keeps its value lent in every arm.
+type Shape:
+    Dot
+    Line(U64)
+
+type Pair:
+    a: Shape
+    b: U64
+
+fn first(pair: &Pair) -> &Shape:
+    return &(*pair).a
+
+fn second(pair: &Pair) -> &U64:
+    return &(*pair).b
+
+fn main(console: Console<Write>):
+    var pair = Pair(Line(4), 5)
+    let count = second(&pair)
+    match Line(*count):
+        Dot:
+            pair.b = 1
+        Line(length):
+            pair.b = length + *count

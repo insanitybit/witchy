@@ -1,0 +1,15 @@
+// A typed refutable `let` states what it binds, so a closure may capture it.
+import console
+
+fn parse(n: U64) -> Result<U64, U64>:
+    if n > 100:
+        return Err(n)
+    return Ok(n * 2)
+
+fn apply(f: fn(U64) -> U64, x: U64) -> U64:
+    return f(x)
+
+fn main(console: Console<Write>):
+    let Ok(limit): U64 = parse(21) else Err(code):
+        return
+    console.print_int(apply(fn(n: U64) -> U64: n + limit, 1))

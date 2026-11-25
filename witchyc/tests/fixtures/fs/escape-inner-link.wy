@@ -1,0 +1,38 @@
+// A Dir takes no symbolic link, not even one that stays inside it: `inner -> notes`,
+// `one-link -> notes/one.txt`, and `around -> ../links-root/notes`, which leaves and comes back.
+// cap-std alone would follow the first two (it keeps resolution inside the directory, links
+// included); the host opens each name without following a link, so authority is what the
+// launcher granted and nothing a link inside it says (docs/decisions.md, 2026-11-20).
+import fs
+import console
+
+fn report(console: &Console<Write>, dir: &Dir<Read>, path: Text):
+    match dir.open(path):
+        Ok(file):
+            console.line("opened")
+            file.close()
+        Err(error):
+            match error:
+                InvalidPath:
+                    console.line("invalid path")
+                NotFound:
+                    console.line("not found")
+                WrongKind:
+                    console.line("wrong kind")
+                _:
+                    console.line("other error")
+
+fn main(console: Console<Write>, dir: Dir<Read>):
+    report(&console, &dir, "notes/one.txt")
+    report(&console, &dir, "inner/one.txt")
+    report(&console, &dir, "one-link")
+    report(&console, &dir, "around/one.txt")
+    report(&console, &dir, "inner")
+    match dir.dir("inner"):
+        Ok(inner):
+            console.line("opened")
+            inner.close()
+        Err(error):
+            console.line("refused")
+    let found: Text = if dir.exists("one-link"): "exists" else: "absent"
+    console.line(found)

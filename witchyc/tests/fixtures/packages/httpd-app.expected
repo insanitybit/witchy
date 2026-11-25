@@ -1,0 +1,31 @@
+1200
+HTTP/1.0 200 OK
+
+hello from witchy
+|
+1404
+HTTP/1.0 404 Not Found
+
+|
+2000
+|
+1404
+HTTP/1.0 404 Not Found
+
+|
+1421
+HTTP/1.0 421 Misdirected Request
+
+|
+1400
+HTTP/1.0 400 Bad Request
+
+|
+1400
+HTTP/1.0 400 Bad Request
+
+|
+1400
+HTTP/1.0 400 Bad Request
+
+|

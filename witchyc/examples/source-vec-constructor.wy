@@ -1,0 +1,19 @@
+// Constructor-only migration of the existing library Vec representation.
+// Ordinary vec_new and its allocation branches are a separate pending consumer.
+type Vec<T>:
+    data: Buffer<T>
+    length: USize
+    capacity: USize
+    invariant BufferContents(data, length, capacity)
+
+fn main(console: Console<Write>):
+    var witness = memory.alloc(1)
+    memory.init(&mut witness, 0, 42)
+    let saved = &witness
+    let data: Buffer<Bool> = memory.alloc(3)
+    let vector: Vec<Bool> = Vec(move data, 0, 3)
+    console.print_int(vector.capacity)
+    console.print_int(memory.read(saved, 0))
+    memory.end(saved)
+    memory.release(vector.data)
+    memory.release(witness)

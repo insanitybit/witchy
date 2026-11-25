@@ -1,0 +1,12 @@
+// Refused: a recipe calling its file's private helper whose signature reaches the `For` type
+// (review round 5: `set_v(&mut t, 999)` wrote the sealed `Token` the user chose).
+import "parts/hw.wy"
+import console
+
+type T derive(hw.Wh(for: hw.Token)):
+    a: U64
+
+fn main(console: Console<Write>):
+    let x = T(a: 1)
+    let t = x.made(hw.mint())
+    console.print("${hw.redeem(&t)}")

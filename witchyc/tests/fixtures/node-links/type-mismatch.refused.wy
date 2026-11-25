@@ -1,0 +1,7 @@
+import link
+
+fn bad(link: Link<U8>, other: &Buffer<U64>):
+    link.get(other)
+
+fn main():
+    return

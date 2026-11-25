@@ -1,0 +1,11 @@
+// Refused: a private type named like a built-in type is refused where it is declared (it was
+// reported inside the library, as a use of a private type).
+import console
+import hash
+
+type U16:
+    A
+    B
+
+fn main(console: Console<Write>):
+    console.print_int(1)

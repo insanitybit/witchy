@@ -1,0 +1,9 @@
+// Refused: a number minus a Result; the refusal says which operand is the Result.
+import console
+import int
+
+fn spend(total: I64, n: U64) -> I64:
+    return total - I64.from(n)
+
+fn main(out: Console<Write>):
+    out.print_int(1)

@@ -1,0 +1,106 @@
+// Authenticate the server and send the protected client Finished. All TLS
+// framing and transcript construction stay in Witchy.
+import tls_client_exchange
+import tls_client_flight
+import tls_key_schedule
+import tls_kdf
+import tls_record
+import tls_transport
+import certificates
+import crypto
+import span
+import vec
+
+pub type ClientAuthError:
+    ClientHandshakeFailed
+    UntrustedServer
+    ClientFinishedFailed
+
+pub fn handshake(socket: &Socket, allocator: &Allocator, random: &Rand, hostname: Span, anchors: &[U8], now: U64, transcript: &mut [U8], plaintext: &mut [U8], frame: &mut [U8]) -> Result<Application, ClientAuthError>:
+    let Ok(exchange): ClientExchange = tls_client_exchange.begin(socket, random, hostname, transcript) else Err(reason):
+        return Err(ClientHandshakeFailed)
+    let Ok(flight): ServerFlight = tls_client_flight.receive(socket, allocator, &exchange.handshake, transcript, exchange.length, plaintext, frame) else Err(reason):
+        return Err(ClientHandshakeFailed)
+    if !check_identity(allocator, hostname, anchors, now, transcript, flight):
+        return Err(UntrustedServer)
+    return finish(socket, allocator, &exchange.handshake, transcript, flight.end, plaintext, frame)
+
+fn check_identity(allocator: &Allocator, hostname: Span, anchors: &[U8], now: U64, transcript: &[U8], flight: ServerFlight) -> Bool:
+    let signature = transcript.part(flight.certificate_verify + 4, flight.finished)
+    let scheme: [U8; 2] = [5, 3]
+    if signature[0] != scheme[0] || signature[1] != scheme[1] || U8.to_u64(signature[2]) * 256 + U8.to_u64(signature[3]) != signature.len() - 4:
+        return false
+    let message = transcript.part(flight.certificate + 4, flight.certificate_verify)
+    if message.len() < 10 || message[0] != 0 || u24(Span.of(message), 1) != message.len() - 4:
+        return false
+    let Ok(output): Vec<U8> = Vec.filled(allocator, message.len() - 4, 0) else Err(reason):
+        return false
+    var chain = move output
+    let result = check_chain(hostname, anchors, now, message.part(4, message.len()), transcript.part(0, flight.certificate_verify), signature.part(4, signature.len()), chain.as_mut_slice())
+    chain.close()
+    return result
+
+fn check_chain(hostname: Span, anchors: &[U8], now: U64, entries: &[U8], transcript: &[U8], signature: &[U8], chain: &mut [U8]) -> Bool:
+    let length = parse_entries(Span.of(entries), chain)
+    if length == 0:
+        return false
+    return verify_signed(hostname, anchors, now, transcript, signature, chain, length)
+
+fn verify_signed(hostname: Span, anchors: &[U8], now: U64, transcript: &[U8], signature: &[U8], chain: &[U8], length: U64) -> Bool:
+    var signed: [U8; 154] = [0; 154]
+    let context: [U8; 33] = [84, 76, 83, 32, 49, 46, 51, 44, 32, 115, 101, 114, 118, 101, 114, 32, 67, 101, 114, 116, 105, 102, 105, 99, 97, 116, 101, 86, 101, 114, 105, 102, 121]
+    for i in 0..8:
+        signed[i] = U8.truncate(now >> ((7 - i) * 8))
+    for i in 8..72:
+        signed[i] = 32
+    signed.slice_mut().part(72, 105).copy_from(context.slice())
+    if let Err(reason) = crypto.sha384(transcript, signed.slice_mut().part(106, 154)):
+        return false
+    return certificates.verify_p384(anchors, chain.part(0, length), hostname.as_bytes(), signed.slice(), signature)
+
+fn u24(input: Span, at: U64) -> U64:
+    return input.byte_or_end(at) * 65536 + input.byte_or_end(at + 1) * 256 + input.byte_or_end(at + 2)
+
+// No certificate entry extensions were requested in this profile.
+fn parse_entries(entries: Span, output: &mut [U8]) -> U64:
+    var rest = entries
+    var length: U64 = 0
+    var certificates: U64 = 0
+    while !rest.is_empty():
+        if rest.len() < 6 || certificates == 8:
+            return 0
+        let size = u24(rest, 0)
+        if size == 0 || size > rest.len() - 5:
+            return 0
+        let end = 3 + size
+        if rest.byte_or_end(end) != 0 || rest.byte_or_end(end + 1) != 0:
+            return 0
+        output.part(length, length + end).copy_from(rest.part(0, end).as_bytes())
+        length += end
+        certificates += 1
+        rest = rest.part(end + 2, rest.len())
+    return length
+
+fn finish(socket: &Socket, allocator: &Allocator, keys: &Handshake, transcript: &[U8], end: U64, plaintext: &mut [U8], frame: &mut [U8]) -> Result<Application, ClientAuthError>:
+    var hash: [U8; 48] = [0; 48]
+    if let Err(reason) = crypto.sha384(transcript.part(0, end), hash.slice_mut()):
+        return Err(ClientFinishedFailed)
+    let Ok(traffic): Application = keys.application(hash.slice()) else Err(reason):
+        return Err(ClientFinishedFailed)
+    let Ok(tag): Digest = keys.finished(Client, hash.slice()) else Err(reason):
+        return Err(ClientFinishedFailed)
+    let Ok(client_keys): RecordKeys = keys.keys(Client) else Err(reason):
+        return Err(ClientFinishedFailed)
+    var finished: [U8; 52] = [0; 52]
+    finished[0] = 20
+    finished[3] = 48
+    tag.write_bytes(&mut hash)
+    finished.slice_mut().part(4, 52).copy_from(hash.slice())
+    let Ok(epoch): WriteEpoch = tls_record.writer(allocator, move client_keys) else Err(reason):
+        return Err(ClientFinishedFailed)
+    var writer = move epoch
+    let sent = tls_transport.write_protected(socket, &mut writer, HandshakeMessage, finished.slice(), plaintext, frame)
+    writer.close()
+    if let Err(reason) = sent:
+        return Err(ClientFinishedFailed)
+    return Ok(move traffic)

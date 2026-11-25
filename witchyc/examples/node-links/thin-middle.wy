@@ -1,0 +1,39 @@
+import pointer_list
+
+fn main(out: Console<Write>, a: Allocator):
+    var list: DoublyLinkedList<U64> = DoublyLinkedList.new()
+    let first_failure = list.push_back(&a, 11)
+    if first_failure.is_some():
+        list.close()
+        return
+    let second_failure = list.push_back(&a, 22)
+    if second_failure.is_some():
+        list.close()
+        return
+    let third_failure = list.push_back(&a, 33)
+    if third_failure.is_some():
+        list.close()
+        return
+    match list.back():
+        Some(right):
+            let right_value = *right.item()
+            out.print_int(right_value)
+            match right.previous():
+                Some(middle):
+                    let middle_value = *middle.item()
+                    out.print_int(middle_value)
+                    match middle.previous():
+                        Some(first):
+                            let first_value = *first.item()
+                            out.print_int(first_value)
+                        None:
+                            out.print_int(0)
+                None:
+                    out.print_int(0)
+        None:
+            out.print_int(0)
+    out.print_int(list.pop_penultimate().unwrap_or(0))
+    out.print_int(list.pop_back().unwrap_or(0))
+    out.print_int(list.pop_back().unwrap_or(0))
+    out.print_int(list.pop_penultimate().unwrap_or(0))
+    list.close()

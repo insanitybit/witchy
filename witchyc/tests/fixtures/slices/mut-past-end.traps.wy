@@ -1,0 +1,6 @@
+// Writing past the end of a unique slice traps.
+import console
+fn main(console: Console<Write>):
+    var numbers: [U64; 2] = [1, 2]
+    let s = numbers.slice_mut()
+    s[2] = 5

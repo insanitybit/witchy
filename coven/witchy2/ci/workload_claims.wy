@@ -1,0 +1,65 @@
+import "../tuf/coordinate.wy"
+import "../tuf/release_trust.wy"
+import "identifiers.wy"
+import "request_proof.wy"
+import "receipt_intent.wy"
+import json_tree
+import span
+import string
+import text
+
+pub fn attest_workload(claims: &Json, enrollment: &Json, request: &Json, body: &[U8], expiry: U64, nonce_expiry: U64, allocator: &Allocator) -> Result<String, U64>:
+    if !matches_enrollment(claims, enrollment):
+        return Err(1)
+    let ref = string_field(claims, "ref")?
+    let version = ref.span().part(11, ref.byte_len())
+    if !ref.span().starts_with_text("refs/tags/v") || !release_version(version):
+        return Err(1)
+    let workflow = string_field(claims, "workflow_ref")?
+    let caller = string_field(enrollment, "caller_workflow")?
+    let Ok(parts): Halves = workflow.span().split('@') else Err(rest):
+        return Err(1)
+    if !parts.head.same(caller.span()) || !parts.tail.same(ref.span()):
+        return Err(1)
+    let jti = string_field(claims, "jti")?
+    let sha = string_field(claims, "sha")?
+    if !identifier(jti.span()) || !revision(sha.span()):
+        return Err(1)
+    let run = claims.field("run_id")?
+    let attempt = claims.field("run_attempt")?
+    let check = claims.field("check_run_id")?
+    if !valid_id(run) || !valid_id(attempt) || !valid_id(check):
+        return Err(1)
+    let token = string_field(request, "token")?
+    verify_request(request, enrollment, token, version, body, allocator)?
+    return receipt_bindings(request, enrollment, claims, version, nonce_expiry, expiry, allocator)
+
+fn matches_enrollment(claims: &Json, enrollment: &Json) -> Bool:
+    let tagged_job = equals(claims, "runner_environment", "self-hosted") && equals(claims, "event_name", "push") && equals(claims, "ref_type", "tag")
+    let repository = matches_claim(claims, enrollment, "repository_id") && matches_claim(claims, enrollment, "repository_owner_id")
+    let workflow = matches_claim(claims, enrollment, "job_workflow_ref") && matches_claim(claims, enrollment, "job_workflow_sha")
+    return tagged_job && repository && workflow && matches_claim(claims, enrollment, "sub") && matches_claim(claims, enrollment, "environment")
+
+fn matches_claim(claims: &Json, enrollment: &Json, name: Text) -> Bool:
+    let Ok(expected): &String = string_field(enrollment, name) else Err(code):
+        return false
+    let Ok(found): &String = string_field(claims, name) else Err(code):
+        return false
+    return found.eq(expected)
+
+fn valid_id(value: &Json) -> Bool:
+    match value:
+        Whole(number):
+            return *number > 0
+        Str(digits):
+            return positive_id(digits.span())
+        Decimal(digits):
+            return positive_id(digits.span())
+        _:
+            return false
+
+
+fn equals(object: &Json, name: Text, value: Text) -> Bool:
+    let Ok(found): &String = string_field(object, name) else Err(code):
+        return false
+    return found.equals_text(value)

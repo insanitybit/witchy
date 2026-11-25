@@ -1,0 +1,56 @@
+// A recipe over a sum's variants (parts/variant_keys.wy) gives the same equality and hashing as
+// the built-in derive on the same shape: variants of no, one and two values, the tag telling
+// `Point(1)` from `Line(1, ...)`, and the sum used as a map key.
+import "parts/variant_keys.wy"
+import console
+import hash
+import hashmap
+import discard
+
+type Edge derive(variant_keys.VariantKey, Discard):
+    Line(U64, U64)
+    Point(U64)
+    Empty
+
+impl KeyFor<Edge> for Edge:
+    fn key_for(self: &Edge, allocator: &Allocator) -> Result<Edge, U64>:
+        return Ok(*self)
+
+type Built derive(Eq, Hash, Discard):
+    Line2(U64, U64)
+    Point2(U64)
+    Empty2
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let a = Line(1, 2)
+    let b = Line(1, 2)
+    let c = Line(1, 3)
+    let p = Point(1)
+    let e = Empty
+    console.print("${a == b} ${a == c} ${p == e} ${p == Point(1)}")
+    console.print("${a.hash() == b.hash()} ${a.hash() == c.hash()} ${p.hash() == e.hash()}")
+    // The same hashes as the built-in derive writes for the same shape.
+    let (l2, p2, e2) = (Line2(1, 2), Point2(1), Empty2)
+    console.print("${a.hash() == l2.hash()} ${p.hash() == p2.hash()} ${e.hash() == e2.hash()}")
+    let Ok(made): HashMap<Edge, U64> = HashMap.new(&allocator, 4) else Err(code):
+        return
+    var map = move made
+    for n in 0..30:
+        var key = Empty
+        if n % 3 == 0:
+            key = Line(n % 4, 1)
+        else if n % 3 == 1:
+            key = Point(n % 5)
+        match map.get_or_insert(&allocator, &key, 0):
+            Ok(found):
+                *found += 1
+            Err(missed):
+                missed.discard()
+    var empties: U64 = 0
+    match map.get(&Empty):
+        Ok(n):
+            empties = *n
+        Err(code):
+            ()
+    console.print("${map.len()} ${empties}")
+    map.discard()

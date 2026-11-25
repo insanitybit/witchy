@@ -1,0 +1,15 @@
+// A closure captures locals bound from a library method (`text.byte_len()`): their type is the
+// method's declared result, so no annotation is needed.
+import console
+import string
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var text = move made
+    let _ = text.push_text(&allocator, "abc")
+    let length = text.byte_len()
+    let plus = fn(extra: U64) -> U64:
+        return length + extra
+    console.print_int(plus(4))
+    text.close()

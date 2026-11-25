@@ -1,0 +1,19 @@
+// Appended to library/unchecked-u64.wy by tests/unsafe_adversarial.rs.
+//
+// One cell is temporarily taken while a different cell is read unchecked.
+// The read is safe only because `other < index` separates the two cells.
+// The test weakens that requirement to `other <= index`, which permits
+// reading the cell that is currently empty.
+fn read_beside_taken(input: Vec<U64>, index: USize, other: USize) -> Result<Indexed, Vec<U64>>:
+    requires index < input.length
+    requires other < index
+    var vector = move input
+    proof:
+        apply initialized_in_prefix(vector.data, vector.length, index)
+        apply initialized_in_prefix(vector.data, vector.length, other)
+    if memory.loan_room(1):
+        let removed = memory.take(&mut vector.data, other)
+        let item = memory.read_unchecked(&vector.data, index)
+        memory.init(&mut vector.data, other, removed)
+        return Ok(Indexed(move vector, Some(item)))
+    return Err(move vector)

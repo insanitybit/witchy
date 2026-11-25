@@ -1,0 +1,13 @@
+// The target is written once per path, so reading it must run nothing.
+fn next(counter: &mut U64) -> U64:
+    *counter += 1
+    return *counter
+
+fn main(console: Console<Write>):
+    var counter: U64 = 0
+    var table = [0, 0, 0, 0]
+    table[next(&mut counter)] = if counter > 0:
+        1
+    else:
+        2
+    console.print_int(table[1])

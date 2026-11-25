@@ -1,0 +1,6 @@
+// Refused: a pause is only where the signature says the function may pause.
+fn quiet(token: U64):
+    memory.pause(token)
+
+fn main():
+    return

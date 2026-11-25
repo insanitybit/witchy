@@ -1,0 +1,24 @@
+fn main(console: Console<Write>):
+    let created: Result<Vec<U64>, AllocError> = vec_new(1)
+    match created:
+        Ok(initial):
+            match vec_push_spare(move initial, 73):
+                Ok(occupied):
+                    match vec_reserve(move occupied, 8):
+                        Ok(grown):
+                            match vec_pop(move grown):
+                                Ok(popped):
+                                    match popped.item:
+                                        Some(item):
+                                            console.print_int(item)
+                                        None:
+                                            console.print_int(0)
+                                    discard(vec_release(move popped.vector))
+                                Err(unchanged):
+                                    discard(vec_release(move unchanged))
+                        Err(failed):
+                            discard(vec_release(move failed.vector))
+                Err(failed):
+                    discard(vec_release(move failed.vector))
+        Err(reason):
+            console.print_int(0)

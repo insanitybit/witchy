@@ -1,0 +1,12 @@
+// A number known when the line is read (a literal, a module constant, arithmetic of them) is written
+// into the text: `${7}` and `${LIMIT}` were refused as settling no type, beside a variable too.
+import console
+
+let LIMIT = 40
+
+fn main(console: Console<Write>):
+    let x = 5
+    console.print("${x} ${7}")
+    console.print("${7}")
+    console.print("limit ${LIMIT}, twice ${LIMIT * 2}, ${x} of ${LIMIT}")
+    console.print("${0}${1}${2}")

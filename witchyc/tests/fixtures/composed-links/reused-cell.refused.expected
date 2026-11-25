@@ -1,0 +1,2 @@
+proof failed: in function `invalid`, a call to `claim_same` does not establish the callee's `requires`
+not proved: requires memory.box_id(first) == memory.box_id(second)

@@ -1,0 +1,44 @@
+// The `Discard` trait and the values that own nothing. It imports no container, so a type's
+// own library (`option`) can implement the trait without bringing `Vec` into a program;
+// `import discard` gives this and `Vec`'s.
+pub trait Discard:
+    fn discard(self: Self)
+
+// A number owns nothing; it is Discard so that it can sit beside owners, as a map's key or value.
+impl Discard for U64:
+    fn discard(self: U64):
+        return
+
+impl Discard for Bool:
+    fn discard(self: Bool):
+        return
+
+// A literal is part of the program, not an allocation: a map with Text keys discards nothing for them.
+impl Discard for Text:
+    fn discard(self: Text):
+        return
+
+impl Discard for U8:
+    fn discard(self: U8):
+        return
+
+impl Discard for U16:
+    fn discard(self: U16):
+        return
+
+impl Discard for U32:
+    fn discard(self: U32):
+        return
+
+impl Discard for F64:
+    fn discard(self: F64):
+        return
+
+// Whichever value it holds is discarded.
+impl<T: Any + Discard, E: Any + Discard> Discard for Result<T, E>:
+    fn discard(self: Result<T, E>):
+        match move self:
+            Ok(item):
+                item.discard()
+            Err(error):
+                error.discard()

@@ -1,0 +1,11 @@
+// Refused: pushing to a Vec (which may move its elements) while a slice of it is in use.
+import vec
+
+fn main(allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.filled(&allocator, 3, 0) else Err(code):
+        return
+    var numbers = move made
+    let s = numbers.as_mut_slice()
+    numbers.push_mut(&allocator, 1)
+    s[0] = 2
+    numbers.close()

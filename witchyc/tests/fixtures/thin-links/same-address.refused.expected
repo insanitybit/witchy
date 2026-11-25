@@ -1,0 +1,2 @@
+proof failed: function `invalid`
+not proved: following a weak pointer of another allocation, in what is assigned to `loan`

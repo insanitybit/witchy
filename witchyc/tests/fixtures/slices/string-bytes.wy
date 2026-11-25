@@ -1,0 +1,24 @@
+// A String's bytes as `&[U8]`: the same functions take a String's bytes or an array's.
+import console
+import string
+
+fn spaces(bytes: &[U8]) -> U64:
+    var count: U64 = 0
+    for byte in bytes:
+        if *byte == 32:
+            count += 1
+    return count
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var text = move made
+    if let Err(_) = text.push_text(&allocator, "a b c d"):
+        text.close()
+        return
+    let bytes = text.as_bytes()
+    console.print_int(bytes.len())
+    console.print_int(spaces(bytes))
+    console.print_int(U8.to_u64(bytes[2]))
+    console.print_int(spaces(bytes.part(0, 3)))
+    text.close()

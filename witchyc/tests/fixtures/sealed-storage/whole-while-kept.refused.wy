@@ -1,0 +1,32 @@
+// Refused: with a field lent, the value is used only through its fields; a method called on
+// the whole value would assume the invariant.
+import console
+import vec
+import option
+
+sealed type Bag:
+    items: Vec<U64>
+    held: Option<U64>
+    spare: U64
+    count: U64
+    limit: U64
+    invariant count <= limit
+    invariant when None = held:
+        count == 0
+
+impl Bag:
+    fn size(bag: &Bag) -> U64:
+        ensures result <= bag.limit
+        return (*bag).count
+    fn set(bag: &mut Bag) -> U64:
+        ensures bag.count == old(bag.count)
+        match (*bag).items.at_mut(0):
+            Ok(slot):
+                let n = bag.size()
+                *slot = n
+                return n
+            Err(code):
+                return 0
+
+fn main(console: Console<Write>):
+    console.print_int(1)

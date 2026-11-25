@@ -1,0 +1,12 @@
+// Refused, saying `write_span` is a function to call with the console among its arguments: it
+// said only that `Console` has a method `write`.
+import console
+import string
+import span
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(e):
+        return
+    var text = move made
+    console.write_span(text.span())
+    text.close()

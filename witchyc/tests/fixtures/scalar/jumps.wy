@@ -1,0 +1,107 @@
+// `break` and `continue` in loops with invariants. Each shows the invariants where it
+// stands. After a loop that `break` can leave, the invariants are what is known; a loop
+// with only `continue` is still left with its condition false.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-vec.wy"
+
+fn find(items: &Vec<U64>, wanted: U64) -> U64:
+    ensures result <= items.len()
+    proof:
+        auto
+    var found = items.len()
+    for index in 0..items.len():
+        invariant found <= items.len()
+        invariant index <= items.len()
+        match items.get(index):
+            Ok(item):
+                if item == wanted:
+                    found = index
+                    break
+            Err(code):
+                break
+    return found
+
+fn evens(n: U64) -> U64:
+    requires n < 1000
+    ensures result <= n
+    proof:
+        auto
+    var count: U64 = 0
+    for index in 0..n:
+        invariant count <= index
+        invariant index <= n
+        if index % 2 == 1:
+            continue
+        count += 1
+    return count
+
+fn all(n: U64) -> U64:
+    requires n < 1000
+    ensures result == n
+    proof:
+        auto
+    var index: U64 = 0
+    while index < n:
+        invariant index <= n
+        index += 1
+        if index % 2 == 1:
+            continue
+    return index
+
+fn grid(n: U64) -> U64:
+    requires n < 100
+    ensures result <= n
+    proof:
+        auto
+    var rows: U64 = 0
+    while rows < n:
+        invariant rows <= n
+        var column: U64 = 0
+        while column < 10:
+            if column == 3:
+                break
+            column += 1
+        rows += 1
+    return rows
+
+fn more(left: U64) -> Result<Bool, U64>:
+    return Ok(left > 0)
+
+fn count(from: U64) -> Result<U64, U64>:
+    ensures match result:
+        Ok(left):
+            from >= 0
+        Err(code):
+            from >= 0
+    proof:
+        auto
+    var left = from
+    while more(left)?:
+        invariant left <= from
+        if left > 0:
+            left -= 1
+    return Ok(left)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var items: Vec<U64> = match Vec.new(&allocator, 4):
+        Ok(made):
+            move made
+        Err(code):
+            return
+    for step in 0..4:
+        match items.push_mut(&allocator, step * 10):
+            Ok(done):
+                continue
+            Err(back):
+                break
+    console.print_int(find(&items, 20))
+    console.print_int(find(&items, 21))
+    items.close()
+    console.print_int(evens(9))
+    console.print_int(all(9))
+    console.print_int(grid(7))
+    match count(4):
+        Ok(left):
+            console.print_int(left)
+        Err(code):
+            console.print_int(100)

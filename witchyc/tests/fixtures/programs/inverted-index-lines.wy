@@ -1,0 +1,84 @@
+// An inverted index: each word maps to the lines it is on, a Vec of line numbers held in the map.
+import console
+import string
+import vec
+import hashmap
+import discard
+
+fn record(index: &mut HashMap<String, Vec<U64>>, allocator: &Allocator, word: &String, line: U64) -> Bool:
+    match index.get_mut(word):
+        Ok(lines):
+            // A word twice on one line is listed once.
+            let count = lines.len()
+            if count > 0:
+                let Ok(last): &U64 = lines.at(count - 1) else Err(e):
+                    return false
+                if *last == line:
+                    return true
+            match lines.push_mut(allocator, line):
+                Ok:
+                    return true
+                Err(back):
+                    return false
+        Err(missing):
+            ()
+    let Ok(made): Vec<U64> = Vec.new(allocator, 1) else Err(e):
+        return false
+    var lines = move made
+    let pushed = lines.push_mut(allocator, line)
+    let Ok(key): String = String.new(allocator) else Err(e):
+        lines.close()
+        return false
+    var owned = move key
+    let _ = owned.push_string(allocator, word)
+    match index.put(allocator, move owned, move lines):
+        Ok:
+            return true
+        Err(back):
+            let Entry(k, v) = move back
+            k.close()
+            v.close()
+            return false
+
+fn show(console: &Console<Write>, allocator: &Allocator, index: &HashMap<String, Vec<U64>>, word: Text):
+    match index.get(&word):
+        Ok(lines):
+            let Ok(made): String = String.new(allocator) else Err(e):
+                return
+            var out = move made
+            for n in lines:
+                let _ = out.push_format(allocator, " ${*n}")
+            console.write_format("${word}:")
+            console.write_string(&out)
+            console.line("")
+            out.close()
+        Err(missing):
+            console.print("${word}: none")
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): HashMap<String, Vec<U64>> = HashMap.new(&allocator, 16) else Err(c):
+        return
+    var index = move made
+    let Ok(w): String = String.new(&allocator) else Err(c):
+        index.release()
+        return
+    var word = move w
+    let text: &str = "the cat sat\non the mat\nthe cat ran the race\n"
+    var line: U64 = 1
+    for byte in text.as_bytes():
+        let b = U8.to_u64(*byte)
+        if b == 32 || b == 10:
+            if word.byte_len() > 0:
+                let ok = record(&mut index, &allocator, &word, line)
+                word.clear()
+            if b == 10:
+                line += 1
+        else:
+            let _ = word.push(&allocator, b)
+    console.print("${index.len()} words")
+    show(&console, &allocator, &index, "the")
+    show(&console, &allocator, &index, "cat")
+    show(&console, &allocator, &index, "race")
+    show(&console, &allocator, &index, "dog")
+    word.close()
+    index.discard()

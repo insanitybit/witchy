@@ -1,0 +1,18 @@
+// An impl with type parameters of its own may implement a trait with parameters,
+// naming its own parameter in the trait's arguments (`impl<T> Holds<T> for Pair<T>`).
+import "../../../library/wasm-console.wy"
+
+trait Holds<T>:
+    fn count(self: &Self) -> U64
+
+type Pair<T>:
+    first: T
+    second: T
+
+impl<T> Holds<T> for Pair<T>:
+    fn count(self: &Pair<T>) -> U64:
+        return 2
+
+fn main(console: Console<Write>):
+    let pair: Pair<U64> = Pair(3, 4)
+    console.print_int(pair.count())

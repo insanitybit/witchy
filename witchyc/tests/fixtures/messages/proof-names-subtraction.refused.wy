@@ -1,0 +1,11 @@
+// Refused, naming the subtraction: `count - 1` with nothing saying `count >= 1`.
+import console
+
+fn last(count: U64) -> U64:
+    ensures true
+    proof:
+        auto
+    return count - 1
+
+fn main(console: Console<Write>):
+    console.print_int(last(4))

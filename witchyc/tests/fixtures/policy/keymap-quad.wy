@@ -1,0 +1,57 @@
+// KeyMap: keys hashed by the map's policy (slice 2). Quads under the reference policy at two
+// seeds and under the constant policy (every key collides, and full equality still tells them
+// apart): hit, miss, growth past the first table, removal and lookups after it.
+import "../derive/parts/keys.wy"
+import console
+import hash
+import hashmap
+import keymap
+
+type Quad derive(keys.Key, keys.Fed, Discard):
+    a: U32
+    b: U32
+    c: U32
+    d: U32
+
+fn quad(n: U64) -> Quad:
+    return Quad(a: U32.truncate(n), b: U32.truncate(n * 3 + 4294967000), c: U32.truncate(n % 7), d: U32.truncate(4294967295 - n))
+
+fn run(console: &Console<Write>, allocator: &Allocator, policy: Policy):
+    let Ok(made): KeyMap<Quad, U64> = KeyMap.new(allocator, 4, policy) else Err(code):
+        return
+    var map = move made
+    for n in 0..200:
+        match map.put(allocator, quad(n), n * 10):
+            Ok:
+                ()
+            Err(entry):
+                discard(entry)
+    var found: U64 = 0
+    for n in 0..200:
+        match map.get(&quad(n)):
+            Ok(v):
+                found += *v
+            Err(code):
+                ()
+    var missing: U64 = 0
+    for n in 200..250:
+        if !map.contains(&quad(n)):
+            missing += 1
+    for n in 0..100:
+        match map.remove(&quad(n * 2)):
+            Ok(entry):
+                discard(entry)
+            Err(code):
+                ()
+    var left: U64 = 0
+    for n in 0..200:
+        if map.contains(&quad(n)):
+            left += n
+    console.print("${map.len()} ${found} ${missing} ${left}")
+    map.discard()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    run(&console, &allocator, Reference(0))
+    run(&console, &allocator, Reference(1))
+    run(&console, &allocator, Constant)
+    run(&console, &allocator, Fast(7))

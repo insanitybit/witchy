@@ -1,0 +1,411 @@
+// Text on the console. The host imports take a byte or a word (eight bytes) as a value, so the
+// host never reads guest memory; these loops are ordinary checked Witchy.
+import "wasm-string.wy"
+import "wasm-result.wy"
+
+// Bytes written one at a time, sent eight to a call: `writer.put(&console, byte)` for each,
+// then `writer.flush(&console)` for the last few. A value of two numbers; nothing is allocated.
+pub type WordWriter:
+    word: U64
+    filled: U64
+
+impl WordWriter:
+    // A writer holding no bytes yet.
+    pub fn new() -> WordWriter:
+        return WordWriter(word: 0, filled: 0)
+
+    // Add a byte; eight make one write.
+    pub fn put(self: &mut WordWriter, console: &Console<Write>, byte: U8):
+        let filled = (*self).filled % 8
+        let word = (*self).word | (U8.to_u64(byte) << (filled * 8))
+        if filled == 7:
+            console.print_word(word)
+            (*self).word = 0
+            (*self).filled = 0
+        else:
+            (*self).word = word
+            (*self).filled = filled + 1
+
+    // Write what is held and start again.
+    pub fn flush(self: &mut WordWriter, console: &Console<Write>):
+        console.write_part((*self).word, (*self).filled)
+        (*self).word = 0
+        (*self).filled = 0
+
+impl Console<Write>:
+    // Write borrowed UTF-8 without allocating.
+    pub fn write(console: &Console<Write>, text: &str):
+        console.write_bytes(text.as_bytes())
+
+    // Write the whole borrowed byte slice in order.
+    pub fn write_bytes(console: &Console<Write>, bytes: &[U8]):
+        let words = bytes.len() / 8
+        for index in 0..words:
+            console.print_word(bytes.read_le64(index * 8))
+        for index in words * 8..bytes.len():
+            console.print_byte(bytes[index])
+
+    // Write a text and a newline.
+    pub fn line(console: &Console<Write>, text: &str):
+        console.write(text)
+        console.print_byte(10)
+
+    // The first `count` bytes of `word` (fewer than eight), lowest first.
+    // `byte` `count` times, eight to a word: spaces before a right-aligned column.
+    pub fn write_repeated(console: &Console<Write>, byte: U8, count: U64):
+        let word = U8.to_u64(byte) * 72340172838076673
+        var left = count
+        while left >= 8:
+            console.print_word(word)
+            left -= 8
+        if left > 0:
+            console.write_part(word, left)
+
+    // Write the low `count` bytes of `word`, lowest first.
+    pub fn write_part(console: &Console<Write>, word: U64, count: U64):
+        for index in 0..count:
+            console.print_byte(U8.truncate((word >> (index % 8 * 8)) % 256))
+
+    // Write a String.
+    pub fn write_string(console: &Console<Write>, text: &String):
+        console.write_bytes(text.as_bytes())
+
+    // A number in decimal, with no newline after it.
+    pub fn write_u64(console: &Console<Write>, number: U64):
+        // The digits off the low end into at most three words in written order, as
+        // `String.push_decimal`; a whole word in one call, the rest a byte at a time.
+        var length: U64 = 1
+        var rest = number / 10
+        while rest > 0:
+            length += 1
+            rest = rest / 10
+        var low: U64 = 0
+        var middle: U64 = 0
+        var high: U64 = 0
+        var left = number
+        var position = length
+        while position > 0:
+            position -= 1
+            let shifted = (48 + left % 10) << (position % 8 * 8)
+            left = left / 10
+            if position < 8:
+                low = low | shifted
+            else if position < 16:
+                middle = middle | shifted
+            else:
+                high = high | shifted
+        if length < 8:
+            console.write_part(low, length)
+            return
+        console.print_word(low)
+        if length < 16:
+            console.write_part(middle, length - 8)
+            return
+        console.print_word(middle)
+        console.write_part(high, length - 16)
+
+    // Write `count` spaces.
+    pub fn write_spaces(console: &Console<Write>, count: U64):
+        for step in 0..count:
+            console.print_byte(32)
+
+    // A number at the right of a column `width` wide. A number with more digits
+    // than that is written whole.
+    pub fn write_u64_right(console: &Console<Write>, number: U64, width: U64):
+        ensures true
+        proof:
+            auto
+        var digits: U64 = 1
+        var rest = number
+        // A U64 has at most twenty digits.
+        for step in 0..19:
+            invariant digits <= step + 1
+            if rest < 10:
+                break
+            rest = rest / 10
+            digits += 1
+        if digits < width:
+            console.write_spaces(width - digits)
+        console.write_u64(number)
+
+    // A String at the left of a column `width` bytes wide.
+    pub fn write_string_left(console: &Console<Write>, text: &String, width: U64):
+        console.write_string(text)
+        if text.byte_len() < width:
+            console.write_spaces(width - text.byte_len())
+
+// Input. The host import hands over one byte at a time as a number, so the host
+// never writes guest memory; decoding is ordinary checked Witchy.
+
+// Read past the rest of the current line, through its newline, or to the end of the input:
+// what `read_line` does with a line that is not UTF-8. Runs end after a newline, so a run whose
+// last byte is one ends the line, and nothing of the next line is taken.
+fn skip_line(input: &Console<Read>):
+    while true:
+        let fetched = input.next_run()
+        let left = fetched >> 56
+        if left == 0:
+            return
+        if (fetched >> ((left - 1) * 8)) % 256 == 10:
+            return
+
+impl Console<Read>:
+    // The next byte of input. Err: the input has ended.
+    pub fn read_byte(input: &Console<Read>) -> Result<U8, U64>:
+        let next = input.next_byte()
+        if next > 255:
+            return Err(0)
+        return Ok(U8.truncate(next))
+
+    // The low six bits of the next byte, or 256 if it does not continue a scalar's encoding.
+    pub fn continuation(input: &Console<Read>) -> U64:
+        let next = input.next_byte()
+        if next < 128 || next > 191:
+            return 256
+        return next - 128
+
+    // Append the next line of input to `line`, without its newline.
+    // .Line: a line was read, which may be empty. .End: the input had ended.
+    // .NotText: the line was not well-formed UTF-8. The whole line has been skipped, through its
+    // newline (or to the end of the input), and `line` is as it was: the fault is reported once,
+    // and the next call reads the next line (2026-11-22: the tail after a bad byte came back as
+    // a good line). .NoRoom: the allocator had no room; `line` holds what was read before it.
+    pub fn read_line(input: &Console<Read>, allocator: &Allocator, line: &mut String) -> .[Line | End | NotText | NoRoom]:
+        let start = line.byte_len()
+        var any = false
+        // Bytes come seven at a time (`next_run`, one host call): `run` holds those not yet taken,
+        // lowest first, and `left` how many. A run ends after a newline or a byte of 128 or more,
+        // so only its last byte can be one; the bytes before it, and the last when it is plain
+        // too, go in as one `push_ascii` (which still refuses a byte of 128 or more). Room for a
+        // run is made before it is fetched: ten bytes, six plain and a four-byte scalar, so a
+        // fetched byte is never lost to a full allocator. When that room cannot be made, bytes
+        // come one at a time (`next_byte`), each appended if it fits, as before runs: a line that
+        // fits the room left is still read whole (review of 00ba4181). The last byte, when it
+        // ends the line or starts a longer scalar, is read below; a scalar's continuation bytes
+        // come through `continuation`.
+        var run: U64 = 0
+        var left: U64 = 0
+        while true:
+            var single: U64 = 257
+            // A match on `reserve`, not `.is_err()`: this is every run of every line.
+            var room = true
+            if left == 0:
+                if let Err(_) = line.reserve(allocator, 10):
+                    room = false
+            if !room:
+                single = input.next_byte()
+            else if left == 0:
+                let fetched = input.next_run()
+                left = fetched >> 56
+                run = fetched % 72057594037927936
+                if left > 0:
+                    let last = (run >> ((left - 1) * 8)) % 256
+                    var plain = left - 1
+                    if last != 10 && last < 128:
+                        plain = left
+                    if plain > 0:
+                        var chunk = run
+                        if plain < 8:
+                            chunk = run % (1 << (plain * 8))
+                        if let Err(_) = line.push_ascii(allocator, chunk, plain):
+                            // Only a host that broke its word sends such a run: the line ends in
+                            // it when its last byte is the newline.
+                            if last != 10:
+                                skip_line(input)
+                            line.cut(start)
+                            return .NotText
+                        any = true
+                        run = run >> (plain * 8)
+                        left -= plain
+                        if left == 0:
+                            continue
+            var lead: U64 = 256
+            if single < 257:
+                lead = single
+            else if left > 0:
+                lead = run % 256
+                run = run >> 8
+                left -= 1
+            if lead < 128 && lead != 10:
+                // A byte read alone, when no room for a run could be made (or a host that broke
+                // its word): appended if it fits.
+                if let Err(_) = line.push_ascii(allocator, lead, 1):
+                    return .NoRoom
+                any = true
+                continue
+            if lead > 255:
+                if any:
+                    return .Line
+                return .End
+            any = true
+            if lead == 10:
+                return .Line
+            var scalar = lead
+            if lead >= 128:
+                var more: U64 = 0
+                var least: U64 = 0
+                if lead >= 240 && lead <= 244:
+                    scalar = lead - 240
+                    more = 3
+                    least = 65536
+                else if lead >= 224 && lead < 240:
+                    scalar = lead - 224
+                    more = 2
+                    least = 2048
+                else if lead >= 194 && lead < 224:
+                    scalar = lead - 192
+                    more = 1
+                    least = 128
+                else:
+                    skip_line(input)
+                    line.cut(start)
+                    return .NotText
+                while more > 0:
+                    let next = input.next_byte()
+                    if next < 128 || next > 191:
+                        // Not a continuation byte. A newline, or the end, ends the bad line here;
+                        // any other byte is part of it.
+                        if next != 10 && next < 256:
+                            skip_line(input)
+                        line.cut(start)
+                        return .NotText
+                    scalar = scalar * 64 + (next - 128)
+                    more -= 1
+                // The shortest encoding only.
+                if scalar < least:
+                    skip_line(input)
+                    line.cut(start)
+                    return .NotText
+            // `push` refuses a surrogate or a value above U+10FFFF (Err(2)), and answers Err(1) with no room.
+            if let Err(code) = line.push(allocator, scalar):
+                if code == 2:
+                    skip_line(input)
+                    line.cut(start)
+                    return .NotText
+                return .NoRoom
+        return .End
+
+// A value that can be shown as text (docs/design-format.md), taken by value: numbers, Bools,
+// text literals and views (`Span`); an owned String is shown through its view,
+// `name.span()`. Each `${...}` of an interpolated literal is one.
+pub trait Show:
+    fn show_on(self: Self, console: &Console<Write>)
+    fn push_on(self: Self, text: &mut String, allocator: &Allocator) -> Result<(), U64>
+
+// Appends the decimal digits of `number`. Err(1): no room.
+pub fn push_u64(text: &mut String, allocator: &Allocator, number: U64) -> Result<(), U64>:
+    return text.push_decimal(allocator, number)
+
+impl Show for U64:
+    fn show_on(self: U64, console: &Console<Write>):
+        console.write_u64(self)
+    fn push_on(self: U64, text: &mut String, allocator: &Allocator) -> Result<(), U64>:
+        return push_u64(text, allocator, self)
+
+// The narrower widths show as their U64 value: `"${byte}"`.
+impl Show for U8:
+    fn show_on(self: U8, console: &Console<Write>):
+        console.write_u64(U8.to_u64(self))
+    fn push_on(self: U8, text: &mut String, allocator: &Allocator) -> Result<(), U64>:
+        return push_u64(text, allocator, U8.to_u64(self))
+
+impl Show for U16:
+    fn show_on(self: U16, console: &Console<Write>):
+        console.write_u64(U16.to_u64(self))
+    fn push_on(self: U16, text: &mut String, allocator: &Allocator) -> Result<(), U64>:
+        return push_u64(text, allocator, U16.to_u64(self))
+
+impl Show for U32:
+    fn show_on(self: U32, console: &Console<Write>):
+        console.write_u64(U32.to_u64(self))
+    fn push_on(self: U32, text: &mut String, allocator: &Allocator) -> Result<(), U64>:
+        return push_u64(text, allocator, U32.to_u64(self))
+
+// A Unicode scalar shown as the character it is, `"${Char(letter)}"`, not as its number.
+pub type Char:
+    scalar: U64
+
+impl Show for Char:
+    fn show_on(self: Char, console: &Console<Write>):
+        var scalar = self.scalar
+        // Not a scalar (a surrogate, or past U+10FFFF): the replacement character.
+        if (scalar >= 55296 && scalar <= 57343) || scalar > 1114111:
+            scalar = 65533
+        if scalar < 128:
+            console.print_byte(U8.truncate(scalar))
+        else if scalar < 2048:
+            console.print_byte(U8.truncate(192 + scalar / 64))
+            console.print_byte(U8.truncate(128 + scalar % 64))
+        else if scalar < 65536:
+            console.print_byte(U8.truncate(224 + scalar / 4096))
+            console.print_byte(U8.truncate(128 + scalar / 64 % 64))
+            console.print_byte(U8.truncate(128 + scalar % 64))
+        else:
+            console.print_byte(U8.truncate(240 + scalar / 262144))
+            console.print_byte(U8.truncate(128 + scalar / 4096 % 64))
+            console.print_byte(U8.truncate(128 + scalar / 64 % 64))
+            console.print_byte(U8.truncate(128 + scalar % 64))
+    fn push_on(self: Char, text: &mut String, allocator: &Allocator) -> Result<(), U64>:
+        return text.push(allocator, self.scalar)
+
+impl Show for Bool:
+    fn show_on(self: Bool, console: &Console<Write>):
+        if self:
+            console.write("true")
+        else:
+            console.write("false")
+    fn push_on(self: Bool, text: &mut String, allocator: &Allocator) -> Result<(), U64>:
+        if self:
+            return text.push_text(allocator, "true")
+        return text.push_text(allocator, "false")
+
+impl Show for Text:
+    fn show_on(self: Text, console: &Console<Write>):
+        console.write(self.as_str())
+    fn push_on(self: Text, text: &mut String, allocator: &Allocator) -> Result<(), U64>:
+        return text.push_text(allocator, self.as_str())
+
+// Borrowed UTF-8 shown as it is: `console.show(text)`, `"hello ${name}"`.
+impl Show for &str:
+    fn show_on(self: &str, console: &Console<Write>):
+        console.write(self)
+    fn push_on(self: &str, text: &mut String, allocator: &Allocator) -> Result<(), U64>:
+        return text.push_text(allocator, self)
+
+// An interpolated literal's value, `"total ${t}"`: its pieces, written where it is used. It
+// is copied like its pieces. A plain text literal is one too.
+pub trait Format:
+    fn write_to(self: Self, console: &Console<Write>)
+    fn push_onto(self: Self, text: &mut String, allocator: &Allocator) -> Result<(), U64>
+
+impl Format for Text:
+    fn write_to(self: Text, console: &Console<Write>):
+        console.write(self.as_str())
+    fn push_onto(self: Text, text: &mut String, allocator: &Allocator) -> Result<(), U64>:
+        return text.push_text(allocator, self.as_str())
+
+// A plain literal is a format of one piece: `console.print("done")`.
+impl Format for &str:
+    fn write_to(self: &str, console: &Console<Write>):
+        console.write(self)
+    fn push_onto(self: &str, text: &mut String, allocator: &Allocator) -> Result<(), U64>:
+        return text.push_text(allocator, self)
+
+impl Console<Write>:
+    // One value, by its `Show`.
+    pub fn show<T: Show>(console: &Console<Write>, value: T):
+        value.show_on(console)
+
+    // A format and the end of the line: `console.print("total ${t}")`. Nothing is allocated.
+    pub fn print<F: Format>(console: &Console<Write>, message: F):
+        message.write_to(console)
+        console.print_byte(10)
+
+    // A format with no end of line: `console.write_format("${word}:")`.
+    pub fn write_format<F: Format>(console: &Console<Write>, message: F):
+        message.write_to(console)
+
+impl String:
+    // Appends a format's text. Err(1): no room (part may have been added).
+    pub fn push_format<F: Format>(self: &mut String, allocator: &Allocator, message: F) -> Result<(), U64>:
+        return message.push_onto(self, allocator)

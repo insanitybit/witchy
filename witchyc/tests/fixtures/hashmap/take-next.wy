@@ -1,0 +1,43 @@
+// HashMap.take_next empties a map in one pass, nearly full so probe runs wrap past the last
+// cell: after each take every key left is still found, and each key comes out once.
+import console
+import hash
+import hashmap
+
+fn run(console: &Console<Write>, allocator: &Allocator, cells: U64, keys: U64):
+    let Ok(m): HashMap<U64, U64> = HashMap.new(allocator, cells) else Err(e):
+        return
+    var map = move m
+    for k in 0..keys:
+        match map.put(allocator, k * 7919, k):
+            Ok:
+                ()
+            Err(entry):
+                console.line("full")
+    var seen: U64 = 0
+    var sum: U64 = 0
+    var lost: U64 = 0
+    var cursor: U64 = 0
+    while true:
+        match map.take_next(&mut cursor):
+            Ok(entry):
+                let Entry(key, value) = move entry
+                seen += 1
+                sum += value
+                // Every key not yet taken is still found.
+                var left: U64 = 0
+                for k in 0..keys:
+                    if map.contains(&(k * 7919)):
+                        left += 1
+                if left != keys - seen:
+                    lost += 1
+            Err(done):
+                break
+    console.print("${cells} cells, ${keys} keys: took ${seen}, sum ${sum}, ${map.len()} left, ${lost} lost")
+    map.release()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    run(&console, &allocator, 8, 7)
+    run(&console, &allocator, 16, 15)
+    run(&console, &allocator, 64, 60)
+    run(&console, &allocator, 256, 250)

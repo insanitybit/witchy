@@ -1,0 +1,9 @@
+import "review/challenge_issue.wy"
+import console
+import rand
+import time
+import text
+
+fn main(db: Sqlite, input: Console<Read>, output: Console<Write>, random: Rand, clock: Clock, allocator: Allocator):
+    if let Err(reason) = issue(&input, &db, &output, &random, clock.now_ms() / 1000, true, &allocator):
+        output.line("invalid review challenge request")

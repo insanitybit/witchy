@@ -1,0 +1,10 @@
+// The chosen owner must still be consumed.
+import "../../../library/wasm-string.wy"
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let text = match String.new(&allocator):
+        Ok(empty):
+            move empty
+        Err(code):
+            return
+    console.print_int(text.byte_len())

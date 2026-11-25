@@ -1,0 +1,10 @@
+// A proved function shows it cannot trap, and a shift by 64 or more traps: an amount the
+// contract does not bound is refused.
+fn high(x: U64, n: U64) -> U64:
+    ensures true
+    proof:
+        auto
+    return x >> n
+
+fn main():
+    let h = high(8, 2)

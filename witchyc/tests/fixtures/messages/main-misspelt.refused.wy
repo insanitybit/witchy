@@ -1,0 +1,5 @@
+// Refused, naming the nearest declared function: it said only "missing main function".
+import console
+
+fn mian(console: Console<Write>):
+    console.line("x")

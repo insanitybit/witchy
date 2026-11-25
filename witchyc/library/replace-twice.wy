@@ -1,0 +1,24 @@
+// A normal client of the checked Vec contract. `held` is never passed to either
+// exchange; the first extracted item remains owned while the second call runs.
+type TwiceReplaced:
+    vector: Vec<Bool>
+    first_previous: Bool
+    second_previous: Bool
+    completed: USize
+    held: Buffer<USize>
+
+fn replace_twice(input: Vec<Bool>, index: USize, first: Bool, second: Bool, held: Buffer<USize>) -> TwiceReplaced:
+    ensures result.held == old(held)
+    ensures memory.unchanged(held)
+    ensures result.completed < 1 || result.first_previous == old(memory.read(input.data, index))
+    ensures result.completed < 2 || result.second_previous == old(first)
+    ensures result.completed < 2 || memory.cell(input.data, index, second)
+    match vec_replace(move input, index, first):
+        Ok(changed):
+            match vec_replace(move changed.vector, index, second):
+                Ok(again):
+                    return TwiceReplaced(move again.vector, changed.previous, again.previous, 2, move held)
+                Err(failed):
+                    return TwiceReplaced(move failed.vector, changed.previous, failed.replacement, 1, move held)
+        Err(failed):
+            return TwiceReplaced(move failed.vector, failed.replacement, second, 0, move held)

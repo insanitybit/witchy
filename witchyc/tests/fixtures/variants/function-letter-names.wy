@@ -1,0 +1,25 @@
+// Functions named `T`, `E`, `K` and `Q`, the library's type parameter names, do not stop the
+// library's generic functions (Vec, HashMap, Result), as variants of those names do not.
+import console
+import vec
+import hashmap
+
+fn T() -> U64:
+    return 1
+
+fn E() -> U64:
+    return 2
+
+fn K() -> U64:
+    return 3
+
+fn Q() -> U64:
+    return 4
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.new(&allocator, 2) else Err(c):
+        return
+    var v = move made
+    let pushed = v.push_mut(&allocator, T() + E() + K() + Q())
+    console.print_int(v[0])
+    v.close()

@@ -1,0 +1,167 @@
+// Eight openings, each with its own brand, share one instance of every helper generic over the
+// brand (erased after checking: 142 functions before, 65 after; docs/design-brands.md).
+import console
+import graph
+
+fn improve<G: Brand>(distance: &mut Distances<G>, node: Node<G>, cost: U64):
+    if cost < distance.get(node):
+        distance.set(node, cost)
+
+fn step0(roads: &Graph, allocator: &Allocator) -> Result<U64, U64>:
+    brand roads.nodes() as nodes:
+        var distance = nodes.distances(allocator, 1000000)?
+        if let Some(home) = nodes.first():
+            distance.set(home, 0)
+            for next in nodes.neighbors(home):
+                improve(&mut distance, next, 1)
+        var total: U64 = 0
+        for i in 0..nodes.count():
+            if let Some(node) = nodes.node(i):
+                total += distance.get(node)
+        distance.close()
+        return Ok(total)
+
+fn step1(roads: &Graph, allocator: &Allocator) -> Result<U64, U64>:
+    brand roads.nodes() as nodes:
+        var distance = nodes.distances(allocator, 1000000)?
+        if let Some(home) = nodes.first():
+            distance.set(home, 0)
+            for next in nodes.neighbors(home):
+                improve(&mut distance, next, 2)
+        var total: U64 = 0
+        for i in 0..nodes.count():
+            if let Some(node) = nodes.node(i):
+                total += distance.get(node)
+        distance.close()
+        return Ok(total)
+
+fn step2(roads: &Graph, allocator: &Allocator) -> Result<U64, U64>:
+    brand roads.nodes() as nodes:
+        var distance = nodes.distances(allocator, 1000000)?
+        if let Some(home) = nodes.first():
+            distance.set(home, 0)
+            for next in nodes.neighbors(home):
+                improve(&mut distance, next, 3)
+        var total: U64 = 0
+        for i in 0..nodes.count():
+            if let Some(node) = nodes.node(i):
+                total += distance.get(node)
+        distance.close()
+        return Ok(total)
+
+fn step3(roads: &Graph, allocator: &Allocator) -> Result<U64, U64>:
+    brand roads.nodes() as nodes:
+        var distance = nodes.distances(allocator, 1000000)?
+        if let Some(home) = nodes.first():
+            distance.set(home, 0)
+            for next in nodes.neighbors(home):
+                improve(&mut distance, next, 4)
+        var total: U64 = 0
+        for i in 0..nodes.count():
+            if let Some(node) = nodes.node(i):
+                total += distance.get(node)
+        distance.close()
+        return Ok(total)
+
+fn step4(roads: &Graph, allocator: &Allocator) -> Result<U64, U64>:
+    brand roads.nodes() as nodes:
+        var distance = nodes.distances(allocator, 1000000)?
+        if let Some(home) = nodes.first():
+            distance.set(home, 0)
+            for next in nodes.neighbors(home):
+                improve(&mut distance, next, 5)
+        var total: U64 = 0
+        for i in 0..nodes.count():
+            if let Some(node) = nodes.node(i):
+                total += distance.get(node)
+        distance.close()
+        return Ok(total)
+
+fn step5(roads: &Graph, allocator: &Allocator) -> Result<U64, U64>:
+    brand roads.nodes() as nodes:
+        var distance = nodes.distances(allocator, 1000000)?
+        if let Some(home) = nodes.first():
+            distance.set(home, 0)
+            for next in nodes.neighbors(home):
+                improve(&mut distance, next, 6)
+        var total: U64 = 0
+        for i in 0..nodes.count():
+            if let Some(node) = nodes.node(i):
+                total += distance.get(node)
+        distance.close()
+        return Ok(total)
+
+fn step6(roads: &Graph, allocator: &Allocator) -> Result<U64, U64>:
+    brand roads.nodes() as nodes:
+        var distance = nodes.distances(allocator, 1000000)?
+        if let Some(home) = nodes.first():
+            distance.set(home, 0)
+            for next in nodes.neighbors(home):
+                improve(&mut distance, next, 7)
+        var total: U64 = 0
+        for i in 0..nodes.count():
+            if let Some(node) = nodes.node(i):
+                total += distance.get(node)
+        distance.close()
+        return Ok(total)
+
+fn step7(roads: &Graph, allocator: &Allocator) -> Result<U64, U64>:
+    brand roads.nodes() as nodes:
+        var distance = nodes.distances(allocator, 1000000)?
+        if let Some(home) = nodes.first():
+            distance.set(home, 0)
+            for next in nodes.neighbors(home):
+                improve(&mut distance, next, 8)
+        var total: U64 = 0
+        for i in 0..nodes.count():
+            if let Some(node) = nodes.node(i):
+                total += distance.get(node)
+        distance.close()
+        return Ok(total)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Graph = Graph.new(&allocator, 4) else Err(code):
+        return
+    var roads = move made
+    let _ = roads.connect(&allocator, 0, 1)
+    match step0(&roads, &allocator):
+        Ok(t):
+            console.print_int(t)
+        Err(code):
+            console.line("no room")
+    match step1(&roads, &allocator):
+        Ok(t):
+            console.print_int(t)
+        Err(code):
+            console.line("no room")
+    match step2(&roads, &allocator):
+        Ok(t):
+            console.print_int(t)
+        Err(code):
+            console.line("no room")
+    match step3(&roads, &allocator):
+        Ok(t):
+            console.print_int(t)
+        Err(code):
+            console.line("no room")
+    match step4(&roads, &allocator):
+        Ok(t):
+            console.print_int(t)
+        Err(code):
+            console.line("no room")
+    match step5(&roads, &allocator):
+        Ok(t):
+            console.print_int(t)
+        Err(code):
+            console.line("no room")
+    match step6(&roads, &allocator):
+        Ok(t):
+            console.print_int(t)
+        Err(code):
+            console.line("no room")
+    match step7(&roads, &allocator):
+        Ok(t):
+            console.print_int(t)
+        Err(code):
+            console.line("no room")
+    roads.close()

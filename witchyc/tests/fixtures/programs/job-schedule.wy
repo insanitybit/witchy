@@ -1,0 +1,70 @@
+// Jobs run highest priority first (ties by name) from a Heap of records with their own
+// Before; a timeline with right-aligned start times. 40 jobs, compared with Python.
+import console
+import string
+import span
+import heap
+import sort
+import discard
+import text
+
+type Job derive(Discard):
+    name: String
+    priority: U64
+    duration: U64
+
+// Higher priority first; equal priorities by name.
+impl Before for Job:
+    fn before(self: &Job, other: &Job) -> Bool:
+        if (*self).priority != (*other).priority:
+            return (*self).priority > (*other).priority
+        return (*self).name.less(&(*other).name)
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    let Ok(h): Heap<Job> = Heap.new(&allocator) else Err(e):
+        return
+    var jobs = move h
+    let Ok(l): String = String.new(&allocator) else Err(e):
+        jobs.discard()
+        return
+    var line = move l
+    while true:
+        line.clear()
+        match input.read_line(&allocator, &mut line):
+            .Line:
+                let Ok(a) = line.span().split(32) else Err(whole):
+                    continue
+                let Ok(b) = a.tail.split(32) else Err(whole):
+                    continue
+                let Ok(priority) = b.head.parse_u64() else Err(e):
+                    continue
+                let Ok(duration) = b.tail.parse_u64() else Err(e):
+                    continue
+                let Ok(name) = a.head.to_string(&allocator) else Err(e):
+                    continue
+                match jobs.push(&allocator, Job(move name, priority, duration)):
+                    Ok:
+                        ()
+                    Err(back):
+                        back.discard()
+            .End:
+                break
+            .NotText:
+                break
+            .NoRoom:
+                break
+    line.close()
+    var clock: U64 = 0
+    while true:
+        match jobs.pop():
+            Ok(job):
+                console.write_u64_right(clock, 4)
+                console.write(" ")
+                console.write_string(&job.name)
+                console.print(" p${job.priority} +${job.duration}")
+                clock += job.duration
+                job.discard()
+            Err(empty):
+                break
+    console.print("total ${clock}")
+    jobs.discard()

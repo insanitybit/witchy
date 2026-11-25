@@ -1,0 +1,19 @@
+// Refused by the proof: the whole value is reborrowed, so every field is unknown afterwards.
+import console
+
+type Pair:
+    a: U64
+    b: U64
+
+fn poke(slot: &mut U64):
+    *slot = 9
+
+fn f(p: &mut Pair) -> U64:
+    ensures result == 5
+    (*p).a = 5
+    let q = &mut *p
+    (*q).a = 6
+    return (*p).a
+
+fn main(console: Console<Write>):
+    console.print_int(1)

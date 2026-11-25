@@ -1,0 +1,12 @@
+// Refused: an index that is not a literal may be any element, so it overlaps the loan.
+type Grid:
+    cells: [U64; 3]
+
+fn poke(g: &mut Grid, i: U64):
+    let r = &g.cells[0]
+    g.cells[i] = 9
+    let n = *r
+
+fn main():
+    var g = Grid([1, 2, 3])
+    poke(&mut g, 1)

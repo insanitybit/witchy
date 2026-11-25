@@ -1,0 +1,26 @@
+// A generic record or sum type derives: `impl<T: Eq> Eq for Pair<T>`, each type parameter bound by the trait.
+import console
+import hash
+import sort
+import discard
+
+type Pair<T> derive(Eq, Hash, Before, Discard):
+    first: T
+    second: U64
+
+type Maybe<T> derive(Eq, Before, Discard):
+    Some(T)
+    None
+
+fn main(console: Console<Write>):
+    let a: Pair<U64> = Pair(1, 2)
+    let b: Pair<U64> = Pair(1, 3)
+    let c: Pair<U64> = Pair(1, 2)
+    console.print("${a == b} ${a == c} ${a.before(&b)} ${b.before(&a)} ${a.hash() == c.hash()}")
+    let x: Maybe<U64> = Some(4)
+    let y: Maybe<U64> = Some(5)
+    let n: Maybe<U64> = None
+    console.print("${x == y} ${x.before(&y)} ${x.before(&n)} ${n.before(&x)}")
+    a.discard()
+    x.discard()
+    console.line("discarded")

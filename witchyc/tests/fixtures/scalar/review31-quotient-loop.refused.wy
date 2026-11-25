@@ -1,0 +1,17 @@
+// Refused (review 31): a quotient fact made in a loop does not bound the value after it (900 here).
+import console
+
+fn f(n: U64, d: U64) -> U64:
+    requires n <= 10 && d > 0
+    ensures result <= 100
+    proof:
+        auto
+    var i: U64 = 0
+    var q: U64 = 0
+    while i < n:
+        q = 50 * i / d
+        i += 1
+    return q * 2
+
+fn main(console: Console<Write>):
+    console.print_int(f(10, 1))

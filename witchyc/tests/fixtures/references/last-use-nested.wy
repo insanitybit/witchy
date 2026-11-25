@@ -1,0 +1,15 @@
+// The same when the write is deeper inside the branch.
+type Pair:
+    a: U64
+    b: U64
+
+fn first(pair: &Pair) -> &U64:
+    return &(*pair).a
+
+fn main(console: Console<Write>):
+    var pair = Pair(4, 5)
+    let seen = first(&pair)
+    if *seen == 4:
+        if pair.b == 5:
+            pair.a = 9
+    console.print_int(pair.a)

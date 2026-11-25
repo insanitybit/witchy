@@ -1,0 +1,17 @@
+// Labelled arguments name the parameter (or record field) they are given to and are checked;
+// out of order only when every argument is a name, field or literal.
+import console
+
+type Account:
+    name: U64
+    balance: U64
+
+fn greet(n: U64, by: U64) -> U64:
+    n * by
+
+fn main(console: Console<Write>):
+    console.print_int(greet(n: 3, by: 4))
+    console.print_int(greet(5, by: 2))
+    console.print_int(greet(by: 2, n: 1))
+    let a = Account(name: 7, balance: 100)
+    console.print_int(a.balance + a.name)

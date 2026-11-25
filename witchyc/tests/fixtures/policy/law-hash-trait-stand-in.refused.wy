@@ -1,0 +1,18 @@
+// Refused (adversarial review round 6): the key law trusts the library's number impls, so the
+// HashKey trait must come from the library's own file; a program that brought its own (an edited
+// copy of wasm-hash.wy, where U64's eq compared the low byte) was not checked.
+import "hash-stand-in/wasm-hash.wy"
+
+type Key:
+    a: U64
+
+impl Eq for Key:
+    fn eq(self: &Key, other: &Key) -> Bool:
+        return (*self).a == (*other).a
+
+impl HashKey for Key:
+    fn feed(self: &Key, state: &mut U64):
+        (*self).a.feed(state)
+
+fn main():
+    return

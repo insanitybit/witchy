@@ -1,0 +1,23 @@
+// A `using` inside a `match` that gives a value: the value is bound inside the
+// block, the owner is discarded, and then the value leaves.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-text.wy"
+import "../../../library/wasm-string.wy"
+
+fn length_of(allocator: &Allocator, number: U64) -> U64:
+    let length = match String.new(allocator):
+        Ok(made):
+            using var text = move made:
+                if let Err(_) = text.push_u64(allocator, number):
+                    return 0
+                let count = text.byte_len()
+                count
+        Err(code):
+            0
+    return length
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var total: U64 = 0
+    for n in 0..100:
+        total += length_of(&allocator, n)
+    console.print_int(total)

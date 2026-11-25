@@ -1,0 +1,207 @@
+// A length of time in whole milliseconds: what `250ms`, `30s` and `1m30s` are. A Duration is
+// its own type, so it is never added to a count or passed where a number of seconds was meant;
+// `d.ms()` is the number when one is wanted (the clock's methods take and give milliseconds).
+import "wasm-ops.wy"
+import "wasm-sort.wy"
+import "wasm-hash.wy"
+import "wasm-console.wy"
+import "wasm-string.wy"
+import "wasm-discard-core.wy"
+
+pub type Duration:
+    millis: U64
+
+impl Duration:
+    pub fn from_ms(ms: U64) -> Duration:
+        Duration(millis: ms)
+
+    pub fn ms(self: Duration) -> U64:
+        self.millis
+
+    // Whole seconds, rounded down.
+    pub fn seconds(self: Duration) -> U64:
+        self.millis / 1000
+
+    pub fn times(self: Duration, count: U64) -> Duration:
+        Duration(millis: self.millis * count)
+
+impl Add for Duration:
+    fn add(self: Duration, other: Duration) -> Duration:
+        Duration(millis: self.millis + other.millis)
+
+impl Scale for Duration:
+    fn scale(self: Duration, by: U64) -> Duration:
+        Duration(millis: self.millis * by)
+
+// Below zero traps, as for U64.
+impl Sub for Duration:
+    fn sub(self: Duration, other: Duration) -> Duration:
+        Duration(millis: self.millis - other.millis)
+
+impl Before for Duration:
+    fn before(self: &Duration, other: &Duration) -> Bool:
+        (*self).millis < (*other).millis
+
+impl Eq for Duration:
+    fn eq(self: &Duration, other: &Duration) -> Bool:
+        (*self).millis == (*other).millis
+
+impl Hash for Duration:
+    fn hash(self: &Duration) -> U64:
+        let millis = (*self).millis
+        millis.hash()
+
+impl Clock:
+    // The time since `start`, an earlier `clock.now_ms()`; none if the clock went back.
+    pub fn since(clock: &Clock, start: U64) -> Duration:
+        let now = clock.now_ms()
+        if now < start:
+            return Duration(millis: 0)
+        Duration(millis: now - start)
+
+// How much of `left` milliseconds is whole `unit`s, and what is left after them.
+fn time_part(left: U64, unit: U64) -> (U64, U64):
+    (left / unit, left % unit)
+
+// `"${d}"`: each unit that is not zero, largest first: `1m30s`, `2h5m`, `250ms`; `0ms` for none.
+impl Show for Duration:
+    fn show_on(self: Duration, console: &Console<Write>):
+        if self.millis == 0:
+            console.write("0ms")
+            return
+        var left = self.millis
+        let (days, after_days) = time_part(left, 86400000)
+        left = after_days
+        if days > 0:
+            console.write_u64(days)
+            console.write("d")
+        let (hours, after_hours) = time_part(left, 3600000)
+        left = after_hours
+        if hours > 0:
+            console.write_u64(hours)
+            console.write("h")
+        let (minutes, after_minutes) = time_part(left, 60000)
+        left = after_minutes
+        if minutes > 0:
+            console.write_u64(minutes)
+            console.write("m")
+        let (seconds, millis) = time_part(left, 1000)
+        if seconds > 0:
+            console.write_u64(seconds)
+            console.write("s")
+        if millis > 0:
+            console.write_u64(millis)
+            console.write("ms")
+
+    fn push_on(self: Duration, text: &mut String, allocator: &Allocator) -> Result<(), U64>:
+        if self.millis == 0:
+            return text.push_text(allocator, "0ms")
+        var left = self.millis
+        let (days, after_days) = time_part(left, 86400000)
+        left = after_days
+        if days > 0:
+            push_u64(text, allocator, days)?
+            text.push_text(allocator, "d")?
+        let (hours, after_hours) = time_part(left, 3600000)
+        left = after_hours
+        if hours > 0:
+            push_u64(text, allocator, hours)?
+            text.push_text(allocator, "h")?
+        let (minutes, after_minutes) = time_part(left, 60000)
+        left = after_minutes
+        if minutes > 0:
+            push_u64(text, allocator, minutes)?
+            text.push_text(allocator, "m")?
+        let (seconds, millis) = time_part(left, 1000)
+        if seconds > 0:
+            push_u64(text, allocator, seconds)?
+            text.push_text(allocator, "s")?
+        if millis > 0:
+            push_u64(text, allocator, millis)?
+            text.push_text(allocator, "ms")?
+        return Ok(())
+
+// Holds no owner: a record of Durations can derive Discard and go in a map that is discarded.
+impl Discard for Duration:
+    fn discard(self: Duration):
+        return
+
+pub type UtcTimestampError:
+    InvalidUtcTimestamp
+    BeforeUnixEpoch
+
+// Parse canonical YYYY-MM-DDTHH:MM:SSZ into whole seconds since the Unix epoch.
+pub pure fn parse_utc_seconds(date: &[U8]) -> Result<U64, UtcTimestampError>:
+    if date.len() != 20 || date[4] != '-' || date[7] != '-' || date[10] != 'T' || date[13] != ':' || date[16] != ':' || date[19] != 'Z':
+        return Err(InvalidUtcTimestamp)
+    let year = digits(date.part(0, 4))?
+    let month = digits(date.part(5, 7))?
+    let day = digits(date.part(8, 10))?
+    let hour = digits(date.part(11, 13))?
+    let minute = digits(date.part(14, 16))?
+    let second = digits(date.part(17, 19))?
+    if year == 0 || month < 1 || month > 12 || day < 1 || day > month_days(year, month) || hour > 23 || minute > 59 || second > 59:
+        return Err(InvalidUtcTimestamp)
+    if year < 1970:
+        return Err(BeforeUnixEpoch)
+    var days = preceding_days(year) - preceding_days(1970) + day - 1
+    for prior in 1..month:
+        days += month_days(year, prior)
+    return Ok(days * 86400 + hour * 3600 + minute * 60 + second)
+
+pure fn digits(bytes: &[U8]) -> Result<U64, UtcTimestampError>:
+    var value: U64 = 0
+    for byte in bytes:
+        if *byte < '0' || *byte > '9':
+            return Err(InvalidUtcTimestamp)
+        value = value * 10 + U8.to_u64(*byte) - 48
+    return Ok(value)
+
+pure fn preceding_days(year: U64) -> U64:
+    let preceding = year - 1
+    return preceding * 365 + preceding / 4 - preceding / 100 + preceding / 400
+
+pure fn month_days(year: U64, month: U64) -> U64:
+    if month == 2:
+        if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0):
+            return 29
+        return 28
+    if month == 4 || month == 6 || month == 9 || month == 11:
+        return 30
+    return 31
+
+// Append canonical YYYY-MM-DDTHH:MM:SSZ. Err(1) for a year above 9999.
+pub fn append_utc_seconds(out: &mut String, seconds: U64, allocator: &Allocator) -> Result<(), U64>:
+    let days = seconds / 86400 + preceding_days(1970)
+    if days >= preceding_days(10000):
+        return Err(1)
+    var low: U64 = 1970
+    var high: U64 = 10000
+    while high - low > 1:
+        let middle = (low + high) / 2
+        if preceding_days(middle) <= days:
+            low = middle
+        else:
+            high = middle
+    var day = days - preceding_days(low)
+    var month: U64 = 1
+    while day >= month_days(low, month):
+        day -= month_days(low, month)
+        month += 1
+    out.push_decimal(allocator, low)?
+    out.push_text(allocator, "-")?
+    append_pair(out, month, allocator)?
+    out.push_text(allocator, "-")?
+    append_pair(out, day + 1, allocator)?
+    out.push_text(allocator, "T")?
+    append_pair(out, seconds / 3600 % 24, allocator)?
+    out.push_text(allocator, ":")?
+    append_pair(out, seconds / 60 % 60, allocator)?
+    out.push_text(allocator, ":")?
+    append_pair(out, seconds % 60, allocator)?
+    return out.push_text(allocator, "Z")
+
+fn append_pair(out: &mut String, value: U64, allocator: &Allocator) -> Result<(), U64>:
+    if value < 10:
+        out.push_text(allocator, "0")?
+    return out.push_decimal(allocator, value)

@@ -1,0 +1,14 @@
+fn main(console: Console<Write>):
+    var witness = memory.alloc(1)
+    memory.init(&mut witness, 0, 42)
+    let saved = &witness
+    let allocation: Result<Vec<Bool>, AllocError> = vec_new(3)
+    match allocation:
+        Ok(vector):
+            console.print_int(vector.capacity)
+            memory.release(vector.data)
+        Err(reason):
+            console.print_int(0)
+    console.print_int(memory.read(saved, 0))
+    memory.end(saved)
+    memory.release(witness)

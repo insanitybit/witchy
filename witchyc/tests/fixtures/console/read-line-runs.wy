@@ -1,0 +1,28 @@
+// read_line over runs of seven bytes (`next_run`): lines of 6, 7 and 8 bytes (a newline at a
+// run's end and just past it), two-, three- and four-byte scalars at each place in a run, a tab,
+// empty lines, a last line with no newline. Each line's bytes, scalars and text.
+import console
+import string
+import text
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(e):
+        return
+    var line = move made
+    while true:
+        line.clear()
+        match input.read_line(&allocator, &mut line):
+            .Line:
+                console.write_format("${line.byte_len()} ${line.scalar_count()} [")
+                console.write_string(&line)
+                console.line("]")
+            .End:
+                console.line("end")
+                break
+            .NotText:
+                console.line("not text")
+                break
+            .NoRoom:
+                console.line("no room")
+                break
+    line.close()

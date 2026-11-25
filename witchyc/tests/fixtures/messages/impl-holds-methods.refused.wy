@@ -1,0 +1,8 @@
+// Refused, naming what was found in an impl where a method goes.
+import console
+
+impl Foo:
+    let x = 1
+
+fn main(console: Console<Write>):
+    console.print_int(1)

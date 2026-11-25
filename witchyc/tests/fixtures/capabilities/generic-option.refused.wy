@@ -1,0 +1,11 @@
+// Refused: nor a sum that holds one.
+type Option<T>:
+    Some(T)
+    None
+
+fn hold<T: Any>(thing: Option<T>) -> Option<T>:
+    return move thing
+
+fn main(dir: Dir<Write>):
+    let given: Option<Dir<Write>> = Some(move dir)
+    let kept = hold(move given)

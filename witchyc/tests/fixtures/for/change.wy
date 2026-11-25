@@ -1,0 +1,65 @@
+// `for item in &mut container:` gives `&mut` references to the elements.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-string.wy"
+import "../../../library/wasm-vec.wy"
+import "../../../library/wasm-discard.wy"
+
+fn text(allocator: &Allocator, value: Text) -> Result<String, U64>:
+    var made = String.new(allocator)?
+    if let Err(_) = made.push_text(allocator, value):
+        made.close()
+        return Err(1)
+    return Ok(move made)
+
+fn names(console: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    var items: Vec<String> = Vec.new(allocator, 0)?
+    for round in 0..3:
+        let made = match text(allocator, "name"):
+            Ok(made):
+                move made
+            Err(code):
+                items.discard()
+                return Err(code)
+        match items.push_mut(allocator, move made):
+            Ok:
+                continue
+            Err(back):
+                back.close()
+    var count: U64 = 0
+    for name in &mut items:
+        count += 1
+        if count == 2:
+            continue
+        if let Err(_) = name.push_text(allocator, "!"):
+            break
+    for name in &items:
+        console.write_string(name)
+        console.line("")
+    items.discard()
+    return Ok(())
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<Vec<U64>, U64> = Vec.new(&allocator, 0)
+    var numbers = match move made:
+        Ok(empty):
+            move empty
+        Err(code):
+            return
+    for step in 0..4:
+        match numbers.push_mut(&allocator, step):
+            Ok:
+                continue
+            Err(back):
+                break
+    for value in &mut numbers:
+        *value = *value * 10 + 1
+    var total: U64 = 0
+    for value in &numbers:
+        total += *value
+    console.print_int(total)
+    numbers.close()
+    match names(&console, &allocator):
+        Ok:
+            console.line("done")
+        Err(code):
+            console.print_int(code)

@@ -1,0 +1,3 @@
+Synthetic witchy-2 keys for the tests only (never a registry's): each seed is the first 32 bytes
+of SHA-384("coven-test-key/NAME"), its public key from `coven key`. Fixed, so that no test spends
+an engine run deriving one. tests/registry_run.py's `key(NAME)` copies them; other names are made fresh.

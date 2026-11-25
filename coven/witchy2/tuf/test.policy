@@ -1,0 +1,15 @@
+<standard>/: *
+test.wy: Allocator ; no unchecked
+base64url.wy: Allocator ; no unchecked
+canonical.wy: Allocator ; no unchecked
+coordinate.wy: Allocator ; no unchecked
+expiry.wy: nothing ; no unchecked
+metadata.wy: Allocator ; no unchecked
+origin.wy: nothing ; no unchecked
+package.wy: Allocator ; no unchecked
+package_imports.wy: Allocator ; no unchecked
+package_paths.wy: nothing ; no unchecked
+package_record.wy: Allocator ; no unchecked
+release_trust.wy: Allocator ; no unchecked
+@webauthn: nothing ; no unchecked ; digest sha384:54a4fef3280dd616d86a69943378fd661b7813aa1062ae69361b5b246837404831c4450b698a90c97bc47bae4abefd0e
+@webauthn/cose.wy: nothing ; no unchecked ; digest sha384:35ac282f06ec89d858e72dc58db2b8a01c6a4e844929c57a6ce5e08a8f60a2c1cdc6a764ab65de688d2b0be8afa3a299

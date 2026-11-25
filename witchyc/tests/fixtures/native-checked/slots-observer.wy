@@ -1,0 +1,12 @@
+// An observer of one buffer that says whether a cell is full, as its contract proves.
+pub sealed type Slots<T>:
+    data: Buffer<T>
+
+fn occupied<T: Any>(slots: &Slots<T>, i: U64) -> Bool:
+    ensures result == memory.initialized(slots.data, i)
+    proof:
+        auto
+    return memory.initialized(&(*slots).data, i)
+
+fn main():
+    return

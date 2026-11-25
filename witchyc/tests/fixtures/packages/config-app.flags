@@ -1,0 +1,1 @@
+run: --dir={dir}/config-files --dir-rights=read

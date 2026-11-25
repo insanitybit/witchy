@@ -1,0 +1,20 @@
+// Refused, for an `if`: as leaving-arm-falls-through.refused.wy.
+import console
+import span
+import string
+
+fn bad(allocator: &Allocator, n: U64) -> Result<U64, U64>:
+    let Ok(made): String = String.new(allocator) else Err(code):
+        return Err(code)
+    var text = move made
+    let _ = text.push_text(allocator, "a b")
+    let words = text.span()
+    if n == 0:
+        text.close()
+        return Err(n)
+    text.close()
+    return Ok(words.len())
+
+fn main(console: Console<Write>, allocator: Allocator):
+    if let Ok(n) = bad(&allocator, 1):
+        console.print_int(n)

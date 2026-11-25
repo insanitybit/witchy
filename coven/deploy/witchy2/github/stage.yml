@@ -1,0 +1,92 @@
+name: Stage a Coven release
+on:
+  workflow_call:
+
+jobs:
+  stage:
+    if: github.event_name == 'push' && github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/v')
+    runs-on:
+      group: coven-release
+      labels: linux
+    environment: release
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out the tagged source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: source
+          persist-credentials: false
+          submodules: false
+          lfs: false
+
+      - name: Pack and stage without running repository code
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('node:fs')
+            const path = require('node:path')
+            const {spawnSync} = require('node:child_process')
+            const config = JSON.parse(fs.readFileSync('/etc/coven/runner.json', 'utf8'))
+            const {origin, registry, package_dir, ca_pin, signer_pin, transport_pin} = config
+            const pin = /^sha384:[0-9a-f]{96}$/
+            if (typeof origin !== 'string' || typeof package_dir !== 'string' ||
+                typeof registry !== 'string' || !/^[a-z0-9][a-z0-9.-]{0,63}$/.test(registry) ||
+                typeof ca_pin !== 'string' || !pin.test(ca_pin) ||
+                typeof signer_pin !== 'string' || !pin.test(signer_pin) ||
+                typeof transport_pin !== 'string' || !pin.test(transport_pin)) {
+              throw new Error('Invalid Coven runner configuration')
+            }
+            const url = new URL(origin)
+            if (url.protocol !== 'https:' || origin !== url.origin) {
+              throw new Error('Coven runner requires a canonical HTTPS origin')
+            }
+            const checkout = path.join(fs.realpathSync(process.env.GITHUB_WORKSPACE), 'source')
+            const project = fs.realpathSync(path.resolve(checkout, package_dir))
+            if (fs.realpathSync(checkout) !== checkout ||
+                (project !== checkout && !project.startsWith(checkout + path.sep))) {
+              throw new Error('Coven package directory must be inside the checkout')
+            }
+
+            if (!fs.lstatSync(path.join(project, 'witchy.toml')).isFile()) {
+              throw new Error('Coven package manifest must be a regular file in the checkout')
+            }
+
+            const work = fs.mkdtempSync(path.join(process.env.RUNNER_TEMP, 'coven-'))
+            try {
+              const env = {
+                PATH: '/usr/bin:/bin',
+                TMPDIR: work,
+                WITCHYC: '/nonexistent/witchyc',
+                WITCHY_WASMTIME_HOST: '/opt/coven/bin/witchy-wasmtime-host',
+              }
+              const run = (args, input) => {
+                const result = spawnSync('/opt/coven/bin/coven', args, {
+                  cwd: work, env, input, timeout: 60000, maxBuffer: 2097152,
+                })
+                if (result.status !== 0 || result.error) {
+                  throw new Error(`Coven ${args[0]} operation failed`)
+                }
+                return result.stdout
+              }
+              const candidate = path.join(work, 'candidate.coven')
+              fs.writeFileSync(candidate, run(['pack', project]), {mode: 0o600, flag: 'wx'})
+
+              const identity = await core.getIDToken(`${origin}/v1/ci/${registry}`)
+              const result = JSON.parse(run([
+                'ci', 'stage', candidate, '--origin', origin,
+                '--key', '/var/lib/coven-runner/runner.seed', '--ca-file', '/etc/coven/runner-ca.pem',
+                '--ca-pin', ca_pin,
+                '--signer-module', '/opt/coven/libexec/coven-runner/ci-sign.wasm', '--signer-pin', signer_pin,
+                '--transport-module', '/opt/coven/libexec/coven-runner/ci-post.wasm', '--transport-pin', transport_pin,
+              ], identity + '\n').toString('utf8'))
+              if (typeof result.digest !== 'string' || !pin.test(result.digest)) {
+                throw new Error('Coven returned an invalid staging receipt')
+              }
+              core.notice(`Staged ${result.digest} for independent maintainer review`)
+            } finally {
+              fs.rmSync(work, {recursive: true, force: true})
+            }

@@ -1,0 +1,5 @@
+// Refused: the closure took `console` over; `main` no longer has it.
+import console
+fn main(console: Console<Write>):
+    let log = fn(n: U64) -> (): console.print_int(n)
+    console.print_int(1)

@@ -1,0 +1,1 @@
+proof failed: in function `main`, a call to `small` does not establish the callee's `requires`

@@ -1,0 +1,9 @@
+// Refused: a file opened for reading has no bulk write; its right does not allow it.
+import fs
+
+fn main(dir: Dir<Read>):
+    let Ok(file): File<Read> = dir.open("in.bin") else Err(error):
+        return
+    let bytes: [U8; 1] = [1]
+    let code = file.raw_write(bytes.slice())
+    let closed = file.close()

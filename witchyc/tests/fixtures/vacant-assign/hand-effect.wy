@@ -1,0 +1,38 @@
+// Left as written (review of 2026-11-21): the assignment's three statements written by hand,
+// with an arm that does something. It is not the checker's own, so it is never one store: the
+// count is set, in the store build and in the guarded one.
+type Slot<T>:
+    Vacant
+    Full(T)
+
+type Shelf<T>:
+    count: U64
+    slot: Slot<T>
+
+fn show(out: &Console<Write>, slot: Slot<U64>):
+    match move slot:
+        Vacant:
+            out.print_int(0)
+        Full(n):
+            out.print_int(n)
+
+fn attack<T: Any>(shelf: &mut Shelf<T>, a: T) -> Slot<T>:
+    ensures true
+    var held: Slot<T> = Vacant
+    memory.exchange(&mut (*shelf).slot, &mut held)
+    var inc: Slot<T> = Full(move a)
+    memory.exchange(&mut (*shelf).slot, &mut inc)
+    match move inc:
+        Vacant:
+            (*shelf).count = 77
+        Full(x):
+            unreachable
+    return move held
+
+fn main(out: Console<Write>):
+    var shelf: Shelf<U64> = Shelf(0, Full(7))
+    show(&out, attack(&mut shelf, 9))
+    out.print_int(shelf.count)
+    let Shelf(count, slot) = move shelf
+    show(&out, move slot)
+

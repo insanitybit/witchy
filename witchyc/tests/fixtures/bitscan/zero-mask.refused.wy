@@ -1,0 +1,20 @@
+// Nothing bounds the zeros under a mask that may be zero (there are 64 of them), so the proof
+// cannot rule out the `unreachable` and the function is refused.
+import console
+
+nopanic fn first_lane(block: &[U8], mask: U64) -> U64:
+    requires block.len() == 16
+    requires mask < 65536
+    ensures result < 256
+    proof:
+        auto
+    let lane = U64.trailing_zeros(mask)
+    if lane < block.len():
+        return U8.to_u64(block[lane])
+    // Never reached: the proof shows the lane is inside the block.
+    unreachable
+
+fn main(console: Console<Write>):
+    let block: [U8; 16] = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+    let view = block.slice()
+    console.print_int(first_lane(view, 0))

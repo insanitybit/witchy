@@ -1,0 +1,95 @@
+// Sales by region: a CSV file written, read back, totalled per region in a HashMap, sorted by
+// total, and the report written to another file and printed. File, allocation and parse
+// errors meet in one `?`.
+import console
+import fs
+import hashmap
+import sort
+import span
+import string
+import vec
+import discard
+
+type Total derive(Discard):
+    region: U64
+    amount: U64
+
+impl Before for Total:
+    fn before(self: &Total, other: &Total) -> Bool:
+        return self.amount > other.amount
+
+fn write_input(dir: &Dir<Write>, allocator: &Allocator) -> Result<(), FsError>:
+    using var text: String = String.new(allocator)?:
+        let _ = text.push_text(allocator, "region,amount\nnorth,120\nsouth,80\nnorth,30\neast,200\nsouth,15\n")
+        dir.write_text("sales.csv", &text)?
+    return Ok(())
+
+fn totals(dir: &Dir<Read>, allocator: &Allocator, map: &mut HashMap<String, U64>) -> Result<U64, FsError>:
+    var rows: U64 = 0
+    using var text: String = dir.read_text(allocator, "sales.csv")?:
+        var rest = text.span()
+        var first = true
+        var more = true
+        while more:
+            let line = match rest.split(10):
+                Ok(halves):
+                    rest = halves.tail
+                    halves.head
+                Err(last):
+                    more = false
+                    last
+            if first || line.is_empty():
+                first = false
+                continue
+            let Ok(fields) = line.split(44) else Err(one):
+                return Err(InvalidPath)
+            let amount = fields.tail.parse_u64()?
+            if let Ok(sum) = get_mut_by_span(map, fields.head):
+                *sum += amount
+            else:
+                let key = fields.head.to_string(allocator)?
+                match map.put(allocator, move key, amount):
+                    Ok:
+                        ()
+                    Err(back):
+                        let Entry(k, v) = move back
+                        k.close()
+            rows += 1
+    return Ok(rows)
+
+fn report(console: &Console<Write>, dir: &Dir, allocator: &Allocator) -> Result<(), FsError>:
+    write_input(dir, allocator)?
+    using var map: HashMap<String, U64> = HashMap.new(allocator, 8)?:
+        let rows = totals(dir, allocator, &mut map)?
+        using var order: Vec<Total> = Vec.new(allocator, 0)?:
+            var cursor: U64 = 0
+            var walking = true
+            while walking:
+                match map.next(&mut cursor):
+                    Ok(entry):
+                        match order.push_mut(allocator, Total(cursor - 1, entry.value)):
+                            Ok:
+                                ()
+                            Err(back):
+                                return Err(TooLarge)
+                    Err(end):
+                        walking = false
+            sort(&mut order)
+            using var out: String = String.new(allocator)?:
+                if let Err(_) = out.push_format(allocator, "${rows} rows\n"):
+                    return Err(TooLarge)
+                for total in &order:
+                    if let Ok(entry) = map.entry(total.region):
+                        let _ = out.push_string(allocator, &entry.key)
+                        if let Err(_) = out.push_format(allocator, ": ${total.amount}\n"):
+                            return Err(TooLarge)
+                dir.write_text("report.txt", &out)?
+                console.write_string(&out)
+    return Ok(())
+
+fn main(console: Console<Write>, dir: Dir, allocator: Allocator):
+    match report(&console, &dir, &allocator):
+        Ok:
+            ()
+        Err(error):
+            console.line("failed")

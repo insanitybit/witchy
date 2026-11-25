@@ -1,0 +1,7 @@
+// `let _ = ...` drops a value, and a value that holds an owner is not dropped.
+import console
+import string
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let _ = String.new(&allocator)
+    console.print_int(1)

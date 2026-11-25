@@ -1,0 +1,17 @@
+[paths]
+links = false
+
+[listen]
+connection = "127.0.0.1:8419"
+
+[dirs]
+root = { root = "mirror/published", rights = ["Read"] }
+
+[rand]
+random = true
+
+[secrets]
+issuer = { use = "sign/tls13/server-p384", from = "fd:3" }
+
+[limits]
+waiting-connections = 16

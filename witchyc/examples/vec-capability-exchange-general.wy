@@ -1,0 +1,47 @@
+fn main(out: Console<Write>, first: Console<Write>, second: Console<Write>):
+    var witness = memory.alloc(1)
+    memory.init(&mut witness, 0, 42)
+    let saved = &witness
+    let created: Result<Vec<Console<Write>>, AllocError> = vec_new(0)
+    match created:
+        Ok(empty):
+            match vec_push(move empty, move first):
+                Ok(pushed):
+                    match vec_reserve(move pushed, 3):
+                        Ok(grown):
+                            match vec_replace(move grown, 0, move second):
+                                Ok(changed):
+                                    let previous = move changed.previous
+                                    previous.print_int(73)
+                                    match vec_pop(move changed.vector):
+                                        Ok(popped):
+                                            match popped.item:
+                                                Some(item):
+                                                    let recovered = move item
+                                                    recovered.print_int(74)
+                                                None:
+                                                    out.print_int(901)
+                                            match vec_release(move popped.vector):
+                                                Ok(done):
+                                                    out.print_int(75)
+                                                Err(kept):
+                                                    discard(move kept)
+                                        Err(kept):
+                                            discard(move kept)
+                                Err(failed):
+                                    let replacement = move failed.replacement
+                                    replacement.print_int(902)
+                                    discard(move failed.vector)
+                        Err(failed):
+                            discard(move second)
+                            discard(move failed)
+                Err(failed):
+                    discard(move second)
+                    discard(move failed)
+        Err(reason):
+            discard(move first)
+            discard(move second)
+            out.print_int(903)
+    out.print_int(memory.read(saved, 0))
+    memory.end(saved)
+    memory.release(witness)

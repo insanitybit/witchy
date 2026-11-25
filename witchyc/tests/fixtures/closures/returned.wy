@@ -1,0 +1,14 @@
+// The book's `adder`: a function returns a closure, which is called directly and passed on.
+import console
+
+fn adder(by: U64) -> fn(U64) -> U64:
+    return fn(n: U64) -> U64: n + by
+
+fn apply(f: fn(U64) -> U64, x: U64) -> U64:
+    return f(x)
+
+fn main(console: Console<Write>):
+    let add10 = adder(10)
+    console.print_int(add10(5))
+    console.print_int(apply(add10, 7))
+    console.print_int(apply(adder(100), 1))

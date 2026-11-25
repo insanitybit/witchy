@@ -1,0 +1,13 @@
+// Review of the slice walk: the body reassigns the view whose slice is walked: re-read each step.
+import console
+
+type W:
+    s: &[U64]
+
+fn main(console: Console<Write>):
+    let a: [U64; 4] = [1, 2, 3, 4]
+    let whole = a.slice()
+    var w = W(whole)
+    for x in w.s:
+        console.print_int(*x)
+        w = W(whole.part(2, 4))

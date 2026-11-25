@@ -1,0 +1,124 @@
+// The restored bulk copy (Astra's proof-budget review): String.push_string and
+// Vec.extend_copy_mut append in one proved range copy. Suffixes of 0, 1, 8 and 9 bytes and a long
+// UTF-8 one, into spare room (after `reserve`) and through growth; each source printed after it
+// is appended, unchanged; Vec<U8>, Vec<U64> and a Vec of a two-field Copy record extended.
+import console
+import string
+import text
+import vec
+
+type Pair:
+    left: U64
+    right: U8
+
+fn text(allocator: &Allocator, literal: Text) -> String:
+    let Ok(made): String = String.new(allocator) else Err(code):
+        unreachable
+    var owned = move made
+    if let Err(_) = owned.push_text(allocator, literal):
+        unreachable
+    return move owned
+
+fn append(console: &Console<Write>, allocator: &Allocator, target: &mut String, literal: Text):
+    let suffix = text(allocator, literal)
+    if let Err(_) = target.push_string(allocator, &suffix):
+        console.line("no room")
+    console.write_string(target)
+    console.print("|${target.byte_len()} ${target.scalar_count()}")
+    console.write_string(&suffix)
+    console.line("|")
+    suffix.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var grown = move made
+    append(&console, &allocator, &mut grown, "")
+    append(&console, &allocator, &mut grown, "a")
+    append(&console, &allocator, &mut grown, "bcdefghi")
+    append(&console, &allocator, &mut grown, "jklmnopqr")
+    append(&console, &allocator, &mut grown, "héllo wörld € 𝄞 héllo wörld € 𝄞 héllo wörld € 𝄞")
+    grown.close()
+    let Ok(made_roomy): String = String.new(&allocator) else Err(code):
+        return
+    var roomy = move made_roomy
+    if let Err(_) = roomy.reserve(&allocator, 200):
+        console.line("no reserve")
+    append(&console, &allocator, &mut roomy, "x")
+    append(&console, &allocator, &mut roomy, "€𝄞é")
+    roomy.close()
+    let Ok(made_bytes): Vec<U8> = Vec.new(&allocator, 2) else Err(code):
+        return
+    var bytes = move made_bytes
+    let Ok(made_source): Vec<U8> = Vec.new(&allocator, 9) else Err(code):
+        bytes.close()
+        return
+    var source = move made_source
+    for k in 0..9:
+        match source.push_mut(&allocator, U8.truncate(k * 30)):
+            Ok:
+                ()
+            Err(back):
+                ()
+    for round in 0..3:
+        if let Err(_) = bytes.extend_copy_mut(&allocator, &source):
+            console.line("no room")
+    var check: U64 = 0
+    for k in 0..bytes.len():
+        match bytes.get(k):
+            Ok(v):
+                check = (check * 7 + U8.to_u64(v)) % 1000000007
+            Err(code):
+                ()
+    console.print("${bytes.len()} ${check % 1000000007} ${source.len()}")
+    bytes.close()
+    source.close()
+    let Ok(made_words): Vec<U64> = Vec.new(&allocator, 1) else Err(code):
+        return
+    var words = move made_words
+    let Ok(made_more): Vec<U64> = Vec.new(&allocator, 4) else Err(code):
+        words.close()
+        return
+    var more = move made_more
+    for k in 0..4:
+        match more.push_mut(&allocator, 18446744073709551615 - k):
+            Ok:
+                ()
+            Err(back):
+                ()
+    if words.extend_copy_mut(&allocator, &more).is_err() || words.extend_copy_mut(&allocator, &more).is_err():
+        console.line("no room")
+    var last: U64 = 0
+    match words.get(7):
+        Ok(v):
+            last = v
+        Err(code):
+            ()
+    console.print("${words.len()} ${last}")
+    words.close()
+    more.close()
+    let Ok(made_pairs): Vec<Pair> = Vec.new(&allocator, 0) else Err(code):
+        return
+    var pairs = move made_pairs
+    let Ok(made_from): Vec<Pair> = Vec.new(&allocator, 3) else Err(code):
+        pairs.close()
+        return
+    var from = move made_from
+    for k in 0..3:
+        match from.push_mut(&allocator, Pair(left: k * 1000, right: U8.truncate(k + 250))):
+            Ok:
+                ()
+            Err(back):
+                ()
+    if pairs.extend_copy_mut(&allocator, &from).is_err() || pairs.extend_copy_mut(&allocator, &from).is_err():
+        console.line("no room")
+    var sum: U64 = 0
+    for k in 0..pairs.len():
+        match pairs.get(k):
+            Ok(p):
+                sum += p.left + U8.to_u64(p.right)
+            Err(code):
+                ()
+    console.print("${pairs.len()} ${sum}")
+    pairs.close()
+    from.close()

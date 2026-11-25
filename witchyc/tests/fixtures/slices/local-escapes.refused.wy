@@ -1,0 +1,7 @@
+// Refused: a slice of a local array would outlive the function.
+fn make() -> &[U64]:
+    let numbers: [U64; 3] = [1, 2, 3]
+    return numbers.slice()
+
+fn main():
+    let all = make()

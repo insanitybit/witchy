@@ -1,0 +1,32 @@
+// Refused by the checker: the holder is read whole, by a method that relies on its invariant,
+// after the helper emptied the field and before the mark was repaired.
+import cell
+import option
+
+// The mark points at the cell exactly while one is held: the invariant reads the cell through a
+// method, so it is one over a view of the storage.
+sealed type Holder<T>:
+    mark: Weak<T>
+    held: Option<OccupiedCell<T>>
+    invariant when Some(cell) = held:
+        same_target(mark, cell.pointer())
+    invariant when None = held:
+        !has_address(mark)
+
+
+impl<T: Any> Holder<T>:
+    nopanic fn peek(holder: &Holder<T>) -> Option<&T>:
+        match &(*holder).held:
+            None:
+                return None
+            Some(cell):
+                return Some(memory.follow_loan(cell.read(), (*holder).mark))
+
+    nopanic fn pull(holder: &mut Holder<T>) -> Option<OccupiedCell<T>>:
+        let cell = (*holder).held.take()
+        let seen = holder.peek()
+        (*holder).mark = memory.null_weak()
+        return move cell
+
+nopanic fn main(a: Allocator, out: Console<Write>):
+    out.print_int(1)

@@ -1,0 +1,13 @@
+// `x += if ...` reads `x` before the `if` runs (red-team review).
+fn bump(x: &mut U64) -> U64:
+    *x = *x + 100
+    return 2
+
+fn main(console: Console<Write>):
+    let c = true
+    var x: U64 = 5
+    x += if c: bump(&mut x) else: 1
+    console.print_int(x)
+    var y: U64 = 5
+    y += bump(&mut y)
+    console.print_int(y)

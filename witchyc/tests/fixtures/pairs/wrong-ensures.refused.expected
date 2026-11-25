@@ -1,0 +1,1 @@
+not proved: ensures result == (old(pairs.length) <= old(pairs.capacity))

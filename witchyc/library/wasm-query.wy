@@ -1,0 +1,103 @@
+// Questions a Vec answers with a closure (docs/wasm-closures.md). A module of its own, so
+// the Vec library's proof stays the size it was.
+import vec
+
+impl<T> Vec<T>:
+    // How many elements `test` holds for (docs/wasm-closures.md).
+    pub fn count_where(vector: &Vec<T>, test: fn(T) -> Bool) -> U64:
+        var found: U64 = 0
+        for index in 0..vector.len():
+            match vector.get(index):
+                Ok(item):
+                    if test(item):
+                        found += 1
+                Err(code):
+                    return found
+        return found
+
+    // Whether `test` holds for some element.
+    pub fn any(vector: &Vec<T>, test: fn(T) -> Bool) -> Bool:
+        for index in 0..vector.len():
+            match vector.get(index):
+                Ok(item):
+                    if test(item):
+                        return true
+                Err(code):
+                    return false
+        return false
+
+    // Whether `test` holds for every element.
+    pub fn all(vector: &Vec<T>, test: fn(T) -> Bool) -> Bool:
+        for index in 0..vector.len():
+            match vector.get(index):
+                Ok(item):
+                    if !test(item):
+                        return false
+                Err(code):
+                    return false
+        return true
+
+impl<T: Any> Vec<T>:
+    // How many elements `test` holds for, each lent to it: for elements that are owners too
+    // (`Vec<String>` with `fn(&String) -> Bool`).
+    pub fn count_ref(vector: &Vec<T>, test: &fn(&T) -> Bool) -> U64:
+        var found: U64 = 0
+        for index in 0..vector.len():
+            match vector.at(index):
+                Ok(item):
+                    if test(item):
+                        found += 1
+                Err(code):
+                    return found
+        return found
+
+    // Whether `test` holds for some element, each lent to it.
+    pub fn any_ref(vector: &Vec<T>, test: &fn(&T) -> Bool) -> Bool:
+        for index in 0..vector.len():
+            match vector.at(index):
+                Ok(item):
+                    if test(item):
+                        return true
+                Err(code):
+                    return false
+        return false
+
+impl<T> Vec<T>:
+    // A new Vec of `f` of each element, in order. Err(code) when memory runs out.
+    pub fn map<U>(vector: &Vec<T>, allocator: &Allocator, f: fn(T) -> U) -> Result<Vec<U>, U64>:
+        let Ok(made): Vec<U> = Vec.new(allocator, vector.len() + 1) else Err(code):
+            return Err(code)
+        var out = move made
+        for index in 0..vector.len():
+            match vector.get(index):
+                Ok(item):
+                    match out.push_mut(allocator, f(item)):
+                        Ok:
+                            continue
+                        Err(lost):
+                            out.close()
+                            return Err(1)
+                Err(code):
+                    out.close()
+                    return Err(code)
+        return Ok(move out)
+
+    // A new Vec of the elements `keep` holds for, in order.
+    pub fn filter(vector: &Vec<T>, allocator: &Allocator, keep: fn(T) -> Bool) -> Result<Vec<T>, U64>:
+        let Ok(made): Vec<T> = Vec.new(allocator, vector.len() + 1) else Err(code):
+            return Err(code)
+        var out = move made
+        for index in 0..vector.len():
+            match vector.get(index):
+                Ok(item):
+                    if keep(item):
+                        match out.push_mut(allocator, item):
+                            Ok:
+                                continue
+                            Err(lost):
+                                out.close()
+                                return Err(1)
+                Err(code):
+                    out.close()
+                    return Err(code)
+        return Ok(move out)

@@ -1,0 +1,23 @@
+// A generator over a Vec's elements, through `as_slice`; pushing while it runs is refused
+// (over-slice-changed.refused.wy).
+import console
+import vec
+
+gen fn above(items: &[U64], limit: U64) -> U64:
+    var index: U64 = 0
+    while index < items.len():
+        let item: U64 = items[index]
+        if item > limit:
+            yield item
+        index += 1
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.filled(&allocator, 4, 3) else Err(code):
+        return
+    var numbers = move made
+    let _ = numbers.set(2, 10)
+    var count: U64 = 0
+    for n in above(numbers.as_slice(), 5):
+        count += n
+    console.print_int(count)
+    numbers.close()

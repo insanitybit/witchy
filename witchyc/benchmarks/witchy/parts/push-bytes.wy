@@ -1,0 +1,13 @@
+import console
+import string
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var text = move made
+    for i in 0..1000000:
+        for at in 0..9:
+            if let Err(_) = text.push(&allocator, 97):
+                console.line("full")
+    console.print_int(text.byte_len())
+    text.close()

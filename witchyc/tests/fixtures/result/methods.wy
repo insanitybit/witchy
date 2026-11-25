@@ -1,0 +1,26 @@
+// Methods on the built-in Result, including one whose Ok carries nothing.
+import "../../../library/wasm-console.wy"
+
+fn half(n: U64) -> Result<U64, U64>:
+    if n % 2 == 0:
+        return Ok(n / 2)
+    return Err(1)
+
+fn check(n: U64) -> Result<(), U64>:
+    if n > 3:
+        return Err(n)
+    return Ok(())
+
+fn show(console: &Console<Write>, flag: Bool):
+    if flag:
+        console.print_int(1)
+    else:
+        console.print_int(0)
+
+fn main(console: Console<Write>):
+    show(&console, half(4).is_ok())
+    show(&console, half(5).is_ok())
+    show(&console, check(2).is_err())
+    show(&console, check(9).is_err())
+    console.print_int(half(10).unwrap_or(99))
+    console.print_int(half(7).unwrap_or(99))

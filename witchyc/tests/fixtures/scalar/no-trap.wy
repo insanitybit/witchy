@@ -1,0 +1,40 @@
+// A method that only reads its sealed type, in the type's own file, proved by the proof
+// over numbers: its arithmetic cannot trap.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-vec.wy"
+
+sealed type Tally:
+    marks: Vec<U8>
+    scale: U64
+
+impl Tally:
+    fn new(allocator: &Allocator) -> Result<Tally, U64>:
+        let marks: Vec<U8> = Vec.new(allocator, 4)?
+        return Ok(Tally(move marks, 3))
+
+    // The sum of the marks, kept below a bound so that no step can overflow.
+    fn weight(self: &Tally) -> U64:
+        ensures result < 1000000
+        proof:
+            auto
+        var sum: U64 = 0
+        for index in 0..self.marks.len():
+            invariant sum < 1000000
+            match self.marks.get(index):
+                Ok(mark):
+                    sum = (sum + U8.to_u64(mark) * 3) % 1000000
+                Err(code):
+                    break
+        return sum
+
+    fn close(self: Tally):
+        let Tally(marks, scale) = move self
+        marks.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    match Tally.new(&allocator):
+        Ok(tally):
+            console.print_int(tally.weight())
+            tally.close()
+        Err(code):
+            console.print_int(100)

@@ -1,0 +1,23 @@
+// `if c: a else: b` on one line is a value. Only the chosen side runs, and it runs where
+// the value is needed: nothing in the statement runs before it.
+import console
+
+fn larger(a: U64, b: U64) -> U64:
+    return if a > b: a else: b
+
+fn shout(console: &Console<Write>, n: U64) -> U64:
+    console.print_int(n)
+    return n
+
+fn main(console: Console<Write>):
+    let wrote = true
+    console.print_int(if wrote: 1 else: 0)
+    let big = if larger(3, 9) > 5: 100 else: 200
+    console.print_int(big)
+    var total: U64 = 0
+    total = if big == 100: total + 7 else: total
+    console.print_int(total)
+    // Only the chosen side runs: this prints 5, not 6.
+    let picked = if total > 0: shout(&console, 5) else: shout(&console, 6)
+    // Nested, and inside a call with plain arguments beside it.
+    console.print_int(larger(picked, if picked > 4: if picked > 10: 0 else: 50 else: 1))

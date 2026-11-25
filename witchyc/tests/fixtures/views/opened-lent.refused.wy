@@ -1,0 +1,11 @@
+// A name an opening gave a reference to keeps the record's loan while it is in use.
+type Pair:
+    left: &U64
+    right: U64
+
+fn main(console: Console<Write>):
+    var n: U64 = 4
+    let pair = Pair(&n, 5)
+    let Pair(left, right) = pair
+    n += 1
+    console.print_int(right + *left)

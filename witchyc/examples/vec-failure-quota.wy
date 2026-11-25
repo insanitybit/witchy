@@ -1,0 +1,62 @@
+fn drain_owners(input: Vec<Buffer<U64>>) -> U64:
+    var vector = move input
+    var total: U64 = 0
+    while true:
+        match vec_pop(move vector):
+            Ok(popped):
+                vector = move popped.vector
+                match popped.item:
+                    Some(item):
+                        total += memory.read(&item, 0)
+                        memory.release(item)
+                    None:
+                        match vec_release(move vector):
+                            Ok(done):
+                                return total
+                            Err(remaining):
+                                vector = move remaining
+            Err(unchanged):
+                vector = move unchanged
+
+fn main(console: Console<Write>):
+    var original = memory.alloc(1)
+    memory.init(&mut original, 0, 37)
+    var item = memory.alloc(1)
+    memory.init(&mut item, 0, 99)
+    var witness = memory.alloc(1)
+    memory.init(&mut witness, 0, 42)
+    let live = &witness
+    let created: Result<Vec<Buffer<U64>>, AllocError> = vec_new(1)
+    match created:
+        Ok(empty):
+            match vec_push_spare(move empty, move original):
+                Ok(full):
+                    let pressure = memory.alloc(65532)
+                    match vec_push(move full, move item):
+                        Ok(unexpected):
+                            memory.end(live)
+                            memory.release(pressure)
+                            console.print_int(drain_owners(move unexpected))
+                        Err(failed):
+                            if failed.reason == AllocError.quota:
+                                console.print_int(1)
+                            else:
+                                console.print_int(0)
+                            let measured = vec_len(move failed.vector)
+                            console.print_int(measured.length)
+                            console.print_int(memory.read(&failed.item, 0))
+                            memory.release(failed.item)
+                            console.print_int(memory.read(live, 0))
+                            memory.end(live)
+                            memory.release(pressure)
+                            console.print_int(drain_owners(move measured.vector))
+                Err(failed):
+                    memory.end(live)
+                    memory.release(failed.item)
+                    memory.release(item)
+                    console.print_int(drain_owners(move failed.vector))
+        Err(reason):
+            memory.end(live)
+            memory.release(original)
+            memory.release(item)
+            console.print_int(0)

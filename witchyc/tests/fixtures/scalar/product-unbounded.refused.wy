@@ -1,0 +1,12 @@
+// Refused: one factor has no bound.
+import console
+
+fn f(a: U64, b: U64) -> U64:
+    requires a < 100
+    ensures true
+    proof:
+        auto
+    return a * b
+
+fn main(console: Console<Write>):
+    console.print_int(f(3, 4))

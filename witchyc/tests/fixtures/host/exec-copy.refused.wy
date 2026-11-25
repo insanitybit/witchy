@@ -1,0 +1,5 @@
+// Refused: an Exec is moved, never copied.
+import exec
+fn main(exec: Exec):
+    let a = exec
+    let b = exec

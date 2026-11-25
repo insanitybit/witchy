@@ -1,0 +1,31 @@
+import console
+import discard
+import json_sorted
+import json_tree
+import string
+
+fn check(output: &Console<Write>, allocator: &Allocator, source: &str):
+    let Ok(input): String = String.from_str(allocator, source) else Err(code):
+        output.line("could not store input")
+        return
+    let parsed = json_sorted_tree(&input, allocator)
+    input.close()
+    match move parsed:
+        Ok(document):
+            if let Ok(empty) = String.new(allocator):
+                match document.show(move empty, allocator):
+                    Ok(text):
+                        output.write_string(&text)
+                        output.print_byte(10)
+                        text.close()
+                    Err(back):
+                        back.close()
+            document.discard()
+        Err(code):
+            output.print_int(code)
+
+fn main(output: Console<Write>, allocator: Allocator):
+    check(&output, &allocator, "{\"z\":[{\"b\":2,\"a\":3},1],\"a\":0}")
+    check(&output, &allocator, "{\"a\":0,\"a\":1}")
+    check(&output, &allocator, "{\"z\":[{\"a\":0,\"\\u0061\":1}]}")
+    check(&output, &allocator, "{\"a\":0} true")

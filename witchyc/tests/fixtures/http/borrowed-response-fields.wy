@@ -1,0 +1,32 @@
+import console
+import http
+import string
+import text
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(staged): ResponseHeaders = http.response_headers(&allocator) else Err(reason):
+        return
+    var fields = move staged
+    let Ok(value): String = String.from_str(&allocator, "fresh") else Err(code):
+        fields.close()
+        return
+    let valid = fields.add_str(&allocator, "X-Test", value.as_str())
+    value.close()
+    if let Err(reason) = valid:
+        fields.close()
+        return
+    if let Ok(_) = fields.add_str(&allocator, "CONTENT-LENGTH", "999"):
+        fields.close()
+        return
+    if let Ok(_) = fields.add_str(&allocator, "X-Test", "bad\r\nvalue"):
+        fields.close()
+        return
+    let response = http.response_head_str(&allocator, ResponseHttp11, 200, "text/plain", 0, &fields)
+    fields.close()
+    match move response:
+        Ok(text):
+            if text.equals_text("HTTP/1.1 200 \r\nConnection: close\r\nContent-Type: text/plain\r\nContent-Length: 0\r\nX-Test: fresh\r\n\r\n"):
+                console.line("exact response")
+            text.close()
+        Err(reason):
+            return

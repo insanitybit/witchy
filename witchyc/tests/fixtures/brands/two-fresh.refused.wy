@@ -1,0 +1,20 @@
+// Refused (review, evidence/two-fresh.wy): two `Fresh` type parameters would be one numbering,
+// so rows the library declares apart would mix.
+import console
+
+type Row<G>:
+    n: U64
+
+type Pair<A, B>:
+    a: Row<A>
+    b: Row<B>
+
+fn issue<A: Fresh, B: Fresh>() -> Pair<A, B>:
+    return Pair(Row(1), Row(2))
+
+fn together<G: Brand>(a: Row<G>, b: Row<G>) -> U64:
+    return b.n
+
+fn main(console: Console<Write>):
+    brand issue() as pair:
+        console.print_int(together(pair.a, pair.b))

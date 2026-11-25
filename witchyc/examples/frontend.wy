@@ -1,0 +1,5 @@
+// Frontend fixture only; no source execution is claimed yet.
+fn main(console: Console<Write>):
+    var values = [10, 20, 30]
+    if values[0] < values[1]:
+        console.print_int(values[2])

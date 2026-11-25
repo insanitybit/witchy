@@ -1,0 +1,23 @@
+// A recipe's literals and interpolations (review of recipe literals): two interpolations from one
+// expansion (named apart, they collided at the type's span), a literal holding `Self`, `For`, the
+// loop's name and `@`/`#` printed as written, and the field substituted only inside `${...}`.
+import console
+
+trait Shown:
+    fn show(self: &Self, console: &Console<Write>)
+
+derive Show:
+    impl Shown for Self:
+        fn show(self: &Self, console: &Console<Write>):
+            static for f in fields:
+                console.print("f=${(*self).f}; Self For f a@b #x")
+
+type Point derive(Show):
+    x: U64
+    y: U64
+
+fn main(console: Console<Write>):
+    console.line("before")
+    let p = Point(x: 1, y: 2)
+    p.show(&console)
+    console.line("after")

@@ -1,0 +1,7 @@
+// Refused: a directory given to a run is moved there: the program cannot use it after.
+import exec
+import fs
+
+fn main(exec: Exec, data: Dir<Read>):
+    let command = exec.command("where").cwd(move data)
+    let again = data.dir("sub")

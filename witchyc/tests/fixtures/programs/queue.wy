@@ -1,0 +1,97 @@
+// A queue of events taken in time order, and a heap of Strings.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-heap.wy"
+import "../../../library/wasm-string.wy"
+import "../../../library/wasm-sort.wy"
+import "../../../library/wasm-discard-core.wy"
+
+type Event:
+    time: U64
+    id: U64
+
+// Earlier first; at the same time, the lower id.
+impl Before for Event:
+    fn before(self: &Event, other: &Event) -> Bool:
+        return self.time < other.time || (self.time == other.time && self.id < other.id)
+
+impl Discard for Event:
+    fn discard(self: Event):
+        return
+
+fn text(allocator: &Allocator, value: Text) -> Result<String, U64>:
+    var made = String.new(allocator)?
+    if let Err(_) = made.push_text(allocator, value):
+        made.close()
+        return Err(1)
+    return Ok(move made)
+
+fn add(names: &mut Heap<String>, allocator: &Allocator, value: Text) -> Bool:
+    let name = match text(allocator, value):
+        Ok(made):
+            move made
+        Err(code):
+            return false
+    match names.push(allocator, move name):
+        Ok(done):
+            return true
+        Err(back):
+            back.close()
+            return false
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var events: Heap<Event> = match Heap.new(&allocator):
+        Ok(heap):
+            move heap
+        Err(code):
+            return
+    var seed: U64 = 7
+    for id in 0..200:
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        match events.push(&allocator, Event(seed % 50, id)):
+            Ok(done):
+                continue
+            Err(back):
+                break
+    console.print_int(events.len())
+    match events.first():
+        Ok(event):
+            console.print_int(event.time)
+        Err(code):
+            console.line("empty")
+    // Every event comes out no earlier than the one before it.
+    var last = Event(0, 0)
+    var ordered = true
+    var taken: U64 = 0
+    while taken < 190:
+        match events.pop():
+            Ok(event):
+                if event.before(&last):
+                    ordered = false
+                last = event
+                taken += 1
+            Err(code):
+                break
+    if ordered:
+        console.line("in order")
+    console.print_int(events.len())
+    events.discard()
+    var names: Heap<String> = match Heap.new(&allocator):
+        Ok(heap):
+            move heap
+        Err(code):
+            return
+    if add(&mut names, &allocator, "pear") && add(&mut names, &allocator, "apple") && add(&mut names, &allocator, "fig") && add(&mut names, &allocator, "banana"):
+        while !names.is_empty():
+            match names.pop():
+                Ok(name):
+                    console.write_string(&name)
+                    console.line("")
+                    name.close()
+                Err(code):
+                    break
+    match names.pop():
+        Ok(name):
+            name.close()
+        Err(code):
+            console.print_int(code)
+    names.discard()

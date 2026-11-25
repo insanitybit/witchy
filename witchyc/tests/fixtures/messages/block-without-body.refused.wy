@@ -1,0 +1,7 @@
+// Refused, saying what a line ending with `:` needs under it, and that an empty one holds `()`:
+// it said only that an indented block was expected (520 of 4,000 mutants).
+import console
+
+fn main(console: Console<Write>):
+    if true:
+    console.line("x")

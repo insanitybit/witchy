@@ -1,0 +1,21 @@
+// Every integer type shows itself in `${...}`: U8, U16, U32 as their value, I64 with its sign.
+import console
+import int
+import string
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let a: U8 = 7
+    let b: U16 = 300
+    let c: U32 = 9
+    var x: I64 = 3
+    x *= -2
+    console.print("${a} ${b} ${c} ${x} ${-x}")
+    console.show(x)
+    console.print("")
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var text = move made
+    if let Ok(_) = text.push_format(&allocator, "${x}/${a}"):
+        console.write_string(&text)
+        console.print("")
+    text.close()

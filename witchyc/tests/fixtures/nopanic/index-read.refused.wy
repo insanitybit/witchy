@@ -1,0 +1,8 @@
+// Review 2026-11-21: reading an array element at a computed index is tested against the length
+// and can trap; it was not counted, and this built and stopped with "an index out of range".
+nopanic fn f(n: U64) -> U64:
+    var arr: [U64; 3] = [1, 2, 3]
+    return arr[n]
+
+fn main(out: Console<Write>):
+    out.print_int(f(5))

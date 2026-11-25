@@ -1,0 +1,89 @@
+// Authorize the exact request and commit it without exporting its bindings.
+import "ci/authorize.wy"
+import "ci/commit_plan.wy"
+import console_bytes
+import "ci/storage_schema.wy"
+import "sqlite_reply.wy"
+import "tuf/release_trust.wy"
+import console
+import discard
+import json_tree
+import "@sqlite"
+import string
+import text
+import time
+import vec
+
+fn main(db: Sqlite, input: Console<Read>, output: Console<Write>, nonce_key: Secret<Seal>, clock: Clock, allocator: Allocator):
+    if let Err(code) = run(&db, &input, &output, &nonce_key, clock.now_ms() / 1000, &allocator):
+        if code == 100:
+            output.line("refused proof")
+        else if code == 101:
+            output.line("refused candidate")
+        else if code == 102:
+            output.line("refused challenge")
+        else if code == 103:
+            output.line("refused enrollment")
+        else:
+            output.line("refused identity")
+
+fn run(db: &Sqlite, input: &Console<Read>, output: &Console<Write>, key: &Secret<Seal>, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let Ok(length): U64 = input.read_u24_be() else Err(reason):
+        return Err(1)
+    if length == 0 || length > 2097152:
+        return Err(1)
+    let request = read_header(input, length, allocator)?
+    let checked = prepare(&request, 2799999 - length, db, input, output, key, now, allocator)
+    request.discard()
+    return checked
+
+fn read_header(input: &Console<Read>, length: U64, allocator: &Allocator) -> Result<Json, U64>:
+    let empty: Vec<U8> = Vec.filled(allocator, length, 0)?
+    var bytes = move empty
+    if let Err(reason) = input.read_exact(bytes.as_mut_slice()):
+        bytes.close()
+        return Err(1)
+    let Ok(header): String = String.from_utf8(move bytes) else Err(invalid):
+        invalid.close()
+        return Err(1)
+    let parsed = parse_release_json(&header, allocator)
+    header.close()
+    return move parsed
+
+fn prepare(request: &Json, remaining_bytes: U64, db: &Sqlite, input: &Console<Read>, output: &Console<Write>, key: &Secret<Seal>, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    if count_fields(request, 1):
+        let mode = string_field(request, "mode")?
+        if !mode.equals_text("check-schema"):
+            return Err(1)
+        if let Ok(extra) = input.read_byte():
+            return Err(1)
+        return check_ci_schema(db, output, allocator)
+    if !count_fields(request, 11):
+        return Err(1)
+    let length = declared_integer(request, "body_size")?
+    let route = string_field(request, "route")?
+    let stage = route.equals_text("/v1/ci/stage")
+    if length > 1048576 || length > remaining_bytes || stage != (length != 0) || (!stage && !route.equals_text("/v1/ci/receipt")):
+        return Err(101)
+    let empty: Vec<U8> = Vec.filled(allocator, length, 0)?
+    var body = move empty
+    if let Err(reason) = input.read_exact_to_end(body.as_mut_slice()):
+        body.close()
+        return Err(101)
+    let checked = authorize_and_commit(request, body.as_slice(), stage, db, output, key, now, allocator)
+    body.close()
+    return checked
+
+fn authorize_and_commit(request: &Json, body: &[U8], stage: Bool, db: &Sqlite, output: &Console<Write>, key: &Secret<Seal>, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let parameters = authorize_request(request, body, key, now, allocator)?
+    let checked = commit_authorized(&parameters, body, stage, db, output, allocator)
+    parameters.close()
+    return checked
+
+fn commit_authorized(parameters: &String, body: &[U8], stage: Bool, db: &Sqlite, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    let plan = commit_plan(stage, allocator)?
+    let checked = emit_transaction(db, &plan, parameters, body, output, 16384, allocator)
+    plan.close()
+    if let Err(code) = checked:
+        output.line("unavailable")
+    return Ok(())

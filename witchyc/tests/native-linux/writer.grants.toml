@@ -1,0 +1,6 @@
+[launch]
+version = 1
+[dirs]
+data = { root = { from = "cwd", path = "data" }, rights = ["Write"] }
+[limits]
+fs-entries = 8

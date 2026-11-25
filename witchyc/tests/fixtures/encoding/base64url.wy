@@ -1,0 +1,75 @@
+import console
+import encoding
+import span
+import string
+import vec
+
+fn same_bytes(made: &[U8], original: &[U8]) -> Bool:
+    if made.len() != original.len():
+        return false
+    for index in 0..made.len():
+        if made[index] != original[index]:
+            return false
+    return true
+
+fn roundtrip(allocator: &Allocator, bytes: &[U8], expected: Text) -> Bool:
+    let Ok(initial): String = String.new(allocator) else Err(code):
+        return false
+    var encoded = move initial
+    if let Err(code) = encoding.push_base64url(&mut encoded, allocator, bytes):
+        encoded.close()
+        return false
+    if !encoded.span().equals_text(expected):
+        encoded.close()
+        return false
+    let result = encoding.decode_base64url_bounded(allocator, encoded.as_bytes(), bytes.len())
+    encoded.close()
+    let Ok(decoded): Vec<U8> = move result else Err(reason):
+        return false
+    let matches = same_bytes(decoded.as_slice(), bytes)
+    decoded.close()
+    return matches
+
+fn rejects(allocator: &Allocator, input: Text, expected: U64) -> Bool:
+    let Ok(initial): String = String.new(allocator) else Err(code):
+        return false
+    var text = move initial
+    if let Err(code) = text.push_text(allocator, input):
+        text.close()
+        return false
+    let result = encoding.decode_base64url(allocator, text.as_bytes())
+    text.close()
+    match move result:
+        Ok(bytes):
+            bytes.close()
+            return false
+        Err(InvalidBase64(position)):
+            return position == expected
+        Err(Base64Allocation(_)):
+            return false
+
+fn refuses_oversize(allocator: &Allocator) -> Bool:
+    let wire: [U8; 4] = ['Z', 'm', '9', 'v']
+    match encoding.decode_base64url_bounded(allocator, wire.slice(), 2):
+        Ok(bytes):
+            bytes.close()
+            return false
+        Err(Base64Limit(size)):
+            return size == 3
+        Err(_):
+            return false
+
+fn main(out: Console<Write>, allocator: Allocator):
+    let bytes: [U8; 3] = ['f', 'o', 'o']
+    let sample = bytes.slice()
+    if roundtrip(&allocator, sample.part(0, 0), "") && roundtrip(&allocator, sample.part(0, 1), "Zg") && roundtrip(&allocator, sample.part(0, 2), "Zm8") && roundtrip(&allocator, sample, "Zm9v"):
+        out.line("empty and all tail sizes")
+    let binary: [U8; 7] = [251, 255, 255, 0, 251, 255, 255]
+    if roundtrip(&allocator, binary.slice(), "-___APv__w"):
+        out.line("binary and URL alphabet")
+    if rejects(&allocator, "Zg==", 2) && rejects(&allocator, "+w", 0) && rejects(&allocator, "/w", 0) && rejects(&allocator, "Z g", 1) && rejects(&allocator, "Z", 1):
+        out.line("invalid spelling")
+    if rejects(&allocator, "Zh", 1) && rejects(&allocator, "Zm9", 2) && rejects(&allocator, "Zm9v_w ", 6):
+        out.line("unused bits and trailing bytes")
+    if refuses_oversize(&allocator):
+        out.line("decoded byte limit")

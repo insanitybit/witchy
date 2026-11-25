@@ -1,0 +1,119 @@
+// Ordinary library source over the same byte storage Vec<U8> owns; the names
+// String and Vec have no compiler privilege. Needs library/memory-ranges.wy and
+// library/vec-core.wy.
+//
+// A String is an owned, checked value, not an immutable one: its fields are
+// public, and every function that rebuilds or returns a String must re-establish
+// the whole invariant, including UTF-8 validity of the current bytes.
+//
+// The record repeats the three Vec fields instead of nesting a Vec, because an
+// invariant can name direct fields only. Import and export move the SAME buffer.
+predicate Utf8Contents(data, length, capacity):
+    BufferContents(data, length, capacity) && memory.utf8(data, length)
+
+type String:
+    data: Buffer<U8>
+    length: USize
+    capacity: USize
+    invariant Utf8Contents(data, length, capacity)
+
+// A text literal evaluates to Result<Buffer<U8>, AllocError>; its Ok buffer has
+// exactly `length` initialized cells. A wrong length fails the precondition.
+fn vec_from_buffer(input: Buffer<U8>, length: USize) -> Vec<U8>:
+    requires BufferContents(input, length, length)
+    ensures result.length == length
+    ensures result.capacity == length
+    ensures result.data == old(input)
+    ensures memory.unchanged(input)
+    return Vec(move input, length, length)
+
+// `invalid` true: the bytes were examined and are not UTF-8.
+// `invalid` false: no loan was available, so nothing was examined.
+type ImportFailure:
+    vector: Vec<U8>
+    invalid: Bool
+
+// The only constructor. The bytes actually stored are validated at run time
+// under a shared loan; nothing is copied, and every failure returns the same
+// vector with its buffer, contents, length and capacity untouched.
+fn string_from_utf8(input: Vec<U8>) -> Result<String, ImportFailure>:
+    ensures match result:
+        Ok(text):
+            text.data == old(input.data)
+            text.length == old(input.length)
+            text.capacity == old(input.capacity)
+            memory.unchanged(input.data)
+        Err(failed):
+            failed.vector.data == old(input.data)
+            failed.vector.length == old(input.length)
+            failed.vector.capacity == old(input.capacity)
+            memory.unchanged(input.data)
+    var vector = move input
+    if memory.loan_room(1):
+        let reader = &vector.data
+        let valid = memory.utf8_check(reader, vector.length)
+        memory.end(reader)
+        if valid:
+            let length = vector.length
+            let capacity = vector.capacity
+            return Ok(String(move vector.data, length, capacity))
+        return Err(ImportFailure(move vector, true))
+    return Err(ImportFailure(move vector, false))
+
+// Giving up the text invariant is always allowed and moves the same buffer.
+fn string_into_vec(input: String) -> Vec<U8>:
+    ensures result.data == old(input.data)
+    ensures result.length == old(input.length)
+    ensures result.capacity == old(input.capacity)
+    ensures memory.unchanged(input.data)
+    let length = input.length
+    let capacity = input.capacity
+    return Vec(move input.data, length, capacity)
+
+type Printed:
+    text: String
+    console: Console<Write>
+
+// Ok: every byte was read from its initialized cell under one shared loan and
+// written raw, in order. Err: no loan was available and nothing was written.
+// Both outcomes return the same text and the same capability.
+fn string_print(input: String, console: Console<Write>) -> Result<Printed, Printed>:
+    var text = move input
+    if memory.loan_room(1):
+        let reader = &text.data
+        var i: USize = 0
+        while i < text.length:
+            invariant i <= text.length
+            invariant text.length <= text.capacity
+            invariant memory.size(text.data) == text.capacity
+            invariant InitializedBetween(text.data, 0, text.length)
+            invariant EmptyBetween(text.data, text.length, text.capacity)
+            invariant memory.utf8(text.data, text.length)
+            let byte: U8 = memory.read(reader, i)
+            console.write_byte(byte)
+            i += 1
+        memory.end(reader)
+        return Ok(Printed(move text, move console))
+    return Err(Printed(move text, move console))
+
+// Bytes are plain data: each is taken and dropped, then the empty buffer is
+// released. Err returns the untouched vector when no loan was available.
+fn bytes_release(input: Vec<U8>) -> Result<(), Vec<U8>>:
+    var vector = move input
+    if memory.loan_room(1):
+        let writer = &mut vector.data
+        var i: USize = 0
+        while i < vector.length:
+            invariant i <= vector.length
+            invariant vector.length <= vector.capacity
+            invariant memory.size(vector.data) == vector.capacity
+            invariant EmptyBetween(vector.data, 0, i)
+            invariant InitializedBetween(vector.data, i, vector.length)
+            invariant EmptyBetween(vector.data, vector.length, vector.capacity)
+            let item: U8 = memory.take(writer, i)
+            discard(item)
+            i += 1
+        memory.end(writer)
+        memory.release(vector.data)
+        return Ok(())
+    return Err(move vector)

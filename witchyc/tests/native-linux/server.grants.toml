@@ -1,0 +1,20 @@
+[launch]
+version = 1
+[listen]
+socket = "127.0.0.1:47011"
+[files]
+file = { from = "cwd", path = "f.txt" }
+[input]
+input = { stdin = true }
+[net]
+api = ["127.0.0.1:47012"]
+[exec]
+exec = { dir = "/w/bin", programs = ["greet"] }
+[dirs]
+data = { root = { from = "cwd", path = "sdata" }, rights = ["Write"] }
+[limits]
+connections = 2
+connection-deadline-ms = 3000
+deadline-ms = 10000
+input-bytes = 4
+fs-entries-per-connection = 1

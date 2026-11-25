@@ -1,0 +1,106 @@
+lemma guard_marker(number: U64):
+    requires number == 9
+    ensures number == number
+    proof:
+        auto
+
+fn choose(flag: Bool) -> Result<U64, U64>:
+    ensures match result:
+        Ok(value):
+            value == 7
+        Err(reason):
+            reason == 9
+    if flag:
+        return Ok(7)
+    return Err(9)
+
+fn scalar(flag: Bool) -> U64:
+    let Ok(value) = choose(flag) else Err(reason):
+        return reason
+    return value
+
+fn recover(data: Buffer<U64>, flag: Bool) -> Result<Buffer<U64>, Buffer<U64>>:
+    ensures match result:
+        Ok(kept):
+            kept == old(data)
+        Err(kept):
+            kept == old(data)
+    if flag:
+        return Ok(move data)
+    return Err(move data)
+
+fn ordinary_cleanup() -> U64:
+    ensures result == 5
+    let temporary: Buffer<U64> = memory.alloc(0)
+    return 5
+
+fn owned(data: Buffer<U64>, flag: Bool) -> Result<Buffer<U64>, Buffer<U64>>:
+    ensures match result:
+        Ok(kept):
+            kept == old(data)
+        Err(kept):
+            kept == old(data)
+    let Ok(value) = recover(move data, flag) else Err(retained):
+        let marker = ordinary_cleanup()
+        return Err(move retained)
+    return Ok(move value)
+
+fn optional(flag: Bool) -> Option<U64>:
+    if flag:
+        return Some(11)
+    return None
+
+fn option_value(flag: Bool) -> U64:
+    let Some(value) = optional(flag) else None:
+        return 13
+    return value
+
+type Signalled:
+    console: Console<Write>
+    number: U64
+
+fn signal(console: Console<Write>, flag: Bool) -> Result<Signalled, Signalled>:
+    console.print_int(17)
+    if flag:
+        return Ok(Signalled(move console, 19))
+    return Err(Signalled(move console, 23))
+
+fn observed(console: Console<Write>, flag: Bool) -> Signalled:
+    let Ok(value) = signal(move console, flag) else Err(retained):
+        return move retained
+    return move value
+
+fn unused_guard(flag: Bool) -> U64:
+    let Ok(value) = choose(flag) else Err(reason):
+        let checked: U64 = 9
+        proof:
+            apply guard_marker(checked)
+        return reason
+    let checked_success: U64 = 9
+    proof:
+        apply guard_marker(checked_success)
+    return value
+
+fn main(console: Console<Write>):
+    console.print_int(scalar(true))
+    console.print_int(scalar(false))
+    console.print_int(option_value(true))
+    console.print_int(option_value(false))
+    var data: Buffer<U64> = memory.alloc(1)
+    memory.init(&mut data, 0, 42)
+    match owned(move data, true):
+        Ok(kept):
+            match owned(move kept, false):
+                Ok(unexpected):
+                    memory.release(unexpected)
+                Err(retained):
+                    var recovered = move retained
+                    console.print_int(memory.take(&mut recovered, 0))
+                    memory.release(recovered)
+        Err(unexpected):
+            memory.release(unexpected)
+    let first = observed(move console, true)
+    let second = observed(move first.console, false)
+    let returned_console = move second.console
+    returned_console.print_int(first.number)
+    returned_console.print_int(second.number)

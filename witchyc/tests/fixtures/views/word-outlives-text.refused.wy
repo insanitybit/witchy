@@ -1,0 +1,18 @@
+// Refused: the String cannot be closed while a word taken from it is in use.
+import console
+import span
+import string
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var text = move made
+    let _ = text.push_text(&allocator, "bolt hardware 100")
+    let words = text.span().words()
+    var cursor: U64 = 0
+    match words.next(&mut cursor):
+        Ok(word):
+            text.close()
+            write_span(&console, word)
+        Err(code):
+            text.close()

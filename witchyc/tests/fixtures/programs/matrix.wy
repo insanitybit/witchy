@@ -1,0 +1,100 @@
+// Matrices as rows of rows: build, multiply, transpose, print.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-vec.wy"
+import "../../../library/wasm-discard.wy"
+
+sealed type Matrix:
+    rows: Vec<Vec<U64>>
+    width: U64
+
+impl Matrix:
+    // `height` rows of `width` zeros. Err(1): no room.
+    fn zero(allocator: &Allocator, height: U64, width: U64) -> Result<Matrix, U64>:
+        var rows: Vec<Vec<U64>> = Vec.new(allocator, height)?
+        for step in 0..height:
+            let made: Result<Vec<U64>, U64> = Vec.filled(allocator, width, 0)
+            match move made:
+                Ok(row):
+                    match rows.push_mut(allocator, move row):
+                        Ok(done):
+                            continue
+                        Err(back):
+                            back.close()
+                            rows.discard()
+                            return Err(1)
+                Err(reason):
+                    rows.discard()
+                    return Err(1)
+        return Ok(Matrix(move rows, width))
+
+    fn height(self: &Matrix) -> U64:
+        return self.rows.len()
+
+    fn get(self: &Matrix, row: U64, column: U64) -> U64:
+        match self.rows.at(row):
+            Ok(cells):
+                match cells.get(column):
+                    Ok(value):
+                        return value
+                    Err(reason):
+                        return 0
+            Err(reason):
+                return 0
+
+    fn set(self: &mut Matrix, row: U64, column: U64, value: U64):
+        match self.rows.at_mut(row):
+            Ok(cells):
+                let _ = cells.set(column, value)
+            Err(reason):
+                ()
+
+    fn times(self: &Matrix, other: &Matrix, allocator: &Allocator) -> Result<Matrix, U64>:
+        if self.width != other.height():
+            return Err(2)
+        var out = Matrix.zero(allocator, self.height(), other.width)?
+        for row in 0..self.height():
+            for column in 0..other.width:
+                var sum: U64 = 0
+                for step in 0..self.width:
+                    sum += self.get(row, step) * other.get(step, column)
+                out.set(row, column, sum)
+        return Ok(move out)
+
+    fn print(self: &Matrix, console: &Console<Write>):
+        for cells in &self.rows:
+            for value in cells:
+                console.write_u64_right(*value, 5)
+            console.line("")
+
+    fn close(self: Matrix):
+        let Matrix(rows, width) = move self
+        rows.discard()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<Matrix, U64> = Matrix.zero(&allocator, 2, 3)
+    var left = match move made:
+        Ok(matrix):
+            move matrix
+        Err(reason):
+            return
+    let again: Result<Matrix, U64> = Matrix.zero(&allocator, 3, 2)
+    var right = match move again:
+        Ok(matrix):
+            move matrix
+        Err(reason):
+            left.close()
+            return
+    for row in 0..2:
+        for column in 0..3:
+            left.set(row, column, row * 3 + column + 1)
+            right.set(column, row, row + column * 2 + 1)
+    left.print(&console)
+    right.print(&console)
+    match left.times(&right, &allocator):
+        Ok(product):
+            product.print(&console)
+            product.close()
+        Err(reason):
+            console.line("no product")
+    left.close()
+    right.close()

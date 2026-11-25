@@ -1,0 +1,11 @@
+// Refused: `For(...)` of the recipe module's sealed type inside a `${...}` (review round 2: the
+// interpolation's tokens carried the recipe's span, and the Token was minted).
+import "parts/forgei.wy"
+import console
+
+type T derive(forgei.Interp(for: forgei.Token)):
+    a: U64
+
+fn main(console: Console<Write>):
+    let t = T(a: 999)
+    t.peek(&console)

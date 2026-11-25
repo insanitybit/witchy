@@ -1,0 +1,58 @@
+import "metadata.wy"
+import json_tree
+import string
+import time
+
+pub type FreshnessError:
+    InvalidDate
+    UnsupportedSpec
+    Expired
+
+pub fn check_freshness(document: &Metadata, now_ms: U64) -> Result<(), FreshnessError>:
+    let Ok(body): &Json = document.signed() else Err(code):
+        return Err(InvalidDate)
+    let Ok(field): &Json = body.field("expires") else Err(code):
+        return Err(InvalidDate)
+    let Ok(expires): &String = field.text() else Err(code):
+        return Err(InvalidDate)
+    check_spec(body)?
+    return check_expiry(expires.as_bytes(), now_ms)
+
+fn check_spec(body: &Json) -> Result<(), FreshnessError>:
+    let Ok(field): &Json = body.field("spec_version") else Err(code):
+        return Err(UnsupportedSpec)
+    let Ok(version): &String = field.text() else Err(code):
+        return Err(UnsupportedSpec)
+    let bytes = version.as_bytes()
+    if bytes.len() < 5 || bytes[0] != '1' || bytes[1] != '.':
+        return Err(UnsupportedSpec)
+    // The Coven profile accepts the numeric 1.MINOR.PATCH family.
+    var start: U64 = 2
+    for i in 2..bytes.len():
+        if bytes[i] == '.':
+            if start != 2 || !valid_component(bytes.part(start, i)):
+                return Err(UnsupportedSpec)
+            start = i + 1
+    if start == 2 || !valid_component(bytes.part(start, bytes.len())):
+        return Err(UnsupportedSpec)
+    return Ok(())
+
+fn valid_component(bytes: &[U8]) -> Bool:
+    if bytes.len() == 0 || (bytes.len() > 1 && bytes[0] == '0'):
+        return false
+    for byte in bytes:
+        if *byte < '0' || *byte > '9':
+            return false
+    return true
+
+// Expiration is inclusive at the recorded instant.
+pub fn check_expiry(date: &[U8], now_ms: U64) -> Result<(), FreshnessError>:
+    match time.parse_utc_seconds(date):
+        Ok(expires):
+            if expires <= now_ms / 1000:
+                return Err(Expired)
+            return Ok(())
+        Err(BeforeUnixEpoch):
+            return Err(Expired)
+        Err(InvalidUtcTimestamp):
+            return Err(InvalidDate)

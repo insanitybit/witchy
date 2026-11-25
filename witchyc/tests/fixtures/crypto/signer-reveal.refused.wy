@@ -1,0 +1,9 @@
+// Refused: a `Signer` has no operation that reads its key, by text, bytes or raw import.
+import crypto
+import secret
+fn main(targets: Signer, allocator: Allocator):
+    match targets.reveal_bytes(&allocator):
+        Ok(bytes):
+            bytes.close()
+        Err(e):
+            return

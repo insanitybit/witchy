@@ -1,0 +1,6 @@
+unsigned big-endian fields
+exact binary prefix
+trailing byte refused
+short prefix preserved
+unsigned field at EOF
+empty body at EOF

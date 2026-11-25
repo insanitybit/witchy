@@ -1,0 +1,75 @@
+// Breadth-first search over a maze given as text: a Deque of cells, a closure for "open",
+// Option for the neighbour step, `?` through the setup.
+import console
+import deque
+import option
+import string
+import vec
+import discard
+
+type Maze:
+    width: U64
+    height: U64
+
+fn step(maze: Maze, cell: U64, direction: U64) -> Option<U64>:
+    let x = cell % maze.width
+    let y = cell / maze.width
+    if direction == 0 && x + 1 < maze.width:
+        return Some(cell + 1)
+    if direction == 1 && x > 0:
+        return Some(cell - 1)
+    if direction == 2 && y + 1 < maze.height:
+        return Some(cell + maze.width)
+    if direction == 3 && y > 0:
+        return Some(cell - maze.width)
+    return None
+
+fn search(maze: Maze, open: fn(U64) -> Bool, start: U64, goal: U64, allocator: &Allocator) -> Result<U64, U64>:
+    let cells = maze.width * maze.height
+    var answer: U64 = 0
+    using var distance: Vec<U64> = Vec.filled(allocator, cells, 0)?:
+        using var queue: Deque<U64> = Deque.new(allocator, 8)?:
+            distance[start] = 1
+            let pushed = queue.push_back(allocator, start)
+            var going = true
+            while going:
+                match queue.pop_front_mut():
+                    Ok(here):
+                        if here == goal:
+                            answer = distance[here] - 1
+                            going = false
+                        else:
+                            for direction in 0..4:
+                                if let Some(next) = step(maze, here, direction):
+                                    if open(next) && distance[next] == 0:
+                                        distance[next] = distance[here] + 1
+                                        match queue.push_back(allocator, next):
+                                            Ok:
+                                                ()
+                                            Err(back):
+                                                going = false
+                    Err(empty):
+                        going = false
+    if answer == 0 && start != goal:
+        return Err(1)
+    return Ok(answer)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var text = move made
+    let _ = text.push_text(&allocator, "..#.....#.##.#.....#....#")
+    let maze = Maze(5, 5)
+    let bytes: &[U8] = text.as_bytes()
+    let open = fn(cell: U64) -> Bool: bytes[cell] != 35
+    match search(maze, open, 0, 23, &allocator):
+        Ok(steps):
+            console.print("steps: ${steps}")
+        Err(code):
+            console.print("no path")
+    match search(maze, open, 0, 24, &allocator):
+        Ok(steps):
+            console.print("steps: ${steps}")
+        Err(code):
+            console.print("no path")
+    text.close()

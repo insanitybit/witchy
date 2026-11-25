@@ -1,0 +1,6 @@
+// A function nothing calls is held to the parameter limit its types decide, as a called one is.
+fn unused(x: [U64; 32], extra: U64):
+    return
+
+fn main():
+    return

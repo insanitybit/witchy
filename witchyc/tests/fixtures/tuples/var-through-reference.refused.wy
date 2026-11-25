@@ -1,0 +1,9 @@
+// `var (a, b) = r` through a reference is not read silently: changing `a` would not change `*r`.
+import console
+
+fn main(console: Console<Write>):
+    let t = (1, 2)
+    let r = &t
+    var (a, b) = r
+    a += 1
+    console.print_int(a + b)

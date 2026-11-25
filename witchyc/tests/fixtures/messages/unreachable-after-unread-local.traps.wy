@@ -1,0 +1,12 @@
+// A never-read Bool set just before `unreachable`: the trap is still named as an `unreachable`
+// (dropping the dead set would have left `i32.const 1; drop; unreachable`, read as an overflow).
+import console
+
+fn stop(n: U64) -> U64:
+    if n > 3:
+        let flag = true
+        unreachable
+    return n
+
+fn main(console: Console<Write>):
+    console.print_int(stop(9))

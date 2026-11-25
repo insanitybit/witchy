@@ -1,0 +1,31 @@
+// A record of narrow numbers and a Bool derives Hash and Eq (U8, U16, U32 and Bool hash as
+// the U64 they widen to) and is a HashMap key.
+import console
+import hash
+import hashmap
+
+type Key derive(Eq, Hash, Discard):
+    kind: U8
+    port: U16
+    on: Bool
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): HashMap<Key, U64> = HashMap.new(&allocator, 8) else Err(code):
+        return
+    var map = move made
+    match map.insert(Key(kind: 1, port: 80, on: true), 7):
+        Ok:
+            ()
+        Err(entry):
+            discard(entry)
+    match map.get(&Key(kind: 1, port: 80, on: true)):
+        Ok(n):
+            console.print_int(*n)
+        Err(code):
+            console.print_int(0)
+    match map.get(&Key(kind: 1, port: 80, on: false)):
+        Ok(n):
+            console.print_int(*n)
+        Err(code):
+            console.print_int(0)
+    map.discard()

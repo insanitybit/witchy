@@ -1,0 +1,43 @@
+import hash
+import string
+
+pub type Point:
+    x: U64
+    y: U64
+
+fn same_str(a: &String, b: &String) -> Bool:
+    return *a == *b
+
+fn mix(a: &Point) -> U64:
+    return a.x * 31 + a.y
+
+impl Point:
+    fn sum(p: &Point) -> U64:
+        return p.x + p.y
+
+pub trait Sig:
+    fn sig(self: &Self) -> U64
+
+pub derive StrEq:
+    impl Eq for Self:
+        fn eq(self: &Self, other: &Self) -> Bool:
+            static for f in fields:
+                if !same_str(&(*self).f, &(*other).f):
+                    return false
+            return true
+
+pub derive PtSig:
+    impl Sig for Self:
+        fn sig(self: &Self) -> U64:
+            var s: U64 = 0
+            static for f in fields:
+                s = s + mix(&(*self).f)
+            return s
+
+pub derive PtSum:
+    impl Sig for Self:
+        fn sig(self: &Self) -> U64:
+            var s: U64 = 0
+            static for f in fields:
+                s = s + (*self).f.sum()
+            return s

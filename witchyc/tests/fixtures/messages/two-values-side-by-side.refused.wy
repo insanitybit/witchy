@@ -1,0 +1,7 @@
+// Refused, naming what follows the complete expression and the two likely fixes: it said only that
+// the line should end here (355 of 4,000 mutants).
+import console
+
+fn main(console: Console<Write>):
+    let n: U64 = 1 2
+    console.print_int(n)

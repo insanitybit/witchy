@@ -1,0 +1,13 @@
+// Refused: a `Fetch` gets from one endpoint; the `Net` inside is reached only in its library.
+import http
+
+fn escape(fetch: &Fetch) -> U64:
+    match (*fetch).net.connect("10.0.0.1:22"):
+        Ok(socket):
+            socket.close()
+            return 1
+        Err(_):
+            return 0
+
+fn main(net: Net):
+    return

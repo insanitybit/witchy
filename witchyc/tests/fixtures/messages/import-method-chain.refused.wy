@@ -1,0 +1,10 @@
+// `span` is not imported, so `text.span()` is unknown; the diagnostic blames `.len()` and
+// suggests Vec: "no method of this name on the value's type; `len` is a method of `Vec`".
+import console
+import string
+
+fn first(text: &String) -> U64:
+    return text.span().len()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    console.print_int(1)

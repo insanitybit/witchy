@@ -1,0 +1,29 @@
+// `static if NAME is TYPE:` inside a `static for`: the branch the field's declared type selects
+// is written for that field (`static else:` for the others). Read-only: the type as declared is
+// compared with the type written; nothing else is computed.
+import console
+
+trait Described:
+    fn described(self: &Self, console: &Console<Write>)
+
+derive Describe:
+    impl Described for Self:
+        fn described(self: &Self, console: &Console<Write>):
+            static for f in fields:
+                static if f is U32:
+                    console.print("u32 ${(*self).f}")
+                static else:
+                    console.print("other")
+            static for g in fields:
+                static if g is [U8; 2]:
+                    console.print("pair ${(*self).g[0]}")
+
+type Mixed derive(Describe):
+    a: U32
+    b: U64
+    c: U32
+    d: [U8; 2]
+
+fn main(console: Console<Write>):
+    let m = Mixed(a: 1, b: 2, c: 3, d: [7, 8])
+    m.described(&console)

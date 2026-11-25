@@ -1,0 +1,33 @@
+// Refused: a generic function given a pausing reader inside `nosuspend:`; the same call with a memory reader is accepted (readers.wy).
+import console
+
+trait Read:
+    fn byte(self: &mut Self) -> U64 suspends
+
+type Memory:
+    at: U64
+
+type Remote:
+    at: U64
+
+impl Read for Memory:
+    fn byte(self: &mut Memory) -> U64:
+        (*self).at += 1
+        return (*self).at
+
+fn wait_for_data(at: U64) -> U64 suspends:
+    return at + 100
+
+impl Read for Remote:
+    fn byte(self: &mut Remote) -> U64:
+        (*self).at += 1
+        return wait_for_data((*self).at)
+
+
+fn two<R: Read>(reader: &mut R) -> U64:
+    return reader.byte() + reader.byte()
+
+fn main(console: Console<Write>):
+    var remote = Remote(0)
+    nosuspend:
+        console.print_int(two(&mut remote))

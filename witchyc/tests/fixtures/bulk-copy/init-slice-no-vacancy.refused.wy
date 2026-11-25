@@ -1,0 +1,10 @@
+fn append(target: &mut Buffer<U8>, source: &[U8]):
+    ensures memory.same_allocation(target, old(target))
+    proof:
+        auto
+    if source.len() <= memory.capacity(&*target):
+        memory.init_slice_unchecked(target, 0, source)
+    return
+
+fn main():
+    return

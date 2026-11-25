@@ -1,0 +1,50 @@
+# Fly.io config for the PUBLIC coven origin — app "witchy" (https://witchy.fly.dev).
+# This image serves the coven-web glamour UI on 0.0.0.0:8080 and same-origin-
+# proxies both `/api/coven/*` (SPA) and the bare `/coven/*` read routes (pm) to an
+# embedded coven registry on loopback. Deploy from the REPO ROOT so the Docker
+# build context contains the workspace AND the pre-built web bundle:
+#
+#   projects/coven-web/web/build.sh    # build the bundle first (dist/)
+#   flyctl deploy --remote-only --app witchy \
+#     --config projects/coven-web/deploy/fly.toml \
+#     --dockerfile projects/coven-web/deploy/Dockerfile
+#
+# App-level secrets (set out of band, persist across deploys): COVEN_SIGNING_SEED
+# (32-byte hex) and COVEN_TRUST_ISSUERS (`admin=<pubkey-hex>`). They arrive as env
+# vars; intentionally NOT duplicated here so a deploy can never clobber them.
+app = "witchy"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+# The registry store. Single machine + single volume: coven is a single-instance
+# service (its store is a directory tree, not a replicated database).
+[mounts]
+  source = "coven_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  # Fly's edge terminates TLS for https://witchy.fly.dev and redirects plain HTTP;
+  # the container speaks HTTP on 8080.
+  force_https = true
+  # A registry origin must stay up: no scale-to-zero, keep the one machine running.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  # /coven/rootpub is a real route: coven-web proxies it to the loopback registry,
+  # which returns 200 + the registry public key. First boot compiles BOTH embedded
+  # programs (coven-serve + coven-web) to wasm before their ports open, so the
+  # grace period must outlast two (parallel) compiles.
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "60s"
+    method = "GET"
+    path = "/coven/rootpub"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

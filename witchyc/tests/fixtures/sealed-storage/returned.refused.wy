@@ -1,0 +1,22 @@
+// Refused: the reference into the storage is returned. (Sound for the invariant, but a
+// function proved over numbers returns no `&mut`.)
+import console
+import vec
+import option
+
+sealed type Bag:
+    items: Vec<U64>
+    held: Option<U64>
+    spare: U64
+    count: U64
+    limit: U64
+    invariant count <= limit
+    invariant when None = held:
+        count == 0
+
+impl Bag:
+    fn slot(bag: &mut Bag, i: U64) -> Result<&mut U64, U64>:
+        return (*bag).items.at_mut(i)
+
+fn main(console: Console<Write>):
+    console.print_int(1)

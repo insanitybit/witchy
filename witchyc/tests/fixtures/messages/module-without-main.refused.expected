@@ -1,0 +1,2 @@
+this file offers `helper` for others to import and has no `fn main(...)`
+a package is built and checked with `grimoire build`

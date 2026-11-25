@@ -1,0 +1,7 @@
+// A literal alone does not say which number type a parameter is: the type is written.
+type Pair<A, B>:
+    left: A
+    right: B
+
+fn main():
+    let pair = Pair(1, 2)

@@ -1,0 +1,11 @@
+// Refused: the run must fit.
+fn read(buffer: &Buffer<U8>, at: U64, count: U64) -> U64:
+    requires count <= 8
+    requires memory.initialized_range(buffer, at, at + count)
+    ensures true
+    proof:
+        auto
+    return memory.read_word_unchecked(buffer, at, count)
+
+fn main():
+    return

@@ -1,0 +1,116 @@
+// U64 copied access composes through the public bounds and retention summary.
+fn observed_get(input: Vec<U64>, index: USize) -> Result<Indexed, Vec<U64>>:
+    ensures match result:
+        Ok(indexed):
+            indexed.vector.data == old(input.data)
+            indexed.vector.length == old(input.length)
+            indexed.vector.capacity == old(input.capacity)
+            memory.unchanged(input.data)
+            match indexed.item:
+                Some(value):
+                    index < old(input.length)
+                    value == old(memory.read(input.data, index))
+                None:
+                    index >= old(input.length)
+        Err(kept):
+            kept.data == old(input.data)
+            kept.length == old(input.length)
+            kept.capacity == old(input.capacity)
+            memory.unchanged(input.data)
+            index < old(input.length)
+            !memory.loan_room(1)
+    return vec_get(move input, index)
+
+fn unused_identity(input: U64) -> U64:
+    ensures result == old(input)
+    return input
+
+fn main(console: Console<Write>):
+    let created: Result<Vec<U64>, AllocError> = vec_new(2)
+    let Ok(empty) = move created else Err(reason):
+        discard(move console)
+        return
+    let Ok(first) = vec_push_spare(move empty, 73) else Err(rejected):
+        discard(move rejected)
+        discard(move console)
+        return
+    let Ok(vector) = vec_push_spare(move first, 74) else Err(rejected):
+        discard(move rejected)
+        discard(move console)
+        return
+    let selected: USize = 1
+    let Ok(indexed) = observed_get(move vector, selected) else Err(rejected):
+        discard(move rejected)
+        discard(move console)
+        return
+    let Some(value) = move indexed.item else None:
+        discard(move indexed.vector)
+        discard(move console)
+        return
+    assert selected < indexed.vector.length
+    assert indexed.vector.length == 2
+    assert indexed.vector.capacity == 2
+    assert memory.cell(indexed.vector.data, 0, 73)
+    assert memory.cell(indexed.vector.data, 1, 74)
+    console.print_int(value)
+    var witness: Buffer<U64> = memory.alloc(1)
+    memory.init(&mut witness, 0, 37)
+    var held: Buffer<U64> = memory.alloc(1)
+    memory.init(&mut held, 0, 41)
+    var third: Buffer<U64> = memory.alloc(1)
+    memory.init(&mut third, 0, 42)
+    let first_loan = &witness
+    let second_loan = &held
+    let third_loan = &third
+    let room: Bool = memory.loan_room(1)
+    assert room == false
+    let outside: USize = 4
+    let Ok(missing) = observed_get(move indexed.vector, outside) else Err(rejected):
+        discard(move rejected)
+        memory.end(first_loan)
+        memory.end(second_loan)
+        memory.end(third_loan)
+        memory.release(witness)
+        memory.release(held)
+        memory.release(third)
+        discard(move console)
+        return
+    match missing.item:
+        Some(unexpected):
+            console.print_int(unexpected)
+        None:
+            assert outside >= missing.vector.length
+            console.print_int(missing.vector.length)
+    let Err(kept) = observed_get(move missing.vector, selected) else Ok(unexpected):
+        discard(move unexpected)
+        memory.end(first_loan)
+        memory.end(second_loan)
+        memory.end(third_loan)
+        memory.release(witness)
+        memory.release(held)
+        memory.release(third)
+        discard(move console)
+        return
+    assert selected < kept.length
+    assert kept.length == 2
+    assert kept.capacity == 2
+    assert memory.cell(kept.data, 0, 73)
+    assert memory.cell(kept.data, 1, 74)
+    console.print_int(kept.capacity)
+    console.print_int(memory.read(first_loan, 0))
+    console.print_int(memory.read(second_loan, 0))
+    console.print_int(memory.read(third_loan, 0))
+    memory.end(first_loan)
+    memory.end(second_loan)
+    memory.end(third_loan)
+    let Ok(done) = vec_release(move kept) else Err(rejected):
+        discard(move rejected)
+        memory.release(witness)
+        memory.release(held)
+        memory.release(third)
+        discard(move console)
+        return
+    memory.release(witness)
+    memory.release(held)
+    memory.release(third)
+    discard(move console)

@@ -1,0 +1,6 @@
+1 [first line.txt] txt true key false
+2 [second] txt false key false
+3 [] txt false key false
+4 [fourth has key] txt false key true
+5 [last.txt] txt true key false
+[no newline at the end]

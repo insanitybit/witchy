@@ -1,0 +1,28 @@
+// Refused: a value reached through `&mut` may be the greatest U64, so `+= 1` may overflow.
+import console
+
+type Shape:
+    Rect(U64, U64)
+    Dot
+
+type P:
+    x: U64
+    y: U64
+
+fn f(s: &mut Shape) -> U64:
+    ensures true
+    proof:
+        auto
+    match s:
+        Rect(w, h):
+            *w += 1
+            return 1
+        Dot:
+            return 0
+
+fn g() -> U64:
+    var s = Rect(1, 1)
+    return f(&mut s)
+
+fn main(console: Console<Write>):
+    console.print_int(g())

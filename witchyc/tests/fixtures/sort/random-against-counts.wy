@@ -1,0 +1,46 @@
+// The library sort on random vectors (lengths 0 to 300, small and wide value ranges, many
+// duplicates, in order and reversed): each result in order and the same values, counted per value.
+import console
+import vec
+import sort
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var seed: U64 = 11
+    var wrong: U64 = 0
+    var sorted: U64 = 0
+    for round in 0..120:
+        seed = seed * 48271 % 2147483647
+        let n = seed % 301
+        let range = if round % 3 == 0: 4 else: if round % 3 == 1: 64 else: 1000000
+        let Ok(made): Vec<U64> = Vec.new(&allocator, n + 1) else Err(c):
+            return
+        var v = move made
+        var counts: [U64; 64] = [0; 64]
+        var sum: U64 = 0
+        for k in 0..n:
+            seed = seed * 48271 % 2147483647
+            var x = seed % range
+            // Every fifth round in order, every fifth reversed: the inputs a quicksort is weakest on.
+            if round % 5 == 3:
+                x = k
+            else if round % 5 == 4:
+                x = n - k
+            let p = v.push_mut(&allocator, x)
+            counts[x % 64] += 1
+            sum += x
+        sort(&mut v)
+        var after: [U64; 64] = [0; 64]
+        var total: U64 = 0
+        for i in 0..v.len():
+            if i > 0 && v[i - 1] > v[i]:
+                wrong += 1
+            after[v[i] % 64] += 1
+            total += v[i]
+        for b in 0..64:
+            if counts[b] != after[b]:
+                wrong += 1
+        if total != sum || v.len() != n:
+            wrong += 1
+        sorted += n
+        v.close()
+    console.print("${wrong} wrong, ${sorted} sorted")

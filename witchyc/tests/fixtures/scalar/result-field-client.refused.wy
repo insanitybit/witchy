@@ -1,0 +1,22 @@
+// `order` ensures low <= high, which says nothing for high - low the other way.
+type Pair:
+    low: U64
+    high: U64
+
+fn order(a: U64, b: U64) -> Pair:
+    ensures result.low <= result.high
+    proof:
+        auto
+    if a < b:
+        return Pair(a, b)
+    return Pair(b, a)
+
+fn gap(a: U64, b: U64) -> U64:
+    ensures result >= 0
+    proof:
+        auto
+    let pair = order(a, b)
+    return pair.low - pair.high
+
+fn main(console: Console<Write>):
+    console.print_int(gap(9, 4))

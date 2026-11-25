@@ -1,0 +1,7 @@
+// Tuples in an array taken apart in the loop's head.
+import console
+
+fn main(console: Console<Write>):
+    let pairs = [(1, 2), (3, 4)]
+    for (a, b) in pairs:
+        console.print_int(a + b)

@@ -1,0 +1,17 @@
+// What was borrowed with `&mut` stays lent while the result is in use.
+type Pair:
+    a: U64
+    b: U64
+
+fn pick(pair: &mut Pair, which: &U64) -> &mut U64:
+    if *which == 0:
+        return &mut (*pair).a
+    return &mut (*pair).b
+
+fn main(console: Console<Write>):
+    var pair = Pair(1, 2)
+    var which: U64 = 1
+    let slot = pick(&mut pair, &which)
+    pair.a = 5
+    *slot = 9
+    console.print_int(pair.b)

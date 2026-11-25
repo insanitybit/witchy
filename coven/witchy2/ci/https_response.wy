@@ -1,0 +1,39 @@
+import "../https_reply.wy"
+import "../response_fields.wy"
+import http
+import span
+import string
+import tls
+
+pub fn send_ci_response(stream: &mut SecureSession, status: U64, body: Span, plaintext: &mut [U8], wire: &mut [U8], allocator: &Allocator) -> Result<(), SessionError>:
+    let code = ci_status(status)
+    let Ok(empty): ResponseHeaders = http.response_headers(allocator) else Err(reason):
+        return Err(SessionNoRoom)
+    var headers = move empty
+    let added = ci_fields(&mut headers, code, allocator)
+    if let Err(reason) = added:
+        headers.close()
+        return Err(SessionWriteFailed)
+    let sent = send_reply_with_fields(stream, code, "application/json", &headers, body, plaintext, wire, allocator)
+    headers.close()
+    return sent
+
+fn ci_fields(headers: &mut ResponseHeaders, status: U64, allocator: &Allocator) -> Result<(), U64>:
+    let empty = String.with_capacity(allocator, 96)?
+    var field = move empty
+    let added = add_ci_fields(headers, &mut field, status, allocator)
+    field.close()
+    return added
+
+fn add_ci_fields(headers: &mut ResponseHeaders, field: &mut String, status: U64, allocator: &Allocator) -> Result<(), U64>:
+    add_common_fields(headers, field, allocator)?
+    if status == 405:
+        add_literal(headers, field, "Allow", "POST", allocator)?
+    return add_literal(headers, field, "Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'", allocator)
+
+fn ci_status(status: U64) -> U64:
+    match status:
+        200 | 403 | 404 | 405 | 413 | 421 | 431 | 503:
+            return status
+        _:
+            return 400

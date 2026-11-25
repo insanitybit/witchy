@@ -1,0 +1,16 @@
+// Nothing sets the flag.
+type Flag:
+    on: Bool
+    count: U64
+
+fn bump(flag: &mut Flag):
+    requires flag.count < 10
+    ensures flag.on
+    proof:
+        auto
+    flag.count += 1
+
+fn main(console: Console<Write>):
+    var flag = Flag(false, 0)
+    bump(&mut flag)
+    console.print_int(flag.count)

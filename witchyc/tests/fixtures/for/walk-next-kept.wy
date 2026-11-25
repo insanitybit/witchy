@@ -1,0 +1,21 @@
+// Review of the slice walk: a type with `next` and `elements` is walked by `next`, as before.
+import console
+
+type C:
+    items: [U64; 3]
+
+impl C:
+    pub fn elements(c: &C) -> &[U64]:
+        return c.items.slice()
+
+    pub fn next(c: &C, cursor: &mut U64) -> Result<U64, U64>:
+        if *cursor < 5:
+            let k = *cursor
+            *cursor += 1
+            return Ok(k * 100)
+        return Err(0)
+
+fn main(console: Console<Write>):
+    let c = C([1, 2, 3])
+    for x in &c:
+        console.print_int(x)

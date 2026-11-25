@@ -1,0 +1,23 @@
+// A function that may pause runs only on a task's stack: its large frame is checked against the
+// task's stack as it runs, not refused for the main stack's size (review).
+import console
+import tasks
+
+fn work(seed: U64) suspends:
+    var a: [U64; 200] = [seed; 200]
+    pause(seed)
+    a[3] = 1
+    report(a[199] + a[3])
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(m1): Task = Task.spawn(&allocator, 8192, work, 7) else Err(given):
+        return
+    var t1 = move m1
+    var g1 = true
+    while g1:
+        match t1.step():
+            Ok:
+                g1 = false
+            Err(token):
+                console.print_int(token)
+    t1.close()

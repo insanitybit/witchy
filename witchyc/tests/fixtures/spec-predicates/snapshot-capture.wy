@@ -1,0 +1,81 @@
+predicate was_empty<T>(buffer: &mut Buffer<T>, index: U64):
+    memory.empty(old(buffer), index)
+
+fn init_with_snapshot<T>(buffer: &mut Buffer<T>, index: U64, item: T):
+    requires index < memory.capacity(buffer)
+    requires memory.empty(buffer, index)
+    ensures was_empty(buffer, index)
+    ensures memory.cell(buffer, index, item)
+    proof:
+        auto
+    memory.init_unchecked(buffer, index, item)
+    return
+
+fn safe_snapshot_init<T>(buffer: &mut Buffer<T>, index: U64, item: T) -> Result<(), T>:
+    ensures true
+    proof:
+        auto
+    if index < memory.capacity(buffer):
+        if !memory.initialized(buffer, index):
+            init_with_snapshot(buffer, index, item)
+            return Ok(())
+    return Err(item)
+
+predicate selected<T>(result: T, buffer: &Buffer<T>, index: U64):
+    memory.cell(buffer, index, result)
+
+predicate same_before<T>(after: &Buffer<T>, before: &Buffer<T>):
+    memory.same_allocation(after, old(before))
+
+fn snapshot_get<T>(buffer: &Buffer<T>, index: U64) -> T:
+    requires readable(buffer, index)
+    ensures selected(result, buffer, index)
+    ensures same_before(buffer, buffer)
+    proof:
+        auto
+    return memory.get_unchecked(buffer, index)
+
+fn safe_snapshot<T>(buffer: &Buffer<T>, index: U64) -> Result<T, U64>:
+    ensures true
+    proof:
+        auto
+    if index < memory.capacity(buffer):
+        if memory.initialized(buffer, index):
+            return Ok(snapshot_get(buffer, index))
+    return Err(1)
+
+fn close<T>(input: Buffer<T>):
+    match memory.try_release(move input):
+        Ok:
+            return
+        Err(back):
+            close(move back)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let allocation: Result<Buffer<U64>, U64> = memory.try_alloc(&allocator, 1)
+    match move allocation:
+        Ok(input):
+            var buffer = move input
+            match safe_snapshot_init(&mut buffer, 0, 77):
+                Ok:
+                    return_after_init(&console, move buffer)
+                Err(item):
+                    console.print_int(996)
+                    close(move buffer)
+        Err(code):
+            console.print_int(997)
+
+fn return_after_init(console: &Console<Write>, input: Buffer<U64>):
+    var buffer = move input
+    match safe_snapshot(&buffer, 0):
+        Ok(item):
+            console.print_int(item)
+        Err(code):
+            console.print_int(999)
+    match safe_snapshot(&buffer, 1):
+        Ok(item):
+            console.print_int(998)
+        Err(code):
+            console.print_int(code)
+    let _ = memory.take(&mut buffer, 0)
+    close(move buffer)

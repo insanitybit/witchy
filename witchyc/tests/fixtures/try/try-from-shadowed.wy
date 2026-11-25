@@ -1,0 +1,37 @@
+// Review: a local named like the error type does not capture the conversion; `?` calls
+// `AppError.from` itself.
+import console
+
+type AppError:
+    NoRoom(U64)
+    Empty
+
+impl AppError:
+    pub fn from(code: U64) -> AppError:
+        return NoRoom(code)
+
+type Fake:
+    x: U64
+
+impl Fake:
+    pub fn from(self: &Fake, code: U64) -> AppError:
+        return Empty
+
+fn fail(code: U64) -> Result<U64, U64>:
+    return Err(code)
+
+fn passes(code: U64) -> Result<U64, AppError>:
+    let AppError = Fake(1)
+    let n = fail(code)?
+    return Ok(n)
+
+fn main(console: Console<Write>):
+    match passes(42):
+        Ok(n):
+            console.line("ok?")
+        Err(e):
+            match e:
+                NoRoom(code):
+                    console.print_int(code)
+                Empty:
+                    console.line("empty - shadowed!")

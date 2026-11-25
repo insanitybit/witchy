@@ -1,0 +1,1 @@
+`Wrap`'s field `b` has the type parameter `U`, which its `HashKey` impl does not bind by `HashKey`

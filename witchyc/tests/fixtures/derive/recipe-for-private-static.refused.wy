@@ -1,0 +1,12 @@
+// Refused: a recipe calling a private static method of its `For` type, the user having chosen the
+// recipe file's sealed `Token` (review round 3: `For.mk(v)` minted one of the user's value).
+import "parts/for_private_methods.wy"
+import console
+
+type T derive(for_private_methods.Stat(for: for_private_methods.Token)):
+    a: U64
+
+fn main(console: Console<Write>):
+    let t = T(a: 999)
+    let tok = t.made(for_private_methods.mint())
+    console.print("${for_private_methods.redeem(&tok)}")

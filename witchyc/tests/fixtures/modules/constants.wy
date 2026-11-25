@@ -1,0 +1,10 @@
+// A module constant is its file's unless declared `pub let`.
+import console
+import "parts/limits.wy"
+
+let LOCAL = LIMIT + 1
+
+fn main(console: Console<Write>):
+    console.print_int(LIMIT)
+    console.print_int(DOUBLE)
+    console.print_int(LOCAL)

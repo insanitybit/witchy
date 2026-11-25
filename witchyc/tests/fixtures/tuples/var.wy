@@ -1,0 +1,11 @@
+// `var (a, b) = ...` binds variables; a stated type applies to the tuple.
+import console
+
+fn main(console: Console<Write>):
+    var (count, total): (U64, U64) = (0, 0)
+    for i in 1..=4:
+        count += 1
+        total += i
+    console.print_int(count * 100 + total)
+    let (small, big): (U8, U64) = (200, 300)
+    console.print_int(U8.to_u64(small) + big)

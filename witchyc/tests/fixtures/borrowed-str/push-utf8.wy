@@ -1,0 +1,45 @@
+import console
+import string
+import vec
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.from_str(&allocator, "pré") else Err(code):
+        return
+    var text = move made
+    let good: [U8; 3] = [226, 152, 128]
+    let bad: [U8; 3] = [237, 160, 128]
+    match text.push_utf8_slice(&allocator, good.slice()):
+        Ok:
+            console.write_string(&text)
+            console.print_byte(10)
+        Err(code):
+            console.print_int(code)
+    match text.push_utf8_slice(&allocator, bad.slice()):
+        Ok:
+            console.line("invalid accepted")
+        Err(code):
+            console.print_int(code)
+    console.write_string(&text)
+    console.print_byte(10)
+    text.close()
+    let Ok(buffer): Vec<U8> = Vec.new(&allocator, 3) else Err(code):
+        return
+    var raw = move buffer
+    let _ = raw.extend_from_slice_mut(&allocator, bad.slice())
+    match String.from_utf8(move raw):
+        Ok(accepted):
+            accepted.close()
+            console.line("invalid accepted")
+        Err(original):
+            console.print_int(original.as_slice().len())
+            original.close()
+    let Ok(valid_buffer): Vec<U8> = Vec.new(&allocator, 3) else Err(code):
+        return
+    var valid = move valid_buffer
+    let _ = valid.extend_from_slice_mut(&allocator, good.slice())
+    match String.from_utf8(move valid):
+        Ok(accepted):
+            console.line(accepted.as_str())
+            accepted.close()
+        Err(original):
+            original.close()

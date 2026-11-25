@@ -1,0 +1,8 @@
+import console
+
+type Score derive(Eq):
+    points: U64
+
+fn main(console: Console<Write>):
+    if Score(1) == Score(1):
+        console.print_int(1)

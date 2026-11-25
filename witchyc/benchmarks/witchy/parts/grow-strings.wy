@@ -1,0 +1,45 @@
+import console
+import string
+import vec
+
+// 200000 Strings pushed into a Vec<String> that starts empty: each doubling moves every owner.
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<String> = Vec.new(&allocator, 0) else Err(code):
+        return
+    var names = move made
+    for i in 0..200000:
+        let made_name: Result<String, U64> = String.new(&allocator)
+        match move made_name:
+            Ok(name):
+                match names.push(&allocator, move name):
+                    Ok(grown):
+                        names = move grown
+                    Err(back):
+                        console.line("full")
+                        let VecPushError(vector, item) = move back
+                        item.close()
+                        names = move vector
+                        break
+            Err(code):
+                console.line("no room")
+                break
+    console.print_int(names.len())
+    finish(move names)
+
+// A Vec of owners is released once it is empty: `try_release` hands it back if it is not.
+fn finish(names: Vec<String>):
+    var rest = move names
+    drain(&mut rest)
+    match rest.try_release():
+        Ok:
+            return
+        Err(stuck):
+            finish(move stuck)
+
+fn drain(names: &mut Vec<String>):
+    while names.len() > 0:
+        match names.take_last_mut():
+            Ok(name):
+                name.close()
+            Err(code):
+                return

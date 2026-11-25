@@ -1,0 +1,62 @@
+// keymap-span-query with the query's Equivalent derived (`keys.Query(for: NameKey)`) and checked
+// by the key law like a written one. A composite key queried by a borrowed view (slice 2): NameKey(tenant, String) stored in a
+// KeyMap, found by a NameQuery(tenant, Span) cut from the middle of another String, under the
+// reference policy at two seeds. Both derive the recipe's whole-input feed, which frames the
+// name as its length then its bytes, so the query and the key feed the same input wherever the
+// span starts; a different tenant with the same name misses.
+import "../derive/parts/keys.wy"
+import console
+import hash
+import hashmap
+import keymap
+import span
+import string
+
+type NameKey derive(keys.Key, keys.Fed, Discard):
+    tenant: U32
+    name: String
+
+type NameQuery derive(keys.Fed, keys.Query(for: NameKey)):
+    tenant: U32
+    name: Span
+
+fn run(console: &Console<Write>, allocator: &Allocator, policy: Policy, text: &String):
+    let Ok(made): KeyMap<NameKey, U64> = KeyMap.new(allocator, 4, policy) else Err(code):
+        return
+    var map = move made
+    let Ok(name_made): String = String.new(allocator) else Err(code):
+        map.discard()
+        return
+    var name = move name_made
+    let _ = name.push_text(allocator, "beta")
+    match map.put(allocator, NameKey(tenant: U32.truncate(4000000000), name: move name), 42):
+        Ok:
+            ()
+        Err(entry):
+            entry.discard()
+    let word = text.span().part(6, 10)
+    let hit = NameQuery(tenant: U32.truncate(4000000000), name: word)
+    let other = NameQuery(tenant: U32.truncate(7), name: word)
+    match map.get(&hit):
+        Ok(v):
+            console.print_int(*v)
+        Err(code):
+            console.print_int(0)
+    if !map.contains(&other):
+        console.print_int(1)
+    match map.remove(&hit):
+        Ok(entry):
+            entry.discard()
+        Err(code):
+            ()
+    console.print_int(map.len())
+    map.discard()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(text_made): String = String.new(&allocator) else Err(code):
+        return
+    var text = move text_made
+    let _ = text.push_text(&allocator, "alpha beta gamma")
+    run(&console, &allocator, Reference(0), &text)
+    run(&console, &allocator, Reference(1), &text)
+    text.close()

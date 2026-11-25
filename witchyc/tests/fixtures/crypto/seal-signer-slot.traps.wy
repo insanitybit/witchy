@@ -1,0 +1,4 @@
+// A `Secret<Seal>` whose grant says it signs `targets`: the run stops before `main`.
+import secret
+fn main(key: Secret<Seal>):
+    return

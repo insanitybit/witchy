@@ -1,0 +1,20 @@
+// A forwarding function is held to its own clauses, variant by variant: here they are swapped.
+import console
+import "../modules/parts/choose.wy"
+
+// Forwards `choose`: its own clauses say the same thing.
+fn pick(left: &U64, right: &U64, flag: Bool) -> Result<&U64, &U64>:
+    borrows Ok from right
+    borrows Err from left
+    return choose(left, right, flag)
+
+fn main(console: Console<Write>):
+    var a: U64 = 1
+    var b: U64 = 2
+    match pick(&a, &b, a < b):
+        Ok(item):
+            b = 3
+            console.print_int(*item)
+        Err(item):
+            a = 3
+            console.print_int(*item)

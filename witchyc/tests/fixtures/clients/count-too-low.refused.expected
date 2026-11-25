@@ -1,0 +1,2 @@
+proof failed: function `count_below`
+  not proved: ensures result < items.len()

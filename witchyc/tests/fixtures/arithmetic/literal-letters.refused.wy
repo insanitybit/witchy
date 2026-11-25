@@ -1,0 +1,3 @@
+// A number does not run on into letters.
+fn main(console: Console<Write>):
+    console.print_int(12abc)

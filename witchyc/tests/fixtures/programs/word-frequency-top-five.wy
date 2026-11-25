@@ -1,0 +1,73 @@
+// The five most frequent words of a text, most frequent first, ties in byte order.
+import console
+import string
+import text
+import span
+import vec
+import sort
+import hashmap
+import discard
+import discard_core
+
+type Count:
+    times: U64
+    word: String
+
+// More frequent first; equal counts in byte order of the word.
+impl Before for Count:
+    fn before(self: &Count, other: &Count) -> Bool:
+        if (*self).times != (*other).times:
+            return (*self).times > (*other).times
+        return (*self).word.less(&(*other).word)
+
+impl Discard for Count:
+    fn discard(self: Count):
+        let Count(times, word) = move self
+        word.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(c):
+        return
+    var text = move made
+    let _ = text.push_text(&allocator, "the cat and the hat and the bat sat on the mat with a cat and a hat")
+    let Ok(m): HashMap<String, U64> = HashMap.new(&allocator, 64) else Err(c):
+        text.close()
+        return
+    var counts = move m
+    for w in text.span().words():
+        match counts.get_mut(&w):
+            Ok(n):
+                *n += 1
+            Err(missing):
+                let Ok(key): String = w.to_string(&allocator) else Err(c):
+                    break
+                match counts.put(&allocator, move key, 1):
+                    Ok:
+                        ()
+                    Err(back):
+                        back.discard()
+    let Ok(v): Vec<Count> = Vec.new(&allocator, counts.len()) else Err(c):
+        counts.discard()
+        text.close()
+        return
+    var ranked = move v
+    while true:
+        match counts.take_any():
+            Ok(entry):
+                let Entry(word, times) = move entry
+                match ranked.push_mut(&allocator, Count(times: times, word: move word)):
+                    Ok:
+                        ()
+                    Err(back):
+                        back.discard()
+            Err(empty):
+                break
+    sort(&mut ranked)
+    for i in 0..5:
+        if i < ranked.len():
+            let c = ranked.cell(i)
+            console.write_string(&(*c).word)
+            console.print(" ${(*c).times}")
+    ranked.discard()
+    counts.discard()
+    text.close()

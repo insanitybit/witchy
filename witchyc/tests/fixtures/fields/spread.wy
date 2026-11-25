@@ -1,0 +1,15 @@
+// `Style(..base, size: 20)`: the fields not written are read from `base`.
+import console
+
+type Style:
+    size: U64
+    bold: Bool
+    color: U64
+
+fn main(console: Console<Write>):
+    let base = Style(size: 12, bold: false, color: 7)
+    let big = Style(..base, size: 20)
+    let loud = Style(..big, bold: true, color: 1)
+    console.print_int(big.size + big.color)
+    if loud.bold && !base.bold:
+        console.print_int(loud.size * 10 + loud.color)

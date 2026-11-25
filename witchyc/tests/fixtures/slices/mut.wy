@@ -1,0 +1,42 @@
+// `&mut [T]`: elements written through a unique slice, by `s[i] = v`, `+=`, `cell` and
+// `at`; the slice passed on twice, split into parts one after another, and read where a
+// `&[T]` is expected. Generic code writes Copy elements.
+import console
+
+fn fill(s: &mut [U64], value: U64):
+    for i in 0..s.len():
+        match s.at(i):
+            Ok(cell):
+                *cell = value + i
+            Err(code):
+                return
+
+fn total(s: &[U64]) -> U64:
+    var sum: U64 = 0
+    for item in s:
+        sum += *item
+    return sum
+
+fn first<T>(s: &mut [T]) -> &mut T:
+    return s.cell(0)
+
+fn set_all<T>(s: &mut [T], value: T):
+    for i in 0..s.len():
+        s[i] = value
+
+fn main(console: Console<Write>):
+    var numbers: [U64; 4] = [0, 0, 0, 0]
+    let s = numbers.slice_mut()
+    fill(s, 10)
+    fill(s, 20)
+    console.print_int(total(s))
+    s[2] = 30
+    s[3] += 5
+    console.print_int(s[2] + s[3])
+    fill(s.part(1, 3), 7)
+    console.print_int(total(numbers.slice()))
+    let c = first(numbers.slice_mut())
+    *c = 9
+    console.print_int(numbers[0])
+    set_all(numbers.slice_mut(), 4)
+    console.print_int(total(numbers.slice()))

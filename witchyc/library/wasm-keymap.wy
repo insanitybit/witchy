@@ -1,0 +1,377 @@
+// A hash map whose hash the map chooses (docs/plan-derive-laws.md, slice 2), in its own module
+// so a program that uses only HashMap does not parse and check it (2026-11-19: KeyMap in
+// wasm-hashmap.wy added 17 KB to every HashMap user's build). Entries are HashMap's `Entry`.
+import "wasm-hash.wy"
+import "wasm-discard.wy"
+import "wasm-hashmap.wy"
+import "wasm-discard-core.wy"
+
+// `HashMap` with the hash chosen by the map (docs/plan-derive-laws.md, slice 2): the map holds a
+// `Policy` (library/wasm-hash.wy) and every probe, borrowed lookup, removal's backward shift and
+// growth hashes the key's whole input (`HashKey`) under it. Generated from `HashMap` above with
+// only that changed; `HashMap` itself is unchanged.
+pub sealed type KeyMap<K, V>:
+    cells: Buffer<Entry<K, V>>
+    count: U64
+    policy: Policy
+
+impl<K: Any + HashKey + Eq, V: Any> KeyMap<K, V>:
+    // An empty map of `capacity` cells. Err: no room.
+    pub fn new(allocator: &Allocator, capacity: U64, policy: Policy) -> Result<KeyMap<K, V>, U64>:
+        let allocation: Result<Buffer<Entry<K, V>>, U64> = memory.try_alloc(allocator, capacity)
+        match move allocation:
+            Ok(buffer):
+                return Ok(KeyMap(move buffer, 0, policy))
+            Err(code):
+                return Err(code)
+
+    // A map that holds `entries` entries without growing: the cells `put`'s three-quarters rule
+    // asks for, `ceil(4 * entries / 3)` (`new` takes cells, not entries). Err(1): a count whose
+    // cells cannot be written down.
+    pub fn for_entries(allocator: &Allocator, entries: U64, policy: Policy) -> Result<KeyMap<K, V>, U64>:
+        if entries > 4611686018427387902:
+            return Err(1)
+        return KeyMap.new(allocator, (entries * 4 + 2) / 3, policy)
+
+    // How many entries it holds.
+    pub fn len(map: &KeyMap<K, V>) -> U64:
+        return (*map).count
+
+    // How many cells it has.
+    pub fn capacity(map: &KeyMap<K, V>) -> U64:
+        return memory.capacity(&(*map).cells)
+
+    // Ok: the cell that holds this key. Err: the empty cell where it would go,
+    // or the capacity when every cell is full.
+    pub fn find(map: &KeyMap<K, V>, key: &K) -> Result<U64, U64>:
+        let capacity = memory.capacity(&(*map).cells)
+        if capacity == 0:
+            return Err(0)
+        var index = hash_key(key, (*map).policy) % capacity
+        var step: U64 = 0
+        while step < capacity:
+            match memory.ref(&(*map).cells, index):
+                Ok(entry):
+                    if (*entry).key.eq(key):
+                        return Ok(index)
+                Err(code):
+                    return Err(index)
+            // The next cell, wrapping at the end: no division a step.
+            index += 1
+            if index == capacity:
+                index = 0
+            step += 1
+        return Err(capacity)
+
+    // `find` for a key of any type that compares with keys and hashes as they do
+    // (`Equivalent<K>`): a Text literal finds a String key without making a String.
+    pub fn find_by<Q: Any + HashKey + Equivalent<K>>(map: &KeyMap<K, V>, key: &Q) -> Result<U64, U64>:
+        let capacity = memory.capacity(&(*map).cells)
+        if capacity == 0:
+            return Err(0)
+        var index = hash_key(key, (*map).policy) % capacity
+        var step: U64 = 0
+        while step < capacity:
+            match memory.ref(&(*map).cells, index):
+                Ok(entry):
+                    if key.equivalent(&(*entry).key):
+                        return Ok(index)
+                Err(code):
+                    return Err(index)
+            // The next cell, wrapping at the end: no division a step.
+            index += 1
+            if index == capacity:
+                index = 0
+            step += 1
+        return Err(capacity)
+
+    // Whether a value is stored under this key.
+    pub fn contains<Q: Any + HashKey + Equivalent<K>>(map: &KeyMap<K, V>, key: &Q) -> Bool:
+        match map.find_by(key):
+            Ok(index):
+                return true
+            Err(index):
+                return false
+
+    // A reference to the value stored under this key.
+    // The same probe as `find`, handing back the cell it stops at rather than
+    // looking it up a second time. Err: as `find`'s.
+    pub fn get<Q: Any + HashKey + Equivalent<K>>(map: &KeyMap<K, V>, key: &Q) -> Result<&V, U64>:
+        let capacity = memory.capacity(&(*map).cells)
+        if capacity == 0:
+            return Err(0)
+        var index = hash_key(key, (*map).policy) % capacity
+        var step: U64 = 0
+        while step < capacity:
+            match memory.ref(&(*map).cells, index):
+                Ok(entry):
+                    if key.equivalent(&(*entry).key):
+                        return Ok(&(*entry).value)
+                Err(code):
+                    return Err(index)
+            // The next cell, wrapping at the end: no division a step.
+            index += 1
+            if index == capacity:
+                index = 0
+            step += 1
+        return Err(capacity)
+
+    // A reference to the value stored under this key, for changing it where it is.
+    // The map and the key stay lent while the reference is used.
+    pub fn get_mut<Q: Any + HashKey + Equivalent<K>>(map: &mut KeyMap<K, V>, key: &Q) -> Result<&mut V, U64>:
+        // One probe that hands back the cell it stops at, as HashMap's.
+        let capacity = memory.capacity(&(*map).cells)
+        if capacity == 0:
+            return Err(0)
+        var index = hash_key(key, (*map).policy) % capacity
+        var step: U64 = 0
+        while step < capacity:
+            match memory.mut(&mut (*map).cells, index):
+                Ok(entry):
+                    if key.equivalent(&(*entry).key):
+                        return Ok(&mut (*entry).value)
+                Err(code):
+                    return Err(index)
+            // The next cell, wrapping at the end: no division a step.
+            index += 1
+            if index == capacity:
+                index = 0
+            step += 1
+        return Err(capacity)
+
+    // The entry in one cell, for walking the map in time proportional to its capacity:
+    // `for slot in 0..map.capacity():` and skip the cells that answer Err (empty).
+    pub fn entry(map: &KeyMap<K, V>, slot: U64) -> Result<&Entry<K, V>, U64>:
+        let entry = memory.ref(&(*map).cells, slot)?
+        return Ok(entry)
+
+    // For `for entry in &map:`. The next entry at or after cell `cursor`, which
+    // moves past it. Err(1): there is no further entry. The order is the order
+    // of the cells, which is not the order of insertion.
+    pub fn next(map: &KeyMap<K, V>, cursor: &mut U64) -> Result<&Entry<K, V>, U64>:
+        let cells = memory.capacity(&(*map).cells)
+        while *cursor < cells:
+            let slot = *cursor
+            *cursor += 1
+            match memory.ref(&(*map).cells, slot):
+                Ok(entry):
+                    return Ok(entry)
+                Err(empty):
+                    continue
+        return Err(1)
+
+    // Store a new key. A key that is already present, or a full table, hands the entry back.
+    pub fn insert(map: &mut KeyMap<K, V>, key: K, value: V) -> Result<(), Entry<K, V>>:
+        return map.place(Entry(move key, move value))
+
+    // Store an entry whose key is not present. Err: the key is present or the table is full, and the entry comes back.
+    pub fn place(map: &mut KeyMap<K, V>, entry: Entry<K, V>) -> Result<(), Entry<K, V>>:
+        match map.find(&entry.key):
+            Ok(index):
+                return Err(move entry)
+            Err(index):
+                match memory.try_init(&mut (*map).cells, index, move entry):
+                    Ok:
+                        (*map).count += 1
+                        return Ok(())
+                    Err(back):
+                        return Err(move back)
+
+    // Take a key and its value out. Entries that probed past the emptied cell are put back
+    // so that every remaining key is still found from its own starting cell.
+    pub fn remove<Q: Any + HashKey + Equivalent<K>>(map: &mut KeyMap<K, V>, key: &Q) -> Result<Entry<K, V>, U64>:
+        let found = map.find_by(key)?
+        let taken = memory.take(&mut (*map).cells, found)?
+        (*map).count -= 1
+        map.close_hole(found)
+        return Ok(move taken)
+
+    // After the entry at `hole` was taken out, keep every entry reachable from its home: walk the
+    // cluster after the hole, and move an entry back into the hole exactly when the hole lies on
+    // its probe path, the circular run from its home up to (not including) where it is; the cell
+    // it leaves is the next hole. An entry at or past its home with the hole outside that run
+    // stays (Astra's selective backward shift, 2026-11-18: 44.2 -> 20.1 ms on remove/insert churn
+    // at 75% load; the earlier repair took and re-placed every follower). Stops at an empty cell.
+    fn close_hole(map: &mut KeyMap<K, V>, start: U64):
+        let capacity = memory.capacity(&(*map).cells)
+        if capacity == 0:
+            return
+        var hole = start
+        var index = (start + 1) % capacity
+        var step: U64 = 1
+        while step < capacity:
+            var home: U64 = 0
+            match memory.ref(&(*map).cells, index):
+                Ok(entry):
+                    home = hash_key(&(*entry).key, (*map).policy) % capacity
+                Err(code):
+                    return
+            var crosses = false
+            if hole < index:
+                crosses = home <= hole || home > index
+            else:
+                crosses = home <= hole && home > index
+            if crosses:
+                match memory.take(&mut (*map).cells, index):
+                    Ok(moved):
+                        match memory.try_init(&mut (*map).cells, hole, move moved):
+                            Ok:
+                                hole = index
+                            Err(back):
+                                // The hole was just emptied: it takes the entry.
+                                unreachable
+                    Err(code):
+                        unreachable
+            // The next cell, wrapping at the end: no division a step.
+            index += 1
+            if index == capacity:
+                index = 0
+            step += 1
+
+    // Place an entry that the caller knows fits: its key is not in the map and there is a
+    // free cell. Anything else is a broken assumption in this file, and stops the run.
+    fn settle(map: &mut KeyMap<K, V>, entry: Entry<K, V>):
+        // Its key is in no cell here (the caller moves entries out of another map of distinct
+        // keys), so no key is compared: the first empty cell from its home is its place (Astra,
+        // 2026-11-18: the growth transfer need not search for an equal key).
+        let capacity = memory.capacity(&(*map).cells)
+        if capacity == 0:
+            unreachable
+        var index = hash_key(&entry.key, (*map).policy) % capacity
+        var step: U64 = 0
+        while step < capacity:
+            match memory.ref(&(*map).cells, index):
+                Ok(occupied):
+                    // The next cell, wrapping at the end: no division a step.
+                    index += 1
+                    if index == capacity:
+                        index = 0
+                    step += 1
+                Err(empty):
+                    match memory.try_init(&mut (*map).cells, index, move entry):
+                        Ok:
+                            (*map).count += 1
+                            return
+                        Err(back):
+                            unreachable
+        unreachable
+
+    // Take any one entry out, for emptying the map before it is released. The map stays a map:
+    // the hole is closed as `remove` closes one, so every entry left is found (Astra, 2026-11-18:
+    // keys 0 and 8 in eight cells, one taken, and `get(8)` missed the one left).
+    pub fn take_any(map: &mut KeyMap<K, V>) -> Result<Entry<K, V>, U64>:
+        let capacity = memory.capacity(&(*map).cells)
+        var index: U64 = 0
+        while index < capacity:
+            match memory.take(&mut (*map).cells, index):
+                Ok(entry):
+                    (*map).count -= 1
+                    map.close_hole(index)
+                    return Ok(move entry)
+                Err(code):
+                    index += 1
+        return Err(1)
+
+    // Take entries out one after another: `while map.take_next(&mut cursor)` empties the map in
+    // one pass over its cells (calling `take_any` until Err scanned from cell 0 each time). The
+    // entry at or after `cursor`; the hole is closed as `remove` closes one, so the map stays a
+    // map between calls. The cursor stays on a cell taken (closing the hole may move a later
+    // entry into it) and goes back to 0 at the end while entries remain (a probe run that wraps
+    // around can move one behind it). Err(1): the map is empty.
+    pub fn take_next(map: &mut KeyMap<K, V>, cursor: &mut U64) -> Result<Entry<K, V>, U64>:
+        let capacity = memory.capacity(&(*map).cells)
+        // Each step moves the cursor or takes an entry; past twice the cells there is none.
+        var steps: U64 = 0
+        while (*map).count > 0 && steps < 2 * capacity + 2:
+            if *cursor >= capacity:
+                *cursor = 0
+            match memory.take(&mut (*map).cells, *cursor):
+                Ok(entry):
+                    (*map).count -= 1
+                    map.close_hole(*cursor)
+                    return Ok(move entry)
+                Err(code):
+                    *cursor += 1
+            steps += 1
+        return Err(1)
+
+    // Move every entry into an empty map with more cells than this one has entries.
+    // Keys in one map are distinct, so each finds a cell.
+    fn pour(source: &mut KeyMap<K, V>, target: &mut KeyMap<K, V>):
+        let capacity = memory.capacity(&(*source).cells)
+        for index in 0..capacity:
+            match memory.take(&mut (*source).cells, index):
+                Ok(entry):
+                    (*source).count -= 1
+                    target.settle(move entry)
+                Err(code):
+                    continue
+
+    // Move every entry into a table of the requested capacity.
+    pub fn resize(input: KeyMap<K, V>, allocator: &Allocator, capacity: U64) -> Result<KeyMap<K, V>, KeyMap<K, V>>:
+        if capacity <= input.count:
+            return Err(move input)
+        let made: Result<KeyMap<K, V>, U64> = KeyMap.new(allocator, capacity, input.policy)
+        match move made:
+            Ok(empty):
+                var source = move input
+                var target = move empty
+                source.pour(&mut target)
+                source.release()
+                return Ok(move target)
+            Err(code):
+                return Err(move input)
+
+    // Store a new key, moving to a table twice the size when this one is three
+    // quarters full. Err: the key is already present, or there is no room at all.
+    pub fn put(map: &mut KeyMap<K, V>, allocator: &Allocator, key: K, value: V) -> Result<(), Entry<K, V>>:
+        let capacity = map.capacity()
+        if (map.len() + 1) * 4 > capacity * 3:
+            let made: Result<KeyMap<K, V>, U64> = KeyMap.new(allocator, capacity * 2 + 8, (*map).policy)
+            match move made:
+                Ok(bigger):
+                    var next = move bigger
+                    map.pour(&mut next)
+                    memory.exchange(map, &mut next)
+                    next.release()
+                Err(code):
+                    // No larger table: the present one may still have a free cell.
+                    return map.insert(move key, move value)
+        return map.insert(move key, move value)
+
+    // Release a map that holds no entries.
+    pub fn try_release(input: KeyMap<K, V>) -> Result<(), KeyMap<K, V>>:
+        let count = input.count
+        let policy = input.policy
+        let buffer = move input.cells
+        match memory.try_release(move buffer):
+            Ok:
+                return Ok(())
+            Err(remainder):
+                return Err(KeyMap(move remainder, count, policy))
+
+    // Release a map that holds no entries; one that still holds some stops the run (a trap).
+    // `discard()` empties a map of keys and values that can be discarded, and then releases it.
+    pub fn release(input: KeyMap<K, V>):
+        match input.try_release():
+            Ok:
+                return
+            Err(stuck):
+                unreachable
+
+// Empties each cell once, in order, and discards the key and value it held.
+fn keymap_discard_entries<K: Any + HashKey + Eq + Discard, V: Any + Discard>(map: &mut KeyMap<K, V>):
+    let capacity = memory.capacity(&(*map).cells)
+    for index in 0..capacity:
+        match memory.take(&mut (*map).cells, index):
+            Ok(entry):
+                (*map).count -= 1
+                entry.discard()
+            Err(code):
+                continue
+
+impl<K: Any + HashKey + Eq + Discard, V: Any + Discard> Discard for KeyMap<K, V>:
+    fn discard(self: KeyMap<K, V>):
+        var rest = move self
+        keymap_discard_entries(&mut rest)
+        rest.release()

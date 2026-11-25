@@ -1,0 +1,101 @@
+import "tuf/delegated_input.wy"
+import "tuf/delegated_offers.wy"
+import "tuf/delegated_signing.wy"
+import "tuf/metadata.wy"
+import "tuf/release_trust.wy"
+import console
+import discard
+import fs
+import json_tree
+import sort
+import string
+import text
+import time
+import vec
+
+fn main(source: Dir<Read>, output: Console<Write>, clock: Clock, allocator: Allocator):
+    let result = prepare(&source, &output, clock.now_ms(), &allocator)
+    source.close()
+    if let Err(code) = result:
+        if code == 2:
+            output.line("refused pin")
+        else if code == 3:
+            output.line("refused role")
+        else if code == 4:
+            output.line("refused evidence")
+        else if code == 5:
+            output.line("refused target")
+        else:
+            output.line("refused")
+
+fn prepare(source: &Dir<Read>, output: &Console<Write>, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let wire = read_delegated_input(source, "request.json", 1024, allocator)?
+    let parsed = parse_release_json(&wire, allocator)
+    wire.close()
+    let Ok(request): Json = move parsed else Err(code):
+        return Err(1)
+    let prepared = with_request(&request, source, output, now, allocator)
+    request.discard()
+    return prepared
+
+fn with_request(request: &Json, source: &Dir<Read>, output: &Console<Write>, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    if !count_fields(request, 6):
+        return Err(1)
+    let pin = string_field(request, "parent_pin")?
+    let Ok(parent): Metadata = read_delegated_parent(source, pin, allocator) else Err(error):
+        return Err(2)
+    let result = with_parent(request, &parent, source, output, now, allocator)
+    parent.close()
+    return result
+
+fn with_parent(request: &Json, parent: &Metadata, source: &Dir<Read>, output: &Console<Write>, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let pin = string_field(request, "trust_pin")?
+    let trust = read_delegated_trust(source, pin, allocator)?
+    let result = with_trust(request, parent, &trust, source, output, now, allocator)
+    trust.close()
+    return result
+
+fn with_trust(request: &Json, parent: &Metadata, trust: &ReleaseTrust, source: &Dir<Read>, output: &Console<Write>, now: U64, allocator: &Allocator) -> Result<(), U64>:
+    let days = declared_integer(request, "valid_days")?
+    let version = declared_integer(request, "version")?
+    if days == 0 || days > 90 || version == 0 || version >= 9007199254740992:
+        return Err(3)
+    let role = string_field(request, "role")?
+    let count = declared_integer(request, "count")?
+    let empty: Vec<String> = Vec.new(allocator, 4)?
+    var offers = move empty
+    let collected = collect_offers(source, trust, &mut offers, count, now, allocator)
+    let result = render(parent, role, &mut offers, collected, now, days, version, output, allocator)
+    offers.discard()
+    return result
+
+fn render(parent: &Metadata, role: &String, offers: &mut Vec<String>, collected: Result<(), U64>, now: U64, days: U64, version: U64, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    collected?
+    sort(offers)
+    let empty = String.with_capacity(allocator, 1024)?
+    var child = move empty
+    let written = write_child(&mut child, offers, now / 1000 + days * 86400, version, allocator)
+    let result = verify_and_emit(parent, role, &child, written, now, output, allocator)
+    child.close()
+    return result
+
+fn write_child(child: &mut String, offers: &Vec<String>, expiry: U64, version: U64, allocator: &Allocator) -> Result<(), U64>:
+    child.push_text(allocator, "{\"signatures\":[],\"signed\":{\"_type\":\"targets\",\"expires\":\"")?
+    time.append_utc_seconds(child, expiry, allocator)?
+    child.push_text(allocator, "\",\"spec_version\":\"1.0.31\",\"targets\":{")?
+    append_offers(child, offers, allocator)?
+    child.push_text(allocator, "},\"version\":")?
+    child.push_u64(allocator, version)?
+    return child.push_text(allocator, "}}")
+
+fn verify_and_emit(parent: &Metadata, role: &String, child: &String, written: Result<(), U64>, now: U64, output: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    written?
+    let Ok(metadata): Metadata = parse_metadata(child, allocator, Targets) else Err(error):
+        return Err(1)
+    let checked = checked_signing_role(parent, &metadata, role, now, allocator)
+    metadata.close()
+    if let Err(code) = checked:
+        return Err(5)
+    output.line("prepared")
+    output.write_string(child)
+    return Ok(())

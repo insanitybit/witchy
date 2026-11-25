@@ -1,0 +1,16 @@
+// The overflowing `big + 1` is written before the `if` that prints: it runs first (bound to a
+// hidden name before the `if` is taken out), so the run stops before anything is printed.
+import console
+
+type S:
+    a: U64
+    b: U64
+
+fn noisy(console: &Console<Write>) -> U64:
+    console.print_int(7)
+    7
+
+fn main(console: Console<Write>):
+    let big: U64 = 18446744073709551615
+    let s = S(a: big + 1, b: if big > 3: noisy(&console) else: 0)
+    console.print_int(s.b)

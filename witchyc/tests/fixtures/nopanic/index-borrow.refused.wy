@@ -1,0 +1,9 @@
+// Taking the address of an element at a computed index can trap (review 2026-11-21).
+nopanic fn f(n: U64) -> U64:
+    let arr: [U64; 3] = [1, 2, 3]
+    let r = &arr[n]
+    return *r
+
+fn main(out: Console<Write>):
+    out.print_int(f(1))
+    out.print_int(f(5))

@@ -1,0 +1,13 @@
+// Closing a task that has not finished traps: its paused frames are in its memory.
+import tasks
+
+fn twice(n: U64) suspends:
+    pause(n)
+    pause(n)
+
+fn main(allocator: Allocator):
+    let Ok(made): Task = Task.spawn(&allocator, 1024, twice, 1) else Err(given):
+        return
+    var task = move made
+    let first = task.step()
+    task.close()

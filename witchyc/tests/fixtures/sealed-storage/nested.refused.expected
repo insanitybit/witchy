@@ -1,0 +1,1 @@
+a type with an invariant is built, changed or taken apart only in a function whose proof covers it

@@ -1,0 +1,28 @@
+// Refused (adversarial review round 15): a reference to this function's own view would
+// outlive its frame; once accepted, it read a later call's values.
+import console
+import option
+type Point:
+    x: U64
+    y: U64
+type Seen:
+    point: &Point
+    n: U64
+type Seen2:
+    first: Seen
+    pad: U64
+    second: Seen
+type Box<T>:
+    item: T
+    tag: U64
+
+fn f(o: Option<Seen>) -> &Seen:
+    match o:
+        Some(s):
+            return &s
+        None:
+            unreachable
+fn main(console: Console<Write>):
+    var p = Point(1, 2)
+    let r = f(Some(Seen(&p, 3)))
+    console.print_int(r.n)

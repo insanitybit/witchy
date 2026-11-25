@@ -1,0 +1,1 @@
+borrows only with `&`, not `&mut`, what the reference could point into

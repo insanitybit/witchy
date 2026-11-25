@@ -1,0 +1,6 @@
+// Refused (from an automated security review): grants are named by type, so two modules'
+// grantable capabilities of one name would both take `--grant=RateLimit...`.
+import "parts/limits.wy"
+import "parts/limits2.wy"
+fn main(limit: limits.RateLimit):
+    return

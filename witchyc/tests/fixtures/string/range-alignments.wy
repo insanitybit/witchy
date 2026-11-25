@@ -1,0 +1,44 @@
+// Runs of byte cells starting and ending at every alignment: Strings of length 0..199 built by
+// literal words, copied with push_string (a word read and write), grown (a range move) and
+// closed (a range take), with a second String allocated between them so neighbouring cells must
+// keep their state. The allocator marks such runs a bitmap word or byte at a time where it can
+// (allocator.rs, `range_walk`); any bit set or cleared wrongly shows as a trap, a wrong byte or
+// a release that fails.
+import console
+import string
+import text
+
+fn check(text: &String, length: U64) -> U64:
+    if text.byte_len() != length:
+        return 1
+    for at in 0..length:
+        if text.byte_or_end(at) != 97 + at % 26:
+            return 1
+    return 0
+
+fn round(allocator: &Allocator, length: U64) -> Result<U64, U64>:
+    var bad: U64 = 0
+    using var source: String = String.new(allocator)?:
+        for at in 0..length:
+            let _ = source.push(allocator, 97 + at % 26)
+        using var neighbour: String = String.new(allocator)?:
+            let _ = neighbour.push_text(allocator, "neighbour")
+            using var copy: String = String.new(allocator)?:
+                let _ = copy.push_string(allocator, &source)
+                bad += check(&source, length) + check(&copy, length)
+                let _ = copy.push_string(allocator, &source)
+                if copy.byte_len() != length * 2:
+                    bad += 1
+            if neighbour.byte_len() != 9 || neighbour.byte_or_end(8) != 114:
+                bad += 1
+    return Ok(bad)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var bad: U64 = 0
+    for length in 0..200:
+        match round(&allocator, length):
+            Ok(count):
+                bad += count
+            Err(code):
+                bad += 1000
+    console.print_int(bad)

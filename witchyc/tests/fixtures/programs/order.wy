@@ -1,0 +1,87 @@
+// An order to build eight tasks in, each after the tasks it depends on: Kahn's
+// algorithm, with a deque of tasks whose dependencies are all built.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-deque.wy"
+import "../../../library/wasm-vec.wy"
+import "../../../library/wasm-discard.wy"
+
+let TASKS = 8
+
+// `later` depends on `first`.
+fn depend(after: &mut Vec<Vec<U64>>, waiting: &mut Vec<U64>, allocator: &Allocator, first: U64, later: U64) -> Bool:
+    match after.at_mut(first):
+        Ok(list):
+            if list.push_mut(allocator, later).is_err():
+                return false
+        Err(code):
+            return false
+    waiting[later] += 1
+    return true
+
+// Build in order, printing each task. False: a cycle left some unbuilt.
+fn build(console: &Console<Write>, after: &Vec<Vec<U64>>, waiting: &mut Vec<U64>, ready: &mut Deque<U64>, allocator: &Allocator) -> Bool:
+    for task in 0..TASKS:
+        if waiting[task] == 0 && ready.push_back(allocator, task).is_err():
+            return false
+    var built: U64 = 0
+    while true:
+        match ready.pop_front_mut():
+            Ok(task):
+                console.print_int(task)
+                built += 1
+                match after.at(task):
+                    Ok(list):
+                        for next in list:
+                            waiting[*next] -= 1
+                            if waiting[*next] == 0 && ready.push_back(allocator, *next).is_err():
+                                return false
+                    Err(code):
+                        return false
+            Err(code):
+                break
+    return built == TASKS
+
+fn run(console: &Console<Write>, allocator: &Allocator) -> Result<(), U64>:
+    var after: Vec<Vec<U64>> = Vec.new(allocator, TASKS)?
+    for task in 0..TASKS:
+        let list: Vec<U64> = match Vec.new(allocator, 0):
+            Ok(empty):
+                move empty
+            Err(code):
+                after.discard()
+                return Err(code)
+        match after.push_mut(allocator, move list):
+            Ok:
+                continue
+            Err(back):
+                back.close()
+                after.discard()
+                return Err(2)
+    var waiting: Vec<U64> = match Vec.filled(allocator, TASKS, 0):
+        Ok(zeros):
+            move zeros
+        Err(code):
+            after.discard()
+            return Err(code)
+    var ready: Deque<U64> = match Deque.new(allocator, 0):
+        Ok(empty):
+            move empty
+        Err(code):
+            after.discard()
+            waiting.close()
+            return Err(code)
+    let linked = depend(&mut after, &mut waiting, allocator, 0, 3) && depend(&mut after, &mut waiting, allocator, 1, 3) && depend(&mut after, &mut waiting, allocator, 3, 4) && depend(&mut after, &mut waiting, allocator, 2, 4) && depend(&mut after, &mut waiting, allocator, 4, 7) && depend(&mut after, &mut waiting, allocator, 5, 6) && depend(&mut after, &mut waiting, allocator, 6, 7)
+    var ok = linked && build(console, &after, &mut waiting, &mut ready, allocator)
+    after.discard()
+    waiting.close()
+    ready.close()
+    if ok:
+        return Ok(())
+    return Err(4)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    match run(&console, &allocator):
+        Ok:
+            console.print_int(100)
+        Err(code):
+            console.print_int(code)

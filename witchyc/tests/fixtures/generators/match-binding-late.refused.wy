@@ -1,0 +1,14 @@
+// Refused: an arm's binding is not kept past the arm's first `yield`.
+type Reading:
+    Value(U64)
+    Missing
+gen fn readings(v0: U64) -> U64:
+    match Value(v0):
+        Value(v):
+            yield v
+            yield v + 1
+            yield v + 2
+        Missing:
+            yield 0
+fn main():
+    return

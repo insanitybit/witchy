@@ -1,0 +1,24 @@
+// A binder that is a reference into the matched value keeps it lent while the binder is in use.
+type Shape:
+    Dot
+    Line(U64)
+
+type Pair:
+    a: Shape
+    b: U64
+
+fn first(pair: &Pair) -> &Shape:
+    return &(*pair).a
+
+fn second(pair: &Pair) -> &U64:
+    return &(*pair).b
+
+fn main(console: Console<Write>):
+    var pair = Pair(Line(4), 5)
+    let seen = first(&pair)
+    match seen:
+        Dot:
+            pair.b = 1
+        Line(length):
+            pair.b = 2
+            console.print_int(*length)

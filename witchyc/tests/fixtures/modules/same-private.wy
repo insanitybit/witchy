@@ -1,0 +1,13 @@
+// Private functions are each file's own: two imported files may both have a `helper`,
+// and so may this one.
+import console
+import "parts/first.wy"
+import "parts/second.wy"
+
+fn helper(x: U64) -> U64:
+    return x + 1000
+
+fn main(console: Console<Write>):
+    console.print_int(first(5))
+    console.print_int(second(5))
+    console.print_int(helper(5))

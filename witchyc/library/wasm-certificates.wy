@@ -1,0 +1,6 @@
+// The trust anchors and peer chain are separate DER bundles (big-endian
+// u24 length followed by certificate bytes, leaf first for the peer).
+// `signed` starts with eight big-endian Unix seconds, followed by the
+// message whose signature must verify under the validated P-384 leaf key.
+pub pure fn verify_p384(anchors: &[U8], chain: &[U8], dns_name: &[U8], signed: &[U8], signature: &[U8]) -> Bool:
+    return provider.raw_x509_p384_verify(anchors, chain, dns_name, signed, signature) == 1

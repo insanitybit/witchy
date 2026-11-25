@@ -1,0 +1,5 @@
+// Refused: only the declaring file builds a ConfigDir.
+import fs
+import "parts/config.wy"
+fn main(root: Dir<Read>):
+    let forged = ConfigDir(move root)

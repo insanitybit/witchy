@@ -1,0 +1,29 @@
+// `Command.cwd`: a granted directory, given up to the run, is where the program starts: the
+// directory as the grant opened it, never a path.
+import console
+import exec
+import fs
+
+fn show(console: &Console<Write>, allocator: &Allocator, ran: Result<Run, ExecError>):
+    match move ran:
+        Ok(run):
+            match run.read_text(allocator):
+                Ok(text):
+                    console.write_string(&text)
+                    text.close()
+                Err(e):
+                    console.line("unreadable")
+        Err(_):
+            console.line("failed")
+
+fn main(console: Console<Write>, allocator: Allocator, exec: Exec, data: Dir<Read>):
+    // A directory opened in the grant: the program starts in it.
+    match data.dir("sub"):
+        Ok(sub):
+            show(&console, &allocator, exec.command("where").cwd(move sub).run())
+        Err(e):
+            console.line("no sub")
+    // The granted directory itself, given up to the run.
+    show(&console, &allocator, exec.command("where").cwd(move data).run())
+    // Without one: the program's own private directory, where there is no marker.
+    show(&console, &allocator, exec.command("where").run())

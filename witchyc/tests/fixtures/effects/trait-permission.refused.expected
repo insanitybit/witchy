@@ -1,0 +1,1 @@
+`Slow.tick` may pause, but `Tick.tick` does not allow its implementations to: declare it `suspends` in the trait

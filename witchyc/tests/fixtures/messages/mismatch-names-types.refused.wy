@@ -1,0 +1,11 @@
+// Refused, naming both types: a Bool returned where a U64 is expected; and the second function too.
+import console
+
+fn first() -> U64:
+    return true
+
+fn second() -> Bool:
+    return 3
+
+fn main(console: Console<Write>):
+    console.print_int(first())

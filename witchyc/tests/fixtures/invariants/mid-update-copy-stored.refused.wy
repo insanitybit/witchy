@@ -1,0 +1,37 @@
+// Refused (review): a copy of the parameter taken while broken, stored in another record.
+import console
+
+sealed type Account:
+    balance: U64
+    limit: U64
+    invariant balance <= limit
+
+impl Account:
+    pub fn open(limit: U64) -> Account:
+        ensures result.balance == 0
+        proof:
+            auto
+        return Account(0, limit)
+
+    pub fn room(account: &Account) -> U64:
+        ensures true
+        proof:
+            auto
+        return (*account).limit - (*account).balance
+
+    pub fn trick(account: &mut Account, out: &mut Holder):
+        ensures true
+        proof:
+            auto
+        (*account).balance = 7
+        (*out).acct = *account
+        (*account).balance = 0
+
+type Holder:
+    acct: Account
+
+fn main(console: Console<Write>):
+    var a = Account.open(5)
+    var h = Holder(Account.open(1))
+    a.trick(&mut h)
+    console.print_int(h.acct.room())

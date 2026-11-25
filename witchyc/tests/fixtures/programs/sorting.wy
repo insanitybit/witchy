@@ -1,0 +1,77 @@
+// The library sort on numbers and on Strings, and Vec.exchange at its edges.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-sort.wy"
+import "../../../library/wasm-string.wy"
+import "../../../library/wasm-vec.wy"
+import "../../../library/wasm-discard.wy"
+
+fn text(allocator: &Allocator, value: Text) -> Result<String, U64>:
+    var made = String.new(allocator)?
+    if let Err(_) = made.push_text(allocator, value):
+        made.close()
+        return Err(1)
+    return Ok(move made)
+
+fn add(names: &mut Vec<String>, allocator: &Allocator, value: Text) -> Result<(), U64>:
+    let name = text(allocator, value)?
+    match names.push_mut(allocator, move name):
+        Ok(done):
+            return Ok(())
+        Err(back):
+            back.close()
+            return Err(1)
+
+fn fill(names: &mut Vec<String>, allocator: &Allocator) -> Result<(), U64>:
+    add(names, allocator, "pear")?
+    add(names, allocator, "apple")?
+    add(names, allocator, "fig")?
+    add(names, allocator, "banana")?
+    add(names, allocator, "apple pie")?
+    add(names, allocator, "")?
+    return add(names, allocator, "cherry")
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var numbers: Vec<U64> = match Vec.new(&allocator, 0):
+        Ok(made):
+            move made
+        Err(code):
+            return
+    var seed: U64 = 12345
+    for step in 0..1000:
+        seed = (seed * 1103515245 + 12345) % 2147483648
+        match numbers.push_mut(&allocator, seed % 1000):
+            Ok(done):
+                continue
+            Err(back):
+                break
+    sort(&mut numbers)
+    if is_sorted(&numbers):
+        console.line("numbers sorted")
+    console.print_int(numbers.len())
+    match numbers.get(0):
+        Ok(least):
+            console.print_int(least)
+        Err(code):
+            console.line("empty")
+    match numbers.get(999):
+        Ok(most):
+            console.print_int(most)
+        Err(code):
+            console.line("short")
+    numbers.close()
+    var names: Vec<String> = match Vec.new(&allocator, 0):
+        Ok(made):
+            move made
+        Err(code):
+            return
+    match fill(&mut names, &allocator):
+        Ok(done):
+            sort(&mut names)
+        Err(code):
+            console.line("no room")
+    for name in &names:
+        console.write_string(name)
+        console.line(".")
+    if names.exchange(0, 7).is_ok() || names.exchange(2, 2).is_err():
+        console.line("wrong exchange")
+    names.discard()

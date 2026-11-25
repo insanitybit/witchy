@@ -1,0 +1,13 @@
+// A reference that is kept does not end with the argument: the value stays lent.
+type Counter:
+    count: U64
+
+fn add(counter: &mut Counter, amount: U64) -> U64:
+    (*counter).count += amount
+    return (*counter).count
+
+fn main(console: Console<Write>):
+    var counter = Counter(1)
+    let kept = &counter
+    console.print_int(add(&mut counter, 2))
+    console.print_int((*kept).count)

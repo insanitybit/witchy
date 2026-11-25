@@ -1,0 +1,22 @@
+// `items[i]` on a Vec reads the element through `Vec.index`; on a fixed array it
+// is the array's own indexing, as before.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-vec.wy"
+
+fn total(items: &Vec<U64>) -> U64:
+    var sum: U64 = 0
+    for i in 0..items.len():
+        sum += items[i]
+    return sum
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var items: Vec<U64> = match Vec.filled(&allocator, 5, 3):
+        Ok(made):
+            move made
+        Err(code):
+            return
+    let _ = items.set(2, 10)
+    let grid = [4, 5, 6]
+    console.print_int(items[2] + items[0] + grid[1])
+    console.print_int(total(&items))
+    items.close()

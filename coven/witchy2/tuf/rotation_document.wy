@@ -1,0 +1,85 @@
+import "canonical.wy"
+import "release_trust.wy"
+import "../review/commit_request.wy"
+import "../review/policy_document.wy"
+import json_tree
+import string
+import text
+import vec
+
+pub fn check_rotation(active: &Json, next: &Json, allocator: &Allocator) -> Result<U64, U64>:
+    validate_policy(active, allocator)?
+    validate_policy(next, allocator)?
+    let revision = declared_integer(next, "revision")?
+    if revision <= declared_integer(active, "revision")?:
+        return Err(21)
+    let registry = string_field(active, "registry")?
+    let origin = string_field(active, "origin")?
+    let next_registry = string_field(next, "registry")?
+    let next_origin = string_field(next, "origin")?
+    if !registry.eq(next_registry) || !origin.eq(next_origin):
+        return Err(21)
+    return Ok(revision)
+
+pub fn rotated_document(trust: &ReleaseTrust, next: &Json, fresh: &Vec<String>, allocator: &Allocator) -> Result<String, U64>:
+    let empty = String.with_capacity(allocator, 4096)?
+    var output = move empty
+    if let Err(code) = write_document(&mut output, trust, next, fresh, allocator):
+        output.close()
+        return Err(code)
+    if output.byte_len() > 262144:
+        output.close()
+        return Err(23)
+    return Ok(move output)
+
+fn write_document(output: &mut String, trust: &ReleaseTrust, next: &Json, fresh: &Vec<String>, allocator: &Allocator) -> Result<(), U64>:
+    let previous = trust.fields()
+    let format = previous.field("format")?
+    let active = trust.policy()?
+    let publishers = previous.field("publishers")?
+    let witness = previous.field("witness")?
+    output.push_text(allocator, "{\"format\":")?
+    append_json(output, format, allocator)?
+    output.push_text(allocator, ",\"policy\":")?
+    append_json(output, next, allocator)?
+    if let Ok(history) = previous.field("policy_history"):
+        write_history(output, history, active, fresh, allocator)?
+    else if fresh.len() != 0:
+        output.push_text(allocator, ",\"policy_history\":[")?
+        write_entry(output, active, fresh, allocator)?
+        output.push_text(allocator, "]")?
+    output.push_text(allocator, ",\"publishers\":")?
+    append_json(output, publishers, allocator)?
+    output.push_text(allocator, ",\"witness\":")?
+    append_json(output, witness, allocator)?
+    return output.push_text(allocator, "}")
+
+fn write_history(output: &mut String, history: &Json, active: &Json, fresh: &Vec<String>, allocator: &Allocator) -> Result<(), U64>:
+    let count = history.len()?
+    if fresh.len() != 0 && count >= 16:
+        return Err(24)
+    output.push_text(allocator, ",\"policy_history\":")?
+    if fresh.len() == 0:
+        return append_json(output, history, allocator)
+    let wire = release_json(history, allocator)?
+    let copied = output.push_part(allocator, &wire, 0, wire.byte_len() - 1)
+    wire.close()
+    copied?
+    if count != 0:
+        output.push_text(allocator, ",")?
+    write_entry(output, active, fresh, allocator)?
+    return output.push_text(allocator, "]")
+
+fn write_entry(output: &mut String, active: &Json, fresh: &Vec<String>, allocator: &Allocator) -> Result<(), U64>:
+    output.push_text(allocator, "{\"policy\":")?
+    append_json(output, active, allocator)?
+    output.push_text(allocator, ",\"targets\":[")?
+    var first = true
+    for pin in fresh:
+        if !first:
+            output.push_text(allocator, ",")?
+        first = false
+        output.push_text(allocator, "\"")?
+        output.push_part(allocator, pin, 0, pin.byte_len())?
+        output.push_text(allocator, "\"")?
+    return output.push_text(allocator, "]}")

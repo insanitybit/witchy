@@ -1,0 +1,13 @@
+// A private type's name means nothing outside its file: a local and a field here
+// may be spelled `Corner` without touching `area.wy`'s type.
+import "../../../library/wasm-console.wy"
+import "parts/area.wy"
+
+type Spot:
+    Corner: U64
+
+fn main(console: Console<Write>):
+    let Corner = 7
+    let spot = Spot(Corner + 1)
+    console.print_int(spot.Corner)
+    console.print_int(Corner)

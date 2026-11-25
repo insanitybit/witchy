@@ -1,0 +1,1 @@
+a call to `Score.score` does not establish the callee's `requires`

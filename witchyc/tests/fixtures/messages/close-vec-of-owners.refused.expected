@@ -1,0 +1,1 @@
+this copies a `String`, which is not copied (it owns something): lend an element instead (`v.cell(i)`, `&v[i]`), or move it out (`take_last_mut`, `replace_mut`); to give back a whole container of owners, call `discard()`

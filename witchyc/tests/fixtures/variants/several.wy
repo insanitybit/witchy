@@ -1,0 +1,73 @@
+// A variant that holds several values: made, matched by value, matched through
+// a reference, nested inside another pattern, in an anonymous sum, with an owner.
+import "../../../library/wasm-string.wy"
+
+type Shape:
+    Dot
+    Circle(U64)
+    Box(U64, U64)
+
+type Entry:
+    Missing
+    Named(String, U64)
+
+fn area(shape: &Shape) -> U64:
+    match shape:
+        Dot:
+            return 0
+        Circle(radius):
+            return 3 * *radius * *radius
+        Box(width, height):
+            return *width * *height
+
+fn width(shape: Shape) -> U64:
+    match move shape:
+        Box(width, _):
+            return width
+        _:
+            return 0
+
+fn pick(found: Result<Shape, U64>) -> U64:
+    match move found:
+        Ok(Box(width, height)):
+            return width + height
+        Ok(Circle(radius)):
+            return radius
+        Ok(Dot):
+            return 0
+        Err(code):
+            return code
+
+fn span(range: .[Empty | Between(U64, U64)]) -> U64:
+    match move range:
+        .Empty:
+            return 0
+        .Between(low, high):
+            return high - low
+
+fn label(allocator: &Allocator) -> Entry:
+    match String.new(allocator):
+        Ok(empty):
+            match empty.push_scalar(allocator, 119):
+                Ok(text):
+                    return Named(move text, 7)
+                Err(original):
+                    original.close()
+                    return Missing
+        Err(code):
+            return Missing
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let shape = Box(3, 4)
+    console.print_int(area(&shape))
+    console.print_int(area(&Circle(2)))
+    console.print_int(width(move shape))
+    console.print_int(pick(Ok(Box(5, 6))))
+    console.print_int(pick(Err(9)))
+    console.print_int(span(.Between(10, 25)))
+    match label(&allocator):
+        Named(text, count):
+            console.print_int(text.byte_len() + count)
+            text.close()
+        Missing:
+            console.print_int(900)

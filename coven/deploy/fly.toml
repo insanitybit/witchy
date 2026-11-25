@@ -1,0 +1,48 @@
+# Fly.io config for the coven registry (RFC-0116 track 3).
+# Deploy from the REPO ROOT so the Docker build context contains the workspace:
+#
+#   fly deploy . --config projects/coven/deploy/fly.toml \
+#                --dockerfile projects/coven/deploy/Dockerfile
+#
+# Full runbook: projects/coven/DEPLOY.md.
+
+# Placeholder - pick your own globally-unique app name (`fly apps create <name>`)
+# and put it here; the public origin becomes https://<app>.fly.dev.
+app = "witchy-coven"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+# The registry store. Create before first deploy:
+#   fly volumes create coven_data --region <primary_region> --size 1
+# Single machine + single volume: coven is a single-instance service (its
+# store is a directory tree, not a replicated database). Do not scale out.
+[mounts]
+  source = "coven_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 8080
+  # Fly's edge terminates TLS for https://<app>.fly.dev and redirects plain
+  # HTTP; the container itself speaks HTTP on 8080.
+  force_https = true
+  # A registry must stay up: no scale-to-zero, and keep the one machine running.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  # Same probe as the Dockerfile HEALTHCHECK (Fly ignores that one):
+  # /coven/rootpub is a real route returning 200 + the registry public key.
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    # First boot compiles the embedded server to wasm (~15-30 s) before the
+    # port opens; the grace period must outlast that.
+    grace_period = "60s"
+    method = "GET"
+    path = "/coven/rootpub"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

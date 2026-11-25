@@ -1,0 +1,40 @@
+// Generators composed: Fibonacci numbers below a limit, the even ones among them, and
+// running sums; consumed by `for`, with an early `break`.
+import console
+
+gen fn fibonacci(limit: U64) -> U64:
+    var a: U64 = 0
+    var b: U64 = 1
+    while a < limit:
+        yield a
+        let next = a + b
+        a = b
+        b = next
+
+// The even values of the Fibonacci numbers below `limit`.
+gen fn even_fibonacci(limit: U64) -> U64:
+    var numbers = fibonacci(limit)
+    for n in numbers:
+        if n % 2 == 0:
+            yield n
+
+gen fn running(limit: U64) -> U64:
+    var total: U64 = 0
+    var evens = even_fibonacci(limit)
+    for n in evens:
+        total += n
+        yield total
+
+fn main(console: Console<Write>):
+    for n in fibonacci(30):
+        console.print_int(n)
+    for n in even_fibonacci(4000000):
+        console.print_int(n)
+    var last: U64 = 0
+    for total in running(4000000):
+        last = total
+    console.print("sum ${last}")
+    for n in fibonacci(1000):
+        if n > 50:
+            console.print("first above 50: ${n}")
+            break

@@ -1,0 +1,50 @@
+// A request head read in place from bytes (`Span.of`), as a server reads what a socket gave it:
+// the method, target and a header, nothing copied; a head that is not a request, or has a
+// control byte in its target, or no blank line yet, is refused.
+import console
+import span
+import http
+
+fn show(console: &Console<Write>, bytes: &[U8]):
+    let text = Span.of(bytes)
+    if !has_head(text):
+        console.line("no head yet")
+        return
+    match request(text):
+        Ok(head):
+            write_span(console, head.method)
+            console.write(" ")
+            write_span(console, head.target)
+            match header(head.headers, "host"):
+                Ok(host):
+                    console.write(" host=")
+                    write_span(console, host)
+                Err(code):
+                    console.write(" no host")
+            console.write(" body=")
+            console.print_int(head.body.len())
+        Err(error):
+            console.line("refused")
+
+fn main(console: Console<Write>):
+    var good: [U8; 32] = [0; 32]
+    let a: Text = "GET /a?b HTTP/1.1\r\nHost: x\r\n\r\nhi"
+    for index in 0..a.byte_len():
+        match a.byte_at(index):
+            Ok(byte):
+                good[index] = byte
+            Err(code):
+                return
+    show(&console, good.slice().part(0, a.byte_len()))
+    show(&console, good.slice().part(0, 20))
+    var bad: [U8; 24] = [0; 24]
+    let b: Text = "GET /a b HTTP/1.1\r\n\r\n"
+    for index in 0..b.byte_len():
+        match b.byte_at(index):
+            Ok(byte):
+                bad[index] = byte
+            Err(code):
+                return
+    show(&console, bad.slice().part(0, b.byte_len()))
+    bad[5] = 1
+    show(&console, bad.slice().part(0, b.byte_len()))

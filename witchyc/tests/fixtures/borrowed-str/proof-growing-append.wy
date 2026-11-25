@@ -1,0 +1,55 @@
+import console
+import vec
+import vec_text
+
+sealed type TextOwner:
+    bytes: Vec<U8>
+    invariant memory.utf8(bytes.data, 0, bytes.length)
+
+fn new(allocator: &Allocator) -> Result<TextOwner, U64>:
+    ensures true
+    proof:
+        auto
+    let initial: Result<Vec<U8>, U64> = Vec.new(allocator, 0)
+    match move initial:
+        Ok(empty):
+            return Ok(TextOwner(move empty))
+        Err(code):
+            return Err(code)
+
+fn append(owner: &mut TextOwner, allocator: &Allocator, source: &str) -> Result<(), U64>:
+    ensures true
+    proof:
+        auto
+    return (*owner).bytes.extend_utf8_mut(allocator, source)
+
+fn cut(owner: &mut TextOwner, length: U64):
+    ensures true
+    proof:
+        auto
+    (*owner).bytes.truncate_utf8_mut(length)
+
+fn view(owner: &TextOwner) -> &str:
+    ensures result.len() == owner.bytes.length
+    proof:
+        auto
+    let bytes = memory.slice_unchecked(&(*owner).bytes.data, 0, (*owner).bytes.length)
+    return memory.utf8_unchecked(bytes)
+
+fn close(owner: TextOwner):
+    ensures memory.released(old(owner.bytes.data))
+    proof:
+        auto
+    let TextOwner(bytes) = move owner
+    bytes.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(initial): TextOwner = new(&allocator) else Err(code):
+        return
+    var owner = move initial
+    let _ = append(&mut owner, &allocator, "éx")
+    cut(&mut owner, 1)
+    console.print_int(view(&owner).len())
+    cut(&mut owner, 2)
+    console.print_int(view(&owner).len())
+    close(move owner)

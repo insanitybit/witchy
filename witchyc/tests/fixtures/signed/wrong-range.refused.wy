@@ -1,0 +1,11 @@
+// A false claim about a sign.
+fn sign(x: I64) -> I64:
+    ensures result >= 0
+    proof:
+        auto
+    if x < 0:
+        return -1
+    return 1
+
+fn main(console: Console<Write>):
+    console.print_int(I64.bits(sign(5)))

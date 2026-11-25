@@ -1,0 +1,7 @@
+// `impl Trait` is written only as a parameter's type.
+import console
+import hash
+
+fn main(console: Console<Write>):
+    let x: impl Hash = 3
+    console.print_int(x)

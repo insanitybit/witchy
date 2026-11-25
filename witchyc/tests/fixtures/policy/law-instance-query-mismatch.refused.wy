@@ -1,0 +1,13 @@
+// Refused: a query for `Wrap<U64>` whose field is a U32 does not feed the key's input (U64 feeds
+// eight bytes, U32 four), even with the key's parameter substituted.
+import "../derive/parts/keys.wy"
+import hash
+
+type Wrap<T> derive(keys.Key, keys.Fed):
+    v: T
+
+type Probe derive(keys.Fed, keys.Query(for: Wrap<U64>)):
+    v: U32
+
+fn main():
+    return

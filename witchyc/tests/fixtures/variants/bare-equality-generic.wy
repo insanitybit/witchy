@@ -1,0 +1,11 @@
+// A generic sum's bare variant or untyped construction compared with a typed local, either side.
+import console
+import hash
+
+type Maybe<T> derive(Eq):
+    Nothing
+    Just(T)
+
+fn main(console: Console<Write>):
+    let m: Maybe<U64> = Just(3)
+    console.print("${m == Nothing} ${Nothing == m} ${Nothing != m} ${Just(3) == m}")

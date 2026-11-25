@@ -1,0 +1,126 @@
+// Reassemble and check the protected server flight before certificate
+// authentication. The returned ranges select messages in the caller's transcript.
+import tls_kdf
+import tls_key_schedule
+import tls_record
+import tls_transport
+import crypto
+import span
+
+pub type ServerFlightError:
+    ServerFlightProtectionFailed
+    ServerFlightUnexpectedMessage
+    ServerFlightTooLarge
+    ServerFlightFinishedMismatch
+
+pub type ServerFlight:
+    certificate: U64
+    certificate_verify: U64
+    finished: U64
+    end: U64
+
+pub fn receive(socket: &Socket, allocator: &Allocator, handshake: &Handshake, transcript: &mut [U8], hello_len: U64, plaintext: &mut [U8], frame: &mut [U8]) -> Result<ServerFlight, ServerFlightError>:
+    let Ok(keys): RecordKeys = handshake.keys(Server) else Err(reason):
+        return Err(ServerFlightProtectionFailed)
+    let Ok(epoch): ReadEpoch = tls_record.reader(allocator, move keys) else Err(reason):
+        return Err(ServerFlightProtectionFailed)
+    var reader = move epoch
+    let result = read_messages(socket, &mut reader, transcript, hello_len, plaintext, frame)
+    reader.close()
+    let flight = result?
+    finished_tag(handshake, transcript, flight.finished)?
+    return Ok(flight)
+
+fn read_messages(socket: &Socket, reader: &mut ReadEpoch, transcript: &mut [U8], hello_len: U64, plaintext: &mut [U8], frame: &mut [U8]) -> Result<ServerFlight, ServerFlightError>:
+    let capacity = transcript.len()
+    if hello_len == 0 || hello_len >= capacity:
+        return Err(ServerFlightTooLarge)
+    let types: [U8; 4] = [8, 11, 15, 20]
+    var ends: [U64; 4] = [0; 4]
+    var filled = hello_len
+    var position = hello_len
+    var message: U64 = 0
+    while message < 4:
+        let Ok(info): RecordInfo = tls_transport.read_protected(socket, reader, frame, plaintext, true) else Err(reason):
+            return Err(ServerFlightProtectionFailed)
+        match info.kind:
+            HandshakeMessage:
+                ()
+            _:
+                return Err(ServerFlightUnexpectedMessage)
+        if info.length == 0:
+            return Err(ServerFlightUnexpectedMessage)
+        if info.length > capacity - filled:
+            return Err(ServerFlightTooLarge)
+        append_record(transcript.part(filled, filled + info.length), plaintext, info.length)
+        filled += info.length
+        while message < 4 && filled - position >= 4:
+            if transcript[position] != types[message]:
+                return Err(ServerFlightUnexpectedMessage)
+            let size = U8.to_u64(transcript[position + 1]) * 65536 + U8.to_u64(transcript[position + 2]) * 256 + U8.to_u64(transcript[position + 3])
+            if !message_length(types[message], size):
+                return Err(ServerFlightUnexpectedMessage)
+            if size + 4 > capacity - position:
+                return Err(ServerFlightTooLarge)
+            if size + 4 > filled - position:
+                break
+            position += 4 + size
+            ends[message] = position
+            message += 1
+    if position != filled:
+        return Err(ServerFlightUnexpectedMessage)
+    if !selected_http(Span.of(transcript.part(hello_len + 4, ends[0]))):
+        return Err(ServerFlightUnexpectedMessage)
+    return Ok(ServerFlight(ends[0], ends[1], ends[2], ends[3]))
+
+fn append_record(destination: &mut [U8], plaintext: &[U8], length: U64):
+    destination.copy_from(plaintext.part(0, length))
+
+fn message_length(kind: U8, size: U64) -> Bool:
+    if kind == 8:
+        return size >= 2
+    if kind == 11:
+        return size >= 10 && size <= 65540
+    if kind == 15:
+        return size >= 12 && size <= 108
+    return size == 48
+
+fn selected_http(extensions: Span) -> Bool:
+    if word(extensions, 0) != extensions.len() - 2:
+        return false
+    var rest = extensions.part(2, extensions.len())
+    var sni = false
+    var alpn = false
+    var groups = false
+    while !rest.is_empty():
+        if rest.len() < 4:
+            return false
+        let kind = word(rest, 0)
+        let size = word(rest, 2)
+        if size > rest.len() - 4:
+            return false
+        let data = rest.part(4, 4 + size)
+        if kind == 0 && !sni && size == 0:
+            sni = true
+        else if kind == 16 && !alpn && size == 11 && word(data, 0) == 9 && data.byte_or_end(2) == 8 && data.part(3, 11).equals_text("http/1.1"):
+            alpn = true
+        else if kind == 10 && !groups && size >= 4 && size % 2 == 0 && word(data, 0) == size - 2:
+            groups = true
+        else:
+            return false
+        rest = rest.part(4 + size, rest.len())
+    return alpn
+
+fn word(input: Span, offset: U64) -> U64:
+    return input.byte_or_end(offset) * 256 + input.byte_or_end(offset + 1)
+
+fn finished_tag(handshake: &Handshake, transcript: &[U8], finished: U64) -> Result<(), ServerFlightError>:
+    var digest: [U8; 48] = [0; 48]
+    if let Err(reason) = crypto.sha384(transcript.part(0, finished), digest.slice_mut()):
+        return Err(ServerFlightProtectionFailed)
+    let Ok(expected): Digest = handshake.finished(Server, digest.slice()) else Err(reason):
+        return Err(ServerFlightProtectionFailed)
+    expected.write_bytes(&mut digest)
+    if !crypto.verify_tag48(digest.slice(), transcript.part(finished + 4, finished + 52)):
+        return Err(ServerFlightFinishedMismatch)
+    return Ok(())

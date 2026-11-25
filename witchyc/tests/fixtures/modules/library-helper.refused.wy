@@ -1,0 +1,5 @@
+// Refused: the library's unchecked-memory helpers are private to its files.
+import "../../../library/wasm-console.wy"
+
+fn main(console: Console<Write>):
+    console.print_int(utf8_lead(200))

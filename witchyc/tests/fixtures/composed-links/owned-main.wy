@@ -1,0 +1,21 @@
+import cell_list
+import string
+
+nopanic fn main(out: Console<Write>, a: Allocator):
+    var list: DoublyLinkedList<String> = DoublyLinkedList.new()
+    match String.with_capacity(&a, 8):
+        Err(code):
+            list.close()
+            return
+        Ok(owned):
+            match list.push_back(&a, move owned):
+                Some(rejected):
+                    rejected.close()
+                None:
+                    match list.pop_back():
+                        Some(extracted):
+                            out.print_int(extracted.byte_len())
+                            extracted.close()
+                        None:
+                            out.print_int(1)
+    list.close()

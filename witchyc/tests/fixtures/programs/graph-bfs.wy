@@ -1,0 +1,77 @@
+// A graph as a HashMap from node to its neighbours (a Vec), searched breadth first with a Deque;
+// a closure keeps only edges between nodes of the same parity, then distances are printed.
+import console
+import vec
+import hashmap
+import deque
+import discard
+
+fn connect(graph: &mut HashMap<U64, Vec<U64>>, allocator: &Allocator, from: U64, to: U64) -> Bool:
+    match graph.get_mut(&from):
+        Ok(list):
+            match list.push_mut(allocator, to):
+                Ok:
+                    return true
+                Err(back):
+                    return false
+        Err(missing):
+            let Ok(made): Vec<U64> = Vec.new(allocator, 4) else Err(code):
+                return false
+            var list = move made
+            match list.push_mut(allocator, to):
+                Ok:
+                    ()
+                Err(back):
+                    list.close()
+                    return false
+            match graph.put(allocator, from, move list):
+                Ok:
+                    return true
+                Err(entry):
+                    entry.discard()
+                    return false
+
+fn distances(graph: &HashMap<U64, Vec<U64>>, allocator: &Allocator, start: U64, nodes: U64, keep: fn(U64, U64) -> Bool) -> Result<Vec<U64>, U64>:
+    var seen: Vec<U64> = Vec.new(allocator, nodes)?
+    for i in 0..nodes:
+        let pushed = seen.push_mut(allocator, 1000)
+    let Ok(made): Deque<U64> = Deque.new(allocator, 8) else Err(code):
+        seen.close()
+        return Err(code)
+    var queue = move made
+    seen[start] = 0
+    let first = queue.push_back(allocator, start)
+    while true:
+        let Ok(node): U64 = queue.pop_front_mut() else Err(code):
+            break
+        let here = seen[node]
+        match graph.get(&node):
+            Ok(list):
+                for next in list:
+                    if keep(node, *next) && seen[*next] == 1000:
+                        seen[*next] = here + 1
+                        let queued = queue.push_back(allocator, *next)
+            Err(missing):
+                continue
+    queue.close()
+    return Ok(move seen)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): HashMap<U64, Vec<U64>> = HashMap.new(&allocator, 16) else Err(code):
+        return
+    var graph = move made
+    let edges: [U64; 20] = [0, 2, 2, 4, 4, 6, 0, 1, 1, 3, 3, 5, 0, 4, 6, 8, 5, 7, 2, 3]
+    var i: U64 = 0
+    while i + 1 < 20:
+        let a = connect(&mut graph, &allocator, edges[i], edges[i + 1])
+        let b = connect(&mut graph, &allocator, edges[i + 1], edges[i])
+        i += 2
+    let same = fn(a: U64, b: U64) -> Bool: (a + b) % 2 == 0
+    match distances(&graph, &allocator, 0, 9, same):
+        Ok(found):
+            for d in &found:
+                console.print_int(*d)
+            found.close()
+        Err(code):
+            console.line("no room")
+    graph.discard()

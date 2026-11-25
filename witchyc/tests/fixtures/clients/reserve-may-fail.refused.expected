@@ -1,0 +1,2 @@
+proof failed: function `room`
+  not proved: ensures items.capacity() >= wanted

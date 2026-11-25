@@ -1,0 +1,6 @@
+// A number as a condition says a Bool is expected.
+import console
+
+fn main(console: Console<Write>):
+    if 1:
+        console.print("yes")

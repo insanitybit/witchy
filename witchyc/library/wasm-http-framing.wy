@@ -1,0 +1,533 @@
+// Bounded HTTP/1.1 message framing over caller-owned workspaces.
+import http_head
+import net
+import span
+
+pub type FramingError:
+    InvalidResponse
+    HeaderLimit
+    BodyLimit
+    IncompleteResponse
+    UnsupportedTransferCoding
+    InvalidRequest
+    IncompleteRequest
+    WrongAuthority
+    UnsupportedExpectation
+
+type Phase:
+    Headers
+    Fixed
+    UntilClose
+    ChunkSize
+    ChunkData
+    ChunkEnd
+    Trailers
+    Done
+    Failed
+
+pub sealed type ResponseDecoder:
+    phase: Phase
+    status: U64
+    head_used: U64
+    body_used: U64
+    remaining: U64
+    suffix: U64
+    line_used: U64
+    trailer_used: U64
+    head_only: Bool
+
+pub fn response_decoder() -> ResponseDecoder:
+    return ResponseDecoder(Headers, 0, 0, 0, 0, 0, 0, 0, false)
+
+// Frame the response to HEAD. Representation metadata does not frame a body.
+pub fn head_response_decoder() -> ResponseDecoder:
+    return ResponseDecoder(Headers, 0, 0, 0, 0, 0, 0, 0, true)
+
+impl ResponseDecoder:
+    pub fn complete(self: &ResponseDecoder) -> Bool:
+        if let Done = (*self).phase:
+            return true
+        return false
+
+    pub fn status(self: &ResponseDecoder) -> U64:
+        return (*self).status
+
+    pub fn head_len(self: &ResponseDecoder) -> U64:
+        return (*self).head_used
+
+    pub fn body_len(self: &ResponseDecoder) -> U64:
+        return (*self).body_used
+
+    // Call only when the stream reports EOF. TLS reports EOF after close_notify.
+    pub fn finish(self: &mut ResponseDecoder) -> Result<(), FramingError>:
+        if let UntilClose = (*self).phase:
+            (*self).phase = Done
+        if self.complete():
+            return Ok(())
+        (*self).phase = Failed
+        return Err(IncompleteResponse)
+
+    // Feed consecutive transport bytes with the same workspaces. Extra bytes
+    // after a final response in the same input are refused.
+    pub fn push_bytes(self: &mut ResponseDecoder, input: &[U8], head: &mut [U8], body: &mut [U8], line: &mut [U8]) -> Result<(), FramingError>:
+        let window = BodyWindow(0, body.len())
+        let decoded = advance(self, input, head, body, line, window, false, Span.of(input.part(0, 0)))
+        if let Err(reason) = decoded:
+            (*self).phase = Failed
+        return decoded
+
+    // Decode into reusable output scratch. Only the prefix returned by this
+    // call belongs to this chunk. Keep the same total limit for the exchange.
+    pub fn push_body_chunk(self: &mut ResponseDecoder, input: &[U8], head: &mut [U8], chunk: &mut [U8], line: &mut [U8], maximum: U64) -> Result<U64, FramingError>:
+        let before = (*self).body_used
+        if before > maximum:
+            (*self).phase = Failed
+            return Err(BodyLimit)
+        if let Err(reason) = advance(self, input, head, chunk, line, BodyWindow(before, maximum), false, Span.of(input.part(0, 0))):
+            (*self).phase = Failed
+            return Err(reason)
+        return Ok((*self).body_used - before)
+
+pub sealed type RequestDecoder:
+    frame: ResponseDecoder
+
+pub fn request_decoder() -> RequestDecoder:
+    return RequestDecoder(response_decoder())
+
+impl RequestDecoder:
+    pub fn complete(self: &RequestDecoder) -> Bool:
+        return (*self).frame.complete()
+
+    pub fn head_len(self: &RequestDecoder) -> U64:
+        return (*self).frame.head_len()
+
+    pub fn body_len(self: &RequestDecoder) -> U64:
+        return (*self).frame.body_len()
+
+    pub fn finish(self: &mut RequestDecoder) -> Result<(), FramingError>:
+        if let Err(reason) = (*self).frame.finish():
+            return Err(IncompleteRequest)
+        return Ok(())
+
+    // Supply the configured HTTP authority and the same workspaces on each call.
+    pub fn push_bytes(self: &mut RequestDecoder, authority: Span, input: &[U8], head: &mut [U8], body: &mut [U8], line: &mut [U8]) -> Result<(), FramingError>:
+        let window = BodyWindow(0, body.len())
+        let decoded = advance(&mut (*self).frame, input, head, body, line, window, true, authority)
+        if let Err(reason) = decoded:
+            (*self).frame.phase = Failed
+            if let InvalidResponse = reason:
+                return Err(InvalidRequest)
+        return decoded
+
+pub type SocketFramingError:
+    SocketReadFailed(NetError)
+    SocketMessageRefused(FramingError)
+
+pub type SocketResponse = .{status: U64, head_len: U64, body_len: U64}
+pub type SocketRequest = .{head_len: U64, body_len: U64}
+
+// Read one message using nonempty input scratch and caller-sized workspaces.
+// Only the returned head and body prefixes are valid on success.
+pub fn read_response(socket: &Socket, head: &mut [U8], body: &mut [U8], line: &mut [U8], input: &mut [U8]) -> Result<SocketResponse, SocketFramingError>:
+    return read_socket_response(socket, response_decoder(), head, body, line, input)
+
+pub fn read_head_response(socket: &Socket, head: &mut [U8], input: &mut [U8]) -> Result<SocketResponse, SocketFramingError>:
+    var body: [U8; 1] = [0]
+    var line: [U8; 1] = [0]
+    return read_socket_response(socket, head_response_decoder(), head, body.slice_mut().part(0, 0), line.slice_mut().part(0, 0), input)
+
+fn read_socket_response(socket: &Socket, initial: ResponseDecoder, head: &mut [U8], body: &mut [U8], line: &mut [U8], input: &mut [U8]) -> Result<SocketResponse, SocketFramingError>:
+    if input.len() == 0:
+        return Err(SocketMessageRefused(IncompleteResponse))
+    var decoder = initial
+    while !decoder.complete():
+        let Ok(count): U64 = socket.read_some(input) else Err(reason):
+            return Err(SocketReadFailed(reason))
+        if count == 0:
+            if let Err(reason) = decoder.finish():
+                return Err(SocketMessageRefused(reason))
+        else if let Err(reason) = decoder.push_bytes(input.part(0, count), head, body, line):
+            return Err(SocketMessageRefused(reason))
+    return Ok(.{body_len: decoder.body_len(), head_len: decoder.head_len(), status: decoder.status()})
+
+// Require the Host that names the listener that granted this connection.
+pub fn read_request(socket: &Socket, head: &mut [U8], body: &mut [U8], line: &mut [U8], input: &mut [U8]) -> Result<SocketRequest, SocketFramingError>:
+    if input.len() == 0:
+        return Err(SocketMessageRefused(IncompleteRequest))
+    var accepted: [U8; 64] = [0; 64]
+    let size = socket.accepted_on(accepted.slice_mut())
+    if size == 0:
+        return Err(SocketMessageRefused(WrongAuthority))
+    let authority = Span.of(accepted.slice().part(0, size))
+    var decoder = request_decoder()
+    while !decoder.complete():
+        let Ok(count): U64 = socket.read_some(input) else Err(reason):
+            return Err(SocketReadFailed(reason))
+        if count == 0:
+            if let Err(reason) = decoder.finish():
+                return Err(SocketMessageRefused(reason))
+        else if let Err(reason) = decoder.push_bytes(authority, input.part(0, count), head, body, line):
+            return Err(SocketMessageRefused(reason))
+    return Ok(.{body_len: decoder.body_len(), head_len: decoder.head_len()})
+
+// Admission for a single request on a route that accepts only a head.
+// First parse the start line and check the authority. Even a zero
+// Content-Length is refused because this route admits no body framing.
+pub fn request_without_body(head: ParsedRequestHead) -> Result<(), FramingError>:
+    if !head.body.is_empty():
+        return Err(InvalidRequest)
+    var headers = head.headers
+    while !headers.is_empty():
+        let Ok(field): Field = next_field(headers) else Err(reason):
+            return Err(InvalidRequest)
+        if field.name.equals_text_ignore_ascii_case("content-length") || field.name.equals_text_ignore_ascii_case("transfer-encoding"):
+            return Err(InvalidRequest)
+        if field.name.equals_text_ignore_ascii_case("expect"):
+            return Err(UnsupportedExpectation)
+        for byte in field.value.as_bytes():
+            if (*byte < 32 && *byte != 9) || *byte == 127:
+                return Err(InvalidRequest)
+        headers = field.rest
+    return Ok(())
+
+pub type IdentityResponseLength:
+    CloseDelimited
+    FixedLength(U64)
+
+pub type IdentityResponseHead = .{status: U64, body_at: U64, headers: Span, length_field: Span, framing: IdentityResponseLength}
+
+// A 200 or 4xx/5xx HTTP/1.1 response with identity content and no transfer coding.
+// Pass the offset of the first CRLF CRLF. The caller handles the body and
+// must require authenticated EOF when using close delimiting over TLS.
+pub fn identity_response_head(bytes: Span, fence: U64) -> Result<IdentityResponseHead, FramingError>:
+    if fence > 16380 || fence + 4 > bytes.len() || !bytes.part(fence, fence + 4).equals_text("\r\n\r\n"):
+        return Err(InvalidResponse)
+    let Ok(first): Halves = bytes.part(0, fence + 2).split(10) else Err(rest):
+        return Err(InvalidResponse)
+    let status = identity_status(first.head)?
+    let body_at = fence + 4
+    let wire = identity_length_field(first.tail)?
+    let framing = if wire.is_empty():
+        CloseDelimited
+    else:
+        let size = digits(wire, 10)?
+        if bytes.len() - body_at > size:
+            return Err(InvalidResponse)
+        FixedLength(size)
+    return Ok(.{status: status, body_at: body_at, headers: first.tail, length_field: wire, framing: framing})
+
+fn identity_status(line: Span) -> Result<U64, FramingError>:
+    if line.len() < 14 || !line.starts_with_text("HTTP/1.1 ") || line.byte_or_end(12) != 32 || !line.ends_with_text("\r"):
+        return Err(InvalidResponse)
+    let status = digits(line.part(9, 12), 10)?
+    if status != 200 && (status < 400 || status > 599):
+        return Err(InvalidResponse)
+    for byte in line.part(13, line.len() - 1).as_bytes():
+        if *byte < 32 || *byte >= 127:
+            return Err(InvalidResponse)
+    return Ok(status)
+
+fn identity_length_field(headers: Span) -> Result<Span, FramingError>:
+    var rest = headers
+    var length = headers.part(0, 0)
+    var count: U64 = 0
+    while !rest.is_empty():
+        if count == 64:
+            return Err(HeaderLimit)
+        let field = next_field(rest)?
+        rest = field.rest
+        count += 1
+        if !identity_field(field):
+            return Err(InvalidResponse)
+        if field.name.equals_text_ignore_ascii_case("content-length"):
+            let wire = field.value.trim()
+            if !length.is_empty() || wire.is_empty():
+                return Err(InvalidResponse)
+            length = wire
+    return Ok(length)
+
+fn identity_field(field: Field) -> Bool:
+    let name = field.name
+    if name.len() > 64 || name.equals_text_ignore_ascii_case("transfer-encoding") || name.equals_text_ignore_ascii_case("content-encoding") || name.equals_text_ignore_ascii_case("expect") || name.equals_text_ignore_ascii_case("upgrade") || name.equals_text_ignore_ascii_case("trailer"):
+        return false
+    for byte in name.as_bytes():
+        if !(*byte >= 'A' && *byte <= 'Z') && !(*byte >= 'a' && *byte <= 'z') && !(*byte >= '0' && *byte <= '9') && *byte != '-':
+            return false
+    for byte in field.value.as_bytes():
+        if (*byte < 32 && *byte != 9) || *byte >= 127:
+            return false
+    return true
+
+type BodyWindow:
+    start: U64
+    maximum: U64
+
+fn advance(state: &mut ResponseDecoder, input: &[U8], head: &mut [U8], body: &mut [U8], line: &mut [U8], window: BodyWindow, request: Bool, authority: Span) -> Result<(), FramingError>:
+    var at: U64 = 0
+    while at < input.len():
+        match (*state).phase:
+            Headers:
+                if add_header_byte(state, input[at], head)?:
+                    let raw = Span.of(head.part(0, (*state).head_used))
+                    if request:
+                        configure_request(state, raw, authority, window.maximum)?
+                    else:
+                        configure_response(state, raw, window.maximum)?
+                at += 1
+            Fixed:
+                let used = copy_body(state, input.part(at, input.len()), body, window)?
+                at += used
+                if (*state).remaining == 0:
+                    (*state).phase = Done
+            UntilClose:
+                (*state).remaining = input.len() - at
+                let used = copy_body(state, input.part(at, input.len()), body, window)?
+                at += used
+            ChunkData:
+                let used = copy_body(state, input.part(at, input.len()), body, window)?
+                at += used
+                if (*state).remaining == 0:
+                    (*state).phase = ChunkEnd
+            ChunkSize:
+                add_chunk_size_byte(state, input[at], line, window.maximum)?
+                at += 1
+            ChunkEnd:
+                if (*state).suffix == 0 && input[at] == 13:
+                    (*state).suffix = 1
+                else if (*state).suffix == 1 && input[at] == 10:
+                    (*state).suffix = 0
+                    (*state).phase = ChunkSize
+                else:
+                    return Err(InvalidResponse)
+                at += 1
+            Trailers:
+                add_trailer_byte(state, input[at], line, request)?
+                at += 1
+            _:
+                return Err(InvalidResponse)
+    return Ok(())
+
+fn copy_body(state: &mut ResponseDecoder, input: &[U8], output: &mut [U8], window: BodyWindow) -> Result<U64, FramingError>:
+    let used = (*state).body_used
+    let start = used - window.start
+    let remaining = (*state).remaining
+    let count = if remaining < input.len():
+        remaining
+    else:
+        input.len()
+    if used > window.maximum || count > window.maximum - used || start > output.len() || count > output.len() - start:
+        return Err(BodyLimit)
+    output.part(start, start + count).copy_from(input.part(0, count))
+    (*state).body_used += count
+    (*state).remaining -= count
+    return Ok(count)
+
+fn add_header_byte(state: &mut ResponseDecoder, byte: U8, head: &mut [U8]) -> Result<Bool, FramingError>:
+    let used = (*state).head_used
+    if used >= head.len():
+        return Err(HeaderLimit)
+    head[used] = byte
+    (*state).head_used += 1
+    let suffix = (*state).suffix
+    if byte == 13:
+        if suffix == 1 || suffix == 3:
+            return Err(InvalidResponse)
+        (*state).suffix = if suffix == 2:
+            3
+        else:
+            1
+    else if byte == 10:
+        if suffix == 3:
+            (*state).suffix = 0
+            return Ok(true)
+        if suffix != 1:
+            return Err(InvalidResponse)
+        (*state).suffix = 2
+    else:
+        if suffix == 1 || suffix == 3 || (byte < 32 && byte != 9) || byte == 127:
+            return Err(InvalidResponse)
+        (*state).suffix = 0
+    return Ok(false)
+
+fn configure_response(state: &mut ResponseDecoder, raw: Span, body_capacity: U64) -> Result<(), FramingError>:
+    let Ok(parts): ParsedResponseHead = http_head.head(raw) else Err(reason):
+        return Err(InvalidResponse)
+    let status = parts.status
+    if status < 100 || status > 599 || status == 101:
+        return Err(InvalidResponse)
+    let fields = framing_fields(parts.headers, raw.byte_or_end(7) == '1', false, raw.part(0, 0))?
+    if status < 200 || status == 204:
+        if fields.chunked || fields.has_length:
+            return Err(InvalidResponse)
+    if status < 200:
+        (*state).head_used = 0
+        return Ok(())
+    (*state).status = status
+    if (*state).head_only || status == 204 || status == 304:
+        (*state).phase = Done
+        return Ok(())
+    return configure_body(state, fields, body_capacity, UntilClose)
+
+// Parse a complete request head with an HTTP/1.1 request line and a
+// slash-prefixed target. The caller bounds raw and validates the returned
+// field lines, authority and body framing before handling the request.
+pub fn parse_request_head(raw: Span) -> Result<ParsedRequestHead, FramingError>:
+    let Ok(parts): ParsedRequestHead = http_head.request(raw) else Err(reason):
+        return Err(InvalidRequest)
+    let Ok(start): Halves = raw.split(13) else Err(whole):
+        return Err(InvalidRequest)
+    if parts.target.byte_or_end(0) != '/' || !start.head.ends_with_text(" HTTP/1.1"):
+        return Err(InvalidRequest)
+    return Ok(parts)
+
+fn configure_request(state: &mut ResponseDecoder, raw: Span, authority: Span, body_capacity: U64) -> Result<(), FramingError>:
+    let parts = parse_request_head(raw)?
+    let fields = framing_fields(parts.headers, true, true, authority)?
+    return configure_body(state, fields, body_capacity, Done)
+
+type FramingFields = .{chunked: Bool, has_length: Bool, length: U64}
+
+fn framing_fields(headers: Span, allows_chunked: Bool, request: Bool, authority: Span) -> Result<FramingFields, FramingError>:
+    var rest = headers
+    var chunked = false
+    var has_length = false
+    var length: U64 = 0
+    var has_host = false
+    var host_matches = false
+    while !rest.is_empty():
+        let field = next_field(rest)?
+        rest = field.rest
+        let value = trim_ows(field.value)
+        if field.name.equals_text_ignore_ascii_case("content-length"):
+            if has_length:
+                return Err(InvalidResponse)
+            has_length = true
+            length = digits(value, 10)?
+        else if field.name.equals_text_ignore_ascii_case("transfer-encoding"):
+            if chunked || !value.equals_text_ignore_ascii_case("chunked") || !allows_chunked:
+                return Err(UnsupportedTransferCoding)
+            chunked = true
+        else if request && field.name.equals_text_ignore_ascii_case("host"):
+            if has_host || value.is_empty():
+                return Err(InvalidRequest)
+            has_host = true
+            host_matches = value.eq_ignore_ascii_case(authority)
+        else if request && field.name.equals_text_ignore_ascii_case("expect"):
+            return Err(UnsupportedExpectation)
+    if chunked && has_length:
+        return Err(InvalidResponse)
+    if request:
+        if !has_host:
+            return Err(InvalidRequest)
+        if !host_matches:
+            return Err(WrongAuthority)
+    return Ok(.{chunked: chunked, has_length: has_length, length: length})
+
+fn configure_body(state: &mut ResponseDecoder, fields: FramingFields, body_capacity: U64, without_framing: Phase) -> Result<(), FramingError>:
+    if fields.chunked:
+        (*state).phase = ChunkSize
+    else if fields.has_length:
+        if fields.length > body_capacity:
+            return Err(BodyLimit)
+        (*state).remaining = fields.length
+        (*state).phase = if fields.length == 0:
+            Done
+        else:
+            Fixed
+    else:
+        (*state).phase = without_framing
+    return Ok(())
+
+type Field = .{name: Span, value: Span, rest: Span}
+
+fn next_field(bytes: Span) -> Result<Field, FramingError>:
+    let Ok(line): Halves = bytes.split(10) else Err(reason):
+        return Err(InvalidResponse)
+    if line.head.is_empty() || line.head.byte_or_end(line.head.len() - 1) != 13:
+        return Err(InvalidResponse)
+    let field = line.head.part(0, line.head.len() - 1)
+    let Ok(pair): Halves = field.split(':') else Err(reason):
+        return Err(InvalidResponse)
+    if pair.head.is_empty():
+        return Err(InvalidResponse)
+    for byte in pair.head.as_bytes():
+        if !http_head.field_name_byte(*byte):
+            return Err(InvalidResponse)
+    return Ok(.{name: pair.head, rest: line.tail, value: pair.tail})
+
+fn trim_ows(value: Span) -> Span:
+    var first: U64 = 0
+    var end = value.len()
+    while first < end && (value.byte_or_end(first) == 32 || value.byte_or_end(first) == 9):
+        first += 1
+    while first < end && (value.byte_or_end(end - 1) == 32 || value.byte_or_end(end - 1) == 9):
+        end -= 1
+    return value.part(first, end)
+
+fn digits(text: Span, base: U64) -> Result<U64, FramingError>:
+    if text.is_empty():
+        return Err(InvalidResponse)
+    var value: U64 = 0
+    for byte in text.as_bytes():
+        let b = U8.to_u64(*byte)
+        let digit = if b >= 48 && b <= 57:
+            b - 48
+        else if b >= 65 && b <= 70:
+            b - 55
+        else if b >= 97 && b <= 102:
+            b - 87
+        else:
+            16
+        if digit >= base || value > (18446744073709551615 - digit) / base:
+            return Err(InvalidResponse)
+        value = value * base + digit
+    return Ok(value)
+
+fn add_line_byte(state: &mut ResponseDecoder, byte: U8, scratch: &mut [U8]) -> Result<Bool, FramingError>:
+    let used = (*state).line_used
+    if used >= scratch.len():
+        return Err(HeaderLimit)
+    let after_cr = used != 0 && scratch[used - 1] == 13
+    if after_cr != (byte == 10) || (byte < 32 && byte != 9 && byte != 13 && byte != 10) || byte == 127:
+        return Err(InvalidResponse)
+    scratch[used] = byte
+    (*state).line_used += 1
+    return Ok(byte == 10)
+
+fn add_chunk_size_byte(state: &mut ResponseDecoder, byte: U8, scratch: &mut [U8], body_capacity: U64) -> Result<(), FramingError>:
+    let ready = add_line_byte(state, byte, scratch)?
+    if !ready:
+        return Ok(())
+    let line = Span.of(scratch.part(0, (*state).line_used - 2))
+    let length = chunk_length(line)?
+    let used = (*state).body_used
+    if used > body_capacity || length > body_capacity - used:
+        return Err(BodyLimit)
+    (*state).line_used = 0
+    (*state).remaining = length
+    (*state).phase = if length == 0:
+        Trailers
+    else:
+        ChunkData
+    return Ok(())
+
+fn chunk_length(line: Span) -> Result<U64, FramingError>:
+    if let Ok(extension) = line.split(';'):
+        return digits(extension.head.trim(), 16)
+    return digits(line, 16)
+
+fn add_trailer_byte(state: &mut ResponseDecoder, byte: U8, scratch: &mut [U8], request: Bool) -> Result<(), FramingError>:
+    if (*state).trailer_used >= 16384:
+        return Err(HeaderLimit)
+    (*state).trailer_used += 1
+    let ready = add_line_byte(state, byte, scratch)?
+    if !ready:
+        return Ok(())
+    if (*state).line_used == 2:
+        (*state).phase = Done
+        return Ok(())
+    let field = next_field(Span.of(scratch.part(0, (*state).line_used)))?
+    if field.name.equals_text_ignore_ascii_case("content-length") || field.name.equals_text_ignore_ascii_case("transfer-encoding") || (request && field.name.equals_text_ignore_ascii_case("host")):
+        return Err(InvalidResponse)
+    (*state).line_used = 0
+    return Ok(())

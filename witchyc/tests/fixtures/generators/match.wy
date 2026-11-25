@@ -1,0 +1,28 @@
+// `yield` inside `match` arms: an arm's binding is in scope for its first steps and a
+// leading `yield`; a value needed later is copied into a local. The arms rejoin after.
+import console
+
+type Reading:
+    Value(U64)
+    Missing
+
+fn reading(k: U64) -> Reading:
+    if k % 3 == 0:
+        return Missing
+    return Value(k * 10)
+
+gen fn readings(count: U64) -> U64:
+    for k in 0..count:
+        match reading(k):
+            Value(v):
+                var seen: U64 = v
+                yield seen
+                yield seen + 1
+            Missing:
+                var gap: U64 = k
+                yield 900 + gap
+    yield 0
+
+fn main(console: Console<Write>):
+    for r in readings(5):
+        console.print_int(r)

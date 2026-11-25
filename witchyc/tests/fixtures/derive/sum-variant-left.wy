@@ -1,0 +1,12 @@
+// A variant written bare on the left of `==` compares as on the right (review).
+import console
+import hash
+
+type Shape derive(Eq):
+    Square(U64)
+    Dot
+
+fn main(console: Console<Write>):
+    let a = Dot
+    let b = Dot == a
+    console.print("${b}")

@@ -1,0 +1,2 @@
+sqlite 0.2.0: vendor/sqlite/sqlite.wy ; requires
+webauthn 0.1.0: vendor/webauthn/webauthn.wy ; requires

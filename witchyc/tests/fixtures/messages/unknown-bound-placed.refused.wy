@@ -1,0 +1,8 @@
+// Refused at the function, naming the bound: no trait of that name.
+import console
+
+fn show_all<T: Printable>(x: T) -> U64:
+    return 0
+
+fn main(console: Console<Write>):
+    console.print_int(show_all(3))

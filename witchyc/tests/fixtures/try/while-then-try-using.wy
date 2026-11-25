@@ -1,0 +1,38 @@
+// A `while condition?:` then another `?`, inside a `using` (review): the second `?` returns with
+// the String discarded first; it was refused as a leak.
+import console
+import string
+
+type AppError:
+    NoRoom(U64)
+    Empty
+
+impl AppError:
+    pub fn from(code: U64) -> AppError:
+        return NoRoom(code + 1000)
+
+fn fail(code: U64) -> Result<U64, U64>:
+    if code > 3:
+        return Err(code)
+    return Ok(code)
+
+fn flag(code: U64) -> Result<Bool, U64>:
+    if code > 3:
+        return Err(code)
+    return Ok(code > 1)
+
+fn a(allocator: &Allocator, k: U64) -> Result<U64, U64>:
+    using var s: String = String.new(allocator)?:
+        var i: U64 = 0
+        while flag(k + i)?:
+            i += 1
+        let m = fail(k + 2)?
+        return Ok(m + i)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    for k in 0..6:
+        match a(&allocator, k):
+            Ok(n):
+                console.print_int(n)
+            Err(e):
+                console.print_int(e)

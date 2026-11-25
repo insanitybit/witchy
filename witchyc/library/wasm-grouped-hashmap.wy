@@ -1,0 +1,126 @@
+import "wasm-hash.wy"
+import "wasm-hashmap.wy"
+import "wasm-simd.wy"
+
+// A read-only index over an existing map. Moving the map in keeps its slots stable.
+// into_map returns the original keys and values for further mutation.
+pub sealed type GroupedHashMap<K, V>:
+    table: HashMap<K, V>
+    controls: Buffer<U8x16>
+    indexed: Bool
+
+impl<K: Any + Hash + Eq, V: Any> HashMap<K, V>:
+    // Sample evenly spaced slots. A long displacement is evidence that skipping a
+    // fingerprint group can pay for the extra memory access. Sampling only chooses
+    // the lookup implementation, so missing a cluster cannot change a result.
+    fn benefits_from_groups(map: &HashMap<K, V>, capacity: U64) -> Bool:
+        var stride = capacity / 64
+        if stride == 0:
+            stride = 1
+        var index: U64 = 0
+        while index < capacity:
+            match map.entry(index):
+                Ok(entry):
+                    let home = (*entry).key.hash() % capacity
+                    var distance: U64 = 0
+                    if index >= home:
+                        distance = index - home
+                    else:
+                        distance = capacity - (home - index)
+                    if distance >= 16:
+                        return true
+                Err(empty):
+                    ()
+            index += stride
+        return false
+
+    pub fn into_grouped(input: HashMap<K, V>, allocator: &Allocator) -> Result<GroupedHashMap<K, V>, HashMap<K, V>>:
+        let capacity = input.capacity()
+        let indexed = input.benefits_from_groups(capacity)
+        var groups: U64 = 0
+        if indexed:
+            groups = capacity / 16 + (capacity % 16 + 15) / 16
+        let allocation: Result<Buffer<U8x16>, U64> = memory.try_alloc(allocator, groups)
+        match move allocation:
+            Err(code):
+                return Err(move input)
+            Ok(storage):
+                var controls = move storage
+                for g in 0..groups:
+                    var low: U64 = 0
+                    var high: U64 = 0
+                    for lane in 0..16:
+                        let index = g * 16 + lane
+                        if index >= capacity:
+                            break
+                        match input.entry(index):
+                            Ok(entry):
+                                let tag = 1 + (((*entry).key.hash() >> 17) & 127)
+                                let bits = tag << ((lane % 8) * 8)
+                                if lane < 8:
+                                    low = low | bits
+                                else:
+                                    high = high | bits
+                            Err(empty):
+                                continue
+                    match memory.try_init(&mut controls, g, U8x16(low, high)):
+                        Ok:
+                            continue
+                        Err(back):
+                            unreachable
+                return Ok(GroupedHashMap(move input, move controls, indexed))
+
+impl<K: Any + Hash + Eq, V: Any> GroupedHashMap<K, V>:
+    pub fn get<Q: Any + Hash + Equivalent<K>>(map: &GroupedHashMap<K, V>, key: &Q) -> Result<&V, U64>:
+        if !(*map).indexed:
+            return (*map).table.get(key)
+        let capacity = (*map).table.capacity()
+        if capacity == 0:
+            return Err(0)
+        let hash = key.hash()
+        let wanted = U8x16.splat(U8.truncate(1 + ((hash >> 17) & 127)))
+        var index = hash % capacity
+        var remaining = capacity
+        while remaining > 0:
+            match memory.ref(&(*map).controls, index / 16):
+                Ok(group):
+                    let lanes = U8x16((*group).low, (*group).high)
+                    var matches = lanes.cmp_eq(wanted).bitmask() >> (index % 16)
+                    var empty = lanes.cmp_eq(U8x16(0, 0)).bitmask() >> (index % 16)
+                    var count = 16 - index % 16
+                    if count > remaining:
+                        count = remaining
+                    if count > capacity - index:
+                        count = capacity - index
+                    if (matches | empty) != 0:
+                        for offset in 0..count:
+                            if (empty & 1) != 0:
+                                return Err(index + offset)
+                            if (matches & 1) != 0:
+                                let entry = (*map).table.entry(index + offset)?
+                                if key.equivalent(&(*entry).key):
+                                    return Ok(&(*entry).value)
+                            matches = matches >> 1
+                            empty = empty >> 1
+                    remaining -= count
+                    index += count
+                    if index == capacity:
+                        index = 0
+                Err(code):
+                    unreachable
+        return Err(capacity)
+
+    pub fn into_map(input: GroupedHashMap<K, V>) -> HashMap<K, V>:
+        let GroupedHashMap(table, storage, indexed) = move input
+        var controls = move storage
+        for i in 0..memory.capacity(&controls):
+            match memory.take(&mut controls, i):
+                Ok(group):
+                    continue
+                Err(code):
+                    unreachable
+        match memory.try_release(move controls):
+            Ok:
+                return move table
+            Err(back):
+                unreachable

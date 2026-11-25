@@ -1,0 +1,6 @@
+// An input grant comes from `main` only: no value can stand in for it.
+fn take(input: &Console<Read>) -> U64:
+    return input.next_byte()
+
+fn main(console: Console<Write>):
+    console.print_int(take(&3))

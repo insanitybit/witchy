@@ -1,0 +1,16 @@
+// Refused: a generator that holds a reference is not a record of numbers, so it is no local of a gen fn.
+import console
+import vec
+
+gen fn items(v: &Vec<U64>) -> U64:
+    for x in v:
+        yield *x
+
+// Refused: `items` holds a reference, so its generator is no record of numbers.
+gen fn doubled(v: &Vec<U64>) -> U64:
+    var inner = items(v)
+    for x in inner:
+        yield x * 2
+
+fn main(console: Console<Write>):
+    console.line("ran")

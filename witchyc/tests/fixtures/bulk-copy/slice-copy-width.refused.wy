@@ -1,0 +1,5 @@
+// Refused: the source is a slice of the same element type.
+fn main():
+    var a: [U8; 8] = [1; 8]
+    let b: [U64; 1] = [2]
+    a.slice_mut().copy_from(b.slice())

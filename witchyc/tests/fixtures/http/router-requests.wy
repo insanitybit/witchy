@@ -1,0 +1,43 @@
+// A small router over raw requests: method and path choose a handler, a header is found by
+// name whatever its case, and the body's length is checked against Content-Length.
+import console
+import string
+import span
+import http
+
+fn route(console: &Console<Write>, allocator: &Allocator, raw: Text):
+    let Ok(made): String = String.new(allocator) else Err(c):
+        return
+    var text = move made
+    let _ = text.push_text(allocator, raw)
+    match request(text.span()):
+        Ok(head):
+            var length: U64 = 0
+            match header(head.headers, "content-length"):
+                Ok(value):
+                    match value.parse_u64():
+                        Ok(n):
+                            length = n
+                        Err(e):
+                            console.line("400 bad length")
+                Err(none):
+                    ()
+            if head.method.equals_text("GET") && head.target.equals_text("/health"):
+                console.line("200 ok")
+            else if head.method.equals_text("POST") && head.target.equals_text("/echo"):
+                if head.body.len() == length:
+                    console.print("200 echo ${length} bytes")
+                else:
+                    console.print("400 body is ${head.body.len()}, said ${length}")
+            else:
+                console.line("404")
+        Err(e):
+            console.line("400 malformed")
+    text.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    route(&console, &allocator, "GET /health HTTP/1.1\r\nHost: x\r\n\r\n")
+    route(&console, &allocator, "POST /echo HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n\r\nhello")
+    route(&console, &allocator, "POST /echo HTTP/1.1\r\nCONTENT-LENGTH: 9\r\n\r\nhello")
+    route(&console, &allocator, "GET /nowhere HTTP/1.1\r\n\r\n")
+    route(&console, &allocator, "not a request")

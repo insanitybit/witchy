@@ -1,0 +1,11 @@
+// In one file, a type parameter still may not share a declared type's name.
+import console
+
+type T:
+    v: U64
+
+fn id<T>(x: T) -> T:
+    x
+
+fn main(console: Console<Write>):
+    console.print_int(id(3))

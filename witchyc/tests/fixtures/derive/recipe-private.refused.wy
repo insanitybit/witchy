@@ -1,0 +1,8 @@
+// Refused: a recipe declared without `pub` is its own module's.
+import "parts/sumkeys.wy"
+
+type P derive(sumkeys.Hidden):
+    x: U64
+
+fn main():
+    return

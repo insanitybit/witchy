@@ -1,0 +1,12 @@
+import console
+
+fn hash_fold(folded: U64, next: U64) -> U64:
+    return 7
+
+pub trait Telling:
+    fn show(self: &Self, console: &Console<Write>)
+
+pub derive Shown:
+    impl Telling for Self:
+        fn show(self: &Self, console: &Console<Write>):
+            console.print("${hash_fold(1, 2)}")

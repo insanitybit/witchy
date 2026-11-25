@@ -1,0 +1,3 @@
+fn main(console: Console<Write>):
+    let value: U64 = named_fact_read()
+    console.print_int(value)

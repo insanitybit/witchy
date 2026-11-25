@@ -1,0 +1,47 @@
+// The testing library's checks, called as ordinary functions: what a failure holds.
+import console
+import testing
+import vec
+
+fn show(console: &Console<Write>, checked: Result<(), Failure>):
+    match checked:
+        Ok:
+            console.print_int(0)
+        Err(failure):
+            console.print_int(failure.reason)
+            console.print_int(failure.actual)
+            console.print_int(failure.expected)
+
+fn made(allocator: &Allocator, fail: Bool) -> Result<U64, Failure>:
+    if fail:
+        let refused: Result<Vec<U64>, U64> = Err(41)
+        let items = testing.set_up(move refused)?
+        items.close()
+        return Ok(0)
+    var items: Vec<U64> = testing.set_up(Vec.new(allocator, 2))?
+    let _ = items.push_mut(allocator, 5)
+    let length = items.len()
+    items.close()
+    return Ok(length)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    show(&console, testing.eq_u64(3, 4))
+    show(&console, testing.eq_i64(0 - 2, 5))
+    show(&console, testing.eq_i64(0 - 2, 0 - 2))
+    let left: [U8; 3] = [1, 2, 3]
+    let right: [U8; 3] = [1, 9, 3]
+    let short: [U8; 2] = [1, 2]
+    show(&console, testing.eq_bytes(left.slice(), right.slice()))
+    show(&console, testing.eq_bytes(left.slice(), short.slice()))
+    show(&console, testing.eq_bytes(left.slice(), left.slice()))
+    match made(&allocator, true):
+        Ok(length):
+            console.print_int(length)
+        Err(failure):
+            console.print_int(failure.reason)
+            console.print_int(failure.actual)
+    match made(&allocator, false):
+        Ok(length):
+            console.print_int(length)
+        Err(failure):
+            console.print_int(failure.reason)

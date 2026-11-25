@@ -1,0 +1,14 @@
+// Refused (review 31): `m <= y` holds in one branch only; the other's `m * 100 / y` is unbounded.
+import console
+
+fn f(m: U64, y: U64) -> U64:
+    requires y > 0
+    ensures result <= 100
+    proof:
+        auto
+    if m <= y:
+        return m * 100 / y
+    return m * 100 / y
+
+fn main(console: Console<Write>):
+    console.print_int(f(10, 1))

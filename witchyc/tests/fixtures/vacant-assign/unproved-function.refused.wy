@@ -1,0 +1,17 @@
+// Refused by the proof in a function with no `nopanic` and no contract too: an owner is
+// never overwritten unproved, and never by a hidden trap.
+type Slot<T>:
+    Vacant
+    Full(T)
+
+type Shelf<T>:
+    count: U64
+    slot: Slot<T>
+
+fn clobber<T: Any>(shelf: &mut Shelf<T>, item: T):
+    (*shelf).slot = Full(move item)
+
+fn main(out: Console<Write>):
+    var shelf: Shelf<U64> = Shelf(0, Full(7))
+    clobber(&mut shelf, 9)
+    out.print_int(shelf.count)

@@ -1,0 +1,18 @@
+// Both inputs are the same place: it stays lent in either arm.
+import console
+
+fn choose(left: &U64, right: &U64, flag: Bool) -> Result<&U64, &U64>:
+    borrows Ok from left
+    borrows Err from right
+    if flag:
+        return Ok(left)
+    return Err(right)
+
+fn main(console: Console<Write>):
+    var a: U64 = 1
+    match choose(&a, &a, true):
+        Ok(item):
+            a = 5
+            console.print_int(*item)
+        Err(item):
+            console.print_int(*item)

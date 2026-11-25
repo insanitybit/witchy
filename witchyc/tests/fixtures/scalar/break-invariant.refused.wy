@@ -1,0 +1,23 @@
+// At the `break`, `seen` has moved ahead of `index`.
+import "../../../library/wasm-console.wy"
+
+fn first(n: U64) -> U64:
+    requires n < 1000
+    ensures result <= n
+    proof:
+        auto
+    var seen: U64 = 0
+    var index: U64 = 0
+    while index < n:
+        invariant seen <= index
+        invariant index <= n
+        seen += 2
+        if seen > 5:
+            break
+        index += 2
+        if index > n:
+            index = n
+    return seen
+
+fn main(console: Console<Write>):
+    console.print_int(first(9))

@@ -1,0 +1,7 @@
+// A type that does not implement `Eq` cannot be compared with `==`.
+type Point:
+    x: U64
+    y: U64
+
+fn main():
+    let same = Point(1, 2) == Point(1, 2)

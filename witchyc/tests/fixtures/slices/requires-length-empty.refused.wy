@@ -1,0 +1,14 @@
+// Refused: an empty slice does not meet `requires xs.len() > 0`.
+import console
+
+fn first(xs: &[U64]) -> U64:
+    requires xs.len() > 0
+    ensures true
+    proof:
+        auto
+    return xs[0]
+
+fn main(console: Console<Write>):
+    let a: [U64; 3] = [7, 8, 9]
+    let s = a.slice().part(0, 0)
+    console.print_int(first(s))

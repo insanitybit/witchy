@@ -1,0 +1,29 @@
+// Refused: the copy needs the room checked first.
+pub sealed type V<T>:
+    data: Buffer<T>
+    length: U64
+    capacity: U64
+    invariant memory.prefix(data, length, capacity)
+
+impl<T> V<T>:
+    pub fn extend_copy_mut(vector: &mut V<T>, other: &V<T>) -> Result<(), U64>:
+        ensures memory.same_allocation(vector.data, old(vector.data))
+        ensures vector.capacity == old(vector.capacity)
+        ensures match result:
+            Ok:
+                vector.length == old(vector.length) + other.length
+            Err(code):
+                vector.length == old(vector.length)
+                memory.unchanged(vector.data, old(vector.data))
+        proof:
+            auto
+        let at = (*vector).length
+        let count = (*other).length
+        if true:
+            memory.copy_into_unchecked(&(*other).data, &mut (*vector).data, at, count)
+            (*vector).length = at + count
+            return Ok(())
+        return Err(1)
+
+fn main():
+    return

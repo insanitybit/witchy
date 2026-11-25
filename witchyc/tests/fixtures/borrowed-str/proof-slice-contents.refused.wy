@@ -1,0 +1,11 @@
+fn view(buffer: &Buffer<U8>, start: U64, end: U64) -> &[U8]:
+    requires start <= end
+    requires end <= memory.capacity(buffer)
+    requires memory.initialized_range(buffer, start, end)
+    ensures memory.slice_contents(result, buffer, start + 1)
+    proof:
+        auto
+    return memory.slice_unchecked(buffer, start, end)
+
+fn main():
+    return

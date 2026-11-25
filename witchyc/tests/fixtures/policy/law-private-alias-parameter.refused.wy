@@ -1,0 +1,47 @@
+// Refused (adversarial review round 8): another file's private alias `type U = U64` made the type parameter U read as a trusted U64, so its unchecked Eq (never reflexive) reached a KeyMap.
+// round 8: a private alias `U` in an imported module makes the law read Wrap's parameter `U` as U64.
+import console
+import hash
+import hashmap
+import keymap
+import discard
+import "private-alias/ualias.wy"
+
+type Bad derive(Discard):
+    x: U64
+
+impl Eq for Bad:
+    fn eq(self: &Bad, other: &Bad) -> Bool:
+        return false
+
+type Wrap<T, U> derive(Discard):
+    a: T
+    b: U
+
+impl<T: Any + HashKey, U: Any> HashKey for Wrap<T, U>:
+    fn feed(self: &Wrap<T, U>, state: &mut HashState):
+        (*self).a.feed(state)
+
+impl<T: Any + Eq, U: Any + Eq> Eq for Wrap<T, U>:
+    fn eq(self: &Wrap<T, U>, other: &Wrap<T, U>) -> Bool:
+        return (*self).a == (*other).a && (*self).b == (*other).b
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): KeyMap<Wrap<U64, Bad>, U64> = KeyMap.new(&allocator, 64, Reference(1)) else Err(code):
+        return
+    var map = move made
+    let probe: Wrap<U64, Bad> = Wrap(a: 7, b: Bad(x: 1))
+    if probe.eq(&probe):
+        console.print_int(1)
+    else:
+        console.print_int(0)
+    for i in 0..3:
+        let k: Wrap<U64, Bad> = Wrap(a: 7, b: Bad(x: 1))
+        match map.put(&allocator, k, i):
+            Ok:
+                ()
+            Err(entry):
+                entry.discard()
+    console.print_int(map.len())
+    probe.discard()
+    map.discard()

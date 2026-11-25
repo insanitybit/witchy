@@ -1,0 +1,18 @@
+// Refused by the proof: the slot is emptied on one branch only.
+type Slot<T>:
+    Vacant
+    Full(T)
+
+type Shelf<T>:
+    count: U64
+    slot: Slot<T>
+
+nopanic fn swap_in<T: Any>(shelf: &mut Shelf<T>, item: T, empty: Bool) -> Slot<T>:
+    var held: Slot<T> = Vacant
+    if empty:
+        memory.exchange(&mut (*shelf).slot, &mut held)
+    (*shelf).slot = Full(move item)
+    return move held
+
+fn main(out: Console<Write>):
+    out.print_int(1)

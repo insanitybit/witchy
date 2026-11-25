@@ -1,0 +1,101 @@
+// The examples of docs/language.md in one program, so the page stays true.
+import console
+import hash
+import hashmap
+import option
+import sort
+import string
+import time
+import vec
+
+type Point derive(Eq, Hash, Before, Discard):
+    x: U64
+    y: U64
+
+type Shape:
+    Circle(U64)
+    Square(U64)
+    Dot
+
+type Counter:
+    n: U64
+
+impl Counter:
+    gen fn upto(self: &Counter) -> U64:
+        for i in 0..self.n:
+            yield i
+
+fn scale(n: U64, by: U64 = 10, plus: U64 = 0) -> U64:
+    n * by + plus
+
+fn least(a: impl Before, b: impl Hash) -> U64:
+    b.hash() % 7
+
+fn divide(n: U64, d: U64) -> (U64, U64):
+    (n / d, n % d)
+
+fn lookup(n: U64) -> Option<U64>:
+    if n < 3: Some(n * 10) else: None
+
+fn size(shape: Shape) -> U64:
+    match shape:
+        Circle(r) if r > 10:
+            1000
+        Circle(r):
+            r
+        _:
+            0
+
+fn words(n: U64) -> Text:
+    match n:
+        0:
+            "none"
+        1..=9:
+            "few"
+        many:
+            "lots"
+
+fn mix(a: U64, b: U64) -> U64:
+    requires a < 1000000
+    requires b < 1000000
+    ensures result >= a
+    proof:
+        auto
+    a * 2 + b
+
+fn main(console: Console<Write>, allocator: Allocator):
+    console.print("hello")
+    console.print_int(1_000 + 0xFF + 250ms.ms() + 'a')
+    console.print_int(scale(4) + scale(n: 4, by: 2) + scale(4, plus: 1))
+    let p = Point(x: 1, y: 2)
+    let q = Point(..p, y: 5)
+    console.print_int(least(p, 3) + q.y)
+    let (quotient, rest) = divide(17, 5)
+    var (count, total): (U64, U64) = (0, 0)
+    count += quotient
+    total += rest
+    console.print_int(count * 10 + total)
+    let n: U64 = 5
+    let size_word: Text = if n > 3: "big" else: "small"
+    console.print(size_word)
+    console.print_int(size(Shape.Circle(20)) + size(Shape.Circle(3)) + size(Shape.Dot))
+    console.print(words(0))
+    console.print(words(42))
+    if let Some(v) = lookup(1):
+        console.print_int(v)
+    let Ok(made): HashMap<U64, U64> = HashMap.new(&allocator, 8) else Err(code):
+        return
+    var map = move made
+    let k: U64 = 4
+    let v = if let Ok(found) = map.get(&k): *found else: 0
+    console.print_int(v)
+    map.discard()
+    let sq = fn(n: U64): n * n
+    console.print_int(sq(7))
+    let c = Counter(n: 3)
+    for i in c.upto():
+        console.print_int(i)
+    for i in 1..=2:
+        console.print_int(i)
+    console.print_int(mix(3, 4))
+    console.print("total ${total}")

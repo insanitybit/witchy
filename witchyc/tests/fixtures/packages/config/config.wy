@@ -1,0 +1,86 @@
+// A config package, written apart from the programs that use it: `key = value` lines.
+// It is given text and a scratch String; it holds no capability, so it can read no file and
+// reach no network whatever it does. A value is the input's own bytes when it needs no
+// decoding (nothing is copied), or is decoded into the caller's scratch when it has escapes.
+import span
+import string
+
+pub type Value:
+    // The value as written, a part of the text it was found in.
+    Plain(Span)
+    // Decoded into the scratch String the caller passed: a part of it.
+    Decoded(Span)
+    // A quoted value with an escape this package does not know, or bytes that are not text.
+    Invalid
+
+// The value on `key`'s line, as written (spaces around it removed). Err(1): no such line.
+pub fn raw(text: Span, key: Text) -> Result<Span, U64>:
+    var rest = text
+    var going = !rest.is_empty()
+    while going:
+        var line = rest
+        match rest.split(10):
+            Ok(halves):
+                line = halves.head
+                rest = halves.tail
+            Err(all):
+                going = false
+        match line.split(61):
+            Ok(pair):
+                if pair.head.trim().equals_text(key):
+                    return Ok(pair.tail.trim())
+            Err(whole):
+                going = going && !rest.is_empty()
+    return Err(1)
+
+// Adds `run` to `scratch`. False: no memory, or the bytes are not whole UTF-8 text.
+fn append(scratch: &mut String, allocator: &Allocator, run: Span) -> Bool:
+    match run.to_string(allocator):
+        Ok(made):
+            let added = scratch.push_string(allocator, &made).is_ok()
+            made.close()
+            return added
+        Err(code):
+            return false
+
+// What `raw` means. A value in double quotes may hold `\n`, `\t`, `\"` and `\\`: one with none is
+// the text inside the quotes, borrowed; one with any is decoded into `scratch` (emptied first)
+// and borrowed from there, so the caller keeps the scratch lent while it reads it. Anything else
+// is the raw text itself.
+pub fn value(raw: Span, scratch: &mut String, allocator: &Allocator) -> Value:
+    borrows Plain from raw
+    borrows Decoded from scratch
+    let length = raw.len()
+    if length < 2 || raw.byte_or_end(0) != 34 || raw.byte_or_end(length - 1) != 34:
+        return Plain(raw)
+    var rest = raw.part(1, length - 1)
+    match rest.find_byte(92):
+        Ok(at):
+            scratch.clear()
+        Err(code):
+            return Plain(rest)
+    var going = true
+    while going:
+        match rest.split(92):
+            Ok(halves):
+                if !append(scratch, allocator, halves.head):
+                    return Invalid
+                let tail = halves.tail
+                let escape = tail.byte_or_end(0)
+                let decoded = if escape == 110:
+                    10
+                else:
+                    if escape == 116:
+                        9
+                    else:
+                        escape
+                if decoded != 10 && decoded != 9 && decoded != 34 && decoded != 92:
+                    return Invalid
+                if let Err(_) = scratch.push(allocator, decoded):
+                    return Invalid
+                rest = tail.part(1, tail.len())
+            Err(all):
+                if !append(scratch, allocator, all):
+                    return Invalid
+                going = false
+    return Decoded((&*scratch).span())

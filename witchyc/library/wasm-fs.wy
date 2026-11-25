@@ -1,0 +1,437 @@
+// Files through the `Dir` capability (book: cookbook-files.md). A `Dir<Read>` or
+// `Dir<Write>` is authority over one directory subtree, with one right; `main` is
+// the only place a program gets one, and a `File` is opened from a `Dir`. The host
+// checks every path: plain names separated by `/`, no `..`, no absolute paths, and
+// no symbolic links followed. Paths and contents cross a byte at a time, so the
+// host never reads or writes guest memory; the loops here are ordinary checked Witchy.
+import "wasm-string.wy"
+import "wasm-result.wy"
+import "wasm-vec.wy"
+
+pub type FsError:
+    // Nothing at that path.
+    NotFound
+    // Not a plain relative path below the directory, or longer than 1024 bytes.
+    InvalidPath
+    // Past the bytes the run may read and write.
+    TooLarge
+    // A directory where a file was wanted, or the reverse.
+    WrongKind
+    // The operating system refused.
+    Io
+    // `make_dir` of a name that exists.
+    AlreadyExists
+    // The file's bytes are not UTF-8 text.
+    NotText
+    // The allocator had no room (the code it gave). What `?` makes of an allocation's error in a
+    // function whose errors are FsError: `using var text: String = String.new(allocator)?:`.
+    NoRoom(U64)
+    // No memory for the contents.
+    OutOfMemory
+
+impl FsError:
+    // An allocator's error code as an FsError, for `?` (docs/decisions.md).
+    pub fn from(code: U64) -> FsError:
+        return NoRoom(code)
+
+fn fs_error(code: U64) -> FsError:
+    if code == 1:
+        return NotFound
+    if code == 2:
+        return InvalidPath
+    if code == 3:
+        return TooLarge
+    if code == 4:
+        return WrongKind
+    if code == 6:
+        return AlreadyExists
+    return Io
+
+impl Dir<Read>:
+    // Gives the handle back. Optional, as for any capability, but a program that opens a
+    // directory per request (a subtree for each connection) closes each, or runs out of handles.
+    pub fn close(dir: Dir<Read>):
+        let closed = dir.raw_close()
+
+    fn send(dir: &Dir<Read>, path: &str):
+        let count = path.byte_len()
+        var index: U64 = 0
+        while index < count:
+            match path.byte_at(index):
+                Ok(byte):
+                    dir.raw_path_byte(byte)
+                Err(code):
+                    return
+            index += 1
+
+    // A path made at run time: a name from `list`, or one built from parts.
+    fn send_string(dir: &Dir<Read>, path: &String):
+        let count = path.byte_len()
+        var index: U64 = 0
+        while index < count:
+            match path.byte_at(index):
+                Ok(byte):
+                    dir.raw_path_byte(byte)
+                Err(code):
+                    return
+            index += 1
+
+    // The file at `path`, for reading.
+    pub fn open(dir: &Dir<Read>, path: &str) -> Result<File<Read>, FsError>:
+        dir.send(path)
+        let file = dir.raw_open_file()
+        let code = file.raw_status()
+        if code != 0:
+            let closed = file.raw_close()
+            return Err(fs_error(code))
+        return Ok(move file)
+
+    // `open`, `read_text` and `dir` for a path held in a String.
+    pub fn open_path(dir: &Dir<Read>, path: &String) -> Result<File<Read>, FsError>:
+        dir.send_string(path)
+        let file = dir.raw_open_file()
+        let code = file.raw_status()
+        if code != 0:
+            let closed = file.raw_close()
+            return Err(fs_error(code))
+        return Ok(move file)
+
+    pub fn read_text_path(dir: &Dir<Read>, allocator: &Allocator, path: &String) -> Result<String, FsError>:
+        let file = dir.open_path(path)?
+        return file.read_text(allocator)
+
+    pub fn dir_path(dir: &Dir<Read>, path: &String) -> Result<Dir<Read>, FsError>:
+        dir.send_string(path)
+        let inner = dir.raw_open_dir()
+        let code = inner.raw_status()
+        if code != 0:
+            let closed = inner.raw_close()
+            return Err(fs_error(code))
+        return Ok(move inner)
+
+    // The directory at `path`: authority over that subtree only, with the same right.
+    pub fn dir(dir: &Dir<Read>, path: &str) -> Result<Dir<Read>, FsError>:
+        dir.send(path)
+        let inner = dir.raw_open_dir()
+        let code = inner.raw_status()
+        if code != 0:
+            let closed = inner.raw_close()
+            return Err(fs_error(code))
+        return Ok(move inner)
+
+    // The whole file at `path` as text.
+    pub fn read_text(dir: &Dir<Read>, allocator: &Allocator, path: &str) -> Result<String, FsError>:
+        let file = dir.open(path)?
+        return file.read_text(allocator)
+
+    // Whether a file is at `path`. A path that is not a plain relative path has nothing at it.
+    pub fn exists(dir: &Dir<Read>, path: &str) -> Bool:
+        dir.send(path)
+        return dir.raw_probe() == 1
+
+    // Whether a directory is at `path`.
+    pub fn is_dir(dir: &Dir<Read>, path: &str) -> Bool:
+        dir.send(path)
+        return dir.raw_probe() == 2
+
+    // `exists` and `is_dir` for a path held in a String.
+    pub fn exists_path(dir: &Dir<Read>, path: &String) -> Bool:
+        dir.send_string(path)
+        return dir.raw_probe() == 1
+
+    pub fn is_dir_path(dir: &Dir<Read>, path: &String) -> Bool:
+        dir.send_string(path)
+        return dir.raw_probe() == 2
+
+    // The names in this directory, sorted, one per line; a directory's ends with `/`.
+    pub fn list(dir: &Dir<Read>, allocator: &Allocator) -> Result<String, FsError>:
+        let listing = dir.raw_open_list()
+        let code = listing.raw_status()
+        if code != 0:
+            let closed = listing.raw_close()
+            return Err(fs_error(code))
+        return listing.read_text(allocator)
+
+impl File<Read>:
+    // Bytes read into `buffer`, up to its length: the count, 0 at the end.
+    pub fn read_some(file: &File<Read>, buffer: &mut [U8]) -> U64:
+        return file.raw_read(buffer)
+
+    // Unread bytes in this Wasmtime file snapshot. Does not advance the reader.
+    pub fn snapshot_remaining(file: &File<Read>) -> U64:
+        return file.raw_snapshot_remaining()
+
+    // The next byte, or Err at the end.
+    pub fn next_byte(file: &File<Read>) -> Result<U8, ()>:
+        let next = file.raw_read_byte()
+        if next > 255:
+            return Err(())
+        return Ok(U8.truncate(next))
+
+    // Read through EOF into caller storage. If the file is larger than the buffer,
+    // return TooLarge after consuming one extra byte. The caller still owns the file.
+    pub fn read_to_end_into(file: &File<Read>, output: &mut [U8]) -> Result<U64, FsError>:
+        let capacity = output.len()
+        var count: U64 = 0
+        while count < capacity:
+            let added = file.read_some(output.part(count, capacity))
+            if added == 0:
+                return Ok(count)
+            count += added
+        return check_end(file, count)
+
+    // Read at most limit bytes as UTF-8. Close the file on every returned result.
+    pub fn read_text_bounded(file: File<Read>, allocator: &Allocator, limit: U64) -> Result<String, FsError>:
+        var chunk_size = limit
+        if chunk_size > 16384:
+            chunk_size = 16384
+        return read_text_with_chunk(move file, allocator, limit, chunk_size)
+
+    // The rest of the file as text. The file is given back to the host.
+    pub fn read_text(file: File<Read>, allocator: &Allocator) -> Result<String, FsError>:
+        return read_text_with_chunk(move file, allocator, 18446744073709551615, 256)
+
+    pub fn close(file: File<Read>):
+        let closed = file.raw_close()
+
+fn check_end(file: &File<Read>, count: U64) -> Result<U64, FsError>:
+    var extra: [U8; 1] = [0]
+    if file.read_some(extra.slice_mut()) != 0:
+        return Err(TooLarge)
+    return Ok(count)
+
+fn read_text_with_chunk(file: File<Read>, allocator: &Allocator, limit: U64, chunk_size: U64) -> Result<String, FsError>:
+    var capacity: U64 = 64
+    if limit < capacity:
+        capacity = limit
+    let Ok(made): Vec<U8> = Vec.new(allocator, capacity) else Err(code):
+        file.close()
+        return Err(OutOfMemory)
+    var bytes = move made
+    let Ok(chunk_made): Vec<U8> = Vec.filled(allocator, chunk_size, 0) else Err(code):
+        bytes.close()
+        file.close()
+        return Err(OutOfMemory)
+    var chunk = move chunk_made
+    let collected = collect_text(&file, allocator, &mut bytes, chunk.as_mut_slice(), limit)
+    chunk.close()
+    file.close()
+    if let Err(error) = collected:
+        bytes.close()
+        return Err(error)
+    match String.from_utf8(move bytes):
+        Ok(text):
+            return Ok(move text)
+        Err(raw):
+            raw.close()
+            return Err(NotText)
+
+fn collect_text(file: &File<Read>, allocator: &Allocator, bytes: &mut Vec<U8>, chunk: &mut [U8], limit: U64) -> Result<U64, FsError>:
+    while bytes.len() < limit:
+        let remaining = limit - bytes.len()
+        var take = chunk.len()
+        if remaining < take:
+            take = remaining
+        let count = file.read_some(chunk.part(0, take))
+        if count == 0:
+            return Ok(bytes.len())
+        if let Err(_) = bytes.extend_from_slice_mut(allocator, chunk.part(0, count)):
+            return Err(OutOfMemory)
+    return check_end(file, bytes.len())
+
+// A file the host has just opened for writing, or the reason it could not.
+fn opened(file: File<Write>) -> Result<File<Write>, FsError>:
+    let code = file.raw_status()
+    if code != 0:
+        file.raw_abandon()
+        return Err(fs_error(code))
+    return Ok(move file)
+
+impl Dir<Write>:
+    // Gives the handle back. Optional, as for any capability, but a program that opens a
+    // directory per request (a subtree for each connection) closes each, or runs out of handles.
+    pub fn close(dir: Dir<Write>):
+        let closed = dir.raw_close()
+
+    fn send(dir: &Dir<Write>, path: &str):
+        let count = path.byte_len()
+        var index: U64 = 0
+        while index < count:
+            match path.byte_at(index):
+                Ok(byte):
+                    dir.raw_path_byte(byte)
+                Err(code):
+                    return
+            index += 1
+
+    // A path made at run time: a name from `list`, or one built from parts.
+    fn send_string(dir: &Dir<Write>, path: &String):
+        let count = path.byte_len()
+        var index: U64 = 0
+        while index < count:
+            match path.byte_at(index):
+                Ok(byte):
+                    dir.raw_path_byte(byte)
+                Err(code):
+                    return
+            index += 1
+
+    // A new file at `path`, replacing any file there when it is finished. Until
+    // `finish`, nothing on the disk changes; a file never finished is never written.
+    pub fn create(dir: &Dir<Write>, path: &str) -> Result<File<Write>, FsError>:
+        dir.send(path)
+        return opened(dir.raw_open_file())
+
+    // `create` for a path held in a String.
+    pub fn create_path(dir: &Dir<Write>, path: &String) -> Result<File<Write>, FsError>:
+        dir.send_string(path)
+        return opened(dir.raw_open_file())
+
+    // The file at `path`, to be written after its present contents (empty if there is none).
+    // The whole file is replaced at `finish`, as with `create`.
+    pub fn append(dir: &Dir<Write>, path: &str) -> Result<File<Write>, FsError>:
+        dir.send(path)
+        return opened(dir.raw_open_append())
+
+    // A file at `path` that must not exist yet. `finish` fails with AlreadyExists if
+    // something is there by then: of two writers racing for one name, exactly one wins.
+    pub fn create_new(dir: &Dir<Write>, path: &str) -> Result<File<Write>, FsError>:
+        dir.send(path)
+        return opened(dir.raw_open_new())
+
+    // Remove the file at `path`. A directory is not removed.
+    pub fn remove(dir: &Dir<Write>, path: &str) -> Result<(), FsError>:
+        dir.send(path)
+        let code = dir.raw_remove()
+        if code != 0:
+            return Err(fs_error(code))
+        return Ok(())
+
+    // Move the file or directory at `from` to `to`, both inside this directory. A file
+    // already at `to` is replaced; a link is never followed.
+    pub fn rename(dir: &Dir<Write>, from: &str, to: &str) -> Result<(), FsError>:
+        dir.send(from)
+        dir.raw_rename_from()
+        dir.send(to)
+        let code = dir.raw_rename()
+        if code != 0:
+            return Err(fs_error(code))
+        return Ok(())
+
+    // `remove` and `rename` for paths held in Strings (a name taken from a request).
+    pub fn remove_path(dir: &Dir<Write>, path: &String) -> Result<(), FsError>:
+        dir.send_string(path)
+        let code = dir.raw_remove()
+        if code != 0:
+            return Err(fs_error(code))
+        return Ok(())
+
+    pub fn rename_path(dir: &Dir<Write>, from: &String, to: &String) -> Result<(), FsError>:
+        dir.send_string(from)
+        dir.raw_rename_from()
+        dir.send_string(to)
+        let code = dir.raw_rename()
+        if code != 0:
+            return Err(fs_error(code))
+        return Ok(())
+
+    // The directory at `path`: authority over that subtree only, with the same right.
+    pub fn dir(dir: &Dir<Write>, path: &str) -> Result<Dir<Write>, FsError>:
+        dir.send(path)
+        let inner = dir.raw_open_dir()
+        let code = inner.raw_status()
+        if code != 0:
+            let closed = inner.raw_close()
+            return Err(fs_error(code))
+        return Ok(move inner)
+
+    pub fn make_dir(dir: &Dir<Write>, path: &str) -> Result<(), FsError>:
+        dir.send(path)
+        let code = dir.raw_make_dir()
+        if code != 0:
+            return Err(fs_error(code))
+        return Ok(())
+
+    // Replace the file at `path` with `text`, whole: a reader sees the old contents or the new.
+    pub fn write_text(dir: &Dir<Write>, path: &str, text: &String) -> Result<(), FsError>:
+        let file = dir.create(path)?
+        match file.write_string(text):
+            Ok:
+                return file.finish()
+            Err(failure):
+                file.abandon()
+                return Err(failure)
+
+    // `write_text` for a path held in a String.
+    pub fn write_text_path(dir: &Dir<Write>, path: &String, text: &String) -> Result<(), FsError>:
+        let file = dir.create_path(path)?
+        match file.write_string(text):
+            Ok:
+                return file.finish()
+            Err(failure):
+                file.abandon()
+                return Err(failure)
+
+impl File<Write>:
+    // All of `bytes`, or Err(TooLarge) past what the run may write (the bytes that fit are kept).
+    pub fn write_bytes(file: &File<Write>, bytes: &[U8]) -> Result<(), FsError>:
+        let code = file.raw_write(bytes) / 4294967296
+        if code != 0:
+            return Err(fs_error(code))
+        return Ok(())
+
+    pub fn write_byte(file: &File<Write>, byte: U8) -> Result<(), FsError>:
+        let code = file.raw_write_byte(byte)
+        if code != 0:
+            return Err(fs_error(code))
+        return Ok(())
+
+    pub fn write(file: &File<Write>, text: &str) -> Result<(), FsError>:
+        let count = text.byte_len()
+        var index: U64 = 0
+        while index < count:
+            match text.byte_at(index):
+                Ok(byte):
+                    file.write_byte(byte)?
+                Err(code):
+                    return Ok(())
+            index += 1
+        return Ok(())
+
+    pub fn write_string(file: &File<Write>, text: &String) -> Result<(), FsError>:
+        return file.write_bytes(text.as_bytes())
+
+    // Put the contents on the disk, replacing what was at the path.
+    pub fn finish(file: File<Write>) -> Result<(), FsError>:
+        let code = file.raw_close()
+        if code != 0:
+            return Err(fs_error(code))
+        return Ok(())
+
+    // Give the file back without writing anything.
+    // The same as `abandon`, by the name owners share: work that took a file over and is given
+    // up unstarted writes nothing.
+    pub fn discard(file: File<Write>):
+        file.abandon()
+
+    pub fn abandon(file: File<Write>):
+        file.raw_abandon()
+
+// The book's bare `Dir`: both rights. It has every method of `Dir<Read>` and of
+// `Dir<Write>`, and stands in for either where one is expected: more authority
+// stands in for less, never the reverse.
+impl Dir:
+    // Gives the handle back. Optional, as for any capability, but a program that opens a
+    // directory per request (a subtree for each connection) closes each, or runs out of handles.
+    pub fn close(dir: Dir):
+        let closed = dir.raw_close()
+
+    // The directory at `path`, keeping both rights.
+    pub fn dir(dir: &Dir, path: &str) -> Result<Dir, FsError>:
+        dir.send(path)
+        let inner = dir.raw_open_dir()
+        let code = inner.raw_status()
+        if code != 0:
+            let closed = inner.raw_close()
+            return Err(fs_error(code))
+        return Ok(move inner)

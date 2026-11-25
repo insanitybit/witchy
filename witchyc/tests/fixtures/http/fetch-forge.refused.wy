@@ -1,0 +1,5 @@
+// Refused: only the library makes a `Fetch`, from a `Net` it narrows.
+import http
+
+fn main(net: Net):
+    let wide = Fetch(move net, "10.0.0.1:22", "anything")

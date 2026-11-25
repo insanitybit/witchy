@@ -1,0 +1,15 @@
+// Accepted: a reference to a local view used only inside the function that made it.
+type Point:
+    x: U64
+type Seen:
+    point: &Point
+    n: U64
+fn keep(seen: &Seen) -> &Seen:
+    return seen
+fn make() -> U64:
+    let p = Point(3)
+    let s = Seen(&p, 5)
+    let r = keep(&s)
+    return (*r).n
+fn main():
+    let n = make()

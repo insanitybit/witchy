@@ -1,0 +1,21 @@
+fn main(console: Console<Write>):
+    var witness = memory.alloc(1)
+    memory.init(&mut witness, 0, 42)
+    let saved = &witness
+    var data: Buffer<Bool> = memory.alloc(2)
+    let writer = &mut data
+    memory.init(writer, 0, false)
+    memory.init(writer, 1, true)
+    let first = take_initialized(writer, 0)
+    let again = &mut data
+    let second = take_initialized(again, 1)
+    if first:
+        console.print_int(90)
+    else:
+        console.print_int(73)
+    if second:
+        console.print_int(74)
+    console.print_int(memory.read(saved, 0))
+    memory.end(saved)
+    memory.release(data)
+    memory.release(witness)

@@ -1,0 +1,35 @@
+import console
+import hash
+import hashmap
+import discard
+
+// Every fingerprint matches. This isolates the cost of confirming candidates.
+type Key derive(Discard):
+    id: U64
+
+impl Hash for Key:
+    fn hash(key: &Key) -> U64:
+        return 0
+
+impl Eq for Key:
+    fn eq(key: &Key, other: &Key) -> Bool:
+        return (*key).id == (*other).id
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): HashMap<Key, U64> = HashMap.new(&allocator, 1021) else Err(code):
+        return
+    var map = move made
+    for i in 0..512:
+        let key = i * 1021
+        match map.insert(Key(key), i):
+            Ok:
+                continue
+            Err(back):
+                unreachable
+    var hits: U64 = 0
+    for i in 0..100000:
+        let key = (i % 1024) * 1021
+        if let Ok(hit) = map.get(&Key(key)):
+            hits += 1
+    console.print_int(hits)
+    map.discard()

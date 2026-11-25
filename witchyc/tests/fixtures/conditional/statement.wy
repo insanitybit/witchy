@@ -1,0 +1,9 @@
+// A one-line `if` or `if let` may stand as a statement, and as a function's last line.
+import console
+
+fn half(n: U64) -> Result<U64, U64>:
+    if n % 2 == 0: Ok(n / 2) else: Err(n)
+
+fn main(console: Console<Write>):
+    if let Ok(h) = half(4): console.print_int(h) else: console.print_int(0)
+    console.print_int(if let Ok(h) = half(3): h else: 7)

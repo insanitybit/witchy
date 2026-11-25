@@ -1,0 +1,6 @@
+// Refused: a pure function is given no capability, not even through a reference.
+pure fn report(console: &Console<Write>, x: U64):
+    console.print_int(x)
+
+fn main(console: Console<Write>):
+    report(&console, 1)

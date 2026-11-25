@@ -1,0 +1,136 @@
+// Single CI request with a scoped Net and a private snapshot of the runner CA file.
+import "ci/http_post.wy"
+import "ci/client_reply.wy"
+import console_bytes
+import tls
+import tls_trust_pem
+import "tls13/http_client.wy"
+import url
+import "tuf/release_trust.wy"
+import console
+import discard
+import fs
+import json_tree
+import net
+import span
+import string
+import text
+import time
+import vec
+
+fn main(output: Console<Write>, input: Console<Read>, net: Net, roots: File<Read>, clock: Clock, rng: Rand, allocator: Allocator):
+    if let Err(code) = post(&input, &output, &net, move roots, &rng, &clock, &allocator):
+        output.write("refused ")
+        output.write_u64(code)
+        output.print_byte(10)
+
+fn post(input: &Console<Read>, output: &Console<Write>, net: &Net, roots: File<Read>, rng: &Rand, clock: &Clock, allocator: &Allocator) -> Result<(), U64>:
+    let Ok(pem): String = tls_trust_pem.read_trust_pem(move roots, allocator) else Err(code):
+        return Err(5)
+    let Ok(request): Json = read_request(input, allocator) else Err(code):
+        pem.close()
+        return Err(code)
+    let checked = pinned_roots(&request, &pem, allocator)
+    pem.close()
+    let Ok(anchors): Vec<U8> = move checked else Err(code):
+        request.discard()
+        return Err(code)
+    let result = with_body(&request, input, output, net, rng, clock, anchors.as_slice(), allocator)
+    anchors.close()
+    request.discard()
+    return result
+
+fn pinned_roots(request: &Json, pem: &String, allocator: &Allocator) -> Result<Vec<U8>, U64>:
+    let Ok(pin): &String = string_field(request, "ca_pin") else Err(code):
+        return Err(8)
+    let actual = digest_text(pem.as_bytes(), allocator)?
+    let matches = actual.eq(pin)
+    actual.close()
+    if !matches:
+        return Err(8)
+    let Ok(anchors): Vec<U8> = tls_trust_pem.trust_bundle(pem.span(), allocator) else Err(code):
+        return Err(5)
+    return Ok(move anchors)
+
+fn read_request(input: &Console<Read>, allocator: &Allocator) -> Result<Json, U64>:
+    let Ok(line): String = input.read_text_frame(allocator, 16384) else Err(reason):
+        return Err(1)
+    let checked = parse_release_json(&line, allocator)
+    line.close()
+    let Ok(request): Json = move checked else Err(reason):
+        return Err(1)
+    return Ok(move request)
+
+fn with_body(request: &Json, input: &Console<Read>, output: &Console<Write>, net: &Net, rng: &Rand, clock: &Clock, anchors: &[U8], allocator: &Allocator) -> Result<(), U64>:
+    let origin = string_field(request, "origin")?
+    let endpoint = https_origin(origin.span())?
+    let authority = endpoint.authority()
+    let length = declared_integer(request, "body_size")?
+    if length > 1048576:
+        return Err(1)
+    let header = post_headers(request, authority, length, allocator)?
+    let sent = read_and_send(request, &header, input, output, net, rng, clock, endpoint, anchors, length, allocator)
+    header.close()
+    return sent
+
+fn read_and_send(request: &Json, head: &String, input: &Console<Read>, output: &Console<Write>, net: &Net, rng: &Rand, clock: &Clock, endpoint: HttpOrigin, anchors: &[U8], length: U64, allocator: &Allocator) -> Result<(), U64>:
+    let empty: Vec<U8> = Vec.filled(allocator, length, 0)?
+    var body = move empty
+    if let Err(reason) = input.read_exact_to_end(body.as_mut_slice()):
+        body.close()
+        return Err(1)
+    let result = run_post(request, head, body.as_slice(), output, net, rng, clock, endpoint, anchors, allocator)
+    body.close()
+    return result
+
+fn run_post(request: &Json, head: &String, body: &[U8], output: &Console<Write>, net: &Net, rng: &Rand, clock: &Clock, endpoint: HttpOrigin, anchors: &[U8], allocator: &Allocator) -> Result<(), U64>:
+    let scratch: Vec<U8> = Vec.filled(allocator, 72704, 0)?
+    var transcript = move scratch
+    let Ok(clear): Vec<U8> = Vec.filled(allocator, 16385, 0) else Err(code):
+        transcript.close()
+        return Err(code)
+    var plaintext = move clear
+    let Ok(ciphertext): Vec<U8> = Vec.filled(allocator, 16406, 0) else Err(code):
+        transcript.close()
+        plaintext.close()
+        return Err(code)
+    var wire = move ciphertext
+    let result = exchange(request, head, body, output, net, rng, clock, endpoint, anchors, allocator, transcript.as_mut_slice(), plaintext.as_mut_slice(), wire.as_mut_slice())
+    transcript.close()
+    plaintext.close()
+    wire.close()
+    return result
+
+fn exchange(request: &Json, head: &String, body: &[U8], output: &Console<Write>, net: &Net, rng: &Rand, clock: &Clock, endpoint: HttpOrigin, anchors: &[U8], allocator: &Allocator, buffer: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]) -> Result<(), U64>:
+    let connected = connect_https(net, endpoint, anchors, rng, clock, allocator, buffer, plaintext, wire)?
+    var stream = move connected
+    let result = send_post(&mut stream, head, body, plaintext, wire)
+    if let Err(code) = result:
+        stream.close()
+        return Err(code)
+    let fetched = receive_post(&mut stream, buffer, plaintext, wire)
+    stream.close()
+    let reply = fetched?
+    if reply.status != 200:
+        return Err(reply.status)
+    return write_reply(request, output, buffer.part(reply.body_at, reply.body_at + reply.length), allocator)
+
+fn write_reply(request: &Json, output: &Console<Write>, bytes: &[U8], allocator: &Allocator) -> Result<(), U64>:
+    let pin = string_field(request, "ca_pin")?
+    let Ok(body): String = String.from_utf8_bytes(allocator, bytes) else Err(code):
+        return Err(3)
+    let parsed = parse_release_json(&body, allocator)
+    let Ok(reply): Json = move parsed else Err(reason):
+        body.close()
+        return Err(3)
+    let checked = check_client_reply(request, &reply)
+    reply.discard()
+    if let Err(code) = checked:
+        body.close()
+        return Err(code)
+    output.write("verified ")
+    output.write_string(pin)
+    output.print_byte(10)
+    output.write_string(&body)
+    body.close()
+    return Ok(())

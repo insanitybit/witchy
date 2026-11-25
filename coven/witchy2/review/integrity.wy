@@ -1,0 +1,53 @@
+import crypto
+import string
+import text
+
+pub sealed type Integrity:
+    value: String
+
+pub fn asset_integrity(bytes: &[U8], allocator: &Allocator) -> Result<Integrity, U64>:
+    if bytes.len() == 0:
+        return Err(1)
+    var hash: [U8; 48] = [0; 48]
+    if let Err(reason) = crypto.sha384(bytes, hash.slice_mut()):
+        return Err(1)
+    let empty = String.with_capacity(allocator, 71)?
+    var output = move empty
+    if let Err(code) = encode(&mut output, hash.slice(), allocator):
+        output.close()
+        return Err(code)
+    return Ok(Integrity(move output))
+
+impl Integrity:
+    pub fn append(self: &Integrity, out: &mut String, allocator: &Allocator) -> Result<(), U64>:
+        let value = &(*self).value
+        return out.push_part(allocator, value, 0, value.byte_len())
+
+    pub fn close(self: Integrity):
+        let Integrity(value) = move self
+        value.close()
+
+// SHA-384 is exactly sixteen Base64 quanta, with no padding.
+fn encode(output: &mut String, hash: &[U8], allocator: &Allocator) -> Result<(), U64>:
+    output.push_text(allocator, "sha384-")?
+    for i in 0..16:
+        let at = i * 3
+        let first = U8.to_u64(hash[at])
+        let second = U8.to_u64(hash[at + 1])
+        let third = U8.to_u64(hash[at + 2])
+        output.push_ascii(allocator, symbol(first >> 2), 1)?
+        output.push_ascii(allocator, symbol((first % 4) * 16 + (second >> 4)), 1)?
+        output.push_ascii(allocator, symbol((second % 16) * 4 + (third >> 6)), 1)?
+        output.push_ascii(allocator, symbol(third % 64), 1)?
+    return Ok(())
+
+fn symbol(index: U64) -> U64:
+    if index < 26:
+        return 65 + index
+    if index < 52:
+        return 71 + index
+    if index < 62:
+        return index - 4
+    if index == 62:
+        return 43
+    return 47

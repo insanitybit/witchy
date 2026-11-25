@@ -1,0 +1,58 @@
+// The Exec builder: `exec.command(name)` configures one run, every setting only narrowing what
+// the grant allows, and `run` gives the exit code, standard output and standard error.
+import console
+import exec
+
+fn show(console: &Console<Write>, allocator: &Allocator, ran: Result<Run, ExecError>):
+    match move ran:
+        Ok(run):
+            match run.read_text(allocator):
+                Ok(text):
+                    console.write_string(&text)
+                    text.close()
+                Err(e):
+                    console.line("unreadable")
+            match run.read_error_text(allocator):
+                Ok(text):
+                    console.write_string(&text)
+                    text.close()
+                Err(e):
+                    console.line("unreadable errors")
+            console.print_int(run.code())
+        Err(NotGranted):
+            console.line("not granted")
+        Err(InvalidName):
+            console.line("invalid")
+        Err(TooLarge):
+            console.line("too large")
+        Err(TimedOut):
+            console.line("timed out")
+        Err(Wider):
+            console.line("wider than granted")
+        Err(_):
+            console.line("failed")
+
+fn main(console: Console<Write>, allocator: Allocator, exec: Exec):
+    // Arguments, input, a narrower time and output limit: all within the grant.
+    show(&console, &allocator, exec.command("answer").arg("a b").arg("c").input_text("in").deadline_ms(1500).output_limit(200).run())
+    // Input from bytes.
+    let bytes: [U8; 2] = [104, 105]
+    show(&console, &allocator, exec.command("answer").input(&bytes).run())
+    // Each command starts with nothing from another.
+    show(&console, &allocator, exec.command("answer").run())
+    // A longer time limit than a program's own, or a larger output than the run grants: refused.
+    show(&console, &allocator, exec.command("answer").deadline_ms(2001).run())
+    show(&console, &allocator, exec.command("answer").output_limit(4097).run())
+    // No time at all is not a limit.
+    show(&console, &allocator, exec.command("answer").deadline_ms(0).run())
+    // A narrower limit is enforced: too little output room, too little time.
+    show(&console, &allocator, exec.command("answer").arg("x").output_limit(10).run())
+    show(&console, &allocator, exec.command("nap").deadline_ms(200).run())
+    show(&console, &allocator, exec.command("nap").run())
+    // Only granted programs; an `only` narrowing holds for its commands too.
+    show(&console, &allocator, exec.command("sh").arg("-c").run())
+    match exec.only("nap"):
+        Ok(narrow):
+            show(&console, &allocator, narrow.command("answer").run())
+        Err(e):
+            console.line("no narrowing")

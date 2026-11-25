@@ -1,0 +1,14 @@
+// Refused: a false claim about the sum of two elements.
+import console
+
+fn first_two(xs: [U64; 3]) -> U64:
+    requires xs[0] < 1000
+    requires xs[1] < 1000
+    ensures result == old(xs[0]) + old(xs[1]) + 1
+    proof:
+        auto
+    xs[0] + xs[1]
+
+fn main(console: Console<Write>):
+    let given = [1, 2, 3]
+    console.print_int(first_two(given))

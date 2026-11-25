@@ -1,0 +1,1 @@
+does not allow its implementations to: declare it `suspends` in the trait

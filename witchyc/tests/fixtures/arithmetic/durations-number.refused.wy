@@ -1,0 +1,6 @@
+// A number is not added to a Duration: write it as one.
+import console
+import time
+
+fn main(console: Console<Write>):
+    console.print_int(30s + 5)

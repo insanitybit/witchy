@@ -1,0 +1,15 @@
+// This memory contract model still refuses an explicit trap.
+type Held<T>:
+    data: Buffer<T>
+    length: U64
+
+fn longer<T: Any>(held: &mut Held<T>, count: U64):
+    ensures memory.same_allocation(held.data, old(held.data))
+    proof:
+        auto
+    if count < (*held).length:
+        unreachable
+    (*held).length = count
+
+fn main(console: Console<Write>):
+    console.print_int(0)

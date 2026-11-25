@@ -1,0 +1,4 @@
+// One above the largest operand that fits: `x * 31` wraps: a trap.
+fn main(console: Console<Write>):
+    let x: U64 = 595056260442243601
+    console.print_int(x * 31)

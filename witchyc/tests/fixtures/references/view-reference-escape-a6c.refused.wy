@@ -1,0 +1,16 @@
+// Refused (adversarial review round 15): a reference to this function's own view would
+// outlive its frame; once accepted, it read a later call's values.
+import console
+type Point:
+    x: U64
+    y: U64
+type Seen:
+    point: &Point
+    n: U64
+fn escape(s: Seen) -> &Seen:
+    let local = s
+    return &local
+fn main(console: Console<Write>):
+    var p = Point(1, 2)
+    let r = escape(Seen(&p, 3))
+    console.print_int(r.n)

@@ -1,0 +1,19 @@
+import console
+
+sealed type Account:
+    balance: U64
+    limit: U64
+    invariant balance <= limit
+
+impl Account:
+    pub fn balance(account: &Account) -> U64:
+        return (*account).balance
+    // Sets the balance without checking the limit: the invariant cannot be shown at the return.
+    pub fn deposit(account: &mut Account, amount: U64):
+        ensures true
+        proof:
+            auto
+        (*account).balance = amount
+
+fn main(console: Console<Write>):
+    console.line("ran")

@@ -1,0 +1,60 @@
+import "jwk_fields.wy"
+import "rs256_keys.wy"
+import discard
+import json_sorted
+import json_tree
+import span
+import string
+import text
+import vec
+
+pub fn signed_rs256_claims(token: &String, keys: &Json, allocator: &Allocator) -> Result<Json, U64>:
+    if token.byte_len() > 8192:
+        return Err(1)
+    let wire = token.span()
+    let Ok(first): Halves = wire.split('.') else Err(rest):
+        return Err(1)
+    let Ok(second): Halves = first.tail.split('.') else Err(rest):
+        return Err(1)
+    let header = decoded_json(first.head, allocator, 2048)?
+    let signature_check = check_signature(&header, keys, wire.part(0, first.head.len() + 1 + second.head.len()), second.tail, allocator)
+    header.discard()
+    signature_check?
+    return decoded_json(second.head, allocator, 8192)
+
+fn decoded_json(segment: Span, allocator: &Allocator, limit: U64) -> Result<Json, U64>:
+    let bytes = jwt_decode(segment.as_bytes(), allocator, limit)?
+    let decoded = String.from_utf8_bytes(allocator, bytes.as_slice())
+    bytes.close()
+    let Ok(input): String = move decoded else Err(code):
+        return Err(code)
+    let parsed = json_sorted_tree(&input, allocator)
+    input.close()
+    return move parsed
+
+fn check_signature(header: &Json, keys: &Json, message: Span, signature: Span, allocator: &Allocator) -> Result<(), U64>:
+    check_header(header)?
+    let kid = jwt_string(header, "kid")?
+    if !jwt_key_id(kid.span()):
+        return Err(1)
+    let bytes = jwt_decode(signature.as_bytes(), allocator, 1024)?
+    let checked = verify_jwk_signature(keys, kid, message.as_bytes(), bytes.as_slice(), allocator)
+    bytes.close()
+    return checked
+
+fn check_header(header: &Json) -> Result<(), U64>:
+    if !jwt_string_is(header, "alg", "RS256"):
+        return Err(1)
+    if let Ok(kind) = header.field("typ"):
+        let value = kind.text()?
+        if !value.equals_text("JWT"):
+            return Err(1)
+    match header:
+        Object(fields):
+            for field in fields:
+                let key = &field.key
+                if !key.equals_text("alg") && !key.equals_text("kid") && !key.equals_text("typ") && !key.equals_text("x5t") && !key.equals_text("x5t#S256"):
+                    return Err(1)
+            return Ok(())
+        _:
+            return Err(1)

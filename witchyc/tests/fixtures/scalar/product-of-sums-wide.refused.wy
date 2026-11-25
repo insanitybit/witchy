@@ -1,0 +1,16 @@
+// Refused: with indexes below 2^33 the product of the sums can pass 2^64.
+import console
+
+fn index(i: U64, j: U64) -> U64:
+    requires i < 8589934592
+    requires j < 8589934592
+    ensures true
+    proof:
+        auto
+    let s = i + j
+    let t = s + 1
+    let product = s * t
+    return product / 2 + i + 1
+
+fn main(console: Console<Write>):
+    console.print_int(index(999, 999))

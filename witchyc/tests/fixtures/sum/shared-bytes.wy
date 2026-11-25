@@ -1,0 +1,56 @@
+// Stored variants share the bytes after the tag. Writing one variant over another, in the
+// frame or in a Vec, keeps exactly the value written: no variant's cells overwrite another's.
+import console
+import vec
+
+type Three:
+    A(U64)
+    B(U64)
+    C(U8)
+
+fn show(console: &Console<Write>, value: &Three):
+    match value:
+        A(n):
+            console.print_int(1000 + *n)
+        B(n):
+            console.print_int(2000 + *n)
+        C(n):
+            console.print_int(3000 + U8.to_u64(*n))
+
+fn nested(console: &Console<Write>, value: &Result<Result<U64, U8>, U64>):
+    match value:
+        Ok(inner):
+            match inner:
+                Ok(n):
+                    console.print_int(*n)
+                Err(b):
+                    console.print_int(500 + U8.to_u64(*b))
+        Err(n):
+            console.print_int(900 + *n)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    // In the frame: the value is lent, so it lives in memory.
+    var value: Three = A(7)
+    show(&console, &value)
+    value = C(3)
+    show(&console, &value)
+    value = B(9)
+    show(&console, &value)
+    var deep: Result<Result<U64, U8>, U64> = Ok(Err(4))
+    nested(&console, &deep)
+    deep = Err(2)
+    nested(&console, &deep)
+    deep = Ok(Ok(77))
+    nested(&console, &deep)
+    // In a Vec: each element holds the variant written into it.
+    let Ok(made): Vec<Three> = Vec.new(&allocator, 4) else Err(code):
+        return
+    var items = move made
+    let pushed = items.push_mut(&allocator, B(11)).is_ok() && items.push_mut(&allocator, C(12)).is_ok() && items.push_mut(&allocator, A(13)).is_ok()
+    if !pushed:
+        items.close()
+        return
+    let replaced = items.set(1, A(14))
+    for item in &items:
+        show(&console, item)
+    items.close()

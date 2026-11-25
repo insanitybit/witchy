@@ -1,0 +1,60 @@
+// Ordinary fixed-length initialized storage on the same Buffer<T> as Vec<T>.
+// Callers adopt a completely initialized buffer; no container spelling is privileged.
+type Array<T>:
+    data: Buffer<T>
+    length: USize
+    invariant BufferContents(data, length, length)
+
+fn array_from_buffer<T>(input: Buffer<T>, length: USize) -> Array<T>:
+    requires BufferContents(input, length, length)
+    ensures result.length == length
+    ensures result.data == old(input)
+    ensures memory.unchanged(input)
+    return Array(move input, length)
+
+fn array_into_buffer<T>(input: Array<T>) -> Buffer<T>:
+    ensures memory.size(result) == old(input.length)
+    ensures InitializedBetween(result, 0, old(input.length))
+    ensures memory.unchanged(input.data)
+    return move input.data
+
+type ArrayMeasured<T>:
+    array: Array<T>
+    length: USize
+
+fn array_len<T>(input: Array<T>) -> ArrayMeasured<T>:
+    ensures result.length == old(input.length)
+    ensures result.array.data == old(input.data)
+    ensures memory.unchanged(input.data)
+    let length = input.length
+    return ArrayMeasured(move input, length)
+
+type ArrayReplaced<T>:
+    array: Array<T>
+    previous: T
+
+type ArrayReplaceFailure<T>:
+    array: Array<T>
+    replacement: T
+    out_of_bounds: Bool
+
+fn array_replace<T>(input: Array<T>, index: USize, replacement: T) -> Result<ArrayReplaced<T>, ArrayReplaceFailure<T>>:
+    ensures match result:
+        Ok(changed):
+            changed.previous == old(memory.read(input.data, index))
+            changed.array.data == old(input.data)
+            changed.array.length == old(input.length)
+            memory.cell(input.data, index, replacement)
+            memory.unchanged_except(input.data, index)
+        Err(failed):
+            failed.array.data == old(input.data)
+            failed.array.length == old(input.length)
+            failed.replacement == old(replacement)
+            memory.unchanged(input.data)
+    var array = move input
+    if index < array.length:
+        if memory.loan_room(1):
+            let previous: T = memory.swap(&mut array.data, index, move replacement)
+            return Ok(ArrayReplaced(move array, move previous))
+        return Err(ArrayReplaceFailure(move array, move replacement, false))
+    return Err(ArrayReplaceFailure(move array, move replacement, true))

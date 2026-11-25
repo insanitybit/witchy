@@ -1,0 +1,15 @@
+.DS_Store
+__pycache__/
+# Cargo and Grimoire build output, at any depth.
+target/
+/state
+
+# Local benchmark suites, scripts, and results.
+bench/
+benches/
+benchmark/
+benchmarks/
+bench[-_.]*
+benchmark[-_.]*
+benchmarks[-_.]*
+criterion/

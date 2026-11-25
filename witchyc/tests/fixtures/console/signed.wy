@@ -1,0 +1,12 @@
+// Signed numbers on the console: `write_i64` with no newline, `print_i64` with one.
+import "../../../library/wasm-int.wy"
+
+fn main(console: Console<Write>):
+    let below: I64 = 0 - 42
+    console.write("from ")
+    console.write_i64(below)
+    console.write(" to ")
+    console.write_i64(17)
+    console.line("")
+    console.print_i64(below * 3)
+    console.print_i64(0)

@@ -1,0 +1,7 @@
+lemma upper(x: U8):
+    ensures x <= 254
+    proof:
+        auto
+
+fn main():
+    return

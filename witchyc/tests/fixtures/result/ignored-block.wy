@@ -1,0 +1,37 @@
+// `let _ =` names nothing in its block forms too: an `if` or `match` given as the value, and
+// `let Ok(_): T = ... else Err(e):`, each written twice in one block (review of 08a829a4:
+// these still bound a local called `_`, so the second was refused as shadowing, and `_`
+// could be read). The value is computed: the calls print.
+import console
+
+fn step(console: &Console<Write>, n: U64) -> Result<U64, U64>:
+    console.print_int(n)
+    if n > 8:
+        return Err(n)
+    return Ok(n)
+
+fn main(console: Console<Write>):
+    let z: U64 = 3
+    let _ = if z < 3:
+        1
+    else:
+        2
+    let _ = if z < 3:
+        1
+    else:
+        2
+    let _ = match step(&console, 1):
+        Ok(n):
+            n
+        Err(n):
+            0
+    let _ = match step(&console, 2):
+        Ok(n):
+            n
+        Err(n):
+            0
+    let Ok(_): U64 = step(&console, 3) else Err(e):
+        return
+    let Ok(_): U64 = step(&console, 4) else Err(e):
+        return
+    console.print_int(z)

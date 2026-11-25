@@ -1,0 +1,1 @@
+`Pair` implements `HashKey`, so its `eq` must be of the checked shape

@@ -1,0 +1,96 @@
+// Request routing and framing for the dedicated maintainer origin.
+import "../ci/http_request.wy"
+import http
+import span
+import text
+
+pub type ReviewRoute:
+    Page
+    Script
+    Style
+    Enrollment
+    EnrollmentScript
+    Challenge
+    Inspect
+    Approve
+
+pub fn review_action_path(route: ReviewRoute) -> Text:
+    match route:
+        Challenge:
+            return "/v1/review/challenge"
+        Inspect:
+            return "/v1/review/inspect"
+        Approve:
+            return "/v1/review/approve"
+        _:
+            return ""
+
+pub type ReviewRequest:
+    route: ReviewRoute
+    length: U64
+    initial: Span
+
+pub fn review_request(bytes: Span, origin: Span) -> Result<ReviewRequest, U64>:
+    let Ok(line): Halves = bytes.split(10) else Err(rest):
+        return Err(400)
+    if !line.head.ends_with_text(" HTTP/1.1\r"):
+        return Err(400)
+    let Ok(head): RequestHead = http.request(bytes) else Err(reason):
+        return Err(400)
+    if bytes.len() - head.body.len() > 32768:
+        return Err(431)
+    check_headers(head.headers)?
+    if !ci_header(head.headers, "host")?.same(origin.part(8, origin.len())):
+        return Err(421)
+    if head.method.equals_text("GET"):
+        return static_request(head)
+    if head.method.equals_text("POST"):
+        return action(head, origin)
+    return Err(404)
+
+fn static_request(head: RequestHead) -> Result<ReviewRequest, U64>:
+    let length = optional_header(head.headers, "content-length")?
+    if !head.body.is_empty() || (!length.is_empty() && !length.equals_text("0")):
+        return Err(400)
+    let path = head.target
+    if path.equals_text("/enroll"):
+        return Ok(ReviewRequest(Enrollment, 0, head.body))
+    if path.equals_text("/enroll.mjs"):
+        return Ok(ReviewRequest(EnrollmentScript, 0, head.body))
+    if path.equals_text("/review.mjs"):
+        return Ok(ReviewRequest(Script, 0, head.body))
+    if path.equals_text("/review.css"):
+        return Ok(ReviewRequest(Style, 0, head.body))
+    if path.len() == 104 && path.starts_with_text("/review/"):
+        for byte in path.part(8, 104).as_bytes():
+            if !(*byte >= '0' && *byte <= '9') && !(*byte >= 'a' && *byte <= 'f'):
+                return Err(404)
+        return Ok(ReviewRequest(Page, 0, head.body))
+    return Err(404)
+
+fn action(head: RequestHead, origin: Span) -> Result<ReviewRequest, U64>:
+    let route = action_route(head.target)?
+    let supplied_origin = optional_header(head.headers, "origin")?
+    let site = optional_header(head.headers, "sec-fetch-site")?
+    if !supplied_origin.same(origin) || (!site.is_empty() && !site.equals_text("same-origin")):
+        return Err(403)
+    if !ci_header(head.headers, "content-type")?.equals_text("application/json"):
+        return Err(403)
+    let wire = ci_header(head.headers, "content-length")?
+    if wire.len() > 5 || wire.byte_or_end(0) == 48:
+        return Err(400)
+    let length = wire.parse_u64()?
+    if length > 65536:
+        return Err(413)
+    if length == 0 || head.body.len() > length:
+        return Err(400)
+    return Ok(ReviewRequest(route, length, head.body))
+
+fn action_route(path: Span) -> Result<ReviewRoute, U64>:
+    if path.equals_text(review_action_path(Challenge)):
+        return Ok(Challenge)
+    if path.equals_text(review_action_path(Inspect)):
+        return Ok(Inspect)
+    if path.equals_text(review_action_path(Approve)):
+        return Ok(Approve)
+    return Err(404)

@@ -1,0 +1,18 @@
+// A program that needs one file to read and one to write is granted exactly those:
+// no directory at all (`--file`, `--write-file`). The least authority for the job.
+import fs
+import console
+
+fn main(console: Console<Write>, config: File<Read>, out: File<Write>, allocator: Allocator):
+    match config.read_text(&allocator):
+        Ok(text):
+            match out.write_string(&text):
+                Ok:
+                    if out.finish().is_ok():
+                        console.line("copied")
+                Err(error):
+                    out.abandon()
+            text.close()
+        Err(error):
+            out.abandon()
+            console.line("unreadable")

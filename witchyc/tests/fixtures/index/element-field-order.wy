@@ -1,0 +1,26 @@
+// Writing a Vec element's field runs the position, then the value, as written (red-team review:
+// the value ran first).
+import console
+import vec
+
+type P:
+    x: U64
+    y: U64
+
+fn mkv(allocator: &Allocator) -> Vec<P>:
+    let Ok(made): Vec<P> = Vec.filled(allocator, 3, P(x: 1, y: 2)) else Err(code):
+        unreachable
+    move made
+
+fn f(console: &Console<Write>, n: U64) -> U64:
+    console.print_int(n)
+    n
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var v = mkv(&allocator)
+    v[f(&console, 1)].x = f(&console, 2)
+    v[f(&console, 0)] = P(x: f(&console, 3), y: 4)
+    var a: [P; 2] = [P(x: 1, y: 1), P(x: 1, y: 1)]
+    a[f(&console, 1)].x = f(&console, 5)
+    console.print_int(v[1].x)
+    v.close()

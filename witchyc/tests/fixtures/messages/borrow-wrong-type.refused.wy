@@ -1,0 +1,10 @@
+// Refused, naming both types: a Text lent where the method takes a reference to a String.
+import console
+import string
+import hash
+
+
+fn main(console: Console<Write>):
+    let a: Text = "x"
+    let b: Text = "x"
+    console.print("${a.equivalent(&b)}")

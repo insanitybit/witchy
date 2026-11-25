@@ -1,0 +1,6 @@
+// Refused: only the declaring file builds a grantable capability; here, the run does.
+import console
+import "parts/limits.wy"
+fn main(console: Console<Write>):
+    let fake = RateLimit(1000000, false)
+    console.print_int(if limits.allows(&fake, 5): 1 else: 0)

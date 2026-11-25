@@ -1,0 +1,161 @@
+type OrdinaryPair:
+    byte: U8
+    word: U64
+
+fn three<T>(allocator: &Allocator, first: T, second: T, third: T) -> Result<Vec<T>, U64>:
+    let made: Result<Vec<T>, U64> = vec_new(allocator, 1)
+    match move made:
+        Ok(empty):
+            match vec_push(allocator, move empty, first):
+                Ok(once):
+                    match vec_push(allocator, move once, second):
+                        Ok(twice):
+                            match vec_push(allocator, move twice, third):
+                                Ok(output):
+                                    return Ok(move output)
+                                Err(back):
+                                    vec_close(move back.vector)
+                                    return Err(3)
+                        Err(back):
+                            vec_close(move back.vector)
+                            return Err(2)
+                Err(back):
+                    vec_close(move back.vector)
+                    return Err(1)
+        Err(code):
+            return Err(code)
+
+fn reject_byte(console: &Console<Write>, input: Vec<U8>, item: U8):
+    match vec_push_spare(move input, item):
+        Ok(unexpected):
+            console.print_int(901)
+            vec_close(move unexpected)
+        Err(back):
+            console.print_int(U8.to_u64(back.item))
+            console.print_int(back.vector.length)
+            console.print_int(back.vector.capacity)
+            match memory.read(&back.vector.data, 0):
+                Ok(stored):
+                    console.print_int(U8.to_u64(stored))
+                Err(code):
+                    console.print_int(404)
+            vec_close(move back.vector)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let seven: U8 = 7
+    let nine: U8 = 9
+    let eleven: U8 = 11
+    match three(&allocator, seven, nine, eleven):
+        Ok(vector):
+            console.print_int(vec_len(&vector))
+            console.print_int(vec_capacity(&vector))
+            var index: U64 = 0
+            while index < 3:
+                match vec_get(&vector, index):
+                    Ok(stored):
+                        console.print_int(U8.to_u64(stored))
+                    Err(code):
+                        console.print_int(902)
+                index += 1
+            match vec_get(&vector, 3):
+                Ok(stored):
+                    console.print_int(903)
+                Err(code):
+                    console.print_int(code)
+            match vec_reserve(&allocator, move vector, 18446744073709551615):
+                Ok(unexpected):
+                    console.print_int(904)
+                    vec_close(move unexpected)
+                Err(back):
+                    console.print_int(back.length)
+                    match vec_get(&back, 2):
+                        Ok(stored):
+                            console.print_int(U8.to_u64(stored))
+                        Err(code):
+                            console.print_int(905)
+                    vec_close(move back)
+        Err(code):
+            console.print_int(906)
+    let maximum: U64 = 18446744073709551615
+    let wide: U64 = 4294967296
+    let seventeen: U64 = 17
+    match three(&allocator, maximum, wide, seventeen):
+        Ok(vector):
+            var index: U64 = 0
+            while index < 3:
+                match vec_get(&vector, index):
+                    Ok(stored):
+                        console.print_int(stored)
+                    Err(code):
+                        console.print_int(907)
+                index += 1
+            vec_close(move vector)
+        Err(code):
+            console.print_int(908)
+    match three(&allocator, true, false, true):
+        Ok(vector):
+            var index: U64 = 0
+            while index < 3:
+                match vec_get(&vector, index):
+                    Ok(stored):
+                        if stored:
+                            console.print_int(1)
+                        else:
+                            console.print_int(0)
+                    Err(code):
+                        console.print_int(909)
+                index += 1
+            vec_close(move vector)
+        Err(code):
+            console.print_int(910)
+    match three(&allocator, OrdinaryPair(seven, 4294967296), OrdinaryPair(nine, 18446744073709551615), OrdinaryPair(eleven, 17)):
+        Ok(vector):
+            var index: U64 = 0
+            while index < 3:
+                match vec_get(&vector, index):
+                    Ok(stored):
+                        console.print_int(U8.to_u64(stored.byte))
+                        console.print_int(stored.word)
+                    Err(code):
+                        console.print_int(911)
+                index += 1
+            vec_close(move vector)
+        Err(code):
+            console.print_int(912)
+    let full: Result<Vec<U8>, U64> = vec_new(&allocator, 1)
+    match move full:
+        Ok(empty):
+            match vec_push(&allocator, move empty, seven):
+                Ok(vector):
+                    reject_byte(&console, move vector, nine)
+                Err(back):
+                    console.print_int(913)
+                    vec_close(move back.vector)
+        Err(code):
+            console.print_int(914)
+    let busy: Result<Buffer<U8>, U64> = memory.try_alloc(&allocator, 1)
+    match move busy:
+        Ok(buffer):
+            var data = move buffer
+            memory.init(&mut data, 0, seven)
+            reject_byte(&console, Vec(move data, 0, 1), nine)
+        Err(code):
+            console.print_int(915)
+    let mismatch: Result<Buffer<U8>, U64> = memory.try_alloc(&allocator, 1)
+    match move mismatch:
+        Ok(buffer):
+            reject_byte(&console, Vec(move buffer, 0, 99), nine)
+        Err(code):
+            console.print_int(916)
+    let too_long: Result<Buffer<U8>, U64> = memory.try_alloc(&allocator, 1)
+    match move too_long:
+        Ok(buffer):
+            reject_byte(&console, Vec(move buffer, 18446744073709551615, 1), nine)
+        Err(code):
+            console.print_int(917)
+    let zero: Result<Vec<U8>, U64> = vec_new(&allocator, 0)
+    match move zero:
+        Ok(vector):
+            reject_byte(&console, move vector, nine)
+        Err(code):
+            console.print_int(918)

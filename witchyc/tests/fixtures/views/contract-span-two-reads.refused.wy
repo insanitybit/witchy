@@ -1,0 +1,18 @@
+// Refused: two calls on a Span are two unknown numbers to the proof, so the length tested is
+// not the length stored. (Bind it once: contract-span.wy.)
+import console
+import span
+import string
+
+sealed type Short:
+    length: U64
+    invariant length <= 64
+
+impl Short:
+    fn parse(text: Span) -> Result<Short, U64>:
+        if text.len() > 64:
+            return Err(text.len())
+        return Ok(Short(text.len()))
+
+fn main(console: Console<Write>, allocator: Allocator):
+    console.print_int(1)

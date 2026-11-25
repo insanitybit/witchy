@@ -1,0 +1,11 @@
+// Refused, saying where the first declaration is: it said only that `helper` is declared twice.
+import console
+
+fn helper() -> U64:
+    return 1
+
+fn helper() -> U64:
+    return 2
+
+fn main(console: Console<Write>):
+    console.print_int(helper())

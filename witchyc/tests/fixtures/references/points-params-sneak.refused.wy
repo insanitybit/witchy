@@ -1,0 +1,21 @@
+// The rule rests on this: inside the function a `&B` is not a `&A`.
+type Pair:
+    a: U64
+    b: U64
+
+trait Part:
+    fn part(self: &Self) -> &U64
+
+impl Part for Pair:
+    fn part(self: &Pair) -> &U64:
+        return &(*self).a
+
+fn pick<A, B>(a: &A, b: &B) -> &A:
+    return b
+
+fn main(console: Console<Write>):
+    var pair = Pair(1, 2)
+    var n: U64 = 7
+    var k: U64 = 8
+    var flag = false
+    console.print_int(1)

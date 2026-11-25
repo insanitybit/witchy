@@ -1,0 +1,30 @@
+// A task's function may not have a `requires`: its input arrives at the task's first step,
+// where nothing shows it, and a body proved assuming it would run its arithmetic unchecked
+// (review round 30: this printed 0, 2^64 - 1 + 1 wrapped).
+import console
+import tasks
+
+type Job:
+    console: Console<Write>
+    n: U64
+
+fn work(job: Job):
+    requires job.n < 10
+    ensures true
+    proof:
+        auto
+    let Job(console, n) = move job
+    console.print_int(n + 1)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Task = Task.spawn(&allocator, 16384, work, Job(move console, 18446744073709551615)) else Err(given):
+        return
+    var task = move made
+    var going = true
+    while going:
+        match task.step():
+            Ok:
+                going = false
+            Err(token):
+                going = true
+    task.close()

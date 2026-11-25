@@ -1,0 +1,15 @@
+// A Vec's elements written through `as_mut_slice`, whose bounds are proved from the Vec's invariant.
+import console
+import vec
+
+fn fill(s: &mut [U64], value: U64):
+    for i in 0..s.len():
+        s[i] = value + i
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.filled(&allocator, 3, 0) else Err(code):
+        return
+    var numbers = move made
+    fill(numbers.as_mut_slice(), 40)
+    console.print_int(numbers[0] + numbers[2])
+    numbers.close()

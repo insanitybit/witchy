@@ -1,0 +1,9 @@
+// Literal arithmetic before an inline `if` keeps the type its parameter gives it.
+fn f(a: I64, b: U64) -> U64:
+    if a < 0:
+        return 7
+    return b
+
+fn main(console: Console<Write>):
+    let c = true
+    console.print_int(f(0 - 1, if c: 1 else: 2))

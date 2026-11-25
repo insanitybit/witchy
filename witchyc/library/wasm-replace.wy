@@ -1,0 +1,8 @@
+// Replacing a value where it is: `replace(&mut place, next)` puts `next` in the place and hands
+// back what was there. For any storable value, owners included: nothing is copied and nothing
+// is lost, and a caller's proof knows the result as the value that was there and the place as
+// the value passed in (docs/wasm-exchange.md).
+pub nopanic fn replace<T: Any>(slot: &mut T, next: T) -> T:
+    var held = move next
+    memory.exchange(&mut *slot, &mut held)
+    return move held

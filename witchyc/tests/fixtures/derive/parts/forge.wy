@@ -1,0 +1,21 @@
+pub sealed type Token:
+    v: U64
+
+pub fn mint() -> Token:
+    return Token(v: 1)
+
+pub fn redeem(t: &Token) -> U64:
+    return t.v
+
+pub trait Make<X>:
+    fn made(self: &Self) -> X
+
+pub derive Mk:
+    impl Make<For> for Self:
+        fn made(self: &Self) -> For:
+            return For(v: (*self).a)
+type Hidden:
+    v: U64
+
+pub fn peek(h: &Hidden) -> U64:
+    return h.v

@@ -1,0 +1,54 @@
+import "metadata.wy"
+import "publication_files.wy"
+import "release_trust.wy"
+import fs
+import string
+import text
+
+pub fn read_delegated_input(source: &Dir<Read>, name: Text, limit: U64, allocator: &Allocator) -> Result<String, U64>:
+    let Ok(path): String = literal_path(allocator, name) else Err(error):
+        return Err(1)
+    let read = read_text_object(source, &path, limit, allocator)
+    path.close()
+    let Ok(wire): String = move read else Err(error):
+        return Err(1)
+    return Ok(move wire)
+
+pub fn read_delegated_parent(source: &Dir<Read>, pin: &String, allocator: &Allocator) -> Result<Metadata, U64>:
+    let wire = read_delegated_input(source, "parent.json", 2097152, allocator)?
+    let parsed = parse_pinned_parent(&wire, pin, allocator)
+    wire.close()
+    return move parsed
+
+fn parse_pinned_parent(input: &String, pin: &String, allocator: &Allocator) -> Result<Metadata, U64>:
+    if !matches_delegated_pin(input, pin, allocator):
+        return Err(1)
+    let Ok(parent): Metadata = parse_metadata(input, allocator, Targets) else Err(error):
+        return Err(1)
+    return Ok(move parent)
+
+pub fn matches_delegated_pin(input: &String, expected: &String, allocator: &Allocator) -> Bool:
+    let Ok(digest): String = digest_text(input.as_bytes(), allocator) else Err(code):
+        return false
+    let matches = digest.eq(expected)
+    digest.close()
+    return matches
+
+pub fn read_delegated_trust(source: &Dir<Read>, pin: &String, allocator: &Allocator) -> Result<ReleaseTrust, U64>:
+    let wire = read_delegated_input(source, "trust.json", 262144, allocator)?
+    if !matches_delegated_pin(&wire, pin, allocator):
+        wire.close()
+        return Err(2)
+    let parsed = parse_release_trust(&wire, allocator)
+    wire.close()
+    let Ok(trust): ReleaseTrust = move parsed else Err(error):
+        return Err(1)
+    return Ok(move trust)
+
+pub fn read_unsigned_targets(source: &Dir<Read>, allocator: &Allocator) -> Result<Metadata, U64>:
+    let wire = read_delegated_input(source, "unsigned.json", 2097152, allocator)?
+    let parsed = parse_metadata(&wire, allocator, Targets)
+    wire.close()
+    let Ok(child): Metadata = move parsed else Err(error):
+        return Err(1)
+    return Ok(move child)

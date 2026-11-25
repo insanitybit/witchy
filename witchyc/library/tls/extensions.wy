@@ -1,0 +1,30 @@
+// EncryptedExtensions for a TLS 1.3 connection routed to Coven.
+import tls_hello
+
+// The caller acknowledges SNI only after matching its configured service.
+pub fn encode(client: ClientHello, acknowledge_name: Bool, output: &mut [U8]) -> Result<U64, HelloError>:
+    if acknowledge_name && client.server_name().is_empty():
+        return Err(Unsupported)
+    let http = client.offered_http11()
+    var length: U64 = 6
+    if acknowledge_name:
+        length += 4
+    if http:
+        length += 15
+    if output.len() < length:
+        return Err(ShortOutput)
+    output[0] = 8
+    output[1] = 0
+    output[2] = 0
+    output[3] = U8.truncate(length - 4)
+    output[4] = 0
+    output[5] = U8.truncate(length - 6)
+    var at: U64 = 6
+    if acknowledge_name:
+        let name: [U8; 4] = [0, 0, 0, 0]
+        output.part(at, at + 4).copy_from(name.slice())
+        at += 4
+    if http:
+        let alpn: [U8; 15] = [0, 16, 0, 11, 0, 9, 8, 104, 116, 116, 112, 47, 49, 46, 49]
+        output.part(at, at + 15).copy_from(alpn.slice())
+    return Ok(length)

@@ -1,0 +1,5 @@
+import console
+
+fn main(console: Console<Write>):
+    let bytes: [U8; 8] = [0; 8]
+    console.print_int(bytes.slice().read_le64(1))

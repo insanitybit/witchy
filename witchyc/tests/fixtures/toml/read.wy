@@ -1,0 +1,49 @@
+// Reading a document through handles: tables, arrays, each kind of value, and a string
+// with no escape, which is the bytes of the text itself.
+import console
+import string
+import option
+import "@toml"
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(text): String = String.from_str(&allocator, "title = \"Witchy\"\nescaped = \"a\\tb\"\n[owner]\nage = -42\nratio = 2.5\nok = true\nborn = 1979-05-27T07:32:00-08:00\ntags = [\"x\", \"yz\"]\n") else Err(code):
+        return
+    let Ok(tree): Toml = Toml.parse(&allocator, move text) else Err(error):
+        console.print_int(error.line)
+        return
+    brand tree.doc() as doc:
+        let root = doc.root()
+        if let Some(title) = doc.get(root, "title"):
+            if let Some(found) = doc.str(title):
+                console.line(found)
+        if let Some(escaped) = doc.get(root, "escaped"):
+            if let Some(found) = doc.str(escaped):
+                console.print_int(found.len())
+        if let Some(missing) = doc.get(root, "nothing"):
+            console.print("found what is not there")
+        if let Some(item) = doc.get(root, "owner"):
+            if let Some(owner) = doc.table(item):
+                console.print_int(doc.table_len(owner))
+                if let Some(age) = doc.get(owner, "age"):
+                    if let Some(number) = doc.i64(age):
+                        console.print_int(U64.wrapping_add(I64.bits(number), 43))
+                if let Some(ok) = doc.get(owner, "ok"):
+                    if let Some(truth) = doc.bool(ok):
+                        console.print_int(if truth: 1 else: 0)
+                if let Some(born) = doc.get(owner, "born"):
+                    if let Some(date) = doc.datetime(born):
+                        console.print_int(date.year * 10000 + date.month * 100 + date.day)
+                        console.print_int(date.offset_minutes)
+                if let Some(tags) = doc.get(owner, "tags"):
+                    if let Some(array) = doc.array(tags):
+                        console.print_int(doc.array_len(array))
+                        var entry = doc.first_element(array)
+                        while let Some(tag) = entry:
+                            if let Some(found) = doc.str(tag):
+                                console.line(found)
+                            entry = doc.next(tag)
+                var entry = doc.first(owner)
+                while let Some(child) = entry:
+                    console.line(doc.key(child))
+                    entry = doc.next(child)
+    tree.close()

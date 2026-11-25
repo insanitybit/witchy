@@ -1,0 +1,5 @@
+fn bump(value: U64) -> U64:
+    return value + 1
+
+fn main(console: Console<Write>):
+    console.print_int(bump(41))

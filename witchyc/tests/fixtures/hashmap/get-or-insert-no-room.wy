@@ -1,0 +1,62 @@
+// `get_or_insert` with the rest of the heap taken: a table past three quarters that cannot grow
+// still takes a new key in the free cell its search found; one with no free cell hands the value
+// back with the key it made (`NoRoom`) and is as it was; a present key is still found and changed.
+import console
+import hashmap
+import discard
+import vec
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): HashMap<U64, U64> = HashMap.new(&allocator, 2) else Err(e):
+        return
+    var map = move made
+    let Ok(h): Vec<Vec<U8>> = Vec.new(&allocator, 48) else Err(e):
+        map.discard()
+        return
+    var hogs = move h
+    var size: U64 = 1 << 30
+    while size > 0 && hogs.len() < hogs.capacity():
+        let asked: Result<Vec<U8>, U64> = Vec.new(&allocator, size)
+        match move asked:
+            Ok(hog):
+                match hogs.push_spare_mut(move hog):
+                    Ok:
+                        ()
+                    Err(back):
+                        back.close()
+            Err(code):
+                size = size / 2
+    // Two cells: the first key needs no growth (1 * 4 <= 2 * 3); the second does, cannot have it,
+    // and goes in the other free cell; the third finds no free cell.
+    for k in 0..3:
+        match map.get_or_insert(&allocator, &(k * 5), 10 + k):
+            Ok(found):
+                console.print_int(*found)
+            Err(missed):
+                match move missed:
+                    NoKey(back, code):
+                        console.print_int(back)
+                        console.print_int(code)
+                    NoRoom(key, back):
+                        console.print_int(key)
+                        console.print_int(back)
+    match map.get_or_insert(&allocator, &5, 99):
+        Ok(found):
+            *found += 1
+            console.print_int(*found)
+        Err(missed):
+            match move missed:
+                NoKey(back, code):
+                    console.print_int(code)
+                NoRoom(key, back):
+                    console.print_int(key)
+    console.print_int(map.len())
+    console.print_int(map.capacity())
+    while hogs.len() > 0:
+        match hogs.take_last_mut():
+            Ok(hog):
+                hog.close()
+            Err(code):
+                break
+    hogs.release_empty()
+    map.discard()

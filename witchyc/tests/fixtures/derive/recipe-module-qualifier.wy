@@ -1,0 +1,13 @@
+// `util.pick` in a recipe is the recipe file's own import of lib/util.wy, though the program imports
+// another util.wy (the fifth review found the program's, 2).
+import "parts/recipe_qualified.wy"
+import "parts/other/util.wy"
+import console
+
+type T derive(recipe_qualified.First):
+    a: U64
+    b: U64
+
+fn main(console: Console<Write>):
+    let t = T(a: 1, b: 2)
+    console.print("${t.picked()}")

@@ -1,0 +1,15 @@
+// Refused: a trait is not implemented for a capability.
+import console
+
+trait Shout:
+    fn shout(self: &Self, x: U64)
+
+impl Shout for Console<Write>:
+    fn shout(self: &Console<Write>, x: U64):
+        self.print_int(x)
+
+fn sneaky<T: Shout>(thing: &T):
+    thing.shout(7)
+
+fn main(console: Console<Write>):
+    sneaky(&console)

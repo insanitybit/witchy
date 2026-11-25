@@ -1,0 +1,37 @@
+// A key of four U32 fields fed as two packed words, and a query that packs its paired fields the
+// same way: the shapes the key law reads (one `state.word` of two U32 fields, low first).
+import hash
+import discard
+
+pub type Quad derive(Discard):
+    a: U32
+    b: U32
+    c: U32
+    d: U32
+
+impl Eq for Quad:
+    fn eq(self: &Quad, other: &Quad) -> Bool:
+        return (*self).a == (*other).a && (*self).b == (*other).b && (*self).c == (*other).c && (*self).d == (*other).d
+
+impl HashKey for Quad:
+    fn feed(self: &Quad, state: &mut HashState):
+        state.word(U32.to_u64((*self).a) | (U32.to_u64((*self).b) << 32), 8)
+        state.word(U32.to_u64((*self).c) | (U32.to_u64((*self).d) << 32), 8)
+
+// The same fields fed one by one: a different type, so its hash can be compared.
+pub type Plain:
+    a: U32
+    b: U32
+    c: U32
+    d: U32
+
+impl Eq for Plain:
+    fn eq(self: &Plain, other: &Plain) -> Bool:
+        return (*self).a == (*other).a && (*self).b == (*other).b && (*self).c == (*other).c && (*self).d == (*other).d
+
+impl HashKey for Plain:
+    fn feed(self: &Plain, state: &mut HashState):
+        (*self).a.feed(state)
+        (*self).b.feed(state)
+        (*self).c.feed(state)
+        (*self).d.feed(state)

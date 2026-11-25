@@ -1,0 +1,15 @@
+// The wrong test (`>`): nothing shows the read in range, so it keeps its check and traps.
+import console
+
+// `index > len` is the wrong test: index == len gets through, and the read must still trap.
+fn read(bytes: &[U8], index: U64) -> U64:
+    ensures true
+    proof:
+        auto
+    if index > bytes.len():
+        return 256
+    return U8.to_u64(bytes[index])
+
+fn main(console: Console<Write>):
+    let a: [U8; 3] = [7, 8, 9]
+    console.print_int(read(&a, 3))

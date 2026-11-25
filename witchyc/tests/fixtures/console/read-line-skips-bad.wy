@@ -1,0 +1,44 @@
+// A line that is not UTF-8 is skipped whole and reported once as NotText, wherever its bad bytes
+// are (first, middle, last, a scalar cut short by the newline, a CRLF line), however long it is
+// (the rest is skipped across many runs), and whether or not it ends with a newline: nothing of
+// its tail comes back as a Line (2026-11-22: `tw\xffo,12\xfe34` gave NotText, NotText, Line 34),
+// and the line buffer is as it was. Each good line's bytes and its last byte, then the text.
+// The input (the .txt beside this file) ends with a good line with no newline, or (-last) a bad one.
+import console
+import string
+import text
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(e):
+        return
+    var line = move made
+    while true:
+        line.clear()
+        if let Err(_) = line.push_text(&allocator, "kept"):
+            break
+        match input.read_line(&allocator, &mut line):
+            .Line:
+                var last: U64 = 0
+                match line.byte_at(line.byte_len() - 1):
+                    Ok(byte):
+                        last = U8.to_u64(byte)
+                    Err(code):
+                        last = 0
+                console.write_format("line ${line.byte_len()} ${last}")
+                // A CRLF line keeps its carriage return: shown by its last byte, not printed.
+                if last != 13:
+                    console.write(" [")
+                    console.write_string(&line)
+                    console.write("]")
+                console.line("")
+            .End:
+                console.line("end")
+                break
+            .NotText:
+                console.write("not text [")
+                console.write_string(&line)
+                console.line("]")
+            .NoRoom:
+                console.line("no room")
+                break
+    line.close()

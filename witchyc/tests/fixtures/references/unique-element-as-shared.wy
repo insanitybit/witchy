@@ -1,0 +1,14 @@
+// A `&mut` element given where a `&` is expected is passed on as shared (it compiled in release,
+// and a debug-build check panicked: red-team review 35).
+import console
+import vec
+
+fn pick(x: &U64) -> U64:
+    return *x
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(m): Vec<U64> = Vec.filled(&allocator, 3, 7) else Err(c):
+        return
+    var v = move m
+    console.print_int(pick(v.cell_mut(0)))
+    v.close()

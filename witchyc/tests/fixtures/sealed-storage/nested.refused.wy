@@ -1,0 +1,33 @@
+// Refused: the storage of a sealed value with an invariant that is itself a field. Only a
+// field of the `&mut` parameter's own type is lent under a proof over numbers.
+import console
+import vec
+import option
+
+sealed type Bag:
+    items: Vec<U64>
+    held: Option<U64>
+    spare: U64
+    count: U64
+    limit: U64
+    invariant count <= limit
+    invariant when None = held:
+        count == 0
+
+sealed type Shelf:
+    bag: Bag
+    n: U64
+    invariant n >= 1
+
+impl Shelf:
+    fn set(shelf: &mut Shelf) -> Bool:
+        ensures shelf.n == old(shelf.n)
+        match (*shelf).bag.items.at_mut(0):
+            Ok(slot):
+                *slot = 1
+            Err(code):
+                ()
+        return true
+
+fn main(console: Console<Write>):
+    console.print_int(1)

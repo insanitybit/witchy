@@ -1,0 +1,38 @@
+import console
+import console_bytes
+import string
+import text
+
+fn main(output: Console<Write>, input: Console<Read>, allocator: Allocator):
+    var bytes: [U8; 7] = [0; 7]
+    if let Ok(LineFrame(length)) = input.read_optional_line_bytes(bytes.slice_mut().part(0, 0)):
+        if length == 0:
+            output.line("optional empty frame")
+    if let Ok(LineFrame(length)) = input.read_optional_line_bytes(bytes.slice_mut()):
+        if length == 2 && bytes[0] == 97 && bytes[1] == 98:
+            output.line("optional frame")
+    if let Ok(length) = input.read_line_bytes(bytes.slice_mut().part(0, 0)):
+        if length == 0:
+            output.line("empty frame")
+    if let Ok(length) = input.read_line_bytes(bytes.slice_mut()):
+        if length == 7 && bytes[0] == 97 && bytes[6] == 103 && input.next_byte() == 128:
+            output.line("exact frame left binary body")
+    if let Ok(line) = input.read_text_frame(&allocator, 16):
+        if line.equals_text("é!"):
+            output.line("valid UTF-8 frame")
+        line.close()
+    match input.read_text_frame(&allocator, 16):
+        Ok(line):
+            line.close()
+        Err(reason):
+            if let InvalidLineText = reason:
+                output.line("invalid UTF-8 frame")
+    if let Err(LineTooLong) = input.read_line_bytes(bytes.slice_mut().part(0, 3)):
+        if bytes[2] == 67 && input.next_byte() == 10:
+            output.line("overflow consumed only the first extra byte")
+    if let Err(MissingLineFeed) = input.read_optional_line_bytes(bytes.slice_mut()):
+        output.line("unterminated frame refused")
+    if let Ok(EndOfFrames) = input.read_optional_line_bytes(bytes.slice_mut()):
+        output.line("optional frame ended cleanly")
+    if let Err(MissingLineFeed) = input.read_line_bytes(bytes.slice_mut().part(0, 0)):
+        output.line("required frame refused EOF")

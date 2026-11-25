@@ -1,0 +1,11 @@
+// Refused: the run must fit the buffer.
+fn clear<T>(buffer: &mut Buffer<T>, count: U64):
+    requires memory.initialized_range(buffer, 0, count)
+    ensures memory.empty_range(buffer, 0, count)
+    proof:
+        auto
+    memory.take_prefix_unchecked(buffer, count)
+    return
+
+fn main():
+    return

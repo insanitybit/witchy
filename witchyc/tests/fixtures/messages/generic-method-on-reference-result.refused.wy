@@ -1,0 +1,11 @@
+// Refused, saying a reference cannot be the stored type argument and to match instead: it said
+// "record/Buffer type arguments require non-unit storage".
+import console
+import vec
+import result
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.new(&allocator, 4) else Err(code):
+        return
+    let missing = made.at(3).is_err()
+    made.close()

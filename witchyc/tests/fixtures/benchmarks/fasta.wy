@@ -1,0 +1,71 @@
+// fasta (the Benchmarks Game): three DNA sequences of 2n, 3n and 5n letters in lines of 60, the
+// first repeating a fixed text, the others drawn with a linear congruential generator from
+// letter frequencies.
+import console
+
+// The generator: the next value in [0, 1), from `seed`, which moves on.
+fn random(seed: &mut U64) -> F64:
+    *seed = (*seed * 3877 + 29573) % 139968
+    return F64.from_u64(*seed) / 139968.0
+
+fn repeat(console: &Console<Write>, text: Text, total: U64):
+    let length = text.byte_len()
+    var at: U64 = 0
+    var left = total
+    while left > 0:
+        var line: U64 = 60
+        if left < 60:
+            line = left
+        for j in 0..line:
+            match text.byte_at((at + j) % length):
+                Ok(byte):
+                    console.print_byte(byte)
+                Err(code):
+                    return
+        console.print_byte('\n')
+        at = (at + line) % length
+        left -= line
+
+// `count` letters with their cumulative probabilities.
+fn draw(console: &Console<Write>, letters: &[U8; 15], cumulative: &[F64; 15], count: U64, total: U64, seed: &mut U64):
+    var left = total
+    while left > 0:
+        var line: U64 = 60
+        if left < 60:
+            line = left
+        for j in 0..line:
+            let r = random(seed)
+            var pick = count - 1
+            var k: U64 = 0
+            while k < count:
+                if r < (*cumulative)[k]:
+                    pick = k
+                    k = count
+                else:
+                    k += 1
+            console.print_byte((*letters)[pick])
+        console.print_byte('\n')
+        left -= line
+
+fn main(console: Console<Write>):
+    let n: U64 = 1000
+    var seed: U64 = 42
+    console.line(">ONE Homo sapiens alu")
+    repeat(&console, "GGCCGGGCGCGGTGGCTCACGCCTGTAATCCCAGCACTTTGGGAGGCCGAGGCGGGCGGATCACCTGAGGTCAGGAGTTCGAGACCAGCCTGGCCAACATGGTGAAACCCCGTCTCTACTAAAAATACAAAAATTAGCCGGGCGTGGTGGCGCGCGCCTGTAATCCCAGCTACTCGGGAGGCTGAGGCAGGAGAATCGCTTGAACCCGGGAGGCGGAGGTTGCAGTGAGCCGAGATCGCGCCACTGCACTCCAGCCTGGGCGACAGAGCGAGACTCCGTCTCAAAAA", 2 * n)
+    console.line(">TWO IUB ambiguity codes")
+    let iub_letters: [U8; 15] = ['a', 'c', 'g', 't', 'B', 'D', 'H', 'K', 'M', 'N', 'R', 'S', 'V', 'W', 'Y']
+    let iub: [F64; 15] = [0.27, 0.12, 0.12, 0.27, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02]
+    var cumulative: [F64; 15] = [0.0; 15]
+    var sum = 0.0
+    for i in 0..15:
+        sum += iub[i]
+        cumulative[i] = sum
+    draw(&console, &iub_letters, &cumulative, 15, 3 * n, &mut seed)
+    console.line(">THREE Homo sapiens frequency")
+    let hs_letters: [U8; 15] = ['a', 'c', 'g', 't', 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a', 'a']
+    let hs: [F64; 15] = [0.3029549426680, 0.1979883004921, 0.1975473066391, 0.3015094502008, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    sum = 0.0
+    for i in 0..4:
+        sum += hs[i]
+        cumulative[i] = sum
+    draw(&console, &hs_letters, &cumulative, 4, 5 * n, &mut seed)

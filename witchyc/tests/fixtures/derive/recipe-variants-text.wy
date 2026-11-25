@@ -1,0 +1,23 @@
+// The pattern `V(..NAME)` is written out in code only: a text literal holding the same letters is
+// printed as written (review of sum recipes: it printed `v(mine0, mine1)`).
+import console
+
+trait Told:
+    fn told(self: &Self, console: &Console<Write>)
+
+derive Tell:
+    impl Told for Self:
+        fn told(self: &Self, console: &Console<Write>):
+            match self:
+                static for v, tag in variants:
+                    v(..mine):
+                        console.print("v(..mine) ${tag}")
+
+type E derive(Tell):
+    A(U64, U64)
+    B
+
+fn main(console: Console<Write>):
+    let (a, b) = (A(1, 2), B)
+    a.told(&console)
+    b.told(&console)

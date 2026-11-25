@@ -1,0 +1,39 @@
+// Reads the files m0, m1, ... (as many as the number in the file `count`) from the granted
+// directory and prints one line: `1` for each that is TOML 1.1, `0` for each that is not.
+// scripts/toml-fuzz.py compares the line with what the Rust `toml` crate says.
+import console
+import fs
+import string
+import "@toml"
+
+fn main(console: Console<Write>, dir: Dir<Read>, allocator: Allocator):
+    let Ok(wanted): String = dir.read_text(&allocator, "count") else Err(error):
+        return
+    var count: U64 = 0
+    let digits = wanted.as_bytes()
+    for at in 0..digits.len():
+        let digit = U8.to_u64(digits[at])
+        if digit >= 48 && digit <= 57 && count < 1000000:
+            count = count * 10 + (digit - 48)
+    wanted.close()
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var out = move made
+    for number in 0..count:
+        let Ok(blank): String = String.new(&allocator) else Err(code):
+            break
+        var name = move blank
+        let m = name.push(&allocator, 109)
+        let n = name.push_decimal(&allocator, number)
+        var accepted: U64 = 48
+        if let Ok(text) = dir.read_text_path(&allocator, &name):
+            match Toml.parse(&allocator, move text):
+                Ok(tree):
+                    accepted = 49
+                    tree.close()
+                Err(error):
+                    accepted = 48
+        name.close()
+        let pushed = out.push(&allocator, accepted)
+    console.line(out.as_str())
+    out.close()

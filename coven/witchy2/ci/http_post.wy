@@ -1,0 +1,116 @@
+// Build the request and return the exact framed JSON body from the authenticated peer.
+import http
+import https
+import http_framing
+import tls
+import "http_response.wy"
+import "request_transcript.wy"
+import "../tuf/release_trust.wy"
+import json_tree
+import span
+import string
+import text
+
+pub fn post_headers(request: &Json, authority: Span, length: U64, allocator: &Allocator) -> Result<String, U64>:
+    let route = string_field(request, "route")?
+    if route.equals_text("/v1/ci/challenge"):
+        if length != 0:
+            return Err(1)
+    else:
+        validate_request_coordinates(request)?
+        if (length != 0) != route.equals_text("/v1/ci/stage"):
+            return Err(1)
+    let Ok(empty): RequestHeaders = http.request_headers(allocator) else Err(reason):
+        return Err(1)
+    var headers = move empty
+    if !route.equals_text("/v1/ci/challenge"):
+        if let Err(code) = auth_headers(request, &mut headers, allocator):
+            headers.close()
+            return Err(code)
+    let result = http.request_head(allocator, PostRequest(length), authority, route.span(), &headers)
+    headers.close()
+    let Ok(head): String = move result else Err(reason):
+        return Err(1)
+    return Ok(move head)
+
+fn auth_headers(request: &Json, headers: &mut RequestHeaders, allocator: &Allocator) -> Result<(), U64>:
+    let token = string_field(request, "token")?
+    let proof = string_field(request, "proof")?
+    if token.byte_len() > 8192 || !compact_token(token.span()) || proof.byte_len() != 6170 || !url_alphabet(proof.span()):
+        return Err(1)
+    let nonce = string_field(request, "nonce")?
+    let package = string_field(request, "package")?
+    let digest = string_field(request, "digest")?
+    let empty = String.with_capacity(allocator, token.byte_len() + 7)?
+    var bearer = move empty
+    let added = add_bearer(headers, &mut bearer, token, allocator)
+    bearer.close()
+    added?
+    field(headers, "Coven-Nonce", nonce.span(), allocator)?
+    field(headers, "Coven-Package", package.span(), allocator)?
+    field(headers, "Coven-Digest", digest.span(), allocator)?
+    field(headers, "Coven-Proof", proof.span(), allocator)?
+    let media: &str = "application/octet-stream"
+    return field(headers, "Content-Type", Span.of(media.as_bytes()), allocator)
+
+fn add_bearer(headers: &mut RequestHeaders, bearer: &mut String, token: &String, allocator: &Allocator) -> Result<(), U64>:
+    bearer.push_text(allocator, "Bearer ")?
+    bearer.push_utf8_slice(allocator, token.as_bytes())?
+    return field(headers, "Authorization", bearer.span(), allocator)
+
+fn field(headers: &mut RequestHeaders, name: &str, value: Span, allocator: &Allocator) -> Result<(), U64>:
+    if let Err(reason) = headers.add(allocator, name, value):
+        return Err(1)
+    return Ok(())
+
+fn compact_token(wire: Span) -> Bool:
+    let Ok(first): Halves = wire.split('.') else Err(rest):
+        return false
+    let Ok(second): Halves = first.tail.split('.') else Err(rest):
+        return false
+    return url_alphabet(first.head) && url_alphabet(second.head) && url_alphabet(second.tail)
+
+fn url_alphabet(wire: Span) -> Bool:
+    if wire.is_empty():
+        return false
+    for byte in wire.as_bytes():
+        if !(*byte >= 'A' && *byte <= 'Z') && !(*byte >= 'a' && *byte <= 'z') && !(*byte >= '0' && *byte <= '9') && *byte != '-' && *byte != '_':
+            return false
+    return true
+
+pub fn send_post(stream: &mut SecureSession, head: &String, body: &[U8], plaintext: &mut [U8], wire: &mut [U8]) -> Result<(), U64>:
+    if let Err(code) = stream.write(head.as_bytes(), plaintext, wire):
+        return Err(2)
+    if let Err(code) = stream.write(body, plaintext, wire):
+        return Err(2)
+    return Ok(())
+
+pub fn receive_post(stream: &mut SecureSession, buffer: &mut [U8], plaintext: &mut [U8], wire: &mut [U8]) -> Result<http_response.Response, U64>:
+    let Ok(prefix): IdentityPrefix = https.read_identity_prefix(stream, buffer, plaintext, wire) else Err(reason):
+        if let PrefixTransportError(code) = reason:
+            return Err(2)
+        return Err(3)
+    let reply = response(Span.of(buffer.part(0, prefix.received)), prefix.fence)?
+    return finish_response(stream, buffer, prefix.received, reply, plaintext, wire)
+
+fn finish_response(stream: &mut SecureSession, buffer: &mut [U8], used: U64, reply: http_response.Response, plaintext: &mut [U8], wire: &mut [U8]) -> Result<http_response.Response, U64>:
+    if reply.body_at + reply.length > buffer.len():
+        return Err(3)
+    let Ok(state): IdentityBody = https.identity_body(FixedLength(reply.length), used - reply.body_at,
+        IdentityExactly(reply.length), RequireIdentityClose) else Err(reason):
+        return Err(3)
+    var body = state
+    var received = used
+    while true:
+        let Ok(count): U64 = https.read_identity_chunk(&mut body, stream, plaintext, wire) else Err(reason):
+            if let BodyTransportError(code) = reason:
+                return Err(2)
+            return Err(3)
+        if count == 0:
+            break
+        copy_into(buffer.part(received, received + count), plaintext, count)
+        received += count
+    return Ok(reply)
+
+fn copy_into(output: &mut [U8], input: &[U8], count: U64):
+    output.copy_from(input.part(0, count))

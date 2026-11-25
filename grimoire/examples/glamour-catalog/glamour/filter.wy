@@ -1,0 +1,18 @@
+fn lower(byte: U8) -> U8:
+    if byte >= 65 && byte <= 90:
+        return byte + 32
+    return byte
+
+pub fn contains(name: &[U8], query: &[U8]) -> Bool:
+    if query.len() > name.len():
+        return false
+    let last = name.len() - query.len()
+    for offset in 0..last + 1:
+        var matched = true
+        for index in 0..query.len():
+            if lower(name[offset + index]) != lower(query[index]):
+                matched = false
+                break
+        if matched:
+            return true
+    return false

@@ -1,0 +1,5 @@
+fn escaped() -> Result<&str, U64>:
+    let bytes: [U8; 1] = [97]
+    return str.from_utf8_bytes(bytes.slice())
+fn main():
+    return

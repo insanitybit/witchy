@@ -1,0 +1,38 @@
+// Bit operations on unsigned integers: & | ^ ~ << >>, looser than + - and tighter than the
+// comparisons, as the book has them. A narrow type keeps only its own bits. In a proved
+// function `a & b` is at most each side, `a >> n` at most `a`, and a shift's amount must be
+// shown below the width.
+import console
+
+fn low_byte_plus_one(x: U64) -> U64:
+    ensures result <= 256
+    proof:
+        auto
+    return (x & 255) + 1
+
+fn top(x: U64, n: U64) -> U64:
+    requires n < 64
+    ensures result <= x
+    proof:
+        auto
+    return x >> n
+
+fn main(console: Console<Write>):
+    let a: U64 = 12
+    let b: U64 = 10
+    console.print_int(a & b)
+    console.print_int(a | b)
+    console.print_int(a ^ b)
+    console.print_int(1 << 63)
+    console.print_int(18446744073709551615 >> 60)
+    console.print_int(1 + 2 << 3)
+    if a & 4 == 4:
+        console.print_int(1)
+    console.print_int(~a & 255)
+    let byte: U8 = 200
+    let shifted: U8 = byte << 1
+    console.print_int(U8.to_u64(shifted))
+    let flipped: U8 = ~byte
+    console.print_int(U8.to_u64(flipped))
+    console.print_int(low_byte_plus_one(300))
+    console.print_int(top(1000, 3))

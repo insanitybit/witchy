@@ -1,0 +1,65 @@
+// Anonymous sums as error sets: built by tag, matched by tag, and widened through `?`.
+type ParseError = .[Empty | TooBig(U64)]
+type LookupError = .[Missing]
+// Every tag of the two smaller sets, and one more.
+type AnyError = .[Empty | Missing | TooBig(U64) | Refused]
+
+fn parse(value: U64) -> Result<U64, ParseError>:
+    if value == 0:
+        return Err(.Empty)
+    if value > 100:
+        return Err(.TooBig(value))
+    return Ok(value)
+
+fn lookup(key: U64) -> Result<U64, LookupError>:
+    if key == 7:
+        return Ok(700)
+    return Err(.Missing)
+
+// `?` hands a smaller error set on as the larger one.
+fn both(value: U64) -> Result<U64, AnyError>:
+    let parsed = parse(value)?
+    let found = lookup(parsed)?
+    if found > 500:
+        return Err(.Refused)
+    return Ok(found)
+
+// The same widening at an argument and at a return.
+fn code(error: AnyError) -> U64:
+    match error:
+        .Empty:
+            return 1
+        .Missing:
+            return 2
+        .TooBig(size):
+            return size
+        .Refused:
+            return 4
+
+fn widen(error: ParseError) -> AnyError:
+    return error
+
+fn show(console: &Console<Write>, value: U64):
+    match both(value):
+        Ok(found):
+            console.print_int(found)
+        Err(error):
+            console.print_int(code(error))
+
+fn main(console: Console<Write>, allocator: Allocator):
+    show(&console, 0)
+    show(&console, 250)
+    show(&console, 5)
+    show(&console, 7)
+    let small: ParseError = .TooBig(9)
+    console.print_int(code(small))
+    console.print_int(code(widen(.Empty)))
+    let only: LookupError = .Missing
+    console.print_int(code(only))
+    // Tag order in the type does not matter: this is the same type as ParseError.
+    let other: .[TooBig(U64) | Empty] = small
+    match other:
+        .TooBig(size):
+            console.print_int(size + 1)
+        _:
+            console.print_int(0)

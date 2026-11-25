@@ -1,0 +1,17 @@
+// A claim about an unsigned number in a function that also computes with an I64. The
+// proof still shows the I64 arithmetic cannot trap, so `x` needs its bound.
+import "../../../library/wasm-int.wy"
+
+fn f(x: I64, n: U64) -> U64:
+    requires n < 10
+    requires x < 1000
+    ensures result == n + 1
+    proof:
+        auto
+    let y = x + 1
+    if y > 5:
+        return n + 1
+    return 1 + n
+
+fn main(console: Console<Write>):
+    console.print_int(f(-1, 3))

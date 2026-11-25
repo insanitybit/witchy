@@ -1,0 +1,14 @@
+// Refused: an error in the code a recipe writes names the recipe (it was reported at the type
+// with no word of where the code came from).
+import hash
+
+derive Broken:
+    impl Eq for Self:
+        fn eq(self: &Self, other: &Self) -> Bool:
+            return (*self).x ==
+
+type P derive(Broken):
+    x: U64
+
+fn main():
+    return

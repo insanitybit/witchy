@@ -1,0 +1,23 @@
+// `items[i] = v` calls `Vec.index_set`; `items[i] += v` reads the element first.
+// A count of each digit, kept in a Vec.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-vec.wy"
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var counts: Vec<U64> = match Vec.filled(&allocator, 10, 0):
+        Ok(made):
+            move made
+        Err(code):
+            return
+    var n: U64 = 9081726354
+    while n > 0:
+        let digit = n % 10
+        counts[digit] += 1
+        n = n / 10
+    counts[0] = 5
+    counts[9] -= 1
+    var total: U64 = 0
+    for i in 0..10:
+        total = total * 10 + counts[i]
+    console.print_int(total)
+    counts.close()

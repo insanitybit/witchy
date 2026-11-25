@@ -1,0 +1,44 @@
+import list
+
+fn show(list: &DoublyLinkedList<U64>, out: &Console<Write>):
+    match list.current():
+        Some(value):
+            out.print_int(*value)
+        None:
+            out.print_int(0)
+
+fn main(out: Console<Write>, a: Allocator):
+    var list: DoublyLinkedList<U64> = DoublyLinkedList.new()
+    show(&list, &out)
+    for i in 1..5:
+        match list.insert(&a, i):
+            Ok:
+                continue
+            Err(item):
+                out.print_int(item)
+                break
+    while list.move_prev():
+        show(&list, &out)
+    show(&list, &out)
+    list.move_next()
+    match list.remove():
+        Some(item):
+            out.print_int(item)
+        None:
+            unreachable
+    show(&list, &out)
+    while list.move_next():
+        show(&list, &out)
+    while list.move_prev():
+        show(&list, &out)
+    while true:
+        match list.remove():
+            Some(item):
+                out.print_int(item)
+            None:
+                break
+    match list.close_empty():
+        Ok:
+            out.print_int(0)
+        Err(back):
+            unreachable

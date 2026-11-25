@@ -1,0 +1,17 @@
+// A product of names defined as sums is bounded through their definitions: `s * t` with
+// `s = i + j` and `t = s + 1`, each index below 2^20, is proved in range (spectral-norm's index).
+import console
+
+fn index(i: U64, j: U64) -> U64:
+    requires i < 1048576
+    requires j < 1048576
+    ensures true
+    proof:
+        auto
+    let s = i + j
+    let t = s + 1
+    let product = s * t
+    return product / 2 + i + 1
+
+fn main(console: Console<Write>):
+    console.print_int(index(999, 999))

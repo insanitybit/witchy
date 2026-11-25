@@ -1,0 +1,9 @@
+// Refused: reading fills the buffer, so it takes a `&mut [U8]`, not a shared slice.
+import fs
+
+fn main(dir: Dir<Read>):
+    let Ok(file): File<Read> = dir.open("in.bin") else Err(error):
+        return
+    let buffer: [U8; 3] = [0, 0, 0]
+    let count = file.read_some(buffer.slice())
+    let closed = file.close()

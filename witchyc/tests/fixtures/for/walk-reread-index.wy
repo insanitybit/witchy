@@ -1,0 +1,19 @@
+// Review of the slice walk: the body writes the index in `&arr[i]`: re-read each step, as `at` was.
+import console
+
+type Box4:
+    items: [U64; 4]
+
+impl Box4:
+    pub fn elements(b: &Box4) -> &[U64]:
+        return b.items.slice()
+
+    pub fn at(b: &Box4, index: U64) -> Result<&U64, U64>:
+        return b.items.slice().at(index)
+
+fn main(console: Console<Write>):
+    let arr = [Box4([1, 2, 3, 4]), Box4([10, 20, 30, 40])]
+    var i: U64 = 0
+    for x in &arr[i]:
+        console.print_int(*x)
+        i = 1

@@ -1,0 +1,99 @@
+// Anonymous sums that hold owners: a String travels in an error, is widened through `?`,
+// stored in a Vec, and is closed exactly once.
+import "../../../library/wasm-string.wy"
+import "../../../library/wasm-vec.wy"
+
+type NameError = .[Blank | Taken(String)]
+type Failure = .[Blank | Taken(String) | Full(U64)]
+
+fn word(allocator: &Allocator, scalar: U64) -> Result<String, U64>:
+    let made: Result<String, U64> = String.new(allocator)
+    match move made:
+        Ok(empty):
+            match empty.push_scalar(allocator, scalar):
+                Ok(text):
+                    return Ok(move text)
+                Err(back):
+                    back.close()
+                    return Err(901)
+        Err(code):
+            return Err(code)
+
+fn claim(allocator: &Allocator, scalar: U64) -> Result<U64, NameError>:
+    if scalar == 0:
+        return Err(.Blank)
+    match word(allocator, scalar):
+        Ok(name):
+            if scalar == 233:
+                return Err(.Taken(move name))
+            name.close()
+            return Ok(scalar)
+        Err(code):
+            return Err(.Blank)
+
+fn register(allocator: &Allocator, scalar: U64, room: U64) -> Result<U64, Failure>:
+    if room == 0:
+        return Err(.Full(scalar))
+    let claimed = claim(allocator, scalar)?
+    return Ok(claimed + 1)
+
+// What an error weighs; the String is closed here.
+fn settle(failure: Failure) -> U64:
+    match move failure:
+        .Blank:
+            return 1
+        .Taken(name):
+            let length = name.byte_len()
+            name.close()
+            return 100 + length
+        .Full(scalar):
+            return 1000 + scalar
+
+fn report(console: &Console<Write>, allocator: &Allocator, scalar: U64, room: U64):
+    match register(allocator, scalar, room):
+        Ok(value):
+            console.print_int(value)
+        Err(failure):
+            console.print_int(settle(move failure))
+
+fn finish(console: &Console<Write>, kept: Vec<Failure>):
+    var rest = move kept
+    while rest.len() > 0:
+        match rest.take_last_mut():
+            Ok(failure):
+                console.print_int(settle(move failure))
+            Err(code):
+                break
+    match rest.try_release():
+        Ok:
+            console.print_int(7)
+        Err(stuck):
+            finish(console, move stuck)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    report(&console, &allocator, 97, 1)
+    report(&console, &allocator, 0, 1)
+    report(&console, &allocator, 233, 1)
+    report(&console, &allocator, 5, 0)
+    // Failures are values: they are stored in a Vec and taken out again.
+    let made: Result<Vec<Failure>, U64> = Vec.new(&allocator, 2)
+    match move made:
+        Ok(empty):
+            var kept = move empty
+            match register(&allocator, 233, 1):
+                Ok(value):
+                    console.print_int(900)
+                Err(failure):
+                    match kept.push_spare_mut(move failure):
+                        Ok:
+                            console.print_int(kept.len())
+                        Err(back):
+                            console.print_int(settle(move back))
+            match kept.take_last_mut():
+                Ok(failure):
+                    console.print_int(settle(move failure))
+                Err(code):
+                    console.print_int(902)
+            finish(&console, move kept)
+        Err(code):
+            console.print_int(code)

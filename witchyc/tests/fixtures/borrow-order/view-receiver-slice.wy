@@ -1,0 +1,18 @@
+// A view receiver on a record that holds a slice (adversarial review round 23): the slice
+// field is passed as the reference it is, the position lent `&mut`.
+import console
+type Win:
+    items: &[U64]
+    pos: U64
+impl Win:
+    fn adv(self: Self { &mut pos, &items }) -> U64:
+        let v: U64 = self.items[self.pos]
+        self.pos += 1
+        return v
+fn main(console: Console<Write>):
+    let arr: [U64; 3] = [5, 6, 7]
+    var w = Win(arr.slice(), 0)
+    let s = w.items
+    let a = w.adv()
+    let b = w.adv()
+    console.print_int(a * 100 + b * 10 + s.len())

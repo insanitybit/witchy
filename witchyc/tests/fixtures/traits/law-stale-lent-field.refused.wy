@@ -1,0 +1,42 @@
+// Review of trait contracts: a field written after a generic call read `len` kept the old `len`,
+// so an unchecked subtraction proved from it wrapped. Writing a part now forgets it.
+// The synthetic `len` path of a concrete value survives a write to the field `len` returns.
+import console
+
+trait Sized:
+    pure fn len(self: &Self) -> U64
+    fn get(self: &Self, index: U64) -> U64:
+        requires index < self.len()
+        ensures result < self.len()
+
+type Few:
+    count: U64
+    value: U64
+
+impl Sized for Few:
+    pure fn len(self: &Few) -> U64:
+        return self.count
+    fn get(self: &Few, index: U64) -> U64:
+        return self.count - 1 - index
+
+fn size<T: Sized>(items: &T) -> U64:
+    ensures result == items.len()
+    proof:
+        auto
+    return items.len()
+
+fn at<T: Sized>(items: &T, index: U64) -> U64:
+    requires index < items.len()
+    ensures result < items.len()
+    proof:
+        auto
+    return items.get(index)
+
+fn zero(x: &mut U64):
+    *x = 0
+
+fn main(console: Console<Write>):
+    var few = Few(3, 10)
+    let n = size(&few)
+    zero(&mut few.count)
+    console.print_int(at(&few, n - 1))

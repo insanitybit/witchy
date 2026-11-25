@@ -1,0 +1,14 @@
+// Review of in-place generators: another file's private `gen fn` of a name this file uses for a plain function was run in its place.
+import console
+import "parts/same-name.wy"
+
+gen fn pair(n: U64) -> U64:
+    yield n
+    yield n + 1
+
+fn nums(n: U64) -> Pair:
+    return pair(n)
+
+fn main(console: Console<Write>):
+    for v in nums(3):
+        console.print_int(v)

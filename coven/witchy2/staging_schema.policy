@@ -1,0 +1,11 @@
+# Reviewed capabilities for the private staging schema worker.
+<standard>/wasm-vec.wy: Allocator ; digest sha384:bedaa1adef080670b74f6b45b2d8a1d4cb84c158d298b9fc9ca69a6d1bdc67425998ae44bb7f8658d66821cd3436b417
+<standard>/wasm-vec-text.wy: Allocator ; no unchecked ; digest sha384:631624647408dcdf978739698431b6e433b7effc83acd006edcc4e325eb70374135fced80d0a7ede048e811fca528aac
+<standard>/wasm-hash.wy: nothing ; no unchecked ; digest sha384:1cd64a088254b164cbe6656cdd894920f8d4b0d0c12a753c7ea5b8317d4bdb341a732303d7a48ceade360acb410016d1
+<standard>/wasm-discard-core.wy: nothing ; no unchecked ; digest sha384:22e2f3a4849f6b641017566c17a7dd1715953486462e270d1b7f0e0a697fd586e97a8e357580a44c59f6a57029e56ddb
+<standard>/wasm-discard.wy: nothing ; no unchecked ; digest sha384:6d061add8d8385896a93123e6729737ce5e91b563a9e58e28928f5e3ef419bc08fa1ba23b16c38e844f1bbd34319568d
+<standard>/wasm-result.wy: nothing ; no unchecked ; digest sha384:79a4b162a05bfb091520eae8b36710e5cd8053d3c8eb05349980b279f58c229ef4e7d53aadc9f440f45b7b7f75cadbb9
+<standard>/wasm-string.wy: Allocator ; no unchecked ; digest sha384:0fa2a84a8103651b211c214589865a6cd181ac681fc13a2e03765c1fd65f69f70827bc1c9b67bfbd304d0124dcacf4e5
+<standard>/wasm-console.wy: Console<Write> ; no unchecked ; digest sha384:9cf7c1f12a4259890baa0e60380b789af0ce75a7390d092f78068bb5959605e1eeb8ab6e49894aa15e9b081580d1595d
+@sqlite: Sqlite ; no unchecked ; digest sha384:9163e5c382011b4807298892fb2569c55b14eb9e124b6ccae5a09b45f73ecca547f89a5eab9f42788465f6f8ed0ebc33
+staging_schema.wy: Allocator, Console<Write>, Sqlite ; no unchecked ; digest sha384:db7e77a9b520ee7ee92737a09468fd45075fa2537cb35d357a9420b9940b90069109f33fd94c2ae1fc7e51b00f04f21f

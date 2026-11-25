@@ -1,0 +1,50 @@
+import "identity.wy"
+import "web_assets.wy"
+import "web_headers.wy"
+import "web_routes.wy"
+import "../review/integrity.wy"
+import fs
+import span
+import string
+import option
+import text
+import vec
+
+pub type WebReply:
+    head: String
+    length: U64
+
+pub fn prepare_web(root: &Dir<Read>, path: Span, route: WebRoute, output: &mut [U8], allocator: &Allocator) -> Result<WebReply, U64>:
+    let empty: Vec<U8> = Vec.filled(allocator, 16384, 0)?
+    var table = move empty
+    let read = identity.read_file(root, "web/routes", table.as_mut_slice())
+    let result = prepare_from_table(read, root, table.as_slice(), path, route, output, allocator)
+    table.close()
+    return move result
+
+fn prepare_from_table(read: Result<U64, FsError>, root: &Dir<Read>, bytes: &[U8], path: Span, route: WebRoute, output: &mut [U8], allocator: &Allocator) -> Result<WebReply, U64>:
+    match read:
+        Ok(length):
+            let selection = select_web_asset(Span.of(bytes.part(0, length)), path)?
+            require_web_timestamp(root, selection.timestamp, output)?
+            if selection.digest.is_empty():
+                return Err(404)
+            return prepare_asset(root, selection, route, output, allocator)
+        Err(NotFound):
+            return Err(404)
+        Err(_):
+            return Err(503)
+
+fn prepare_asset(root: &Dir<Read>, selection: WebSelection, route: WebRoute, output: &mut [U8], allocator: &Allocator) -> Result<WebReply, U64>:
+    if let Catalog = route:
+        let size = read_web_asset(root, selection.bootstrap, Bootstrap, output, allocator)?
+        let script = asset_integrity(output.part(0, size), allocator)?
+        let result = prepare_body(root, selection, route, Some(&script), output, allocator)
+        script.close()
+        return move result
+    return prepare_body(root, selection, route, None, output, allocator)
+
+fn prepare_body(root: &Dir<Read>, selection: WebSelection, route: WebRoute, bootstrap: Option<&Integrity>, output: &mut [U8], allocator: &Allocator) -> Result<WebReply, U64>:
+    let size = read_web_asset(root, selection.digest, route, output, allocator)?
+    let head = web_head(route, size, bootstrap, selection.framed, allocator)?
+    return Ok(WebReply(move head, size))

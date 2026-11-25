@@ -1,0 +1,5 @@
+// A signer's slot holds exactly a 32-byte seed: 31 bytes stop the run before `main`, and
+// the message names the slot and the kind of failure, never the bytes.
+import crypto
+fn main(targets: Signer):
+    return

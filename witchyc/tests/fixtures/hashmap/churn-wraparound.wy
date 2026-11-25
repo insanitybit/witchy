@@ -1,0 +1,87 @@
+// Random inserts and removals in small tables whose keys' homes crowd the last cells, so probe
+// runs and the hole closing of `remove` wrap at the end; after each step every key's presence is
+// checked against a shadow set, then the table is drained with `take_next` (review of the
+// division-free probe steps, 2026-11-19). Per capacity: mismatches (0), entries left, drained.
+import console
+import hashmap
+import hash
+
+type Key:
+    id: U64
+
+// Homes crowd the last cells, so probe runs wrap at the end.
+impl Hash for Key:
+    fn hash(self: &Key) -> U64:
+        return 1000 - ((*self).id % 3)
+
+impl Eq for Key:
+    fn eq(self: &Key, other: &Key) -> Bool:
+        return (*self).id == (*other).id
+
+fn main(console: Console<Write>, allocator: Allocator):
+    churn(&console, &allocator, 1)
+    churn(&console, &allocator, 2)
+    churn(&console, &allocator, 5)
+    churn(&console, &allocator, 7)
+    churn(&console, &allocator, 13)
+
+fn churn(console: &Console<Write>, allocator: &Allocator, capacity: U64):
+    let made: Result<HashMap<Key, U64>, U64> = HashMap.new(allocator, capacity)
+    match move made:
+        Ok(empty):
+            var map = move empty
+            var shadow: U64 = 0
+            var count: U64 = 0
+            var seed: U64 = 12345
+            var bad: U64 = 0
+            var round: U64 = 0
+            while round < 600:
+                seed = (seed * 1103515245 + 12345) % 2147483648
+                let id = (seed >> 8) % 16
+                let bit = 1 << id
+                let k = Key(id)
+                if (seed >> 24) % 2 == 0:
+                    match map.insert(Key(id), id):
+                        Ok:
+                            if shadow & bit != 0:
+                                bad += 1
+                            shadow = shadow | bit
+                            count += 1
+                        Err(back):
+                            if shadow & bit == 0 && count < capacity:
+                                bad += 1
+                else:
+                    match map.remove(&k):
+                        Ok(entry):
+                            if shadow & bit == 0 || entry.value != id:
+                                bad += 1
+                            shadow = shadow & (0xFFFFFFFFFFFFFFFF ^ bit)
+                            count -= 1
+                        Err(code):
+                            if shadow & bit != 0:
+                                bad += 1
+                for j in 0..16:
+                    let q = Key(j)
+                    let present = map.contains(&q)
+                    if present != ((shadow & (1 << j)) != 0):
+                        bad += 1
+                if map.len() != count:
+                    bad += 1
+                round += 1
+            console.print_int(bad)
+            console.print_int(count)
+            var cursor: U64 = 0
+            var drained: U64 = 0
+            while take(&mut map, &mut cursor):
+                drained += 1
+            console.print_int(drained)
+            map.release()
+        Err(code):
+            console.print_int(999)
+
+fn take(map: &mut HashMap<Key, U64>, cursor: &mut U64) -> Bool:
+    match map.take_next(cursor):
+        Ok(entry):
+            return true
+        Err(code):
+            return false

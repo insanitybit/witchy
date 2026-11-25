@@ -1,0 +1,46 @@
+// Sort on every size from 0 to 300 in six patterns: random, sorted, reversed, all equal, few
+// distinct values, organ pipe. Each line: the size, whether sorted, and a checksum of the result.
+import console
+import vec
+import sort
+
+fn value(pattern: U64, i: U64, n: U64, seed: &mut U64) -> U64:
+    *seed = *seed * 48271 % 2147483647
+    if pattern == 0:
+        return *seed % 1000
+    if pattern == 1:
+        return i
+    if pattern == 2:
+        return n - i
+    if pattern == 3:
+        return 7
+    if pattern == 4:
+        return *seed % 3
+    if i < n / 2:
+        return i
+    return n - i
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var seed: U64 = 1
+    var all: U64 = 0
+    for pattern in 0..6:
+        for n in 0..301:
+            let Ok(made): Vec<U64> = Vec.new(&allocator, n + 1) else Err(code):
+                return
+            var v = move made
+            for i in 0..n:
+                match v.push_mut(&allocator, value(pattern, i, n, &mut seed)):
+                    Ok:
+                        continue
+                    Err(back):
+                        continue
+            sort(&mut v)
+            if !is_sorted(&v) || v.len() != n:
+                console.write("unsorted ")
+                console.write_u64(pattern)
+                console.write(" ")
+                console.print_int(n)
+            for i in 0..n:
+                all = (all * 31 + v[i]) % 1000000007
+            v.close()
+    console.print_int(all)

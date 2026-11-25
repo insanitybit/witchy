@@ -1,0 +1,13 @@
+// Refused: the graph cannot change shape while an opening of it is in use.
+import console
+import graph
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Graph = Graph.new(&allocator, 3) else Err(code):
+        return
+    var roads = move made
+    brand roads.nodes() as nodes:
+        let ok = roads.connect(&allocator, 0, 1)
+        if let Some(home) = nodes.first():
+            console.print_int(nodes.number(home))
+    roads.close()

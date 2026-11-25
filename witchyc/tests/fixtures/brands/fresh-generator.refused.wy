@@ -1,0 +1,19 @@
+// Refused, at the `gen fn`: a generator makes no new numbering.
+import console
+
+type Graph:
+    count: U64
+
+type Node<G>:
+    offset: U64
+
+gen fn rows<D: Fresh>(g: &Graph) -> Node<D>:
+    var i: U64 = 0
+    while i < (*g).count:
+        yield Node(i)
+        i += 1
+
+fn main(console: Console<Write>):
+    let roads = Graph(3)
+    for n in rows(&roads):
+        console.print_int(n.offset)

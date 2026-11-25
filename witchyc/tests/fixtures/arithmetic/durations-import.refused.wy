@@ -1,0 +1,5 @@
+// A duration literal is a Duration, so its library is imported.
+import console
+
+fn main(console: Console<Write>):
+    let d = 30s

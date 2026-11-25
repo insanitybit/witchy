@@ -1,0 +1,92 @@
+// SHA-256 and SHA-384 HMAC and single-block HKDF for TLS 1.3. Only the
+// underlying digest operations are delegated to the crypto provider.
+import crypto
+import text
+
+// Packing keeps handshake state inside Witchy's aggregate slot limit.
+pub sealed type Digest:
+    words: [U64; 6]
+    width: U64
+
+pure fn pack(bytes: &[U8]) -> Digest:
+    var words: [U64; 6] = [0; 6]
+    for i in 0..bytes.len():
+        words[i / 8] = words[i / 8] | (U8.to_u64(bytes[i]) << (8 * (i % 8)))
+    return Digest(move words, bytes.len())
+
+impl Digest:
+    pub pure fn len(self: &Digest) -> U64:
+        return (*self).width
+
+    pure fn byte(self: &Digest, index: U64) -> U8:
+        return U8.truncate((*self).words[index / 8] >> (8 * (index % 8)))
+
+    // Only the first len() bytes are the digest.
+    pub pure fn write_bytes(self: &Digest, bytes: &mut [U8; 48]):
+        let out = (*bytes).slice_mut()
+        for i in 0..self.len():
+            out[i] = self.byte(i)
+
+pub pure fn hash(width: U64, input: &[U8]) -> Result<Digest, CryptoError>:
+    var bytes: [U8; 48] = [0; 48]
+    if width == 32:
+        crypto.sha256(input, bytes.slice_mut().part(0, 32))?
+    else if width == 48:
+        crypto.sha384(input, bytes.slice_mut())?
+    else:
+        return Err(WrongLength)
+    return Ok(pack(bytes.slice().part(0, width)))
+
+pub pure fn zeros(width: U64) -> Result<Digest, CryptoError>:
+    let empty: [U8; 48] = [0; 48]
+    if width != 32 && width != 48:
+        return Err(WrongLength)
+    return Ok(pack(empty.slice().part(0, width)))
+
+pub pure fn mac(key: &Digest, message: &[U8]) -> Result<Digest, CryptoError>:
+    // TLS label encoding uses at most 32 label bytes and one hash context.
+    if message.len() > 91:
+        return Err(TooLong)
+    let width = key.len()
+    let block: U64 = if width == 48:
+        128
+    else:
+        64
+    var bytes: [U8; 219] = [54; 219]
+    for i in 0..width:
+        bytes[i] = key.byte(i) ^ 54
+    bytes.slice_mut().part(block, block + message.len()).copy_from(message)
+    let inner = hash(width, bytes.slice().part(0, block + message.len()))?
+    for i in 0..width:
+        bytes[i] = key.byte(i) ^ 92
+        bytes[block + i] = inner.byte(i)
+    for i in width..block:
+        bytes[i] = 92
+    return hash(width, bytes.slice().part(0, block + width))
+
+pub pure fn label(secret: &Digest, name: Text, context: &[U8], length: U64) -> Result<Digest, CryptoError>:
+    let label_size = name.byte_len()
+    if label_size == 0 || label_size > 32 || (context.len() != 0 && context.len() != secret.len()) || length == 0 || length > secret.len():
+        return Err(WrongLength)
+    var bytes: [U8; 91] = [0; 91]
+    bytes[1] = U8.truncate(length)
+    bytes[2] = U8.truncate(6 + label_size)
+    bytes[3] = 116
+    bytes[4] = 108
+    bytes[5] = 115
+    bytes[6] = 49
+    bytes[7] = 51
+    bytes[8] = 32
+    for i in 0..label_size:
+        match name.byte_at(i):
+            Ok(byte):
+                bytes[9 + i] = byte
+            Err(code):
+                return Err(Failed)
+    let length_offset = 9 + label_size
+    bytes[length_offset] = U8.truncate(context.len())
+    let context_offset = length_offset + 1
+    let index_offset = context_offset + context.len()
+    bytes.slice_mut().part(context_offset, index_offset).copy_from(context)
+    bytes[index_offset] = 1
+    return mac(secret, bytes.slice().part(0, index_offset + 1))

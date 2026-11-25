@@ -1,0 +1,105 @@
+// Json.field and Json.item read a parsed document without a helper of one's own; json_f64 puts an
+// F64 into a new document as the shortest text that reads back, which the round trip checks
+// (written, parsed again, the same bits); infinity is refused, as JSON cannot write it.
+import console
+import string
+import vec
+import format
+import json_tree
+import float
+import discard
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(c):
+        return
+    var text = move made
+    let _ = text.push_text(&allocator, "{\"name\": \"pen\", \"prices\": [1.25, 0.1, 3], \"stock\": {\"left\": 7}}")
+    let Ok(doc): Json = json_tree(&text, &allocator) else Err(at):
+        text.close()
+        return
+    text.close()
+    var total = 0.0
+    var index: U64 = 0
+    while true:
+        match doc.field("prices"):
+            Ok(prices):
+                match prices.item(index):
+                    Ok(price):
+                        match price.number():
+                            Ok(value):
+                                total = total + value
+                            Err(code):
+                                console.line("not a number")
+                    Err(code):
+                        break
+            Err(code):
+                break
+        index += 1
+    console.print("${index} prices, total ${total}")
+    match doc.field("stock"):
+        Ok(stock):
+            match stock.field("left"):
+                Ok(left):
+                    console.print("left: ${left.number().unwrap_or(0.0)}")
+                Err(code):
+                    console.print("no left: ${code}")
+        Err(code):
+            console.line("no stock")
+    var missing = false
+    match doc.field("colour"):
+        Ok(value):
+            ()
+        Err(code):
+            missing = code == 2
+    var not_array = false
+    match doc.item(0):
+        Ok(value):
+            ()
+        Err(code):
+            not_array = code == 1
+    console.print("missing: ${missing}, not an array: ${not_array}")
+    // A new document holding the total; written, read back, the same F64.
+    let Ok(number): Json = json_f64(&allocator, total) else Err(code):
+        doc.discard()
+        return
+    let Ok(items): Vec<Json> = Vec.new(&allocator, 2) else Err(code):
+        number.discard()
+        doc.discard()
+        return
+    var list = move items
+    match list.push_mut(&allocator, move number):
+        Ok:
+            ()
+        Err(back):
+            back.discard()
+    let built = Array(move list)
+    let Ok(empty): String = String.new(&allocator) else Err(code):
+        built.discard()
+        doc.discard()
+        return
+    match built.show(move empty, &allocator):
+        Ok(written):
+            console.write_string(&written)
+            console.line("")
+            match json_tree(&written, &allocator):
+                Ok(again):
+                    match again.item(0):
+                        Ok(value):
+                            console.print("same bits: ${F64.bits(value.number().unwrap_or(0.0)) == F64.bits(total)}")
+                        Err(code):
+                            console.line("no item")
+                    again.discard()
+                Err(at):
+                    console.print("bad json at ${at}")
+            written.close()
+        Err(back):
+            back.close()
+    let zero = 0.0
+    match json_f64(&allocator, 1.0 / zero):
+        Ok(written_inf):
+            console.line("infinity: false")
+            written_inf.discard()
+        Err(code):
+            console.print("infinity: ${code == 1}")
+    built.discard()
+    doc.discard()

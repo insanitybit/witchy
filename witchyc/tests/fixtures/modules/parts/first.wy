@@ -1,0 +1,6 @@
+// Two files each keep a private `helper`; each file's calls mean its own.
+fn helper(x: U64) -> U64:
+    return x + 1
+
+pub fn first(x: U64) -> U64:
+    return helper(x)

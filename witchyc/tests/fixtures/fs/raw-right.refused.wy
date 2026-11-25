@@ -1,0 +1,10 @@
+// Refused: the raw operations follow the right too. A File<Read> cannot be written.
+import fs
+
+fn main(dir: Dir<Read>):
+    match dir.open("config.txt"):
+        Ok(file):
+            let code = file.raw_write_byte(65)
+            file.close()
+        Err(error):
+            return

@@ -1,0 +1,1 @@
+a match on numbers reads a named value: bind it with `let` first

@@ -1,0 +1,32 @@
+// A change through `&mut` between `len` and `get` forgets what `len` said.
+import console
+
+trait Sized:
+    pure fn len(self: &Self) -> U64
+    fn get(self: &Self, index: U64) -> U64:
+        requires index < self.len()
+        ensures result >= index
+    fn shrink(self: &mut Self)
+
+type Few:
+    count: U64
+    value: U64
+
+impl Sized for Few:
+    pure fn len(self: &Few) -> U64:
+        return self.count
+    fn get(self: &Few, index: U64) -> U64:
+        return index
+    fn shrink(self: &mut Few):
+        self.count = 0
+
+fn last<T: Sized>(items: &mut T) -> U64:
+    let n = items.len()
+    items.shrink()
+    if n == 0:
+        return 0
+    return items.get(n - 1)
+
+fn main(console: Console<Write>):
+    var few = Few(3, 10)
+    console.print_int(last(&mut few))

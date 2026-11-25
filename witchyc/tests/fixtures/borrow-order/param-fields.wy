@@ -1,0 +1,17 @@
+// Fields reached through a `&mut` parameter are lent separately too.
+import console
+
+type Pair:
+    left: U64
+    right: U64
+
+fn add(into: &mut U64, from: &U64):
+    *into += *from
+
+fn main(console: Console<Write>):
+    var p = Pair(1, 2)
+    swap_in(&mut p)
+    console.print_int(p.left)
+
+fn swap_in(p: &mut Pair):
+    add(&mut p.left, &p.right)

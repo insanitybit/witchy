@@ -1,0 +1,6 @@
+// Refused, with the mend: a text with `${...}` is a format, printed with `console.print`.
+import console
+
+fn main(console: Console<Write>):
+    let n: U64 = 3
+    console.line("x ${n}")

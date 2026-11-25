@@ -1,0 +1,21 @@
+// Refused at once: one inference goes at most 120 expressions deep, and each operator of a
+// program's own type is three of them. A chain of up to 41 is typed; the parts of a longer one
+// are given names with `let`.
+import console
+import ops
+
+type Money:
+    cents: U64
+
+impl Add for Money:
+    fn add(self: Money, other: Money) -> Money:
+        return Money(self.cents + other.cents)
+
+impl Sub for Money:
+    fn sub(self: Money, other: Money) -> Money:
+        return Money(self.cents - other.cents)
+
+fn main(console: Console<Write>):
+    let m = Money(1)
+    let total = m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m + m
+    console.print_int(total.cents)

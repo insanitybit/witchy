@@ -1,0 +1,10 @@
+fn f(v: Result<Result<U64, U64>, U64>) -> U64:
+    match v:
+        Ok(Ok(n)):
+            return n
+        Ok(other):
+            return 1
+        Err(code):
+            return code
+fn main(console: Console<Write>):
+    console.print_int(f(Ok(Ok(1))))

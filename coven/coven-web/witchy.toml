@@ -1,0 +1,14 @@
+# coven-web — the secure web frontend for coven, written in witchy.
+# A std/server program that serves a zero-dependency SPA + the full security
+# header stack (Perfect Types CSP, cross-origin isolation, sandbox-frame), and
+# reverse-proxies coven's read API same-origin so the browser only ever talks to
+# one origin (no CORS). It listens (Net[Listen]), proxies to coven (Net[Connect]),
+# and reads its static assets from a Dir[Read]. See PLAN.md.
+[rune]
+name = "coven-web"
+version = "0.1.0"
+
+[capabilities]
+runtime = ["Console", "Net", "Dir"]
+
+[dependencies]

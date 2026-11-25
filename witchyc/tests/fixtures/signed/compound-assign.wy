@@ -1,0 +1,15 @@
+// Compound assignment on an I64: `*= += -= /= %=`, each rounding toward zero where it divides.
+import console
+import int
+
+fn main(console: Console<Write>):
+    var x: I64 = -3
+    x *= 4
+    console.show(x)
+    x += 2
+    x -= 1
+    console.show(x)
+    x /= 2
+    console.show(x)
+    x %= 3
+    console.show(x)

@@ -1,0 +1,8 @@
+// `-F64.sqrt(x)` is an F64: the type of F64's own calls is known before they are checked (it was
+// read as an I64: review).
+import console
+import float
+
+fn main(console: Console<Write>):
+    let y = -F64.from_u64(3)
+    console.print_f64(y, 2)

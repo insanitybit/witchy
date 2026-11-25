@@ -1,0 +1,8 @@
+// Refused: a private trait's impl methods are private to its file, as the trait is (review round 6
+// of recipes: another file called `pt.Token.make()` of a private `Mk` and minted the sealed Token).
+import "parts/pt.wy"
+import console
+
+fn main(console: Console<Write>):
+    let t = pt.Token.make()
+    console.print("${pt.redeem(&t)}")

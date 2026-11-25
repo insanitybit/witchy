@@ -1,0 +1,1 @@
+not proved: ensures two.small.wide == old(two.small.wide)

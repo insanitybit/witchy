@@ -1,0 +1,10 @@
+import cell
+
+nopanic fn main(a: Allocator):
+    let made: Result<VacantCell<U64>, U64> = VacantCell.new(&a)
+    match move made:
+        Err(code):
+            return
+        Ok(owner):
+            owner.close()
+            owner.close()

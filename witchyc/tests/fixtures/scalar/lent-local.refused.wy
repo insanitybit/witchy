@@ -1,0 +1,12 @@
+fn small(x: U64) -> U64:
+    requires x < 10
+    ensures result == x + 1
+    proof:
+        auto
+    return x + 1
+fn change(x: &mut U64):
+    *x = 50
+fn main(console: Console<Write>):
+    var n = 1
+    change(&mut n)
+    console.print_int(small(n))

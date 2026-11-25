@@ -1,0 +1,55 @@
+// derive(Eq, Hash, Before, Discard): a record as a HashMap key and sorted in a Vec.
+import console
+import hash
+import hashmap
+import sort
+import vec
+
+type Point derive(Eq, Hash, Before, Discard):
+    x: U64
+    y: U64
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let a = Point(x: 1, y: 2)
+    let b = Point(x: 1, y: 3)
+    if a == a && !(a == b):
+        console.print_int(1)
+    if a.before(&b) && !b.before(&a) && !a.before(&a):
+        console.print_int(2)
+    if a.hash() == Point(x: 1, y: 2).hash() && a.hash() != b.hash():
+        console.print_int(3)
+    let Ok(made): HashMap<Point, U64> = HashMap.new(&allocator, 8) else Err(code):
+        return
+    var counts = move made
+    match counts.insert(a, 10):
+        Ok:
+            ()
+        Err(entry):
+            discard(entry)
+    match counts.get(&Point(x: 1, y: 2)):
+        Ok(n):
+            console.print_int(*n)
+        Err(code):
+            console.print_int(0)
+    counts.discard()
+    let Ok(made_points): Vec<Point> = Vec.new(&allocator, 4) else Err(code):
+        return
+    var points = move made_points
+    add(&mut points, &allocator, Point(x: 2, y: 1))
+    add(&mut points, &allocator, Point(x: 1, y: 9))
+    add(&mut points, &allocator, Point(x: 1, y: 3))
+    sort(&mut points)
+    for i in 0..points.len():
+        match points.at(i):
+            Ok(p):
+                console.print_int(p.x * 10 + p.y)
+            Err(code):
+                ()
+    points.close()
+
+fn add(points: &mut Vec<Point>, allocator: &Allocator, p: Point):
+    match points.push_mut(allocator, p):
+        Ok:
+            ()
+        Err(back):
+            ()

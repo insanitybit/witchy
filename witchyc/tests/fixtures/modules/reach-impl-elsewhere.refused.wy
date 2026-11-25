@@ -1,0 +1,10 @@
+// Refused: an impl written in neither the type's file nor the trait's is used only where its
+// file is imported; `doubler.wy` does not import `coin_twice.wy`, though this file does.
+import console
+import "reach/coin.wy"
+import "reach/coin_twice.wy"
+import "reach/doubler.wy"
+
+fn main(console: Console<Write>):
+    let c = Coin(n: 4)
+    console.print_int(doubled(&c))

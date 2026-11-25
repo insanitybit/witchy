@@ -1,0 +1,4 @@
+8 cells, 7 keys: took 7, sum 21, 0 left, 0 lost
+16 cells, 15 keys: took 15, sum 105, 0 left, 0 lost
+64 cells, 60 keys: took 60, sum 1770, 0 left, 0 lost
+256 cells, 250 keys: took 250, sum 31125, 0 left, 0 lost

@@ -1,0 +1,81 @@
+// TAP 21 carries RFC 9881 SubjectPublicKeyInfo in a PUBLIC KEY PEM block.
+// Decode only the fixed DER prefix for a raw ML-DSA-87 key with no parameters.
+import encoding
+import json_tree
+import string
+import text
+import vec
+
+pub fn mldsa87_key(key: &Json, allocator: &Allocator) -> Result<Vec<U8>, U64>:
+    let type_field = key.field("keytype")?
+    let keytype = type_field.text()?
+    let scheme_field = key.field("scheme")?
+    let scheme = scheme_field.text()?
+    if !keytype.equals_text("ml-dsa") || !scheme.equals_text("ml-dsa-87/1"):
+        return Err(1)
+    let keyval = key.field("keyval")?
+    let public = keyval.field("public")?
+    let pem = public.text()?
+    let Ok(empty): Vec<U8> = Vec.filled(allocator, 3488, 0) else Err(code):
+        return Err(code)
+    var b64 = move empty
+    let decoded = decode_public_pem(pem.as_bytes(), b64.as_mut_slice(), allocator)
+    b64.close()
+    match move decoded:
+        Ok(der):
+            if valid_spki(der.as_slice()):
+                return Ok(move der)
+            der.close()
+            return Err(1)
+        Err(code):
+            return Err(code)
+
+fn at_literal(input: &[U8], offset: U64, text: Text) -> Bool:
+    if offset > input.len() || input.len() - offset < text.byte_len():
+        return false
+    for i in 0..text.byte_len():
+        let Ok(expected): U8 = text.byte_at(i) else Err(code):
+            return false
+        if input[offset + i] != expected:
+            return false
+    return true
+
+fn after_line(input: &[U8], at: U64) -> Result<U64, U64>:
+    if at < input.len() && input[at] == 10:
+        return Ok(at + 1)
+    if at + 1 < input.len() && input[at] == 13 && input[at + 1] == 10:
+        return Ok(at + 2)
+    return Err(1)
+
+fn decode_public_pem(input: &[U8], b64: &mut [U8], allocator: &Allocator) -> Result<Vec<U8>, U64>:
+    let begin: Text = "-----BEGIN PUBLIC KEY-----"
+    let end: Text = "-----END PUBLIC KEY-----"
+    if !at_literal(input, 0, begin):
+        return Err(1)
+    var at = after_line(input, begin.byte_len())?
+    var wrote: U64 = 0
+    while at < input.len() && input[at] != '-':
+        if input[at] == 10 || input[at] == 13:
+            at = after_line(input, at)?
+        else:
+            if wrote == b64.len():
+                return Err(1)
+            b64[wrote] = input[at]
+            wrote += 1
+            at += 1
+    if at == 0 || input[at - 1] != 10 || wrote != b64.len() || !at_literal(input, at, end):
+        return Err(1)
+    let after = at + end.byte_len()
+    if after != input.len():
+        if after_line(input, after)? != input.len():
+            return Err(1)
+    return decode_base64(allocator, b64)
+
+fn valid_spki(der: &[U8]) -> Bool:
+    let prefix: [U8; 22] = [48, 130, 10, 50, 48, 11, 6, 9, 96, 134, 72, 1, 101, 3, 4, 3, 19, 3, 130, 10, 33, 0]
+    if der.len() != 2614:
+        return false
+    for i in 0..22:
+        if der[i] != prefix[i]:
+            return false
+    return true

@@ -1,0 +1,5 @@
+fn forged(bytes: &[U8]) -> &str:
+    return bytes
+
+fn main():
+    return

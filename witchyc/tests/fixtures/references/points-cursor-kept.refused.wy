@@ -1,0 +1,15 @@
+// What the result can point into stays lent.
+type Pair:
+    a: U64
+    b: U64
+
+fn step(pair: &Pair, cursor: &mut Bool) -> &U64:
+    *cursor = true
+    return &(*pair).a
+
+fn main(console: Console<Write>):
+    var pair = Pair(1, 2)
+    var flag = false
+    let first = step(&pair, &mut flag)
+    pair.a = 5
+    console.print_int(*first)

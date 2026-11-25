@@ -1,0 +1,11 @@
+import prop
+
+type DirectorySample:
+    directory: Dir<Read>
+
+impl Arbitrary for DirectorySample:
+    fn arbitrary(trial: &mut Trial) -> DirectorySample:
+        return DirectorySample(trial.next_word())
+
+fn main():
+    return

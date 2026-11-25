@@ -1,0 +1,3 @@
+// U64 is not a truncation target, and the operand must be U64.
+fn main(console: Console<Write>):
+    console.print_int(U64.truncate(1))

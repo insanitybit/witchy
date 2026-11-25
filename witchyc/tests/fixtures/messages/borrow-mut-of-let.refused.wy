@@ -1,0 +1,10 @@
+// Refused, saying why: `&mut` of a name declared with `let`.
+import console
+
+fn bump(n: &mut U64):
+    *n += 1
+
+fn main(console: Console<Write>):
+    let n: U64 = 1
+    bump(&mut n)
+    console.print_int(n)

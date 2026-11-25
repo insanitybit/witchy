@@ -1,0 +1,100 @@
+// A validating constructor, `-> Result<Account, U64>`, builds the account inside `return Ok(...)`:
+// the invariant is shown of the value the `Ok` variant holds.
+// Accounts whose balance never passes their limit: the invariant is the type's, and each
+// operation is proved to keep it, so no deposit can make a balance the type forbids, and
+// the arithmetic in them needs no overflow checks.
+import console
+
+pub type Refusal:
+    OverLimit(U64)
+    Short(U64)
+
+sealed type Account:
+    balance: U64
+    limit: U64
+    invariant balance <= limit
+
+impl Account:
+    // A limit of zero is refused: an account that can hold nothing is a mistake.
+    pub fn open(limit: U64) -> Result<Account, U64>:
+        ensures match result:
+            Ok(made):
+                made.balance == 0
+            Err(code):
+                code == 0
+        proof:
+            auto
+        if limit == 0:
+            return Err(0)
+        return Ok(Account(0, limit))
+
+    pub fn balance(account: &Account) -> U64:
+        return (*account).balance
+
+    pub fn deposit(account: &mut Account, amount: U64) -> Result<(), Refusal>:
+        ensures match result:
+            Ok:
+                account.balance == old(account.balance) + amount
+            Err(why):
+                account.balance == old(account.balance)
+        proof:
+            auto
+        let room = (*account).limit - (*account).balance
+        if amount > room:
+            return Err(OverLimit(room))
+        (*account).balance = (*account).balance + amount
+        return Ok(())
+
+    pub fn withdraw(account: &mut Account, amount: U64) -> Result<(), Refusal>:
+        ensures match result:
+            Ok:
+                account.balance + amount == old(account.balance)
+            Err(why):
+                account.balance == old(account.balance)
+        proof:
+            auto
+        if amount > (*account).balance:
+            return Err(Short((*account).balance))
+        (*account).balance = (*account).balance - amount
+        return Ok(())
+
+// Money moves whole or not at all.
+fn transfer(from: &mut Account, to: &mut Account, amount: U64) -> Result<(), Refusal>:
+    from.withdraw(amount)?
+    match to.deposit(amount):
+        Ok:
+            return Ok(())
+        Err(why):
+            match from.deposit(amount):
+                Ok:
+                    return Err(why)
+                Err(again):
+                    unreachable
+
+fn say(console: &Console<Write>, done: Result<(), Refusal>):
+    match done:
+        Ok:
+            console.line("ok")
+        Err(OverLimit(room)):
+            console.print("over the limit, room for ${room}")
+        Err(Short(have)):
+            console.print("short, have ${have}")
+
+fn main(console: Console<Write>):
+    let Ok(first): Account = Account.open(100) else Err(code):
+        return
+    let Ok(second): Account = Account.open(50) else Err(code):
+        return
+    match Account.open(0):
+        Ok(none):
+            console.line("opened an empty account")
+        Err(code):
+            console.line("no account of limit 0")
+    var a = first
+    var b = second
+    say(&console, a.deposit(80))
+    say(&console, a.deposit(30))
+    say(&console, transfer(&mut a, &mut b, 40))
+    say(&console, transfer(&mut a, &mut b, 20))
+    say(&console, transfer(&mut b, &mut a, 60))
+    console.print("${a.balance()} ${b.balance()}")

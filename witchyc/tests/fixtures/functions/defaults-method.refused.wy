@@ -1,0 +1,13 @@
+// A method's parameters take no default yet: method calls are resolved after defaults are filled.
+import console
+
+type P:
+    x: U64
+
+impl P:
+    fn add(self: &P, by: U64 = 1) -> U64:
+        self.x + by
+
+fn main(console: Console<Write>):
+    let p = P(x: 2)
+    console.print_int(p.add())

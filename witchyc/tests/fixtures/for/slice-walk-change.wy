@@ -1,0 +1,16 @@
+// The body names the Vec and grows it once done with the element: walked through `at`, asked again
+// each step, as before the slice walk (which would keep the Vec lent throughout).
+import console
+import vec
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.new(&allocator, 4) else Err(code):
+        return
+    var v = move made
+    let pushed = v.push_mut(&allocator, 1)
+    for x in &v:
+        let n = *x
+        if n < 5:
+            let again = v.push_mut(&allocator, n + 1)
+    console.print_int(v.len())
+    v.close()

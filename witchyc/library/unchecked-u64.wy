@@ -1,0 +1,70 @@
+// General contents reasoning, independent of any container representation.
+lemma initialized_between_at(data: Buffer<U64>, lower: USize, upper: USize, index: USize):
+    requires InitializedBetween(data, lower, upper)
+    requires lower <= index && index < upper
+    ensures memory.initialized(data, index)
+    proof:
+        auto
+
+// Prefix access explicitly supplies the checked facts needed by the general rule.
+lemma initialized_in_prefix(data: Buffer<U64>, length: USize, index: USize):
+    requires InitializedBetween(data, 0, length)
+    requires index < length
+    ensures memory.initialized(data, index)
+    proof:
+        have contents: InitializedBetween(data, 0, length)
+        have within: 0 <= index && index < length
+        apply initialized_between_at(data, 0, length, index) using contents, within as ready
+        exact ready
+
+// The additional precondition is the logical index bound. Vec supplies the
+// initialized prefix; ordinary ownership supplies the stable live allocation.
+fn vec_get_unchecked(input: Vec<U64>, index: USize) -> Result<Indexed, Vec<U64>>:
+    requires index < input.length
+    ensures match result:
+        Ok(indexed):
+            indexed.vector.data == old(input.data)
+            indexed.vector.length == old(input.length)
+            indexed.vector.capacity == old(input.capacity)
+            memory.unchanged(input.data)
+            match indexed.item:
+                Some(value):
+                    value == old(memory.read(input.data, index))
+                None:
+                    false
+        Err(kept):
+            kept.data == old(input.data)
+            kept.length == old(input.length)
+            kept.capacity == old(input.capacity)
+            memory.unchanged(input.data)
+            !memory.loan_room(1)
+    var vector = move input
+    proof:
+        apply initialized_in_prefix(vector.data, vector.length, index)
+    if memory.loan_room(1):
+        let item = memory.read_unchecked(&vector.data, index)
+        return Ok(Indexed(move vector, Some(item)))
+    return Err(move vector)
+
+// A normal runtime branch discharges the unchecked callee's extra precondition.
+fn vec_get_safe(input: Vec<U64>, index: USize) -> Result<Indexed, Vec<U64>>:
+    ensures match result:
+        Ok(indexed):
+            indexed.vector.data == old(input.data)
+            indexed.vector.length == old(input.length)
+            indexed.vector.capacity == old(input.capacity)
+            memory.unchanged(input.data)
+            match indexed.item:
+                Some(value):
+                    value == old(memory.read(input.data, index))
+                None:
+                    index >= old(input.length)
+        Err(kept):
+            kept.data == old(input.data)
+            kept.length == old(input.length)
+            kept.capacity == old(input.capacity)
+            memory.unchanged(input.data)
+            !memory.loan_room(1)
+    if index < input.length:
+        return vec_get_unchecked(move input, index)
+    return Ok(Indexed(move input, None))

@@ -1,0 +1,6 @@
+// Refused: `name@file` spelled inside a `${...}` value (it named alpha's inner function).
+import console
+import "@alpha"
+
+fn main(console: Console<Write>):
+    console.write_format("${alpha_internal@8(1)}\n")

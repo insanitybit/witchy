@@ -1,0 +1,20 @@
+// Refused (review): a generic generator holding a reference to a record that holds a Console.
+// Control: a generic record holding a Console and a T.
+import console
+
+type Wrap<T>:
+    c: Console<Write>
+    v: T
+
+gen fn noisy<T>(w: &Wrap<T>) -> U64:
+    for i in 0..3:
+        (*w).c.print_int(i * 100)
+        yield i
+
+fn main(console: Console<Write>):
+    let w: Wrap<U64> = Wrap(move console, 5)
+    var total: U64 = 0
+    for i in noisy(&w):
+        total += i
+    let Wrap(c, v) = move w
+    c.print_int(total)

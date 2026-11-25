@@ -1,0 +1,142 @@
+// Fetch a package from its registry slot into a client's cache, verified. A version is two
+// files hashed as one, `package` and then `source.wy` (publish.wy). `expected` carries the
+// coordinate, the digest covered by the launcher's decision, and the optional lock digest.
+// Both files are read once into memory (at most 1 MiB together). The worker checks the exact
+// record boundary, package format, and digests on that buffer before staging anything. Before anything else it verifies the batch
+// on its input, every signed object the launcher's decision to fetch rests on (the snapshot,
+// operator rotations, index, rotations, release signature), and reads nothing of the slot unless
+// each is valid (`verified_first`: a `valid` or `invalid` line for each, then `end`). Then it
+// prints one line:
+//   verified sha384:<hex>
+//   refused: <why>           nothing was written
+import "raw.wy"
+import "witchy2.wy"
+import "tuf/package.wy"
+import "tuf/package_record.wy"
+import fs
+import span
+import string
+import vec
+
+fn main(console: Console<Write>, allocator: Allocator, input: Console<Read>, slot: Dir<Read>, expected: File<Read>, cache: Dir<Write>):
+    if !verified_first(&console, &allocator, &input):
+        let closed = expected.raw_close()
+        return
+    let Ok(package): File<Read> = open_read(&slot, "package") else Err(code):
+        say(&console, "refused: the registry has no package record for this version\n")
+        return
+    let Ok(source): File<Read> = open_read(&slot, "source.wy") else Err(code):
+        let closed = package.raw_close()
+        say(&console, "refused: the registry has no source for this version\n")
+        return
+    let Ok(bytes_made): Vec<U8> = Vec.filled(&allocator, package_bound() + 1, 0) else Err(code):
+        let closed_package = package.raw_close()
+        let closed_source = source.raw_close()
+        say(&console, "refused: out of memory\n")
+        return
+    var bytes = move bytes_made
+    let Ok(digest_made): Vec<U8> = Vec.filled(&allocator, 48, 0) else Err(code):
+        let closed_package = package.raw_close()
+        let closed_source = source.raw_close()
+        bytes.close()
+        say(&console, "refused: out of memory\n")
+        return
+    var digest = move digest_made
+    let head = read_into(move package, &mut bytes, 0, package_bound() + 1)
+    var length = head
+    if head <= package_bound():
+        length = head + read_into(move source, &mut bytes, head, package_bound() + 1)
+    else:
+        let closed_source = source.raw_close()
+    let hashed = length <= package_bound() && digest_of(&bytes, length, &mut digest)
+    fetch(&console, &bytes, head, length, hashed, digest.as_slice(), &slot, move expected, &cache, &allocator)
+    digest.close()
+    bytes.close()
+
+fn fetch(console: &Console<Write>, bytes: &Vec<U8>, head: U64, length: U64, hashed: Bool, digest: &[U8], slot: &Dir<Read>, expected: File<Read>, cache: &Dir<Write>, allocator: &Allocator):
+    if length > package_bound():
+        let closed = expected.raw_close()
+        say(console, "refused: the registry's package is larger than a version holds (1 MiB)\n")
+        return
+    if !hashed:
+        let closed = expected.raw_close()
+        say(console, "refused: cannot hash the package\n")
+        return
+    let Ok(record): File<Read> = open_read(slot, "digest") else Err(code):
+        let closed = expected.raw_close()
+        say(console, "refused: the registry has no digest for this version\n")
+        return
+    if !holds_digest(move record, digest):
+        let closed = expected.raw_close()
+        say(console, "refused: the registry's package does not match its recorded digest (it hashes to ")
+        say_digest(console, digest)
+        say(console, ")\n")
+        return
+    let Ok(request): String = expected.read_text_bounded(allocator, 304) else Err(error):
+        say(console, "refused: invalid fetch request\n")
+        return
+    let payload = bytes.as_slice().part(0, length)
+    let accepted = check_release(console, request.span(), payload, head, digest, allocator)
+    request.close()
+    if !accepted:
+        return
+    let Ok(staged_package): File<Write> = create(cache, "package") else Err(code):
+        say(console, "refused: cannot stage the package in the cache\n")
+        return
+    let Ok(staged): File<Write> = create(cache, "source.wy") else Err(code):
+        staged_package.raw_abandon()
+        say(console, "refused: cannot stage the package in the cache\n")
+        return
+    if write_part(&staged_package, bytes, 0, head) != 0 || write_part(&staged, bytes, head, length) != 0:
+        staged_package.raw_abandon()
+        staged.raw_abandon()
+        say(console, "refused: cannot write the package to the cache\n")
+        return
+    let kept_package = staged_package.raw_close()
+    let kept_source = staged.raw_close()
+    if kept_package != 0 || kept_source != 0:
+        say(console, "refused: cannot keep the package in the cache\n")
+        return
+    say(console, "verified ")
+    say_digest(console, digest)
+    console.print_byte(10)
+
+fn check_release(console: &Console<Write>, request: Span, payload: &[U8], record_end: U64, digest: &[U8], allocator: &Allocator) -> Bool:
+    let Ok(name): Halves = request.split(10) else Err(rest):
+        say(console, "refused: invalid fetch request\n")
+        return false
+    let Ok(version): Halves = name.tail.split(10) else Err(rest):
+        say(console, "refused: invalid fetch request\n")
+        return false
+    let Ok(recorded): Halves = version.tail.split(10) else Err(rest):
+        say(console, "refused: invalid fetch request\n")
+        return false
+    if !matches_digest(recorded.head, digest):
+        say(console, "refused: the registry's record changed during the fetch\n")
+        return false
+    if !recorded.tail.is_empty() && !matches_digest(recorded.tail, digest):
+        say(console, "refused: digest mismatch: the registry's package hashes to ")
+        say_digest(console, digest)
+        say(console, ", not the locked digest\n")
+        return false
+    if !valid_release(Span.of(payload), record_end, name.head, version.head, allocator):
+        say(console, "refused: the registry's release is not a release this tool builds from\n")
+        return false
+    return true
+
+fn matches_digest(pin: Span, digest: &[U8]) -> Bool:
+    if pin.len() != 103 || !pin.starts_with_text("sha384:"):
+        return false
+    for index in 0..96:
+        if pin.byte_or_end(7 + index) != hex_digit(digest, index):
+            return false
+    return true
+
+fn valid_release(payload: Span, record_end: U64, name: Span, version: Span, allocator: &Allocator) -> Bool:
+    let Ok(header): PackageHeader = package_header(payload) else Err(error):
+        return false
+    if !header.name.same(name) || !header.version.same(version) || release_record_end(payload.as_bytes()) != record_end:
+        return false
+    if let Err(error) = validate_package_contents(payload, header, allocator):
+        return false
+    return true

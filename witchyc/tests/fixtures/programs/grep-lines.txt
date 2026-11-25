@@ -1,0 +1,6 @@
+alpha beta gamma
+the error was here
+nothing to see
+ERROR in caps does not match
+another error, and error again
+unicode érror is not error? yes it is

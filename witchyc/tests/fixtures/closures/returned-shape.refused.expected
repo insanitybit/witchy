@@ -1,0 +1,1 @@
+this function says it returns a `fn(U64) -> U64`, and the closure it returns is a `fn(Bool) -> Bool`

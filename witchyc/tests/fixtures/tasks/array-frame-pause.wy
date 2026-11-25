@@ -1,0 +1,24 @@
+// An array in the frame is not also saved slot by slot at a pause: a [U8; 130] fits a 1 KiB task
+// (it took 1040 bytes of save area: review).
+import console
+import tasks
+
+fn work(seed: U64) suspends:
+    var a: [U8; 130] = [0; 130]
+    a[3] = 1
+    pause(seed)
+    a[4] = 2
+    report(U8.to_u64(a[3] + a[4]))
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(m1): Task = Task.spawn(&allocator, 1024, work, 7) else Err(given):
+        return
+    var t1 = move m1
+    var g1 = true
+    while g1:
+        match t1.step():
+            Ok:
+                g1 = false
+            Err(token):
+                console.print_int(token)
+    t1.close()

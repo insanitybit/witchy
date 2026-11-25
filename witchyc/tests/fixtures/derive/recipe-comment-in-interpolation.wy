@@ -1,0 +1,25 @@
+// Inside a recipe's `${...}` the first `}` outside a quote closes the value, as the lexer reads it,
+// whatever `'` or `//` came before: the field after the literal is substituted (third review: the
+// scanner took the `'` for a scalar, and the impl read the type's own field `f`).
+import console
+
+trait Total:
+    fn total(self: &Self) -> U64
+
+fn pick<F: Any + Format>(m: &F, v: U64) -> U64:
+    return v
+
+derive Sum:
+    impl Total for Self:
+        fn total(self: &Self) -> U64:
+            static for f in fields:
+                return pick(&"${0 // '}", (*self).f)
+            return 0
+
+type T derive(Sum(by: id)):
+    f: U64
+    id: U64
+
+fn main(console: Console<Write>):
+    let v = T(f: 100, id: 5)
+    console.print("${v.total()}")

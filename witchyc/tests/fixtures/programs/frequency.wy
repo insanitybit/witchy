@@ -1,0 +1,141 @@
+// Word frequencies of a text file, most frequent first and then by word.
+// Reads lines, cuts them at spaces, counts in a HashMap<String, U64> by changing
+// each count where it is, and orders the map's cells by comparing counts and words.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-hashmap.wy"
+import "../../../library/wasm-text.wy"
+import "../../../library/wasm-vec.wy"
+import "../../../library/wasm-string.wy"
+
+// One more of `word`. False: no room.
+fn count(map: &mut HashMap<String, U64>, allocator: &Allocator, word: String) -> Bool:
+    match map.get_mut(&word):
+        Ok(seen):
+            *seen += 1
+            word.close()
+            return true
+        Err(code):
+            match map.put(allocator, move word, 1):
+                Ok:
+                    return true
+                Err(back):
+                    back.discard()
+                    return false
+
+// Count every word of one line. False: no room.
+fn tally(map: &mut HashMap<String, U64>, allocator: &Allocator, text: &String) -> Bool:
+    var from: U64 = 0
+    let length = text.byte_len()
+    while from < length:
+        let to = match text.find_byte(32, from):
+            Ok(at):
+                at
+            Err(code):
+                length
+        if to > from:
+            match text.slice(allocator, from, to):
+                Ok(word):
+                    if !count(map, allocator, move word):
+                        return false
+                Err(code):
+                    return false
+        from = to + 1
+    return true
+
+// Whether the entry in cell `left` is printed before the one in cell `right`.
+fn before(map: &HashMap<String, U64>, left: U64, right: U64) -> Bool:
+    match map.entry(left):
+        Ok(first):
+            match map.entry(right):
+                Ok(second):
+                    if (*first).value != (*second).value:
+                        return (*first).value > (*second).value
+                    return (*first).key.less(&(*second).key)
+                Err(code):
+                    return true
+        Err(code):
+            return false
+
+fn report(console: &Console<Write>, allocator: &Allocator, map: &HashMap<String, U64>) -> Result<(), U64>:
+    var cells: Vec<U64> = Vec.new(allocator, map.len())?
+    for slot in 0..map.capacity():
+        match map.entry(slot):
+            Ok(entry):
+                match cells.push_mut(allocator, slot):
+                    Ok:
+                        continue
+                    Err(back):
+                        cells.close()
+                        return Err(1)
+            Err(code):
+                continue
+    // Insertion sort of the cell numbers.
+    for index in 1..cells.len():
+        var at = index
+        while at > 0:
+            let left = match cells.get(at - 1):
+                Ok(cell):
+                    cell
+                Err(code):
+                    break
+            let right = match cells.get(at):
+                Ok(cell):
+                    cell
+                Err(code):
+                    break
+            if before(map, left, right):
+                break
+            let _ = cells.swap(at - 1, at)
+            at -= 1
+    for cell in &cells:
+        match map.entry(*cell):
+            Ok(entry):
+                console.print_int((*entry).value)
+                console.write(" ")
+                console.write_string(&(*entry).key)
+                console.line("")
+            Err(code):
+                continue
+    cells.close()
+    return Ok(())
+
+fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
+    let made: Result<HashMap<String, U64>, U64> = HashMap.new(&allocator, 0)
+    var map = match move made:
+        Ok(empty):
+            move empty
+        Err(code):
+            return
+    var text = match String.new(&allocator):
+        Ok(empty):
+            move empty
+        Err(code):
+            map.discard()
+            return
+    var lines: U64 = 0
+    while true:
+        text.clear()
+        match input.read_line(&allocator, &mut text):
+            .Line:
+                lines += 1
+            .End:
+                break
+            .NotText:
+                console.line("the input is not text")
+                break
+            .NoRoom:
+                console.line("no room")
+                break
+        if !tally(&mut map, &allocator, &text):
+            console.line("no room")
+            break
+    match report(&console, &allocator, &map):
+        Ok:
+            console.write("lines: ")
+            console.print_int(lines)
+        Err(code):
+            console.line("no room")
+    console.write("words: ")
+    console.print_int(map.len())
+    text.close()
+    map.discard()

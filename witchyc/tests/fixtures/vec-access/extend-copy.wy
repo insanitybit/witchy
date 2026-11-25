@@ -1,0 +1,43 @@
+// Vec.extend_copy_mut and clear_mut: an empty source, growth past capacity, extending twice,
+// clearing and reusing the room.
+import console
+import vec
+
+fn show(console: &Console<Write>, v: &Vec<U64>):
+    console.write_format("${v.len()}:")
+    for index in 0..v.len():
+        match v.get(index):
+            Ok(item):
+                console.write_format(" ${item}")
+            Err(code):
+                console.write(" ?")
+    console.line("")
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(a): Vec<U64> = Vec.new(&allocator, 2) else Err(e):
+        return
+    var target = move a
+    let Ok(b): Vec<U64> = Vec.new(&allocator, 0) else Err(e):
+        target.close()
+        return
+    var source = move b
+    if let Err(_) = target.extend_copy_mut(&allocator, &source):
+        console.line("full")
+    show(&console, &target)
+    for k in 1..6:
+        match source.push_mut(&allocator, k * 10):
+            Ok:
+                continue
+            Err(back):
+                console.line("full")
+    if target.extend_copy_mut(&allocator, &source).is_err() || target.extend_copy_mut(&allocator, &source).is_err():
+        console.line("full")
+    show(&console, &target)
+    show(&console, &source)
+    let room = target.capacity()
+    target.clear_mut()
+    show(&console, &target)
+    if target.capacity() == room:
+        console.line("room kept")
+    target.close()
+    source.close()

@@ -1,0 +1,128 @@
+// Ordinary generic clients restate storage facts supplied by public summaries.
+// Buffer identity is logical: no physical-allocation or exact-growth claim.
+fn observed_push<T>(input: Vec<T>, item: T) -> Result<Vec<T>, Rejected<T>>:
+    ensures match result:
+        Ok(pushed):
+            pushed.length == old(input.length) + 1
+            pushed.capacity >= old(input.capacity)
+            old(input.length) >= old(input.capacity) || (pushed.capacity == old(input.capacity) && pushed.data == old(input.data) && memory.unchanged_except(input.data, old(input.length)))
+            memory.cell(pushed.data, old(input.length), item)
+            forall cell in (0, old(input.length)): memory.cell(pushed.data, cell, old(memory.read(input.data, cell)))
+        Err(failed):
+            failed.vector.data == old(input.data)
+            failed.vector.length == old(input.length)
+            failed.vector.capacity == old(input.capacity)
+            failed.item == old(item)
+            memory.unchanged(input.data)
+    return vec_push(move input, move item)
+
+fn observed_method_push<T>(input: Vec<T>, item: T) -> Result<Vec<T>, Rejected<T>>:
+    ensures match result:
+        Ok(pushed):
+            pushed.length == old(input.length) + 1
+            pushed.capacity >= old(input.capacity)
+            old(input.length) >= old(input.capacity) || (pushed.capacity == old(input.capacity) && pushed.data == old(input.data) && memory.unchanged_except(input.data, old(input.length)))
+            memory.cell(pushed.data, old(input.length), item)
+            forall cell in (0, old(input.length)): memory.cell(pushed.data, cell, old(memory.read(input.data, cell)))
+        Err(failed):
+            failed.vector.data == old(input.data)
+            failed.vector.length == old(input.length)
+            failed.vector.capacity == old(input.capacity)
+            failed.item == old(item)
+            memory.unchanged(input.data)
+    return input.push(move item)
+
+// This pure unused definition supplies one small current-proof refusal control.
+fn unused_push_identity(value: U64) -> U64:
+    ensures result == value
+    return value
+
+// Keep the output/cleanup branches separate from the storage-summary witness.
+fn emit_pushed_items(console: Console<Write>, input: Vec<U64>) -> Console<Write>:
+    requires input.length == 2
+    requires memory.loan_room(1)
+    let Ok(last) = vec_pop(move input) else Err(rejected):
+        discard(move rejected)
+        return console
+    let Some(last_item) = move last.item else None:
+        discard(move last.vector)
+        return console
+    console.print_int(last_item)
+    let Ok(first) = vec_pop(move last.vector) else Err(rejected):
+        discard(move rejected)
+        return console
+    let Some(first_item) = move first.item else None:
+        discard(move first.vector)
+        return console
+    console.print_int(first_item)
+    let Ok(done) = vec_release(move first.vector) else Err(rejected):
+        discard(move rejected)
+        return console
+    return console
+
+fn main(console: Console<Write>):
+    var witness: Buffer<U64> = memory.alloc(1)
+    memory.init(&mut witness, 0, 42)
+    var held: Buffer<U64> = memory.alloc(1)
+    memory.init(&mut held, 0, 37)
+    var third: Buffer<U64> = memory.alloc(1)
+    memory.init(&mut third, 0, 88)
+    let allocation: Result<Vec<U64>, AllocError> = vec_new(1)
+    let Ok(empty) = move allocation else Err(reason):
+        memory.release(witness)
+        memory.release(held)
+        memory.release(third)
+        discard(move console)
+        return
+    let Ok(fitting) = observed_push(move empty, 73) else Err(rejected):
+        discard(move rejected)
+        memory.release(witness)
+        memory.release(held)
+        memory.release(third)
+        discard(move console)
+        return
+    assert fitting.capacity == 1
+    assert fitting.length == 1
+    assert memory.cell(fitting.data, 0, 73)
+    console.print_int(fitting.capacity)
+    let capacity = fitting.capacity
+    let one = &witness
+    let two = &held
+    let three = &third
+    let Err(failed) = observed_push(move fitting, 74) else Ok(unexpected):
+        discard(move unexpected)
+        memory.end(one)
+        memory.end(two)
+        memory.end(three)
+        memory.release(witness)
+        memory.release(held)
+        memory.release(third)
+        discard(move console)
+        return
+    assert failed.vector.capacity == capacity
+    assert failed.vector.length == 1
+    assert failed.item == 74
+    assert memory.cell(failed.vector.data, 0, 73)
+    console.print_int(failed.item)
+    memory.end(two)
+    memory.end(three)
+    let Ok(grown) = observed_method_push(move failed.vector, failed.item) else Err(rejected):
+        discard(move rejected)
+        memory.end(one)
+        memory.release(witness)
+        memory.release(held)
+        memory.release(third)
+        discard(move console)
+        return
+    assert grown.capacity >= capacity
+    assert grown.length == 2
+    assert memory.cell(grown.data, 0, 73)
+    assert memory.cell(grown.data, 1, 74)
+    console.print_int(grown.length)
+    let output = emit_pushed_items(move console, move grown)
+    output.print_int(memory.read(one, 0))
+    memory.end(one)
+    memory.release(witness)
+    memory.release(held)
+    memory.release(third)
+    discard(move output)

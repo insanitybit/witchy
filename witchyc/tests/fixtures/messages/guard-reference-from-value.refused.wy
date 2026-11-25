@@ -1,0 +1,16 @@
+// Refused: `get` gives a copy, so a written `&U64` cannot hold it; the message names the value's
+// type and the method that gives a reference, not `&`, which has nowhere to go.
+import console
+import vec
+
+fn first(v: &Vec<U64>) -> U64:
+    let Ok(x): &U64 = v.get(0) else Err(c):
+        return 0
+    return *x
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<U64> = Vec.new(&allocator, 0) else Err(c):
+        return
+    var v = move made
+    console.print_int(first(&v))
+    v.close()

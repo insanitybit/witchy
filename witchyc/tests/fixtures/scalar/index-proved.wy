@@ -1,0 +1,22 @@
+// A proved function's array indexes are proved below the length, so their checks are not
+// emitted (n-body's `advance`): `j` below 5 by the loop's condition, `i` by its range.
+import console
+
+fn largest_after_sort(values: &mut [U64; 5]) -> U64:
+    ensures true
+    proof:
+        auto
+    for i in 0..5:
+        var j = i + 1
+        while j < 5:
+            if values[j] < values[i]:
+                let low = values[j]
+                values[j] = values[i]
+                values[i] = low
+            j += 1
+    return values[4]
+
+fn main(console: Console<Write>):
+    var values: [U64; 5] = [4, 9, 1, 7, 3]
+    console.print_int(largest_after_sort(&mut values))
+    console.print_int(values[0])

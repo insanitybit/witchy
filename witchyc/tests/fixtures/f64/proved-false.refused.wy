@@ -1,0 +1,23 @@
+// A false claim about the integers in a function that uses F64 is still refused.
+import console
+import float
+
+// How many of the first n squares' roots are whole: a contract on the count, F64 inside.
+fn whole_roots(n: U64) -> U64:
+    requires n <= 1000
+    ensures result == 0
+    proof:
+        auto
+    var count: U64 = 0
+    var i: U64 = 0
+    while i < n:
+        invariant count <= i
+        invariant i <= n
+        let root = F64.sqrt(F64.from_u64(i))
+        if F64.floor(root) == root:
+            count += 1
+        i += 1
+    return count
+
+fn main(console: Console<Write>):
+    console.print_int(whole_roots(100))

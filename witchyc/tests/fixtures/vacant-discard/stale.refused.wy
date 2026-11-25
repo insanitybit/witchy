@@ -1,0 +1,30 @@
+// Refused by the proof: the slot was vacant, but a call that may refill it comes between.
+type Slot<T>:
+    Vacant
+    Full(T)
+
+type Shelf<T>:
+    count: U64
+    slot: Slot<T>
+
+fn refill<T: Any>(shelf: &mut Shelf<T>, item: T) -> Slot<T>:
+    var incoming: Slot<T> = Full(move item)
+    if true:
+        memory.exchange(&mut (*shelf).slot, &mut incoming)
+    return move incoming
+
+type Both<T>:
+    first: Slot<T>
+    second: Slot<T>
+
+nopanic fn unpack<T: Any>(shelf: Shelf<T>, item: T) -> Both<T>:
+    var whole = move shelf
+    var held: Slot<T> = Vacant
+    memory.exchange(&mut whole.slot, &mut held)
+    let other = refill(&mut whole, move item)
+    let Shelf(count, slot) = move whole
+    memory.vacant(move slot)
+    return Both(move held, move other)
+
+fn main(out: Console<Write>):
+    out.print_int(1)

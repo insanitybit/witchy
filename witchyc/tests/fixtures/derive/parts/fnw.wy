@@ -1,0 +1,10 @@
+fn dbl(x: U64) -> U64:
+    return 1000 + x
+
+pub trait Ask:
+    fn ask(self: &Self) -> U64
+
+pub derive Wf:
+    impl Ask for Self:
+        fn ask(self: &Self) -> U64:
+            return For((*self).a)

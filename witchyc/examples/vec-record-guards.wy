@@ -1,0 +1,90 @@
+type Pair:
+    byte: U8
+    word: U64
+
+// This witness's failure cleanup consumes only plain numeric records.
+// Every cell is taken before raw release; no all-T destruction policy is assumed.
+fn drop_pairs(input: Vec<Pair>):
+    requires memory.loan_room(1)
+    var vector = move input
+    let reader = &mut vector.data
+    var i: USize = 0
+    while i < vector.length:
+        invariant i <= vector.length
+        invariant memory.size(vector.data) == vector.capacity
+        invariant EmptyBetween(vector.data, 0, i)
+        invariant InitializedBetween(vector.data, i, vector.length)
+        invariant EmptyBetween(vector.data, vector.length, vector.capacity)
+        let item: Pair = memory.take(reader, i)
+        discard(move item)
+        i += 1
+    memory.end(reader)
+    memory.release(vector.data)
+
+fn drain(vector: Vec<Pair>, console: Console<Write>):
+    requires memory.loan_room(1)
+    let Ok(back) = vec_pop(move vector) else Err(kept):
+        drop_pairs(move kept)
+        discard(move console)
+        return
+    let Some(back_item) = move back.item else None:
+        drop_pairs(move back.vector)
+        discard(move console)
+        return
+    console.print_int(U8.to_u64(back_item.byte))
+    console.print_int(back_item.word)
+    discard(move back_item)
+    let Ok(front) = vec_pop(move back.vector) else Err(kept):
+        drop_pairs(move kept)
+        discard(move console)
+        return
+    let Some(front_item) = move front.item else None:
+        drop_pairs(move front.vector)
+        discard(move console)
+        return
+    console.print_int(U8.to_u64(front_item.byte))
+    console.print_int(front_item.word)
+    discard(move front_item)
+    let Ok(done) = vec_release(move front.vector) else Err(kept):
+        drop_pairs(move kept)
+        discard(move console)
+        return
+    console.print_int(42)
+    discard(move console)
+
+fn replace_and_drain(vector: Vec<Pair>, console: Console<Write>):
+    requires memory.loan_room(1)
+    let seven: U8 = 7
+    let Ok(changed) = vec_replace(move vector, 0, Pair(seven, 12884901889)) else Err(failed):
+        discard(move failed.replacement)
+        drop_pairs(move failed.vector)
+        discard(move console)
+        return
+    console.print_int(U8.to_u64(changed.previous.byte))
+    console.print_int(changed.previous.word)
+    discard(move changed.previous)
+    drain(move changed.vector, move console)
+
+fn fill(vector: Vec<Pair>, console: Console<Write>):
+    requires memory.loan_room(1)
+    let zero: U8 = 0
+    let full: U8 = 255
+    let Ok(once) = vec_push(move vector, Pair(zero, 4294967297)) else Err(failed):
+        discard(move failed.item)
+        drop_pairs(move failed.vector)
+        discard(move console)
+        return
+    let Ok(grown) = vec_push(move once, Pair(full, 8589934595)) else Err(failed):
+        discard(move failed.item)
+        drop_pairs(move failed.vector)
+        discard(move console)
+        return
+    replace_and_drain(move grown, move console)
+
+fn main(console: Console<Write>):
+    let allocation: Result<Vec<Pair>, AllocError> = vec_new(0)
+    let Ok(vector) = move allocation else Err(reason):
+        console.print_int(903)
+        discard(move console)
+        return
+    fill(move vector, move console)

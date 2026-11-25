@@ -1,0 +1,13 @@
+// A program hands its console to a logger and can then only log through it.
+import "../../../library/wasm-console.wy"
+import "parts/logger.wy"
+
+fn work(log: &mut Logger):
+    for n in 0..3:
+        log.log(n * n)
+
+fn main(console: Console<Write>):
+    var log = logger(move console)
+    work(&mut log)
+    let total = log.lines()
+    log.log(total)

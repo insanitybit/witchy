@@ -1,0 +1,50 @@
+fn release_owners(input: Vec<Buffer<U64>>):
+    var vector = move input
+    while true:
+        match vec_pop(move vector):
+            Ok(popped):
+                vector = move popped.vector
+                match popped.item:
+                    Some(item):
+                        memory.release(item)
+                    None:
+                        match vec_release(move vector):
+                            Ok(done):
+                                return
+                            Err(remaining):
+                                vector = move remaining
+            Err(unchanged):
+                vector = move unchanged
+
+// Run with --loan-limit 2. An unrelated live loan leaves fewer than the two
+// slots reserve needs; failure must retain both the empty vector and item.
+fn main(console: Console<Write>):
+    var item = memory.alloc(1)
+    memory.init(&mut item, 0, 37)
+    var witness = memory.alloc(1)
+    memory.init(&mut witness, 0, 42)
+    let live = &witness
+    let created: Result<Vec<Buffer<U64>>, AllocError> = vec_new(0)
+    match created:
+        Ok(empty):
+            match vec_push(move empty, move item):
+                Ok(unexpected):
+                    memory.end(live)
+                    release_owners(move unexpected)
+                    console.print_int(0)
+                Err(failed):
+                    if failed.reason == AllocError.metadata:
+                        console.print_int(1)
+                    else:
+                        console.print_int(0)
+                    let measured = vec_len(move failed.vector)
+                    console.print_int(measured.length)
+                    console.print_int(memory.read(live, 0))
+                    memory.end(live)
+                    console.print_int(memory.read(&failed.item, 0))
+                    memory.release(failed.item)
+                    release_owners(move measured.vector)
+        Err(reason):
+            memory.end(live)
+            memory.release(item)
+            console.print_int(0)

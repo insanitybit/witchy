@@ -1,0 +1,89 @@
+// `String.from_utf8` (a word at a time over ASCII) answers as `String.from_utf8` (proved,
+// a byte at a time) for every placing of every one-, two-, three- and four-byte pattern below
+// among ASCII bytes: at each offset 0 to 17 of a 26-byte buffer, so every pattern meets a word's
+// start, middle and end, and the text's end. Prints the cases, those accepted, and the
+// disagreements (none).
+import console
+import vec
+import string
+
+fn fast(allocator: &Allocator, bytes: &[U8]) -> Bool:
+    match String.from_utf8_bytes(allocator, bytes):
+        Ok(text):
+            text.close()
+            return true
+        Err(code):
+            return false
+
+fn slow(allocator: &Allocator, bytes: &[U8]) -> Bool:
+    let Ok(made): Vec<U8> = Vec.new(allocator, bytes.len()) else Err(code):
+        return false
+    var copy = move made
+    for index in 0..bytes.len():
+        let _ = copy.push_mut(allocator, bytes[index])
+    match String.from_utf8(move copy):
+        Ok(text):
+            text.close()
+            return true
+        Err(back):
+            back.close()
+            return false
+
+fn main(console: Console<Write>, allocator: Allocator):
+    // Lead and continuation bytes at every boundary of the encoding's ranges.
+    let edge: [U8; 24] = [0, 65, 127, 128, 143, 144, 159, 160, 191, 192, 193, 194, 223, 224, 225, 236, 237, 238, 239, 240, 241, 244, 245, 255]
+    var cases: U64 = 0
+    var accepted: U64 = 0
+    var differ: U64 = 0
+    for width in 1..5:
+        var patterns: U64 = 24
+        if width >= 2:
+            patterns = 576
+        if width >= 3:
+            patterns = 13824
+        if width == 4:
+            // Four-byte patterns: the leads that matter, three free bytes of the edge set.
+            patterns = 13824
+        for pattern in 0..patterns:
+            var rest = pattern
+            var bytes: [U8; 4] = [0; 4]
+            for k in 0..width:
+                if width == 4 && k == 0:
+                    // 0xF0, 0xF1, 0xF4 and 0xF5 in turn with the pattern's low bits.
+                    let leads: [U8; 4] = [240, 241, 244, 245]
+                    bytes[0] = leads[pattern % 4]
+                else:
+                    bytes[k] = edge[rest % 24]
+                    rest = rest / 24
+            // A pattern is placed at three offsets chosen by its number, so all 18 are met.
+            for which in 0..3:
+                let offset = (pattern + which * 7) % 18
+                var buffer: [U8; 26] = [97; 26]
+                for k in 0..width:
+                    buffer[offset + k] = bytes[k]
+                // The whole buffer, and one cut right after the pattern (a text's end).
+                let whole = buffer.slice()
+                let a = fast(&allocator, whole)
+                let b = slow(&allocator, whole)
+                cases += 1
+                if a:
+                    accepted += 1
+                if a != b:
+                    differ += 1
+                let cut = buffer.slice().part(0, offset + width)
+                let c = fast(&allocator, cut)
+                let d = slow(&allocator, cut)
+                cases += 1
+                if c:
+                    accepted += 1
+                if c != d:
+                    differ += 1
+                // And cut inside the pattern.
+                if width > 1:
+                    let short = buffer.slice().part(0, offset + width - 1)
+                    if fast(&allocator, short) != slow(&allocator, short):
+                        differ += 1
+                    cases += 1
+    console.print_int(cases)
+    console.print_int(accepted)
+    console.print_int(differ)

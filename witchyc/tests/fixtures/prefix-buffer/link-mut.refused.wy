@@ -1,0 +1,6 @@
+// A PrefixBuffer issues no exclusive link to a cell.
+fn first<T>(buffer: &mut PrefixBuffer<T>, word: U64) -> &mut T:
+    return memory.mut_link(buffer, word)
+
+fn main(out: Console<Write>):
+    out.print_int(0)

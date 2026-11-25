@@ -1,0 +1,43 @@
+// All statements in a CI storage request. Values are bound separately.
+import "../candidate_plan.wy"
+import string
+import text
+
+pub fn commit_plan(stage: Bool, allocator: &Allocator) -> Result<String, U64>:
+    let empty = String.with_capacity(allocator, 3072)?
+    var plan = move empty
+    if let Err(code) = build(&mut plan, stage, allocator):
+        plan.close()
+        return Err(code)
+    return Ok(move plan)
+
+fn build(plan: &mut String, stage: Bool, allocator: &Allocator) -> Result<(), U64>:
+    step(plan, "expect\tCI authorization expired before commit\tSELECT :now < :token_expiry AND :now < :nonce_expiry", allocator)?
+    step(plan, "exec\t\tDELETE FROM ci_requests WHERE token_expires <= :now AND nonce_expires <= :now", allocator)?
+    step(plan, "change\tCI replay refused\tINSERT OR IGNORE INTO ci_requests (jti, token_expires, nonce, nonce_expires) VALUES (:jti, :token_expiry, :nonce, :nonce_expiry)", allocator)?
+    if stage:
+        stage_candidate(plan, allocator)?
+    return lookup_receipt(plan, allocator)
+
+fn stage_candidate(plan: &mut String, allocator: &Allocator) -> Result<(), U64>:
+    add_candidate_write(plan, allocator)?
+    plan.push_text(allocator, "exec\t\tINSERT OR IGNORE INTO ci_receipts (digest, package, workload, run, attempt, document) VALUES (:digest, :name, :workload, :run_id, :run_attempt, CAST(json_object(")?
+    plan.push_text(allocator, "'check_run_id',:check_run_id,'digest',:digest,'name',:name,'registry',:registry,'repository_id',:repository_id,'revision',:revision,")?
+    return step(plan, "'run_attempt',:run_attempt,'run_id',:run_id,'staged_at',:now,'version',:version,'workflow',:workflow,'workflow_commit',:workflow_commit) AS BLOB))", allocator)
+
+fn receipt_scope() -> Text:
+    return " FROM ci_receipts WHERE digest=:digest AND package=:name AND workload=:workload AND run=:run_id AND attempt=:run_attempt"
+
+fn lookup_receipt(plan: &mut String, allocator: &Allocator) -> Result<(), U64>:
+    plan.push_text(allocator, "expect\tCI receipt is absent for this workload run\tSELECT EXISTS(SELECT 1")?
+    plan.push_text(allocator, receipt_scope())?
+    step(plan, ")", allocator)?
+    plan.push_text(allocator, "expect\tCI request belongs to another job\tSELECT EXISTS(SELECT 1")?
+    plan.push_text(allocator, receipt_scope())?
+    step(plan, " AND json_extract(CAST(document AS TEXT), '$.version')=:version AND json_extract(CAST(document AS TEXT), '$.revision')=:revision AND json_extract(CAST(document AS TEXT), '$.check_run_id')=:check_run_id)", allocator)?
+    plan.push_text(allocator, "result\tCI receipt result is invalid\tSELECT document")?
+    return step(plan, receipt_scope(), allocator)
+
+fn step(plan: &mut String, line: Text, allocator: &Allocator) -> Result<(), U64>:
+    plan.push_text(allocator, line)?
+    return plan.push_text(allocator, "\n")

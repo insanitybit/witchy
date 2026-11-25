@@ -1,0 +1,5 @@
+// Words given to a run that is granted none are refused before the program starts.
+import console
+
+fn main(console: Console<Write>):
+    console.line("ran")

@@ -1,0 +1,36 @@
+import encoding
+import json_tree
+import span
+import string
+import text
+import vec
+
+pub fn jwt_string(object: &Json, name: Text) -> Result<&String, U64>:
+    let field = object.field(name)?
+    return field.text()
+
+pub fn jwt_string_is(object: &Json, name: Text, value: Text) -> Bool:
+    let Ok(found): &String = jwt_string(object, name) else Err(code):
+        return false
+    return found.equals_text(value)
+
+pub fn jwt_decode(input: &[U8], allocator: &Allocator, limit: U64) -> Result<Vec<U8>, U64>:
+    if input.len() == 0:
+        return Err(1)
+    match encoding.decode_base64url_bounded(allocator, input, limit):
+        Ok(bytes):
+            return Ok(move bytes)
+        Err(Base64Decode(Base64Allocation(code))):
+            return Err(code)
+        Err(_):
+            return Err(1)
+
+pub fn jwt_key_id(text: Span) -> Bool:
+    if text.is_empty() || text.len() > 128:
+        return false
+    for byte in text.as_bytes():
+        let letter = (*byte >= 'a' && *byte <= 'z') || (*byte >= 'A' && *byte <= 'Z')
+        let digit = *byte >= '0' && *byte <= '9'
+        if !letter && !digit && *byte != '-' && *byte != '_' && *byte != '.':
+            return false
+    return true

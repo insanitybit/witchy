@@ -1,0 +1,15 @@
+// A recipe looping over its module's generator means the same applied in its own file and in the
+// program's, where the program declares its own `bump` (eighth review: 1 2 100 101).
+import console
+import "parts/recipe_walk.wy"
+
+fn bump(x: U64) -> U64:
+    return x + 100
+
+type T derive(recipe_walk.Shown):
+    a: U64
+
+fn main(console: Console<Write>):
+    recipe_walk.own(&console)
+    let t = T(a: 2)
+    t.show(&console)

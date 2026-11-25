@@ -1,0 +1,7 @@
+// Refused, naming the standard module that declares the type: it said only that no type of this
+// name is declared or imported.
+import console
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(m): HashMap<U64, U64> = HashMap.new(&allocator, 4) else Err(e):
+        return

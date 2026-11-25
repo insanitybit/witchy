@@ -1,0 +1,10 @@
+// A closure whose block ends in a value states its result type.
+import console
+
+fn other(n: U64) -> U64:
+    n
+
+fn main(console: Console<Write>):
+    let f = fn(n: U64):
+        n + 1
+    console.print_int(f(1))

@@ -1,0 +1,24 @@
+// What a closure takes over is discarded if it is given up unstarted, so it has a `discard`.
+import console
+import tasks
+import string
+
+type Pair:
+    left: String
+    right: U64
+
+fn work(pair: Pair) suspends:
+    let Pair(left, right) = move pair
+    left.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    let pair: Pair = Pair(move made, 1)
+    match Task.spawn(&allocator, 2048, fn() -> (): work(move pair)):
+        Ok(task):
+            var t = move task
+            let done = t.step()
+            t.close()
+        Err(back):
+            back.discard()

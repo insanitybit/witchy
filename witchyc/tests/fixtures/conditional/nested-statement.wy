@@ -1,0 +1,12 @@
+// One-line `if` statements nest in either branch.
+import console
+
+fn main(console: Console<Write>):
+    let a = true
+    let b = false
+    if a: if b: console.print_int(1) else: console.print_int(2) else: console.print_int(3)
+    if b: console.print_int(4) else: if a: console.print_int(5) else: console.print_int(6)
+    let v = if a: 1 else: 2 + 10
+    console.print_int(v)
+    let w = if b: 1 else: 2 + 10
+    console.print_int(w)

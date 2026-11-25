@@ -1,0 +1,6 @@
+// A package imports only the packages its line of the list requires (`; requires`): the lock's
+// edges are the build's. The program itself may import any package of the list.
+import "@chain"
+
+fn main(console: Console<Write>):
+    console.print_int(chained())

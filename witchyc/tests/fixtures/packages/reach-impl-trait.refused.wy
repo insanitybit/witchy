@@ -1,0 +1,12 @@
+// Refused: a trait of alpha's inner file implemented here.
+import "@alpha"
+
+type Mine:
+    n: U64
+
+impl Secretive for Mine:
+    fn reveal(self: &Mine) -> U64:
+        return 1
+
+fn main():
+    return

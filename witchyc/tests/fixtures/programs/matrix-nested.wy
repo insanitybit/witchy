@@ -1,0 +1,43 @@
+// 3x3 matrices as nested fixed arrays: a product, an in-place transpose through `&mut`, and the
+// determinant, printed with six decimals.
+import console
+import float
+
+fn product(a: &[[F64; 3]; 3], b: &[[F64; 3]; 3]) -> [[F64; 3]; 3]:
+    var out: [[F64; 3]; 3] = [[0.0; 3]; 3]
+    for i in 0..3:
+        for j in 0..3:
+            var sum = 0.0
+            for k in 0..3:
+                sum += a[i][k] * b[k][j]
+            out[i][j] = sum
+    return out
+
+fn transpose(m: &mut [[F64; 3]; 3]):
+    for i in 0..3:
+        for j in i + 1..3:
+            let held = m[i][j]
+            m[i][j] = m[j][i]
+            m[j][i] = held
+
+fn determinant(m: &[[F64; 3]; 3]) -> F64:
+    return m[0][0] * (m[1][1] * m[2][2] - m[1][2] * m[2][1]) - m[0][1] * (m[1][0] * m[2][2] - m[1][2] * m[2][0]) + m[0][2] * (m[1][0] * m[2][1] - m[1][1] * m[2][0])
+
+fn show(console: &Console<Write>, m: &[[F64; 3]; 3]):
+    for i in 0..3:
+        for j in 0..3:
+            console.write_f64(m[i][j], 6)
+            console.write(" ")
+        console.line("")
+
+fn main(console: Console<Write>):
+    let a: [[F64; 3]; 3] = [[2.0, 0.0, 1.0], [1.0, 3.0, 2.0], [1.0, 1.0, 2.0]]
+    let b: [[F64; 3]; 3] = [[1.0, 2.0, 0.0], [0.0, 1.0, 4.0], [5.0, 0.0, 1.0]]
+    var c = product(&a, &b)
+    show(&console, &c)
+    transpose(&mut c)
+    show(&console, &c)
+    console.write_f64(determinant(&a), 6)
+    console.line("")
+    console.write_f64(determinant(&c), 6)
+    console.line("")

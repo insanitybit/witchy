@@ -1,0 +1,166 @@
+// Arbitrary-precision natural numbers. Limbs are little-endian in base 2^64.
+// The active prefix has no leading zero limbs. Spare limbs are initialized
+// workspace, so operations can reuse storage across calls.
+import "wasm-vec.wy"
+import "wasm-discard-core.wy"
+
+import "wasm-word.wy"
+
+pub sealed type BigNat:
+    limbs: Vec<U64>
+    used: U64
+
+pub type BigOrder:
+    Less
+    Equal
+    Greater
+
+impl BigNat:
+    pub fn with_capacity(allocator: &Allocator, limbs: U64) -> Result<BigNat, U64>:
+        let storage: Vec<U64> = Vec.filled(allocator, limbs, 0)?
+        return Ok(BigNat(move storage, 0))
+
+    fn room(value: &mut BigNat, allocator: &Allocator, needed: U64) -> Result<(), U64>:
+        if needed <= (*value).limbs.len():
+            return Ok(())
+        let capacity = (*value).limbs.len()
+        var requested = needed
+        if capacity <= 9223372036854775807 && capacity * 2 > needed:
+            requested = capacity * 2
+        (*value).limbs.reserve_mut(allocator, requested)?
+        while (*value).limbs.len() < requested:
+            match (*value).limbs.push_spare_mut(0):
+                Ok:
+                    continue
+                Err(_):
+                    return Err(1)
+        return Ok(())
+
+    pub fn set_word(value: &mut BigNat, allocator: &Allocator, word: U64) -> Result<(), U64>:
+        if word == 0:
+            (*value).used = 0
+            return Ok(())
+        value.room(allocator, 1)?
+        (*value).limbs[0] = word
+        (*value).used = 1
+        return Ok(())
+
+    pub fn copy_from(value: &mut BigNat, allocator: &Allocator, source: &BigNat) -> Result<(), U64>:
+        let used = (*source).used
+        value.room(allocator, used)?
+        let input = (*source).limbs.as_slice()
+        let output = (*value).limbs.as_mut_slice()
+        for i in 0..used:
+            output[i] = input[i]
+        (*value).used = used
+        return Ok(())
+
+    pub fn compare(value: &BigNat, other: &BigNat) -> BigOrder:
+        if (*value).used < (*other).used:
+            return Less
+        if (*value).used > (*other).used:
+            return Greater
+        let left = (*value).limbs.as_slice()
+        let right = (*other).limbs.as_slice()
+        var i = (*value).used
+        while i > 0:
+            i -= 1
+            if left[i] < right[i]:
+                return Less
+            if left[i] > right[i]:
+                return Greater
+        return Equal
+
+    pub fn multiply_word(value: &mut BigNat, allocator: &Allocator, factor: U32) -> Result<(), U64>:
+        let used = (*value).used
+        if used == 0 || factor == 1:
+            return Ok(())
+        if factor == 0:
+            (*value).used = 0
+            return Ok(())
+        value.room(allocator, used + 1)?
+        let output = (*value).limbs.as_mut_slice()
+        var carry: U64 = 0
+        for i in 0..used:
+            let product = U64.widening_mul(output[i], U32.to_u64(factor))
+            let low = U64.wrapping_add(product.low, carry)
+            carry = product.high
+            if low < product.low:
+                carry += 1
+            output[i] = low
+        if carry != 0:
+            output[used] = carry
+            (*value).used = used + 1
+        return Ok(())
+
+    // Add source * factor. The high word holds the carry into the next limb.
+    pub fn add_scaled(value: &mut BigNat, allocator: &Allocator, source: &BigNat, factor: U32) -> Result<(), U64>:
+        let count = (*source).used
+        if factor == 0 || count == 0:
+            return Ok(())
+        let used = (*value).used
+        var longest = used
+        if count > longest:
+            longest = count
+        value.room(allocator, longest + 1)?
+        let input = (*source).limbs.as_slice()
+        let output = (*value).limbs.as_mut_slice()
+        var carry: U64 = 0
+        var i: U64 = 0
+        while i < count || carry != 0:
+            var sum = carry
+            carry = 0
+            if i < count:
+                let product = U64.widening_mul(input[i], U32.to_u64(factor))
+                let low = U64.wrapping_add(sum, product.low)
+                if low < sum:
+                    carry = 1
+                carry += product.high
+                sum = low
+            if i < used:
+                let low = U64.wrapping_add(sum, output[i])
+                if low < sum:
+                    carry += 1
+                sum = low
+            output[i] = sum
+            i += 1
+        if i > used:
+            (*value).used = i
+        return Ok(())
+
+    // Return false and leave value unchanged if the difference would be negative.
+    pub fn subtract(value: &mut BigNat, other: &BigNat) -> Bool:
+        match value.compare(other):
+            Less:
+                return false
+            _:
+                let used = (*value).used
+                let count = (*other).used
+                let input = (*other).limbs.as_slice()
+                let output = (*value).limbs.as_mut_slice()
+                var borrow: U64 = 0
+                var i: U64 = 0
+                while i < count || borrow != 0:
+                    var right = borrow
+                    borrow = 0
+                    if i < count:
+                        right = U64.wrapping_add(input[i], right)
+                        if right < input[i]:
+                            borrow = 1
+                    let left = output[i]
+                    if left < right:
+                        output[i] = (18446744073709551615 - right) + left + 1
+                        borrow = 1
+                    else:
+                        output[i] = left - right
+                    i += 1
+                var remaining = used
+                while remaining > 0 && output[remaining - 1] == 0:
+                    remaining -= 1
+                (*value).used = remaining
+                return true
+
+impl Discard for BigNat:
+    fn discard(value: BigNat):
+        let BigNat(limbs, used) = move value
+        limbs.close()

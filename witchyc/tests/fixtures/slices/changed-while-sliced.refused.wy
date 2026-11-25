@@ -1,0 +1,6 @@
+// Refused: the array is lent to a slice that is still in use.
+fn main():
+    var numbers: [U64; 3] = [1, 2, 3]
+    let all = numbers.slice()
+    numbers[0] = 9
+    let n = all.len()

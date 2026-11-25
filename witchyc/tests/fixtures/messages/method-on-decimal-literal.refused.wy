@@ -1,0 +1,5 @@
+// Refused, saying to write parentheses: it said what a decimal number is made of.
+import float
+
+fn main():
+    let a = 2.5.min(1.0)

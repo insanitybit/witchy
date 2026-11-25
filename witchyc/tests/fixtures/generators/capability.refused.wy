@@ -1,0 +1,7 @@
+// Refused: a generator keeps its arguments between steps; they are numbers, Bools and
+// shared references, so it holds no capability.
+import console
+gen fn noisy(console: Console<Write>) -> U64:
+    yield 1
+fn main(console: Console<Write>):
+    return

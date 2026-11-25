@@ -1,0 +1,84 @@
+fn show_failure(console: &Console<Write>, input: Vec<U8>):
+    match vec_take_last(move input):
+        Ok(unexpected):
+            console.print_int(900)
+            vec_close(move unexpected.vector)
+        Err(back):
+            console.print_int(back.length)
+            console.print_int(back.capacity)
+            console.print_int(memory.capacity(&back.data))
+            match memory.read(&back.data, 0):
+                Ok(item):
+                    console.print_int(U8.to_u64(item))
+                Err(code):
+                    console.print_int(404)
+            vec_close(move back)
+
+fn failed_headers(console: &Console<Write>, allocator: &Allocator, length: U64, claimed: U64, actual: U64):
+    let made: Result<Buffer<U8>, U64> = memory.try_alloc(allocator, actual)
+    match move made:
+        Ok(fresh):
+            var data = move fresh
+            let byte: U8 = 73
+            memory.init(&mut data, 0, byte)
+            show_failure(console, Vec(move data, length, claimed))
+        Err(code):
+            console.print_int(901)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let zero: Result<Vec<U8>, U64> = vec_new(&allocator, 0)
+    match move zero:
+        Ok(vector):
+            show_failure(&console, move vector)
+        Err(code):
+            console.print_int(902)
+    let made: Result<Buffer<U8>, U64> = memory.try_alloc(&allocator, 2)
+    match move made:
+        Ok(fresh):
+            var data = move fresh
+            let first: U8 = 11
+            let last: U8 = 37
+            memory.init(&mut data, 0, first)
+            memory.init(&mut data, 1, last)
+            let vector: Vec<U8> = Vec(move data, 2, 2)
+            match vec_take_last(move vector):
+                Ok(taken):
+                    console.print_int(U8.to_u64(taken.item))
+                    console.print_int(taken.vector.length)
+                    console.print_int(taken.vector.capacity)
+                    console.print_int(memory.capacity(&taken.vector.data))
+                    if memory.initialized(&taken.vector.data, 1):
+                        console.print_int(1)
+                    else:
+                        console.print_int(0)
+                    match memory.read(&taken.vector.data, 0):
+                        Ok(other):
+                            console.print_int(U8.to_u64(other))
+                        Err(code):
+                            console.print_int(903)
+                    let replacement: U8 = 99
+                    match vec_push_spare(move taken.vector, replacement):
+                        Ok(reused):
+                            match vec_get(&reused, 1):
+                                Ok(item):
+                                    console.print_int(U8.to_u64(item))
+                                Err(code):
+                                    console.print_int(904)
+                            vec_close(move reused)
+                        Err(back):
+                            console.print_int(905)
+                            vec_close(move back.vector)
+                Err(back):
+                    console.print_int(906)
+                    vec_close(move back)
+        Err(code):
+            console.print_int(907)
+    failed_headers(&console, &allocator, 1, 99, 1)
+    failed_headers(&console, &allocator, 18446744073709551615, 1, 1)
+    failed_headers(&console, &allocator, 2, 2, 2)
+    let empty: Result<Vec<U8>, U64> = vec_new(&allocator, 2)
+    match move empty:
+        Ok(vector):
+            show_failure(&console, move vector)
+        Err(code):
+            console.print_int(908)

@@ -1,0 +1,3 @@
+run: --secret-slot=targets:sign/witchy-2/targets:env:FIXTURE_SEED
+env: FIXTURE_SEED=abcdefghijklmnopqrstuvwxyz012345
+absent: abcdefghijklmnop

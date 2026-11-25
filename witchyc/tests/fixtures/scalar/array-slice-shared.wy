@@ -1,0 +1,16 @@
+// A shared slice of an array cannot change it: what is known of `xs[0]` stays known.
+import console
+
+fn total(s: &[U64]) -> U64:
+    return s.len()
+
+fn f() -> U64:
+    ensures result == 1
+    proof:
+        auto
+    var xs: [U64; 2] = [1, 2]
+    let n = total(xs.slice())
+    return xs[0]
+
+fn main(console: Console<Write>):
+    console.print_int(f())

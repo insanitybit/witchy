@@ -1,0 +1,15 @@
+// The bits of an I64 from 0 up are the number itself.
+import console
+import int
+
+fn f(x: I64) -> U64:
+    requires x >= 0
+    requires x < 1000
+    ensures result < 1000
+    proof:
+        auto
+    I64.bits(x)
+
+fn main(console: Console<Write>):
+    let a: I64 = 5
+    console.print_int(f(a))

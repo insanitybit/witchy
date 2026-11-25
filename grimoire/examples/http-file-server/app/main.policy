@@ -1,0 +1,8 @@
+# What each file of main.wy may use. The compiler applies it to every build; grimoire stages it
+# beside the entry with the verified registry copy of @httpd.
+<standard>/: *
+main.wy: *
+# The file server package is given connections, a read-only directory, a clock and memory: it
+# can dial nowhere, accept nothing itself, write no file, and holds nothing unchecked. The digest
+# pins the reviewed source.
+@httpd/: Allocator, Clock, Dir<Read>, Socket ; no unchecked ; digest sha384:4db94085869a53b3760d3a03ff5e3914b135b9cbdedaf1a9093f78e3faf8bcb8dd7c4d1259a7ef8afd3e5eb2e8679f2f

@@ -1,0 +1,6 @@
+// A package is qualified by the name it is imported by (`hello_world` for `@hello-world`), not
+// its file's: a registry copy, stored under another file name, reads the same.
+import "@hello-world"
+
+fn main(console: Console<Write>):
+    console.print_int(hello_world.greeting())

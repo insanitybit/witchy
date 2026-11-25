@@ -1,0 +1,91 @@
+fn main(console: Console<Write>):
+    var witness = memory.alloc(1)
+    memory.init(&mut witness, 0, 42)
+    let saved = &witness
+    var held: Buffer<USize> = memory.alloc(1)
+    memory.init(&mut held, 0, 37)
+    let allocation: Result<Vec<Bool>, AllocError> = vec_new(2)
+    match allocation:
+        Ok(vector):
+            match vec_push_spare(move vector, true):
+                Ok(once):
+                    match vec_push_spare(move once, false):
+                        Ok(second):
+                            match reserve_beside(move second, 5, move held):
+                                Ok(grown):
+                                    console.print_int(memory.read(&grown.held, 0))
+                                    memory.release(grown.held)
+                                    let measured = vec_len(move grown.vector)
+                                    console.print_int(measured.length)
+                                    match vec_pop(move measured.vector):
+                                        Ok(last):
+                                            match last.item:
+                                                Some(item):
+                                                    if item:
+                                                        console.print_int(90)
+                                                    else:
+                                                        console.print_int(73)
+                                                None:
+                                                    console.print_int(91)
+                                            match vec_pop(move last.vector):
+                                                Ok(front):
+                                                    match front.item:
+                                                        Some(item):
+                                                            if item:
+                                                                console.print_int(74)
+                                                        None:
+                                                            console.print_int(92)
+                                                    match vec_release(move front.vector):
+                                                        Ok(unit):
+                                                            console.print_int(75)
+                                                        Err(kept):
+                                                            discard(move kept)
+                                                Err(kept):
+                                                    discard(move kept)
+                                        Err(kept):
+                                            discard(move kept)
+                                Err(failed):
+                                    console.print_int(76)
+                                    console.print_int(memory.read(&failed.held, 0))
+                                    memory.release(failed.held)
+                                    let measured = vec_len(move failed.vector)
+                                    console.print_int(measured.length)
+                                    match vec_pop(move measured.vector):
+                                        Ok(last):
+                                            match last.item:
+                                                Some(item):
+                                                    if item:
+                                                        console.print_int(90)
+                                                    else:
+                                                        console.print_int(73)
+                                                None:
+                                                    console.print_int(91)
+                                            match vec_pop(move last.vector):
+                                                Ok(front):
+                                                    match front.item:
+                                                        Some(item):
+                                                            if item:
+                                                                console.print_int(74)
+                                                        None:
+                                                            console.print_int(92)
+                                                    match vec_release(move front.vector):
+                                                        Ok(unit):
+                                                            console.print_int(75)
+                                                        Err(kept):
+                                                            discard(move kept)
+                                                Err(kept):
+                                                    discard(move kept)
+                                        Err(kept):
+                                            discard(move kept)
+                        Err(failed):
+                            memory.release(held)
+                            discard(move failed)
+                Err(failed):
+                    memory.release(held)
+                    discard(move failed)
+        Err(reason):
+            memory.release(held)
+            console.print_int(93)
+    console.print_int(memory.read(saved, 0))
+    memory.end(saved)
+    memory.release(witness)

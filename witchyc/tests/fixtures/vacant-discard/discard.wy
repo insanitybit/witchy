@@ -1,0 +1,86 @@
+// `memory.vacant(value)` ends a value that is proved to hold no owner: nothing is released,
+// because there is nothing to release, and the proof says so.
+import "../../../library/wasm-string.wy"
+
+type Slot<T>:
+    Vacant
+    Full(T)
+
+type Shelf<T>:
+    count: U64
+    slot: Slot<T>
+
+nopanic fn drain<T: Any>(slot: &mut Slot<T>) -> Slot<T>:
+    var previous: Slot<T> = Vacant
+    memory.exchange(&mut *slot, &mut previous)
+    return move previous
+
+// Takes the shelf apart: what it held is handed on, and the slot left behind is ended.
+nopanic fn unpack<T: Any>(shelf: Shelf<T>) -> Slot<T>:
+    var whole = move shelf
+    var held: Slot<T> = Vacant
+    memory.exchange(&mut whole.slot, &mut held)
+    let Shelf(count, slot) = move whole
+    memory.vacant(move slot)
+    return move held
+
+// Known vacant from a match through a reference, as the list's `close_empty` knows its tail.
+nopanic fn close_empty<T: Any>(shelf: Shelf<T>) -> Result<(), Shelf<T>>:
+    match &shelf.slot:
+        Full(_):
+            return Err(move shelf)
+        Vacant:
+            let Shelf(count, slot) = move shelf
+            memory.vacant(move slot)
+            return Ok(())
+
+// What a helper hands back, ended where the call is made: the second drain gives `Vacant`.
+nopanic fn drain_twice<T: Any>(shelf: &mut Shelf<T>) -> Slot<T>:
+    let held = drain(&mut (*shelf).slot)
+    memory.vacant(drain(&mut (*shelf).slot))
+    return move held
+
+fn word(allocator: &Allocator, count: U64) -> Result<String, U64>:
+    var out = String.new(allocator)?
+    for index in 0..count:
+        match out.push_scalar(allocator, 97):
+            Ok(grown):
+                out = move grown
+            Err(original):
+                original.close()
+                return Err(900)
+    return Ok(move out)
+
+fn show(out: &Console<Write>, slot: Slot<String>):
+    match move slot:
+        Vacant:
+            out.print_int(0)
+        Full(text):
+            out.print_int(text.byte_len())
+            text.close()
+
+fn main(out: Console<Write>, allocator: Allocator):
+    match word(&allocator, 3):
+        Err(code):
+            out.print_int(code)
+        Ok(first):
+            match word(&allocator, 4):
+                Err(code):
+                    first.close()
+                    out.print_int(code)
+                Ok(second):
+                    show(&out, unpack(Shelf(1, Full(move first))))
+                    var shelf: Shelf<String> = Shelf(1, Full(move second))
+                    show(&out, drain_twice(&mut shelf))
+                    show(&out, drain_twice(&mut shelf))
+                    match close_empty(move shelf):
+                        Ok:
+                            out.print_int(7)
+                        Err(full):
+                            show(&out, unpack(move full))
+                    let numbers: Shelf<U64> = Shelf(2, Full(9))
+                    match close_empty(move numbers):
+                        Ok:
+                            out.print_int(8)
+                        Err(full):
+                            out.print_int(full.count)

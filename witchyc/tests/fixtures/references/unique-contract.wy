@@ -1,0 +1,19 @@
+// A function with a contract holds a `&mut` returned by a call and writes through it.
+type Pair:
+    a: U64
+    b: U64
+
+fn first(pair: &mut Pair) -> &mut U64:
+    return &mut (*pair).a
+
+fn fixed(pair: &mut Pair) -> U64:
+    ensures result == 5
+    proof:
+        auto
+    let r = first(pair)
+    *r = 5
+    return 5
+
+fn main(console: Console<Write>):
+    var pair = Pair(1, 2)
+    console.print_int(fixed(&mut pair))

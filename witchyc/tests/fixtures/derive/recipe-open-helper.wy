@@ -1,0 +1,12 @@
+// A recipe's private helper over an open type of its file (`Point`, neither sealed nor with an
+// invariant) stays callable on a field the user chose: anyone may write an open type's fields
+// (review round 6: refused after round 5, 33 before).
+import "parts/sk.wy"
+import console
+
+type T derive(sk.PtSig):
+    p: sk.Point
+
+fn main(console: Console<Write>):
+    let x = T(p: sk.Point(x: 1, y: 2))
+    console.print("${x.sig()}")

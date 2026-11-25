@@ -1,0 +1,16 @@
+// A recipe from another file calls its module's private `pick` and gets it, though the program
+// declares a `pick` of its own: a recipe's names are read in its own file (definition-site
+// resolution; the fourth review found the program's called, 2).
+import "parts/recipe_helper.wy"
+import console
+
+fn pick(a: U64, b: U64) -> U64:
+    return b
+
+type T derive(recipe_helper.First):
+    a: U64
+    b: U64
+
+fn main(console: Console<Write>):
+    let t = T(a: 1, b: 2)
+    console.print("${t.picked()}")

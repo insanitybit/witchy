@@ -1,0 +1,2 @@
+proof failed: function `gap`
+  not proved: a `-` that may go below zero

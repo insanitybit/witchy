@@ -1,0 +1,8 @@
+// Refused: a closure holding a reference to a local would outlive it.
+fn make() -> fn(U64) -> Bool:
+    let limit: U64 = 4
+    let r: &U64 = &limit
+    return fn(n: U64) -> Bool: n > *r
+
+fn main():
+    let over = make()

@@ -1,0 +1,67 @@
+// An invariant over two Vec fields' lengths: both grow, or the first is taken back.
+import console
+import vec
+
+sealed type Pair:
+    keys: Vec<U64>
+    values: Vec<U64>
+    invariant keys.len() == values.len()
+
+impl Pair:
+    fn new(allocator: &Allocator) -> Result<Pair, U64>:
+        ensures true
+        proof:
+            auto
+        let made_keys: Result<Vec<U64>, U64> = Vec.new(allocator, 2)
+        let Ok(keys): Vec<U64> = move made_keys else Err(code):
+            return Err(code)
+        let made_values: Result<Vec<U64>, U64> = Vec.new(allocator, 2)
+        let Ok(values): Vec<U64> = move made_values else Err(code):
+            keys.close()
+            return Err(code)
+        return Ok(Pair(move keys, move values))
+
+    // Both grow, or neither: a key whose value could not follow is taken back out.
+    fn add(pair: &mut Pair, allocator: &Allocator, key: U64, value: U64) -> Result<(), U64>:
+        ensures true
+        proof:
+            auto
+        let pushed: Result<(), U64> = (*pair).keys.push_mut(allocator, key)
+        match move pushed:
+            Ok:
+                ()
+            Err(back):
+                return Err(1)
+        let followed: Result<(), U64> = (*pair).values.push_mut(allocator, value)
+        match move followed:
+            Ok:
+                return Ok(())
+            Err(back):
+                let undone: Result<U64, U64> = (*pair).keys.take_last_mut()
+                match move undone:
+                    Ok(taken):
+                        return Err(1)
+                    Err(code):
+                        return Err(2)
+
+    // A key and its value, read at one index: in range for one is in range for the other.
+    fn value_at(pair: &Pair, at: U64) -> U64:
+        if at >= (*pair).keys.len():
+            return 0
+        return (*pair).keys[at] * 100 + (*pair).values[at]
+
+    fn close(pair: Pair):
+        let Pair(keys, values) = move pair
+        keys.close()
+        values.close()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    match Pair.new(&allocator):
+        Ok(made):
+            var pair = move made
+            for i in 0..5:
+                let _ = pair.add(&allocator, i, i + 10)
+            console.print_int(pair.value_at(3))
+            pair.close()
+        Err(code):
+            console.print_int(code)

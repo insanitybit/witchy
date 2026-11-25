@@ -1,0 +1,2 @@
+run: --secret-slot=key:sign/witchy-2/targets:fd:{fd}
+fd: 464756A985E5DF03739D95DD309C1ED9C5B04254CC294E7E7EB9B9365EE15117

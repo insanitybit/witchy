@@ -1,0 +1,28 @@
+// A callee's `ensures result < s.len()` lets a proved caller read `s[at]` with no test: the program
+// never traps. Inside the callee, a loop invariant `best < s.len()` does the same for `s[best]`.
+import console
+
+fn smallest_at(s: &[U64]) -> U64:
+    requires s.len() > 0
+    ensures result < s.len()
+    proof:
+        auto
+    var best: U64 = 0
+    for j in 0..s.len():
+        invariant best < s.len()
+        if s[j] < s[best]:
+            best = j
+    return best
+
+fn smallest(s: &[U64]) -> U64:
+    requires s.len() > 0
+    ensures true
+    proof:
+        auto
+    let at = smallest_at(s)
+    return s[at]
+
+fn main(console: Console<Write>):
+    let a: [U64; 4] = [7, 3, 9, 5]
+    let s = a.slice()
+    console.print_int(smallest(s))

@@ -1,0 +1,15 @@
+// A number field of a view is lent like any field: the view has a place in the frame.
+import console
+type Point:
+    x: U64
+type Seen:
+    point: &Point
+    n: U64
+fn set(n: &mut U64):
+    *n = 41
+fn main(console: Console<Write>):
+    let p = Point(1)
+    var seen = Seen(&p, 1)
+    set(&mut seen.n)
+    let q = seen.point
+    console.print_int(seen.n + q.x)

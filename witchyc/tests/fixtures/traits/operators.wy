@@ -1,0 +1,37 @@
+// Operators on a program's own type: `+ - *` from Add, Sub, Mul (import ops), `< <= > >=` from
+// Before (derive), `+=` as `x = x + y`; numbers keep their own operators.
+import console
+import ops
+import sort
+
+type Money derive(Before):
+    cents: U64
+
+impl Add for Money:
+    fn add(self: Money, other: Money) -> Money:
+        Money(cents: self.cents + other.cents)
+
+impl Sub for Money:
+    fn sub(self: Money, other: Money) -> Money:
+        Money(cents: self.cents - other.cents)
+
+impl Mul for Money:
+    fn mul(self: Money, other: Money) -> Money:
+        Money(cents: self.cents * other.cents / 100)
+
+fn main(console: Console<Write>):
+    let price = Money(cents: 250)
+    let tax = Money(cents: 20)
+    let total = price + tax - Money(cents: 70)
+    console.print_int(total.cents)
+    let doubled = total * Money(cents: 200)
+    console.print_int(doubled.cents)
+    if tax < price && price > tax && tax <= tax && price >= tax:
+        console.print_int(1)
+    if !(price < tax):
+        console.print_int(2)
+    var sum = Money(cents: 0)
+    sum += price
+    sum += tax
+    console.print_int(sum.cents)
+    console.print_int(3 + 4 * 2)

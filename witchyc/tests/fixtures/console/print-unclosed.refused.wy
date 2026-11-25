@@ -1,0 +1,4 @@
+import console
+fn main(console: Console<Write>):
+    let x: U64 = 1
+    console.print("open ${x")

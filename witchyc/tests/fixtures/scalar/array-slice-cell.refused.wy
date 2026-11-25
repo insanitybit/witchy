@@ -1,0 +1,15 @@
+// Refused (review): a store through a slice's cell changes the array.
+import console
+
+fn f() -> U64:
+    ensures result == 1
+    proof:
+        auto
+    var xs: [U64; 2] = [1, 2]
+    let s = xs.slice_mut()
+    let c = s.cell(0)
+    *c = 99
+    return xs[0]
+
+fn main(console: Console<Write>):
+    console.print_int(f())

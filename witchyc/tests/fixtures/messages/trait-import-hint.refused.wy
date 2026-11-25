@@ -1,0 +1,92 @@
+// Refused, naming the import: the library gives `I64` its `Discard` in `int`.
+// A stack machine: instructions as a sum type in a Vec, run by a `match` loop over an I64 stack
+// with jumps; computes 10! and a countdown sum.
+import console
+import vec
+import discard
+
+type Op:
+    Push(I64)
+    Add
+    Mul
+    Sub
+    Dup
+    Swap
+    Over
+    Drop
+    JumpIfZero(U64)
+    Jump(U64)
+    Print
+    Halt
+
+fn run(console: &Console<Write>, allocator: &Allocator, code: &[Op]) -> Result<(), U64>:
+    using var stack: Vec<I64> = Vec.new(allocator, 16)?:
+        var pc: U64 = 0
+        var steps: U64 = 0
+        while pc < code.len() && steps < 10000:
+            steps += 1
+            let op = &code[pc]
+            pc += 1
+            match op:
+                Push(value):
+                    let pushed = stack.push_mut(allocator, *value)
+                Add:
+                    let b = stack.take_last_mut()?
+                    let a = stack.take_last_mut()?
+                    let pushed = stack.push_mut(allocator, a + b)
+                Sub:
+                    let b = stack.take_last_mut()?
+                    let a = stack.take_last_mut()?
+                    let pushed = stack.push_mut(allocator, a - b)
+                Mul:
+                    let b = stack.take_last_mut()?
+                    let a = stack.take_last_mut()?
+                    let pushed = stack.push_mut(allocator, a * b)
+                Dup:
+                    let a = stack.take_last_mut()?
+                    let p = stack.push_mut(allocator, a)
+                    let q = stack.push_mut(allocator, a)
+                Swap:
+                    let b = stack.take_last_mut()?
+                    let a = stack.take_last_mut()?
+                    let p = stack.push_mut(allocator, b)
+                    let q = stack.push_mut(allocator, a)
+                Over:
+                    let b = stack.take_last_mut()?
+                    let a = stack.take_last_mut()?
+                    let p = stack.push_mut(allocator, a)
+                    let q = stack.push_mut(allocator, b)
+                    let r = stack.push_mut(allocator, a)
+                Drop:
+                    let a = stack.take_last_mut()?
+                JumpIfZero(target):
+                    let a = stack.take_last_mut()?
+                    if a == 0:
+                        pc = *target
+                Jump(target):
+                    pc = *target
+                Print:
+                    let a = stack.take_last_mut()?
+                    console.print("${a}")
+                    let p = stack.push_mut(allocator, a)
+                Halt:
+                    pc = code.len()
+        return Ok(())
+
+fn push(code: &mut Vec<Op>, allocator: &Allocator, op: Op):
+    let pushed = code.push_mut(allocator, op)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Vec<Op> = Vec.new(&allocator, 32) else Err(c):
+        return
+    var code = move made
+    // [acc n]: while n != 0: acc = acc * n; n = n - 1; then print acc.
+    let program: [Op; 15] = [Push(1), Push(10), Dup, JumpIfZero(12), Swap, Over, Mul, Swap, Push(1), Sub, Jump(2), Halt, Drop, Print, Halt]
+    for op in program:
+        push(&mut code, &allocator, *op)
+    match run(&console, &allocator, code.as_slice()):
+        Ok:
+            console.line("ok")
+        Err(e):
+            console.print("error ${e}")
+    code.close()

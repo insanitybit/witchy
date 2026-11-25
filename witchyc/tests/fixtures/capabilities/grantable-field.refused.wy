@@ -1,0 +1,6 @@
+// Refused: in this first version the run grants numbers and Bools only.
+grantable capability Named:
+    count: U64
+    label: U8
+fn main(n: Named):
+    return

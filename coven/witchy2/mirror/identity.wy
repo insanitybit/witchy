@@ -1,0 +1,23 @@
+// Public TLS identity files in the read-only published tree.
+import fs
+import span
+import string
+
+pub fn authority_line(file: Span) -> Span:
+    if file.ends_with_text("\r\n"):
+        return file.part(0, file.len() - 2)
+    if file.ends_with_text("\n"):
+        return file.part(0, file.len() - 1)
+    return file
+
+pub fn read_file(root: &Dir<Read>, path: Text, output: &mut [U8]) -> Result<U64, FsError>:
+    let file = root.open(path)?
+    let length = file.read_to_end_into(output)
+    file.close()
+    return length
+
+pub fn read_file_path(root: &Dir<Read>, path: &String, output: &mut [U8]) -> Result<U64, FsError>:
+    let file = root.open_path(path)?
+    let length = file.read_to_end_into(output)
+    file.close()
+    return length

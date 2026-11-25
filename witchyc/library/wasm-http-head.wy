@@ -1,0 +1,116 @@
+// Shared borrowed HTTP/1.x head grammar. No allocation or transport authority.
+import span
+
+pub type HeadError:
+    MalformedHead
+
+pub fn field_name_byte(byte: U8) -> Bool:
+    return (byte >= 'A' && byte <= 'Z') || (byte >= 'a' && byte <= 'z') || (byte >= '0' && byte <= '9') || byte == '!' || byte == '#' || byte == '$' || byte == '%' || byte == '&' || byte == 39 || byte == '*' || byte == '+' || byte == '-' || byte == '.' || byte == '^' || byte == '_' || byte == '`' || byte == '|' || byte == '~'
+
+// A response read in place: parts of its text, nothing copied. The header lines are `headers`
+// (available through `http.header`); `body` is what follows the blank line.
+pub type ParsedResponseHead = .{status: U64, headers: Span, body: Span}
+
+// The status, header lines and body of a whole response, as parts of `response`.
+pub fn head(response: Span) -> Result<ParsedResponseHead, HeadError>:
+    if response.len() < 12 || !response.part(0, 7).equals_text("HTTP/1."):
+        return Err(MalformedHead)
+    let minor = response.byte_or_end(7)
+    if minor < 48 || minor > 57 || response.byte_or_end(8) != 32:
+        return Err(MalformedHead)
+    let after = response.byte_or_end(12)
+    if after != 32 && after != 13:
+        return Err(MalformedHead)
+    var status: U64 = 0
+    for index in 9..12:
+        let digit = response.byte_or_end(index)
+        if digit < 48 || digit > 57:
+            return Err(MalformedHead)
+        status = status * 10 + (digit - 48)
+    // The header lines start after the status line's CRLF and end at the blank line.
+    let length = response.len()
+    var start: U64 = 12
+    while start + 1 < length && !(response.byte_or_end(start) == 13 && response.byte_or_end(start + 1) == 10):
+        start += 1
+    var at = start
+    while at + 3 < length:
+        if response.byte_or_end(at) == 13 && response.byte_or_end(at + 1) == 10 && response.byte_or_end(at + 2) == 13 && response.byte_or_end(at + 3) == 10:
+            let headers = response.part(start + 2, at + 2)
+            let body = response.part(at + 4, length)
+            return Ok(.{status: status, headers: headers, body: body})
+        at += 1
+    return Err(MalformedHead)
+
+// Offset just after the first CRLF CRLF, or zero when the head is incomplete.
+// Pass the length of an earlier prefix known to have no delimiter. Only the
+// new bytes and up to three preceding bytes need to be examined.
+pub fn head_end(text: Span, previous: U64) -> U64:
+    let bytes = text.as_bytes()
+    if previous > bytes.len():
+        return 0
+    let start = if previous < 3: 0 else: previous - 3
+    let end = blank_line(bytes, start)
+    if end == bytes.len():
+        return 0
+    return end + 4
+
+// Where the first CR LF CR LF at or after `from` starts, or the length when there is none.
+// The fourth byte of where it would be decides: a byte that is neither CR nor LF is in no
+// such run, so the next place it could start is past that byte; an LF there is the run's
+// second or fourth byte; a CR its first or third. Most bytes of a head are never read (the
+// scan read four at every position: 40 instructions a byte, a third of a request, 2026-11-22).
+fn blank_line(bytes: &[U8], from: U64) -> U64:
+    let length = bytes.len()
+    var at = from
+    while at + 3 < length:
+        let last = bytes[at + 3]
+        if last == 10:
+            if bytes[at] == 13 && bytes[at + 1] == 10 && bytes[at + 2] == 13:
+                return at
+            at += 2
+        else if last == 13:
+            at += 1
+        else:
+            at += 4
+    return length
+
+// A request read in place: `METHOD target HTTP/1.x`, its header lines (find one with
+// `http.header`), and what follows the blank line. Nothing is copied.
+pub type ParsedRequestHead = .{method: Span, target: Span, headers: Span, body: Span}
+
+// The parts of a whole request head in `text` (bytes read from a socket: `Span.of`). Err:
+// not `METHOD SP target SP HTTP/1.x CR LF`, a method or target with a control byte, or no
+// blank line yet.
+pub fn request(text: Span) -> Result<ParsedRequestHead, HeadError>:
+    let length = text.len()
+    let bytes = text.as_bytes()
+    var end: U64 = 0
+    while end + 1 < length && !(bytes[end] == 13 && bytes[end + 1] == 10):
+        end += 1
+    if end + 1 >= length:
+        return Err(MalformedHead)
+    let line = text.part(0, end)
+    let Ok(first): Halves = line.split(32) else Err(whole):
+        return Err(MalformedHead)
+    let Ok(second): Halves = first.tail.split(32) else Err(whole):
+        return Err(MalformedHead)
+    let method = first.head
+    let target = second.head
+    let version = second.tail
+    if method.is_empty() || target.is_empty() || version.len() != 8 || !version.part(0, 7).equals_text("HTTP/1."):
+        return Err(MalformedHead)
+    let minor = version.byte_or_end(7)
+    if minor < 48 || minor > 57:
+        return Err(MalformedHead)
+    for byte in method.as_bytes():
+        if *byte < 65 || *byte > 90:
+            return Err(MalformedHead)
+    for byte in target.as_bytes():
+        if *byte <= 32 || *byte >= 127:
+            return Err(MalformedHead)
+    let at = blank_line(bytes, end)
+    if at == length:
+        return Err(MalformedHead)
+    let headers = text.part(end + 2, at + 2)
+    let body = text.part(at + 4, length)
+    return Ok(.{method: method, target: target, headers: headers, body: body})

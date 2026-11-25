@@ -1,0 +1,51 @@
+import "witchy2.wy"
+import "tests/ci_reply.wy"
+import "tests/fixtures.wy"
+import "tests/ci_http.wy"
+import "tests/review_http.wy"
+import testing
+import test_runner
+
+using fixtures.fixed_limits
+test fn message_limit(limit: &DecoderLimit) -> Result<(), Failure>:
+    return testing.eq_u64(witchy2.message_bound(), (*limit).bytes)
+
+test fn length(input: &Console<Read>, expected: U64) -> Result<(), Failure>:
+    return testing.eq_u64(witchy2.read_length(input), expected)
+
+test fn short_length(truncated: &Console<Read>) -> Result<(), Failure>:
+    return testing.eq_u64(witchy2.read_length(truncated), 4294967295)
+
+using fixtures.role_directories
+test fn roles(publisher: &Dir<Read>, reviewer: &Dir<Read>) -> Result<(), Failure>:
+    testing.eq_u64(witchy2.role_of(publisher), 1)?
+    return testing.eq_u64(witchy2.role_of(reviewer), 5)
+
+test fn release_record_stops_before_source() -> Result<(), Failure>:
+    let packed: [U8; 8] = [65, 10, 66, 10, 10, 67, 10, 10]
+    testing.eq_u64(witchy2.release_record_end(packed.slice()), 5)?
+    return testing.eq_u64(witchy2.release_record_end(packed.slice().part(0, 5)), 5)
+
+test fn incomplete_release_record() -> Result<(), Failure>:
+    let prefix: [U8; 4] = [65, 10, 66, 10]
+    testing.eq_u64(witchy2.release_record_end(prefix.slice().part(0, 0)), 0)?
+    testing.eq_u64(witchy2.release_record_end(prefix.slice().part(0, 1)), 0)?
+    return testing.eq_u64(witchy2.release_record_end(prefix.slice()), 0)
+
+fn main(tests: Tests, grants: TestGrants):
+    let external_roles = grants.has_root("roles")
+    for case in tests.collect():
+        grants.offer_bytes(case, "input", "00000102")
+        grants.offer_word(case, "expected", 258)
+        grants.offer_bytes(case, "truncated", "000001")
+        if external_roles:
+            grants.offer_directory(case, "left", "roles", "publisher")
+            grants.offer_directory(case, "right", "roles", "reviewer")
+        else:
+            grants.offer_fixture(case, "left", "role", "01")
+            grants.offer_fixture(case, "right", "role", "05")
+        match grants.bind(case):
+            Bound(invocation):
+                invocation.run()
+            Blocked(slot):
+                continue

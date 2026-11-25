@@ -1,0 +1,6 @@
+// A full `Dir` needs reading and writing granted on one directory; a run that grants only
+// a separate directory to write does not hand one over.
+import fs
+
+fn main(dir: Dir):
+    return

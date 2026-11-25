@@ -1,0 +1,17 @@
+// Refused: a Span of a String that has been closed, or moved away, is given to no function.
+import console
+import span
+import string
+
+fn length(text: Span) -> U64:
+    ensures result <= 18446744073709551615
+    return text.len()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var s = move made
+    let _ = s.push_text(&allocator, "hello")
+    let view = s.span()
+    s.close()
+    console.print_int(length(view))

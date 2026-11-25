@@ -1,0 +1,18 @@
+// Refused: an eq outside the checked shape (always true: equality is then not the identity the
+// hash is of).
+import hash
+
+type Pair:
+    a: U64
+    b: U64
+
+impl Eq for Pair:
+    fn eq(self: &Pair, other: &Pair) -> Bool:
+        return (*self).a == (*other).b
+
+impl HashKey for Pair:
+    fn feed(self: &Pair, state: &mut HashState):
+        (*self).a.feed(state)
+
+fn main():
+    return

@@ -1,0 +1,2042 @@
+// TOML 1.0 and 1.1, read without a trap on any input and without copying the text.
+//
+//     var parsed = Toml.parse(&allocator, move text)?      // the document owns the text
+//     brand parsed.doc() as doc:
+//         let root = doc.root()
+//         if let Some(item) = doc.get(root, "name"):
+//             if let Some(name) = doc.str(item):            // a &str into the text: no copy
+//
+// The text is a String the document takes and keeps: a string value with no escapes is
+// returned as a `&str` into it, through offsets the type's invariants show are inside the
+// text, so the read has no range test. Text with escapes is decoded once, while reading, into
+// a second String the document owns.
+//
+// Every function here is `nopanic`: no input makes one trap.
+import vec
+import string
+import option
+
+// What a node is.
+const TABLE: U64 = 0
+const ARRAY: U64 = 1
+const STRING: U64 = 2
+const INTEGER: U64 = 3
+const FLOAT: U64 = 4
+const BOOLEAN: U64 = 5
+const OFFSET_DATETIME: U64 = 6
+const LOCAL_DATETIME: U64 = 7
+const LOCAL_DATE: U64 = 8
+const LOCAL_TIME: U64 = 9
+// A number still to be read digit by digit (never the kind of a value of a document).
+const SLOW_FLOAT: U64 = 10
+
+// How a table came to be, which decides what may be said of it again.
+// IMPLICIT: named on the way to a deeper header (`[a.b]` makes `a`). EXPLICIT: a header of
+// its own. DOTTED: made by a dotted key (`a.b = 1` makes `a`). INLINE: written `{...}`.
+const IMPLICIT: U64 = 1
+const EXPLICIT: U64 = 2
+const DOTTED: U64 = 4
+const INLINE: U64 = 8
+// An array whose elements are the tables of `[[name]]` headers.
+const TABLES: U64 = 16
+// The key, or the text, is in the decoded String (it had an escape).
+const KEY_DECODED: U64 = 32
+const TEXT_DECODED: U64 = 64
+// The last value of its table or array: a walk ends here whatever table it was given.
+const LAST: U64 = 128
+
+// "No node": past every node number.
+const NONE: U64 = 4294967295
+// The most nodes a document has, and the longest text read.
+const MOST: U64 = 4294967294
+
+// What went wrong, as the low byte of an internal error; the rest is where.
+const ENDED: U64 = 1
+const UNEXPECTED: U64 = 2
+const CONTROL: U64 = 3
+const ESCAPE: U64 = 4
+const NUMBER: U64 = 5
+const DATE: U64 = 6
+const DUPLICATE: U64 = 7
+const REDEFINED: U64 = 8
+const NOT_TABLE: U64 = 9
+const CLOSED: U64 = 10
+const DEEP: U64 = 11
+const LARGE: U64 = 12
+const MEMORY: U64 = 13
+const INTERNAL: U64 = 14
+
+// One value of the document: 32 bytes of numbers.
+//   key_start, key_len: the key's bytes in the text (KEY_DECODED: in the decoded text)
+//   start, len: the value's own bytes in the text (TEXT_DECODED: in the decoded text)
+//   next: the next value of the same table or array; the last one's is the first
+//   data: a number's bits, or for a table or an array its last value (low half) and how
+//         many it has (high half)
+type Node:
+    kind: U8
+    flags: U8
+    key_start: U32
+    key_len: U32
+    start: U32
+    len: U32
+    next: U32
+    data: U64
+
+// A parsed document. It owns the text it was read from.
+pub sealed type Toml:
+    text: String
+    nodes: Vec<Node>
+    // Open addressing over (table, key): a cell is 0, or the table's node in the high half
+    // and the value's node plus one in the low half.
+    index: Vec<U64>
+    // The text of keys and strings written with escapes, decoded.
+    decoded: String
+    invariant forall i in (0, nodes.len()): nodes[i].key_start + nodes[i].key_len <= text.byte_len()
+    invariant forall i in (0, nodes.len()): nodes[i].start + nodes[i].len <= text.byte_len()
+
+// A key or a string as it was read: where its bytes are, and where reading goes on. `next`
+// is an error (BAD or more) when there was none to read.
+type Token:
+    start: U64
+    len: U64
+    escaped: Bool
+    multi: Bool
+    next: U64
+
+// A number, a truth value or a date as it was read.
+type Scalar:
+    kind: U64
+    data: U64
+    next: U64
+
+// Where a key path leads: the table, the last key, and where reading goes on.
+type Path:
+    table: U64
+    key: Token
+    next: U64
+
+// A table reached by a header, and where reading goes on.
+type Step:
+    table: U64
+    next: U64
+
+// A value made, where reading goes on, and what was opened (1 an array, 2 an inline table).
+type Made:
+    node: U64
+    next: U64
+    open: U64
+
+// A date, a time, or both, with or without an offset from UTC.
+pub type TomlDateTime:
+    kind: U64
+    year: U64
+    month: U64
+    day: U64
+    hour: U64
+    minute: U64
+    second: U64
+    nanosecond: U64
+    offset_minutes: U64
+    west: Bool
+
+// What a value is.
+pub type TomlKind:
+    KindTable
+    KindArray
+    KindString
+    KindInteger
+    KindFloat
+    KindBoolean
+    KindOffsetDateTime
+    KindLocalDateTime
+    KindLocalDate
+    KindLocalTime
+
+// A document open for reading. `G` is the opening: a handle from one opening is not taken
+// by another, so a handle is never used on a document it did not come from.
+pub sealed type Doc<G>:
+    tree: &Toml
+
+// A table, an array, or any value of the document opened as `G`.
+pub sealed type Table<G>:
+    node: U64
+
+pub sealed type Array<G>:
+    node: U64
+
+pub sealed type Item<G>:
+    node: U64
+
+// What was wrong with a text.
+pub type TomlProblem:
+    Ended
+    Unexpected
+    Control
+    Escape
+    Number
+    Date
+    Duplicate
+    Redefined
+    NotTable
+    Closed
+    Deep
+    Large
+    Memory
+    Internal
+
+// Where a text was wrong (a byte offset; a line and a column from 1), and how.
+pub type TomlError:
+    at: U64
+    line: U64
+    column: U64
+    what: TomlProblem
+
+// A result at or over this is an error: where in bits 8 and up, what in the low byte.
+const BAD: U64 = 9223372036854775808
+
+nopanic fn fail(at: U64, what: U64) -> U64:
+    return BAD | ((at & 4294967295) << 8) | (what & 255)
+
+nopanic fn up(at: U64) -> U64:
+    return U64.wrapping_add(at, 1)
+
+// The byte at `at`, or 256 past the end.
+nopanic fn peek(bytes: &[U8], at: U64) -> U64:
+    ensures result <= 256
+    ensures result == 256 || at < bytes.len()
+    proof:
+        auto
+    if at < bytes.len():
+        return U8.to_u64(bytes[at])
+    return 256
+
+// Whether two runs of bytes are the same.
+nopanic fn same_bytes(left: &[U8], right: &[U8]) -> Bool:
+    ensures true
+    proof:
+        auto
+    let count = left.len()
+    if count != right.len():
+        return false
+    var at: U64 = 0
+    while at < count:
+        invariant at <= count
+        if left[at] != right[at]:
+            return false
+        at += 1
+    return true
+
+// A hash of a key under a table: FNV-1a over the bytes, started from the table's number.
+nopanic fn key_hash(parent: U64, key: &[U8]) -> U64:
+    ensures true
+    proof:
+        auto
+    var hash: U64 = 14695981039346656037 ^ U64.wrapping_mul(parent, 11400714819323198485)
+    var at: U64 = 0
+    // Eight bytes a step, each step folding both halves of a product so that every byte
+    // reaches the low bits the index is cut from.
+    while key.len() - at >= 8:
+        invariant at <= key.len()
+        let mixed = hash ^ key.read_le64(at)
+        hash = U64.mul_high(mixed, 11400714819323198485) ^ U64.wrapping_mul(mixed, 11400714819323198485)
+        at += 8
+    while at < key.len():
+        invariant at <= key.len()
+        hash = U64.wrapping_mul(hash ^ U8.to_u64(key[at]), 1099511628211)
+        at += 1
+    return U64.mul_high(hash, 11400714819323198485) ^ U64.wrapping_mul(hash, 11400714819323198485)
+
+nopanic fn is_digit(byte: U64) -> Bool:
+    return byte >= 48 && byte <= 57
+
+// A byte of a bare key: A-Z a-z 0-9 _ -
+nopanic fn is_bare(byte: U64) -> Bool:
+    if byte >= 97 && byte <= 122:
+        return true
+    if byte >= 65 && byte <= 90:
+        return true
+    if byte >= 48 && byte <= 57:
+        return true
+    return byte == 95 || byte == 45
+
+// A byte a number or a date may hold.
+nopanic fn is_word(byte: U64) -> Bool:
+    if is_bare(byte):
+        return true
+    return byte == 43 || byte == 46 || byte == 58
+
+// The value of a hexadecimal digit, or 16.
+nopanic fn hex_value(byte: U64) -> U64:
+    if byte >= 48 && byte <= 57:
+        return byte & 15
+    if (byte >= 97 && byte <= 102) || (byte >= 65 && byte <= 70):
+        return U64.wrapping_add(byte & 7, 9)
+    return 16
+
+// `count` hexadecimal digits from `from`, or NONE when one is not.
+nopanic fn hex_run(bytes: &[U8], from: U64, count: U64) -> U64:
+    var value: U64 = 0
+    var at = from
+    var left = count
+    while left != 0:
+        let digit = hex_value(peek(bytes, at))
+        if digit > 15:
+            return NONE
+        value = (value << 4) | digit
+        at = up(at)
+        left = U64.wrapping_sub(left, 1)
+    return value
+
+// Past spaces and tabs.
+nopanic fn skip_space(bytes: &[U8], from: U64) -> U64:
+    ensures true
+    proof:
+        auto
+    var at = from
+    while at < bytes.len():
+        invariant true
+        let byte = bytes[at]
+        if byte != 32 && byte != 9:
+            break
+        at += 1
+    return at
+
+// From after a `#` to the newline that ends the comment (or the end): a comment holds no
+// control character but a tab.
+nopanic fn skip_comment(bytes: &[U8], from: U64) -> U64:
+    ensures true
+    proof:
+        auto
+    var at = from
+    if at <= bytes.len():
+        // Eight bytes together, up to the first control character or DEL; the loop after
+        // looks at that one.
+        while bytes.len() - at >= 8:
+            invariant at <= bytes.len()
+            let word = bytes.read_le64(at)
+            let delete = word ^ 9187201950435737471
+            let control = word & 16204198715729174752
+            let c = U64.wrapping_add(delete & 9187201950435737471, 9187201950435737471) | delete
+            let d = U64.wrapping_add(control & 9187201950435737471, 9187201950435737471) | control
+            let plain = c & d & 9259542123273814144
+            if plain != 9259542123273814144:
+                break
+            at += 8
+    while at < bytes.len():
+        invariant true
+        let byte = U8.to_u64(bytes[at])
+        if (byte < 32 && byte != 9) || byte == 127:
+            if byte == 10:
+                return at
+            if byte == 13 && peek(bytes, at + 1) == 10:
+                return at
+            return fail(at, CONTROL)
+        at += 1
+    return at
+
+// Past spaces, comments and newlines.
+nopanic fn skip_blank(bytes: &[U8], from: U64) -> U64:
+    var at = from
+    while true:
+        at = skip_space(bytes, at)
+        let byte = peek(bytes, at)
+        if byte == 10:
+            at = up(at)
+            continue
+        if byte == 13:
+            if peek(bytes, up(at)) != 10:
+                return fail(at, CONTROL)
+            at = up(up(at))
+            continue
+        if byte == 35:
+            at = skip_comment(bytes, up(at))
+            if at >= BAD:
+                return at
+            continue
+        return at
+    return at
+
+// The rest of a line after what it held: spaces, a comment, then a newline or the end.
+nopanic fn end_line(bytes: &[U8], from: U64) -> U64:
+    var at = skip_space(bytes, from)
+    if peek(bytes, at) == 35:
+        at = skip_comment(bytes, up(at))
+        if at >= BAD:
+            return at
+    let byte = peek(bytes, at)
+    if byte == 256:
+        return at
+    if byte == 10:
+        return up(at)
+    if byte == 13 && peek(bytes, up(at)) == 10:
+        return up(up(at))
+    return fail(at, UNEXPECTED)
+
+// A string from its opening quote: where its contents are, whether a `\` was seen, and
+// where reading goes on. The contents' escapes are checked when they are decoded.
+nopanic fn scan_string(bytes: &[U8], from: U64, multi_ok: Bool) -> Token:
+    let quote = peek(bytes, from)
+    let basic = quote == 34
+    var at = up(from)
+    var multi = false
+    if peek(bytes, at) == quote && peek(bytes, up(at)) == quote:
+        if !multi_ok:
+            return Token(at, 0, false, false, up(at))
+        multi = true
+        at = up(up(at))
+        // A newline right after the opening is not part of the text.
+        if peek(bytes, at) == 10:
+            at = up(at)
+        else:
+            if peek(bytes, at) == 13 && peek(bytes, up(at)) == 10:
+                at = up(up(at))
+    let start = at
+    var escaped = false
+    while true:
+        at = plain_end(bytes, at, quote)
+        let byte = peek(bytes, at)
+        if byte == 256:
+            return Token(start, 0, false, multi, fail(at, ENDED))
+        if byte == quote:
+            if !multi:
+                return Token(start, U64.wrapping_sub(at, start), escaped, false, up(at))
+            // Three quotes close; one or two more before them belong to the text.
+            var run: U64 = 1
+            var probe = up(at)
+            while run < 5 && peek(bytes, probe) == quote:
+                run = up(run)
+                probe = up(probe)
+            if run >= 3:
+                let end = U64.wrapping_add(at, U64.wrapping_sub(run, 3))
+                return Token(start, U64.wrapping_sub(end, start), escaped, true, probe)
+            at = probe
+            continue
+        if byte == 92 && basic:
+            escaped = true
+            at = up(at)
+            if peek(bytes, at) == 256:
+                return Token(start, 0, false, multi, fail(at, ENDED))
+            at = up(at)
+            continue
+        if (byte >= 32 && byte != 127) || byte == 9:
+            at = up(at)
+            continue
+        if multi && byte == 10:
+            at = up(at)
+            continue
+        if multi && byte == 13 && peek(bytes, up(at)) == 10:
+            at = up(up(at))
+            continue
+        return Token(start, 0, false, multi, fail(at, CONTROL))
+    return Token(start, 0, false, multi, fail(at, INTERNAL))
+
+// A key: bare, or quoted on one line.
+nopanic fn scan_key(bytes: &[U8], from: U64) -> Token:
+    let byte = peek(bytes, from)
+    if byte == 34 || byte == 39:
+        return scan_string(bytes, from, false)
+    let end = bare_end(bytes, from)
+    if end == from:
+        if byte == 256:
+            return Token(from, 0, false, false, fail(from, ENDED))
+        return Token(from, 0, false, false, fail(from, UNEXPECTED))
+    return Token(from, U64.wrapping_sub(end, from), false, false, end)
+
+// Two digits as a number, or NONE.
+nopanic fn two_digits(bytes: &[U8], at: U64) -> U64:
+    let tens = peek(bytes, at)
+    let ones = peek(bytes, up(at))
+    if !is_digit(tens) || !is_digit(ones):
+        return NONE
+    return U64.wrapping_add(U64.wrapping_mul(tens & 15, 10), ones & 15)
+
+nopanic fn no_date() -> TomlDateTime:
+    return TomlDateTime(0, 0, 0, 0, 0, 0, 0, 0, 0, false)
+
+nopanic fn days_in(year: U64, month: U64) -> U64:
+    if month == 2:
+        if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0:
+            return 29
+        return 28
+    if month == 4 || month == 6 || month == 9 || month == 11:
+        return 30
+    return 31
+
+// A date, a time or both in the bytes from `from` to `end`: kind 0 when they are none.
+nopanic fn read_date(bytes: &[U8], from: U64, end: U64, modern: Bool) -> TomlDateTime:
+    var at = from
+    var year: U64 = 0
+    var month: U64 = 0
+    var day: U64 = 0
+    var dated = false
+    if peek(bytes, U64.wrapping_add(from, 2)) != 58:
+        let century = two_digits(bytes, at)
+        let years = two_digits(bytes, U64.wrapping_add(at, 2))
+        month = two_digits(bytes, U64.wrapping_add(at, 5))
+        day = two_digits(bytes, U64.wrapping_add(at, 8))
+        if century == NONE || years == NONE || month == NONE || day == NONE:
+            return no_date()
+        if peek(bytes, U64.wrapping_add(at, 4)) != 45 || peek(bytes, U64.wrapping_add(at, 7)) != 45:
+            return no_date()
+        year = U64.wrapping_add(U64.wrapping_mul(century, 100), years)
+        if month < 1 || month > 12 || day < 1 || day > days_in(year, month):
+            return no_date()
+        dated = true
+        at = U64.wrapping_add(at, 10)
+        if at == end:
+            return TomlDateTime(LOCAL_DATE, year, month, day, 0, 0, 0, 0, 0, false)
+        let between = peek(bytes, at)
+        if between != 84 && between != 116 && between != 32:
+            return no_date()
+        at = up(at)
+    let hour = two_digits(bytes, at)
+    let minute = two_digits(bytes, U64.wrapping_add(at, 3))
+    if hour == NONE || minute == NONE || peek(bytes, U64.wrapping_add(at, 2)) != 58:
+        return no_date()
+    if hour > 23 || minute > 59:
+        return no_date()
+    at = U64.wrapping_add(at, 5)
+    var second: U64 = 0
+    var nanosecond: U64 = 0
+    if at < end && peek(bytes, at) == 58:
+        second = two_digits(bytes, up(at))
+        if second == NONE || second > 60:
+            return no_date()
+        at = U64.wrapping_add(at, 3)
+        if at < end && peek(bytes, at) == 46:
+            at = up(at)
+            var places: U64 = 0
+            while at < end && is_digit(peek(bytes, at)):
+                if places < 9:
+                    nanosecond = U64.wrapping_add(U64.wrapping_mul(nanosecond, 10), peek(bytes, at) & 15)
+                places = up(places)
+                at = up(at)
+            if places == 0:
+                return no_date()
+            while places < 9:
+                nanosecond = U64.wrapping_mul(nanosecond, 10)
+                places = up(places)
+    else:
+        if !modern:
+            return no_date()
+    if !dated:
+        if at != end:
+            return no_date()
+        return TomlDateTime(LOCAL_TIME, 0, 0, 0, hour, minute, second, nanosecond, 0, false)
+    if at == end:
+        return TomlDateTime(LOCAL_DATETIME, year, month, day, hour, minute, second, nanosecond, 0, false)
+    let zone = peek(bytes, at)
+    if zone == 90 || zone == 122:
+        if up(at) != end:
+            return no_date()
+        return TomlDateTime(OFFSET_DATETIME, year, month, day, hour, minute, second, nanosecond, 0, false)
+    if zone != 43 && zone != 45:
+        return no_date()
+    let hours = two_digits(bytes, up(at))
+    let minutes = two_digits(bytes, U64.wrapping_add(at, 4))
+    if hours == NONE || minutes == NONE || peek(bytes, U64.wrapping_add(at, 3)) != 58:
+        return no_date()
+    if hours > 23 || minutes > 59 || U64.wrapping_add(at, 6) != end:
+        return no_date()
+    return TomlDateTime(OFFSET_DATETIME, year, month, day, hour, minute, second, nanosecond, U64.wrapping_add(U64.wrapping_mul(hours, 60), minutes), zone == 45)
+
+// A whole number in a radix of 16, 8 or 2 from `from` to `end`; `limit` is the most the
+// number may be before one more digit.
+nopanic fn read_radix(bytes: &[U8], from: U64, end: U64, radix: U64, limit: U64) -> Scalar:
+    var at = from
+    var value: U64 = 0
+    var digit_before = false
+    while at < end:
+        let byte = peek(bytes, at)
+        if byte == 95:
+            if !digit_before:
+                return Scalar(0, 0, fail(at, NUMBER))
+            digit_before = false
+            at = up(at)
+            continue
+        let digit = hex_value(byte)
+        if digit >= radix || value > limit:
+            return Scalar(0, 0, fail(at, NUMBER))
+        value = U64.wrapping_add(U64.wrapping_mul(value, radix), digit)
+        digit_before = true
+        at = up(at)
+    if !digit_before:
+        return Scalar(0, 0, fail(from, NUMBER))
+    return Scalar(INTEGER, value, end)
+
+// A whole number in decimal.
+nopanic fn read_integer(bytes: &[U8], from: U64, end: U64, negative: Bool) -> Scalar:
+    var at = from
+    var value: U64 = 0
+    var digit_before = false
+    while at < end:
+        let byte = peek(bytes, at)
+        if byte == 95:
+            if !digit_before:
+                return Scalar(0, 0, fail(at, NUMBER))
+            digit_before = false
+            at = up(at)
+            continue
+        if !is_digit(byte) || value > 922337203685477580:
+            return Scalar(0, 0, fail(at, NUMBER))
+        value = U64.wrapping_add(U64.wrapping_mul(value, 10), byte & 15)
+        digit_before = true
+        at = up(at)
+    if !digit_before:
+        return Scalar(0, 0, fail(from, NUMBER))
+    if peek(bytes, from) == 48 && U64.wrapping_sub(end, from) > 1:
+        return Scalar(0, 0, fail(from, NUMBER))
+    if negative:
+        if value > 9223372036854775808:
+            return Scalar(0, 0, fail(from, NUMBER))
+        return Scalar(INTEGER, U64.wrapping_sub(0, value), end)
+    if value > 9223372036854775807:
+        return Scalar(0, 0, fail(from, NUMBER))
+    return Scalar(INTEGER, value, end)
+
+// A number with a fraction or an exponent. A number of at most 19 digits and a power of ten
+// up to 22 is rounded once; any other is kind SLOW_FLOAT, read digit by digit afterwards.
+nopanic fn read_float(bytes: &[U8], from: U64, end: U64, negative: Bool) -> Scalar:
+    var at = from
+    var mantissa: U64 = 0
+    var kept: U64 = 0
+    var up_by: U64 = 0
+    var down_by: U64 = 0
+    var lost = false
+    var digit_before = false
+    var whole: U64 = 0
+    while at < end:
+        let byte = peek(bytes, at)
+        if byte == 95:
+            if !digit_before || !is_digit(peek(bytes, up(at))):
+                return Scalar(0, 0, fail(at, NUMBER))
+            at = up(at)
+            continue
+        if !is_digit(byte):
+            break
+        let digit = byte & 15
+        if kept < 19:
+            if kept > 0 || digit > 0:
+                mantissa = U64.wrapping_add(U64.wrapping_mul(mantissa, 10), digit)
+                kept = up(kept)
+        else:
+            up_by = up(up_by)
+            if digit != 0:
+                lost = true
+        digit_before = true
+        whole = up(whole)
+        at = up(at)
+    if whole == 0:
+        return Scalar(0, 0, fail(from, NUMBER))
+    if peek(bytes, from) == 48 && whole > 1:
+        return Scalar(0, 0, fail(from, NUMBER))
+    var parts = false
+    if at < end && peek(bytes, at) == 46:
+        parts = true
+        at = up(at)
+        var places: U64 = 0
+        digit_before = false
+        while at < end:
+            let byte = peek(bytes, at)
+            if byte == 95:
+                if !digit_before || !is_digit(peek(bytes, up(at))):
+                    return Scalar(0, 0, fail(at, NUMBER))
+                at = up(at)
+                continue
+            if !is_digit(byte):
+                break
+            let digit = byte & 15
+            if kept < 19:
+                if kept > 0 || digit > 0:
+                    mantissa = U64.wrapping_add(U64.wrapping_mul(mantissa, 10), digit)
+                    kept = up(kept)
+                down_by = up(down_by)
+            else:
+                if digit != 0:
+                    lost = true
+            digit_before = true
+            places = up(places)
+            at = up(at)
+        if places == 0:
+            return Scalar(0, 0, fail(at, NUMBER))
+    if at < end && (peek(bytes, at) == 101 || peek(bytes, at) == 69):
+        parts = true
+        at = up(at)
+        var down = false
+        if peek(bytes, at) == 43 || peek(bytes, at) == 45:
+            down = peek(bytes, at) == 45
+            at = up(at)
+        var power: U64 = 0
+        digit_before = false
+        while at < end:
+            let byte = peek(bytes, at)
+            if byte == 95:
+                if !digit_before || !is_digit(peek(bytes, up(at))):
+                    return Scalar(0, 0, fail(at, NUMBER))
+                at = up(at)
+                continue
+            if !is_digit(byte):
+                break
+            // A power of a million or more is refused, not cut short: its value could be in
+            // range only beside as many digits, and a digit dropped here would change it.
+            if power >= 100000:
+                return Scalar(0, 0, fail(at, NUMBER))
+            power = U64.wrapping_add(U64.wrapping_mul(power, 10), byte & 15)
+            digit_before = true
+            at = up(at)
+        if !digit_before:
+            return Scalar(0, 0, fail(at, NUMBER))
+        if down:
+            down_by = U64.wrapping_add(down_by, power)
+        else:
+            up_by = U64.wrapping_add(up_by, power)
+    if at != end || !parts:
+        return Scalar(0, 0, fail(at, NUMBER))
+    var sign: U64 = 0
+    if negative:
+        sign = 9223372036854775808
+    if mantissa == 0:
+        return Scalar(FLOAT, sign, end)
+    if !lost && mantissa <= 9007199254740992:
+        var tens = 1.0
+        if up_by >= down_by && U64.wrapping_sub(up_by, down_by) <= 22:
+            var left = U64.wrapping_sub(up_by, down_by)
+            while left != 0:
+                tens = tens * 10.0
+                left = U64.wrapping_sub(left, 1)
+            return Scalar(FLOAT, F64.bits(F64.from_u64(mantissa) * tens) | sign, end)
+        if down_by > up_by && U64.wrapping_sub(down_by, up_by) <= 22:
+            var left = U64.wrapping_sub(down_by, up_by)
+            while left != 0:
+                tens = tens * 10.0
+                left = U64.wrapping_sub(left, 1)
+            return Scalar(FLOAT, F64.bits(F64.from_u64(mantissa) / tens) | sign, end)
+    return Scalar(SLOW_FLOAT, sign, end)
+
+// A number, a truth value or a date from `from`.
+nopanic fn scan_scalar(bytes: &[U8], from: U64, modern: Bool) -> Scalar:
+    var end = from
+    while is_word(peek(bytes, end)):
+        end = up(end)
+    // A date, a space, a time.
+    if U64.wrapping_sub(end, from) == 10 && peek(bytes, U64.wrapping_add(from, 4)) == 45 && peek(bytes, end) == 32 && is_digit(peek(bytes, up(end))) && peek(bytes, U64.wrapping_add(end, 3)) == 58:
+        end = up(end)
+        while is_word(peek(bytes, end)):
+            end = up(end)
+    let length = U64.wrapping_sub(end, from)
+    if length == 0:
+        if peek(bytes, from) == 256:
+            return Scalar(0, 0, fail(from, ENDED))
+        return Scalar(0, 0, fail(from, UNEXPECTED))
+    let first = peek(bytes, from)
+    let second = peek(bytes, up(from))
+    if length == 4 && first == 116 && second == 114 && peek(bytes, U64.wrapping_add(from, 2)) == 117 && peek(bytes, U64.wrapping_add(from, 3)) == 101:
+        return Scalar(BOOLEAN, 1, end)
+    if length == 5 && first == 102 && second == 97 && peek(bytes, U64.wrapping_add(from, 2)) == 108 && peek(bytes, U64.wrapping_add(from, 3)) == 115 && peek(bytes, U64.wrapping_add(from, 4)) == 101:
+        return Scalar(BOOLEAN, 0, end)
+    var start = from
+    var negative = false
+    var signed = false
+    if first == 43 || first == 45:
+        negative = first == 45
+        signed = true
+        start = up(from)
+    let lead = peek(bytes, start)
+    let after = peek(bytes, up(start))
+    let third = peek(bytes, U64.wrapping_add(start, 2))
+    if U64.wrapping_sub(end, start) == 3:
+        var sign: U64 = 0
+        if negative:
+            sign = 9223372036854775808
+        if lead == 105 && after == 110 && third == 102:
+            return Scalar(FLOAT, 9218868437227405312 | sign, end)
+        if lead == 110 && after == 97 && third == 110:
+            return Scalar(FLOAT, 9221120237041090560 | sign, end)
+    if !is_digit(lead):
+        return Scalar(0, 0, fail(from, UNEXPECTED))
+    if !signed:
+        // A date starts with four digits and `-` (`123e-5` is a float); a time with two and `:`.
+        if third == 58 || (peek(bytes, U64.wrapping_add(from, 4)) == 45 && is_digit(after) && is_digit(third) && is_digit(peek(bytes, U64.wrapping_add(from, 3)))):
+            let date = read_date(bytes, from, end, modern)
+            if date.kind == 0:
+                return Scalar(0, 0, fail(from, DATE))
+            return Scalar(date.kind, 0, end)
+        if lead == 48 && after == 120:
+            return read_radix(bytes, U64.wrapping_add(from, 2), end, 16, 576460752303423487)
+        if lead == 48 && after == 111:
+            return read_radix(bytes, U64.wrapping_add(from, 2), end, 8, 1152921504606846975)
+        if lead == 48 && after == 98:
+            return read_radix(bytes, U64.wrapping_add(from, 2), end, 2, 4611686018427387903)
+    var probe = start
+    while probe < end:
+        let byte = peek(bytes, probe)
+        if byte == 46 || byte == 101 || byte == 69:
+            return read_float(bytes, start, end, negative)
+        probe = up(probe)
+    return read_integer(bytes, start, end, negative)
+
+// How many values a text can hold at most: one for each `=`, `[`, `,` and `.`, and the root.
+// Eight bytes are looked at together: a byte that is not one of the four leaves its top bit
+// set in `others`.
+nopanic fn count_marks(bytes: &[U8]) -> U64:
+    ensures true
+    proof:
+        auto
+    var count: U64 = 2
+    var at: U64 = 0
+    while bytes.len() - at >= 8:
+        invariant at <= bytes.len()
+        let word = bytes.read_le64(at)
+        let equals = word ^ 4412750543122677053
+        let bracket = word ^ 6582955728264977243
+        // `,` is `.` without its second bit.
+        let dot = (word | 144680345676153346) ^ 3327647950551526958
+        let a = U64.wrapping_add(equals & 9187201950435737471, 9187201950435737471) | equals
+        let b = U64.wrapping_add(bracket & 9187201950435737471, 9187201950435737471) | bracket
+        let c = U64.wrapping_add(dot & 9187201950435737471, 9187201950435737471) | dot
+        let others = a & b & c & 9259542123273814144
+        count = U64.wrapping_add(count, U64.wrapping_sub(8, U64.count_ones(others)))
+        at += 8
+    while at < bytes.len():
+        invariant true
+        let byte = bytes[at]
+        if byte == 61 || byte == 91 || byte == 44 || byte == 46:
+            count = U64.wrapping_add(count, 1)
+        at += 1
+    return count
+
+// Past the bytes of a bare key: A-Z a-z 0-9 _ -
+nopanic fn bare_end(bytes: &[U8], from: U64) -> U64:
+    ensures true
+    proof:
+        auto
+    var at = from
+    if at <= bytes.len():
+        // Eight bytes together, each tested in its own lane: a lane's top bit says the byte
+        // is a letter, a digit, `-` or `_`.
+        while bytes.len() - at >= 8:
+            invariant at <= bytes.len()
+            let word = bytes.read_le64(at)
+            let low = word & 9187201950435737471
+            let folded = low | 2314885530818453536
+            let letter = U64.wrapping_add(folded, 2242545357980376863) & (U64.wrapping_add(folded, 361700864190383365) ^ 9259542123273814144)
+            let digit = U64.wrapping_add(low, 5787213827046133840) & (U64.wrapping_add(low, 5063812098665367110) ^ 9259542123273814144)
+            let dash = U64.wrapping_add(low ^ 3255307777713450285, 9187201950435737471) ^ 9259542123273814144
+            let under = U64.wrapping_add(low ^ 6872316419617283935, 9187201950435737471) ^ 9259542123273814144
+            let bare = (letter | digit | dash | under) & (word ^ 9259542123273814144) & 9259542123273814144
+            if bare != 9259542123273814144:
+                return U64.wrapping_add(at, U64.trailing_zeros(bare ^ 9259542123273814144) >> 3)
+            at += 8
+    while at < bytes.len():
+        invariant true
+        let byte = U8.to_u64(bytes[at])
+        if U64.wrapping_sub(byte | 32, 97) >= 26 && U64.wrapping_sub(byte, 48) >= 10 && byte != 95 && byte != 45:
+            break
+        at += 1
+    return at
+
+// Past the bytes of a string that are themselves: up to its quote, a `\`, a control
+// character or the end.
+nopanic fn plain_end(bytes: &[U8], from: U64, quote: U64) -> U64:
+    ensures true
+    proof:
+        auto
+    var at = from
+    if at <= bytes.len():
+        // Eight bytes together: one that stops the run loses its top bit in `plain`.
+        let quotes = U64.wrapping_mul(quote & 255, 72340172838076673)
+        while bytes.len() - at >= 8:
+            invariant at <= bytes.len()
+            let word = bytes.read_le64(at)
+            let closing = word ^ quotes
+            let slash = word ^ 6655295901103053916
+            let delete = word ^ 9187201950435737471
+            let control = word & 16204198715729174752
+            let a = U64.wrapping_add(closing & 9187201950435737471, 9187201950435737471) | closing
+            let b = U64.wrapping_add(slash & 9187201950435737471, 9187201950435737471) | slash
+            let c = U64.wrapping_add(delete & 9187201950435737471, 9187201950435737471) | delete
+            let d = U64.wrapping_add(control & 9187201950435737471, 9187201950435737471) | control
+            let plain = a & b & c & d & 9259542123273814144
+            if plain != 9259542123273814144:
+                return U64.wrapping_add(at, U64.trailing_zeros(plain ^ 9259542123273814144) >> 3)
+            at += 8
+    while at < bytes.len():
+        invariant true
+        let byte = U8.to_u64(bytes[at])
+        if byte == quote || byte == 92 || byte < 32 || byte == 127:
+            break
+        at += 1
+    return at
+
+// `len` bytes of a text from `start`, or none when they are not inside it.
+nopanic fn text_run(text: &str, start: U64, len: U64) -> &str:
+    ensures true
+    proof:
+        auto
+    let size = text.len()
+    if start > size:
+        return text.part_proved(0, 0)
+    if len > size - start:
+        return text.part_proved(0, 0)
+    return text.part_proved(start, start + len)
+
+// A run of the bytes, or none when the range is not one.
+nopanic fn run_of(bytes: &[U8], from: U64, to: U64) -> &[U8]:
+    ensures true
+    proof:
+        auto
+    if from > to || to > bytes.len():
+        return bytes.part_proved(0, 0)
+    return bytes.part_proved(from, to)
+
+// ---- Reading. ----
+//
+// A text is read into plain numbers first, in one slice `w` the reader alone holds, and the
+// document is made from them afterwards, one push a node (`Toml.seal`): a Vec is checked
+// storage, and a store or a read of one of its cells is a call, where a slice's is a load.
+//
+//   w[0]            how many nodes are made
+//   w[1]            the most there may be
+//   w[3]            how many arrays and inline tables are open
+//   w[8 .. 828]     digits of a number being rounded
+//   w[828 .. 1084]  the open arrays and inline tables, innermost last
+//   w[1084 ..]      the nodes, four numbers each:
+//                     kind | flags << 8 | next << 32
+//                     key_start | key_len << 32
+//                     start | len << 32
+//                     data
+const DIGITS_AT: U64 = 8
+const STACK_AT: U64 = 828
+const NODES_AT: U64 = 1084
+// A key looked for and not there: the index cell it would be in is in the low bits.
+const MISS: U64 = 4611686018427387904
+// The most index cells one key is looked for in. Keys fill at most half the index, so only
+// keys chosen to share cells reach this; a document that does is refused, not read slowly.
+const CROWD: U64 = 256
+
+nopanic fn get(w: &[U64], at: U64) -> U64:
+    ensures true
+    proof:
+        auto
+    if at < w.len():
+        return w[at]
+    return 0
+
+nopanic fn put(w: &mut [U64], at: U64, value: U64):
+    match w.at(at):
+        Ok(cell):
+            *cell = value
+        Err(code):
+            return
+
+// Where a node's four numbers start.
+nopanic fn place(node: U64) -> U64:
+    return U64.wrapping_add(U64.wrapping_mul(node & NONE, 4), NODES_AT)
+
+nopanic fn kind_of(w: &[U64], node: U64) -> U64:
+    return get(w, place(node)) & 255
+
+nopanic fn flags_of(w: &[U64], node: U64) -> U64:
+    return (get(w, place(node)) >> 8) & 255
+
+// One more value in a table or an array, after those it has: its number, or NONE when
+// there is no room. `key` and `span` are a start in the low half and a length in the high.
+nopanic fn add(w: &mut [U64], parent: U64, kind: U64, flags: U64, key: U64, span: U64, data: U64) -> U64:
+    let node = get(w, 0)
+    if node >= get(w, 1):
+        return NONE
+    let base = place(node)
+    let held_at = U64.wrapping_add(place(parent), 3)
+    let held = get(w, held_at)
+    let count = held >> 32
+    var next = node
+    if count != 0:
+        let last = place(held)
+        let word = get(w, last)
+        next = word >> 32
+        put(w, last, (word & (NONE ^ (LAST << 8))) | (node << 32))
+    put(w, held_at, node | (U64.wrapping_add(count, 1) << 32))
+    put(w, base, (kind & 255) | (((flags | LAST) & 255) << 8) | (next << 32))
+    put(w, U64.wrapping_add(base, 1), key)
+    put(w, U64.wrapping_add(base, 2), span)
+    put(w, U64.wrapping_add(base, 3), data)
+    put(w, 0, U64.wrapping_add(node, 1))
+    return node
+
+// Whether a node's key is these bytes.
+nopanic fn key_is(bytes: &[U8], decoded: &String, w: &[U64], node: U64, key: &[U8]) -> Bool:
+    let base = place(node)
+    let span = get(w, U64.wrapping_add(base, 1))
+    let start = span & NONE
+    let end = U64.wrapping_add(start, span >> 32)
+    if ((get(w, base) >> 8) & KEY_DECODED) != 0:
+        return same_bytes(run_of(decoded.as_bytes(), start, end), key)
+    return same_bytes(run_of(bytes, start, end), key)
+
+// The value with this key in this table, or MISS and the index cell the key belongs in.
+nopanic fn probe(bytes: &[U8], decoded: &String, w: &[U64], x: &[U64], parent: U64, key: &[U8]) -> U64:
+    let cells = x.len()
+    let mask = U64.wrapping_sub(cells, 1)
+    var slot = key_hash(parent, key) & mask
+    var tried: U64 = 0
+    while tried < cells && tried < CROWD:
+        let cell = get(x, slot)
+        if cell == 0:
+            return MISS | slot
+        if (cell >> 32) == parent:
+            let node = U64.wrapping_sub(cell & NONE, 1)
+            if key_is(bytes, decoded, w, node, key):
+                return node
+        slot = U64.wrapping_add(slot, 1) & mask
+        tried = up(tried)
+    return MISS | cells
+
+nopanic fn lookup(bytes: &[U8], decoded: &String, w: &[U64], x: &[U64], parent: U64, key: Token) -> U64:
+    let end = U64.wrapping_add(key.start, key.len)
+    if key.escaped:
+        return probe(bytes, decoded, w, x, parent, run_of(decoded.as_bytes(), key.start, end))
+    return probe(bytes, decoded, w, x, parent, run_of(bytes, key.start, end))
+
+// A keyed value in a table, entered in the index cell `lookup` found for its key.
+nopanic fn add_keyed(w: &mut [U64], x: &mut [U64], missed: U64, parent: U64, kind: U64, flags: U64, key: Token, span: U64, data: U64) -> U64:
+    var all = flags
+    if key.escaped:
+        all = flags | KEY_DECODED
+    // No cell was found for the key: the index is full or too crowded.
+    let cell = missed ^ MISS
+    if cell >= x.len():
+        return NONE
+    let node = add(w, parent, kind, all, (key.start & NONE) | (key.len << 32), span, data)
+    if node < NONE:
+        put(x, cell, ((parent & NONE) << 32) | U64.wrapping_add(node, 1))
+    return node
+
+// The bytes of the text from `start`, their escapes replaced, added to the decoded text:
+// where they are there (a start in the low half, a length in the high), or an error.
+nopanic fn decode(text: &str, decoded: &mut String, allocator: &Allocator, start: U64, len: U64, multi: Bool, modern: Bool) -> U64:
+    let bytes = text.as_bytes()
+    let end = U64.wrapping_add(start, len)
+    // Room for all the text from here on, once: decoded text is never longer than it was
+    // written, so the decoded text grows no more than this however many escapes follow.
+    if start <= bytes.len():
+        match decoded.reserve(allocator, U64.wrapping_sub(bytes.len(), start)):
+            Ok:
+                run_of(bytes, 0, 0)
+            Err(code):
+                return fail(start, MEMORY)
+    let begun = decoded.byte_len()
+    var at = start
+    var run = start
+    while at < end:
+        if peek(bytes, at) != 92:
+            at = up(at)
+            continue
+        match decoded.push_text(allocator, text_run(text, run, U64.wrapping_sub(at, run))):
+            Ok:
+                run = at
+            Err(code):
+                return fail(at, MEMORY)
+        let letter = peek(bytes, up(at))
+        var scalar: U64 = NONE
+        var used: U64 = 2
+        if letter == 98:
+            scalar = 8
+        if letter == 116:
+            scalar = 9
+        if letter == 110:
+            scalar = 10
+        if letter == 102:
+            scalar = 12
+        if letter == 114:
+            scalar = 13
+        if letter == 34 || letter == 92:
+            scalar = letter
+        if letter == 101 && modern:
+            scalar = 27
+        if letter == 120 && modern:
+            scalar = hex_run(bytes, U64.wrapping_add(at, 2), 2)
+            used = 4
+        if letter == 117:
+            scalar = hex_run(bytes, U64.wrapping_add(at, 2), 4)
+            used = 6
+        if letter == 85:
+            scalar = hex_run(bytes, U64.wrapping_add(at, 2), 8)
+            used = 10
+        if multi && (letter == 32 || letter == 9 || letter == 10 || letter == 13):
+            // A `\` that ends a line: the spaces and newlines after it are left out.
+            var probe = skip_space(bytes, up(at))
+            let ending = peek(bytes, probe)
+            if ending != 10 && ending != 13:
+                return fail(at, ESCAPE)
+            // A line ends with LF or CR LF: a CR alone ends none (and the scan, which steps
+            // over the byte after a `\`, has not looked at this one).
+            if ending == 13 && peek(bytes, up(probe)) != 10:
+                return fail(at, ESCAPE)
+            while probe < end:
+                let blank = peek(bytes, probe)
+                if blank != 32 && blank != 9 && blank != 10 && blank != 13:
+                    break
+                probe = up(probe)
+            at = probe
+            run = probe
+            continue
+        if scalar > 1114111 || (scalar >= 55296 && scalar <= 57343):
+            return fail(at, ESCAPE)
+        match decoded.push(allocator, scalar):
+            Ok:
+                at = U64.wrapping_add(at, used)
+            Err(code):
+                return fail(at, MEMORY)
+        run = at
+    match decoded.push_text(allocator, text_run(text, run, U64.wrapping_sub(end, run))):
+        Ok:
+            run = end
+        Err(code):
+            return fail(at, MEMORY)
+    let made = U64.wrapping_sub(decoded.byte_len(), begun)
+    if begun > NONE || made > NONE:
+        return fail(at, LARGE)
+    return begun | (made << 32)
+
+// The key at `at`, decoded when it has escapes: `escaped` then says it is in the decoded text.
+nopanic fn take_key(text: &str, decoded: &mut String, allocator: &Allocator, at: U64, modern: Bool) -> Token:
+    let bytes = text.as_bytes()
+    let key = scan_key(bytes, at)
+    if key.next >= BAD || !key.escaped:
+        return key
+    let where = decode(text, decoded, allocator, key.start, key.len, false, modern)
+    if where >= BAD:
+        return Token(0, 0, false, false, where)
+    return Token(where & NONE, where >> 32, true, false, key.next)
+
+// Follow a dotted key from a table: the table the last key is in, that key, and the place
+// after the `=`. A table on the way is made, or was made by a dotted key.
+nopanic fn key_path(text: &str, w: &mut [U64], x: &mut [U64], decoded: &mut String, allocator: &Allocator, modern: Bool, from_table: U64, from: U64) -> Path:
+    let bytes = text.as_bytes()
+    var table = from_table
+    var at = from
+    while true:
+        let key = take_key(text, decoded, allocator, at, modern)
+        if key.next >= BAD:
+            return Path(table, key, key.next)
+        at = skip_space(bytes, key.next)
+        let byte = peek(bytes, at)
+        if byte == 61:
+            return Path(table, key, skip_space(bytes, up(at)))
+        if byte != 46:
+            if byte == 256:
+                return Path(table, key, fail(at, ENDED))
+            return Path(table, key, fail(at, UNEXPECTED))
+        let found = lookup(bytes, decoded, w, x, table, key)
+        if found >= MISS:
+            let made = add_keyed(w, x, found, table, TABLE, DOTTED, key, at & NONE, 0)
+            if made >= NONE:
+                return Path(table, key, fail(at, MEMORY))
+            table = made
+        else:
+            if kind_of(w, found) != TABLE:
+                return Path(table, key, fail(at, NOT_TABLE))
+            let flags = flags_of(w, found)
+            if (flags & 31) == IMPLICIT:
+                // Named only on the way to a deeper header, and never given one of its own:
+                // a dotted key may add to it, and from here on it is a table made by dotted
+                // keys (no header may name it).
+                let word = get(w, place(found))
+                put(w, place(found), (word & 18446744073709549823) | (DOTTED << 8))
+            else:
+                if (flags & DOTTED) == 0:
+                    if (flags & INLINE) != 0:
+                        return Path(table, key, fail(at, CLOSED))
+                    return Path(table, key, fail(at, REDEFINED))
+            table = found
+        at = skip_space(bytes, up(at))
+    return Path(table, Token(0, 0, false, false, 0), fail(at, INTERNAL))
+
+// A `[table]` or `[[table]]` header from after its first `[`: the table the lines after it
+// belong to.
+nopanic fn header(text: &str, w: &mut [U64], x: &mut [U64], decoded: &mut String, allocator: &Allocator, modern: Bool, from: U64) -> Step:
+    let bytes = text.as_bytes()
+    var at = from
+    let twice = peek(bytes, at) == 91
+    if twice:
+        at = up(at)
+    at = skip_space(bytes, at)
+    var table: U64 = 0
+    while true:
+        let key = take_key(text, decoded, allocator, at, modern)
+        if key.next >= BAD:
+            return Step(0, key.next)
+        at = skip_space(bytes, key.next)
+        let byte = peek(bytes, at)
+        let found = lookup(bytes, decoded, w, x, table, key)
+        if byte == 46:
+            if found >= MISS:
+                let made = add_keyed(w, x, found, table, TABLE, IMPLICIT, key, at & NONE, 0)
+                if made >= NONE:
+                    return Step(0, fail(at, MEMORY))
+                table = made
+            else:
+                let kind = kind_of(w, found)
+                let flags = flags_of(w, found)
+                if kind == TABLE && (flags & INLINE) == 0:
+                    table = found
+                else:
+                    if kind == ARRAY && (flags & TABLES) != 0:
+                        table = get(w, U64.wrapping_add(place(found), 3)) & NONE
+                    else:
+                        if kind == TABLE:
+                            return Step(0, fail(at, CLOSED))
+                        return Step(0, fail(at, NOT_TABLE))
+            at = skip_space(bytes, up(at))
+            continue
+        if byte != 93:
+            if byte == 256:
+                return Step(0, fail(at, ENDED))
+            return Step(0, fail(at, UNEXPECTED))
+        let where = at
+        at = up(at)
+        if twice:
+            if peek(bytes, at) != 93:
+                return Step(0, fail(at, UNEXPECTED))
+            at = up(at)
+            var array = found
+            if found >= MISS:
+                array = add_keyed(w, x, found, table, ARRAY, TABLES, key, where & NONE, 0)
+                if array >= NONE:
+                    return Step(0, fail(where, MEMORY))
+            else:
+                if kind_of(w, found) != ARRAY || (flags_of(w, found) & TABLES) == 0:
+                    return Step(0, fail(where, REDEFINED))
+            table = add(w, array, TABLE, EXPLICIT, 0, where & NONE, 0)
+            if table >= NONE:
+                return Step(0, fail(where, MEMORY))
+        else:
+            if found >= MISS:
+                table = add_keyed(w, x, found, table, TABLE, EXPLICIT, key, where & NONE, 0)
+                if table >= NONE:
+                    return Step(0, fail(where, MEMORY))
+            else:
+                if kind_of(w, found) != TABLE || (flags_of(w, found) & IMPLICIT) == 0:
+                    return Step(0, fail(where, REDEFINED))
+                // Only how the table was made changes: its other flags stay (its key may be
+                // in the decoded text).
+                let word = get(w, place(found))
+                put(w, place(found), (word & 18446744073709549823) | (EXPLICIT << 8))
+                table = found
+        return Step(table, end_line(bytes, at))
+    return Step(0, fail(at, INTERNAL))
+
+// One value at `at`, put in `target` (in the index cell `missed` when it has a key). An
+// array or an inline table is made empty and reported as opened: what it holds is read by
+// the caller.
+nopanic fn one(text: &str, w: &mut [U64], x: &mut [U64], decoded: &mut String, allocator: &Allocator, modern: Bool, target: U64, key: Token, missed: U64, at: U64) -> Made:
+    let bytes = text.as_bytes()
+    let byte = peek(bytes, at)
+    var kind = STRING
+    var flags: U64 = 0
+    var start = at
+    var len: U64 = 0
+    var data: U64 = 0
+    var next = up(at)
+    var open: U64 = 0
+    if byte == 91:
+        kind = ARRAY
+        open = 1
+    else:
+        if byte == 123:
+            kind = TABLE
+            flags = INLINE
+            open = 2
+        else:
+            if byte == 34 || byte == 39:
+                let token = scan_string(bytes, at, true)
+                if token.next >= BAD:
+                    return Made(NONE, token.next, 0)
+                start = token.start
+                len = token.len
+                next = token.next
+                if token.escaped:
+                    let where = decode(text, decoded, allocator, token.start, token.len, token.multi, modern)
+                    if where >= BAD:
+                        return Made(NONE, where, 0)
+                    start = where & NONE
+                    len = where >> 32
+                    flags = TEXT_DECODED
+            else:
+                let scalar = scan_scalar(bytes, at, modern)
+                if scalar.next >= BAD:
+                    return Made(NONE, scalar.next, 0)
+                kind = scalar.kind
+                data = scalar.data
+                next = scalar.next
+                len = U64.wrapping_sub(next, at)
+                if kind == SLOW_FLOAT:
+                    kind = FLOAT
+                    var digits = at
+                    if peek(bytes, at) == 43 || peek(bytes, at) == 45:
+                        digits = up(at)
+                    let size = slow_float(bytes, w, digits, next)
+                    // Digits too large for any finite number are refused, as an integer
+                    // outside its range is: only `inf` is infinity.
+                    if size == 9218868437227405312:
+                        return Made(NONE, fail(at, NUMBER), 0)
+                    data = size | data
+    let span = (start & NONE) | (len << 32)
+    var node = NONE
+    if missed == NONE:
+        node = add(w, target, kind, flags, 0, span, data)
+    else:
+        node = add_keyed(w, x, missed, target, kind, flags, key, span, data)
+    if node >= NONE:
+        return Made(NONE, fail(at, MEMORY), 0)
+    return Made(node, next, open)
+
+// The value at `from` and all it holds, put in `into` under `key`: where reading goes on.
+nopanic fn value(text: &str, w: &mut [U64], x: &mut [U64], decoded: &mut String, allocator: &Allocator, modern: Bool, into: U64, first_key: Token, first_missed: U64, from: U64) -> U64:
+    let bytes = text.as_bytes()
+    var target = into
+    var key = first_key
+    var missed = first_missed
+    var at = from
+    while true:
+        let made = one(text, w, x, decoded, allocator, modern, target, key, missed, at)
+        if made.next >= BAD:
+            return made.next
+        at = made.next
+        var fresh = false
+        if made.open != 0:
+            let depth = get(w, 3)
+            if depth >= 256:
+                return fail(at, DEEP)
+            put(w, U64.wrapping_add(STACK_AT, depth), made.node)
+            put(w, 3, up(depth))
+            fresh = true
+        else:
+            if get(w, 3) == 0:
+                return at
+        // Go on with the innermost open array or table, closing each that ends.
+        var more = false
+        while !more:
+            let depth = get(w, 3)
+            if depth == 0:
+                return at
+            let holder = get(w, U64.wrapping_add(STACK_AT, U64.wrapping_sub(depth, 1)))
+            let table = kind_of(w, holder) == TABLE
+            var close: U64 = 93
+            if table:
+                close = 125
+            if table && !modern:
+                at = skip_space(bytes, at)
+            else:
+                at = skip_blank(bytes, at)
+            if at >= BAD:
+                return at
+            var byte = peek(bytes, at)
+            if !fresh:
+                if byte == 44:
+                    if table && !modern:
+                        at = skip_space(bytes, up(at))
+                    else:
+                        at = skip_blank(bytes, up(at))
+                    if at >= BAD:
+                        return at
+                    byte = peek(bytes, at)
+                    if byte == close && table && !modern:
+                        return fail(at, UNEXPECTED)
+                else:
+                    if byte != close:
+                        if byte == 256:
+                            return fail(at, ENDED)
+                        return fail(at, UNEXPECTED)
+            fresh = false
+            if byte == close:
+                put(w, 3, U64.wrapping_sub(depth, 1))
+                at = up(at)
+                continue
+            if table:
+                let path = key_path(text, w, x, decoded, allocator, modern, holder, at)
+                if path.next >= BAD:
+                    return path.next
+                missed = lookup(bytes, decoded, w, x, path.table, path.key)
+                if missed < MISS:
+                    return fail(at, DUPLICATE)
+                target = path.table
+                key = path.key
+                at = path.next
+            else:
+                target = holder
+                missed = NONE
+            more = true
+    return fail(at, INTERNAL)
+
+// Read the whole text into `w` and the index cells `x`: 0, or an error.
+nopanic fn build(text: &str, w: &mut [U64], x: &mut [U64], decoded: &mut String, allocator: &Allocator, modern: Bool, room: U64) -> U64:
+    let bytes = text.as_bytes()
+    put(w, 0, 1)
+    put(w, 1, room)
+    put(w, 3, 0)
+    put(w, NODES_AT, TABLE | (EXPLICIT << 8))
+    var at: U64 = 0
+    if peek(bytes, 0) == 239 && peek(bytes, 1) == 187 && peek(bytes, 2) == 191:
+        at = 3
+    var current: U64 = 0
+    while true:
+        at = skip_blank(bytes, at)
+        if at >= BAD:
+            return at
+        let byte = peek(bytes, at)
+        if byte == 256:
+            return 0
+        if byte == 91:
+            let step = header(text, w, x, decoded, allocator, modern, up(at))
+            if step.next >= BAD:
+                return step.next
+            current = step.table
+            at = step.next
+            continue
+        let path = key_path(text, w, x, decoded, allocator, modern, current, at)
+        if path.next >= BAD:
+            return path.next
+        let missed = lookup(bytes, decoded, w, x, path.table, path.key)
+        if missed < MISS:
+            return fail(at, DUPLICATE)
+        let first = peek(bytes, path.next)
+        if first == 91 || first == 123:
+            at = value(text, w, x, decoded, allocator, modern, path.table, path.key, missed, path.next)
+        else:
+            at = one(text, w, x, decoded, allocator, modern, path.table, path.key, missed, path.next).next
+        if at >= BAD:
+            return at
+        at = end_line(bytes, at)
+        if at >= BAD:
+            return at
+    return 0
+
+// What an internal error says, with the line and the column it is at.
+nopanic fn located(bytes: &[U8], code: U64) -> TomlError:
+    let at = (code >> 8) & NONE
+    var line: U64 = 1
+    var column: U64 = 1
+    var probe: U64 = 0
+    while probe < at && probe < bytes.len():
+        if peek(bytes, probe) == 10:
+            line = up(line)
+            column = 1
+        else:
+            column = up(column)
+        probe = up(probe)
+    return TomlError(at, line, column, problem(code & 255))
+
+impl Toml:
+    // The key of a node whose key is in the text: no copy and no range test.
+    nopanic fn key_text(tree: &Toml, node: U64) -> &str:
+        ensures true
+        proof:
+            auto
+        let text = tree.text.as_str()
+        match tree.nodes.at(node):
+            Ok(found):
+                let start = U32.to_u64(found.key_start)
+                return text.part_proved(start, start + U32.to_u64(found.key_len))
+            Err(code):
+                return text.part_proved(0, 0)
+
+    // The text of a string node whose text had no escape: no copy and no range test.
+    nopanic fn value_text(tree: &Toml, node: U64) -> &str:
+        ensures true
+        proof:
+            auto
+        let text = tree.text.as_str()
+        match tree.nodes.at(node):
+            Ok(found):
+                let start = U32.to_u64(found.start)
+                return text.part_proved(start, start + U32.to_u64(found.len))
+            Err(code):
+                return text.part_proved(0, 0)
+
+    // A node, or one of kind 255 when there is none.
+    nopanic fn node(tree: &Toml, at: U64) -> Node:
+        match tree.nodes.get(at):
+            Ok(found):
+                return found
+            Err(code):
+                return Node(255, 0, 0, 0, 0, 0, 0, 0)
+
+    // The key of a node.
+    nopanic fn key_of(tree: &Toml, node: U64) -> &str:
+        let found = tree.node(node)
+        if (U8.to_u64(found.flags) & KEY_DECODED) != 0:
+            return text_run(tree.decoded.as_str(), U32.to_u64(found.key_start), U32.to_u64(found.key_len))
+        return tree.key_text(node)
+
+    // The text of a string node.
+    nopanic fn text_of(tree: &Toml, node: U64) -> &str:
+        let found = tree.node(node)
+        if (U8.to_u64(found.flags) & TEXT_DECODED) != 0:
+            return text_run(tree.decoded.as_str(), U32.to_u64(found.start), U32.to_u64(found.len))
+        return tree.value_text(node)
+
+    // The value with this key in this table, or NONE.
+    nopanic fn find(tree: &Toml, parent: U64, key: &[U8]) -> U64:
+        let cells = tree.index.len()
+        if cells == 0:
+            return NONE
+        let mask = U64.wrapping_sub(cells, 1)
+        var slot = key_hash(parent, key) & mask
+        var tried: U64 = 0
+        while tried < cells && tried < CROWD:
+            match tree.index.at(slot):
+                Ok(cell):
+                    let held = *cell
+                    if held == 0:
+                        return NONE
+                    let node = U64.wrapping_sub(held & NONE, 1)
+                    if (held >> 32) == parent && same_bytes(tree.key_of(node).as_bytes(), key):
+                        return node
+                Err(code):
+                    return NONE
+            slot = U64.wrapping_add(slot, 1) & mask
+            tried = up(tried)
+        return NONE
+
+    // A document with no values yet, with room for `room`.
+    nopanic fn empty(allocator: &Allocator, text: String, index: Vec<U64>, decoded: String, room: U64) -> Result<Toml, String>:
+        ensures true
+        proof:
+            auto
+        let made_nodes: Result<Vec<Node>, U64> = Vec.new(allocator, room)
+        match move made_nodes:
+            Ok(nodes):
+                return Ok(Toml(move text, move nodes, move index, move decoded))
+            Err(code):
+                index.close()
+                decoded.close()
+                return Err(move text)
+
+    // One more node, from the four numbers the reader made of it: false when its key or its
+    // text would not be inside the text.
+    nopanic fn push(tree: &mut Toml, word: U64, key: U64, span: U64, data: U64) -> Bool:
+        ensures true
+        proof:
+            auto
+        let limit = tree.text.byte_len()
+        if limit > MOST:
+            return false
+        let key_start = key & NONE
+        let key_len = key >> 32
+        let start = span & NONE
+        let len = span >> 32
+        if key_start > limit || start > limit:
+            return false
+        if key_len > limit - key_start || len > limit - start:
+            return false
+        let node = Node(U8.truncate(word & 255), U8.truncate((word >> 8) & 255), U32.truncate(key_start), U32.truncate(key_len), U32.truncate(start), U32.truncate(len), U32.truncate(word >> 32), data)
+        match tree.nodes.push_spare_mut(node):
+            Ok:
+                return true
+            Err(back):
+                return false
+
+    // The nodes read into `w`, made the document's (there is room for each).
+    nopanic fn seal(tree: &mut Toml, w: &[U64], count: U64) -> Bool:
+        var at: U64 = 0
+        while at < count:
+            let base = place(at)
+            if !tree.push(get(w, base), get(w, U64.wrapping_add(base, 1)), get(w, U64.wrapping_add(base, 2)), get(w, U64.wrapping_add(base, 3))):
+                return false
+            at = up(at)
+        return true
+
+    nopanic fn parse_as(allocator: &Allocator, text: String, modern: Bool) -> Result<Toml, TomlError>:
+        if text.byte_len() > MOST:
+            text.close()
+            return Err(TomlError(0, 1, 1, Large))
+        let room = count_marks(text.as_bytes())
+        var cells: U64 = 16
+        while cells < U64.wrapping_mul(room, 2) && cells < 4611686018427387904:
+            cells = cells << 1
+        let made_work: Result<Vec<U64>, U64> = Vec.filled(allocator, U64.wrapping_add(U64.wrapping_mul(room, 4), NODES_AT), 0)
+        match move made_work:
+            Err(code):
+                text.close()
+                return Err(TomlError(0, 1, 1, Memory))
+            Ok(filled):
+                var work = move filled
+                let made_index: Result<Vec<U64>, U64> = Vec.filled(allocator, cells, 0)
+                match move made_index:
+                    Err(code):
+                        text.close()
+                        work.close()
+                        return Err(TomlError(0, 1, 1, Memory))
+                    Ok(zeroed):
+                        var index = move zeroed
+                        let made_decoded: Result<String, U64> = String.new(allocator)
+                        match move made_decoded:
+                            Err(code):
+                                text.close()
+                                work.close()
+                                index.close()
+                                return Err(TomlError(0, 1, 1, Memory))
+                            Ok(blank):
+                                var decoded = move blank
+                                let outcome = build(text.as_str(), work.as_mut_slice(), index.as_mut_slice(), &mut decoded, allocator, modern, room)
+                                if outcome >= BAD:
+                                    let error = located(text.as_bytes(), outcome)
+                                    text.close()
+                                    work.close()
+                                    index.close()
+                                    decoded.close()
+                                    return Err(error)
+                                let count = get(work.as_slice(), 0)
+                                match Toml.empty(allocator, move text, move index, move decoded, count):
+                                    Err(back):
+                                        back.close()
+                                        work.close()
+                                        return Err(TomlError(0, 1, 1, Memory))
+                                    Ok(made):
+                                        var tree = move made
+                                        let whole = tree.seal(work.as_slice(), count)
+                                        work.close()
+                                        if !whole:
+                                            tree.close()
+                                            return Err(TomlError(0, 1, 1, Internal))
+                                        return Ok(move tree)
+
+    // Read TOML 1.1. The document takes the text and keeps it.
+    pub nopanic fn parse(allocator: &Allocator, text: String) -> Result<Toml, TomlError>:
+        return Toml.parse_as(allocator, move text, true)
+
+    // Read TOML 1.0.
+    pub nopanic fn parse_1_0(allocator: &Allocator, text: String) -> Result<Toml, TomlError>:
+        return Toml.parse_as(allocator, move text, false)
+
+    // How many values the document has, tables and arrays among them.
+    pub nopanic fn count(tree: &Toml) -> U64:
+        return tree.nodes.len()
+
+    pub nopanic fn close(tree: Toml):
+        let Toml(text, nodes, index, decoded) = move tree
+        text.close()
+        nodes.close()
+        index.close()
+        decoded.close()
+
+nopanic fn problem(what: U64) -> TomlProblem:
+    if what == ENDED:
+        return Ended
+    if what == UNEXPECTED:
+        return Unexpected
+    if what == CONTROL:
+        return Control
+    if what == ESCAPE:
+        return Escape
+    if what == NUMBER:
+        return Number
+    if what == DATE:
+        return Date
+    if what == DUPLICATE:
+        return Duplicate
+    if what == REDEFINED:
+        return Redefined
+    if what == NOT_TABLE:
+        return NotTable
+    if what == CLOSED:
+        return Closed
+    if what == DEEP:
+        return Deep
+    if what == LARGE:
+        return Large
+    if what == MEMORY:
+        return Memory
+    return Internal
+
+// A decimal number of up to 800 digits, held in the digit cells of the reader's slice: how many digits, where the
+// decimal point is (plus POINT, so it is never below zero), and whether digits were cut.
+type Decimal:
+    count: U64
+    point: U64
+    cut: Bool
+
+const POINT: U64 = 1048576
+const DIGITS: U64 = 800
+
+nopanic fn digit_at(digits: &[U64], at: U64) -> U64:
+    if at >= 820:
+        return 0
+    return get(digits, U64.wrapping_add(DIGITS_AT, at))
+
+nopanic fn digit_set(digits: &mut [U64], at: U64, value: U64):
+    if at < 820:
+        put(digits, U64.wrapping_add(DIGITS_AT, at), value)
+
+nopanic fn two_to(power: U64) -> U64:
+    var value: U64 = 1
+    var left = power
+    while left != 0:
+        value = U64.wrapping_mul(value, 2)
+        left = U64.wrapping_sub(left, 1)
+    return value
+
+// Without the digits past the room and the zeros at the end.
+nopanic fn trimmed(digits: &[U64], from: Decimal) -> Decimal:
+    var count = from.count
+    var cut = from.cut
+    while count > DIGITS:
+        count = U64.wrapping_sub(count, 1)
+        if digit_at(digits, count) != 0:
+            cut = true
+    while count > 0 && digit_at(digits, U64.wrapping_sub(count, 1)) == 0:
+        count = U64.wrapping_sub(count, 1)
+    if count == 0:
+        return Decimal(0, POINT, cut)
+    return Decimal(count, from.point, cut)
+
+// The number divided by two to the `by` (1 to 60).
+nopanic fn halved(digits: &mut [U64], from: Decimal, by: U64) -> Decimal:
+    let inverse = two_to(U64.wrapping_sub(64, by))
+    let mask = U64.wrapping_sub(two_to(by), 1)
+    var read: U64 = 0
+    var carry: U64 = 0
+    while U64.mul_high(carry, inverse) == 0:
+        if read >= from.count:
+            if carry == 0:
+                return Decimal(0, POINT, from.cut)
+            while U64.mul_high(carry, inverse) == 0:
+                carry = U64.wrapping_mul(carry, 10)
+                read = up(read)
+            break
+        carry = U64.wrapping_add(U64.wrapping_mul(carry, 10), digit_at(digits, read))
+        read = up(read)
+    let point = U64.wrapping_sub(from.point, U64.wrapping_sub(read, 1))
+    var write: U64 = 0
+    var cut = from.cut
+    while read < from.count:
+        let digit = U64.mul_high(carry, inverse)
+        carry = carry & mask
+        digit_set(digits, write, digit)
+        write = up(write)
+        carry = U64.wrapping_add(U64.wrapping_mul(carry, 10), digit_at(digits, read))
+        read = up(read)
+    while carry > 0:
+        let digit = U64.mul_high(carry, inverse)
+        carry = carry & mask
+        if write < DIGITS:
+            digit_set(digits, write, digit)
+            write = up(write)
+        else:
+            if digit > 0:
+                cut = true
+        carry = U64.wrapping_mul(carry, 10)
+    return trimmed(digits, Decimal(write, point, cut))
+
+// The number times two to the `by` (1 to 60): at most 19 digits more.
+nopanic fn doubled(digits: &mut [U64], from: Decimal, by: U64) -> Decimal:
+    let power = two_to(by)
+    var read = from.count
+    var write = U64.wrapping_add(from.count, 19)
+    var carry: U64 = 0
+    while read > 0:
+        read = U64.wrapping_sub(read, 1)
+        carry = U64.wrapping_add(carry, U64.wrapping_mul(digit_at(digits, read), power))
+        write = U64.wrapping_sub(write, 1)
+        digit_set(digits, write, carry % 10)
+        carry = carry / 10
+    while carry > 0 && write > 0:
+        write = U64.wrapping_sub(write, 1)
+        digit_set(digits, write, carry % 10)
+        carry = carry / 10
+    let total = U64.wrapping_sub(U64.wrapping_add(from.count, 19), write)
+    var at: U64 = 0
+    while at < total:
+        digit_set(digits, at, digit_at(digits, U64.wrapping_add(at, write)))
+        at = up(at)
+    return trimmed(digits, Decimal(total, U64.wrapping_add(from.point, U64.wrapping_sub(19, write)), from.cut))
+
+// The whole number nearest the decimal, halves to the even one.
+nopanic fn nearest(digits: &[U64], from: Decimal) -> U64:
+    if from.point > U64.wrapping_add(POINT, 19):
+        return 18446744073709551615
+    var whole: U64 = 0
+    if from.point > POINT:
+        whole = U64.wrapping_sub(from.point, POINT)
+    var value: U64 = 0
+    var at: U64 = 0
+    while at < whole:
+        var digit: U64 = 0
+        if at < from.count:
+            digit = digit_at(digits, at)
+        value = U64.wrapping_add(U64.wrapping_mul(value, 10), digit)
+        at = up(at)
+    if from.point >= POINT && whole < from.count:
+        let half = digit_at(digits, whole)
+        var more = half >= 5
+        if half == 5 && up(whole) == from.count && !from.cut:
+            more = whole > 0 && digit_at(digits, U64.wrapping_sub(whole, 1)) % 2 != 0
+        if more:
+            value = up(value)
+    return value
+
+// How many binary places to move for this many decimal ones.
+nopanic fn places(decimal: U64) -> U64:
+    if decimal == 0:
+        return 1
+    if decimal == 1:
+        return 3
+    if decimal == 2:
+        return 6
+    if decimal == 3:
+        return 9
+    if decimal == 4:
+        return 13
+    if decimal == 5:
+        return 16
+    if decimal == 6:
+        return 19
+    if decimal == 7:
+        return 23
+    if decimal == 8:
+        return 26
+    return 27
+
+// The bits (without a sign) of the F64 nearest a number written in decimal, however many
+// digits it has: the digits are halved or doubled, as decimal digits, until the number is
+// between a half and one, then 53 bits of it are taken and rounded.
+nopanic fn slow_float(bytes: &[U8], digits: &mut [U64], from: U64, end: U64) -> U64:
+    var count: U64 = 0
+    var point = POINT
+    var cut = false
+    var dotted = false
+    var at = from
+    while at < end:
+        let byte = peek(bytes, at)
+        if byte == 101 || byte == 69:
+            break
+        at = up(at)
+        if byte == 46:
+            dotted = true
+            continue
+        if !is_digit(byte):
+            continue
+        let digit = byte & 15
+        if count == 0 && digit == 0:
+            if dotted && point > 1024:
+                point = U64.wrapping_sub(point, 1)
+            continue
+        if count < DIGITS:
+            digit_set(digits, count, digit)
+            count = up(count)
+        else:
+            if digit != 0:
+                cut = true
+        if !dotted && point < 2097152:
+            point = up(point)
+    if at < end:
+        at = up(at)
+        var down = false
+        if peek(bytes, at) == 43 || peek(bytes, at) == 45:
+            down = peek(bytes, at) == 45
+            at = up(at)
+        var power: U64 = 0
+        while at < end:
+            let byte = peek(bytes, at)
+            if is_digit(byte) && power < 100000:
+                power = U64.wrapping_add(U64.wrapping_mul(power, 10), byte & 15)
+            at = up(at)
+        if down:
+            if point > U64.wrapping_add(power, 1024):
+                point = U64.wrapping_sub(point, power)
+            else:
+                point = 1024
+        else:
+            point = U64.wrapping_add(point, power)
+    var number = trimmed(digits, Decimal(count, point, cut))
+    if number.count == 0:
+        return 0
+    if number.point > U64.wrapping_add(POINT, 310):
+        return 9218868437227405312
+    if U64.wrapping_add(number.point, 330) < POINT:
+        return 0
+    // The binary exponent, plus 4096.
+    var exponent: U64 = 4096
+    while number.point > POINT:
+        let by = places(U64.wrapping_sub(number.point, POINT))
+        number = halved(digits, number, by)
+        exponent = U64.wrapping_add(exponent, by)
+    while number.count != 0 && (number.point < POINT || (number.point == POINT && digit_at(digits, 0) < 5)):
+        let by = places(U64.wrapping_sub(POINT, number.point))
+        number = doubled(digits, number, by)
+        exponent = U64.wrapping_sub(exponent, by)
+    exponent = U64.wrapping_sub(exponent, 1)
+    // Too small for a full 53 bits: fewer are kept.
+    if exponent < 3074:
+        var left = U64.wrapping_sub(3074, exponent)
+        while left > 0:
+            var by = left
+            if by > 60:
+                by = 60
+            number = halved(digits, number, by)
+            left = U64.wrapping_sub(left, by)
+        exponent = 3074
+    if exponent >= 5120:
+        return 9218868437227405312
+    number = doubled(digits, number, 53)
+    var mantissa = nearest(digits, number)
+    if mantissa == 9007199254740992:
+        mantissa = mantissa >> 1
+        exponent = up(exponent)
+        if exponent >= 5120:
+            return 9218868437227405312
+    if (mantissa & 4503599627370496) == 0:
+        exponent = 3073
+    return (mantissa & 4503599627370495) | ((U64.wrapping_sub(exponent, 3073) & 2047) << 52)
+
+impl Toml:
+    // Open the document for reading: `brand parsed.doc() as doc:`.
+    pub nopanic fn doc<D: Fresh>(tree: &Toml) -> Doc<D>:
+        return Doc(tree)
+
+    // The value after `node` in the table or array that holds it, or NONE after the last.
+    // It takes no table: a value knows where its own walk ends, so there is no wrong one.
+    nopanic fn after(tree: &Toml, node: U64) -> U64:
+        let from = tree.node(node)
+        if (U8.to_u64(from.flags) & LAST) != 0:
+            return NONE
+        return U32.to_u64(from.next)
+
+    // The first value of `parent`, or NONE.
+    nopanic fn first_of(tree: &Toml, parent: U64) -> U64:
+        let holder = tree.node(parent)
+        if (holder.data >> 32) == 0:
+            return NONE
+        return U32.to_u64(tree.node(holder.data & NONE).next)
+
+    // A date or a time read again from the text of its node.
+    nopanic fn date_of(tree: &Toml, node: U64) -> TomlDateTime:
+        let found = tree.node(node)
+        let start = U32.to_u64(found.start)
+        return read_date(tree.text.as_bytes(), start, U64.wrapping_add(start, U32.to_u64(found.len)), true)
+
+impl<G: Brand> Doc<G>:
+    // The table every value of the document is in.
+    pub nopanic fn root(self: &Doc<G>) -> Table<G>:
+        return Table(0)
+
+    // The value of `key` in a table.
+    pub nopanic fn get(self: &Doc<G>, table: Table<G>, key: &str) -> Option<Item<G>>:
+        let tree = (*self).tree
+        let found = tree.find(table.node, key.as_bytes())
+        if found == NONE:
+            return None
+        return Some(Item(found))
+
+    pub nopanic fn kind(self: &Doc<G>, item: Item<G>) -> TomlKind:
+        let tree = (*self).tree
+        let kind = U8.to_u64(tree.node(item.node).kind)
+        if kind == TABLE:
+            return KindTable
+        if kind == ARRAY:
+            return KindArray
+        if kind == STRING:
+            return KindString
+        if kind == INTEGER:
+            return KindInteger
+        if kind == FLOAT:
+            return KindFloat
+        if kind == BOOLEAN:
+            return KindBoolean
+        if kind == OFFSET_DATETIME:
+            return KindOffsetDateTime
+        if kind == LOCAL_DATETIME:
+            return KindLocalDateTime
+        if kind == LOCAL_DATE:
+            return KindLocalDate
+        return KindLocalTime
+
+    // The key a value has in its table (none for a value of an array).
+    pub nopanic fn key(self: &Doc<G>, item: Item<G>) -> &str:
+        let tree = (*self).tree
+        return tree.key_of(item.node)
+
+    // A string's text. One written with no escape is the bytes of the text the document
+    // was read from: nothing is copied.
+    pub nopanic fn str(self: &Doc<G>, item: Item<G>) -> Option<&str>:
+        let tree = (*self).tree
+        if U8.to_u64(tree.node(item.node).kind) != STRING:
+            return None
+        return Some(tree.text_of(item.node))
+
+    pub nopanic fn i64(self: &Doc<G>, item: Item<G>) -> Option<I64>:
+        let tree = (*self).tree
+        let node = tree.node(item.node)
+        if U8.to_u64(node.kind) != INTEGER:
+            return None
+        return Some(I64.from_bits(node.data))
+
+    pub nopanic fn f64(self: &Doc<G>, item: Item<G>) -> Option<F64>:
+        let tree = (*self).tree
+        let node = tree.node(item.node)
+        if U8.to_u64(node.kind) != FLOAT:
+            return None
+        return Some(F64.from_bits(node.data))
+
+    pub nopanic fn bool(self: &Doc<G>, item: Item<G>) -> Option<Bool>:
+        let tree = (*self).tree
+        let node = tree.node(item.node)
+        if U8.to_u64(node.kind) != BOOLEAN:
+            return None
+        return Some(node.data != 0)
+
+    // A date, a time or both: `kind` says which parts it has.
+    pub nopanic fn datetime(self: &Doc<G>, item: Item<G>) -> Option<TomlDateTime>:
+        let tree = (*self).tree
+        let node = tree.node(item.node)
+        if U8.to_u64(node.kind) < OFFSET_DATETIME || U8.to_u64(node.kind) > LOCAL_TIME:
+            return None
+        return Some(tree.date_of(item.node))
+
+    pub nopanic fn table(self: &Doc<G>, item: Item<G>) -> Option<Table<G>>:
+        let tree = (*self).tree
+        let node = tree.node(item.node)
+        if U8.to_u64(node.kind) != TABLE:
+            return None
+        return Some(Table(item.node))
+
+    pub nopanic fn array(self: &Doc<G>, item: Item<G>) -> Option<Array<G>>:
+        let tree = (*self).tree
+        let node = tree.node(item.node)
+        if U8.to_u64(node.kind) != ARRAY:
+            return None
+        return Some(Array(item.node))
+
+    // How many values a table or an array has.
+    pub nopanic fn table_len(self: &Doc<G>, table: Table<G>) -> U64:
+        let tree = (*self).tree
+        return tree.node(table.node).data >> 32
+
+    pub nopanic fn array_len(self: &Doc<G>, array: Array<G>) -> U64:
+        let tree = (*self).tree
+        return tree.node(array.node).data >> 32
+
+    // The values of a table in the order they were written: the first, and the one after.
+    pub nopanic fn first(self: &Doc<G>, table: Table<G>) -> Option<Item<G>>:
+        let tree = (*self).tree
+        let found = tree.first_of(table.node)
+        if found == NONE:
+            return None
+        return Some(Item(found))
+
+    // The value after this one in its own table or array.
+    pub nopanic fn next(self: &Doc<G>, item: Item<G>) -> Option<Item<G>>:
+        let tree = (*self).tree
+        let found = tree.after(item.node)
+        if found == NONE:
+            return None
+        return Some(Item(found))
+
+    // The values of an array in order.
+    pub nopanic fn first_element(self: &Doc<G>, array: Array<G>) -> Option<Item<G>>:
+        let tree = (*self).tree
+        let found = tree.first_of(array.node)
+        if found == NONE:
+            return None
+        return Some(Item(found))

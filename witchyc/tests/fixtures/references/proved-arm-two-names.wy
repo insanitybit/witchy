@@ -1,0 +1,29 @@
+// A function with a contract matches through `&mut` and names both values of a variant; a
+// write through each is checked for overflow against what the arm tested.
+import console
+
+type Shape:
+    Rect(U64, U64)
+    Dot
+
+fn grow(s: &mut Shape) -> U64:
+    ensures result <= 1
+    proof:
+        auto
+    match s:
+        Rect(w, h):
+            if *w < 100 && *h < 100:
+                *w += 1
+                *h += 2
+            return 1
+        Dot:
+            return 0
+
+fn main(console: Console<Write>):
+    var s = Rect(1, 1)
+    let r = grow(&mut s)
+    match s:
+        Rect(w, h):
+            console.print_int(w * 10 + h + r)
+        Dot:
+            console.print_int(0)

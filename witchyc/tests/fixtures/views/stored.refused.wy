@@ -1,0 +1,13 @@
+// A record that holds a reference is not stored in a Vec.
+import "../../../library/wasm-span.wy"
+import "../../../library/wasm-string.wy"
+import "../../../library/wasm-vec.wy"
+
+fn main(console: Console<Write>, allocator: Allocator):
+    var text = match String.new(&allocator):
+        Ok(empty):
+            move empty
+        Err(code):
+            return
+    let made: Result<Vec<Span>, U64> = Vec.new(&allocator, 0)
+    text.close()

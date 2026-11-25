@@ -1,0 +1,139 @@
+// `ring.wy` with `invariant slots.len() == capacity`: the invariant reads the storage's length,
+// `push` and `pop` keep a `&mut` into an element (`at_mut`, whose result cannot reach the header
+// and whose `ensures` keeps the length), and the `Err` arm that cannot run is `unreachable`.
+import console
+import option
+import vec
+import string
+import text
+import discard
+import discard_core
+
+pub sealed type Ring<T>:
+    slots: Vec<Option<T>>
+    head: U64
+    count: U64
+    capacity: U64
+    invariant capacity >= 1
+    invariant capacity <= 65536
+    invariant head < capacity
+    invariant count <= capacity
+    invariant slots.len() == capacity
+
+impl<T: Any + Discard> Ring<T>:
+    pub fn new(allocator: &Allocator, capacity: U64) -> Result<Ring<T>, U64>:
+        ensures true
+        proof:
+            auto
+        if capacity == 0 || capacity > 65536:
+            return Err(1)
+        var slots: Vec<Option<T>> = Vec.new(allocator, capacity)?
+        for index in 0..capacity:
+            invariant index <= capacity
+            invariant slots.len() == index
+            match slots.push_mut(allocator, None):
+                Ok:
+                    ()
+                Err(back):
+                    back.discard()
+                    slots.discard()
+                    return Err(2)
+        return Ok(Ring(move slots, 0, 0, capacity))
+
+    pub fn len(ring: &Ring<T>) -> U64:
+        ensures result <= ring.capacity
+        return (*ring).count
+
+    pub fn push(ring: &mut Ring<T>, item: T) -> Result<(), T>:
+        ensures match result:
+            Ok:
+                ring.count == old(ring.count) + 1
+            Err(back):
+                ring.count == old(ring.count)
+        if (*ring).count == (*ring).capacity:
+            return Err(move item)
+        let tail = ((*ring).head + (*ring).count) % (*ring).capacity
+        match (*ring).slots.at_mut(tail):
+            Ok(slot):
+                match slot.replace(Some(move item)):
+                    Some(lost):
+                        lost.discard()
+                    None:
+                        ()
+            Err(code):
+                unreachable
+        (*ring).count = (*ring).count + 1
+        return Ok(())
+
+    pub fn pop(ring: &mut Ring<T>) -> Option<T>:
+        ensures match result:
+            Some(item):
+                ring.count + 1 == old(ring.count)
+            None:
+                ring.count == old(ring.count)
+        if (*ring).count == 0:
+            return None
+        let at = (*ring).head
+        match (*ring).slots.at_mut(at):
+            Ok(slot):
+                match slot.take():
+                    Some(item):
+                        (*ring).head = ((*ring).head + 1) % (*ring).capacity
+                        (*ring).count = (*ring).count - 1
+                        return Some(move item)
+                    None:
+                        return None
+            Err(code):
+                unreachable
+
+    pub fn close(ring: Ring<T>):
+        let Ring(slots, head, count, capacity) = move ring
+        slots.discard()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    match Ring.new(&allocator, 3):
+        Ok(made):
+            var ring: Ring<U64> = move made
+            for i in 0..5:
+                match ring.push(i + 10):
+                    Ok:
+                        console.print_int(ring.len())
+                    Err(back):
+                        console.print_int(back + 100)
+            match ring.pop():
+                Some(item):
+                    console.print_int(item)
+                None:
+                    console.print_int(999)
+            console.print_int(ring.len())
+            ring.close()
+        Err(code):
+            console.print_int(code)
+    // The same with owners: each String is moved in, moved out or discarded with the ring.
+    match Ring.new(&allocator, 2):
+        Ok(made):
+            var words: Ring<String> = move made
+            for i in 0..3:
+                match String.new(&allocator):
+                    Ok(text):
+                        var word = move text
+                        let _ = word.push_u64(&allocator, i + 7)
+                        match words.push(move word):
+                            Ok:
+                                console.print_int(words.len())
+                            Err(back):
+                                console.write_string(&back)
+                                console.line("")
+                                back.close()
+                    Err(code):
+                        console.print_int(code)
+            match words.pop():
+                Some(word):
+                    console.write_string(&word)
+                    console.line("")
+                    word.close()
+                None:
+                    console.print_int(999)
+            words.close()
+        Err(code):
+            console.print_int(code)

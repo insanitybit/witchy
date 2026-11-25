@@ -1,0 +1,26 @@
+// Found by an adversarial review: a `break` in a value `match` leaves the user's loop and
+// the generator goes on to `yield 500`.
+import console
+
+fn check(n: U64) -> Result<U64, U64>:
+    if n == 2:
+        return Err(n)
+    return Ok(n)
+
+gen fn after(limit: U64) -> U64:
+    var n: U64 = 0
+    var got: U64 = 0
+    while n < limit:
+        n += 1
+        let w: U64 = match check(n):
+            Ok(v):
+                v
+            Err(e):
+                break
+        got = w
+        yield got
+    yield 500
+
+fn main(console: Console<Write>):
+    for v in after(4):
+        console.print_int(v)

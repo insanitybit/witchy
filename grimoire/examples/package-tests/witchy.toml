@@ -1,0 +1,4 @@
+[package]
+name = "paired-values"
+version = "0.1.0"
+source = "values.wy"

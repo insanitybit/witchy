@@ -1,0 +1,61 @@
+// A literal becomes owned bytes, a Vec<U8>, a String checked at run time, raw
+// console output and an explicit release. The literal covers 1, 2, 3 and 4 byte
+// encodings and is 11 encoded bytes long. Then one invalid byte is imported: the
+// import fails and the same vector comes back with its byte, length and capacity.
+fn main(console: Console<Write>):
+    let Ok(bytes) = "hé✓🧙\n" else Err(reason):
+        discard(move console)
+        return
+    let vector = vec_from_buffer(move bytes, 11)
+    let Ok(text) = string_from_utf8(move vector) else Err(failed):
+        discard(move failed.vector)
+        discard(move console)
+        return
+    let Ok(printed) = string_print(move text, move console) else Err(skipped):
+        let unused = move skipped.console
+        discard(move skipped.text)
+        discard(move unused)
+        return
+    let out = move printed.console
+    let length = printed.text.length
+    let plain = string_into_vec(move printed.text)
+    let Ok(done) = bytes_release(move plain) else Err(kept):
+        discard(move kept)
+        discard(move out)
+        return
+    out.print_int(length)
+    let created: Result<Vec<U8>, AllocError> = vec_new(2)
+    let Ok(empty) = move created else Err(reason):
+        discard(move out)
+        return
+    let stray: U8 = 255
+    let Ok(one) = vec_push_spare(move empty, stray) else Err(refused):
+        discard(refused.item)
+        discard(move refused.vector)
+        discard(move out)
+        return
+    let Err(failed) = string_from_utf8(move one) else Ok(wrong):
+        out.print_int(900)
+        discard(move wrong)
+        discard(move out)
+        return
+    let invalid = failed.invalid
+    let Ok(indexed) = vec_get_byte(move failed.vector, 0) else Err(kept):
+        discard(move kept)
+        discard(move out)
+        return
+    let Some(value) = move indexed.item else None:
+        discard(move indexed.vector)
+        discard(move out)
+        return
+    let rest = move indexed.vector
+    if invalid:
+        out.print_int(1)
+    out.print_int(U8.to_u64(value))
+    out.print_int(rest.length)
+    out.print_int(rest.capacity)
+    let Ok(released) = bytes_release(move rest) else Err(kept):
+        discard(move kept)
+        discard(move out)
+        return
+    discard(move out)

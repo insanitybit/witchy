@@ -1,0 +1,19 @@
+// A generator method may borrow its receiver, which stays readable while the loop runs.
+import console
+
+type Counter:
+    n: U64
+    step: U64
+
+impl Counter:
+    gen fn upto(self: &Counter) -> U64:
+        var i: U64 = 0
+        while i < self.n:
+            yield i
+            i = i + self.step
+
+fn main(console: Console<Write>):
+    let c = Counter(n: 7, step: 3)
+    for x in c.upto():
+        console.print_int(c.n)
+        console.print_int(x)

@@ -1,0 +1,1 @@
+run: --exec={dir}/exec-command-bin:where --dir={dir}/exec-command-data

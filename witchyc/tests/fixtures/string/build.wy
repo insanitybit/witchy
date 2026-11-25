@@ -1,0 +1,75 @@
+// Build "hé✓🧙" scalar by scalar, append it to itself, then inspect the bytes.
+import "../../../library/wasm-string.wy"
+import "../../../library/wasm-vec.wy"
+
+fn show(console: &Console<Write>, text: &String):
+    let count = text.byte_len()
+    console.print_int(count)
+    var index: U64 = 0
+    while index < count:
+        match text.byte_at(index):
+            Ok(byte):
+                console.print_int(U8.to_u64(byte))
+            Err(code):
+                console.print_int(900)
+        index += 1
+
+fn push(console: &Console<Write>, allocator: &Allocator, text: String, scalar: U64) -> String:
+    match text.push_scalar(allocator, scalar):
+        Ok(grown):
+            return move grown
+        Err(original):
+            console.print_int(901)
+            return move original
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<String, U64> = String.new(&allocator)
+    match move made:
+        Ok(empty):
+            var text = push(&console, &allocator, move empty, 104)
+            text = push(&console, &allocator, move text, 233)
+            text = push(&console, &allocator, move text, 10003)
+            text = push(&console, &allocator, move text, 129497)
+            show(&console, &text)
+            // A surrogate and an out-of-range value are refused; contents stay.
+            text = push(&console, &allocator, move text, 55296)
+            text = push(&console, &allocator, move text, 1114112)
+            console.print_int(text.byte_len())
+            let second: Result<String, U64> = String.new(&allocator)
+            match move second:
+                Ok(other):
+                    var copy = push(&console, &allocator, move other, 33)
+                    match copy.append(&allocator, &text):
+                        Ok(joined):
+                            show(&console, &joined)
+                            // The bytes leave and re-enter String through validation.
+                            let raw = joined.into_bytes()
+                            match String.from_utf8(move raw):
+                                Ok(again):
+                                    console.print_int(1)
+                                    again.close()
+                                Err(rejected):
+                                    console.print_int(902)
+                                    rejected.close()
+                        Err(back):
+                            console.print_int(903)
+                            back.close()
+                Err(code):
+                    console.print_int(904)
+            // A lone continuation byte is not UTF-8: the Vec comes back.
+            let bytes = text.into_bytes()
+            let stray: U8 = 128
+            match bytes.push(&allocator, stray):
+                Ok(invalid):
+                    match String.from_utf8(move invalid):
+                        Ok(wrong):
+                            console.print_int(905)
+                            wrong.close()
+                        Err(kept):
+                            console.print_int(kept.len())
+                            kept.close()
+                Err(back):
+                    console.print_int(906)
+                    Vec.close(move back.vector)
+        Err(code):
+            console.print_int(907)

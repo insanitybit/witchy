@@ -1,0 +1,71 @@
+// Checked buffer cells: every operation tests bounds and occupancy at run time, so no proof is needed.
+import "../../../library/wasm-string.wy"
+
+fn text(allocator: &Allocator, scalar: U64) -> Result<String, U64>:
+    let empty = String.new(allocator)?
+    match empty.push_scalar(allocator, scalar):
+        Ok(one):
+            return Ok(move one)
+        Err(back):
+            back.close()
+            return Err(901)
+
+// Fill a cell, or print why not and close the value that came back.
+fn put(console: &Console<Write>, cells: &mut Buffer<String>, index: U64, item: String):
+    match memory.try_init(cells, index, move item):
+        Ok:
+            console.print_int(1)
+        Err(back):
+            console.print_int(back.byte_len())
+            back.close()
+
+fn show(console: &Console<Write>, cells: &Buffer<String>, index: U64):
+    match memory.ref(cells, index):
+        Ok(name):
+            console.print_int(name.byte_len())
+        Err(code):
+            console.print_int(900 + code)
+
+fn empty(console: &Console<Write>, cells: &mut Buffer<String>, index: U64):
+    match memory.take(cells, index):
+        Ok(name):
+            console.print_int(name.byte_len())
+            name.close()
+        Err(code):
+            console.print_int(900 + code)
+
+fn fill(console: &Console<Write>, allocator: &Allocator, cells: &mut Buffer<String>, index: U64, scalar: U64):
+    match text(allocator, scalar):
+        Ok(name):
+            put(console, cells, index, move name)
+        Err(code):
+            console.print_int(code)
+
+fn finish(console: &Console<Write>, cells: Buffer<String>):
+    match memory.try_release(move cells):
+        Ok:
+            console.print_int(1)
+        Err(stuck):
+            console.print_int(907)
+            finish(console, move stuck)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let made: Result<Buffer<String>, U64> = memory.try_alloc(&allocator, 4)
+    match move made:
+        Ok(buffer):
+            var cells = move buffer
+            fill(&console, &allocator, &mut cells, 2, 65)
+            // A full cell and a cell out of range both hand the value back.
+            fill(&console, &allocator, &mut cells, 2, 233)
+            fill(&console, &allocator, &mut cells, 4, 10003)
+            fill(&console, &allocator, &mut cells, 0, 128512)
+            show(&console, &cells, 0)
+            show(&console, &cells, 1)
+            show(&console, &cells, 2)
+            show(&console, &cells, 9)
+            empty(&console, &mut cells, 0)
+            empty(&console, &mut cells, 0)
+            empty(&console, &mut cells, 2)
+            finish(&console, move cells)
+        Err(code):
+            console.print_int(code)

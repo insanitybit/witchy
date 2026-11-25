@@ -1,0 +1,2 @@
+# The packages named-app.wy imports by name.
+hello-world 1.0.0: greeting/words.wy

@@ -1,0 +1,42 @@
+// A kept reference from a callee whose result is a `&mut U64` may point at the length: the whole Vec is lent.
+import console
+import vec
+
+sealed type Shelf:
+    items: Vec<U64>
+    room: U64
+    invariant room <= 64
+    invariant items.len() == room
+
+impl Shelf:
+    fn new(allocator: &Allocator, room: U64) -> Result<Shelf, U64>:
+        requires room <= 64
+        ensures true
+        proof:
+            auto
+        let made: Result<Vec<U64>, U64> = Vec.filled(allocator, room, 7)
+        let Ok(items): Vec<U64> = move made else Err(code):
+            return Err(code)
+        return Ok(Shelf(move items, room))
+
+    fn close(shelf: Shelf):
+        let Shelf(items, room) = move shelf
+        items.close()
+
+// A callee whose result is a `&mut U64` may point at the header's length: the whole Vec is lent.
+fn first_cell(vector: &mut Vec<U64>) -> Result<&mut U64, U64>:
+    return vector.at_mut(0)
+
+impl Shelf:
+    fn poke(shelf: &mut Shelf):
+        ensures true
+        proof:
+            auto
+        match first_cell(&mut (*shelf).items):
+            Ok(slot):
+                *slot = 9
+            Err(code):
+                ()
+
+fn main(console: Console<Write>, allocator: Allocator):
+    return

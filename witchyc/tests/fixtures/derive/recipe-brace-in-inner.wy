@@ -1,0 +1,27 @@
+// A `"}"` inside a `${...}` is inside a literal and does not close the interpolation: the
+// field after the literal is substituted (review: it was read as text and left alone).
+import console
+
+fn one(t: Text) -> U64:
+    return 1
+
+trait Total:
+    fn total(self: &Self, console: &Console<Write>) -> U64
+
+derive Sum:
+    impl Total for Self:
+        fn total(self: &Self, console: &Console<Write>) -> U64:
+            static for f in fields:
+                return pick(&"${one("}")}", (*self).f)
+            return 0
+
+fn pick<F: Any + Format>(m: &F, v: U64) -> U64:
+    return v
+
+type T derive(Sum(by: id)):
+    f: U64
+    id: U64
+
+fn main(console: Console<Write>):
+    let v = T(f: 100, id: 5)
+    console.print("${v.total(&console)}")

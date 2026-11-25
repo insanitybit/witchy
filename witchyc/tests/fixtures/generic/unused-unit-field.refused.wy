@@ -1,0 +1,6 @@
+// A generic record nothing uses is still refused for a `()` field.
+type Holder<T>:
+    value: ()
+
+fn main():
+    return

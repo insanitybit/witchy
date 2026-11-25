@@ -1,0 +1,21 @@
+import console
+import net
+import "redis.wy"
+
+fn main(console: Console<Write>, net: Net, allocator: Allocator):
+    let Ok(client): Redis = redis.connect(&net, "127.0.0.1:16379") else Err(_):
+        console.line("connect failed")
+        return
+    match client.ping():
+        Err(_):
+            console.line("PING failed")
+            client.close()
+            return
+        Ok:
+            console.line("PONG")
+    match client.set(&allocator, "witchy demo", "one\r\ntwo"):
+        Ok:
+            console.line("SET OK")
+        Err(_):
+            console.line("SET failed")
+    client.close()

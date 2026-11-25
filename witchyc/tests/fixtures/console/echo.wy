@@ -1,0 +1,14 @@
+// Copy the input to the output and count its bytes and lines.
+fn main(console: Console<Write>, input: Console<Read>):
+    var bytes: U64 = 0
+    var lines: U64 = 0
+    while true:
+        let next = input.next_byte()
+        if next > 255:
+            break
+        console.print_byte(U8.truncate(next))
+        bytes += 1
+        if next == 10:
+            lines += 1
+    console.print_int(bytes)
+    console.print_int(lines)

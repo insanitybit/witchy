@@ -1,0 +1,15 @@
+// The body is checked for each pattern, and `Dot` binds no `side`.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-string.wy"
+
+type Shape:
+    Dot
+    Circle(U64)
+
+fn size(shape: Shape) -> U64:
+    match shape:
+        Dot | Circle(side):
+            return side
+
+fn main(console: Console<Write>):
+    console.print_int(size(Dot))

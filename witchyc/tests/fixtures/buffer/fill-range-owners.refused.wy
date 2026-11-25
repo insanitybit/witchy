@@ -1,0 +1,12 @@
+// Refused: one owner cannot be put in many cells.
+fn fill<T: Any>(buffer: &mut Buffer<T>, count: U64, item: T):
+    requires count <= memory.capacity(buffer)
+    requires memory.empty_range(buffer, 0, count)
+    ensures memory.initialized_range(buffer, 0, count)
+    proof:
+        auto
+    memory.fill_unchecked(buffer, count, move item)
+    return
+
+fn main():
+    return

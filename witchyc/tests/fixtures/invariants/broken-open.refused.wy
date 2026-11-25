@@ -1,0 +1,19 @@
+import console
+
+sealed type Account:
+    balance: U64
+    limit: U64
+    invariant balance <= limit
+
+impl Account:
+    pub fn balance(account: &Account) -> U64:
+        return (*account).balance
+    // Builds a value that breaks the invariant: the proof must fail.
+    pub fn open(limit: U64) -> Account:
+        ensures true
+        proof:
+            auto
+        return Account(1, 0)
+
+fn main(console: Console<Write>):
+    console.line("ran")

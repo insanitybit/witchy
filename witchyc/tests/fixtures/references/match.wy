@@ -1,0 +1,104 @@
+// A match through a reference reads a sum where it is: binders are references.
+import "../../../library/wasm-vec.wy"
+
+type Shape:
+    Circle(U64)
+    Square(U64)
+    Empty
+
+type Tagged:
+    shape: Shape
+    weight: U64
+
+type Json:
+    Null
+    Number(U64)
+    Array(Vec<Json>)
+
+fn area(shape: &Shape) -> U64:
+    match shape:
+        Circle(radius):
+            return 3 * *radius * *radius
+        Square(side):
+            return *side * *side
+        Empty:
+            return 0
+
+// Read the tree in place.
+fn total(value: &Json) -> U64:
+    match value:
+        Null:
+            return 1000
+        Number(n):
+            return *n
+        Array(items):
+            var sum: U64 = 0
+            for item in items:
+                sum += total(item)
+            return sum
+
+fn close(value: Json):
+    match move value:
+        Null:
+            return
+        Number(n):
+            return
+        Array(items):
+            var rest = move items
+            drain(&mut rest)
+            match rest.try_release():
+                Ok:
+                    return
+                Err(stuck):
+                    close(Array(move stuck))
+
+fn drain(items: &mut Vec<Json>):
+    while items.len() > 0:
+        match items.take_last_mut():
+            Ok(item):
+                close(move item)
+            Err(code):
+                return
+
+fn pair(allocator: &Allocator, left: Json, right: Json) -> Json:
+    let made: Result<Vec<Json>, U64> = Vec.new(allocator, 2)
+    match move made:
+        Ok(empty):
+            match empty.push(allocator, move left):
+                Ok(one):
+                    match one.push(allocator, move right):
+                        Ok(two):
+                            return Array(move two)
+                        Err(back):
+                            let VecPushError(vector, item) = move back
+                            close(move item)
+                            return Array(move vector)
+                Err(back):
+                    let VecPushError(vector, item) = move back
+                    close(move item)
+                    close(move right)
+                    return Array(move vector)
+        Err(code):
+            close(move left)
+            close(move right)
+            return Null
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let square = Square(4)
+    console.print_int(area(&square))
+    let tagged = Tagged(Circle(2), 7)
+    console.print_int(area(&tagged.shape))
+    match &tagged.shape:
+        Circle(radius):
+            console.print_int(*radius)
+        Square(side):
+            console.print_int(900)
+        Empty:
+            console.print_int(901)
+    let inner = pair(&allocator, Number(3), Null)
+    let outer = pair(&allocator, move inner, Number(40))
+    let tree = pair(&allocator, Number(500), move outer)
+    console.print_int(total(&tree))
+    console.print_int(total(&tree))
+    close(move tree)
+    console.print_int(1)

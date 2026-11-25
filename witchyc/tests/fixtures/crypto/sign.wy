@@ -1,0 +1,86 @@
+// A `Signer` for the `targets` role, bound by name from a descriptor holding a 32-byte seed
+// (NIST's ACVP ML-DSA-65 key-generation vector, synthetic). Its public key is the one an
+// independent implementation derived from that seed (shown by its SHA-384). A signature
+// verifies with the public key alone and differs each time (hedged signing); a changed
+// message, another role's domain, another key or a truncated signature does not verify. The
+// signer refuses a message outside its domain and a signature slice of the wrong length.
+import console
+import crypto
+import vec
+
+fn hex(console: &Console<Write>, bytes: &[U8]):
+    let digits: [U8; 16] = [48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 97, 98, 99, 100, 101, 102]
+    for index in 0..bytes.len():
+        let byte = U8.to_u64(bytes[index])
+        console.print_byte(digits[byte / 16])
+        console.print_byte(digits[byte % 16])
+    console.line("")
+
+fn say(console: &Console<Write>, what: Text, valid: Bool):
+    console.write(what)
+    if valid:
+        console.line(": valid")
+    else:
+        console.line(": invalid")
+
+fn refusal(console: &Console<Write>, what: Text, result: Result<(), CryptoError>):
+    console.write(what)
+    match result:
+        Ok:
+            console.line(": signed")
+        Err(WrongDomain):
+            console.line(": wrong domain")
+        Err(WrongLength):
+            console.line(": wrong length")
+        Err(_):
+            console.line(": other")
+
+// Key 0..1952, first signature 1952..5261, second 5261..8570.
+fn exercise(console: &Console<Write>, signer: &Signer, all: &mut Vec<U8>):
+    // `witchy/v2/targets\0release 1\n`
+    var message: [U8; 28] = [119, 105, 116, 99, 104, 121, 47, 118, 50, 47, 116, 97, 114, 103, 101, 116, 115, 0, 114, 101, 108, 101, 97, 115, 101, 32, 49, 10]
+    match signer.public_key(all.as_mut_slice().part(0, 1952)):
+        Ok:
+            var digest: [U8; 48] = [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+            match sha384(all.as_slice().part(0, 1952), digest.slice_mut()):
+                Ok:
+                    hex(console, digest.slice())
+                Err(_):
+                    console.line("no digest")
+        Err(_):
+            console.line("no public key")
+    refusal(console, "first", signer.sign(message.slice(), all.as_mut_slice().part(1952, 5261)))
+    refusal(console, "second", signer.sign(message.slice(), all.as_mut_slice().part(5261, 8570)))
+    say(console, "first", witchy2_verify(all.as_slice().part(0, 1952), "targets", message.slice(), all.as_slice().part(1952, 5261)))
+    say(console, "second", witchy2_verify(all.as_slice().part(0, 1952), "targets", message.slice(), all.as_slice().part(5261, 8570)))
+    var same = true
+    for index in 0..3309:
+        if all.index(1952 + index) != all.index(5261 + index):
+            same = false
+    if same:
+        console.line("hedged: the same twice")
+    else:
+        console.line("hedged: two different signatures")
+    say(console, "as root", witchy2_verify(all.as_slice().part(0, 1952), "root", message.slice(), all.as_slice().part(1952, 5261)))
+    say(console, "truncated signature", mldsa65_verify(all.as_slice().part(0, 1952), message.slice(), all.as_slice().part(1952, 5260)))
+    message[26] = 50
+    say(console, "changed message", witchy2_verify(all.as_slice().part(0, 1952), "targets", message.slice(), all.as_slice().part(1952, 5261)))
+    message[26] = 49
+    let kept = all.index(7)
+    let _ = all.set(7, kept ^ 1)
+    say(console, "another key", witchy2_verify(all.as_slice().part(0, 1952), "targets", message.slice(), all.as_slice().part(1952, 5261)))
+    let _ = all.set(7, kept)
+    say(console, "restored", witchy2_verify(all.as_slice().part(0, 1952), "targets", message.slice(), all.as_slice().part(1952, 5261)))
+    // Another role's domain, a domain without its separator, the wrong slice length.
+    message[10] = 120
+    refusal(console, "another role", signer.sign(message.slice(), all.as_mut_slice().part(1952, 5261)))
+    message[10] = 116
+    refusal(console, "no separator", signer.sign(message.slice().part(0, 17), all.as_mut_slice().part(1952, 5261)))
+    refusal(console, "short slice", signer.sign(message.slice(), all.as_mut_slice().part(1952, 5260)))
+
+fn main(console: Console<Write>, allocator: Allocator, targets: Signer):
+    let Ok(made): Vec<U8> = Vec.filled(&allocator, 8570, 0) else Err(code):
+        return
+    var all = move made
+    exercise(&console, &targets, &mut all)
+    all.close()

@@ -1,0 +1,42 @@
+import bufio
+import bufio_fs
+import console
+import fs
+import vec
+
+fn main(out: Console<Write>, source: File<Read>, sink: File<Write>, allocator: Allocator):
+    let Ok(first): Vec<U8> = Vec.filled(&allocator, 4, 0) else Err(reason):
+        source.close()
+        sink.abandon()
+        return
+    let Ok(second): Vec<U8> = Vec.filled(&allocator, 4, 0) else Err(reason):
+        first.close()
+        source.close()
+        sink.abandon()
+        return
+    var reader = bufio.byte_buffer(move first)
+    var writer = bufio.byte_buffer(move second)
+    let ok = transfer(&source, &sink, &mut reader, &mut writer)
+    reader.close()
+    writer.close()
+    source.close()
+    let file = move sink
+    if ok:
+        if let Ok(_) = file.finish():
+            out.line("copied")
+    else:
+        file.abandon()
+
+fn transfer(source: &File<Read>, sink: &File<Write>, reader: &mut ByteBuffer, writer: &mut ByteBuffer) -> Bool:
+    var bytes: [U8; 2] = [0; 2]
+    while true:
+        let Ok(count): U64 = bufio_fs.read_file(reader, source, bytes.slice_mut()) else Err(reason):
+            return false
+        if count == 0:
+            return bufio_fs.flush_file(writer, sink).is_ok()
+        var done: U64 = 0
+        while done < count:
+            let Ok(written): U64 = bufio_fs.write_file(writer, sink, bytes.slice().part(done, count)) else Err(reason):
+                return false
+            done += written
+    return false

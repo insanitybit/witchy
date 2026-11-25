@@ -1,0 +1,16 @@
+// A value lent with `&mut` is unknown afterwards. (The callee writes through the reference: a
+// body that only moves values around, or does nothing, is followed; docs/wasm-exchange.md.)
+fn bump(x: &mut I64):
+    *x = *x
+    return
+
+fn f(x: I64) -> I64:
+    ensures result == x
+    proof:
+        auto
+    var y = x
+    bump(&mut y)
+    return y
+
+fn main(console: Console<Write>):
+    console.print_int(I64.bits(f(4)))

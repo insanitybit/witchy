@@ -1,0 +1,43 @@
+fn main(console: Console<Write>):
+    var witness = memory.alloc(1)
+    memory.init(&mut witness, 0, 42)
+    let saved = &witness
+    let allocation: Result<Vec<Bool>, AllocError> = vec_new(1)
+    match allocation:
+        Ok(vector):
+            match vec_push_spare(move vector, true):
+                Ok(pushed):
+                    var held = memory.alloc(1)
+                    memory.init(&mut held, 0, 37)
+                    let twice = replace_twice(move pushed, 0, false, true, move held)
+                    console.print_int(twice.completed)
+                    if twice.first_previous:
+                        console.print_int(73)
+                    if twice.second_previous:
+                        console.print_int(90)
+                    else:
+                        console.print_int(74)
+                    match vec_pop(move twice.vector):
+                        Ok(popped):
+                            match popped.item:
+                                Some(item):
+                                    if item:
+                                        console.print_int(75)
+                                None:
+                                    console.print_int(91)
+                            match vec_release(move popped.vector):
+                                Ok(done):
+                                    console.print_int(76)
+                                Err(kept):
+                                    discard(move kept)
+                        Err(kept):
+                            discard(move kept)
+                    console.print_int(memory.read(&twice.held, 0))
+                    memory.release(twice.held)
+                Err(failed):
+                    discard(move failed)
+        Err(reason):
+            console.print_int(92)
+    console.print_int(memory.read(saved, 0))
+    memory.end(saved)
+    memory.release(witness)

@@ -1,0 +1,1 @@
+ensures memory.utf8(buffer, start, text.len() + 1)

@@ -1,0 +1,62 @@
+type One:
+    octet: U8
+
+type Reordered:
+    word: U64
+    octet: U8
+
+type Nested:
+    octet: U8
+    child: Reordered
+
+type Triple:
+    first: U8
+    word: U64
+    last: U8
+
+fn relay_one(value: One) -> One:
+    ensures result.octet == old(value.octet)
+    return move value
+
+fn relay_nested(value: Nested) -> Nested:
+    ensures result.octet == old(value.octet)
+    ensures result.child.word == old(value.child.word)
+    ensures result.child.octet == old(value.child.octet)
+    return move value
+
+fn main(console: Console<Write>):
+    let zero: U8 = 0
+    let full: U8 = 255
+    let seven: U8 = 7
+    var one: Buffer<One> = memory.alloc(1)
+    memory.init(&mut one, 0, One(full))
+    let one_value: One = memory.take(&mut one, 0)
+    let relayed = relay_one(move one_value)
+    console.print_int(U8.to_u64(relayed.octet))
+    discard(move relayed)
+    memory.release(one)
+    var reversed: Buffer<Reordered> = memory.alloc(1)
+    memory.init(&mut reversed, 0, Reordered(4294967297, zero))
+    let reversed_value: Reordered = memory.take(&mut reversed, 0)
+    console.print_int(reversed_value.word)
+    console.print_int(U8.to_u64(reversed_value.octet))
+    discard(move reversed_value)
+    memory.release(reversed)
+    var nested: Buffer<Nested> = memory.alloc(1)
+    memory.init(&mut nested, 0, Nested(seven, Reordered(8589934595, full)))
+    let nested_value: Nested = memory.take(&mut nested, 0)
+    let relayed_nested = relay_nested(move nested_value)
+    console.print_int(U8.to_u64(relayed_nested.octet))
+    console.print_int(relayed_nested.child.word)
+    console.print_int(U8.to_u64(relayed_nested.child.octet))
+    discard(move relayed_nested)
+    memory.release(nested)
+    var three: Buffer<Triple> = memory.alloc(1)
+    memory.init(&mut three, 0, Triple(zero, 12884901889, seven))
+    let three_value: Triple = memory.take(&mut three, 0)
+    console.print_int(U8.to_u64(three_value.first))
+    console.print_int(three_value.word)
+    console.print_int(U8.to_u64(three_value.last))
+    discard(move three_value)
+    memory.release(three)
+    console.print_int(42)

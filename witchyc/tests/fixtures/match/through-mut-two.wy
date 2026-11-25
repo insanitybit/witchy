@@ -1,0 +1,23 @@
+// Through `&mut`, an arm names both values its variant holds and changes each where it is.
+import console
+
+type Shape:
+    Rect(U64, U64)
+    Dot
+
+fn grow(s: &mut Shape):
+    match s:
+        Rect(w, h):
+            *w += 1
+            *h += 2
+        Dot:
+            return
+
+fn main(console: Console<Write>):
+    var s = Rect(1, 1)
+    grow(&mut s)
+    match s:
+        Rect(w, h):
+            console.print_int(w * 10 + h)
+        Dot:
+            console.print_int(0)

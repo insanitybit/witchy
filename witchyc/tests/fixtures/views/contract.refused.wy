@@ -1,0 +1,15 @@
+// No proof reads a record that holds a reference yet: a clause does not name one (given
+// whole and handed on unread, it is allowed: contract-span.wy).
+type Pair:
+    left: &U64
+    right: U64
+
+fn right(pair: Pair, n: U64) -> U64:
+    ensures result == n + pair.right - pair.right
+    proof:
+        auto
+    return n
+
+fn main(console: Console<Write>):
+    let n: U64 = 4
+    console.print_int(right(Pair(&n, 5), 3))

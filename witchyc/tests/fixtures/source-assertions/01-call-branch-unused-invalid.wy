@@ -1,0 +1,32 @@
+fn checked_seven(seed: U64) -> U64:
+    requires seed == 7
+    ensures result == old(seed)
+    assert seed == 7
+    return seed
+
+fn unused_branches(flag: Bool) -> Bool:
+    if flag:
+        assert flag == true
+    else:
+        assert flag == true
+    return flag
+
+fn checked_loop(limit: U64) -> U64:
+    requires limit == 2
+    ensures result <= old(limit)
+    var counter: U64 = 0
+    assert counter == 0
+    while counter < limit:
+        invariant counter <= limit
+        counter += 1
+        assert counter > 0
+    return counter
+
+fn main(console: Console<Write>):
+    let value: U64 = checked_seven(7)
+    let looped: U64 = checked_loop(2)
+    if value == 7:
+        assert value == 7
+        console.print_int(value)
+    else:
+        console.print_int(0)

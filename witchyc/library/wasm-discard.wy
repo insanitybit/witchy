@@ -1,0 +1,28 @@
+// Discarding: closing a value together with everything it owns.
+//
+// A container of Copy values is closed with its own `close`. A container of
+// owners cannot be: each owner has to be consumed first. `Discard` is the trait
+// for that, so that one generic function closes a `Vec<String>`, a
+// `Vec<Vec<String>>`, and any type that says how it is discarded.
+import "wasm-vec.wy"
+import "wasm-discard-core.wy"
+
+// Takes the items off the end one at a time and discards each.
+fn discard_items<T: Any + Discard>(items: &mut Vec<T>):
+    while items.len() > 0:
+        match items.take_last_mut():
+            Ok(item):
+                item.discard()
+            Err(_):
+                return
+
+impl<T: Any + Discard> Discard for Vec<T>:
+    fn discard(self: Vec<T>):
+        var rest = move self
+        discard_items(&mut rest)
+        match rest.try_release():
+            Ok:
+                return
+            Err(stuck):
+                // Not reached: the vector was just emptied. The owner still has to go somewhere.
+                stuck.discard()

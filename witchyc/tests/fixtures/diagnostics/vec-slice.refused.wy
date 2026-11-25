@@ -1,0 +1,12 @@
+import console
+import vec
+
+fn main(console: Console<Write>, allocator: Allocator):
+    match Vec.new(&allocator, 2):
+        Ok(made):
+            var v: Vec<U64> = move made
+            let s = v.slice()
+            console.print_int(s.len())
+            v.close()
+        Err(code):
+            ()

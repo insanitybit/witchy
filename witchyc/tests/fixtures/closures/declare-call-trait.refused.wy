@@ -1,0 +1,6 @@
+// Refused (from an automated security review): the call trait is the language's; a program
+// implements it, never declares its own of that name.
+trait WitchyFn2<A, B, R>:
+    fn grab(self: &Self, a: A, b: B) -> A
+fn main():
+    return

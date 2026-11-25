@@ -1,0 +1,10 @@
+// The least I64 divided by -1 traps.
+fn f(a: I64, b: I64) -> I64:
+    requires b != 0
+    ensures result <= 9223372036854775807
+    proof:
+        auto
+    return a / b
+
+fn main(console: Console<Write>):
+    console.print_int(I64.bits(f(1, 2)))

@@ -1,0 +1,29 @@
+import "wasm-crypto.wy"
+
+impl Rand:
+    // Obtain an ephemeral key and write its 97-byte uncompressed SEC1 share.
+    // Carry the key to finish or close it if the handshake is abandoned.
+    pub fn p384_key(self: &Rand, public_key: &mut [U8]) -> Result<P384Key, AgreementError>:
+        if public_key.len() != 97:
+            return Err(InvalidBufferLength)
+        let key = self.raw_p384_start()
+        if key.raw_p384_public(public_key) != 0:
+            key.raw_close()
+            return Err(AgreementFailed)
+        return Ok(move key)
+
+impl P384Key:
+    // Consume the ephemeral key, including on failure. Shared output requires
+    // 48 bytes and is untouched when the peer's SEC1 point is invalid.
+    pub fn finish(self: P384Key, peer: &[U8], shared: &mut [U8]) -> Result<(), AgreementError>:
+        let code = self.raw_p384_finish(peer, shared)
+        if code == 0:
+            return Ok(())
+        if code == 1:
+            return Err(InvalidPeerPoint)
+        if code == 2:
+            return Err(InvalidBufferLength)
+        return Err(AgreementFailed)
+
+    pub fn close(self: P384Key):
+        self.raw_close()

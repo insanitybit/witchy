@@ -1,0 +1,29 @@
+// An optional capability (book: capabilities-optional.md): `record` writes only when it
+// is given somewhere to write. `wasm-caps` still reports it as holding `Dir<Write>`: what
+// the code can do, whatever the value is at run time.
+import console
+import fs
+
+type Maybe<T>:
+    Some(T)
+    Nothing
+
+fn record(out: Maybe<Dir<Write>>, name: Text, line: Text) -> Bool:
+    match move out:
+        Some(dir):
+            match dir.append(name):
+                Ok(file):
+                    match file.write(line):
+                        Ok:
+                            return file.finish().is_ok()
+                        Err(e):
+                            file.abandon()
+                            return false
+                Err(e):
+                    return false
+        Nothing:
+            return false
+
+fn main(console: Console<Write>, dir: Dir<Write>):
+    console.print_int(if record(Nothing, "log.txt", "goes nowhere"): 1 else: 0)
+    console.print_int(if record(Some(move dir), "log.txt", "started"): 1 else: 0)

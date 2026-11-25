@@ -1,0 +1,138 @@
+// `match` and `if` bound as values: scalars, an owner, nesting, `?` in a path,
+// paths that leave, and a `var`.
+import "../../../library/wasm-console.wy"
+import "../../../library/wasm-string.wy"
+import "../../../library/wasm-vec.wy"
+
+type Shape:
+    Dot
+    Circle(U64)
+    Box(U64, U64)
+
+fn size(shape: Shape) -> U64:
+    let area = match move shape:
+        Dot:
+            0
+        Circle(radius):
+            3 * radius * radius
+        Box(width, height):
+            if width == height:
+                width * width
+            else:
+                width * height
+    return area + 1
+
+fn half(value: U64) -> Result<U64, U64>:
+    if value % 2 == 1:
+        return Err(value)
+    return Ok(value / 2)
+
+fn quarter(value: U64) -> Result<U64, U64>:
+    let once = if value > 100:
+        return Err(0)
+    else:
+        half(value)?
+    let twice: U64 = match half(once):
+        Ok(found):
+            found
+        Err(odd):
+            return Err(odd)
+    return Ok(twice)
+
+// An owner chosen by a match: each path makes one String, or leaves.
+fn greeting(allocator: &Allocator, formal: Bool) -> Result<String, U64>:
+    var text = match String.new(allocator):
+        Ok(empty):
+            move empty
+        Err(code):
+            return Err(code)
+    let done = if formal:
+        text.push_text(allocator, "good day").is_ok()
+    else:
+        text.push_text(allocator, "hi").is_ok()
+    if !done:
+        text.close()
+        return Err(7)
+    return Ok(move text)
+
+// The written type of the `let` says what `Ok` holds, which settles the call's type.
+fn count(allocator: &Allocator) -> U64:
+    var items: Vec<U64> = match Vec.new(allocator, 2):
+        Ok(empty):
+            move empty
+        Err(code):
+            return 0
+    match items.push_mut(allocator, 5):
+        Ok:
+            items.close()
+            return 1
+        Err(back):
+            items.close()
+            return 0
+
+// The same after `return`, `=` and `+=`: each path returns or assigns its value.
+fn sign(left: U64, right: U64) -> U64:
+    return if left < right:
+        0
+    else if left == right:
+        1
+    else:
+        2
+
+fn tally(found: Result<U64, U64>, start: U64) -> U64:
+    var total = start
+    total += match found:
+        Ok(value):
+            value
+        Err(code):
+            0
+    total *= if total > 100:
+        0
+    else:
+        2
+    total = match found:
+        Ok(value):
+            total + 1
+        Err(code):
+            return 0
+    return total
+
+fn show(console: &Console<Write>, found: Result<U64, U64>):
+    let value = match found:
+        Ok(value):
+            value
+        Err(code):
+            1000 + code
+    console.print_int(value)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    console.print_int(size(Dot))
+    console.print_int(size(Circle(2)))
+    console.print_int(size(Box(3, 3)))
+    console.print_int(size(Box(3, 4)))
+    show(&console, quarter(40))
+    show(&console, quarter(42))
+    show(&console, quarter(7))
+    show(&console, quarter(400))
+    console.print_int(count(&allocator))
+    console.print_int(sign(1, 2) * 100 + sign(2, 2) * 10 + sign(3, 2))
+    console.print_int(tally(Ok(5), 10))
+    console.print_int(tally(Ok(500), 10))
+    console.print_int(tally(Err(5), 10))
+    var total: U64 = 0
+    for index in 0..6:
+        var step = if index % 2 == 0:
+            continue
+        else:
+            index
+        step *= 10
+        total += step
+    console.print_int(total)
+    for formal in 0..2:
+        match greeting(&allocator, formal == 1):
+            Ok(text):
+                console.write_string(&text)
+                console.line("")
+                text.close()
+            Err(code):
+                console.print_int(code)

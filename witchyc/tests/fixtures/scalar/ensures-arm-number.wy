@@ -1,0 +1,18 @@
+// `Ok(h)` and `Err(code)` name the number each variant holds, in the `ensures`.
+import console
+
+fn half(n: U64) -> Result<U64, U64>:
+    ensures match result:
+        Ok(h):
+            h + h == n
+        Err(code):
+            code == n
+    proof:
+        auto
+    if n % 2 == 1:
+        return Err(n)
+    return Ok(n / 2)
+
+fn main(console: Console<Write>):
+    if let Ok(h) = half(10):
+        console.print_int(h)

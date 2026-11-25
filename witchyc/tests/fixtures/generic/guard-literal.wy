@@ -1,0 +1,9 @@
+// A guard's written type settles a generic call's parameter before a bare number would.
+import console
+import vec
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(v): Vec<U8> = Vec.filled(&allocator, 3, 0) else Err(code):
+        return
+    console.print_int(v.len())
+    v.close()

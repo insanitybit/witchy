@@ -1,0 +1,21 @@
+// `Celsius` compares with a `Kelvin`, not with another `Celsius`.
+trait Comparable<K>:
+    fn compare(self: &Self, key: &K) -> Bool
+
+type Celsius:
+    degrees: U64
+
+type Kelvin:
+    value: U64
+
+impl Comparable<Kelvin> for Celsius:
+    fn compare(self: &Celsius, key: &Kelvin) -> Bool:
+        return (*self).degrees + 273 == (*key).value
+
+fn matches<Q: Comparable<K>, K>(probe: &Q, key: &K) -> Bool:
+    return probe.compare(key)
+
+fn main():
+    let a = Celsius(1)
+    let b = Celsius(1)
+    let same = matches(&a, &b)

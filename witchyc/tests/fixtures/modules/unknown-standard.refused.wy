@@ -1,0 +1,5 @@
+// Refused: there is no standard module of this name.
+import nosuch
+
+fn main():
+    return

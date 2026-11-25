@@ -1,0 +1,9 @@
+item,price
+pen,1.25
+ink,12.5
+pad,0.1
+,7
+paper,0.2
+brush,3e2
+broken,abc
+eraser,-0.75

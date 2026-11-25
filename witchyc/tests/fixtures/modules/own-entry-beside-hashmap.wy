@@ -1,0 +1,33 @@
+// A program's own `Entry` beside the standard `HashMap`'s `pub type Entry`: the library's
+// uses keep meaning its own, and this file's bare `Entry` is this file's (once refused as a
+// duplicate declaration).
+import console
+import hashmap
+
+type Entry:
+    label: U64
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let mine = Entry(5)
+    match HashMap.new(&allocator, 4):
+        Ok(start):
+            var map: HashMap<U64, U64> = move start
+            match map.insert(1, 10):
+                Ok:
+                    console.print_int(1)
+                Err(back):
+                    console.print_int(0)
+            match map.get(&1):
+                Ok(value):
+                    console.print_int(*value + mine.label)
+                Err(code):
+                    console.print_int(code)
+            while map.len() > 0:
+                match map.take_any():
+                    Ok(entry):
+                        console.print_int(entry.key)
+                    Err(code):
+                        console.print_int(code)
+            map.release()
+        Err(code):
+            console.print_int(code)

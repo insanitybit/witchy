@@ -1,0 +1,24 @@
+// A type parameter is reached into through its traits, so a reference to a fixed type may
+// point into it.
+type Pair:
+    a: U64
+    b: U64
+
+trait Part:
+    fn part(self: &Self) -> &U64
+
+impl Part for Pair:
+    fn part(self: &Pair) -> &U64:
+        return &(*self).a
+
+fn get<T: Part>(x: &T, flag: &Bool) -> &U64:
+    return x.part()
+
+fn main(console: Console<Write>):
+    var pair = Pair(1, 2)
+    var n: U64 = 7
+    var k: U64 = 8
+    var flag = false
+    let seen = get(&pair, &flag)
+    pair.a = 9
+    console.print_int(*seen)

@@ -1,0 +1,35 @@
+// The place is found before the value is computed, in a task as anywhere: the index reads
+// k as 0 before the call that pauses advances it (adversarial review round 25).
+import console
+import tasks
+
+// p pauses, and as a side effect advances the shared cursor k.
+fn p(k: &mut U64) -> U64 suspends:
+    pause(1)
+    *k += 2
+    return 100
+
+fn cur(k: &U64) -> U64:
+    return *k
+
+fn work(console: Console<Write>) suspends:
+    var arr: [U64; 4] = [0, 0, 0, 0]
+    var k: U64 = 0
+    // source order: evaluate index cur(&k)==0, then p advances k to 2, store into arr[0]
+    arr[cur(&k)] += p(&mut k)
+    console.print_int(arr[0])
+    console.print_int(arr[2])
+    console.print_int(k)
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): Task = Task.spawn(&allocator, 4096, work, move console) else Err(c):
+        return
+    var t = move made
+    var going = true
+    while going:
+        match t.step():
+            Ok:
+                going = false
+            Err(token):
+                going = true
+    t.close()

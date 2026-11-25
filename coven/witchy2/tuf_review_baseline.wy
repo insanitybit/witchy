@@ -1,0 +1,155 @@
+import "tuf/coordinate.wy"
+import "tuf/delegated_input.wy"
+import "tuf/fetch_history.wy"
+import "tuf/fetch_refresh.wy"
+import "tuf/fetch_roots.wy"
+import "tuf/generation.wy"
+import "tuf/publication_roots.wy"
+import "tuf/release_trust.wy"
+import "tuf/review_generation.wy"
+import "tuf/review_target.wy"
+import "tuf/root.wy"
+import "tuf/signing_input.wy"
+import console
+import discard
+import fs
+import json_tree
+import span
+import string
+import text
+import time
+import vec
+
+fn main(source: Dir<Read>, input: Console<Read>, output: Console<Write>, destination: File<Write>, clock: Clock, allocator: Allocator):
+    let selected = read_request(&source, &input, &output, &destination, clock.now_ms(), &allocator)
+    source.close()
+    match selected:
+        Ok(Unpublished):
+            destination.abandon()
+            output.line("unpublished")
+        Ok(Compared(found)):
+            if let Ok(done) = destination.finish():
+                if found:
+                    output.line("verified")
+                else:
+                    output.line("absent")
+            else:
+                output.line("refused")
+        Err(code):
+            destination.abandon()
+            if code == 2:
+                output.line("rollback")
+            else:
+                output.line("refused")
+
+type ReviewResult:
+    Unpublished
+    Compared(Bool)
+
+fn read_request(source: &Dir<Read>, input: &Console<Read>, output: &Console<Write>, destination: &File<Write>, now: U64, allocator: &Allocator) -> Result<ReviewResult, U64>:
+    let request = read_signing_request(input, allocator)?
+    let result = read_inputs(source, input, &request, output, destination, now, allocator)
+    request.discard()
+    return result
+
+fn read_inputs(source: &Dir<Read>, input: &Console<Read>, request: &Json, output: &Console<Write>, destination: &File<Write>, now: U64, allocator: &Allocator) -> Result<ReviewResult, U64>:
+    if !count_fields(request, 8):
+        return Err(1)
+    let root_size = declared_integer(request, "root_size")?
+    let trust_size = declared_integer(request, "trust_size")?
+    if root_size == 0 || root_size > 512000 || trust_size == 0 || trust_size > 262144:
+        return Err(1)
+    let floor_size = declared_integer(request, "floor_size")?
+    if floor_size > 2113728:
+        return Err(1)
+    let bytes = read_signing_bytes(root_size + trust_size + floor_size, input, allocator)?
+    let wire = Span.of(bytes.as_slice())
+    let result = choose(source, request, wire.part(0, root_size), wire.part(root_size, root_size + trust_size), wire.part(root_size + trust_size, wire.len()), output, destination, now, allocator)
+    bytes.close()
+    return result
+
+fn choose(source: &Dir<Read>, request: &Json, initial: Span, trust_wire: Span, floor_wire: Span, output: &Console<Write>, destination: &File<Write>, now: U64, allocator: &Allocator) -> Result<ReviewResult, U64>:
+    let name = string_field(request, "name")?
+    let version = string_field(request, "version")?
+    if !package_name(name.span()) || !release_version(version.span()):
+        return Err(1)
+    let pin = string_field(request, "trust")?
+    let wire = trust_wire.to_string(allocator)?
+    let verified = parse_trust(&wire, pin, allocator)
+    wire.close()
+    let Ok(trust): ReleaseTrust = move verified else Err(code):
+        return Err(code)
+    let result = with_trust(source, request, &trust, initial, floor_wire, name, version, output, destination, now, allocator)
+    trust.close()
+    return result
+
+fn parse_trust(wire: &String, pin: &String, allocator: &Allocator) -> Result<ReleaseTrust, U64>:
+    if !matches_delegated_pin(wire, pin, allocator):
+        return Err(1)
+    let Ok(trust): ReleaseTrust = parse_release_trust(wire, allocator) else Err(error):
+        return Err(1)
+    return Ok(move trust)
+
+fn with_trust(source: &Dir<Read>, request: &Json, trust: &ReleaseTrust, initial: Span, floor_wire: Span, name: &String, version: &String, output: &Console<Write>, destination: &File<Write>, now: U64, allocator: &Allocator) -> Result<ReviewResult, U64>:
+    let policy = trust.policy()?
+    let registry = string_field(policy, "registry")?
+    let expected = string_field(request, "registry")?
+    if !registry.eq(expected):
+        return Err(1)
+    let pin = string_field(request, "root")?
+    let timestamp = optional_file(source, "metadata/timestamp.json", 16384, allocator)?
+    let result: Result<ReviewResult, U64> = if timestamp.byte_len() == 0:
+        if floor_wire.is_empty():
+            Ok(Unpublished)
+        else:
+            Err(2)
+    else:
+        with_timestamp(source, &timestamp, trust, initial, pin, floor_wire, name, version, output, destination, now, allocator)
+    timestamp.close()
+    return result
+
+fn with_timestamp(source: &Dir<Read>, timestamp: &String, trust: &ReleaseTrust, initial: Span, pin: &String, floor_wire: Span, name: &String, version: &String, output: &Console<Write>, destination: &File<Write>, now: U64, allocator: &Allocator) -> Result<ReviewResult, U64>:
+    let latest = mirror_root_version(source, allocator)?
+    let floor = read_root_floor(floor_wire, latest)?
+    let Ok(reserved): Vec<U8> = trust.reserved_keys(allocator) else Err(error):
+        return Err(1)
+    let result = with_roots(source, timestamp, trust, initial, pin, latest, floor, reserved.as_slice(), name, version, output, destination, now, allocator)
+    reserved.close()
+    return result
+
+fn mirror_root_version(source: &Dir<Read>, allocator: &Allocator) -> Result<U64, U64>:
+    let Ok(folder): Dir<Read> = source.dir("metadata") else Err(error):
+        return Err(1)
+    let listed = folder.list(allocator)
+    folder.close()
+    let Ok(names): String = move listed else Err(error):
+        return Err(1)
+    let result = last_root(names.span())
+    names.close()
+    let Ok(version): U64 = result else Err(error):
+        return Err(1)
+    return Ok(version)
+
+fn with_roots(source: &Dir<Read>, timestamp: &String, trust: &ReleaseTrust, initial: Span, pin: &String, latest: U64, floor: RootFloor, reserved: &[U8], name: &String, version: &String, output: &Console<Write>, destination: &File<Write>, now: U64, allocator: &Allocator) -> Result<ReviewResult, U64>:
+    let empty = String.new(allocator)?
+    var latest_pin = move empty
+    var retired_at: U64 = 1
+    let fetched = fetch_root(source, "metadata/", initial, pin, latest, floor, reserved, &mut latest_pin, &mut retired_at, allocator)
+    let Ok(root): TrustedRoot = move fetched else Err(code):
+        latest_pin.close()
+        return Err(code)
+    let result = with_root(source, &root, timestamp, trust, latest, &latest_pin, floor, reserved, name, version, output, destination, now, allocator)
+    latest_pin.close()
+    root.close()
+    return result
+
+fn with_root(source: &Dir<Read>, root: &TrustedRoot, timestamp: &String, trust: &ReleaseTrust, latest: U64, latest_pin: &String, floor: RootFloor, reserved: &[U8], name: &String, version: &String, output: &Console<Write>, destination: &File<Write>, now: U64, allocator: &Allocator) -> Result<ReviewResult, U64>:
+    let saved = review_generation(source, root, timestamp, latest, latest_pin, floor, reserved, destination, now, allocator)
+    let Ok(checked): ReviewGeneration = move saved else Err(code):
+        return Err(code)
+    let ReviewGeneration(generation, checkpoint_size) = move checked
+    output.write_u64(checkpoint_size)
+    output.print_byte(10)
+    let result = read_comparison(source, &generation, trust, name, version, output, destination, allocator)
+    generation.close()
+    return Ok(Compared(result?))

@@ -1,0 +1,4 @@
+/home: 2 in 200ms
+/api: 2 in 60ms
+/login: 1 in 300ms
+3 paths, 560ms in all

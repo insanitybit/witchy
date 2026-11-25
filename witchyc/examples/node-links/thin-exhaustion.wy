@@ -1,0 +1,34 @@
+import pointer_list
+import string
+
+fn run(a: &Allocator, out: &Console<Write>, original: String):
+    var full: DoublyLinkedList<U64> = DoublyLinkedList.new()
+    for i in 0..64:
+        match full.push_back(a, i):
+            Some(rejected):
+                out.print_int(rejected)
+                break
+            None:
+                continue
+    var pending: DoublyLinkedList<String> = DoublyLinkedList.new()
+    match pending.push_back(a, move original):
+        Some(back):
+            for byte in back.as_bytes():
+                out.print_byte(*byte)
+            out.print_byte(10)
+            back.close()
+        None:
+            out.print_int(1)
+    pending.close()
+    full.close()
+
+fn main(out: Console<Write>, a: Allocator):
+    match String.with_capacity(&a, 9):
+        Ok(blank):
+            var original = move blank
+            if let Ok(_) = original.push_text(&a, "return-me"):
+                run(&a, &out, move original)
+            else:
+                original.close()
+        Err(code):
+            out.print_int(code)

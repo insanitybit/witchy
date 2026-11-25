@@ -1,0 +1,18 @@
+// `for b in view:` walks a Span's bytes (its `at`), counting the vowels of a part of a String
+// without copying it.
+import console
+import string
+import span
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var s = move made
+    let _ = s.push_text(&allocator, "say hello there")
+    let view = s.span().part(4, 9)
+    var vowels: U64 = 0
+    for b in view:
+        if *b == 'a' || *b == 'e' || *b == 'i' || *b == 'o' || *b == 'u':
+            vowels += 1
+    console.print("${view.len()} ${vowels}")
+    s.close()

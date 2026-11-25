@@ -1,0 +1,5 @@
+// Refused: a `pure fn` takes no lent callback, which may hold authority.
+pure fn twice(each: &fn(U64) -> U64, n: U64) -> U64:
+    return each(each(n))
+fn main():
+    return

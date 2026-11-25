@@ -1,0 +1,63 @@
+// A value that may be absent (book: the `option` module). `Some` and `None` may also be
+// variants of other types: where an `Option` is expected, they build one.
+import "wasm-discard-core.wy"
+
+pub type Option<T>:
+    Some(T)
+    None
+
+// What is there is discarded; `None` owns nothing.
+impl<T: Any + Discard> Discard for Option<T>:
+    fn discard(self: Option<T>):
+        match move self:
+            Some(item):
+                item.discard()
+            None:
+                return
+
+impl<T: Any> Option<T>:
+    // Whether a value is there. It is only looked at, so it may hold an owner.
+    pub fn is_some(value: &Option<T>) -> Bool:
+        ensures result == (variant_index(value) == 0)
+        proof:
+            auto
+        match value:
+            Some(_):
+                return true
+            None:
+                return false
+
+    pub fn is_none(value: &Option<T>) -> Bool:
+        return !value.is_some()
+
+    // Take the value out and leave `None`. For an owner too: the value handed back is the one
+    // that was there, and a caller's proof knows it as that value and the place as `None`.
+    pub nopanic fn take(slot: &mut Option<T>) -> Option<T>:
+        var previous: Option<T> = None
+        memory.exchange(&mut *slot, &mut previous)
+        return move previous
+
+    // Put `next` there and hand back what was there. Replacing a value that is there is fine:
+    // it is returned, not lost.
+    pub nopanic fn replace(slot: &mut Option<T>, next: Option<T>) -> Option<T>:
+        var held = move next
+        memory.exchange(&mut *slot, &mut held)
+        return move held
+
+    // The value, or `Err(error)` when there is none. The error is a copied value (a code),
+    // since it is dropped when the value is there.
+    pub fn ok_or<E>(value: Option<T>, error: E) -> Result<T, E>:
+        match move value:
+            Some(item):
+                return Ok(move item)
+            None:
+                return Err(error)
+
+impl<T> Option<T>:
+    // The value, or `otherwise`. For values that are copied.
+    pub fn unwrap_or(value: Option<T>, otherwise: T) -> T:
+        match value:
+            Some(item):
+                return item
+            None:
+                return otherwise

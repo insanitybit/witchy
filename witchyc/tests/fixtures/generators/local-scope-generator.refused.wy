@@ -1,0 +1,22 @@
+// Refused (review of nested generators): a generator local stepped outside the block that binds it stepped a placeholder.
+import console
+
+gen fn from(start: U64, flag: Bool) -> U64:
+    var i: U64 = start
+    while i < start + 3:
+        if flag:
+            yield i * 1000
+        else:
+            yield i
+        i += 1
+
+gen fn g(n: U64, b: Bool) -> U64:
+    if b:
+        var c = from(n, true)
+        yield 100
+    for x in c:
+        yield x
+
+fn main(console: Console<Write>):
+    for n in g(7, false):
+        console.print_int(n)

@@ -1,0 +1,4 @@
+[package]
+name = "sqlite"
+version = "0.2.0"
+source = "sqlite.wy"

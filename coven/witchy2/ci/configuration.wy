@@ -1,0 +1,57 @@
+import "enrollment.wy"
+import "@oidc"
+import "scope.wy"
+import "../tuf/canonical.wy"
+import "../tuf/origin.wy"
+import "../tuf/release_trust.wy"
+import discard
+import json_tree
+import span
+import string
+import text
+
+pub fn checked_configuration(document: &String, key_set: &String, allocator: &Allocator) -> Result<String, U64>:
+    if document.byte_len() > 262144 || key_set.byte_len() > 262144:
+        return Err(104)
+    let Ok(config): Json = parse_release_json(document, allocator) else Err(code):
+        return Err(104)
+    let checked = encode_checked(&config, key_set, allocator)
+    config.discard()
+    return move checked
+
+fn encode_checked(config: &Json, key_set: &String, allocator: &Allocator) -> Result<String, U64>:
+    validate(config, key_set, allocator)?
+    return release_json(config, allocator)
+
+fn validate(config: &Json, key_set: &String, allocator: &Allocator) -> Result<(), U64>:
+    if let Err(code) = validate_scope(config, allocator):
+        return Err(104)
+    let Ok(pin): &String = string_field(config, "jwks_pin") else Err(code):
+        return Err(104)
+    let actual = digest_text(key_set.as_bytes(), allocator)?
+    let matches = actual.eq(pin)
+    actual.close()
+    if !matches:
+        return Err(105)
+    let keys = read_rs256_jwks(key_set, allocator)?
+    keys.close()
+    let Ok(packages): &Json = config.field("packages") else Err(code):
+        return Err(103)
+    if let Err(code) = validate_enrollments(packages, allocator):
+        return Err(103)
+    return Ok(())
+
+fn validate_scope(config: &Json, allocator: &Allocator) -> Result<(), U64>:
+    if !count_fields(config, 5):
+        return Err(1)
+    let profile = string_field(config, "profile")?
+    let origin = string_field(config, "origin")?
+    if !profile.equals_text("github-actions-v1") || !origin.span().starts_with_text("https://"):
+        return Err(1)
+    let host = relying_party(origin.span())?
+    if host.len() > 253:
+        return Err(1)
+    let registry = string_field(config, "registry")?
+    let audience = build_ci_audience(origin, registry.span(), allocator)?
+    audience.close()
+    return Ok(())

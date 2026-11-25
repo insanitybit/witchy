@@ -1,0 +1,24 @@
+// A record may hold a slice (a view: it keeps what the slice borrows lent); read by value and
+// through a reference, where it is laid out in memory as an address and a count.
+import console
+
+type Window:
+    items: &[U64]
+    start: U64
+
+fn sum(w: Window) -> U64:
+    let items = w.items
+    var total: U64 = 0
+    for index in w.start..items.len():
+        total += items[index]
+    return total
+
+fn by_ref(w: &Window) -> U64:
+    let items = (*w).items
+    return items.len() * 100 + (*w).start
+
+fn main(console: Console<Write>):
+    let numbers: [U64; 4] = [1, 2, 3, 4]
+    let w = Window(numbers.slice(), 1)
+    console.print_int(sum(w))
+    console.print_int(by_ref(&w))

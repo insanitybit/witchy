@@ -1,0 +1,126 @@
+:root {
+    color-scheme: dark;
+    font: 16px/1.55 system-ui, sans-serif;
+    --background: #14121a;
+    --surface: #1d1a24;
+    --edge: #3b3448;
+    --text: #f6f0fa;
+    --muted: #bdb3c9;
+    --accent: #e0bcff;
+    --mono: ui-monospace, "SF Mono", Consolas, monospace;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+    margin: 0;
+    min-height: 100vh;
+    color: var(--text);
+    background: radial-gradient(ellipse 45rem 26rem at 70% 0, #2e2040, transparent), var(--background);
+}
+
+a { color: var(--accent); text-underline-offset: .23em; }
+a:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+
+.site-header { border-bottom: 1px solid var(--edge); }
+.site-bar, main { width: min(100% - 3rem, 54rem); margin-inline: auto; }
+.site-bar { display: flex; align-items: center; min-height: 4.25rem; }
+.wordmark {
+    display: inline-flex;
+    align-items: center;
+    gap: .75rem;
+    font-weight: 700;
+    letter-spacing: .035em;
+    color: var(--text);
+    text-decoration: none;
+}
+.mark {
+    width: 1rem;
+    aspect-ratio: 1;
+    transform: rotate(45deg);
+    border: 1px solid var(--accent);
+    border-radius: 2px;
+    background: linear-gradient(135deg, var(--accent) 50%, transparent 50%);
+}
+
+main { padding-block: clamp(2.25rem, 7vw, 5rem); }
+h1 {
+    margin: 0;
+    font: 400 clamp(2.65rem, 8vw, 5rem)/1.02 Georgia, serif;
+    letter-spacing: -.055em;
+    overflow-wrap: anywhere;
+}
+.page-intro { margin-block-end: clamp(1.5rem, 4vw, 2.6rem); }
+.snapshot { margin: 1rem 0 0; color: var(--muted); font-size: .875rem; overflow-wrap: anywhere; }
+code, td:last-child, dd { font-family: var(--mono); }
+.snapshot code { color: var(--accent); }
+
+.catalog-panel {
+    --inset: clamp(1rem, 4vw, 1.75rem);
+    border: 1px solid var(--edge);
+    border-radius: .875rem;
+    background: var(--surface);
+    box-shadow: 0 18px 60px #09060d3d;
+}
+.filter-bar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(12rem, 19rem);
+    align-items: center;
+    gap: .65rem 1.25rem;
+    padding: 1.1rem var(--inset);
+}
+.filter-bar label { font-size: .95rem; font-weight: 650; }
+.filter-bar input {
+    width: 100%;
+    min-height: 2.75rem;
+    font: inherit;
+    font-size: .95rem;
+    color: var(--text);
+    background: var(--background);
+    border: 1px solid #625572;
+    border-radius: .45rem;
+    padding: .55rem .8rem;
+}
+.filter-bar input::placeholder { color: var(--muted); }
+.filter-bar input:disabled { opacity: .65; }
+#filter-status { grid-column: 1 / -1; margin: 0; color: var(--muted); font-size: .875rem; }
+
+table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+th, td { padding: .85rem var(--inset); text-align: left; border-top: 1px solid var(--edge); }
+th {
+    background: #211c2b;
+    color: var(--muted);
+    font-size: .75rem;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+}
+th:last-child, td:last-child { width: 28%; text-align: right; }
+td { overflow-wrap: anywhere; }
+td:last-child { color: var(--muted); font-size: .875rem; }
+td a { display: inline-block; padding-block: .2rem; font-weight: 650; }
+tbody tr:hover td, tbody tr:focus-within td { background: #322740; }
+tbody tr:last-child td:first-child { border-end-start-radius: .875rem; }
+tbody tr:last-child td:last-child { border-end-end-radius: .875rem; }
+
+.package-page h1 { margin-block-end: 2rem; }
+.package-page dl {
+    display: grid;
+    grid-template-columns: 8rem minmax(0, 1fr);
+    gap: .35rem 1rem;
+    margin: 0;
+    padding: 1.15rem clamp(1rem, 4vw, 1.75rem);
+    background: var(--surface);
+    border: 1px solid var(--edge);
+}
+.package-page dl:first-of-type { border-radius: .875rem .875rem 0 0; }
+.package-page dl:last-of-type { border-top: 0; border-radius: 0 0 .875rem .875rem; }
+.package-page dt { color: var(--muted); font-size: .9rem; }
+.package-page dd { margin: 0; font-size: .9rem; overflow-wrap: anywhere; }
+.package-page > a { display: inline-block; margin-block-start: 1.4rem; }
+
+@media (max-width: 36rem) {
+    .site-bar, main { width: calc(100% - 2rem); }
+    .site-bar { min-height: 3.75rem; }
+    .filter-bar, .package-page dl { grid-template-columns: minmax(0, 1fr); }
+    th:last-child, td:last-child { width: 35%; }
+}

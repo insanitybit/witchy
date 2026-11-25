@@ -1,0 +1,4 @@
+// Refused: the raw byte read of a secret is no operation of a `Signer`.
+import crypto
+fn main(targets: Signer):
+    let byte = targets.raw_byte(0)

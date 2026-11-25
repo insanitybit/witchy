@@ -1,0 +1,32 @@
+import cell
+
+fn claim_same<T: Any>(first: Weak<T>, second: Weak<T>):
+    requires memory.box_id(first) == memory.box_id(second)
+    ensures true
+    proof:
+        auto
+    return
+
+fn invalid(a: &Allocator):
+    ensures true
+    proof:
+        auto
+    let initial: Result<VacantCell<U64>, U64> = VacantCell.new(a)
+    match move initial:
+        Err(code):
+            return
+        Ok(owner):
+            let old = owner.pointer()
+            owner.close()
+            let next: Result<VacantCell<U64>, U64> = VacantCell.new(a)
+            match move next:
+                Err(code):
+                    return
+                Ok(replacement):
+                    let fresh = replacement.pointer()
+                    if memory.weak_bits(old) == memory.weak_bits(fresh):
+                        claim_same(old, fresh)
+                    replacement.close()
+
+nopanic fn main(a: Allocator):
+    invalid(&a)

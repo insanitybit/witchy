@@ -1,0 +1,21 @@
+// A contract may name a slice's length: `requires xs.len() > 0` lets `xs[0]` go unchecked, and
+// each caller shows it, from an array's slice (its length is the array's) or a test on the path.
+import console
+
+fn first(xs: &[U64]) -> U64:
+    requires xs.len() > 0
+    ensures true
+    proof:
+        auto
+    return xs[0]
+
+fn guarded(ys: &[U64]) -> U64:
+    if ys.len() == 0:
+        return 0
+    return first(ys)
+
+fn main(console: Console<Write>):
+    let a: [U64; 3] = [7, 8, 9]
+    let s = a.slice()
+    let t = s
+    console.print("${first(t)} ${guarded(s)} ${guarded(s.part(0, 0))}")

@@ -1,0 +1,6 @@
+// Refused: a pure function is given no capability, Exec least of all.
+import exec
+pure fn quiet(exec: &Exec) -> U64:
+    return 0
+fn main(exec: Exec):
+    let n = quiet(&exec)

@@ -1,0 +1,24 @@
+// An owned String in interpolated text, as a Span of it: the format holds a view, so the
+// String stays lent while the format is in use, and nothing is copied or allocated.
+import console
+import string
+import span
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(made): String = String.new(&allocator) else Err(code):
+        return
+    var name = move made
+    if let Err(_) = name.push_text(&allocator, "witchy"):
+        name.close()
+        return
+    let count: U64 = 3
+    console.print("hello ${name.span()}, ${count} times")
+    let Ok(other): String = String.new(&allocator) else Err(code):
+        name.close()
+        return
+    var copy = move other
+    if let Ok(_) = copy.push_format(&allocator, "<${name.span()}>"):
+        console.write_string(&copy)
+        console.print("")
+    copy.close()
+    name.close()

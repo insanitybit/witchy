@@ -1,0 +1,18 @@
+// Refused by the proof: one element of an array field is lent, at an index not known; every
+// element is unknown afterwards.
+import console
+
+type Grid:
+    cells: [U64; 4]
+    n: U64
+
+fn f(g: &mut Grid, i: U64) -> U64:
+    requires i < 4
+    ensures result == 5
+    (*g).cells[1] = 5
+    let r = &mut (*g).cells[i]
+    *r = 6
+    return (*g).cells[1]
+
+fn main(console: Console<Write>):
+    console.print_int(1)

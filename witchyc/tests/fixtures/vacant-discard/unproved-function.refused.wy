@@ -1,0 +1,17 @@
+// Refused by the proof in a function with no `nopanic` and no contract too: an owner never
+// ends unproved, and never by a hidden trap.
+type Slot<T>:
+    Vacant
+    Full(T)
+
+type Shelf<T>:
+    count: U64
+    slot: Slot<T>
+
+fn unpack<T: Any>(shelf: Shelf<T>) -> U64:
+    let Shelf(count, held) = move shelf
+    memory.vacant(move held)
+    return count
+
+fn main(out: Console<Write>):
+    out.print_int(1)

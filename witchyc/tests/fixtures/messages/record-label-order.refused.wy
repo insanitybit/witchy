@@ -1,0 +1,12 @@
+// Refused, naming the order to write: "label order" read as the type's declared order, which is
+// how this record was written; the order is alphabetical, and both operands are calls.
+type Pair = .{words: U64, length: U64}
+
+fn words() -> U64:
+    return 4
+
+fn length() -> U64:
+    return 0
+
+fn main():
+    var p: Pair = .{words: words(), length: length()}

@@ -1,0 +1,31 @@
+import simd
+
+fn main(console: Console<Write>):
+    let left = F64x2(8.0, -6.0)
+    let right = F64x2(2.0, 3.0)
+    let result = left.div(right).mul(F64x2.splat(2.0)).add(F64x2(1.0, 0.0))
+    console.print_int(F64.bits(result.low))
+    console.print_int(F64.bits(result.high))
+    let special = F64x2(1.0, 0.0).div(F64x2.splat(0.0))
+    console.print_int(F64.bits(special.low))
+    if special.high != special.high:
+        console.print_int(1)
+    let signed = F64x2.splat(0.0).mul(F64x2(1.0, -1.0))
+    console.print_int(F64.bits(signed.low))
+    console.print_int(F64.bits(signed.high))
+    var pair = F64x2(1.0, 4.0)
+    for i in 0..3:
+        pair = add_pair(pair, F64x2(2.0, 3.0))
+    pair.low = 5.0
+    console.print_int(F64.bits(pair.low))
+    console.print_int(F64.bits(pair.high))
+    var addressed = pair
+    update(&mut addressed)
+    console.print_int(F64.bits(addressed.low))
+    console.print_int(F64.bits(addressed.high))
+
+fn add_pair(left: F64x2, right: F64x2) -> F64x2:
+    return left.add(right)
+
+fn update(value: &mut F64x2):
+    (*value).high = 2.0
