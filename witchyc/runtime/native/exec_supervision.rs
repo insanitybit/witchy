@@ -136,22 +136,17 @@ fn can_identify_a_live_child() {
         fn fork() -> c_int;
         safe fn getpid() -> c_int;
         safe fn pause() -> c_int;
-        fn waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
         safe fn _exit(code: c_int) -> !;
     }
-    let parent = unsafe { getpid() };
+    let parent = getpid();
     let child = unsafe { fork() };
     assert!(child >= 0);
     if child == 0 {
-        unsafe {
-            pause();
-            _exit(0);
-        }
+        pause();
+        _exit(0);
     }
     assert!(child_of(child, parent));
-    unsafe {
-        kill(child, KILL);
-    }
+    kill(child, KILL);
     let mut status = 0;
-    assert_eq!(unsafe { waitpid(child, &mut status, 0) }, child);
+    assert_eq!(super::sys::waitpid(child, Some(&mut status), 0), child);
 }

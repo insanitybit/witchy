@@ -556,33 +556,29 @@ fn guest_handles_run_only_a_granted_program() {
     use super::exec_linux_runner::witchy_exec_request;
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
+    use super::sys;
     unsafe extern "C" {
-        fn open(path: *const c_char, flags: c_int, ...) -> c_int;
         safe fn close(fd: c_int) -> c_int;
         fn fork() -> c_int;
         safe fn _exit(code: c_int) -> !;
-        fn waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
-        fn socketpair(domain: c_int, kind: c_int, protocol: c_int, fds: *mut c_int) -> c_int;
     }
     let executable = std::env::current_exe().unwrap();
     let parent = CString::new(executable.parent().unwrap().as_os_str().as_bytes()).unwrap();
     let mut name = CString::new(executable.file_name().unwrap().as_bytes())
         .unwrap()
         .into_bytes_with_nul();
-    let fd = unsafe { open(parent.as_ptr(), 0x0110_0000) };
+    let fd = sys::open(&parent, 0x0110_0000);
     assert!(fd >= 0);
     assert!(unsafe { bind_programs(name.as_mut_ptr().cast()) });
     let granted = CStr::from_bytes_with_nul(&name).unwrap();
     assert!(super::exec_programs::witchy_exec_setup(fd, &[granted], 4096));
     configure_budget(4096);
     let mut sockets = [-1; 2];
-    assert_eq!(unsafe { socketpair(1, 1, 0, sockets.as_mut_ptr()) }, 0);
+    assert_eq!(sys::socketpair(1, 1, 0, &mut sockets), 0);
     let child = unsafe { fork() };
     assert!(child >= 0);
     if child == 0 {
-        unsafe {
-            close(sockets[0]);
-        }
+        close(sockets[0]);
         loop {
             let mut head = [0u8; 4];
             if !super::broker_transport::witchy_broker_receive(sockets[1], &mut head) {
@@ -597,9 +593,7 @@ fn guest_handles_run_only_a_granted_program() {
                         &mut data[..count],
                     ))
             {
-                unsafe {
-                    _exit(1);
-                }
+                _exit(1);
             }
             let capacity = if head[0] == 29 { count } else { CHUNK };
             let Some(answer) = witchy_exec_request(
@@ -613,18 +607,12 @@ fn guest_handles_run_only_a_granted_program() {
             if !super::broker_transport::witchy_broker_reply(sockets[1], 0, answer)
                 || !super::broker_transport::witchy_broker_send(sockets[1], &data[..answer])
             {
-                unsafe {
-                    _exit(2);
-                }
+                _exit(2);
             }
         }
-        unsafe {
-            _exit(0);
-        }
+        _exit(0);
     }
-    unsafe {
-        close(sockets[1]);
-    }
+    close(sockets[1]);
     file_reader::bind_channel(sockets[0]);
     for byte in b"not-granted" {
         witchy_exec(0, EXEC, u64::from(*byte));
@@ -660,10 +648,8 @@ fn guest_handles_run_only_a_granted_program() {
             .windows(b"witchy-exec-hello".len())
             .any(|part| part == b"witchy-exec-hello")
     );
-    unsafe {
-        close(sockets[0]);
-    }
+    close(sockets[0]);
     let mut status = 0;
-    assert_eq!(unsafe { waitpid(child, &mut status, 0) }, child);
+    assert_eq!(sys::waitpid(child, Some(&mut status), 0), child);
     assert_eq!(status, 0);
 }

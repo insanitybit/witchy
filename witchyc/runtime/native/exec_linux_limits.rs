@@ -20,7 +20,6 @@ unsafe extern "C" {
     fn dirfd(dir: *mut c_void) -> c_int;
     fn closedir(dir: *mut c_void) -> c_int;
     fn openat(fd: c_int, path: *const c_char, flags: c_int, ...) -> c_int;
-    fn read(fd: c_int, out: *mut c_void, len: usize) -> isize;
     safe fn close(fd: c_int) -> c_int;
     safe fn getuid() -> u32;
     fn getrlimit(resource: c_int, limit: *mut Limit) -> c_int;
@@ -96,7 +95,8 @@ fn user_processes() -> u64 {
             continue;
         }
         let mut bytes = [0u8; 4096];
-        let count = unsafe { read(fd, bytes.as_mut_ptr().cast(), bytes.len() - 1) };
+        let wanted = bytes.len() - 1;
+        let count = super::sys::read(fd, &mut bytes[..wanted]);
         close(fd);
         if count > 0 {
             if let Some(n) = process_status(&bytes[..count as usize], uid) {

@@ -3,12 +3,10 @@
 use super::linux_stat::stat;
 #[cfg(target_os = "macos")]
 use super::seatbelt::stat;
+use super::sys;
 use core::ffi::{CStr, c_char, c_int};
 
 unsafe extern "C" {
-    #[cfg(target_os = "macos")]
-    fn openat(fd: c_int, name: *const c_char, flags: c_int, ...) -> c_int;
-    fn fcntl(fd: c_int, command: c_int, ...) -> c_int;
     safe fn close(fd: c_int) -> c_int;
 }
 
@@ -19,10 +17,6 @@ const MAX_PROGRAMS: usize = 16;
 const OPEN_FLAGS: c_int = 0x0100_0000 | 0x2000_0000 | 0x4;
 #[cfg(target_os = "linux")]
 const OPEN_FLAGS: c_int = 0o2000000 | 0o100000 | 0o4000;
-#[cfg(target_os = "macos")]
-const DUP_CLOEXEC: c_int = 67;
-#[cfg(target_os = "linux")]
-const DUP_CLOEXEC: c_int = 1030;
 
 #[derive(Copy, Clone)]
 pub(super) struct Program {
@@ -218,12 +212,12 @@ pub(super) fn witchy_exec_setup(directory: c_int, names: &[&CStr], limit: u64) -
         entry.name[..bytes.len()].copy_from_slice(bytes);
         entry.name[bytes.len()] = 0;
         #[cfg(target_os = "macos")]
-        let mut fd = unsafe { openat(directory, name.as_ptr(), OPEN_FLAGS) };
+        let mut fd = sys::openat(directory, name, OPEN_FLAGS);
         #[cfg(target_os = "linux")]
         let mut fd =
             unsafe { super::linux_stat::openat_no_symlinks(directory, name.as_ptr(), OPEN_FLAGS) };
         if (0..=2).contains(&fd) {
-            let moved = unsafe { fcntl(fd, DUP_CLOEXEC, 3 as c_int) };
+            let moved = sys::duplicate_close_on_exec(fd, 3);
             close(fd);
             fd = moved;
         }
@@ -266,9 +260,6 @@ fn setup_records_opened_executable_identity() {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::PermissionsExt;
-    unsafe extern "C" {
-        fn open(path: *const c_char, flags: c_int, ...) -> c_int;
-    }
     let root = std::env::temp_dir().join(format!("witchy-exec-programs-{}", std::process::id()));
     std::fs::create_dir(&root).unwrap();
     let program = root.join("helper");
@@ -282,7 +273,7 @@ fn setup_records_opened_executable_identity() {
     const DIR_FLAGS: c_int = 0x0010_0000 | 0x0100_0000;
     #[cfg(target_os = "linux")]
     const DIR_FLAGS: c_int = 0o40000 | 0o2000000;
-    let fd = unsafe { open(root_name.as_ptr(), DIR_FLAGS) };
+    let fd = sys::open(&root_name, DIR_FLAGS);
     assert!(fd >= 0);
     assert!(witchy_exec_setup(fd, &[name.as_c_str(), link.as_c_str()], 42));
     assert!(self::program(1).is_none());
@@ -294,8 +285,6 @@ fn setup_records_opened_executable_identity() {
         info.device as u64,
         info.inode.wrapping_add(1)
     ));
-    unsafe {
-        close(descriptors[0]);
-    }
+    close(descriptors[0]);
     std::fs::remove_dir_all(root).unwrap();
 }

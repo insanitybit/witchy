@@ -1,8 +1,9 @@
 //! Linux subreaper cleanup. Only this process's unreaped children are signalled,
 //! and each signal is sent through a pidfd to prevent PID-reuse mistakes.
 use super::global::Global;
+use super::sys::{self, Timespec};
 use core::{
-    ffi::{c_char, c_int, c_long, c_void},
+    ffi::{CStr, c_char, c_int, c_long, c_void},
     ptr,
 };
 
@@ -17,25 +18,19 @@ static mut HANDLES: [c_int; HELD] = [-1; HELD];
 unsafe extern "C" {
     safe fn getpid() -> c_int;
     fn prctl(option: c_int, ...) -> c_int;
-    fn open(path: *const c_char, flags: c_int, ...) -> c_int;
     safe fn close(fd: c_int) -> c_int;
-    fn pread(fd: c_int, bytes: *mut c_void, len: usize, offset: i64) -> isize;
     fn snprintf(out: *mut c_char, size: usize, format: *const c_char, ...) -> c_int;
     fn syscall(number: c_long, ...) -> c_long;
-    fn waitpid(pid: c_int, status: *mut c_int, flags: c_int) -> c_int;
-    fn nanosleep(
-        time: *const super::clock_random::Timespec,
-        remaining: *mut super::clock_random::Timespec,
-    ) -> c_int;
-    fn clock_gettime(clock: c_int, out: *mut super::clock_random::Timespec) -> c_int;
 }
 
 fn now_ms() -> Option<u64> {
-    let mut time = core::mem::MaybeUninit::<super::clock_random::Timespec>::uninit();
-    if unsafe { clock_gettime(1, time.as_mut_ptr()) } != 0 {
+    let mut time = Timespec {
+        seconds: 0,
+        nanos: 0,
+    };
+    if sys::clock_gettime(1, &mut time) != 0 {
         return None;
     }
-    let time = unsafe { time.assume_init() };
     if time.seconds < 0 || !(0..1_000_000_000).contains(&time.nanos) {
         return None;
     }
@@ -62,7 +57,11 @@ extern "C" fn witchy_exec_supervise() -> bool {
     if n <= 0 || n as usize >= path.len() || unsafe { prctl(36, 1, 0, 0, 0) } != 0 {
         return false;
     }
-    let fd = unsafe { open(path.as_ptr().cast(), 0o2000000) };
+    // The text written above ends before the end of `path`, which began as zeros.
+    let Ok(path) = CStr::from_bytes_until_nul(&path) else {
+        return false;
+    };
+    let fd = sys::open(path, 0o2000000);
     if fd < 0 {
         return false;
     }
@@ -94,7 +93,8 @@ pub(super) fn discard_inherited() {
 // and force another sweep rather than interpreting a truncated PID.
 fn read_children(fd: c_int, output: &mut [c_int]) -> Result<(usize, bool), ()> {
     let input = unsafe { &mut *(&raw mut INPUT) };
-    let n = unsafe { pread(fd, input.as_mut_ptr().cast(), input.len() - 1, 0) };
+    let wanted = input.len() - 1;
+    let n = sys::pread(fd, &mut input[..wanted], 0);
     if n < 0 {
         return Err(());
     }
@@ -162,13 +162,11 @@ extern "C" fn witchy_exec_sweep_own() -> bool {
         for &handle in &handles[..opened] {
             unsafe {
                 syscall(424, handle, 9i32, ptr::null::<c_void>(), 0u32);
-                close(handle);
             }
+            close(handle);
         }
         for &pid in &pids[..count] {
-            unsafe {
-                waitpid(pid, ptr::null_mut(), 1);
-            }
+            sys::waitpid(pid, None, 1);
         }
         if count == 0 && !more {
             return true;
@@ -176,13 +174,11 @@ extern "C" fn witchy_exec_sweep_own() -> bool {
         if now_ms().is_none_or(|now| now >= deadline) {
             return false;
         }
-        let delay = super::clock_random::Timespec {
+        let delay = Timespec {
             seconds: 0,
             nanos: 1_000_000,
         };
-        unsafe {
-            nanosleep(&raw const delay, ptr::null_mut());
-        }
+        sys::nanosleep(&delay);
     }
 }
 
@@ -215,28 +211,23 @@ mod tests {
         assert!(supervisor >= 0);
         if supervisor == 0 {
             if !witchy_exec_supervise() {
-                unsafe { _exit(1) }
+                _exit(1)
             }
             let child = unsafe { fork() };
             if child < 0 {
-                unsafe { _exit(2) }
+                _exit(2)
             }
             if child == 0 {
-                unsafe {
-                    pause();
-                    _exit(3)
-                }
+                pause();
+                _exit(3)
             }
             if !witchy_exec_sweep_own() {
-                unsafe { _exit(4) }
+                _exit(4)
             }
-            unsafe { _exit(0) }
+            _exit(0)
         }
         let mut status = 0;
-        assert_eq!(
-            unsafe { waitpid(supervisor, &raw mut status, 0) },
-            supervisor
-        );
+        assert_eq!(sys::waitpid(supervisor, Some(&mut status), 0), supervisor);
         assert_eq!(status, 0);
     }
 
@@ -244,8 +235,6 @@ mod tests {
     fn runner_stops_a_child_that_created_a_new_session() {
         unsafe extern "C" {
             fn fork() -> c_int;
-            fn pipe(fds: *mut c_int) -> c_int;
-            fn write(fd: c_int, bytes: *const c_void, len: usize) -> isize;
             safe fn setsid() -> c_int;
             safe fn pause() -> c_int;
             safe fn _exit(code: c_int) -> !;
@@ -254,69 +243,53 @@ mod tests {
         assert!(supervisor >= 0);
         if supervisor == 0 {
             if !witchy_exec_supervise() {
-                unsafe { _exit(1) }
+                _exit(1)
             }
             let mut ready = [-1; 2];
-            if unsafe { pipe(ready.as_mut_ptr()) } != 0 {
-                unsafe { _exit(2) }
+            if sys::pipe(&mut ready) != 0 {
+                _exit(2)
             }
             let leader = unsafe { fork() };
             if leader < 0 {
-                unsafe { _exit(3) }
+                _exit(3)
             }
             if leader == 0 {
-                unsafe {
-                    close(ready[0]);
-                }
+                close(ready[0]);
                 let child = unsafe { fork() };
                 if child < 0 {
-                    unsafe { _exit(4) }
+                    _exit(4)
                 }
                 if child == 0 {
-                    if unsafe { setsid() } < 0 {
-                        unsafe { _exit(5) }
+                    if setsid() < 0 {
+                        _exit(5)
                     }
-                    let marker = b'X';
-                    if unsafe { write(ready[1], (&raw const marker).cast(), 1) } != 1 {
-                        unsafe { _exit(6) }
+                    if sys::write(ready[1], b"X") != 1 {
+                        _exit(6)
                     }
-                    unsafe {
-                        pause();
-                        _exit(7)
-                    }
-                }
-                unsafe {
-                    close(ready[1]);
                     pause();
-                    _exit(8)
+                    _exit(7)
                 }
-            }
-            unsafe {
                 close(ready[1]);
+                pause();
+                _exit(8)
             }
-            let mut marker = 0u8;
-            if unsafe { read(ready[0], (&raw mut marker).cast(), 1) } != 1 || marker != b'X' {
-                unsafe { _exit(9) }
+            close(ready[1]);
+            let mut marker = [0u8];
+            if sys::read(ready[0], &mut marker) != 1 || marker[0] != b'X' {
+                _exit(9)
             }
-            unsafe {
-                close(ready[0]);
-            }
+            close(ready[0]);
             if !sweep_descendants(leader) {
-                unsafe { _exit(10) }
+                _exit(10)
             }
-            unsafe {
-                waitpid(leader, ptr::null_mut(), 0);
-            }
+            sys::waitpid(leader, None, 0);
             if !witchy_exec_sweep_own() {
-                unsafe { _exit(11) }
+                _exit(11)
             }
-            unsafe { _exit(0) }
+            _exit(0)
         }
         let mut status = 0;
-        assert_eq!(
-            unsafe { waitpid(supervisor, &raw mut status, 0) },
-            supervisor
-        );
+        assert_eq!(sys::waitpid(supervisor, Some(&mut status), 0), supervisor);
         assert_eq!(status, 0);
     }
 }
@@ -328,26 +301,8 @@ unsafe extern "C" {
     fn closedir(dir: *mut c_void) -> c_int;
     fn dirfd(dir: *mut c_void) -> c_int;
     fn openat(fd: c_int, path: *const c_char, flags: c_int, ...) -> c_int;
-    fn read(fd: c_int, bytes: *mut c_void, size: usize) -> isize;
-    fn waitid(kind: c_int, id: u32, info: *mut SignalInfo, options: c_int) -> c_int;
 }
-#[repr(C)]
-pub(super) struct SignalInfo {
-    signo: i32,
-    error: i32,
-    pub(super) code: i32,
-    pad: i32,
-    pub(super) pid: i32,
-    uid: u32,
-    pub(super) status: i32,
-    rest: [u8; 100],
-}
-#[repr(C)]
-struct PollFd {
-    fd: c_int,
-    events: i16,
-    returned: i16,
-}
+use super::sys::{PollFd, SignalInfo};
 #[derive(Copy, Clone)]
 struct Held {
     fd: c_int,
@@ -374,7 +329,11 @@ fn list_children(parent: c_int, out: &mut [c_int]) -> (usize, bool) {
     if n <= 0 || n as usize >= path.len() {
         return (0, true);
     }
-    let fd = unsafe { open(path.as_ptr().cast(), 0o2040000) };
+    // The text written above ends before the end of `path`, which began as zeros.
+    let Ok(path) = CStr::from_bytes_until_nul(&path) else {
+        return (0, true);
+    };
+    let fd = sys::open(path, 0o2040000);
     if fd < 0 {
         let errno = super::errno::get();
         return (0, !matches!(errno, 2 | 3));
@@ -395,8 +354,7 @@ fn list_children(parent: c_int, out: &mut [c_int]) -> (usize, bool) {
             more |= super::errno::get() != 0;
             break;
         }
-        let name =
-            unsafe { core::ffi::CStr::from_ptr((&raw const (*entry).name).cast()) }.to_bytes();
+        let name = unsafe { CStr::from_ptr((&raw const (*entry).name).cast()) }.to_bytes();
         if name.is_empty() || !name.iter().all(u8::is_ascii_digit) {
             continue;
         }
@@ -442,12 +400,14 @@ fn parent_of(pid: c_int) -> Option<c_int> {
     if n <= 0 || n as usize >= path.len() {
         return None;
     }
-    let fd = unsafe { open(path.as_ptr().cast(), 0o2000000) };
+    // The text written above ends before the end of `path`, which began as zeros.
+    let path = CStr::from_bytes_until_nul(&path).ok()?;
+    let fd = sys::open(path, 0o2000000);
     if fd < 0 {
         return None;
     }
     let mut data = [0u8; 512];
-    let n = unsafe { read(fd, data.as_mut_ptr().cast(), data.len()) };
+    let n = sys::read(fd, &mut data);
     close(fd);
     if n <= 0 {
         return None;
@@ -479,7 +439,7 @@ fn still_running(fd: c_int) -> bool {
         events: 1,
         returned: 0,
     };
-    let zero = super::clock_random::Timespec {
+    let zero = Timespec {
         seconds: 0,
         nanos: 0,
     };
@@ -565,27 +525,23 @@ pub(super) fn sweep_descendants(keep: c_int) -> bool {
         }
         for process in &tree[..held] {
             if process.parent == myself && process.pid != keep {
-                unsafe {
-                    waitpid(process.pid, ptr::null_mut(), 1);
-                }
+                sys::waitpid(process.pid, None, 1);
             }
             close(process.fd);
         }
-        let mut seen: SignalInfo = unsafe { core::mem::zeroed() };
-        let ended = unsafe { waitid(1, keep as u32, &raw mut seen, 4 | 1 | 0x01000000) } == 0
-            && seen.pid == keep;
+        let mut seen = SignalInfo::zeroed();
+        let ended =
+            sys::waitid(1, keep as u32, &mut seen, 4 | 1 | 0x01000000) == 0 && seen.pid == keep;
         if others == 0 && !more && ended {
             return true;
         }
         if now_ms().is_none_or(|now| now >= deadline) {
             return false;
         }
-        let delay = super::clock_random::Timespec {
+        let delay = Timespec {
             seconds: 0,
             nanos: 1_000_000,
         };
-        unsafe {
-            nanosleep(&raw const delay, ptr::null_mut());
-        }
+        sys::nanosleep(&delay);
     }
 }

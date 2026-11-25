@@ -1,45 +1,12 @@
 //! Bounded I/O and process lifetime for an Exec child.
-#[cfg(target_os = "linux")]
-pub(super) use super::exec_linux_children::SignalInfo;
 use super::exec_pending::Buffer;
 #[cfg(target_os = "macos")]
 use super::exec_supervision::{stop_live, stop_session};
-use core::ffi::{c_int, c_void};
-
-#[repr(C)]
-#[cfg(target_os = "macos")]
-struct PollFd {
-    fd: c_int,
-    events: i16,
-    returned: i16,
-}
-#[cfg(target_os = "linux")]
-use super::socket_primitives::PollFd;
-
-#[repr(C)]
-#[cfg(target_os = "macos")]
-pub(super) struct SignalInfo {
-    signal: c_int,
-    error: c_int,
-    code: c_int,
-    pub(super) pid: c_int,
-    uid: u32,
-    status: c_int,
-    address: *mut c_void,
-    value: u64,
-    band: i64,
-    reserved: [u64; 7],
-}
+pub(super) use super::sys::SignalInfo;
+use super::sys::{self, PollFd};
+use core::ffi::c_int;
 
 unsafe extern "C" {
-    fn waitid(kind: c_int, id: u32, info: *mut SignalInfo, options: c_int) -> c_int;
-    fn waitpid(pid: c_int, status: *mut c_int, flags: c_int) -> c_int;
-    #[cfg(target_os = "macos")]
-    fn poll(fds: *mut PollFd, count: u32, timeout: c_int) -> c_int;
-    #[cfg(target_os = "linux")]
-    fn poll(fds: *mut PollFd, count: usize, timeout: c_int) -> c_int;
-    fn read(fd: c_int, buffer: *mut c_void, length: usize) -> isize;
-    fn write(fd: c_int, buffer: *const c_void, length: usize) -> isize;
     safe fn close(fd: c_int) -> c_int;
     #[cfg(target_os = "macos")]
     safe fn kill(pid: c_int, signal: c_int) -> c_int;
@@ -81,7 +48,7 @@ fn now() -> u64 {
 
 fn reap(child: c_int, status: &mut c_int) {
     loop {
-        if unsafe { waitpid(child, status, 0) } >= 0 || super::errno::get() != 4 {
+        if sys::waitpid(child, Some(&mut *status), 0) >= 0 || super::errno::get() != 4 {
             return;
         }
     }
@@ -114,14 +81,12 @@ pub(super) fn collect(
     let mut after_exit = 0;
     while !ended[0] || !ended[1] || !exited {
         if !exited {
-            let mut seen: SignalInfo = unsafe { core::mem::zeroed() };
+            let mut seen = SignalInfo::zeroed();
             #[cfg(target_os = "macos")]
             const WNOWAIT: c_int = 0x20;
             #[cfg(target_os = "linux")]
             const WNOWAIT: c_int = 0x01000000;
-            if unsafe { waitid(1, child as u32, &mut seen, 4 | 1 | WNOWAIT) } == 0
-                && seen.pid == child
-            {
+            if sys::waitid(1, child as u32, &mut seen, 4 | 1 | WNOWAIT) == 0 && seen.pid == child {
                 exited = true;
                 stop_session(child);
                 #[cfg(target_os = "macos")]
@@ -178,7 +143,7 @@ pub(super) fn collect(
         } else {
             limit.saturating_sub(time).min(50) as c_int
         };
-        let polled = unsafe { poll(ready.as_mut_ptr(), 4, wait) };
+        let polled = sys::poll(&mut ready, wait);
         if polled < 0 && super::errno::get() != 4 {
             result.status = Status::Failed;
             break;
@@ -190,13 +155,7 @@ pub(super) fn collect(
         if polled > 0 && *stdin >= 0 && ready[3].returned != 0 {
             let writable = ready[3].returned & 4 != 0;
             let count = if writable {
-                unsafe {
-                    write(
-                        *stdin,
-                        input[input_at..].as_ptr().cast(),
-                        input.len() - input_at,
-                    )
-                }
+                sys::write(*stdin, &input[input_at..])
             } else {
                 -1
             };
@@ -214,13 +173,7 @@ pub(super) fn collect(
             if polled <= 0 || ready[stream + 1].returned == 0 || ready[stream + 1].fd < 0 {
                 continue;
             }
-            let count = unsafe {
-                read(
-                    ready[stream + 1].fd,
-                    scratch.as_mut_ptr().cast(),
-                    scratch.len(),
-                )
-            };
+            let count = sys::read(ready[stream + 1].fd, &mut scratch);
             if count > 0 {
                 let total = result
                     .output
@@ -271,8 +224,6 @@ mod tests {
     use super::*;
     unsafe extern "C" {
         fn fork() -> c_int;
-        fn pipe(fds: *mut c_int) -> c_int;
-        fn socketpair(domain: c_int, kind: c_int, protocol: c_int, fds: *mut c_int) -> c_int;
         safe fn setsid() -> c_int;
         safe fn _exit(code: c_int) -> !;
         safe fn pause() -> c_int;
@@ -282,30 +233,26 @@ mod tests {
         let mut output = [-1; 2];
         let mut errors = [-1; 2];
         let mut channel = [-1; 2];
-        assert_eq!(unsafe { pipe(output.as_mut_ptr()) }, 0);
-        assert_eq!(unsafe { pipe(errors.as_mut_ptr()) }, 0);
-        assert_eq!(unsafe { socketpair(1, 1, 0, channel.as_mut_ptr()) }, 0);
+        assert_eq!(sys::pipe(&mut output), 0);
+        assert_eq!(sys::pipe(&mut errors), 0);
+        assert_eq!(sys::socketpair(1, 1, 0, &mut channel), 0);
         let child = unsafe { fork() };
         assert!(child >= 0);
         if child == 0 {
-            unsafe {
-                setsid();
-                close(output[0]);
-                close(errors[0]);
-                close(channel[0]);
-                close(channel[1]);
-                if hang {
-                    pause();
-                }
-                write(output[1], b"hello".as_ptr().cast(), 5);
-                write(errors[1], b"bad".as_ptr().cast(), 3);
-                _exit(7);
+            setsid();
+            close(output[0]);
+            close(errors[0]);
+            close(channel[0]);
+            close(channel[1]);
+            if hang {
+                pause();
             }
+            sys::write(output[1], b"hello");
+            sys::write(errors[1], b"bad");
+            _exit(7);
         }
-        unsafe {
-            close(output[1]);
-            close(errors[1]);
-        }
+        close(output[1]);
+        close(errors[1]);
         let mut stdin = -1;
         let result = collect(
             channel[0],
@@ -318,12 +265,10 @@ mod tests {
             500,
             || false,
         );
-        unsafe {
-            close(output[0]);
-            close(errors[0]);
-            close(channel[0]);
-            close(channel[1]);
-        }
+        close(output[0]);
+        close(errors[0]);
+        close(channel[0]);
+        close(channel[1]);
         result
     }
 

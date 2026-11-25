@@ -2,6 +2,8 @@
 mod errno;
 #[path = "../../../runtime/native/global.rs"]
 mod global;
+#[path = "../../../runtime/native/sys.rs"]
+mod sys;
 #[path = "../../../runtime/native/clock_random.rs"]
 mod clock_random;
 #[path = "../../../runtime/native/exec_linux_limits.rs"]

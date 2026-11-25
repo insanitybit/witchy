@@ -778,14 +778,17 @@ impl NativeLaunch {
                 let fd = if self.exec_fd >= 0 {
                     self.exec_fd
                 } else {
-                    super::exec_grant::open_directory(self.exec_dir)
+                    // Each of these three is null or a C string that lives as long as the process.
+                    super::exec_grant::open_directory(
+                        (!self.exec_dir.is_null()).then(|| CStr::from_ptr(self.exec_dir)),
+                    )
                 };
                 if fd < 0
                     || !super::exec_grant::separated_from_writes(
                         fd,
-                        paths.write_dir,
+                        (!paths.write_dir.is_null()).then(|| CStr::from_ptr(paths.write_dir)),
                         writable_fd,
-                        paths.output,
+                        (!paths.output.is_null()).then(|| CStr::from_ptr(paths.output)),
                         self.output_fd,
                     )
                 {

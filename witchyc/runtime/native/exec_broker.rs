@@ -7,9 +7,10 @@ use super::{
     exec_pending::{Kind, Pending},
     exec_programs,
     exec_temp::Directory,
+    sys,
 };
 use core::{
-    ffi::{c_char, c_int},
+    ffi::{CStr, c_char, c_int},
     ptr,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -20,10 +21,7 @@ unsafe extern "C" {
     fn sigprocmask(how: c_int, set: *const SignalSet, old: *mut SignalSet) -> c_int;
     fn signal(signal: c_int, handler: usize) -> usize;
     fn open(path: *const c_char, flags: c_int, ...) -> c_int;
-    fn openat(fd: c_int, path: *const c_char, flags: c_int, ...) -> c_int;
     safe fn close(fd: c_int) -> c_int;
-    fn pipe(fds: *mut c_int) -> c_int;
-    fn fcntl(fd: c_int, command: c_int, ...) -> c_int;
     fn fork() -> c_int;
     safe fn dup2(source: c_int, destination: c_int) -> c_int;
     safe fn setsid() -> c_int;
@@ -111,19 +109,16 @@ impl Pipes {
             err: [-1; 2],
             input: [-1; 2],
         };
-        if unsafe {
-            pipe(result.out.as_mut_ptr()) != 0
-                || pipe(result.err.as_mut_ptr()) != 0
-                || (with_input && pipe(result.input.as_mut_ptr()) != 0)
-        } {
+        if sys::pipe(&mut result.out) != 0
+            || sys::pipe(&mut result.err) != 0
+            || (with_input && sys::pipe(&mut result.input) != 0)
+        {
             return None;
         }
-        unsafe {
-            fcntl(result.out[0], 2, 1 as c_int);
-            fcntl(result.err[0], 2, 1 as c_int);
-            if with_input {
-                fcntl(result.input[1], 2, 1 as c_int);
-            }
+        sys::set_close_on_exec(result.out[0]);
+        sys::set_close_on_exec(result.err[0]);
+        if with_input {
+            sys::set_close_on_exec(result.input[1]);
         }
         Some(result)
     }
@@ -166,10 +161,10 @@ fn run_program(
     let Some(temp) = Directory::create() else {
         return (5, 0);
     };
-    let name = match program.name.iter().position(|&byte| byte == 0) {
-        Some(at) => &program.name[..at],
-        None => return (5, 0),
+    let Ok(program_name) = CStr::from_bytes_until_nul(&program.name) else {
+        return (5, 0);
     };
+    let name = program_name.to_bytes();
     let mut executable = [0u8; 1024];
     if !temp.program_path(name, &mut executable) {
         return (5, 0);
@@ -178,14 +173,7 @@ fn run_program(
     const NEW_EXECUTABLE: c_int = 0x0100_0b01;
     #[cfg(target_os = "linux")]
     const NEW_EXECUTABLE: c_int = 0o2000000 | 0o100000 | 0o301;
-    let target = unsafe {
-        openat(
-            temp.fd,
-            program.name.as_ptr().cast(),
-            NEW_EXECUTABLE,
-            0o700 as c_int,
-        )
-    };
+    let target = sys::openat_mode(temp.fd, program_name, NEW_EXECUTABLE, 0o700);
     if target < 0 {
         return (5, 0);
     }
@@ -198,13 +186,14 @@ fn run_program(
     let mut argv = [ptr::null::<c_char>(); 66];
     argv[0] = program.name.as_ptr().cast();
     for i in 0..argc {
-        argv[i + 1] = unsafe { args.as_ptr().add(offsets[i]).cast() };
+        // `exec_arguments::offsets` put every offset inside `args`.
+        argv[i + 1] = args[offsets[i]..].as_ptr().cast();
     }
     let environment = broker.pending.environment();
     let mut env = [ptr::null::<c_char>(); 17];
     let (mut at, mut count) = (0, 0);
     while at < environment.len() {
-        env[count] = unsafe { environment.as_ptr().add(at).cast() };
+        env[count] = environment[at..].as_ptr().cast();
         let Some(end) = environment[at..].iter().position(|&byte| byte == 0) else {
             return (2, 0);
         };
@@ -272,12 +261,10 @@ fn run_program(
     const NONBLOCK: c_int = 4;
     #[cfg(target_os = "linux")]
     const NONBLOCK: c_int = 0o4000;
-    unsafe {
-        fcntl(pipes.out[0], 4, NONBLOCK);
-        fcntl(pipes.err[0], 4, NONBLOCK);
-        if pipes.input[1] >= 0 {
-            fcntl(pipes.input[1], 4, NONBLOCK);
-        }
+    sys::set_status_flags(pipes.out[0], NONBLOCK);
+    sys::set_status_flags(pipes.err[0], NONBLOCK);
+    if pipes.input[1] >= 0 {
+        sys::set_status_flags(pipes.input[1], NONBLOCK);
     }
     let allowed = u64::from(asked).min(exec_programs::budget());
     let capture = exec_capture::collect(
@@ -491,19 +478,15 @@ fn subprocess_helper() {
 fn executes_granted_program_and_enforces_timeout() {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
-    unsafe extern "C" {
-        fn socketpair(domain: c_int, kind: c_int, protocol: c_int, fds: *mut c_int) -> c_int;
-        fn waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
-    }
     let executable = std::env::current_exe().unwrap();
     let parent = CString::new(executable.parent().unwrap().as_os_str().as_bytes()).unwrap();
     let name = CString::new(executable.file_name().unwrap().as_bytes()).unwrap();
-    let directory = unsafe { open(parent.as_ptr(), 0x0110_0000) };
+    let directory = sys::open(&parent, 0x0110_0000);
     assert!(directory >= 0);
     assert!(exec_programs::witchy_exec_setup(directory, &[name.as_c_str()], 4096));
     assert!(exec_environment::witchy_exec_env_names(c"TERM"));
     let mut channel = [-1; 2];
-    assert_eq!(unsafe { socketpair(1, 1, 0, channel.as_mut_ptr()) }, 0);
+    assert_eq!(sys::socketpair(1, 1, 0, &mut channel), 0);
     let mut argument = *b"--exact\0exec_broker::subprocess_helper\0--nocapture\0";
     let count = argument.len();
     assert!(witchy_exec_request(channel[0], 27, &mut argument, count).is_some());
@@ -542,24 +525,18 @@ fn executes_granted_program_and_enforces_timeout() {
     let count = packet.len();
     assert!(witchy_exec_request(channel[0], 28, &mut packet, count).is_some());
     assert_eq!(packet[0], 6);
-    unsafe {
-        close(channel[0]);
-        close(channel[1]);
-    }
+    close(channel[0]);
+    close(channel[1]);
     let mut channel = [-1; 2];
-    assert_eq!(unsafe { socketpair(1, 1, 0, channel.as_mut_ptr()) }, 0);
+    assert_eq!(sys::socketpair(1, 1, 0, &mut channel), 0);
     let child = unsafe { fork() };
     assert!(child >= 0);
     if child == 0 {
-        unsafe {
-            close(channel[0]);
-        }
+        close(channel[0]);
         for _ in 0..3 {
             let mut head = [0u8; 4];
             if !super::broker_transport::witchy_broker_receive(channel[1], &mut head) {
-                unsafe {
-                    _exit(1);
-                }
+                _exit(1);
             }
             let count = u16::from_be_bytes([head[1], head[2]]) as usize;
             let mut data = [0u8; 16384];
@@ -570,9 +547,7 @@ fn executes_granted_program_and_enforces_timeout() {
                         &mut data[..count],
                     ))
             {
-                unsafe {
-                    _exit(2);
-                }
+                _exit(2);
             }
             let capacity = if head[0] == 29 { count } else { data.len() };
             let Some(answer) = witchy_exec_request(
@@ -586,18 +561,12 @@ fn executes_granted_program_and_enforces_timeout() {
             if !super::broker_transport::witchy_broker_reply(channel[1], 0, answer)
                 || !super::broker_transport::witchy_broker_send(channel[1], &data[..answer])
             {
-                unsafe {
-                    _exit(3);
-                }
+                _exit(3);
             }
         }
-        unsafe {
-            _exit(0);
-        }
+        _exit(0);
     }
-    unsafe {
-        close(channel[1]);
-    }
+    close(channel[1]);
     let arguments = b"--exact\0exec_broker::subprocess_helper\0--nocapture\0";
     assert_eq!(
         super::broker_transport::witchy_broker_exec_args(channel[0], arguments),
@@ -626,11 +595,9 @@ fn executes_granted_program_and_enforces_timeout() {
             .windows(b"witchy-exec-hello".len())
             .any(|window| window == b"witchy-exec-hello")
     );
-    unsafe {
-        close(channel[0]);
-    }
+    close(channel[0]);
     let mut status = 0;
-    assert_eq!(unsafe { waitpid(child, &mut status, 0) }, child);
+    assert_eq!(sys::waitpid(child, Some(&mut status), 0), child);
     assert_eq!(status, 0);
 }
 
@@ -648,20 +615,19 @@ fn linux_runner_executes_granted_program() {
     use std::os::unix::ffi::OsStrExt;
     unsafe extern "C" {
         safe fn witchy_exec_supervise() -> bool;
-        fn socketpair(domain: c_int, kind: c_int, protocol: c_int, fds: *mut c_int) -> c_int;
     }
     let executable = std::env::current_exe().unwrap();
     let parent = CString::new(executable.parent().unwrap().as_os_str().as_bytes()).unwrap();
     let name = CString::new(executable.file_name().unwrap().as_bytes()).unwrap();
-    let directory = unsafe { open(parent.as_ptr(), 0o40000 | 0o2000000) };
+    let directory = sys::open(&parent, 0o40000 | 0o2000000);
     assert!(directory >= 0);
     assert!(exec_programs::witchy_exec_setup(directory, &[name.as_c_str()], 4096));
-    assert!(unsafe { witchy_exec_supervise() });
+    assert!(witchy_exec_supervise());
     let mut alive = [-1; 2];
-    assert_eq!(unsafe { pipe(alive.as_mut_ptr()) }, 0);
+    assert_eq!(sys::pipe(&mut alive), 0);
     super::exec_linux_limits::set_liveness(alive[0], alive[1]);
     let mut channel = [-1; 2];
-    assert_eq!(unsafe { socketpair(1, 1, 0, channel.as_mut_ptr()) }, 0);
+    assert_eq!(sys::socketpair(1, 1, 0, &mut channel), 0);
     let mut args = *b"--exact\0exec_broker::linux_subprocess_helper\0--nocapture\0";
     let count = args.len();
     assert!(request_here(channel[0], 27, &mut args, count).is_some());
@@ -680,12 +646,10 @@ fn linux_runner_executes_granted_program() {
             .windows(b"linux-exec-hello".len())
             .any(|s| s == b"linux-exec-hello")
     );
-    unsafe {
-        close(alive[0]);
-        close(alive[1]);
-        close(channel[0]);
-        close(channel[1]);
-    }
+    close(alive[0]);
+    close(alive[1]);
+    close(channel[0]);
+    close(channel[1]);
 }
 
 #[cfg(all(test, target_os = "linux"))]
@@ -696,8 +660,6 @@ fn linux_kill_runner_helper() {
         safe fn kill(pid: c_int, signal: c_int) -> c_int;
         safe fn pause() -> c_int;
     }
-    unsafe {
-        kill(getppid(), 9);
-        pause();
-    }
+    kill(getppid(), 9);
+    pause();
 }

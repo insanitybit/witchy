@@ -67,14 +67,13 @@ pub(super) fn drop_capabilities() -> bool {
 fn child_loses_all_capabilities() {
     unsafe extern "C" {
         fn fork() -> c_int;
-        fn waitpid(pid: c_int, status: *mut c_int, flags: c_int) -> c_int;
         safe fn _exit(code: c_int) -> !;
     }
     let child = unsafe { fork() };
     assert!(child >= 0);
     if child == 0 {
         if !drop_capabilities() {
-            unsafe { _exit(1) }
+            _exit(1)
         }
         let header = Header {
             version: 0x2008_0522,
@@ -90,12 +89,12 @@ fn child_loses_all_capabilities() {
                 .iter()
                 .any(|d| d.effective != 0 || d.permitted != 0 || d.inheritable != 0)
         {
-            unsafe { _exit(2) }
+            _exit(2)
         }
-        unsafe { _exit(0) }
+        _exit(0)
     }
     let mut status = 0;
-    assert_eq!(unsafe { waitpid(child, &raw mut status, 0) }, child);
+    assert_eq!(super::sys::waitpid(child, Some(&mut status), 0), child);
     assert_eq!(status, 0);
 }
 
@@ -104,7 +103,6 @@ fn child_loses_all_capabilities() {
 fn inheritable_set_is_cleared_when_permitted_set_is_empty() {
     unsafe extern "C" {
         fn fork() -> c_int;
-        fn waitpid(pid: c_int, status: *mut c_int, flags: c_int) -> c_int;
         safe fn _exit(code: c_int) -> !;
     }
     let child = unsafe { fork() };
@@ -120,11 +118,11 @@ fn inheritable_set_is_cleared_when_permitted_set_is_empty() {
             inheritable: 0,
         }; 2];
         if unsafe { syscall(90, &raw const header, data.as_mut_ptr()) } != 0 {
-            unsafe { _exit(1) }
+            _exit(1)
         }
         let permitted = data[0].permitted;
         if permitted == 0 {
-            unsafe { _exit(0) }
+            _exit(0)
         }
         data[0].inheritable = permitted & permitted.wrapping_neg();
         data[0].effective = 0;
@@ -133,19 +131,19 @@ fn inheritable_set_is_cleared_when_permitted_set_is_empty() {
         data[1].permitted = 0;
         data[1].inheritable = 0;
         if unsafe { syscall(91, &raw const header, data.as_ptr()) } != 0 {
-            unsafe { _exit(2) }
+            _exit(2)
         }
         if !drop_capabilities() {
-            unsafe { _exit(3) }
+            _exit(3)
         }
         if unsafe { syscall(90, &raw const header, data.as_mut_ptr()) } != 0
             || data.iter().any(|d| d.inheritable != 0)
         {
-            unsafe { _exit(4) }
+            _exit(4)
         }
-        unsafe { _exit(0) }
+        _exit(0)
     }
     let mut status = 0;
-    assert_eq!(unsafe { waitpid(child, &raw mut status, 0) }, child);
+    assert_eq!(super::sys::waitpid(child, Some(&mut status), 0), child);
     assert_eq!(status, 0);
 }

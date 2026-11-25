@@ -29,12 +29,9 @@ struct Control {
     pad: c_int,
 }
 unsafe extern "C" {
-    fn send(fd: c_int, data: *const c_void, len: usize, flags: c_int) -> isize;
-    fn read(fd: c_int, data: *mut c_void, len: usize) -> isize;
     fn sendmsg(fd: c_int, msg: *const Message, flags: c_int) -> isize;
     fn recvmsg(fd: c_int, msg: *mut Message, flags: c_int) -> isize;
     safe fn close(fd: c_int) -> c_int;
-    fn fcntl(fd: c_int, command: c_int, ...) -> c_int;
 }
 const EINTR: c_int = 4;
 const MSG_NOSIGNAL: c_int = 0x4000;
@@ -43,7 +40,7 @@ const MSG_CTRUNC: c_int = 8;
 
 pub(super) fn read_exact(fd: c_int, mut data: &mut [u8]) -> bool {
     while !data.is_empty() {
-        let n = unsafe { read(fd, data.as_mut_ptr().cast(), data.len()) };
+        let n = super::sys::read(fd, data);
         if n < 0 && super::errno::get() == EINTR {
             continue;
         }
@@ -57,7 +54,7 @@ pub(super) fn read_exact(fd: c_int, mut data: &mut [u8]) -> bool {
 
 pub(super) fn send_all(fd: c_int, mut data: &[u8]) -> bool {
     while !data.is_empty() {
-        let n = unsafe { send(fd, data.as_ptr().cast(), data.len(), MSG_NOSIGNAL) };
+        let n = super::sys::send(fd, data, MSG_NOSIGNAL);
         if n < 0 && super::errno::get() == EINTR {
             continue;
         }
@@ -160,7 +157,7 @@ pub(super) fn receive_head(fd: c_int, head: &mut [u8; 9]) -> Result<Option<c_int
         return Err(());
     }
     if let Some(received) = descriptor.filter(|&number| number <= 2) {
-        let private = unsafe { fcntl(received, 1030, 3 as c_int) };
+        let private = super::sys::duplicate_close_on_exec(received, 3);
         close(received);
         if private < 0 {
             return Err(());

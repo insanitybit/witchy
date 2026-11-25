@@ -2,7 +2,7 @@
 //! both before installing Landlock, and retains only their private channel.
 use super::global::Global;
 use super::linux_sandbox::witchy_close_inherited_keeping;
-use super::socket_primitives::PollFd;
+use super::sys::{self, PollFd, SignalInfo};
 use super::{
     exec_broker, exec_linux_children as children, exec_linux_transport as transport, exec_programs,
 };
@@ -17,8 +17,6 @@ static FAILED: Global<bool> = Global::new(false);
 static mut SCRATCH: [u8; BUFFER] = [0; BUFFER];
 
 unsafe extern "C" {
-    fn socketpair(domain: c_int, kind: c_int, protocol: c_int, fds: *mut c_int) -> c_int;
-    fn pipe2(fds: *mut c_int, flags: c_int) -> c_int;
     fn fork() -> c_int;
     safe fn close(fd: c_int) -> c_int;
     safe fn shutdown(fd: c_int, how: c_int) -> c_int;
@@ -26,9 +24,6 @@ unsafe extern "C" {
     safe fn getppid() -> c_int;
     fn prctl(option: c_int, ...) -> c_int;
     fn signal(signal: c_int, handler: usize) -> usize;
-    fn poll(fds: *mut PollFd, count: usize, timeout: c_int) -> c_int;
-    fn waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
-    fn waitid(kind: c_int, id: u32, info: *mut children::SignalInfo, options: c_int) -> c_int;
     fn syscall(number: core::ffi::c_long, ...) -> core::ffi::c_long;
     safe fn witchy_exec_supervise() -> bool;
     safe fn witchy_exec_sweep_own() -> bool;
@@ -42,7 +37,7 @@ fn poll_one(fd: c_int, timeout: c_int) -> c_int {
         returned: 0,
     };
     loop {
-        let n = unsafe { poll(&raw mut p, 1, timeout) };
+        let n = sys::poll(core::slice::from_mut(&mut p), timeout);
         if n < 0 && super::errno::get() == 4 {
             continue;
         }
@@ -63,7 +58,7 @@ fn runner_loop(channel: c_int, broker_pid: c_int) -> ! {
         _exit(2)
     }
     let mut alive = [-1; 2];
-    if unsafe { pipe2(alive.as_mut_ptr(), 0o2000000) } != 0 {
+    if sys::pipe2(&mut alive, 0o2000000) != 0 {
         _exit(2)
     }
     super::exec_linux_limits::set_liveness(alive[0], alive[1]);
@@ -133,7 +128,7 @@ fn runner_loop(channel: c_int, broker_pid: c_int) -> ! {
 
 fn start_warden(pair: [c_int; 2], broker: c_int) -> c_int {
     let mut alive = [-1; 2];
-    if unsafe { pipe2(alive.as_mut_ptr(), 0o2000000) } != 0 {
+    if sys::pipe2(&mut alive, 0o2000000) != 0 {
         return -1;
     }
     let warden = unsafe { fork() };
@@ -173,7 +168,7 @@ fn start_warden(pair: [c_int; 2], broker: c_int) -> c_int {
     }
     loop {
         let ready = poll_one(alive[0], 50);
-        let ended = unsafe { waitpid(runner, ptr::null_mut(), 1) };
+        let ended = sys::waitpid(runner, None, 1);
         if ready != 0 || ended == runner || ended < 0 {
             break;
         }
@@ -187,7 +182,7 @@ extern "C" fn witchy_exec_start_runner() -> bool {
         return true;
     }
     let mut pair = [-1; 2];
-    if unsafe { socketpair(1, 1 | 0o2000000, 0, pair.as_mut_ptr()) } != 0 {
+    if sys::socketpair(1, 1 | 0o2000000, 0, &mut pair) != 0 {
         return false;
     }
     let broker = getpid();
@@ -201,13 +196,11 @@ extern "C" fn witchy_exec_start_runner() -> bool {
     RUNNER.set(pair[0]);
     let pidfd = unsafe { syscall(434, warden, 0u32) } as c_int;
     if pidfd < 0 {
-        unsafe {
-            close(pair[0]);
-            RUNNER.set(-1);
-            close(WARDEN_PIPE.get());
-            WARDEN_PIPE.set(-1);
-            waitpid(warden, ptr::null_mut(), 0);
-        }
+        close(pair[0]);
+        RUNNER.set(-1);
+        close(WARDEN_PIPE.get());
+        WARDEN_PIPE.set(-1);
+        sys::waitpid(warden, None, 0);
         return false;
     }
     WARDEN_FD.set(pidfd);
@@ -226,34 +219,34 @@ extern "C" fn witchy_exec_runner_descriptor() -> c_int {
 
 #[unsafe(no_mangle)]
 extern "C" fn witchy_exec_finish() -> bool {
-    unsafe {
-        if RUNNER.get() >= 0 {
-            shutdown(RUNNER.get(), 2);
-            close(RUNNER.get());
-            RUNNER.set(-1);
-        }
-        if WARDEN_PIPE.get() >= 0 {
-            close(WARDEN_PIPE.get());
-            WARDEN_PIPE.set(-1);
-        }
-        if WARDEN_FD.get() >= 0 {
-            if poll_one(WARDEN_FD.get(), 7000) != 1 {
-                syscall(424, WARDEN_FD.get(), 9i32, ptr::null::<c_void>(), 0u32);
-                FAILED.set(true);
-                let _ = poll_one(WARDEN_FD.get(), 2000);
-            }
-            let mut seen: children::SignalInfo = core::mem::zeroed();
-            if waitid(3, WARDEN_FD.get() as u32, &raw mut seen, 4 | 1) != 0
-                || seen.code != 1
-                || seen.status != 0
-            {
-                FAILED.set(true);
-            }
-            close(WARDEN_FD.get());
-            WARDEN_FD.set(-1);
-        }
-        !FAILED.get()
+    if RUNNER.get() >= 0 {
+        shutdown(RUNNER.get(), 2);
+        close(RUNNER.get());
+        RUNNER.set(-1);
     }
+    if WARDEN_PIPE.get() >= 0 {
+        close(WARDEN_PIPE.get());
+        WARDEN_PIPE.set(-1);
+    }
+    if WARDEN_FD.get() >= 0 {
+        if poll_one(WARDEN_FD.get(), 7000) != 1 {
+            unsafe {
+                syscall(424, WARDEN_FD.get(), 9i32, ptr::null::<c_void>(), 0u32);
+            }
+            FAILED.set(true);
+            let _ = poll_one(WARDEN_FD.get(), 2000);
+        }
+        let mut seen = SignalInfo::zeroed();
+        if sys::waitid(3, WARDEN_FD.get() as u32, &mut seen, 4 | 1) != 0
+            || seen.code != 1
+            || seen.status != 0
+        {
+            FAILED.set(true);
+        }
+        close(WARDEN_FD.get());
+        WARDEN_FD.set(-1);
+    }
+    !FAILED.get()
 }
 
 pub(super) fn witchy_exec_set_cwd(fd: c_int) -> bool {
@@ -313,7 +306,7 @@ pub(super) fn witchy_exec_request(
         },
     ];
     loop {
-        let n = unsafe { poll(ready.as_mut_ptr(), 2, -1) };
+        let n = sys::poll(&mut ready, -1);
         if n < 0 && super::errno::get() == 4 {
             continue;
         }
@@ -349,23 +342,22 @@ fn warden_runs_granted_program_and_reaps_runner() {
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::MetadataExt;
     unsafe extern "C" {
-        fn open(path: *const core::ffi::c_char, flags: c_int, ...) -> c_int;
         safe fn witchy_exec_program(device: u64, inode: u64) -> bool;
     }
     let executable = std::env::current_exe().unwrap();
     let parent = CString::new(executable.parent().unwrap().as_os_str().as_bytes()).unwrap();
     let name = CString::new(executable.file_name().unwrap().as_bytes()).unwrap();
-    let directory = unsafe { open(parent.as_ptr(), 0o40000 | 0o2000000) };
+    let directory = sys::open(&parent, 0o40000 | 0o2000000);
     assert!(directory >= 0);
     assert!(exec_programs::witchy_exec_setup(directory, &[name.as_c_str()], 4096));
     assert!(witchy_exec_start_runner());
     let identity = std::fs::metadata(&executable).unwrap();
-    assert!(unsafe { witchy_exec_program(identity.dev(), identity.ino()) });
-    let cwd = unsafe { open(c"/tmp".as_ptr(), 0o40000 | 0o2000000) };
+    assert!(witchy_exec_program(identity.dev(), identity.ino()));
+    let cwd = sys::open(c"/tmp", 0o40000 | 0o2000000);
     assert!(cwd >= 0);
     assert!(witchy_exec_set_cwd(cwd));
     let mut channel = [-1; 2];
-    assert_eq!(unsafe { socketpair(1, 1, 0, channel.as_mut_ptr()) }, 0);
+    assert_eq!(sys::socketpair(1, 1, 0, &mut channel), 0);
     let mut args = *b"--exact\0exec_broker::linux_subprocess_helper\0--nocapture\0";
     let count = args.len();
     assert!(witchy_exec_request(channel[0], 27, &mut args, count).is_some());
@@ -390,10 +382,8 @@ fn warden_runs_granted_program_and_reaps_runner() {
             .any(|s| s == b"cwd=/tmp")
     );
     assert!(witchy_exec_finish());
-    unsafe {
-        close(channel[0]);
-        close(channel[1]);
-    }
+    close(channel[0]);
+    close(channel[1]);
 }
 
 #[cfg(test)]
@@ -401,18 +391,15 @@ fn warden_runs_granted_program_and_reaps_runner() {
 fn warden_cleans_up_after_runner_is_killed() {
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
-    unsafe extern "C" {
-        fn open(path: *const core::ffi::c_char, flags: c_int, ...) -> c_int;
-    }
     let executable = std::env::current_exe().unwrap();
     let parent = CString::new(executable.parent().unwrap().as_os_str().as_bytes()).unwrap();
     let name = CString::new(executable.file_name().unwrap().as_bytes()).unwrap();
-    let directory = unsafe { open(parent.as_ptr(), 0o40000 | 0o2000000) };
+    let directory = sys::open(&parent, 0o40000 | 0o2000000);
     assert!(directory >= 0);
     assert!(exec_programs::witchy_exec_setup(directory, &[name.as_c_str()], 4096));
     assert!(witchy_exec_start_runner());
     let mut channel = [-1; 2];
-    assert_eq!(unsafe { socketpair(1, 1, 0, channel.as_mut_ptr()) }, 0);
+    assert_eq!(sys::socketpair(1, 1, 0, &mut channel), 0);
     let mut args = *b"--exact\0exec_broker::linux_kill_runner_helper\0--nocapture\0";
     let count = args.len();
     assert!(witchy_exec_request(channel[0], 27, &mut args, count).is_some());
@@ -424,8 +411,6 @@ fn warden_cleans_up_after_runner_is_killed() {
     assert_eq!(witchy_exec_runner_descriptor(), -1);
     assert_eq!(witchy_exec_signal_descriptor(), -1);
     assert!(witchy_exec_finish());
-    unsafe {
-        close(channel[0]);
-        close(channel[1]);
-    }
+    close(channel[0]);
+    close(channel[1]);
 }

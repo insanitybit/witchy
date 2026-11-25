@@ -5,6 +5,7 @@ use super::global::Global;
 use super::linux_stat::{Stat, stat};
 #[cfg(target_os = "macos")]
 use super::seatbelt::{Stat, stat};
+use super::sys;
 use core::ffi::{CStr, c_char, c_int, c_void};
 use core::mem::MaybeUninit;
 
@@ -48,21 +49,28 @@ unsafe extern "C" {
     #[cfg(target_os = "macos")]
     fn confstr(name: c_int, buffer: *mut c_char, len: usize) -> usize;
     fn mkdtemp(template: *mut c_char) -> *mut c_char;
-    fn open(path: *const c_char, flags: c_int, ...) -> c_int;
-    fn openat(parent: c_int, name: *const c_char, flags: c_int, ...) -> c_int;
     fn fstatat(parent: c_int, name: *const c_char, info: *mut Stat, flags: c_int) -> c_int;
     safe fn dup(fd: c_int) -> c_int;
     safe fn close(fd: c_int) -> c_int;
     fn fdopendir(fd: c_int) -> *mut c_void;
     fn readdir(dir: *mut c_void) -> *const Dirent;
     fn closedir(dir: *mut c_void) -> c_int;
-    fn unlinkat(fd: c_int, name: *const c_char, flags: c_int) -> c_int;
-    fn rmdir(path: *const c_char) -> c_int;
     safe fn getpid() -> c_int;
     safe fn getuid() -> u32;
     safe fn kill(pid: c_int, signal: c_int) -> c_int;
-    fn pread(fd: c_int, output: *mut c_void, count: usize, offset: i64) -> isize;
-    fn write(fd: c_int, input: *const c_void, count: usize) -> isize;
+}
+
+/// What `name` under `parent` is, not following a link at `name`.
+fn stat_named(parent: c_int, name: &CStr) -> Option<Stat> {
+    let mut info = MaybeUninit::<Stat>::uninit();
+    // SAFETY: `name` is a C string and `info` has room for the one record the
+    // call writes; it has written all of it when it returns zero.
+    unsafe {
+        if fstatat(parent, name.as_ptr(), info.as_mut_ptr(), AT_SYMLINK_NOFOLLOW) != 0 {
+            return None;
+        }
+        Some(info.assume_init())
+    }
 }
 
 fn remove_tree(fd: c_int, depth: u32) {
@@ -84,16 +92,14 @@ fn remove_tree(fd: c_int, depth: u32) {
         if matches!(name.to_bytes(), b"." | b"..") {
             continue;
         }
-        if unsafe { unlinkat(fd, name.as_ptr(), 0) } == 0 || depth >= 32 {
+        if sys::unlinkat(fd, name, 0) == 0 || depth >= 32 {
             continue;
         }
-        let child = unsafe { openat(fd, name.as_ptr(), DIR | CLOEXEC | NOFOLLOW) };
+        let child = sys::openat(fd, name, DIR | CLOEXEC | NOFOLLOW);
         if child >= 0 {
             remove_tree(child, depth + 1);
-            unsafe {
-                close(child);
-                unlinkat(fd, name.as_ptr(), AT_REMOVEDIR);
-            }
+            close(child);
+            sys::unlinkat(fd, name, AT_REMOVEDIR);
         }
     }
     unsafe {
@@ -176,11 +182,11 @@ impl Directory {
         if unsafe { mkdtemp(path.as_mut_ptr().cast()) }.is_null() {
             return None;
         }
-        let fd = unsafe { open(path.as_ptr().cast(), DIR | CLOEXEC | NOFOLLOW) };
+        // The name ends at the zero written above; `mkdtemp` changed only letters before it.
+        let made = CStr::from_bytes_until_nul(&path).ok()?;
+        let fd = sys::open(made, DIR | CLOEXEC | NOFOLLOW);
         if fd < 0 {
-            unsafe {
-                rmdir(path.as_ptr().cast());
-            }
+            sys::rmdir(made);
             return None;
         }
         Some(Self { path, fd })
@@ -210,9 +216,10 @@ impl Directory {
 impl Drop for Directory {
     fn drop(&mut self) {
         remove_tree(self.fd, 0);
-        unsafe {
-            close(self.fd);
-            rmdir(self.path.as_ptr().cast());
+        close(self.fd);
+        // `create` left the name ending in a zero.
+        if let Ok(path) = CStr::from_bytes_until_nul(&self.path) {
+            sys::rmdir(path);
         }
     }
 }
@@ -221,7 +228,7 @@ pub(super) fn copy_program(source: c_int, target: c_int) -> bool {
     let mut buffer = [0u8; 65536];
     let mut offset = 0i64;
     loop {
-        let count = unsafe { pread(source, buffer.as_mut_ptr().cast(), buffer.len(), offset) };
+        let count = sys::pread(source, &mut buffer, offset);
         if count < 0 && super::errno::get() == 4 {
             continue;
         }
@@ -233,13 +240,7 @@ pub(super) fn copy_program(source: c_int, target: c_int) -> bool {
         }
         let mut at = 0;
         while at < count as usize {
-            let written = unsafe {
-                write(
-                    target,
-                    buffer[at..count as usize].as_ptr().cast(),
-                    count as usize - at,
-                )
-            };
+            let written = sys::write(target, &buffer[at..count as usize]);
             if written < 0 && super::errno::get() == 4 {
                 continue;
             }
@@ -280,7 +281,11 @@ extern "C" fn witchy_exec_sweep(broker: c_int) {
     if temporary_base(&mut path).is_none() {
         return;
     }
-    let root = unsafe { open(path.as_ptr().cast(), DIR | CLOEXEC | NOFOLLOW) };
+    // `temporary_base` accepted the name only with a zero at its end.
+    let Ok(base) = CStr::from_bytes_until_nul(&path) else {
+        return;
+    };
+    let root = sys::open(base, DIR | CLOEXEC | NOFOLLOW);
     if root < 0 {
         return;
     }
@@ -313,18 +318,16 @@ extern "C" fn witchy_exec_sweep(broker: c_int) {
         } {
             continue;
         }
-        let mut named = MaybeUninit::<Stat>::uninit();
-        if unsafe { fstatat(root, name.as_ptr(), named.as_mut_ptr(), AT_SYMLINK_NOFOLLOW) } != 0 {
+        let Some(named) = stat_named(root, name) else {
             continue;
-        }
-        let named = unsafe { named.assume_init() };
+        };
         if named.mode & 0o170000 != 0o040000
             || named.uid != getuid()
             || named.mode & 0o7777 != 0o700
         {
             continue;
         }
-        let fd = unsafe { openat(root, name.as_ptr(), DIR | CLOEXEC | NOFOLLOW) };
+        let fd = sys::openat(root, name, DIR | CLOEXEC | NOFOLLOW);
         if fd < 0 {
             continue;
         }
@@ -332,23 +335,19 @@ extern "C" fn witchy_exec_sweep(broker: c_int) {
             .is_some_and(|opened| opened.device == named.device && opened.inode == named.inode)
         {
             remove_tree(fd, 0);
-            let mut after = MaybeUninit::<Stat>::uninit();
-            if unsafe { fstatat(root, name.as_ptr(), after.as_mut_ptr(), AT_SYMLINK_NOFOLLOW) } == 0
+            if let Some(after) = stat_named(root, name)
+                && after.device == named.device
+                && after.inode == named.inode
             {
-                let after = unsafe { after.assume_init() };
-                if after.device == named.device && after.inode == named.inode {
-                    unsafe {
-                        unlinkat(root, name.as_ptr(), AT_REMOVEDIR);
-                    }
-                }
+                sys::unlinkat(root, name, AT_REMOVEDIR);
             }
         }
         close(fd);
     }
     unsafe {
         closedir(dir);
-        close(root);
     }
+    close(root);
 }
 
 use core::ptr;
@@ -367,7 +366,7 @@ fn private_directory_is_removed_and_names_are_checked() {
         let dir = Directory::create().unwrap();
         let mut path = [0; PATH_MAX];
         assert!(dir.program_path(b"helper", &mut path));
-        let path = unsafe { CStr::from_ptr(path.as_ptr().cast()) };
+        let path = CStr::from_bytes_until_nul(&path).unwrap();
         let path = std::path::PathBuf::from(std::ffi::OsStr::from_bytes(path.to_bytes()));
         std::fs::write(&path, b"contents").unwrap();
         path
