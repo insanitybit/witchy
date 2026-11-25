@@ -498,6 +498,7 @@ unsafe extern "C" {
     fn free(bytes: *mut c_void);
     fn getenv(name: *const c_char) -> *const c_char;
     fn unsetenv(name: *const c_char) -> c_int;
+    fn strdup(s: *const c_char) -> *mut c_char;
     fn strnlen(text: *const c_char, maximum: usize) -> usize;
     #[link_name = "aws_lc_fips_0_14_4_OPENSSL_cleanse"]
     fn cleanse(bytes: *mut c_void, len: usize);
@@ -573,13 +574,24 @@ unsafe fn load_seed(
     if length >= seed.capacity {
         return None;
     }
+    // The slot keeps the name for the life of the process, and the caller's
+    // text may be a buffer it reuses, so the slot holds its own copy.
+    let kept = if environment {
+        let kept = unsafe { strdup(source) };
+        if kept.is_null() {
+            return None;
+        }
+        kept
+    } else {
+        null_mut()
+    };
     unsafe { core::ptr::copy_nonoverlapping(value.cast(), seed.bytes, length) };
     if environment {
         unsafe { cleanse(value.cast_mut().cast(), length) };
         if unsafe { unsetenv(source) } != 0 {
             return None;
         }
-        unsafe { (*slot).environment = source.cast() };
+        unsafe { (*slot).environment = kept.cast_const().cast() };
     }
     Some(length)
 }

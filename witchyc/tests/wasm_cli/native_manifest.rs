@@ -327,6 +327,27 @@ fn manifest_signer_takes_its_seed_from_a_declared_descriptor() {
     refused(&shell("exec ./signer --key-fd=3 3<short"), "could not be bound");
 }
 
+/// Each environment secret of a plan keeps its own source name: a later record must not
+/// change what an earlier slot is compared by, so two distinct names are both bound.
+#[cfg(witchy_native_aws_lc)]
+#[test]
+fn manifest_environment_secrets_keep_their_own_names() {
+    let fixture = Fixture::new();
+    let source = "fn main(out: Console<Write>, one: Secret<Seal>, two: Secret<Seal>):\n    out.print_int(7)\n";
+    let manifest = "[launch]\nversion = 1\n[secrets]\none = { use = \"seal\", from = \"env:TOKEN_A\" }\ntwo = { use = \"seal\", from = \"env:TOKEN_B\" }\n";
+    let built = build(&fixture, "pair", source, manifest);
+    assert!(built.status.success(), "{built:?}");
+    let ran = Command::new(fixture.0.join("pair")).current_dir(&fixture.0).env("TOKEN_A", "a").env("TOKEN_B", "b").output().unwrap();
+    assert!(ran.status.success() && ran.stdout == b"7\n", "{ran:?}");
+    // One name for two slots is still refused before guest code runs.
+    let manifest = "[launch]\nversion = 1\n[secrets]\none = { use = \"seal\", from = \"env:TOKEN_A\" }\ntwo = { use = \"seal\", from = \"env:TOKEN_A\" }\n";
+    let built = build(&fixture, "same", source, manifest);
+    if built.status.success() {
+        let ran = Command::new(fixture.0.join("same")).current_dir(&fixture.0).env("TOKEN_A", "a").output().unwrap();
+        assert!(!ran.status.success() && ran.stdout.is_empty(), "{ran:?}");
+    }
+}
+
 /// A read file and an input are fixed objects opened before entry: beside a secret, each is
 /// compared with the secrets' sources by device and inode, in either launch mode.
 #[cfg(witchy_native_aws_lc)]
