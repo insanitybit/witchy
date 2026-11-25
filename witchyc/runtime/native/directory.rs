@@ -59,7 +59,7 @@ struct Entry {
     kind: u32,
 }
 
-static mut ENTRIES: [Entry; SLOTS] = [Entry { handle: 0, kind: 0 }; SLOTS];
+static ENTRIES: Global<[Entry; SLOTS]> = Global::new([Entry { handle: 0, kind: 0 }; SLOTS]);
 static mut PATHS: [Paths; SLOTS] = [Paths::EMPTY; SLOTS];
 static mut READ_PATH: Paths = Paths::EMPTY;
 static mut WRITE_PATH: Paths = Paths::EMPTY;
@@ -76,8 +76,6 @@ unsafe extern "C" {
         append: bool,
     ) -> u64;
     safe fn witchy_broker_directory_list(channel: c_int, slot: u32, source: u8) -> c_int;
-    #[link_name = "write"]
-    fn write_stderr(fd: c_int, bytes: *const core::ffi::c_void, length: usize) -> isize;
     safe fn exit(status: c_int) -> !;
 }
 
@@ -87,12 +85,14 @@ fn trap() -> ! {
 
 pub(super) fn file_slot(handle: u64, close: bool) -> u32 {
     let slot = handle as usize % SLOTS;
-    let entry = unsafe { &mut (*(&raw mut ENTRIES))[slot] };
+    let mut entries = ENTRIES.get();
+    let entry = &mut entries[slot];
     if handle == 0 || entry.handle != handle || entry.kind != FILE {
         trap();
     }
     if close {
         entry.handle = 0;
+        ENTRIES.set(entries);
     }
     slot as u32
 }
@@ -106,7 +106,9 @@ extern "C" fn witchy_directory(op: u64, handle: u64, value: u64) -> u64 {
     if (1..=IO).contains(&handle) && matches!(op, 2 | 3) {
         return if op == 2 { handle } else { 0 };
     }
-    let entries = unsafe { &mut *(&raw mut ENTRIES) };
+    // This call's copy of the entries, put back after each change. Nothing it
+    // calls reads or writes them.
+    let mut entries = ENTRIES.get();
     let (source, rights) = match handle {
         READ_ROOT => (SLOTS, READ),
         WRITE_ROOT => (SLOTS, WRITE),
@@ -132,6 +134,7 @@ extern "C" fn witchy_directory(op: u64, handle: u64, value: u64) -> u64 {
     if op == 3 {
         if source != SLOTS {
             entries.get_mut(source).unwrap_or_else(|| trap()).handle = 0;
+            ENTRIES.set(entries);
             return u64::from(witchy_broker_file_close(channel, source as u32) < 0);
         }
         CLOSED.set(CLOSED.get() | rights);
@@ -223,11 +226,8 @@ extern "C" fn witchy_directory(op: u64, handle: u64, value: u64) -> u64 {
             witchy_broker_file_open(channel, slot as u32, bytes, kind)
         };
         if result == -1 {
-            let message = b"witchy: the directory grant reached a secret's source, or its broker failed; the run is stopped\n";
-            unsafe {
-                write_stderr(2, message.as_ptr().cast(), message.len());
-                exit(2);
-            }
+            super::sys::write(2, b"witchy: the directory grant reached a secret's source, or its broker failed; the run is stopped\n");
+            exit(2);
         }
         if result != 0 {
             return if result < 0 { IO } else { result as u64 };
@@ -236,6 +236,9 @@ extern "C" fn witchy_directory(op: u64, handle: u64, value: u64) -> u64 {
             handle: token,
             kind,
         };
+        ENTRIES.set(entries);
+        // SAFETY: `slot` is below `SLOTS`, and the borrow of the source's
+        // paths, which may be in the same table, is over.
         unsafe {
             let paths = (&raw mut PATHS).cast::<Paths>().add(slot);
             (*paths).path.len = 0;
@@ -286,7 +289,8 @@ fn resolve_roots<T: Copy>(
     Ok((read, write, grants))
 }
 
-/// The launcher supplies pointers to its live path and grant variables.
+/// The launcher supplies its path and grant variables, and its diagnostic
+/// stream. The paths are compared with null and never read.
 pub(super) fn witchy_directory_grants(
     required: u64,
     grants: &mut u64,
@@ -296,11 +300,8 @@ pub(super) fn witchy_directory_grants(
     identity: bool,
     write_only: bool,
     combined: bool,
-    stderr: *mut core::ffi::c_void,
+    stderr: super::sys::Stream,
 ) -> bool {
-    unsafe extern "C" {
-        fn fputs(text: *const core::ffi::c_char, stream: *mut core::ffi::c_void) -> c_int;
-    }
     let present = |path: *const core::ffi::c_char| (!path.is_null()).then_some(path);
     match resolve_roots(
         required,
@@ -318,7 +319,7 @@ pub(super) fn witchy_directory_grants(
             true
         }
         Err(message) => {
-            unsafe { fputs(message.as_ptr(), stderr) };
+            stderr.put(message);
             false
         }
     }

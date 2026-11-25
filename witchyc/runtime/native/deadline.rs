@@ -31,11 +31,14 @@ pub(super) fn monotonic_ms() -> Option<u64> {
     unsafe extern "C" {
         fn clock_gettime(clock: c_int, out: *mut Timespec) -> c_int;
     }
-    let mut time = core::mem::MaybeUninit::<Timespec>::uninit();
-    if unsafe { clock_gettime(1, time.as_mut_ptr()) } != 0 {
+    let mut time = Timespec {
+        seconds: 0,
+        nanos: 0,
+    };
+    // SAFETY: the call writes one `Timespec`, and `time` is one.
+    if unsafe { clock_gettime(1, &mut time) } != 0 {
         return None;
     }
-    let time = unsafe { time.assume_init() };
     if time.seconds < 0 || !(0..1_000_000_000).contains(&time.nanos) {
         return None;
     }

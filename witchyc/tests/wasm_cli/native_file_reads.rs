@@ -5,6 +5,8 @@
 mod errno;
 #[path = "../../runtime/native/global.rs"]
 mod global;
+#[path = "../../runtime/native/sys.rs"]
+mod sys;
 #[path = "../../runtime/native/broker_transport.rs"]
 mod broker_transport;
 #[path = "../../runtime/native/budget.rs"]

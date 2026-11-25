@@ -174,19 +174,15 @@ unsafe extern "C" fn witchy_run_guest(
 }
 
 /// Check the ordinary launch grants in diagnostic order. The caller supplies
-/// a live error stream. File and listener grants are checked during binding.
+/// its error stream. File and listener grants are checked during binding.
 fn witchy_validate_grants(
     required: u64,
     supplied: u64,
     _max_words: u32,
     _max_bytes: u32,
-    stderr: *mut core::ffi::c_void,
+    stderr: sys::Stream,
 ) -> bool {
     unsafe extern "C" {
-        fn fputs(
-            text: *const core::ffi::c_char,
-            stream: *mut core::ffi::c_void,
-        ) -> core::ffi::c_int;
         safe fn witchy_args_fit(words: u32, bytes: u32) -> bool;
     }
 
@@ -194,7 +190,7 @@ fn witchy_validate_grants(
         || supplied & 64 == 0
         || witchy_args_fit(_max_words, _max_bytes);
     if let Some(message) = grant_policy::refusal(required, supplied, args_fit) {
-        unsafe { fputs(message.as_ptr(), stderr) };
+        stderr.put(message);
         return false;
     }
     true

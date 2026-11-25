@@ -34,18 +34,17 @@ impl Output {
 }
 
 static mut ROOT_BYTES: [u8; CAPACITY] = [0; CAPACITY];
-static mut ROOT_OUTPUT: Output = Output {
+static ROOT_OUTPUT: Global<Output> = Global::new(Output {
     handle: ROOT,
     length: 0,
     bytes: (&raw mut ROOT_BYTES).cast(),
-};
-static mut OUTPUTS: [Output; SLOTS] = [Output::EMPTY; SLOTS];
+});
+static OUTPUTS: Global<[Output; SLOTS]> = Global::new([Output::EMPTY; SLOTS]);
 static NEXT: Global<u64> = Global::new(8192);
 
 unsafe extern "C" {
     fn malloc(size: usize) -> *mut c_void;
     fn free(bytes: *mut c_void);
-    fn write(fd: c_int, bytes: *const c_void, length: usize) -> isize;
     safe fn exit(status: c_int) -> !;
     safe fn witchy_broker_output_drop(channel: c_int, slot: u32) -> c_int;
 }
@@ -66,7 +65,6 @@ unsafe extern "C" fn witchy_open_directory_output(
     exclusive: bool,
     append: bool,
 ) -> u64 {
-    let outputs = unsafe { &mut *(&raw mut OUTPUTS) };
     // SAFETY: the directory dispatcher supplies `length` readable bytes at
     // `path` that stay valid for the duration of the call.
     let path = unsafe { core::slice::from_raw_parts(path, length) };
@@ -77,8 +75,8 @@ unsafe extern "C" fn witchy_open_directory_output(
         }
         NEXT.set(handle + 1);
         let slot = handle as usize % SLOTS;
-        let output = &mut outputs[slot];
-        if output.handle != 0 {
+        let mut outputs = OUTPUTS.get();
+        if outputs[slot].handle != 0 {
             continue;
         }
         let bytes = unsafe { malloc(CAPACITY) }.cast::<u8>();
@@ -90,11 +88,12 @@ unsafe extern "C" fn witchy_open_directory_output(
             unsafe { free(bytes.cast()) };
             return status(result);
         }
-        *output = Output {
+        outputs[slot] = Output {
             handle,
             length: 0,
             bytes,
         };
+        OUTPUTS.set(outputs);
         return handle;
     }
     IO
@@ -111,15 +110,25 @@ unsafe extern "C" fn witchy_write_file(op: u64, handle: u64, value: u64, count: 
     if (1..=IO).contains(&handle) && matches!(op, 0 | 3 | 4) {
         return if op == 0 { handle } else { 0 };
     }
-    let (slot, output) = if handle == ROOT {
-        (SLOTS, unsafe { &mut *(&raw mut ROOT_OUTPUT) })
+    let (slot, mut output) = if handle == ROOT {
+        (SLOTS, ROOT_OUTPUT.get())
     } else {
         let slot = handle as usize % SLOTS;
-        (slot, unsafe { &mut (*(&raw mut OUTPUTS))[slot] })
+        (slot, OUTPUTS.get()[slot])
     };
     if handle == 0 || output.handle != handle {
         trap();
     }
+    // Puts the output back in the place it was copied from.
+    let store = |output: Output| {
+        if slot == SLOTS {
+            ROOT_OUTPUT.set(output);
+        } else {
+            let mut outputs = OUTPUTS.get();
+            outputs[slot] = output;
+            OUTPUTS.set(outputs);
+        }
+    };
     match op {
         0 => return 0,
         3 | 4 => {
@@ -134,13 +143,10 @@ unsafe extern "C" fn witchy_write_file(op: u64, handle: u64, value: u64, count: 
             if slot != SLOTS {
                 unsafe { free(output.bytes.cast()) };
             }
-            *output = Output::EMPTY;
+            store(Output::EMPTY);
             if result == -1 {
-                let message = b"witchy: a write reached a secret's object, or its broker failed; the run is stopped\n";
-                unsafe {
-                    write(2, message.as_ptr().cast(), message.len());
-                    exit(2);
-                }
+                super::sys::write(2, b"witchy: a write reached a secret's object, or its broker failed; the run is stopped\n");
+                exit(2);
             }
             return status(result);
         }
@@ -155,8 +161,11 @@ unsafe extern "C" fn witchy_write_file(op: u64, handle: u64, value: u64, count: 
         if available == 0 {
             return TOO_LARGE;
         }
+        // SAFETY: a live output owns `CAPACITY` bytes at `bytes`, and its
+        // length is short of that, since something is available.
         unsafe { output.bytes.add(output.length).write(byte) };
         output.length += 1;
+        store(output);
         witchy_filesystem_charge(1);
         return 0;
     }
@@ -171,6 +180,7 @@ unsafe extern "C" fn witchy_write_file(op: u64, handle: u64, value: u64, count: 
         }
     }
     output.length += copied as usize;
+    store(output);
     witchy_filesystem_charge(copied);
     copied | if copied < count { TOO_LARGE << 32 } else { 0 }
 }

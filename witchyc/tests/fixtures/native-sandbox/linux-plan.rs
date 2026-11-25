@@ -4,6 +4,8 @@ mod launch_plan;
 mod launch_plan_validate;
 #[path = "../../../runtime/native/errno.rs"]
 mod errno;
+#[path = "../../../runtime/native/sys.rs"]
+mod sys;
 #[path = "../../../runtime/native/launch_walk.rs"]
 mod launch_walk;
 #[path = "../../../runtime/native/linux_stat.rs"]

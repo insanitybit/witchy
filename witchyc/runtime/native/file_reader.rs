@@ -45,11 +45,11 @@ extern "C" fn witchy_file_byte(handle: u64) -> u64 {
     if handle == SNAPSHOT {
         return witchy_snapshot_byte();
     }
-    let mut byte = 0;
+    let mut byte = [0];
     let channel = channel();
     let slot = super::directory::file_slot(handle, false);
-    let size = unsafe { bounded_file_read(channel, slot, &mut byte, 1) };
-    if size == 0 { 256 } else { u64::from(byte) }
+    let size = bounded_file_read(channel, slot, Some(&mut byte));
+    if size == 0 { 256 } else { u64::from(byte[0]) }
 }
 
 #[unsafe(no_mangle)]
@@ -60,7 +60,17 @@ unsafe extern "C" fn witchy_file_read(handle: u64, address: u64, count: u64) -> 
     }
     let channel = channel();
     let slot = super::directory::file_slot(handle, false);
-    unsafe { bounded_file_read(channel, slot, out, count.min(CHUNK) as usize) }
+    let count = count.min(CHUNK) as usize;
+    let out = if count == 0 {
+        Some(&mut [][..])
+    } else if out.is_null() {
+        None
+    } else {
+        // SAFETY: the guest emitter passes an address that takes `count`
+        // bytes, and nothing else refers to them during the call.
+        Some(unsafe { core::slice::from_raw_parts_mut(out, count) })
+    };
+    bounded_file_read(channel, slot, out)
 }
 
 #[unsafe(no_mangle)]

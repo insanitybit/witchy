@@ -7,20 +7,24 @@ const FLAGS: usize = 32;
 const FIELDS: usize = 8;
 const WORDS: usize = 256;
 
+// The pointer fields below are private, and so are the counts that say how
+// many of them are set: the accessors read through them, and what makes that
+// sound is that only this file writes them.
+
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub(super) struct Record {
-    pub(super) count: c_uint,
-    pub(super) fields: [*mut c_char; FIELDS],
+    count: c_uint,
+    fields: [*mut c_char; FIELDS],
 }
 
 #[repr(C)]
 #[derive(Copy, Clone)]
 pub(super) struct Flag {
-    pub(super) name: *const c_char,
+    name: *const c_char,
     pub(super) descriptor: bool,
     pub(super) secret: bool,
-    pub(super) value: *const c_char,
+    value: *const c_char,
     default_kind: *const c_char,
     default_value: *const c_char,
     pub(super) kind_object: bool,
@@ -37,44 +41,127 @@ struct Source {
 #[repr(C)]
 pub(super) struct Launch {
     text: *mut c_char,
-    pub(super) records: [Record; RECORDS],
-    pub(super) record_count: c_uint,
-    pub(super) flags: [Flag; FLAGS],
-    pub(super) flag_count: c_uint,
-    pub(super) words: [*const c_char; WORDS],
-    pub(super) word_count: c_uint,
+    records: [Record; RECORDS],
+    record_count: c_uint,
+    flags: [Flag; FLAGS],
+    flag_count: c_uint,
+    words: [*const c_char; WORDS],
+    word_count: c_uint,
     pub(super) cwd: c_int,
     sources: [Source; RECORDS],
     source_count: c_uint,
 }
 
+/// The text at `text`, or `None` for a null pointer.
+///
+/// `text` must be null or a NUL-terminated string that is live and unchanged
+/// for `'a`.
+unsafe fn text<'a>(text: *const c_char) -> Option<&'a CStr> {
+    // SAFETY: the caller's promise, for a pointer checked not to be null.
+    (!text.is_null()).then(|| unsafe { CStr::from_ptr(text) })
+}
+
 impl Record {
-    /// A field of the record, or `None` past its last one.
-    pub(super) fn field(&self, index: usize) -> Option<&CStr> {
-        let text = *self.fields.get(index)?;
-        // SAFETY: `witchy_launch_read` fills the fields with pointers into the
-        // plan's own NUL-split text, which the launch keeps.
-        (!text.is_null()).then(|| unsafe { CStr::from_ptr(text) })
+    const EMPTY: Self = Self {
+        count: 0,
+        fields: [ptr::null_mut(); FIELDS],
+    };
+
+    /// A field of the record, or `None` past its last one. The plan's text is
+    /// kept for the life of the process, so the field may be stored.
+    pub(super) fn field(&self, index: usize) -> Option<&'static CStr> {
+        // SAFETY: `witchy_launch_read` fills the fields with pointers into its
+        // own NUL-split copy of the plan, which nothing changes afterwards and
+        // nothing but a test frees.
+        unsafe { text(*self.fields.get(index)?) }
+    }
+
+    /// The field's own storage, for the callers that keep it or split it in
+    /// place. Null past the record's last field.
+    pub(super) fn raw(&self, index: usize) -> *mut c_char {
+        self.fields.get(index).copied().unwrap_or(ptr::null_mut())
     }
 }
 
 impl Flag {
+    const EMPTY: Self = Self {
+        name: ptr::null(),
+        descriptor: false,
+        secret: false,
+        value: ptr::null(),
+        default_kind: ptr::null(),
+        default_value: ptr::null(),
+        kind_object: false,
+    };
+
+    /// The flag's name. Empty for a flag the plan did not declare.
+    fn name(&self) -> &'static [u8] {
+        // SAFETY: as `Record::field`: `witchy_launch_read` names a flag from
+        // the plan's copy.
+        unsafe { text(self.name) }.map_or(&[], CStr::to_bytes)
+    }
+
+    /// The source the plan gives the flag when no argument does: its kind
+    /// and its value.
+    fn default(&self) -> Option<(&'static [u8], &'static [u8])> {
+        // SAFETY: as `Record::field`: `witchy_launch_read` sets both from the
+        // plan's copy, or neither.
+        let (kind, value) = unsafe { (text(self.default_kind)?, text(self.default_value)?) };
+        Some((kind.to_bytes(), value.to_bytes()))
+    }
+
     /// The value the argument list gave this flag, if it gave one.
     pub(super) fn value(&self) -> Option<&CStr> {
         // SAFETY: `witchy_launch_arguments` stores only argument strings,
-        // which outlive the launch.
-        (!self.value.is_null()).then(|| unsafe { CStr::from_ptr(self.value) })
+        // which outlive the launch. `opening::parent` lends a flag the text of
+        // a directory of its own for one call of `resolve`, and takes it back
+        // before the text goes.
+        unsafe { text(self.value) }
     }
 }
 
 impl Launch {
+    /// Forgets what the launch held and keeps `text` as its plan. A plan
+    /// read earlier stays allocated, since records copied out may refer to it.
+    fn reset(&mut self, text: *mut c_char) {
+        self.text = text;
+        self.records.fill(Record::EMPTY);
+        self.record_count = 0;
+        self.flags.fill(Flag::EMPTY);
+        self.flag_count = 0;
+        self.words.fill(ptr::null());
+        self.word_count = 0;
+        self.cwd = -1;
+        self.sources.fill(Source {
+            number: 0,
+            copy: 0,
+            taken: false,
+        });
+        self.source_count = 0;
+    }
+
+    /// The plan's records, in order.
+    pub(super) fn records(&self) -> &[Record] {
+        &self.records[..self.record_count as usize]
+    }
+
+    /// The flag the plan declares under `name`.
+    pub(super) fn flag(&self, name: &[u8]) -> Option<Flag> {
+        find_flag(self, name).map(|index| self.flags[index])
+    }
+
+    /// How many words follow `--`.
+    pub(super) fn word_count(&self) -> c_uint {
+        self.word_count
+    }
+
     /// The words after `--`, in order.
     pub(super) fn words(&self) -> impl Iterator<Item = &CStr> {
         // SAFETY: `witchy_launch_arguments` stores only argument strings,
-        // which outlive the launch.
+        // which outlive the launch, and counts the ones it stored.
         self.words[..self.word_count as usize]
             .iter()
-            .map(|&word| unsafe { CStr::from_ptr(word) })
+            .filter_map(|&word| unsafe { text(word) })
     }
 }
 
@@ -120,36 +207,25 @@ pub(super) fn suffix(text: &CStr, start: usize) -> Option<&CStr> {
 
 unsafe extern "C" {
     fn strdup(s: *const c_char) -> *mut c_char;
-    fn write(fd: c_int, bytes: *const c_void, len: usize) -> isize;
-    fn fcntl(fd: c_int, command: c_int, ...) -> c_int;
 }
 
 fn refuse() -> bool {
-    let message = b"launch refused: launch plan: malformed or unavailable\n";
-    unsafe {
-        write(2, message.as_ptr().cast(), message.len());
-    }
+    super::sys::write(2, b"launch refused: launch plan: malformed or unavailable\n");
     false
 }
 
 fn argument_refuse(name: Option<&[u8]>, message: &[u8]) -> bool {
-    let prefix = b"launch refused: ";
-    unsafe {
-        write(2, prefix.as_ptr().cast(), prefix.len());
-    }
+    use super::sys::write;
+    write(2, b"launch refused: ");
     if let Some(name) = name.filter(|name| {
         !name.is_empty() && name.len() <= 64 && name.iter().all(|b| (0x21..=0x7e).contains(b))
     }) {
-        unsafe {
-            write(2, b"--".as_ptr().cast(), 2);
-            write(2, name.as_ptr().cast(), name.len());
-            write(2, b" ".as_ptr().cast(), 1);
-        }
+        write(2, b"--");
+        write(2, name);
+        write(2, b" ");
     }
-    unsafe {
-        write(2, message.as_ptr().cast(), message.len());
-        write(2, b"\n".as_ptr().cast(), 1);
-    }
+    write(2, message);
+    write(2, b"\n");
     false
 }
 
@@ -163,84 +239,86 @@ pub(super) fn witchy_launch_read(embedded: &CStr, launch: &mut Launch) -> bool {
     if !super::launch_plan_validate::valid(input) {
         return refuse();
     }
+    // SAFETY: `embedded` is a C string, and the call keeps nothing of it.
     let text = unsafe { strdup(embedded.as_ptr()) };
     if text.is_null() {
         return refuse();
     }
-    // The C ABI uses zero-initialized arrays and a sentinel for the cwd.
-    // SAFETY: every field of a launch is an integer, a flag or a raw pointer,
-    // and zero is a value of each.
-    unsafe { ptr::write_bytes(&raw mut *launch, 0, 1) };
-    launch.cwd = -1;
-    launch.text = text;
+    launch.reset(text);
     // SAFETY: `text` is this function's own copy of the plan, `length` bytes
-    // and a NUL. Validation showed that every line ends in a newline and has
-    // the fields its tag needs, so each offset below stays within the copy.
-    unsafe {
-        let mut offset = 0;
-        let mut first = true;
-        while offset < length {
-            let start = offset;
-            while *text.add(offset) != b'\n' as c_char {
-                offset += 1;
-            }
-            *text.add(offset) = 0;
-            let end = offset;
-            offset += 1;
-            if first {
-                first = false;
-                continue;
-            }
-            if end - start == 3
-                && core::slice::from_raw_parts(text.add(start).cast::<u8>(), 3) == b"end"
-            {
-                break;
-            }
-            let mut record = Record {
-                count: 0,
-                fields: [ptr::null_mut(); FIELDS],
-            };
-            let mut pos = start;
-            loop {
-                record.fields[record.count as usize] = text.add(pos);
-                record.count += 1;
-                while pos < end && *text.add(pos) != b'\t' as c_char {
-                    pos += 1;
-                }
-                if pos == end {
-                    break;
-                }
-                *text.add(pos) = 0;
+    // and a NUL, and nothing reads the copy through another pointer until
+    // the splitting below is done.
+    let copy = unsafe { core::slice::from_raw_parts_mut(text.cast::<u8>(), length) };
+    // Validation showed that every line ends in a newline and has the fields
+    // its tag needs, so no refusal below is reached.
+    let mut offset = 0;
+    let mut first = true;
+    while offset < length {
+        let start = offset;
+        let Some(line) = copy[start..].iter().position(|&byte| byte == b'\n') else {
+            return refuse();
+        };
+        let end = start + line;
+        copy[end] = 0;
+        offset = end + 1;
+        if first {
+            first = false;
+            continue;
+        }
+        if &copy[start..end] == b"end" {
+            break;
+        }
+        let mut record = Record::EMPTY;
+        // Where each field starts in the copy.
+        let mut starts = [0usize; FIELDS];
+        let mut pos = start;
+        loop {
+            starts[record.count as usize] = pos;
+            record.fields[record.count as usize] = text.wrapping_add(pos);
+            record.count += 1;
+            while pos < end && copy[pos] != b'\t' {
                 pos += 1;
             }
-            let tag = core::ffi::CStr::from_ptr(record.fields[0]).to_bytes();
-            if tag == b"flag" {
-                let kind = core::ffi::CStr::from_ptr(record.fields[2]).to_bytes();
-                let secret = core::ffi::CStr::from_ptr(record.fields[3]).to_bytes() == b"1";
-                let optional = core::ffi::CStr::from_ptr(record.fields[4]).to_bytes() != b"-";
-                let flag = Flag {
-                    name: record.fields[1],
-                    descriptor: kind == b"fd",
-                    secret,
-                    value: ptr::null(),
-                    default_kind: if optional {
-                        record.fields[4]
-                    } else {
-                        ptr::null()
-                    },
-                    default_value: if optional {
-                        record.fields[5]
-                    } else {
-                        ptr::null()
-                    },
-                    kind_object: kind == b"object",
-                };
-                launch.flags[launch.flag_count as usize] = flag;
-                launch.flag_count += 1;
+            if pos == end {
+                break;
             }
-            launch.records[launch.record_count as usize] = record;
-            launch.record_count += 1;
+            copy[pos] = 0;
+            pos += 1;
         }
+        // A field's bytes: every field but the last now ends in a NUL.
+        let field = |index: usize| {
+            let rest = &copy[starts[index]..end];
+            &rest[..rest.iter().position(|&byte| byte == 0).unwrap_or(rest.len())]
+        };
+        if field(0) == b"flag" {
+            if record.count < 6 {
+                return refuse();
+            }
+            let kind = field(2);
+            let secret = field(3) == b"1";
+            let optional = field(4) != b"-";
+            let flag = Flag {
+                name: record.fields[1],
+                descriptor: kind == b"fd",
+                secret,
+                value: ptr::null(),
+                default_kind: if optional {
+                    record.fields[4]
+                } else {
+                    ptr::null()
+                },
+                default_value: if optional {
+                    record.fields[5]
+                } else {
+                    ptr::null()
+                },
+                kind_object: kind == b"object",
+            };
+            launch.flags[launch.flag_count as usize] = flag;
+            launch.flag_count += 1;
+        }
+        launch.records[launch.record_count as usize] = record;
+        launch.record_count += 1;
     }
     true
 }
@@ -272,14 +350,8 @@ fn valid_object(value: &[u8]) -> bool {
         && device.iter().chain(inode).all(u8::is_ascii_digit)
 }
 
-unsafe fn bytes<'a>(value: *const c_char) -> &'a [u8] {
-    unsafe { core::ffi::CStr::from_ptr(value).to_bytes() }
-}
-
-pub(super) fn find_flag(launch: &Launch, name: &[u8]) -> Option<usize> {
-    // SAFETY: only `witchy_launch_read` adds flags, and it names each from
-    // the plan's own text.
-    (0..launch.flag_count as usize).find(|&i| unsafe { bytes(launch.flags[i].name) == name })
+fn find_flag(launch: &Launch, name: &[u8]) -> Option<usize> {
+    (0..launch.flag_count as usize).find(|&i| launch.flags[i].name() == name)
 }
 
 /// Checks all argument names and values before duplicating inherited descriptors.
@@ -371,7 +443,7 @@ pub(super) fn witchy_launch_arguments(
         .iter()
         .find(|flag| flag.value.is_null() && flag.default_kind.is_null())
     {
-        return argument_refuse(Some(unsafe { bytes(flag.name) }), b"is required");
+        return argument_refuse(Some(flag.name()), b"is required");
     }
     // Check every source before duplicating any: an earlier duplicate must not
     // occupy a descriptor number named by a later source.
@@ -413,7 +485,7 @@ pub(super) fn witchy_launch_arguments(
         {
             return argument_refuse(None, b"names a descriptor another source also names");
         }
-        if unsafe { fcntl(number, 1) } < 0 {
+        if super::sys::descriptor_flags(number) < 0 {
             return argument_refuse(None, b"is not an open descriptor");
         }
         launch.sources[launch.source_count as usize] = Source {
@@ -423,12 +495,8 @@ pub(super) fn witchy_launch_arguments(
         };
         launch.source_count += 1;
     }
-    #[cfg(target_os = "macos")]
-    const DUPFD_CLOEXEC: c_int = 67;
-    #[cfg(target_os = "linux")]
-    const DUPFD_CLOEXEC: c_int = 1030;
     for source in &mut launch.sources[..launch.source_count as usize] {
-        source.copy = unsafe { fcntl(source.number, DUPFD_CLOEXEC, 3 as c_int) };
+        source.copy = super::sys::duplicate_close_on_exec(source.number, 3);
         if source.copy < 0 {
             return refuse();
         }
@@ -467,6 +535,7 @@ pub(super) fn witchy_launch_descriptor(launch: &Launch, name: &CStr) -> c_int {
 pub(super) mod opening {
     use super::*;
     use crate::launch_walk::{self, Boundary};
+    use crate::sys;
     #[cfg(target_os = "linux")]
     use crate::linux_stat::stat;
     #[cfg(target_os = "macos")]
@@ -480,10 +549,6 @@ pub(super) mod opening {
     const CLOEXEC: c_int = 0x0100_0000;
     #[cfg(target_os = "linux")]
     const CLOEXEC: c_int = 0o2000000;
-    #[cfg(target_os = "macos")]
-    const DUP_CLOEXEC: c_int = 67;
-    #[cfg(target_os = "linux")]
-    const DUP_CLOEXEC: c_int = 1030;
 
     #[repr(C)]
     struct Passwd {
@@ -502,7 +567,6 @@ pub(super) mod opening {
         expire: i64,
     }
     unsafe extern "C" {
-        fn open(path: *const c_char, flags: c_int, ...) -> c_int;
         safe fn close(fd: c_int) -> c_int;
         safe fn getuid() -> u32;
         fn getpwuid_r(
@@ -523,19 +587,19 @@ pub(super) mod opening {
             return -1;
         }
         if fd > 2 {
-            if unsafe { fcntl(fd, 2, 1 as c_int) } == 0 {
+            if sys::set_close_on_exec(fd) == 0 {
                 return fd;
             }
             close(fd);
             return -1;
         }
-        let result = unsafe { fcntl(fd, DUP_CLOEXEC, 3 as c_int) };
+        let result = sys::duplicate_close_on_exec(fd, 3);
         close(fd);
         result
     }
 
     fn root() -> c_int {
-        private(unsafe { open(c"/".as_ptr(), DIRECTORY | CLOEXEC) })
+        private(sys::open(c"/", DIRECTORY | CLOEXEC))
     }
 
     fn home() -> c_int {
@@ -565,7 +629,10 @@ pub(super) mod opening {
         };
         let result = if status == 0 && !found.is_null() && !unsafe { (*found).directory }.is_null()
         {
-            let path = unsafe { bytes((*found).directory) };
+            // SAFETY: the call succeeded, so `found` is the entry it filled, and
+            // the entry's directory, checked not to be null, is a string in
+            // `storage`, which is freed only after the walk.
+            let path = unsafe { CStr::from_ptr((*found).directory) }.to_bytes();
             if let Some(relative) = path.strip_prefix(b"/") {
                 launch_walk::walk(root(), relative, true, None, true)
             } else {
@@ -582,19 +649,19 @@ pub(super) mod opening {
 
     fn startup(launch: &mut Launch) -> c_int {
         if launch.cwd < 0 {
-            launch.cwd = private(unsafe { open(c".".as_ptr(), DIRECTORY | CLOEXEC) });
+            launch.cwd = private(sys::open(c".", DIRECTORY | CLOEXEC));
         }
         if launch.cwd < 0 {
             -1
         } else {
-            unsafe { fcntl(launch.cwd, DUP_CLOEXEC, 3 as c_int) }
+            sys::duplicate_close_on_exec(launch.cwd, 3)
         }
     }
 
     fn inherited(launch: &mut Launch, number: c_int, object: c_int) -> c_int {
         let copy = witchy_launch_take(launch, number);
         let flags = if copy >= 0 {
-            unsafe { fcntl(copy, 3) }
+            sys::status_flags(copy)
         } else {
             -1
         };
@@ -681,19 +748,20 @@ pub(super) mod opening {
                     return -1;
                 };
                 let flag = launch.flags[index];
-                if flag.value.is_null() && !flag.default_kind.is_null() && !flag.descriptor {
-                    // SAFETY: a flag's default kind and value are set together,
-                    // from the plan's own text.
-                    let (kind, value) =
-                        unsafe { (bytes(flag.default_kind), bytes(flag.default_value)) };
-                    return resolve(launch, object, kind, value, within_kind, within_value);
+                if flag.value.is_null() && !flag.descriptor {
+                    if let Some((kind, value)) = flag.default() {
+                        return resolve(launch, object, kind, value, within_kind, within_value);
+                    }
                 }
-                if flag.kind_object || flag.value.is_null() {
+                if flag.kind_object {
                     return -1;
                 }
-                // SAFETY: a flag's value is an argument string, or the
-                // directory text `parent` lends for the length of its call.
-                let path = unsafe { bytes(flag.value) };
+                // An argument string, or the directory text `parent` lends
+                // for the length of its call.
+                let Some(path) = flag.value() else {
+                    return -1;
+                };
+                let path = path.to_bytes();
                 if flag.descriptor {
                     return inherited(launch, descriptor_number(path).unwrap_or(-1), object);
                 }
@@ -741,26 +809,25 @@ pub(super) mod opening {
         if kind == b"arg" && flag_index.is_none() {
             return -1;
         }
-        if let Some(index) = flag_index {
-            let flag = launch.flags[index];
+        let flag = flag_index.map(|index| launch.flags[index]);
+        if let Some(flag) = &flag {
             if flag.kind_object {
                 return -1;
             }
-            if flag.value.is_null() && !flag.default_kind.is_null() && !flag.descriptor {
-                // SAFETY: a flag's default kind and value are set together,
-                // from the plan's own text.
-                let (kind, value) =
-                    unsafe { (bytes(flag.default_kind), bytes(flag.default_value)) };
-                return parent(launch, kind, value, within_kind, within_value, name);
+            if flag.value.is_null() && !flag.descriptor {
+                if let Some((kind, value)) = flag.default() {
+                    return parent(launch, kind, value, within_kind, within_value, name);
+                }
             }
         }
-        let path = if let Some(index) = flag_index {
-            let flag = launch.flags[index];
-            if flag.descriptor || flag.value.is_null() {
+        let path = if let Some(flag) = &flag {
+            if flag.descriptor {
                 return -1;
             }
-            // SAFETY: a flag's value is an argument string.
-            unsafe { bytes(flag.value) }
+            let Some(path) = flag.value() else {
+                return -1;
+            };
+            path.to_bytes()
         } else {
             if ![b"literal".as_slice(), b"home", b"cwd"].contains(&kind) {
                 return -1;

@@ -1,6 +1,7 @@
 //! Byte-oriented flag classification for the native launcher.
 
 use super::launch_plan::Argv;
+use super::sys::Stream;
 use core::ffi::{CStr, c_char};
 
 fn same_identity(fd: core::ffi::c_int, device: u64, inode: u64) -> bool {
@@ -21,10 +22,8 @@ fn after(arg: &CStr, prefix: usize) -> &CStr {
 }
 
 /// Write a diagnostic to one of the launcher's two streams.
-fn say(text: &CStr, stream: *mut c_void) {
-    // SAFETY: `main` takes both streams from the C runtime, which keeps them
-    // open for the life of the process.
-    unsafe { fputs(text.as_ptr(), stream) };
+fn say(text: &CStr, stream: Stream) {
+    stream.put(text);
 }
 
 struct CommonFlags {
@@ -34,13 +33,14 @@ struct CommonFlags {
 }
 
 /// Return 1 for an applied option, 0 for an unhandled option, or -1 for a
-/// diagnostic already emitted. A limit's label is kept for the process.
+/// diagnostic already emitted. A limit's label is kept for the process, so
+/// the option's text must last that long.
 fn witchy_apply_common_flag(
     flag: u32,
     arg: &'static CStr,
     grants: &mut u64,
     options: &mut CommonFlags,
-    stderr: *mut core::ffi::c_void,
+    stderr: Stream,
 ) -> core::ffi::c_int {
     use super::limit_labels::witchy_bind_limit_label;
     match flag {
@@ -162,7 +162,7 @@ fn witchy_apply_budget_flag(
     arg: &CStr,
     required: u64,
     options: &mut BudgetFlags,
-    stderr: *mut core::ffi::c_void,
+    stderr: Stream,
 ) -> core::ffi::c_int {
     use super::io_budget::{witchy_budget_configure, witchy_filesystem_limit};
     let (bit, grants, prefix, diagnostic) = match flag {
@@ -240,7 +240,9 @@ struct PathFlags {
 }
 
 /// `storage` is the pointer `arg` was read from. The directory and output
-/// paths are kept as pointers into it, since the broker takes them that way.
+/// paths are kept as pointers into it, since the broker takes them that way,
+/// and the file and input paths are kept as text: the option must last for
+/// the life of the process.
 fn witchy_apply_path_flag(
     flag: u32,
     arg: &'static CStr,
@@ -248,7 +250,7 @@ fn witchy_apply_path_flag(
     required: u64,
     grants: &mut u64,
     paths: &mut PathFlags,
-    stderr: *mut core::ffi::c_void,
+    stderr: Stream,
 ) -> core::ffi::c_int {
     const INPUT: u64 = 8;
     const READ_FILE: u64 = 256;
@@ -344,15 +346,10 @@ const POLICY: u64 = 16384;
 const ENTRY_SOCKET: u64 = 131072;
 
 unsafe extern "C" {
-    static witchy_entry_grants: u64;
-    static witchy_launch_plan: u8;
-    #[cfg_attr(target_os = "macos", link_name = "__stdoutp")]
-    #[cfg_attr(target_os = "linux", link_name = "stdout")]
-    static mut CRT_OUT: *mut c_void;
-    #[cfg_attr(target_os = "macos", link_name = "__stderrp")]
-    #[cfg_attr(target_os = "linux", link_name = "stderr")]
-    static mut CRT_ERR: *mut c_void;
-    fn fputs(text: *const c_char, stream: *mut c_void) -> c_int;
+    // The compiler emits both with the entry, and nothing writes either.
+    safe static witchy_entry_grants: u64;
+    /// The first byte of the launch plan's NUL-terminated text.
+    safe static witchy_launch_plan: u8;
     fn fprintf(stream: *mut c_void, format: *const c_char, ...) -> c_int;
     fn witchy_launch_console(
         out: *mut c_void,
@@ -368,7 +365,7 @@ unsafe extern "C" {
 /// The process CRT supplies the argument array and the standard streams.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn main(argc: c_int, argv: *mut *mut c_char) -> c_int {
-    let (out, err, required) = unsafe { (CRT_OUT, CRT_ERR, witchy_entry_grants) };
+    let (out, err, required) = (Stream::stdout(), Stream::stderr(), witchy_entry_grants);
     #[cfg(target_os = "linux")]
     if !witchy_linux_prepare_supervisor() {
         return 2;
@@ -383,7 +380,8 @@ unsafe extern "C" fn main(argc: c_int, argv: *mut *mut c_char) -> c_int {
     // SAFETY: the C runtime passes `argc` NUL-terminated strings and keeps
     // them for the life of the process.
     let args: Option<Argv<'static>> = unsafe { Argv::new(argc, argv) };
-    if unsafe { witchy_launch_plan } != 0 {
+    if witchy_launch_plan != 0 {
+        // SAFETY: `main` is entered once, and this is its one call.
         return unsafe { launch_manifest(args.as_ref(), required, out, err) };
     }
     let args = args.unwrap_or(Argv::EMPTY);
@@ -394,8 +392,9 @@ unsafe extern "C" fn main(argc: c_int, argv: *mut *mut c_char) -> c_int {
         let flag = super::launch_option::classify(arg.to_bytes());
         let handled = witchy_apply_common_flag(flag, arg, &mut grants, &mut common, err);
         let handled = if handled == 0 {
-            // SAFETY: the entry is this argument's own storage, and `arg` is
-            // not read after an option is split.
+            // SAFETY: the entry is this argument's own storage, which the C
+            // runtime keeps for the life of the process, and `arg` is not
+            // read after an option is split.
             unsafe { mac.apply(flag, args.raw(index), required, &mut grants, err) }
         } else {
             handled
@@ -407,10 +406,11 @@ unsafe extern "C" fn main(argc: c_int, argv: *mut *mut c_char) -> c_int {
             return 2;
         }
     }
+    // SAFETY: both streams are the C runtime's own.
     if !unsafe {
         witchy_launch_console(
-            out,
-            err,
+            out.as_ptr(),
+            err.as_ptr(),
             grants & OUTPUT != 0,
             common.streaming,
             common.plain,
@@ -418,9 +418,12 @@ unsafe extern "C" fn main(argc: c_int, argv: *mut *mut c_char) -> c_int {
     } {
         return 2;
     }
-    unsafe { mac.run(required, grants, out, err) }
+    mac.run(required, grants, out, err)
 }
 
+/// What the options or the plan asked for. Each pointer is null or text that
+/// lasts for the life of the process: an argument, a field of the plan's
+/// copy, or a static. `run` relies on that, and only this file sets them.
 struct NativeLaunch {
     listener: *const c_char,
     paths: PathFlags,
@@ -501,17 +504,72 @@ impl NativeLaunch {
         }
     }
 
-    /// `arg` is a writable NUL-terminated option that nothing else borrows.
-    /// It must stay live for the launch unless `flag` names a limit: the
-    /// path, listener, exec and secret-slot options keep pointers into it,
-    /// and the endpoint and exec options are split in place.
+    /// The limit options. Each reads its text during the call and keeps
+    /// nothing of it, so the text need only last that long. Returns as
+    /// `apply` does.
+    fn apply_limit(&mut self, flag: u32, text: &CStr, required: u64, err: Stream) -> c_int {
+        let handled = witchy_apply_budget_flag(flag, text, required, &mut self.budget, err);
+        if handled != 0 {
+            return handled;
+        }
+        if witchy_apply_connection_flag(flag, text, required, &mut self.connection) {
+            return 1;
+        }
+        self.apply_exec_limit(flag, text, required, err)
+    }
+
+    /// `--exec-processes=` and `--exec-bytes=`. Zero for any other option.
+    fn apply_exec_limit(&mut self, flag: u32, text: &CStr, required: u64, err: Stream) -> c_int {
+        match flag {
+            47 if required & 262144 != 0 && !self.exec_processes_seen => {
+                let value = after(text, 17).to_bytes();
+                let Some(value) =
+                    super::budget::parse_limit(value).filter(|&n| n != 0 && n <= 65536)
+                else {
+                    say(c"invalid --exec-processes limit\n", err);
+                    return -1;
+                };
+                #[cfg(target_os = "linux")]
+                {
+                    unsafe extern "C" {
+                        safe fn witchy_exec_process_limit(limit: u32);
+                    }
+                    witchy_exec_process_limit(value as u32);
+                }
+                #[cfg(target_os = "macos")]
+                let _ = value;
+                self.exec_processes_seen = true;
+                1
+            }
+            48 if required & 262144 != 0 && !self.exec_budget_seen => {
+                let value = after(text, 13).to_bytes();
+                let Some(value) = super::budget::parse_limit(value).filter(|&n| n <= 268435456)
+                else {
+                    say(c"invalid --exec-bytes limit\n", err);
+                    return -1;
+                };
+                self.exec_budget = value;
+                self.exec_budget_seen = true;
+                1
+            }
+            _ => 0,
+        }
+    }
+
+    /// Return 1 for an applied option, 0 for an unhandled option, or -1 for
+    /// a diagnostic already emitted.
+    ///
+    /// `arg` is a writable NUL-terminated option that nothing else borrows
+    /// and that lasts for the life of the process: the path, listener, exec
+    /// and endpoint options keep pointers into it, and the endpoint and exec
+    /// options are split in place.
     unsafe fn apply(
         &mut self,
         flag: u32,
         arg: *mut c_char,
         required: u64,
         grants: &mut u64,
-        err: *mut c_void,
+        err: Stream,
     ) -> c_int {
         use super::launch_args::{witchy_args_bind, witchy_args_limits};
         use super::launch_env::witchy_bind_env;
@@ -539,74 +597,38 @@ impl NativeLaunch {
         }
         let (grant, bound, diagnostic) = match flag {
             45 if required & 262144 != 0 && !self.exec_env_seen => {
-                // SAFETY: flag 45 is `--exec-env=`, so its value is the rest of the live argument.
-                let names = unsafe { CStr::from_ptr(arg.add(11)) };
-                if !super::exec_environment::witchy_exec_env_names(names) {
-                    unsafe {
-                        fputs(c"invalid --exec-env=NAME,NAME grant\n".as_ptr(), err);
-                    }
+                if !super::exec_environment::witchy_exec_env_names(after(text, 11)) {
+                    say(c"invalid --exec-env=NAME,NAME grant\n", err);
                     return -1;
                 }
                 self.exec_env_seen = true;
                 return 1;
             }
             46 if required & 262144 != 0 && self.exec_dir.is_null() => {
-                let text = unsafe { arg.add(7) };
-                let bytes = unsafe { CStr::from_ptr(text) }.to_bytes();
+                // The option is `--exec=` and its value, so the value starts
+                // seven bytes in.
+                let value = arg.wrapping_add(7);
+                let bytes = after(text, 7).to_bytes();
                 let Some(colon) = bytes.iter().rposition(|&b| b == b':').filter(|&n| n != 0) else {
-                    unsafe {
-                        fputs(c"invalid --exec=DIR:name,name grant\n".as_ptr(), err);
-                    }
+                    say(c"invalid --exec=DIR:name,name grant\n", err);
                     return -1;
                 };
-                if !unsafe { super::exec_guest::bind_programs(text.add(colon + 1)) } {
-                    unsafe {
-                        fputs(c"invalid --exec=DIR:name,name grant\n".as_ptr(), err);
-                    }
+                // SAFETY: the names start after the colon, within the option,
+                // which lasts for the life of the process.
+                if !unsafe { super::exec_guest::bind_programs(value.wrapping_add(colon + 1)) } {
+                    say(c"invalid --exec=DIR:name,name grant\n", err);
                     return -1;
                 }
+                // SAFETY: the colon is a byte of the option, which is writable,
+                // and `text` is not read again.
                 unsafe {
-                    text.add(colon).write(0);
+                    value.add(colon).write(0);
                 }
-                self.exec_dir = text;
+                self.exec_dir = value;
                 *grants |= 262144;
                 return 1;
             }
-            47 if required & 262144 != 0 && !self.exec_processes_seen => {
-                let value = after(text, 17).to_bytes();
-                let Some(value) =
-                    super::budget::parse_limit(value).filter(|&n| n != 0 && n <= 65536)
-                else {
-                    unsafe {
-                        fputs(c"invalid --exec-processes limit\n".as_ptr(), err);
-                    }
-                    return -1;
-                };
-                #[cfg(target_os = "linux")]
-                {
-                    unsafe extern "C" {
-                        safe fn witchy_exec_process_limit(limit: u32);
-                    }
-                    witchy_exec_process_limit(value as u32);
-                }
-                #[cfg(target_os = "macos")]
-                let _ = value;
-                self.exec_processes_seen = true;
-                return 1;
-            }
-            48 if required & 262144 != 0 && !self.exec_budget_seen => {
-                let value = after(text, 13).to_bytes();
-                let Some(value) = super::budget::parse_limit(value).filter(|&n| n <= 268435456)
-                else {
-                    unsafe {
-                        fputs(c"invalid --exec-bytes limit\n".as_ptr(), err);
-                    }
-                    return -1;
-                };
-                self.exec_budget = value;
-                self.exec_budget_seen = true;
-                return 1;
-            }
+            47 | 48 => return self.apply_exec_limit(flag, text, required, err),
             9 => return 1, // Path resolution already rejects links.
             #[cfg(witchy_native_aws_lc)]
             10 | 11 if required & 65536 != 0 => {
@@ -625,6 +647,8 @@ impl NativeLaunch {
                 } else {
                     32768
                 };
+                // SAFETY: the option is `--secret-slot=` and its value, so the
+                // value is a string fourteen bytes in.
                 (grant, required & grant != 0 && unsafe { witchy_bind_signer(arg.add(14)) },
                     c"invalid or duplicate native secret slot binding\n")
             }
@@ -662,6 +686,9 @@ impl NativeLaunch {
             }
             42 if required & NET != 0 && *grants & NET == 0 => (
                 NET,
+                // SAFETY: the option is `--net=` and its value, so the value
+                // is a writable string six bytes in that lasts for the life
+                // of the process, and `text` is not read again.
                 unsafe { super::broker_socket::witchy_bind_endpoints(arg.add(6)) },
                 c"invalid native --net endpoint list\n",
             ),
@@ -680,13 +707,7 @@ impl NativeLaunch {
         1
     }
 
-    unsafe fn run(
-        mut self,
-        required: u64,
-        mut grants: u64,
-        out: *mut c_void,
-        err: *mut c_void,
-    ) -> c_int {
+    fn run(mut self, required: u64, mut grants: u64, out: Stream, err: Stream) -> c_int {
         use super::directory::witchy_directory_grants;
         use super::file_snapshot::witchy_bind_path_grants;
         use super::input_stream::witchy_launch_input;
@@ -700,111 +721,116 @@ impl NativeLaunch {
             safe fn close(fd: c_int) -> c_int;
         }
         let paths = &mut self.paths;
-        unsafe {
-            #[cfg(witchy_native_aws_lc)]
-            if !witchy_validate_secret_grants(required, grants, err) {
-                return 2;
-            }
-            if !super::connection_queue::witchy_validate_connection_launch(
+        #[cfg(witchy_native_aws_lc)]
+        if !witchy_validate_secret_grants(required, grants, err) {
+            return 2;
+        }
+        // SAFETY: the stream is the C runtime's own.
+        if !unsafe {
+            super::connection_queue::witchy_validate_connection_launch(
                 required,
                 grants,
                 self.connection.enabled,
                 !self.listener.is_null(),
                 self.connection.seen != 0,
+                err.as_ptr(),
+            )
+        } || !witchy_directory_grants(
+            required,
+            &mut grants,
+            &mut paths.read_dir,
+            &mut paths.write_dir,
+            paths.data_only,
+            paths.directory_id_set,
+            paths.write_only,
+            paths.combined,
+            err,
+        ) || !super::witchy_validate_grants(required, grants, self.words, self.arg_bytes, err)
+        {
+            return 2;
+        }
+        grants &= required;
+        if !witchy_bind_path_grants(required, grants, paths.file, self.file_fd, err)
+            || !witchy_launch_input(
+                paths.input,
+                self.input_fd,
+                paths.input_id_set.then_some(&paths.input_identity),
+                self.budget.input,
+                self.budget.seen & 4 != 0,
                 err,
-            ) || !witchy_directory_grants(
-                required,
-                &mut grants,
-                &mut paths.read_dir,
-                &mut paths.write_dir,
-                paths.data_only,
-                paths.directory_id_set,
-                paths.write_only,
-                paths.combined,
+            )
+        {
+            return 2;
+        }
+        if grants & INPUT != 0 && !super::input_stream::safe_stdin() {
+            say(
+                c"native input is a secret's source or a file with more than one link\n",
                 err,
-            ) || !super::witchy_validate_grants(
-                required,
-                grants,
-                self.words,
-                self.arg_bytes,
-                err,
-            ) {
-                return 2;
-            }
-            grants &= required;
-            if !witchy_bind_path_grants(required, grants, paths.file, self.file_fd, err)
-                || !witchy_launch_input(
-                    paths.input,
-                    self.input_fd,
-                    paths.input_id_set.then_some(&paths.input_identity),
-                    self.budget.input,
-                    self.budget.seen & 4 != 0,
-                    err,
-                )
-            {
-                return 2;
-            }
-            if grants & INPUT != 0 && !super::input_stream::safe_stdin() {
-                fputs(
-                    c"native input is a secret's source or a file with more than one link\n"
-                        .as_ptr(),
-                    err,
-                );
-                return 2;
-            }
-            let writable_fd = if self.write_dir_fd >= 0 {
-                self.write_dir_fd
-            } else if self.manifest && self.dir_fd >= 0 && paths.write_only {
-                self.dir_fd
-            } else if !paths.write_dir.is_null() && paths.write_dir == paths.read_dir {
-                self.dir_fd
+            );
+            return 2;
+        }
+        let writable_fd = if self.write_dir_fd >= 0 {
+            self.write_dir_fd
+        } else if self.manifest && self.dir_fd >= 0 && paths.write_only {
+            self.dir_fd
+        } else if !paths.write_dir.is_null() && paths.write_dir == paths.read_dir {
+            self.dir_fd
+        } else {
+            -1
+        };
+        // SAFETY: the writable directory is null or a path that lasts for
+        // the life of the process, as every pointer of a launch is.
+        if !unsafe { super::broker_directory::prepare_secret_protection(paths.write_dir, writable_fd) }
+        {
+            say(c"native secrets: the writable directory grant holds a secret's object, or could not be walked completely; refused\n", err);
+            return 2;
+        }
+        let exec_fd = if grants & 262144 != 0 {
+            let fd = if self.exec_fd >= 0 {
+                self.exec_fd
             } else {
-                -1
+                // SAFETY: as above, for the exec directory.
+                super::exec_grant::open_directory(
+                    (!self.exec_dir.is_null()).then(|| unsafe { CStr::from_ptr(self.exec_dir) }),
+                )
             };
-            if !super::broker_directory::prepare_secret_protection(paths.write_dir, writable_fd) {
-                fputs(c"native secrets: the writable directory grant holds a secret's object, or could not be walked completely; refused\n".as_ptr(), err);
-                return 2;
-            }
-            let exec_fd = if grants & 262144 != 0 {
-                let fd = if self.exec_fd >= 0 {
-                    self.exec_fd
-                } else {
-                    // Each of these three is null or a C string that lives as long as the process.
-                    super::exec_grant::open_directory(
-                        (!self.exec_dir.is_null()).then(|| CStr::from_ptr(self.exec_dir)),
-                    )
-                };
-                if fd < 0
-                    || !super::exec_grant::separated_from_writes(
+            // SAFETY: as above, for the writable directory and the output.
+            if fd < 0
+                || !unsafe {
+                    super::exec_grant::separated_from_writes(
                         fd,
                         (!paths.write_dir.is_null()).then(|| CStr::from_ptr(paths.write_dir)),
                         writable_fd,
                         (!paths.output.is_null()).then(|| CStr::from_ptr(paths.output)),
                         self.output_fd,
                     )
-                {
-                    if fd >= 0 {
-                        close(fd);
-                    }
-                    fputs(
-                        c"the exec directory could not be opened or overlaps a writable grant\n"
-                            .as_ptr(),
-                        err,
-                    );
-                    return 2;
                 }
-                super::exec_guest::configure_budget(self.exec_budget);
-                witchy_broker_exec_budget(self.exec_budget);
-                witchy_exec_granted();
-                witchy_exec_sweep(0);
-                fd
-            } else {
-                -1
-            };
-            let (programs, program_count) = super::exec_guest::program_names();
-            if self.output_fd >= 0 {
-                witchy_broker_output(self.output_fd, self.output_exclusive);
+            {
+                if fd >= 0 {
+                    close(fd);
+                }
+                say(
+                    c"the exec directory could not be opened or overlaps a writable grant\n",
+                    err,
+                );
+                return 2;
             }
+            super::exec_guest::configure_budget(self.exec_budget);
+            witchy_broker_exec_budget(self.exec_budget);
+            witchy_exec_granted();
+            witchy_exec_sweep(0);
+            fd
+        } else {
+            -1
+        };
+        let (programs, program_count) = super::exec_guest::program_names();
+        if self.output_fd >= 0 {
+            witchy_broker_output(self.output_fd, self.output_exclusive);
+        }
+        // SAFETY: every path is null or lasts for the life of the process,
+        // the programs are the bound table and its length, the identity is
+        // null or this launch's own, and both streams are the C runtime's.
+        unsafe {
             super::witchy_launch_native(
                 grants,
                 self.connection.enabled,
@@ -836,8 +862,8 @@ impl NativeLaunch {
                 self.exec_budget,
                 self.budget.input,
                 self.budget.seen & 4 != 0,
-                out,
-                err,
+                out.as_ptr(),
+                err.as_ptr(),
             )
         }
     }
@@ -885,18 +911,18 @@ fn four(record: &super::launch_plan::Record, first: usize) -> Option<[&CStr; 4]>
     ])
 }
 
-/// `args` is the process argument list, and `out` and `err` are the C
-/// runtime's streams. The launcher enters here at most once.
+/// `args` is the process argument list. The launcher must enter here at most
+/// once: the plan is read into one static place.
 unsafe fn launch_manifest(
     args: Option<&Argv<'static>>,
     required: u64,
-    out: *mut c_void,
-    err: *mut c_void,
+    out: Stream,
+    err: Stream,
 ) -> c_int {
     use super::launch_args::witchy_args_bind;
     use super::launch_env::witchy_bind_env;
     use super::launch_plan::opening::{witchy_launch_open, witchy_launch_open_parent};
-    use super::launch_plan::{Launch, find_flag, witchy_launch_arguments, witchy_launch_read};
+    use super::launch_plan::{Launch, witchy_launch_arguments, witchy_launch_read};
     #[cfg(witchy_native_aws_lc)]
     use super::launch_plan::{witchy_launch_descriptor, witchy_launch_take};
     use super::policy_grants_abi::witchy_bind_policy_grant;
@@ -905,13 +931,6 @@ unsafe fn launch_manifest(
     use core::mem::MaybeUninit;
     unsafe extern "C" {
         safe fn close(fd: c_int) -> c_int;
-        fn witchy_launch_console(
-            out: *mut c_void,
-            err: *mut c_void,
-            output: bool,
-            streaming: bool,
-            plain: bool,
-        ) -> bool;
         #[cfg(witchy_native_aws_lc)]
         safe fn witchy_secret_add_object(device: u64, inode: u64) -> bool;
         #[cfg(witchy_native_aws_lc)]
@@ -920,7 +939,8 @@ unsafe fn launch_manifest(
         fn snprintf(out: *mut c_char, length: usize, format: *const c_char, ...) -> c_int;
     }
     static mut PLAN: MaybeUninit<Launch> = MaybeUninit::zeroed();
-    static mut OUTPUT_NAME: [c_char; 256] = [0; 256];
+    /// The name of the file a `write-file` record names, and the NUL after it.
+    static OUTPUT_NAME: super::global::Table<c_char, 256> = super::global::Table::new(0);
     let fail = || {
         say(
             c"launch refused: invalid or unsupported embedded launch plan\n",
@@ -937,7 +957,7 @@ unsafe fn launch_manifest(
         return fail();
     }
     let mut planned = 0u64;
-    for record in &launch.records[..launch.record_count as usize] {
+    for record in launch.records() {
         let Some(grant) = manifest_grant(record) else {
             return fail();
         };
@@ -960,9 +980,8 @@ unsafe fn launch_manifest(
     let read_marker = c"(launch plan directory)".as_ptr();
     let write_marker = c"(launch plan writable directory)".as_ptr();
     let file_marker = c"(launch plan file)";
-    for index in 0..launch.record_count as usize {
-        let record = launch.records[index];
-        let field = record.fields;
+    for index in 0..launch.records().len() {
+        let record = launch.records()[index];
         let Some(tag) = record.field(0).map(CStr::to_bytes) else {
             return fail();
         };
@@ -999,12 +1018,14 @@ unsafe fn launch_manifest(
                         Some(n) => n,
                         None => return fail(),
                     };
-                    if launch.word_count > words
+                    if launch.word_count() > words
                         || total > bytes as usize
                         || !super::launch_args::valid_utf8(value)
                     {
+                        // SAFETY: the stream is the C runtime's own, and the
+                        // format takes the two unsigned numbers given.
                         unsafe {
-                            fprintf(err, c"launch refused: the words after `--` are at most %u, %u bytes in all, UTF-8\n".as_ptr(), words, bytes);
+                            fprintf(err.as_ptr(), c"launch refused: the words after `--` are at most %u, %u bytes in all, UTF-8\n".as_ptr(), words, bytes);
                         }
                         return 2;
                     }
@@ -1019,13 +1040,15 @@ unsafe fn launch_manifest(
                 }
             }
             b"net" => {
-                if !unsafe { super::broker_socket::append_launch_endpoint(field[1]) } {
+                // SAFETY: the field is null or text in the plan's copy, which
+                // lasts for the life of the process.
+                if !unsafe { super::broker_socket::append_launch_endpoint(record.raw(1)) } {
                     return fail();
                 }
             }
-            b"listen" => mac.listener = field[1],
+            b"listen" => mac.listener = record.raw(1),
             b"socket" => {
-                mac.listener = field[1];
+                mac.listener = record.raw(1);
                 mac.connection.enabled = true;
             }
             b"dir" => {
@@ -1102,25 +1125,31 @@ unsafe fn launch_manifest(
                 let Some([kind, value, within_kind, within_value]) = four(&record, 2) else {
                     return fail();
                 };
-                // SAFETY: the launcher is one thread and enters here once, so
-                // nothing else borrows the name.
-                let name = unsafe { &mut *(&raw mut OUTPUT_NAME) };
-                let fd =
-                    witchy_launch_open_parent(launch, kind, value, within_kind, within_value, name);
+                let mut name = [0; 256];
+                let fd = witchy_launch_open_parent(
+                    launch,
+                    kind,
+                    value,
+                    within_kind,
+                    within_value,
+                    &mut name,
+                );
                 if fd < 0 {
                     return fail();
                 }
+                OUTPUT_NAME.clear();
+                for byte in name {
+                    OUTPUT_NAME.push(byte);
+                }
                 mac.output_fd = fd;
                 mac.output_exclusive = mode == b"create";
-                mac.paths.output = (&raw const OUTPUT_NAME).cast();
+                mac.paths.output = OUTPUT_NAME.as_ptr();
             }
             b"exec-env" => {
-                // SAFETY: a non-null plan field is a live C string in the launch record.
                 if mac.exec_env_seen
-                    || field[1].is_null()
-                    || !super::exec_environment::witchy_exec_env_names(unsafe {
-                        CStr::from_ptr(field[1])
-                    })
+                    || !record
+                        .field(1)
+                        .is_some_and(super::exec_environment::witchy_exec_env_names)
                 {
                     return fail();
                 }
@@ -1133,7 +1162,9 @@ unsafe fn launch_manifest(
                     }
                     _ => -1,
                 };
-                if fd < 0 || !unsafe { super::exec_guest::bind_programs(field[3]) } {
+                // SAFETY: the field is null or writable text in the plan's
+                // copy, which lasts for the life of the process.
+                if fd < 0 || !unsafe { super::exec_guest::bind_programs(record.raw(3)) } {
                     return fail();
                 }
                 mac.exec_fd = fd;
@@ -1177,19 +1208,13 @@ unsafe fn launch_manifest(
                 argument[2 + name.len()] = b'=';
                 argument[3 + name.len()..length].copy_from_slice(value);
                 let flag = super::launch_option::classify(&argument[..length]);
-                // SAFETY: the option is NUL-terminated, since it is shorter than
-                // its zeroed buffer, and names a limit, which keeps no pointer.
-                if flag == 0
-                    || unsafe {
-                        mac.apply(
-                            flag,
-                            argument.as_mut_ptr().cast(),
-                            required,
-                            &mut grants,
-                            err,
-                        )
-                    } != 1
-                {
+                // The option is shorter than its zeroed buffer, so a NUL ends it.
+                let Ok(option) = CStr::from_bytes_until_nul(&argument) else {
+                    return fail();
+                };
+                // The buffer lasts only for this record, which is enough for a
+                // limit: no limit keeps its text.
+                if flag == 0 || mac.apply_limit(flag, option, required, err) != 1 {
                     return fail();
                 }
             }
@@ -1201,7 +1226,7 @@ unsafe fn launch_manifest(
                 if source != b"arg"
                     || object_count == objects.len()
                     || objects[..object_count].iter().any(|&used| {
-                        launch.records[used]
+                        launch.records()[used]
                             .field(2)
                             .is_some_and(|used| used.to_bytes() == name)
                     })
@@ -1210,7 +1235,7 @@ unsafe fn launch_manifest(
                 }
                 objects[object_count] = index;
                 object_count += 1;
-                let Some(flag) = find_flag(launch, name).map(|at| launch.flags[at]) else {
+                let Some(flag) = launch.flag(name) else {
                     return fail();
                 };
                 if !flag.kind_object {
@@ -1259,15 +1284,18 @@ unsafe fn launch_manifest(
                             return fail();
                         };
                         let mut buffer = [0 as c_char; 512];
+                        // SAFETY (both calls): the buffer is writable for the
+                        // length given, and validation showed that a secret
+                        // record has the fields each format takes as strings.
                         let size = if kind == b"env" {
                             unsafe {
                                 snprintf(
                                     buffer.as_mut_ptr(),
                                     buffer.len(),
                                     c"%s:%s:env:%s".as_ptr(),
-                                    field[1],
-                                    field[2],
-                                    field[4],
+                                    record.raw(1),
+                                    record.raw(2),
+                                    record.raw(4),
                                 )
                             }
                         } else {
@@ -1293,8 +1321,8 @@ unsafe fn launch_manifest(
                                     buffer.as_mut_ptr(),
                                     buffer.len(),
                                     c"%s:%s:fd:%d".as_ptr(),
-                                    field[1],
-                                    field[2],
+                                    record.raw(1),
+                                    record.raw(2),
                                     copy,
                                 )
                             }
@@ -1316,8 +1344,11 @@ unsafe fn launch_manifest(
         close(launch.cwd);
         launch.cwd = -1;
     }
-    if !unsafe { witchy_launch_console(out, err, grants & OUTPUT != 0, false, false) } {
+    // SAFETY: both streams are the C runtime's own.
+    if !unsafe {
+        witchy_launch_console(out.as_ptr(), err.as_ptr(), grants & OUTPUT != 0, false, false)
+    } {
         return fail();
     }
-    unsafe { mac.run(required, grants, out, err) }
+    mac.run(required, grants, out, err)
 }

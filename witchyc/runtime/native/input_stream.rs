@@ -9,8 +9,6 @@ use super::seatbelt::stat;
 use core::ffi::{c_int, c_void};
 
 unsafe extern "C" {
-    #[cfg(target_os = "macos")]
-    fn open(path: *const core::ffi::c_char, flags: c_int, ...) -> c_int;
     safe fn dup2(from: c_int, to: c_int) -> c_int;
     safe fn close(fd: c_int) -> c_int;
     safe fn getchar() -> c_int;
@@ -25,12 +23,13 @@ unsafe extern "C" {
 
 // Initialized before guest entry. Input calls do not suspend or reenter.
 static LEFT: Global<u64> = Global::new(u64::MAX);
+#[derive(Clone, Copy)]
 struct Snapshot {
     bytes: *mut u8,
     len: usize,
     at: usize,
 }
-static mut SNAPSHOT: Option<Snapshot> = None;
+static SNAPSHOT: Global<Option<Snapshot>> = Global::new(None);
 
 /// Snapshot server input once, before any worker starts. Each fork inherits a
 /// fresh cursor and sees the same bounded bytes.
@@ -56,13 +55,11 @@ pub(super) fn snapshot_input(limit: u64) -> bool {
             return false;
         }
         if count == 0 {
-            unsafe {
-                SNAPSHOT = Some(Snapshot {
-                    bytes,
-                    len: used,
-                    at: 0,
-                });
-            }
+            SNAPSHOT.set(Some(Snapshot {
+                bytes,
+                len: used,
+                at: 0,
+            }));
             return true;
         }
         used += count as usize;
@@ -80,9 +77,9 @@ fn witchy_input_limit(bytes: u64) {
 fn witchy_bind_input_file(path: &core::ffi::CStr, identity: Option<&Identity>) -> bool {
     // O_RDONLY | O_CLOEXEC | O_NOFOLLOW_ANY | O_NONBLOCK.
     #[cfg(target_os = "macos")]
-    let fd = unsafe { open(path.as_ptr(), 0x2100_0004) };
+    let fd = super::sys::open(path, 0x2100_0004);
     #[cfg(target_os = "linux")]
-    let fd = unsafe { super::linux_stat::open_no_symlinks(path.as_ptr()) };
+    let fd = super::linux_stat::open_no_symlinks(path);
     if fd < 0 {
         return false;
     }
@@ -126,12 +123,15 @@ fn trap() -> ! {
 }
 
 fn next_byte() -> Option<u8> {
-    if let Some(snapshot) = unsafe { (&mut *(&raw mut SNAPSHOT)).as_mut() } {
+    if let Some(mut snapshot) = SNAPSHOT.get() {
         if snapshot.at == snapshot.len {
             return None;
         }
+        // SAFETY: `snapshot_input` read `len` bytes into the allocation at
+        // `bytes`, which is never freed, and `at` is short of `len`.
         let byte = unsafe { snapshot.bytes.add(snapshot.at).read() };
         snapshot.at += 1;
+        SNAPSHOT.set(Some(snapshot));
         return Some(byte);
     }
     let byte = getchar();
@@ -170,22 +170,17 @@ extern "C" fn witchy_read(grant: u64, run: u64) -> u64 {
     word | (count << 56)
 }
 
-/// Bind the input snapshot before guest entry. The pathname, optional
-/// identity, and diagnostic stream are borrowed from the launcher.
+/// Bind the input snapshot before guest entry. The pathname and optional
+/// identity are borrowed from the launcher, and `stderr` is its diagnostic
+/// stream.
 pub(super) fn witchy_launch_input(
     path: Option<&core::ffi::CStr>,
     opened: c_int,
     identity: Option<&super::file_identity::Identity>,
     bytes: u64,
     budget_set: bool,
-    stderr: *mut core::ffi::c_void,
+    stderr: super::sys::Stream,
 ) -> bool {
-    unsafe extern "C" {
-        fn fputs(
-            text: *const core::ffi::c_char,
-            stream: *mut core::ffi::c_void,
-        ) -> core::ffi::c_int;
-    }
     witchy_input_limit(bytes);
     let error = if opened >= 0 {
         if bind_opened(opened, identity, true) {
@@ -205,6 +200,6 @@ pub(super) fn witchy_launch_input(
         }
         c"--input=PATH requires a regular file without symlinks matching any identity and byte limit\n"
     };
-    unsafe { fputs(error.as_ptr(), stderr) };
+    stderr.put(error);
     false
 }

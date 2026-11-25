@@ -1,57 +1,60 @@
 //! Bounded UTF-8 launch arguments and guest selection.
 
+use super::global::{Global, Table};
 use core::ffi::CStr;
 
 const MAX_WORDS: usize = 256;
 const MAX_BYTES: usize = 65536;
 const ARGS: u64 = 64;
 
-struct Arguments {
-    bytes: [u8; MAX_BYTES],
-    ends: [usize; MAX_WORDS],
-    count: usize,
-    used: usize,
-    selected: Option<usize>,
-}
-
-impl Arguments {
-    const EMPTY: Self = Self {
-        bytes: [0; MAX_BYTES],
-        ends: [0; MAX_WORDS],
-        count: 0,
-        used: 0,
-        selected: None,
-    };
-
-    fn bind(&mut self, word: &[u8]) -> Option<()> {
-        if !valid_utf8(word) {
-            return None;
-        }
-        let end = self.used.checked_add(word.len())?;
-        let slot = self.ends.get_mut(self.count)?;
-        let storage = self.bytes.get_mut(self.used..end)?;
-        storage.copy_from_slice(word);
-        *slot = end;
-        self.used = end;
-        self.count += 1;
-        Some(())
-    }
-
-    fn word(&self, index: usize) -> Option<&[u8]> {
-        if index >= self.count {
-            return None;
-        }
-        let start = index
-            .checked_sub(1)
-            .and_then(|i| self.ends.get(i))
-            .copied()
-            .unwrap_or(0);
-        self.bytes.get(start..*self.ends.get(index)?)
-    }
-}
-
 // Launcher bindings and guest selections occur on one thread and never suspend.
-static mut ARGUMENTS: Arguments = Arguments::EMPTY;
+/// The bytes of every bound word, one word after another. The guest reads
+/// them by position, which a `Table` does not offer.
+static mut BYTES: [u8; MAX_BYTES] = [0; MAX_BYTES];
+/// How many of `BYTES` are in use.
+static USED: Global<usize> = Global::new(0);
+/// Where each bound word ends in `BYTES`.
+static ENDS: Table<usize, MAX_WORDS> = Table::new(0);
+/// Where the word the guest selected last starts and ends, if that word
+/// exists. Words are only ever added, so the place stays the word's.
+static SELECTED: Global<Option<(usize, usize)>> = Global::new(None);
+
+fn bind(word: &[u8]) -> Option<()> {
+    if !valid_utf8(word) {
+        return None;
+    }
+    let used = USED.get();
+    let end = used.checked_add(word.len())?;
+    if ENDS.len() >= MAX_WORDS {
+        return None;
+    }
+    // SAFETY: the runtime is one thread, and no other reference to the bytes
+    // is live: this one ends with the copy below, and `byte` copies out.
+    let storage = unsafe { (&mut *(&raw mut BYTES)).get_mut(used..end)? };
+    storage.copy_from_slice(word);
+    ENDS.push(end);
+    USED.set(end);
+    Some(())
+}
+
+/// Where the word starts and ends in `BYTES`.
+fn word(index: usize) -> Option<(usize, usize)> {
+    if index >= ENDS.len() {
+        return None;
+    }
+    let start = index
+        .checked_sub(1)
+        .and_then(|i| ENDS.iter().nth(i))
+        .unwrap_or(0);
+    let end = ENDS.iter().nth(index)?;
+    (start <= end && end <= MAX_BYTES).then_some((start, end))
+}
+
+/// The byte at `at`, which is within a bound word.
+fn byte(at: usize) -> Option<u8> {
+    // SAFETY: as `bind`: no reference to the bytes outlives a statement.
+    unsafe { (&*(&raw const BYTES)).get(at).copied() }
+}
 
 fn limit(bytes: &[u8], max: u32) -> Option<u32> {
     if bytes.is_empty() {
@@ -116,14 +119,12 @@ pub(super) fn witchy_args_limits(text: &CStr, words: &mut u32, bytes: &mut u32) 
 }
 
 pub(super) fn witchy_args_bind(text: &CStr) -> bool {
-    // SAFETY: the launcher binds on one thread before any guest selection.
-    unsafe { (&mut *(&raw mut ARGUMENTS)).bind(text.to_bytes()).is_some() }
+    bind(text.to_bytes()).is_some()
 }
 
 #[unsafe(no_mangle)]
 extern "C" fn witchy_args_fit(words: u32, bytes: u32) -> bool {
-    let args = unsafe { &*(&raw const ARGUMENTS) };
-    args.count <= words as usize && args.used <= bytes as usize
+    ENDS.len() <= words as usize && USED.get() <= bytes as usize
 }
 
 fn check_grant(grant: u64) {
@@ -135,19 +136,17 @@ fn check_grant(grant: u64) {
 #[unsafe(no_mangle)]
 extern "C" fn witchy_args_count(grant: u64) -> u64 {
     check_grant(grant);
-    unsafe { ARGUMENTS.count as u64 }
+    ENDS.len() as u64
 }
 
 #[unsafe(no_mangle)]
 extern "C" fn witchy_args_select(grant: u64, index: usize) -> u64 {
     check_grant(grant);
-    let args = unsafe { &mut *(&raw mut ARGUMENTS) };
-    if let Some(word) = args.word(index) {
-        let len = word.len();
-        args.selected = Some(index);
-        len as u64
+    if let Some((start, end)) = word(index) {
+        SELECTED.set(Some((start, end)));
+        (end - start) as u64
     } else {
-        args.selected = None;
+        SELECTED.set(None);
         u64::MAX
     }
 }
@@ -155,9 +154,10 @@ extern "C" fn witchy_args_select(grant: u64, index: usize) -> u64 {
 #[unsafe(no_mangle)]
 extern "C" fn witchy_args_byte(grant: u64, index: usize) -> u64 {
     check_grant(grant);
-    let args = unsafe { &*(&raw const ARGUMENTS) };
-    args.selected
-        .and_then(|i| args.word(i))
-        .and_then(|word| word.get(index))
-        .map_or(256, |&byte| u64::from(byte))
+    SELECTED
+        .get()
+        .and_then(|(start, end)| {
+            byte(start.checked_add(index).filter(|&at| at < end)?)
+        })
+        .map_or(256, u64::from)
 }

@@ -76,8 +76,6 @@ mod linux_stat;
 mod secret_guard;
 #[path = "../../../runtime/native/socket_primitives.rs"]
 mod socket_primitives;
-#[path = "../../../runtime/native/sys.rs"]
-mod sys;
 
 #[test]
 fn broker_cleanup_failure_is_reported() {

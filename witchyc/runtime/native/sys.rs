@@ -442,3 +442,72 @@ pub fn atexit(callback: extern "C" fn()) -> c_int {
     // SAFETY: `callback` is a safe function with the signature the call expects.
     unsafe { net::atexit(callback) }
 }
+
+mod c_stream {
+    use super::{c_char, c_int, c_void};
+
+    unsafe extern "C" {
+        #[cfg_attr(target_os = "macos", link_name = "__stdoutp")]
+        #[cfg_attr(target_os = "linux", link_name = "stdout")]
+        pub static mut OUT: *mut c_void;
+        #[cfg_attr(target_os = "macos", link_name = "__stderrp")]
+        #[cfg_attr(target_os = "linux", link_name = "stderr")]
+        pub static mut ERR: *mut c_void;
+        pub fn fputs(text: *const c_char, stream: *mut c_void) -> c_int;
+        pub fn perror(message: *const c_char);
+        pub fn fcntl(fd: c_int, command: c_int, ...) -> c_int;
+    }
+}
+
+/// One of the C runtime's two output streams. The only ways to get one are
+/// `stdout` and `stderr`, so a `Stream` is always a stream the C runtime
+/// keeps open for the life of the process.
+#[derive(Clone, Copy)]
+pub struct Stream(*mut c_void);
+
+impl Stream {
+    pub fn stdout() -> Self {
+        // SAFETY: the C runtime sets the variable before `main`, and the
+        // runtime's one thread never writes it.
+        Self(unsafe { c_stream::OUT })
+    }
+
+    pub fn stderr() -> Self {
+        // SAFETY: as `stdout`.
+        Self(unsafe { c_stream::ERR })
+    }
+
+    /// Writes the text as `fputs` does. A failure is not reported.
+    pub fn put(self, text: &CStr) {
+        // SAFETY: `text` is a C string, and the stream is one of the C
+        // runtime's own.
+        unsafe { c_stream::fputs(text.as_ptr(), self.0) };
+    }
+
+    /// The `FILE *`, for a C function that takes one.
+    pub fn as_ptr(self) -> *mut c_void {
+        self.0
+    }
+}
+
+/// Writes `message` and the text of the current `errno` to the C runtime's
+/// error stream.
+pub fn perror(message: &CStr) {
+    // SAFETY: `message` is a C string, and the call keeps nothing of it.
+    unsafe { c_stream::perror(message.as_ptr()) }
+}
+
+#[cfg(target_os = "macos")]
+const F_DUPFD_CLOEXEC: c_int = 67;
+#[cfg(target_os = "linux")]
+const F_DUPFD_CLOEXEC: c_int = 1030;
+
+// Each `fcntl` command below takes no argument or an integer, so it is safe for
+// every descriptor number: one that is not open gives a negative result.
+
+/// The descriptor's own flags (`F_GETFD`), or a negative value when it is not open.
+pub fn descriptor_flags(fd: c_int) -> c_int {
+    // SAFETY: the command reads no argument.
+    unsafe { c_stream::fcntl(fd, 1) }
+}
+

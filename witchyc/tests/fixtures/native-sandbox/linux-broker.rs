@@ -1,5 +1,7 @@
 #[path = "../../../runtime/native/global.rs"]
 mod global;
+#[path = "../../../runtime/native/sys.rs"]
+mod sys;
 #[path = "../../../runtime/native/linux_sandbox.rs"]
 mod linux_sandbox;
 use std::ffi::{c_char, c_int, c_long, c_void};

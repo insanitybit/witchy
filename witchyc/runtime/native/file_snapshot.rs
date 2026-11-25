@@ -1,17 +1,17 @@
 //! Read-only file grants are snapshotted before entering the sandbox.
 
+use super::global::Global;
 #[cfg(target_os = "linux")]
 use super::linux_stat::stat;
 #[cfg(target_os = "macos")]
 use super::seatbelt::stat;
+use super::sys::Stream;
 use core::{
-    ffi::{c_char, c_int, c_void},
+    ffi::{CStr, c_int, c_void},
     ptr,
 };
 
 unsafe extern "C" {
-    #[cfg(any(target_os = "macos", test))]
-    fn open(path: *const c_char, flags: c_int, ...) -> c_int;
     fn read(fd: c_int, out: *mut c_void, size: usize) -> isize;
     safe fn close(fd: c_int) -> c_int;
     fn malloc(size: usize) -> *mut c_void;
@@ -21,13 +21,16 @@ unsafe extern "C" {
 const MAX_FILE: usize = 1024 * 1024;
 const EINTR: c_int = 4;
 
+#[derive(Clone, Copy)]
 struct Snapshot {
     bytes: ptr::NonNull<u8>,
     len: usize,
     cursor: usize,
 }
 
-static mut FILE: Option<Snapshot> = None;
+// Startup and guest calls are serialized and cannot suspend while they hold a
+// copy of the snapshot's place.
+static FILE: Global<Option<Snapshot>> = Global::new(None);
 
 fn trap() -> ! {
     unsafe { core::arch::asm!("brk #0", options(noreturn, nostack)) }
@@ -63,28 +66,30 @@ fn load(fd: c_int, budget: u64) -> Option<Snapshot> {
     None
 }
 
-/// The host passes a live C pathname. Startup and
-/// guest calls are serialized and cannot suspend while touching FILE.
-unsafe fn snapshot_file(path: *const c_char) -> bool {
-    if unsafe { (&*(&raw const FILE)).is_some() } {
+/// Snapshot the file a pathname names. A launch with no pathname has no file.
+fn snapshot_file(path: Option<&CStr>) -> bool {
+    if FILE.get().is_some() {
         return false;
     }
+    let Some(path) = path else {
+        return false;
+    };
     // Traverse no final symlink; the descriptor is verified after opening.
     #[cfg(target_os = "macos")]
     const FLAGS: c_int = 0x2100_0004;
     #[cfg(target_os = "macos")]
-    let fd = unsafe { open(path, FLAGS) };
+    let fd = super::sys::open(path, FLAGS);
     #[cfg(target_os = "linux")]
-    let fd = unsafe { super::linux_stat::open_no_symlinks(path) };
+    let fd = super::linux_stat::open_no_symlinks(path);
     if fd < 0 {
         return false;
     }
-    unsafe { snapshot_opened(fd) }
+    snapshot_opened(fd)
 }
 
 /// Consume a file descriptor already opened by the trusted launch resolver.
-pub(super) unsafe fn snapshot_opened(fd: c_int) -> bool {
-    if fd < 0 || unsafe { (&*(&raw const FILE)).is_some() } {
+pub(super) fn snapshot_opened(fd: c_int) -> bool {
+    if fd < 0 || FILE.get().is_some() {
         if fd >= 0 {
             close(fd);
         }
@@ -94,6 +99,7 @@ pub(super) unsafe fn snapshot_opened(fd: c_int) -> bool {
     let loaded = load(fd, previous);
     let closed = close(fd) == 0;
     let Some(snapshot) = loaded else { return false };
+    // SAFETY: `load` allocated the bytes, and nothing else has the snapshot yet.
     if !closed {
         unsafe { free(snapshot.bytes.as_ptr().cast()) };
         return false;
@@ -102,75 +108,72 @@ pub(super) unsafe fn snapshot_opened(fd: c_int) -> bool {
         unsafe { free(snapshot.bytes.as_ptr().cast()) };
         return false;
     }
-    unsafe { FILE = Some(snapshot) };
+    FILE.set(Some(snapshot));
     true
 }
 
 #[unsafe(no_mangle)]
 extern "C" fn witchy_snapshot_check() {
-    if unsafe { (&*(&raw const FILE)).is_none() } {
+    if FILE.get().is_none() {
         trap()
     }
 }
 
 #[unsafe(no_mangle)]
 extern "C" fn witchy_snapshot_byte() -> u64 {
-    let Some(file) = (unsafe { (&mut *(&raw mut FILE)).as_mut() }) else {
-        trap()
-    };
+    let Some(mut file) = FILE.get() else { trap() };
     if file.cursor == file.len {
         return 256;
     }
     super::io_budget::snapshot_read_length(1);
+    // SAFETY: the snapshot owns `len` read bytes at `bytes` until it is
+    // closed, and the cursor is short of `len`.
     let byte = unsafe { file.bytes.as_ptr().add(file.cursor).read() };
     file.cursor += 1;
+    FILE.set(Some(file));
     u64::from(byte)
 }
 
 /// The guest output address must permit writing the returned byte count.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn witchy_snapshot_read(out: *mut u8, count: usize) -> u64 {
-    let Some(file) = (unsafe { (&mut *(&raw mut FILE)).as_mut() }) else {
-        trap()
-    };
+    let Some(mut file) = FILE.get() else { trap() };
     let len = super::io_budget::snapshot_read_length(count.min(file.len - file.cursor));
     if len != 0 {
+        // SAFETY: the snapshot owns `len` read bytes from its cursor on, and
+        // the caller's address takes that many.
         unsafe { ptr::copy_nonoverlapping(file.bytes.as_ptr().add(file.cursor), out, len) };
         file.cursor += len;
+        FILE.set(Some(file));
     }
     len as u64
 }
 
 #[unsafe(no_mangle)]
 extern "C" fn witchy_snapshot_close() {
-    let Some(file) = (unsafe { (&mut *(&raw mut FILE)).take() }) else {
-        trap()
-    };
+    let Some(file) = FILE.get() else { trap() };
+    FILE.set(None);
+    // SAFETY: `load` allocated the bytes, and the snapshot that had them is gone.
     unsafe { free(file.bytes.as_ptr().cast()) };
 }
 
 /// Validate path-backed grants in launch diagnostic order and snapshot the
 /// direct read grant. The remaining paths are opened by the broker.
-/// `stderr` is the launcher's live diagnostic stream.
+/// `stderr` is the launcher's diagnostic stream.
 pub(super) fn witchy_bind_path_grants(
     required: u64,
     supplied: u64,
-    file_path: Option<&core::ffi::CStr>,
+    file_path: Option<&CStr>,
     file_fd: c_int,
-    stderr: *mut core::ffi::c_void,
+    stderr: Stream,
 ) -> bool {
-    unsafe extern "C" {
-        fn fputs(text: *const c_char, stream: *mut core::ffi::c_void) -> core::ffi::c_int;
-    }
     const READ_FILE: u64 = 256;
     let error = if required & READ_FILE != 0
         && (supplied & READ_FILE == 0
-            || !unsafe {
-                if file_fd >= 0 {
-                    snapshot_opened(file_fd)
-                } else {
-                    snapshot_file(file_path.map_or(core::ptr::null(), core::ffi::CStr::as_ptr))
-                }
+            || !if file_fd >= 0 {
+                snapshot_opened(file_fd)
+            } else {
+                snapshot_file(file_path)
             }) {
         Some(c"File<Read> requires a regular file of at most 1 MiB with one link, reached without symlinks, that is no secret's source\n")
     } else {
@@ -185,7 +188,7 @@ pub(super) fn witchy_bind_path_grants(
         .find_map(|(grant, message)| (missing & grant != 0).then_some(message))
     };
     if let Some(message) = error {
-        unsafe { fputs(message.as_ptr(), stderr) };
+        stderr.put(message);
         return false;
     }
     true
@@ -201,14 +204,12 @@ fn opened_snapshot_refuses_hard_links() {
     std::fs::write(root.join("file"), b"ok").unwrap();
     std::fs::hard_link(root.join("file"), root.join("link")).unwrap();
     let path = CString::new(root.join("file").as_os_str().as_bytes()).unwrap();
-    let fd = unsafe { open(path.as_ptr(), 0) };
+    let fd = super::sys::open(&path, 0);
     assert!(fd >= 0);
     assert!(load(fd, 10).is_none());
-    unsafe {
-        close(fd);
-    }
+    close(fd);
     std::fs::remove_file(root.join("link")).unwrap();
-    let fd = unsafe { open(path.as_ptr(), 0) };
+    let fd = super::sys::open(&path, 0);
     let snapshot = load(fd, 10).unwrap();
     assert_eq!(snapshot.len, 2);
     unsafe {

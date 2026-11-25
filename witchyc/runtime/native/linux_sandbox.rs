@@ -1,6 +1,7 @@
 //! Linux AArch64 Landlock and seccomp adapter.
 
 use super::global::Global;
+use super::sys::{self, Stream, perror};
 use core::ffi::{c_char, c_int, c_long, c_void};
 
 #[cfg(not(target_endian = "little"))]
@@ -11,13 +12,49 @@ unsafe extern "C" {
     safe fn personality(value: u64) -> c_int;
     fn prctl(option: c_int, ...) -> c_int;
     safe fn close(fd: c_int) -> c_int;
-    fn fcntl(fd: c_int, command: c_int, ...) -> c_int;
-    fn perror(message: *const c_char);
-    fn fputs(message: *const c_char, stream: *mut c_void) -> c_int;
     fn setvbuf(stream: *mut c_void, buffer: *mut c_char, mode: c_int, size: usize) -> c_int;
-    static mut stderr: *mut c_void;
     static mut stdout: *mut c_void;
     static mut stdin: *mut c_void;
+}
+
+/// `close_range(first, last, 0)`: closes every descriptor numbered from
+/// `first` to `last`. Zero on success.
+fn close_range(first: u32, last: u32) -> c_long {
+    // SAFETY: the call takes three integers and closes descriptors, which
+    // touches no memory.
+    unsafe { syscall(CLOSE_RANGE, first, last, 0u32) }
+}
+
+/// `prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0)`. Zero on success.
+fn set_no_new_privs() -> c_int {
+    // SAFETY: the option takes integers only.
+    unsafe { prctl(38, 1 as c_long, 0 as c_long, 0 as c_long, 0 as c_long) }
+}
+
+/// `prctl(PR_SET_DUMPABLE, 0, 0, 0, 0)`. Zero on success.
+fn clear_dumpable() -> c_int {
+    // SAFETY: the option takes integers only.
+    unsafe { prctl(4, 0 as c_long, 0 as c_long, 0 as c_long, 0 as c_long) }
+}
+
+/// The Landlock ABI the kernel offers, or a negative value.
+fn landlock_abi() -> c_long {
+    const ABI_QUERY: u32 = 1;
+    // SAFETY: a version query passes no attribute for the kernel to read.
+    unsafe {
+        syscall(
+            LANDLOCK_CREATE_RULESET,
+            core::ptr::null::<u64>(),
+            0usize,
+            ABI_QUERY,
+        )
+    }
+}
+
+/// `landlock_restrict_self(rules, 0)`. Zero on success.
+fn landlock_restrict_self(rules: c_int) -> c_long {
+    // SAFETY: the call takes a descriptor and a flags word.
+    unsafe { syscall(LANDLOCK_RESTRICT_SELF, rules, 0u32) }
 }
 
 const LANDLOCK_CREATE_RULESET: c_long = 444;
@@ -54,12 +91,12 @@ pub(super) fn witchy_close_inherited_keeping(
     kept[..n].sort_unstable();
     let mut from = 0u32;
     for &fd in &kept[..n] {
-        if fd > from && unsafe { syscall(CLOSE_RANGE, from, fd - 1, 0u32) } != 0 {
+        if fd > from && close_range(from, fd - 1) != 0 {
             return false;
         }
         from = fd.saturating_add(1);
     }
-    unsafe { syscall(CLOSE_RANGE, from, u32::MAX, 0u32) == 0 }
+    close_range(from, u32::MAX) == 0
 }
 
 fn witchy_close_inherited_descriptors(output: bool, input: bool, relay: c_int) -> bool {
@@ -72,10 +109,8 @@ static SIGNING: Global<bool> = Global::new(false);
 /// creates children, so the broker and Exec descendants inherit them.
 #[unsafe(no_mangle)]
 extern "C" fn witchy_linux_prepare_supervisor() -> bool {
-    if unsafe { prctl(38, 1 as c_long, 0 as c_long, 0 as c_long, 0 as c_long) } != 0
-        || unsafe { prctl(4, 0 as c_long, 0 as c_long, 0 as c_long, 0 as c_long) } != 0
-    {
-        unsafe { perror(c"witchy: no_new_privs".as_ptr()) };
+    if set_no_new_privs() != 0 || clear_dumpable() != 0 {
+        perror(c"witchy: no_new_privs");
         return false;
     }
     true
@@ -87,26 +122,13 @@ extern "C" fn witchy_sandbox_allow_signing() {
 }
 
 fn restrict_filesystem() -> bool {
-    const ABI_QUERY: u32 = 1;
-    let abi = unsafe {
-        syscall(
-            LANDLOCK_CREATE_RULESET,
-            core::ptr::null::<u64>(),
-            0usize,
-            ABI_QUERY,
-        )
-    };
+    let abi = landlock_abi();
     if abi < 0 {
-        unsafe { perror(c"native sandbox Landlock ABI query".as_ptr()) };
+        perror(c"native sandbox Landlock ABI query");
         return false;
     }
     if abi < 3 {
-        unsafe {
-            fputs(
-                c"native sandbox requires Landlock ABI 3 or newer\n".as_ptr(),
-                stderr,
-            )
-        };
+        Stream::stderr().put(c"native sandbox requires Landlock ABI 3 or newer\n");
         return false;
     }
     // The first fifteen filesystem rights run from EXECUTE through TRUNCATE.
@@ -121,13 +143,13 @@ fn restrict_filesystem() -> bool {
         )
     };
     if rules < 0 {
-        unsafe { perror(c"native sandbox Landlock ruleset".as_ptr()) };
+        perror(c"native sandbox Landlock ruleset");
         return false;
     }
     let rules = rules as c_int;
-    let ok = unsafe { syscall(LANDLOCK_RESTRICT_SELF, rules, 0u32) } == 0;
+    let ok = landlock_restrict_self(rules) == 0;
     if !ok {
-        unsafe { perror(c"native sandbox Landlock installation".as_ptr()) };
+        perror(c"native sandbox Landlock installation");
     }
     close(rules);
     ok
@@ -230,19 +252,10 @@ fn restrict_syscalls(output: bool, allocator: bool) -> bool {
         result(allocate),
         result(DENY),
     ]);
-    #[repr(C)]
-    struct Program {
-        len: u16,
-        filter: *const Filter,
-    }
-    let program = Program {
-        len: code.len as u16,
-        filter: code.code.as_ptr(),
-    };
-    if unsafe { syscall(SECCOMP, 1u32, 0u32, &raw const program) } == 0 {
+    if code.install() {
         return true;
     }
-    unsafe { perror(c"native sandbox seccomp installation".as_ptr()) };
+    perror(c"native sandbox seccomp installation");
     false
 }
 
@@ -329,19 +342,10 @@ fn restrict_relay_syscalls(output: bool, allocator: bool, input: bool, relay: c_
         result(ALLOW),
         result(DENY),
     ]);
-    #[repr(C)]
-    struct Program {
-        len: u16,
-        filter: *const Filter,
-    }
-    let program = Program {
-        len: code.len as u16,
-        filter: code.code.as_ptr(),
-    };
-    if unsafe { syscall(SECCOMP, 1u32, 0u32, &raw const program) } == 0 {
+    if code.install() {
         return true;
     }
-    unsafe { perror(c"native sandbox seccomp installation".as_ptr()) };
+    perror(c"native sandbox seccomp installation");
     false
 }
 
@@ -369,6 +373,24 @@ impl FilterBuilder {
     fn syscall(&mut self, number: u32, body: &[Filter]) {
         self.add(&[equal(number, 0, body.len() as u8)]);
         self.add(body);
+    }
+
+    /// Installs the instructions added so far as this thread's seccomp
+    /// filter: `seccomp(SECCOMP_SET_MODE_FILTER, 0, program)`. False when the
+    /// kernel refuses it.
+    fn install(&self) -> bool {
+        #[repr(C)]
+        struct Program {
+            len: u16,
+            filter: *const Filter,
+        }
+        let program = Program {
+            len: self.len as u16,
+            filter: self.code.as_ptr(),
+        };
+        // SAFETY: the program names `len` instructions of `code`, which holds
+        // at least that many, and the kernel copies them during the call.
+        unsafe { syscall(SECCOMP, 1u32, 0u32, &raw const program) == 0 }
     }
 }
 
@@ -461,16 +483,7 @@ fn restrict_broker_syscalls(dials: bool, signal_fd: c_int, message_fd: c_int) ->
         );
     }
     code.add(&[result(DENY)]);
-    #[repr(C)]
-    struct Program {
-        len: u16,
-        filter: *const Filter,
-    }
-    let program = Program {
-        len: code.len as u16,
-        filter: code.code.as_ptr(),
-    };
-    unsafe { syscall(SECCOMP, 1u32, 0u32, &raw const program) == 0 }
+    code.install()
 }
 
 /// Confine the broker to already-opened directory roots and declared TCP ports.
@@ -488,14 +501,7 @@ unsafe extern "C" fn witchy_confine_broker(
     if port_count != 0 && ports.is_null() {
         return false;
     }
-    let abi = unsafe {
-        syscall(
-            LANDLOCK_CREATE_RULESET,
-            core::ptr::null::<u64>(),
-            0usize,
-            1u32,
-        )
-    };
+    let abi = landlock_abi();
     if abi < 3 || (port_count != 0 && abi < 4) {
         return false;
     }
@@ -557,9 +563,9 @@ unsafe extern "C" fn witchy_confine_broker(
         ok = unsafe { syscall(LANDLOCK_ADD_RULE, rules, 2u32, &raw const rule, 0u32) == 0 };
     }
     ok = ok
-        && unsafe { prctl(38, 1 as c_long, 0 as c_long, 0 as c_long, 0 as c_long) == 0 }
-        && unsafe { prctl(4, 0 as c_long, 0 as c_long, 0 as c_long, 0 as c_long) == 0 }
-        && unsafe { syscall(LANDLOCK_RESTRICT_SELF, rules, 0u32) == 0 };
+        && set_no_new_privs() == 0
+        && clear_dumpable() == 0
+        && landlock_restrict_self(rules) == 0;
     close(rules);
     ok && restrict_broker_syscalls(port_count != 0, signal_fd, message_fd)
 }
@@ -571,16 +577,14 @@ unsafe extern "C" fn witchy_install_sandbox_with_relay(
     input: bool,
     relay: c_int,
 ) -> bool {
-    if relay >= 0 && (relay <= 2 || unsafe { fcntl(relay, 1) } < 0) {
+    if relay >= 0 && (relay <= 2 || sys::descriptor_flags(relay) < 0) {
         return false;
     }
     if relay < 0 {
         return witchy_install_sandbox(output, allocator);
     }
-    if unsafe { prctl(38, 1 as c_long, 0 as c_long, 0 as c_long, 0 as c_long) } != 0
-        || unsafe { prctl(4, 0 as c_long, 0 as c_long, 0 as c_long, 0 as c_long) } != 0
-    {
-        unsafe { perror(c"native sandbox process setup".as_ptr()) };
+    if set_no_new_privs() != 0 || clear_dumpable() != 0 {
+        perror(c"native sandbox process setup");
         return false;
     }
     // Prepare stdio before seccomp, since glibc otherwise probes the descriptor.
@@ -601,30 +605,23 @@ extern "C" fn witchy_install_sandbox(output: bool, allocator: bool) -> bool {
     if allocator {
         let domain = personality(u32::MAX.into());
         if domain < 0 {
-            unsafe { perror(c"native sandbox process personality".as_ptr()) };
+            perror(c"native sandbox process personality");
             return false;
         }
         if domain & 0x040_0000 != 0 {
-            unsafe {
-                fputs(
-                    c"native sandbox requires non-executable data mappings\n".as_ptr(),
-                    stderr,
-                )
-            };
+            Stream::stderr().put(c"native sandbox requires non-executable data mappings\n");
             return false;
         }
     }
-    if unsafe { prctl(38, 1 as c_long, 0 as c_long, 0 as c_long, 0 as c_long) } != 0
-        || unsafe { prctl(4, 0 as c_long, 0 as c_long, 0 as c_long, 0 as c_long) } != 0
-    {
-        unsafe { perror(c"native sandbox process setup".as_ptr()) };
+    if set_no_new_privs() != 0 || clear_dumpable() != 0 {
+        perror(c"native sandbox process setup");
         return false;
     }
     if !restrict_filesystem() {
         return false;
     }
-    if unsafe { syscall(CLOSE_RANGE, 3u32, u32::MAX, 0u32) } != 0 {
-        unsafe { perror(c"native sandbox descriptor cleanup".as_ptr()) };
+    if close_range(3, u32::MAX) != 0 {
+        perror(c"native sandbox descriptor cleanup");
         return false;
     }
     close(0);

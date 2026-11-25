@@ -2,9 +2,8 @@
 //!
 //! Traversal takes ownership of its starting descriptor and returns an owned
 //! descriptor, or closes it on failure. Callers supply validated path bytes.
-use core::ffi::{c_char, c_int, c_void};
-#[cfg(target_os = "macos")]
-use core::mem::MaybeUninit;
+use super::sys;
+use core::ffi::{CStr, c_int};
 
 struct Stat {
     device: u64,
@@ -34,28 +33,14 @@ fn stat(fd: c_int) -> Option<Stat> {
 }
 
 unsafe extern "C" {
-    fn openat(fd: c_int, name: *const c_char, flags: c_int, ...) -> c_int;
-    #[cfg(target_os = "macos")]
-    fn fstatat(
-        fd: c_int,
-        name: *const c_char,
-        info: *mut super::seatbelt::Stat,
-        flags: c_int,
-    ) -> c_int;
-    fn fcntl(fd: c_int, command: c_int, ...) -> c_int;
     safe fn close(fd: c_int) -> c_int;
-    fn write(fd: c_int, bytes: *const c_void, len: usize) -> isize;
 }
 
-unsafe fn stat_at(fd: c_int, name: *const c_char) -> Option<Stat> {
+/// The object `name` names under the directory `fd`, a final link not followed.
+fn stat_at(fd: c_int, name: &CStr) -> Option<Stat> {
     #[cfg(target_os = "macos")]
     {
-        let mut raw = MaybeUninit::<super::seatbelt::Stat>::uninit();
-        if unsafe { fstatat(fd, name, raw.as_mut_ptr(), SYMLINK_NOFOLLOW) } != 0 {
-            return None;
-        }
-        let v = unsafe { raw.assume_init() };
-        Some(Stat {
+        super::seatbelt::stat_at(fd, name, SYMLINK_NOFOLLOW).map(|v| Stat {
             device: v.device as u32 as u64,
             inode: v.inode,
             mode: v.mode,
@@ -64,7 +49,7 @@ unsafe fn stat_at(fd: c_int, name: *const c_char) -> Option<Stat> {
     }
     #[cfg(target_os = "linux")]
     {
-        unsafe { super::linux_stat::stat_at(fd, name) }.map(|v| Stat {
+        super::linux_stat::stat_at(fd, name).map(|v| Stat {
             device: v.device,
             inode: v.inode,
             mode: v.mode as u16,
@@ -74,12 +59,9 @@ unsafe fn stat_at(fd: c_int, name: *const c_char) -> Option<Stat> {
 }
 
 pub(super) fn refused(message: &[u8]) -> c_int {
-    let prefix = b"launch refused: ";
-    unsafe {
-        write(2, prefix.as_ptr().cast(), prefix.len());
-        write(2, message.as_ptr().cast(), message.len());
-        write(2, b"\n".as_ptr().cast(), 1);
-    }
+    sys::write(2, b"launch refused: ");
+    sys::write(2, message);
+    sys::write(2, b"\n");
     -1
 }
 
@@ -119,10 +101,6 @@ const SEARCH: c_int = 0x4000_0000 | DIR;
 #[cfg(target_os = "linux")]
 const SEARCH: c_int = 0o10000000 | DIR;
 #[cfg(target_os = "macos")]
-const DUP_CLOEXEC: c_int = 67;
-#[cfg(target_os = "linux")]
-const DUP_CLOEXEC: c_int = 1030;
-#[cfg(target_os = "macos")]
 const SYMLINK_NOFOLLOW: c_int = 0x20;
 const KIND: u16 = 0o170000;
 const REG: u16 = 0o100000;
@@ -140,7 +118,7 @@ fn matches(info: &Stat, boundary: Boundary) -> bool {
 
 /// 1 inside, 0 outside, -1 on another device below the boundary, -2 unknown.
 fn below(fd: c_int, boundary: Boundary) -> c_int {
-    let mut current = unsafe { fcntl(fd, DUP_CLOEXEC, 3 as c_int) };
+    let mut current = sys::duplicate_close_on_exec(fd, 3);
     let mut other_device = false;
     let mut result = -2;
     for _ in 0..4096 {
@@ -155,9 +133,9 @@ fn below(fd: c_int, boundary: Boundary) -> c_int {
             break;
         }
         other_device |= info.device != boundary.device;
-        let mut parent = unsafe { openat(current, c"..".as_ptr(), DIR | CLOEXEC | NOFOLLOW_ANY) };
+        let mut parent = sys::openat(current, c"..", DIR | CLOEXEC | NOFOLLOW_ANY);
         if parent < 0 && super::errno::get() == 13 {
-            parent = unsafe { openat(current, c"..".as_ptr(), SEARCH | CLOEXEC | NOFOLLOW_ANY) };
+            parent = sys::openat(current, c"..", SEARCH | CLOEXEC | NOFOLLOW_ANY);
         }
         let Some(up) = (if parent < 0 { None } else { stat(parent) }) else {
             if parent >= 0 {
@@ -202,13 +180,13 @@ fn private(fd: c_int) -> c_int {
         return -1;
     }
     if fd > 2 {
-        if unsafe { fcntl(fd, 2, 1 as c_int) } == 0 {
+        if sys::set_close_on_exec(fd) == 0 {
             return fd;
         }
         close(fd);
         return -1;
     }
-    let moved = unsafe { fcntl(fd, DUP_CLOEXEC, 3 as c_int) };
+    let moved = sys::duplicate_close_on_exec(fd, 3);
     close(fd);
     moved
 }
@@ -252,8 +230,14 @@ pub(super) fn walk(
         let is_dir = components.peek().is_some() || directory || parent;
         let mut name = [0u8; 256];
         name[..component.len()].copy_from_slice(component);
+        // The component is at most 255 bytes, none of them a NUL, so the name
+        // is the component and the NUL after it.
+        let Ok(name) = CStr::from_bytes_until_nul(&name) else {
+            close(current);
+            return -1;
+        };
         if !is_dir {
-            let Some(info) = (unsafe { stat_at(current, name.as_ptr().cast()) }) else {
+            let Some(info) = stat_at(current, name) else {
                 let error = super::errno::get();
                 close(current);
                 return opening_error(error);
@@ -267,13 +251,11 @@ pub(super) fn walk(
                 });
             }
         }
-        let fd = private(unsafe {
-            openat(
-                current,
-                name.as_ptr().cast(),
-                CLOEXEC | NOFOLLOW_ANY | NONBLOCK | NOCTTY | if is_dir { DIR } else { 0 },
-            )
-        });
+        let fd = private(sys::openat(
+            current,
+            name,
+            CLOEXEC | NOFOLLOW_ANY | NONBLOCK | NOCTTY | if is_dir { DIR } else { 0 },
+        ));
         let error = if fd < 0 { super::errno::get() } else { 0 };
         close(current);
         if fd < 0 {
@@ -318,8 +300,8 @@ pub(super) fn walk(
         return refused(error);
     }
     if !directory {
-        let flags = unsafe { fcntl(current, 3) };
-        if flags < 0 || unsafe { fcntl(current, 4, flags & !NONBLOCK) } < 0 {
+        let flags = sys::status_flags(current);
+        if flags < 0 || sys::set_status_flags(current, flags & !NONBLOCK) < 0 {
             close(current);
             return -1;
         }
@@ -334,10 +316,6 @@ mod tests {
     use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::symlink;
 
-    unsafe extern "C" {
-        fn open(path: *const c_char, flags: c_int, ...) -> c_int;
-    }
-
     #[test]
     fn boundary_rejects_symlink_parent_and_hard_link() {
         let root = std::env::temp_dir().join(format!("witchy-launch-walk-{}", std::process::id()));
@@ -346,7 +324,7 @@ mod tests {
         symlink("file", root.join("link")).unwrap();
         std::fs::hard_link(root.join("file"), root.join("hard")).unwrap();
         let root_c = CString::new(root.as_os_str().as_bytes()).unwrap();
-        let base = || unsafe { open(root_c.as_ptr(), DIR | CLOEXEC) };
+        let base = || sys::open(&root_c, DIR | CLOEXEC);
         let boundary_fd = base();
         assert!(boundary_fd >= 0);
         let info = stat(boundary_fd).unwrap();
@@ -361,10 +339,8 @@ mod tests {
         std::fs::remove_file(root.join("hard")).unwrap();
         let file = walk(base(), b"file", false, boundary, false);
         assert!(file >= 0);
-        unsafe {
-            close(file);
-            close(boundary_fd);
-        }
+        close(file);
+        close(boundary_fd);
         std::fs::remove_dir_all(root).unwrap();
     }
 }
