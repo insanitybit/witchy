@@ -84,7 +84,7 @@ host/ungranted-clock.traps.wy launch-refused Clock requires --clock
 net/greet-server.wy skipped no client connects: whether `accept` gives up before the native launcher's deadline ends the run varies from run to run
 net/https-origin-refusals.wy build-refused macos-arm64 native target: native P-384 agreement requires
 net/write-stalled.wy killed SIGALRM (the peer never reads; the native launcher's deadline ends the run)
-node-links/exhaustion.wy skipped fills the runtime's 262,144 slots and prints how many it got: a PrefixBuffer takes a slot only in a checked or observed build, so the count is one apart (and the Wasm build is given --slots=64)
+node-links/exhaustion.wy differs the Wasm build is given --slots=64; the native runtime has 262,144 slots
 packages/config-app.wy launch-refused usage: executable
 packages/httpd-app.wy launch-refused usage: executable
 programs/fileserver.wy killed SIGALRM (no client connects, and the native launcher's deadline ends the wait)

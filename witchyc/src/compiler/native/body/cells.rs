@@ -7,10 +7,8 @@
 //! what the runtime would test: the element type, the index below the capacity, and the cell
 //! empty to initialize or full to read or take. So the inline form tests none of them. It keeps:
 //!
-//! - for a `Buffer`, the handle's slot and generation, as `live` does: a stale or forged handle
-//!   traps, and a `Buffer` can issue keys, links and weak references that outlive it. A
-//!   `PrefixBuffer` issues none and has one owner, so in a default build its value is its
-//!   header's address, as a Rust `Vec` holds a pointer (`Body::direct`, storage.rs);
+//! - the handle's slot and generation, as `live` does, for a `Buffer` and a `PrefixBuffer`
+//!   alike: a stale or forged handle traps;
 //! - a `PrefixBuffer`'s prefix rule (an initialization at the prefix, a take of the last cell):
 //!   dense storage is the runtime's representation, which the proof model does not know of;
 //! - the bookkeeping, as `Buffer::mark` and `Buffer::range` keep it: the bitmap bit, the count of
@@ -57,14 +55,9 @@ pub(super) fn inline() -> bool {
 /// An observed build (`WITCHY_NATIVE_OBSERVED=1` when compiling): proved accesses to a
 /// `PrefixBuffer` are written in as in a default build, and each first asks the runtime
 /// (`witchy_observe`) to judge the access from its own state and say the address it must reach;
-/// a disagreement traps. The buffer is named by slot and generation there, as in checked mode.
+/// a disagreement traps.
 pub(super) fn observed() -> bool {
     std::env::var_os("WITCHY_NATIVE_OBSERVED").is_some()
-}
-
-/// Whether every buffer is named by a slot and generation, a `PrefixBuffer` too.
-pub(super) fn handles() -> bool {
-    super::super::checked() || observed()
 }
 
 impl Body<'_, '_> {
@@ -88,10 +81,10 @@ impl Body<'_, '_> {
         Ok(buffer)
     }
 
-    /// The header of the buffer `handle` names. A `PrefixBuffer`'s lane is that address in a
-    /// default build (`direct`); any other lane is a slot and generation, looked up as `live` does.
-    fn header(&mut self, handle: Value, buffer: u32) -> Result<Value> {
-        if self.direct(buffer)? { Ok(handle) } else { self.live_inline(handle) }
+    /// The header of the buffer `handle` names: every buffer is a slot and generation, looked
+    /// up and compared as the runtime's `live` does.
+    fn header(&mut self, handle: Value, _buffer: u32) -> Result<Value> {
+        self.live_inline(handle)
     }
 
     /// The address of cell `index` (or of the run `index..index + count`, for a read) after

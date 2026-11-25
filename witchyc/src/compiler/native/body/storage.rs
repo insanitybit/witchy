@@ -3,8 +3,6 @@ use crate::compiler::logical_body::{Expr, StorageOp, Ty, Value as Logical};
 use cranelift_codegen::ir::AbiParam;
 use cranelift_module::{Linkage, Module};
 
-/// The runtime's `DIRECT` (runtime/native/heap.rs): the buffer is named by its header's address.
-const DIRECT: u64 = 1 << 31;
 
 /// Fixed signatures at the native compiler/runtime boundary. All carriers
 /// use the Darwin integer calling convention, including native addresses.
@@ -236,12 +234,10 @@ impl Body<'_, '_> {
         if prefix_only != self.dense(type_id - 1)? {
             return Err(error("a prefix allocation is a PrefixBuffer's"));
         }
-        let direct = self.direct(type_id - 1)?;
-        let kind = if prefix_only { crate::compiler::allocator::PREFIX_TYPE } else { 0 } | if direct { DIRECT } else { 0 };
+        let kind = if prefix_only { crate::compiler::allocator::PREFIX_TYPE } else { 0 };
         let type_id = self.constant(u64::from(type_id) | kind);
         let outcome = self.runtime_value(Runtime::Allocate, &[grant, type_id, stride, count])?;
-        // A header's address is never a small number; an error is one.
-        let failed = if direct { self.fb.ins().icmp_imm_u(super::IntCC::UnsignedLessThan, outcome, 4096) } else { self.allocation_failed(outcome) };
+        let failed = self.allocation_failed(outcome);
         self.result(ty, failed, |_| Ok(vec![outcome]), |_| Ok(vec![outcome]))
     }
 
@@ -253,10 +249,6 @@ impl Body<'_, '_> {
 
     pub(super) fn capacity(&mut self, receiver: &Expr, type_id: u32) -> Result<Value> {
         let handle = self.handle(receiver)?;
-        if self.direct(type_id - 1)? {
-            // The header's first word (runtime/native/heap.rs `Buffer`).
-            return Ok(self.fb.ins().load(I64, super::MemFlagsData::new(), handle, 0));
-        }
         let type_id = self.constant(u64::from(type_id));
         self.runtime_value(Runtime::Capacity, &[handle, type_id])
     }
@@ -273,13 +265,9 @@ impl Body<'_, '_> {
         self.layout.types.buffers().get(buffer as usize).map(|b| b.dense).ok_or_else(|| error("missing native buffer type"))
     }
 
-    /// Whether a value of buffer type `buffer` is its header's address (runtime `DIRECT`): a
-    /// `PrefixBuffer` in a build that is neither checked nor observed. A PrefixBuffer has one
-    /// owner and issues no key, link or weak reference, so the slot and generation every other
-    /// buffer is named by would guard nothing a Rust `Vec`'s pointer has guarded.
     /// Refuse an operation that names a buffer's slot when the value's type is a prefix buffer.
-    /// The checker refuses each of these in source; were one to arrive, a lane that is an address
-    /// would be read as a slot and generation.
+    /// The checker refuses each of these in source; the backend does not lower one either, so the
+    /// type's promise (no key, link or weak reference to a prefix buffer) does not rest on one layer.
     pub(super) fn not_dense(&self, ty: Ty) -> Result<()> {
         let buffer = match ty {
             Ty::Buffer(id) => Some(id),
@@ -290,13 +278,10 @@ impl Body<'_, '_> {
         Ok(())
     }
 
-    pub(super) fn direct(&self, buffer: u32) -> Result<bool> {
-        Ok(self.dense(buffer)? && !super::cells::handles())
-    }
-
-    /// The type a runtime call is told the buffer has: its id, and how its lane names it.
+    /// The type a runtime call is told the buffer has.
     pub(super) fn buffer_kind(&self, buffer: u32) -> Result<u64> {
-        Ok((u64::from(buffer) + 1) | if self.direct(buffer)? { DIRECT } else { 0 })
+        self.dense(buffer)?;
+        Ok(u64::from(buffer) + 1)
     }
 
     pub(super) fn buffer_element(&self, buffer: u32) -> Result<Ty> {

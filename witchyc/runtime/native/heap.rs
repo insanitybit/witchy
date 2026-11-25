@@ -55,7 +55,7 @@ fn allocated_buffers_transfer_and_release() {
                 }
             }
         }
-        // A dense buffer named by slot and generation (a checked or observed build): after
+        // A dense buffer is named by slot and generation in every build: after
         // its release, a buffer made at the same address is not reached through the old name.
         let mut old = witchy_allocate(2, 1 | PREFIX, 8, 4);
         let mut reused = false;
@@ -78,17 +78,6 @@ fn allocated_buffers_transfer_and_release() {
         assert!(reused, "the allocator gave no address again in 64 tries");
         assert_eq!(witchy_release(old, 1), 0);
 
-        // The same buffer named by its header's address (a default build): no slot is used,
-        // an error is still a small number, and the quota is given back.
-        let before = (&*(&raw const HEAP)).bytes;
-        let direct = witchy_allocate(2, 1 | PREFIX | DIRECT, 8, 4);
-        assert!(direct >= 4096 && direct % 8 == 0);
-        assert!((&*(&raw const HEAP)).bytes > before);
-        assert_eq!(witchy_capacity(direct, 1 | DIRECT), 4);
-        assert_eq!(witchy_observe(direct, 1 | DIRECT, 0, 0, u64::from(READ)), direct + size_of::<Buffer>() as u64);
-        assert_eq!(witchy_release(direct, 1 | DIRECT), 0);
-        assert_eq!((&*(&raw const HEAP)).bytes, before);
-        assert_eq!(witchy_allocate(2, 1 | PREFIX | DIRECT, 8, u64::MAX), 1);
     }
 }
 
@@ -98,12 +87,6 @@ unsafe extern "C" {
 }
 
 const PREFIX: u64 = 1 << 29;
-/// A dense buffer named by its header's address, not by a slot: what a `PrefixBuffer`'s owner
-/// holds in a default build (src/compiler/native/body/storage.rs). The buffer has one owner,
-/// which issues no key, link or weak reference (the checker refuses each), so nothing can name
-/// it once it is released, as nothing names a Rust `Vec`'s storage after its drop. A checked or
-/// observed build keeps the slot and generation for these buffers too.
-const DIRECT: u64 = 1 << 31;
 const INIT: u8 = 0;
 const TAKE: u8 = 1;
 const READ: u8 = 2;
@@ -362,15 +345,7 @@ fn live(handle: u64) -> *mut Buffer {
 }
 
 fn typed(handle: u64, kind: u64) -> *mut Buffer {
-    let buffer = if kind & DIRECT != 0 {
-        // Small numbers are allocation errors, never an address.
-        if handle < 4096 {
-            trap();
-        }
-        ptr::with_exposed_provenance_mut(handle as usize)
-    } else {
-        live(handle)
-    };
+    let buffer = live(handle);
     if unsafe { (*buffer).kind } & !PREFIX != kind {
         trap();
     }
@@ -386,8 +361,7 @@ pub(super) extern "C" fn witchy_allow_allocator() {
 pub(super) extern "C" fn witchy_allocate(grant: u64, kind: u64, stride: u64, count: u64) -> u64 {
     unsafe { ALLOCATIONS += 1 };
     let heap = unsafe { &mut *(&raw mut HEAP) };
-    let direct = kind & DIRECT != 0;
-    if !heap.granted || grant != 2 || kind & !(PREFIX | DIRECT) == 0 || (direct && kind & PREFIX == 0) || stride == 0 || stride > 2048 {
+    if !heap.granted || grant != 2 || kind & !PREFIX == 0 || stride == 0 || stride > 2048 {
         trap();
     }
     let Some(layout) = heap_layout::layout(
@@ -398,7 +372,7 @@ pub(super) extern "C" fn witchy_allocate(grant: u64, kind: u64, stride: u64, cou
     ) else {
         return 1;
     };
-    if !direct && !heap.slots.has_room() {
+    if !heap.slots.has_room() {
         return 3;
     }
     let bytes = layout.total as usize;
@@ -420,10 +394,6 @@ pub(super) extern "C" fn witchy_allocate(grant: u64, kind: u64, stride: u64, cou
         Buffer::payload(buffer.as_ptr())
             .add(layout.payload as usize)
             .write_bytes(0, layout.bitmap as usize);
-    }
-    if direct {
-        heap.bytes += bytes;
-        return buffer.as_ptr().expose_provenance() as u64;
     }
     let Some(issued) = heap.slots.insert(buffer) else {
         unsafe { free(buffer.as_ptr().cast()) };
@@ -447,15 +417,10 @@ pub(super) extern "C" fn witchy_release(handle: u64, kind: u64) -> u64 {
         return 1;
     }
     let heap = unsafe { &mut *(&raw mut HEAP) };
-    if kind & DIRECT == 0 && heap.slots.remove(handle).is_none() {
+    if heap.slots.remove(handle).is_none() {
         trap();
     }
     heap.bytes -= header.bytes;
-    // A buffer named by its address has no slot to retire. Its type word is cleared, so a
-    // second release of the block, or a runtime call on it, fails `typed` for as long as the
-    // allocator leaves the block alone. This is a cheap second line and no more: the first
-    // is that the owner is linear, and a checked or observed build keeps the generation.
-    unsafe { (*buffer).kind = 0 };
     unsafe { free(buffer.cast()) };
     0
 }

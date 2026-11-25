@@ -14,10 +14,10 @@ The program is built for macos-arm64 three ways (default, WITCHY_NATIVE_CHECKED=
 WITCHY_NATIVE_OBSERVED=1) and each is run with the heap audit on and must also say that no
 allocation is left when it returns (`live bytes: 0`): an owner never released is counted. With
 --guard the default build also runs under the system's guard allocator (libgmalloc), which puts
-each block against an unmapped page and unmaps it when freed. That is what catches a default
-build reaching a released or outgrown block: its dense code holds an address and checks no
-generation, so without the guard such a read usually finds the old bytes and the run still
-matches. With --runtime the Wasm build runs the same inputs (output only; it has no live count).
+each block against an unmapped page and unmaps it when freed. Every build names a vector's
+buffer by slot and generation, so a released one traps before it is read; the guard is a second
+line that catches a read past a block or of an outgrown one, which otherwise usually finds old
+bytes and still matches. With --runtime the Wasm build runs the same inputs (output only; it has no live count).
 
 What this does not reach: the vectors stay short (tens of elements), the only allocation that
 fails is one too large to describe, and nested vectors, records holding owners and tasks are

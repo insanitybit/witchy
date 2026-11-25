@@ -571,15 +571,17 @@ allocations it asked for.
 
 ## Buffer values and the three builds
 
-A sparse `Buffer`, a `Boxed` and a `Weak` are a slot number with a generation in the high
-word; the runtime looks the slot up and compares the generation on each use. A
-`PrefixBuffer` (what `Vec` and `String` hold) is, in a default build, the address of its
-header: it has one owner and can issue no key or link, so nothing can name it once
-released. `WITCHY_NATIVE_CHECKED=1` builds keep slot and generation for it and send every
-access a proof admitted through the runtime's tests. `WITCHY_NATIVE_OBSERVED=1` builds keep
-slot and generation, emit the default build's inline code, and before each dense access
-call `witchy_observe`, which judges the access and returns the address the inline code must
-arrive at. `scripts/native-checked.py` builds every fixture all three ways;
+Every buffer value (a sparse `Buffer`, a `PrefixBuffer`, a `Boxed`, a `Weak`) is a slot
+number with a generation in the high word, and every access looks the slot up and compares
+the generation, in compiled code or in the runtime. Whether a buffer is dense is its static
+type. A default build writes proved accesses in line and keeps, for a `PrefixBuffer`, the
+slot and generation test, the prefix rule and its bookkeeping. `WITCHY_NATIVE_CHECKED=1`
+sends every access a proof admitted through the runtime's tests. `WITCHY_NATIVE_OBSERVED=1`
+emits the default build's inline code and before each dense access calls `witchy_observe`,
+which judges the access (type, capacity, prefix rule) and returns the address the inline
+code must arrive at. The table of what each build tests is in `docs/decisions.md` (the
+entry that restores slot and generation for prefix buffers in every build).
+`scripts/native-checked.py` builds every fixture all three ways;
 `scripts/native-vec-fuzz.py` runs random `Vec` operations on all three (and, with `--guard`,
 the default build under libgmalloc) against a model. `WITCHY_REPORT_LIVE=1` with
 `WITCHY_HEAP_AUDIT=1` prints the bytes still allocated when a run ends.

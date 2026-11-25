@@ -10,8 +10,8 @@ the compiler emits it; in checked mode (WITCHY_NATIVE_CHECKED=1, src/compiler/na
 every test a proof lets the default build leave out is kept, and every cell access is the
 runtime's checked call); and observed (WITCHY_NATIVE_OBSERVED=1, native/body/cells.rs: the
 accesses to a PrefixBuffer are written in as in the default build, and the runtime judges each
-from its own state and names the address it must reach). In the last two a PrefixBuffer is
-named by slot and generation, in the first by its address. All run with WITCHY_HEAP_AUDIT=1.
+from its own state and names the address it must reach). In all three a PrefixBuffer is
+named by slot and generation. All run with WITCHY_HEAP_AUDIT=1.
 What each must do is decided by its name and by scripts/native-checked.list, never by the
 builds agreeing ("both builds" below is all three):
 
