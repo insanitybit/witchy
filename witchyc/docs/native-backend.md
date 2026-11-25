@@ -662,6 +662,11 @@ cover the individual core functions and the states in each harness. The read
 check uses an eight-byte buffer and replaces the hardware trap with a Kani
 failure. The OS adapters and generated machine code are outside their scope.
 
+The runtime's process-state cells (`runtime/native/global.rs`) have their own harness crate,
+`tools/native-global-kani` (run the same way). It checks that a `Table` agrees with a plain array
+and count over any six pushes and clears of four places, and that the pointer handed to C reaches
+every item in use. It does not check the claim the cells rest on: that the runtime has one thread.
+
 Three additional harnesses were checked individually: one-byte fills of up to
 eight cells, two-byte fills of up to four cells, and transfers of up to four
 cells. They exercise the actual pointer and occupancy operations, including a

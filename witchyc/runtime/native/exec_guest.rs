@@ -1,6 +1,6 @@
 //! Guest-visible Exec capabilities and run handles. Broker operations are
 //! serialized by the guest thread; handles are never recycled in a run.
-use super::global::Global;
+use super::global::{Global, Table};
 use super::{exec_pending::Buffer, file_reader};
 use core::{
     ffi::{CStr, c_char, c_int, c_void},
@@ -99,8 +99,7 @@ impl Entry {
     }
 }
 
-static mut PROGRAMS: [*const c_char; 16] = [ptr::null(); 16];
-static mut PROGRAM_COUNT: usize = 0;
+static PROGRAMS: Table<*const c_char, 16> = Table::new(ptr::null());
 static mut ENTRIES: [*mut Entry; MAX_HANDLES] = [ptr::null_mut(); MAX_HANDLES];
 static mut ENTRY_COUNT: usize = 0;
 static PENDING: Global<usize> = Global::new(0);
@@ -154,7 +153,7 @@ fn entry(handle: u64) -> &'static mut Entry {
         }
         if entries[0].is_null() {
             let root = allocate(1);
-            let count = unsafe { PROGRAM_COUNT };
+            let count = PROGRAMS.len();
             unsafe {
                 (*root).allowed = (1u32 << count) - 1;
             }
@@ -188,8 +187,7 @@ fn chosen(entry: &mut Entry) -> Result<u32, u8> {
     {
         return Err(2);
     }
-    let programs = unsafe { &*(&raw const PROGRAMS) };
-    for (index, &name) in programs.iter().take(unsafe { PROGRAM_COUNT }).enumerate() {
+    for (index, name) in PROGRAMS.iter().enumerate() {
         if !name.is_null() && unsafe { CStr::from_ptr(name) }.to_bytes() == &entry.name[..length] {
             return if entry.allowed & (1 << index) != 0 {
                 Ok(index as u32)
@@ -518,7 +516,7 @@ extern "C" fn witchy_exec(op: u64, handle: u64, value: u64) -> u64 {
 
 /// `names` must remain live for the program's execution. It is split in place.
 pub(super) unsafe fn bind_programs(names: *mut c_char) -> bool {
-    if names.is_null() || unsafe { PROGRAM_COUNT != 0 } {
+    if names.is_null() || !PROGRAMS.is_empty() {
         return false;
     }
     let mut starts = [0usize; 16];
@@ -547,17 +545,13 @@ pub(super) unsafe fn bind_programs(names: *mut c_char) -> bool {
             start = end + 1;
         }
     }
-    let programs = unsafe { &mut *(&raw mut PROGRAMS) };
     for index in 0..count {
         if index + 1 != count {
             unsafe {
                 names.add(ends[index]).write(0);
             }
         }
-        programs[index] = unsafe { names.add(starts[index]) };
-    }
-    unsafe {
-        PROGRAM_COUNT = count;
+        PROGRAMS.push(unsafe { names.add(starts[index]) });
     }
     true
 }
@@ -568,9 +562,7 @@ pub(super) fn configure_budget(bytes: u64) {
 }
 
 pub(super) fn program_names() -> (*const *const c_char, u32) {
-    ((&raw const PROGRAMS).cast(), unsafe {
-        PROGRAM_COUNT as u32
-    })
+    (PROGRAMS.as_ptr(), PROGRAMS.len() as u32)
 }
 
 #[cfg(test)]

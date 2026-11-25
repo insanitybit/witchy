@@ -1,4 +1,5 @@
 //! Private executable copies and bounded descriptor-relative cleanup.
+#[cfg(target_os = "linux")]
 use super::global::Global;
 #[cfg(target_os = "linux")]
 use super::linux_stat::{Stat, stat};

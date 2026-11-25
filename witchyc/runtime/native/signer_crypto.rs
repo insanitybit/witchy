@@ -1,6 +1,6 @@
 //! Native ML-DSA signing through the pinned AWS-LC provider.
 
-use super::global::Global;
+use super::global::{Global, Table};
 use core::{
     ffi::{c_int, c_void},
     ptr::{null, null_mut},
@@ -195,18 +195,11 @@ static mut SIGNER_SLOTS: [SignerSlot; 256] = [SignerSlot {
     domain_len: 0,
 }; 256];
 
-static mut SECRET_OBJECTS: [(u64, u64); 64] = [(0, 0); 64];
-static mut SECRET_OBJECT_COUNT: usize = 0;
+static SECRET_OBJECTS: Table<(u64, u64), 64> = Table::new((0, 0));
 
 #[unsafe(no_mangle)]
 extern "C" fn witchy_secret_add_object(device: u64, inode: u64) -> bool {
-    let count = unsafe { SECRET_OBJECT_COUNT };
-    let Some(entry) = (unsafe { (&mut *(&raw mut SECRET_OBJECTS)).get_mut(count) }) else {
-        return false;
-    };
-    *entry = (device, inode);
-    unsafe { SECRET_OBJECT_COUNT = count + 1 };
-    true
+    SECRET_OBJECTS.push((device, inode))
 }
 
 fn secret_identities(mut visit: impl FnMut(u64, u64)) {
@@ -218,8 +211,7 @@ fn secret_identities(mut visit: impl FnMut(u64, u64)) {
             visit(slot.device as u64, slot.inode);
         }
     }
-    let count = unsafe { SECRET_OBJECT_COUNT };
-    for &(device, inode) in unsafe { &*(&raw const SECRET_OBJECTS) }.iter().take(count) {
+    for (device, inode) in SECRET_OBJECTS.iter() {
         visit(device, inode);
     }
 }

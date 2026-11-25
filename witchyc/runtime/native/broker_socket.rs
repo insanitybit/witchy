@@ -1,6 +1,6 @@
 //! Socket operations used by the broker.
 
-use super::global::Global;
+use super::global::{Global, Table};
 use core::{
     ffi::{c_int, c_void},
     ptr,
@@ -842,14 +842,11 @@ extern "C" fn stop_launched_broker() {
 }
 
 const ENDPOINT_CAPACITY: usize = 16;
-static mut LAUNCH_ENDPOINTS: [*const core::ffi::c_char; ENDPOINT_CAPACITY] =
-    [core::ptr::null(); ENDPOINT_CAPACITY];
-static mut LAUNCH_ENDPOINT_COUNT: u32 = 0;
+static LAUNCH_ENDPOINTS: Table<*const core::ffi::c_char, ENDPOINT_CAPACITY> =
+    Table::new(core::ptr::null());
 
 pub(super) fn launch_endpoints() -> (*const *const core::ffi::c_char, u32) {
-    ((&raw const LAUNCH_ENDPOINTS).cast(), unsafe {
-        LAUNCH_ENDPOINT_COUNT
-    })
+    (LAUNCH_ENDPOINTS.as_ptr(), LAUNCH_ENDPOINTS.len() as u32)
 }
 
 pub(super) unsafe fn append_launch_endpoint(text: *const core::ffi::c_char) -> bool {
@@ -860,15 +857,7 @@ pub(super) unsafe fn append_launch_endpoint(text: *const core::ffi::c_char) -> b
     {
         return false;
     }
-    let count = unsafe { LAUNCH_ENDPOINT_COUNT } as usize;
-    if count >= ENDPOINT_CAPACITY {
-        return false;
-    }
-    unsafe {
-        (*(&raw mut LAUNCH_ENDPOINTS))[count] = text;
-        LAUNCH_ENDPOINT_COUNT += 1;
-    }
-    true
+    LAUNCH_ENDPOINTS.push(text)
 }
 
 /// The launcher supplies writable, NUL-terminated argv storage. On success
@@ -890,16 +879,15 @@ unsafe extern "C" fn witchy_bind_endpoints(text: *mut core::ffi::c_char) -> bool
         offset += part.len() + 1;
         count += 1;
     }
-    let endpoints = unsafe { &mut *(&raw mut LAUNCH_ENDPOINTS) };
-    for (destination, start) in endpoints.iter_mut().zip(starts.into_iter().take(count)) {
+    LAUNCH_ENDPOINTS.clear();
+    for start in starts.into_iter().take(count) {
         unsafe {
             if start != 0 {
                 text.add(start - 1).write(0);
             }
-            *destination = text.add(start);
+            LAUNCH_ENDPOINTS.push(text.add(start));
         }
     }
-    unsafe { LAUNCH_ENDPOINT_COUNT = count as u32 };
     true
 }
 
@@ -924,8 +912,8 @@ pub(super) unsafe fn launch_broker(
         fn atexit(callback: extern "C" fn()) -> c_int;
         fn fputs(text: *const core::ffi::c_char, stream: *mut core::ffi::c_void) -> c_int;
     }
-    let endpoints = (&raw const LAUNCH_ENDPOINTS).cast();
-    let endpoint_count = unsafe { LAUNCH_ENDPOINT_COUNT };
+    let endpoints = LAUNCH_ENDPOINTS.as_ptr();
+    let endpoint_count = LAUNCH_ENDPOINTS.len() as u32;
     let mut port = 0;
     let channel = unsafe {
         witchy_net_start(

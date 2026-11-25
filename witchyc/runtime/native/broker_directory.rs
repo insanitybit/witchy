@@ -4,6 +4,7 @@
 use super::linux_stat::{Stat, stat};
 #[cfg(target_os = "macos")]
 use super::seatbelt::{Stat, stat};
+use super::global::Table;
 use core::{
     ffi::{CStr, c_char, c_int, c_void},
     mem::MaybeUninit,
@@ -47,8 +48,7 @@ unsafe fn open_checked(parent: c_int, name: *const c_char, flags: c_int) -> c_in
 }
 const EXDEV: c_int = 18;
 
-static mut SECRET_OBJECTS: [(u64, u64); 192] = [(0, 0); 192];
-static mut SECRET_OBJECT_COUNT: usize = 0;
+static SECRET_OBJECTS: Table<(u64, u64), 192> = Table::new((0, 0));
 
 /// Startup supplies the arrays of secret identities before the broker forks.
 #[unsafe(no_mangle)]
@@ -58,19 +58,16 @@ unsafe extern "C" fn witchy_broker_secret_objects(
     count: u32,
 ) {
     let count = (count as usize).min(192);
-    let objects = unsafe { &mut *(&raw mut SECRET_OBJECTS) };
-    for (index, object) in objects.iter_mut().take(count).enumerate() {
-        *object = unsafe { (devices.add(index).read(), inodes.add(index).read()) };
+    SECRET_OBJECTS.clear();
+    for index in 0..count {
+        SECRET_OBJECTS.push(unsafe { (devices.add(index).read(), inodes.add(index).read()) });
     }
-    unsafe { SECRET_OBJECT_COUNT = count };
 }
 
 fn secret_identity(info: &Stat) -> bool {
-    let count = unsafe { SECRET_OBJECT_COUNT };
-    unsafe { &*(&raw const SECRET_OBJECTS) }
+    SECRET_OBJECTS
         .iter()
-        .take(count)
-        .any(|&(device, inode)| device == info.device as u64 && inode == info.inode)
+        .any(|(device, inode)| device == info.device as u64 && inode == info.inode)
 }
 
 fn protected_identity(info: &Stat) -> bool {
@@ -297,7 +294,7 @@ fn protected_tree_mode(
     remaining: &mut u32,
     programs: bool,
 ) -> u8 {
-    if unsafe { SECRET_OBJECT_COUNT == 0 } && (!programs || !witchy_exec_guarded()) {
+    if SECRET_OBJECTS.is_empty() && (!programs || !witchy_exec_guarded()) {
         return 0;
     }
     if depth == 0 || *remaining == 0 {
