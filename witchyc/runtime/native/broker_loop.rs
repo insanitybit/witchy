@@ -213,20 +213,17 @@ unsafe fn relay(
                 {
                     break;
                 }
-                let bytes = scratch.as_mut_ptr();
-                let code = unsafe {
-                    if operation == 23 {
-                        witchy_broker_rename_rooted(writable, bytes, count, mode)
-                    } else {
-                        witchy_broker_modify_directory(
-                            writable,
-                            bytes,
-                            count,
-                            mode,
-                            operation == 17,
-                            entries,
-                        )
-                    }
+                let code = if operation == 23 {
+                    witchy_broker_rename_rooted(writable, &mut scratch, count, mode)
+                } else {
+                    witchy_broker_modify_directory(
+                        writable,
+                        &mut scratch,
+                        count,
+                        mode,
+                        operation == 17,
+                        entries,
+                    )
                 };
                 witchy_broker_reply(channel, 0, 1) && witchy_broker_send(channel, &[code])
             }
@@ -236,7 +233,7 @@ unsafe fn relay(
                     operation,
                     slot,
                     count,
-                    scratch.as_mut_ptr(),
+                    &mut scratch,
                     &mut outputs,
                     &mut output,
                     output_name,
@@ -296,7 +293,7 @@ unsafe fn relay(
                             operation,
                             slot,
                             count,
-                            scratch.as_mut_ptr(),
+                            &mut scratch,
                             root,
                             write_root,
                             combined,

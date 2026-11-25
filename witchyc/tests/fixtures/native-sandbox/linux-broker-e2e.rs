@@ -2,6 +2,8 @@
 mod errno;
 #[path = "../../../runtime/native/global.rs"]
 mod global;
+#[path = "../../../runtime/native/sys.rs"]
+mod sys;
 #[path = "../../../runtime/native/broker_directory.rs"]
 mod broker_directory;
 #[path = "../../../runtime/native/broker_endpoint.rs"]

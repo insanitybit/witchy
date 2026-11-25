@@ -72,3 +72,65 @@ pub fn socketpair(domain: c_int, kind: c_int, protocol: c_int, fds: &mut [c_int;
     // SAFETY: the call writes two descriptors.
     unsafe { c::socketpair(domain, kind, protocol, fds.as_mut_ptr()) }
 }
+
+mod c_directory {
+    use super::{c_char, c_int};
+
+    unsafe extern "C" {
+        pub fn mkdirat(parent: c_int, name: *const c_char, mode: u16) -> c_int;
+        pub fn renameat(from: c_int, source: *const c_char, to: c_int, target: *const c_char) -> c_int;
+        #[cfg(target_os = "macos")]
+        pub fn renameatx_np(
+            from: c_int,
+            source: *const c_char,
+            to: c_int,
+            target: *const c_char,
+            flags: u32,
+        ) -> c_int;
+        #[cfg(target_os = "linux")]
+        pub fn syscall(number: core::ffi::c_long, ...) -> core::ffi::c_long;
+        #[cfg(target_os = "linux")]
+        pub fn getrandom(out: *mut super::c_void, len: usize, flags: u32) -> isize;
+    }
+}
+
+/// Makes the directory `name` under the directory `parent`.
+pub fn mkdirat(parent: c_int, name: &CStr, mode: u16) -> c_int {
+    // SAFETY: `name` is a C string, and the call keeps nothing of it.
+    unsafe { c_directory::mkdirat(parent, name.as_ptr(), mode) }
+}
+
+/// Moves `source` under `from` to `target` under `to`, replacing what is there.
+pub fn renameat(from: c_int, source: &CStr, to: c_int, target: &CStr) -> c_int {
+    // SAFETY: both names are C strings, and the call keeps nothing of them.
+    unsafe { c_directory::renameat(from, source.as_ptr(), to, target.as_ptr()) }
+}
+
+/// As `renameat`, under the kernel's `flags` for an exclusive move or a swap.
+#[cfg(target_os = "macos")]
+pub fn renameatx_np(from: c_int, source: &CStr, to: c_int, target: &CStr, flags: u32) -> c_int {
+    // SAFETY: as `renameat`.
+    unsafe { c_directory::renameatx_np(from, source.as_ptr(), to, target.as_ptr(), flags) }
+}
+
+/// As `renameat`, under the kernel's `flags` for an exclusive move or a swap.
+/// The call number is AArch64's.
+#[cfg(target_os = "linux")]
+pub fn renameat2(
+    from: c_int,
+    source: &CStr,
+    to: c_int,
+    target: &CStr,
+    flags: u32,
+) -> core::ffi::c_long {
+    // SAFETY: as `renameat`. The call takes these five arguments.
+    unsafe { c_directory::syscall(276, from, source.as_ptr(), to, target.as_ptr(), flags) }
+}
+
+/// Fills at most `out.len()` bytes with random ones. The count, or a negative
+/// value with `errno` set.
+#[cfg(target_os = "linux")]
+pub fn getrandom(out: &mut [u8], flags: u32) -> isize {
+    // SAFETY: `out` is writable for its length.
+    unsafe { c_directory::getrandom(out.as_mut_ptr().cast(), out.len(), flags) }
+}
