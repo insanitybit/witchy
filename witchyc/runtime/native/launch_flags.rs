@@ -513,7 +513,6 @@ impl NativeLaunch {
             fn witchy_bind_env(text: *const c_char) -> bool;
             fn witchy_args_limits(text: *const c_char, words: *mut u32, bytes: *mut u32) -> bool;
             fn witchy_args_bind(text: *const c_char) -> bool;
-            fn witchy_exec_env_names(text: *const c_char) -> bool;
             #[cfg(witchy_native_aws_lc)]
             fn witchy_bind_store_secret(text: *const c_char, reveal: bool) -> bool;
             #[cfg(witchy_native_aws_lc)]
@@ -534,7 +533,9 @@ impl NativeLaunch {
         }
         let (grant, bound, diagnostic) = match flag {
             45 if required & 262144 != 0 && !self.exec_env_seen => {
-                if !unsafe { witchy_exec_env_names(arg.add(11)) } {
+                // SAFETY: flag 45 is `--exec-env=`, so its value is the rest of the live argument.
+                let names = unsafe { CStr::from_ptr(arg.add(11)) };
+                if !super::exec_environment::witchy_exec_env_names(names) {
                     unsafe {
                         fputs(c"invalid --exec-env=NAME,NAME grant\n".as_ptr(), err);
                     }
@@ -921,7 +922,6 @@ unsafe fn launch_manifest(
         fn witchy_bind_env(text: *const c_char) -> bool;
         fn witchy_bind_policy_grant(text: *const c_char) -> bool;
         fn witchy_args_bind(text: *const c_char) -> bool;
-        fn witchy_exec_env_names(text: *const c_char) -> bool;
         fn witchy_launch_console(
             out: *mut c_void,
             err: *mut c_void,
@@ -1128,7 +1128,13 @@ unsafe fn launch_manifest(
                 mac.paths.output = (&raw const OUTPUT_NAME).cast();
             }
             b"exec-env" => {
-                if mac.exec_env_seen || !unsafe { witchy_exec_env_names(field[1]) } {
+                // SAFETY: a non-null plan field is a live C string in the launch record.
+                if mac.exec_env_seen
+                    || field[1].is_null()
+                    || !super::exec_environment::witchy_exec_env_names(unsafe {
+                        CStr::from_ptr(field[1])
+                    })
+                {
                     return fail();
                 }
                 mac.exec_env_seen = true;

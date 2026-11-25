@@ -1,6 +1,7 @@
 //! Linux's unconfined Exec runner and its subreaper warden. The broker starts
 //! both before installing Landlock, and retains only their private channel.
 use super::global::Global;
+use super::linux_sandbox::witchy_close_inherited_keeping;
 use super::socket_primitives::PollFd;
 use super::{
     exec_broker, exec_linux_children as children, exec_linux_transport as transport, exec_programs,
@@ -29,13 +30,6 @@ unsafe extern "C" {
     fn waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
     fn waitid(kind: c_int, id: u32, info: *mut children::SignalInfo, options: c_int) -> c_int;
     fn syscall(number: core::ffi::c_long, ...) -> core::ffi::c_long;
-    fn witchy_close_inherited_keeping(
-        output: bool,
-        input: bool,
-        keep: *const c_int,
-        count: u32,
-    ) -> bool;
-    fn witchy_exec_descriptors(out: *mut c_int, capacity: u32) -> u32;
     safe fn witchy_exec_supervise() -> bool;
     safe fn witchy_exec_sweep_own() -> bool;
     safe fn _exit(code: c_int) -> !;
@@ -75,12 +69,8 @@ fn runner_loop(channel: c_int, broker_pid: c_int) -> ! {
     super::exec_linux_limits::set_liveness(alive[0], alive[1]);
     let mut keep = [-1; 19];
     keep[..3].copy_from_slice(&[channel, alive[0], alive[1]]);
-    let count = unsafe { witchy_exec_descriptors(keep.as_mut_ptr().add(3), 16) } as usize;
-    if count > 16
-        || !unsafe {
-            witchy_close_inherited_keeping(false, false, keep.as_ptr(), (3 + count) as u32)
-        }
-    {
+    let count = exec_programs::witchy_exec_descriptors(&mut keep[3..]);
+    if count > 16 || !witchy_close_inherited_keeping(false, false, &keep[..3 + count]) {
         _exit(2)
     }
     loop {
@@ -112,7 +102,7 @@ fn runner_loop(channel: c_int, broker_pid: c_int) -> ! {
                 }
                 false
             } else if let Some(fd) = passed {
-                unsafe { exec_broker::set_cwd_here(fd) }
+                exec_broker::set_cwd_here(fd)
             } else {
                 false
             }
@@ -120,15 +110,12 @@ fn runner_loop(channel: c_int, broker_pid: c_int) -> ! {
             close(fd);
             false
         } else {
-            unsafe {
-                exec_broker::request_here(
-                    channel,
-                    head[0],
-                    buffer.as_mut_ptr(),
-                    count,
-                    capacity,
-                    &mut answer,
-                )
+            match exec_broker::request_here(channel, head[0], &mut buffer[..capacity], count) {
+                Some(size) => {
+                    answer = size;
+                    true
+                }
+                None => false,
             }
         };
         if answer > capacity {
@@ -180,7 +167,7 @@ fn start_warden(pair: [c_int; 2], broker: c_int) -> c_int {
     let keep = [alive[0], children::children_descriptor()];
     if runner < 0
         || keep[1] < 0
-        || !unsafe { witchy_close_inherited_keeping(false, false, keep.as_ptr(), 2) }
+        || !witchy_close_inherited_keeping(false, false, &keep)
     {
         _exit(2)
     }
@@ -269,11 +256,10 @@ extern "C" fn witchy_exec_finish() -> bool {
     }
 }
 
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_exec_set_cwd(fd: c_int) -> bool {
+pub(super) fn witchy_exec_set_cwd(fd: c_int) -> bool {
     let runner = RUNNER.get();
     if runner < 0 {
-        return unsafe { exec_broker::set_cwd_here(fd) };
+        return exec_broker::set_cwd_here(fd);
     }
     let mut head = [0u8; 9];
     head[0] = 32;
@@ -287,43 +273,32 @@ unsafe extern "C" fn witchy_exec_set_cwd(fd: c_int) -> bool {
     answer[0] != 0
 }
 
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_exec_request(
+/// Serve one Exec request through the runner, or in this process when no
+/// runner was started. The first `count` bytes of `buffer` are the request;
+/// the answer replaces the front of `buffer` and its length is returned.
+/// `None` refuses the request.
+pub(super) fn witchy_exec_request(
     channel: c_int,
     operation: u8,
-    bytes: *mut u8,
+    buffer: &mut [u8],
     count: usize,
-    capacity: usize,
-    reply: *mut usize,
-) -> bool {
-    if reply.is_null()
-        || count > BUFFER
-        || capacity > BUFFER
-        || (bytes.is_null() && (count != 0 || capacity != 0))
-    {
-        return false;
+) -> Option<usize> {
+    let capacity = buffer.len();
+    if count > BUFFER || capacity > BUFFER {
+        return None;
     }
     let runner = RUNNER.get();
     if runner < 0 {
-        return unsafe {
-            exec_broker::request_here(channel, operation, bytes, count, capacity, reply)
-        };
+        return exec_broker::request_here(channel, operation, buffer, count);
     }
-    unsafe {
-        *reply = 0;
-    }
+    let input = buffer.get(..count)?;
     let mut head = [0u8; 9];
     head[0] = operation;
     head[1..5].copy_from_slice(&(count as u32).to_be_bytes());
     head[5..9].copy_from_slice(&(capacity as u32).to_be_bytes());
-    let input = if count == 0 {
-        &[]
-    } else {
-        unsafe { core::slice::from_raw_parts(bytes, count) }
-    };
     if !transport::send_all(runner, &head) || !transport::send_all(runner, input) {
         witchy_exec_finish();
-        return false;
+        return None;
     }
     let mut ready = [
         PollFd {
@@ -344,7 +319,7 @@ unsafe extern "C" fn witchy_exec_request(
         }
         if n < 0 || ready[1].returned & (1 | 8 | 16 | 32) != 0 {
             witchy_exec_finish();
-            return false;
+            return None;
         }
         if ready[0].returned != 0 {
             break;
@@ -353,26 +328,18 @@ unsafe extern "C" fn witchy_exec_request(
     let mut header = [0u8; 5];
     if !transport::read_exact(runner, &mut header) {
         witchy_exec_finish();
-        return false;
+        return None;
     }
     let size = u32::from_be_bytes(header[1..5].try_into().unwrap()) as usize;
-    if size > capacity {
+    let Some(output) = buffer.get_mut(..size) else {
         witchy_exec_finish();
-        return false;
-    }
-    let output = if size == 0 {
-        &mut []
-    } else {
-        unsafe { core::slice::from_raw_parts_mut(bytes, size) }
+        return None;
     };
     if !transport::read_exact(runner, output) {
         witchy_exec_finish();
-        return false;
+        return None;
     }
-    unsafe {
-        *reply = size;
-    }
-    header[0] != 0
+    (header[0] != 0).then_some(size)
 }
 
 #[cfg(test)]
@@ -383,12 +350,6 @@ fn warden_runs_granted_program_and_reaps_runner() {
     use std::os::unix::fs::MetadataExt;
     unsafe extern "C" {
         fn open(path: *const core::ffi::c_char, flags: c_int, ...) -> c_int;
-        fn witchy_exec_setup(
-            directory: c_int,
-            names: *const *const core::ffi::c_char,
-            count: u32,
-            budget: u64,
-        ) -> bool;
         safe fn witchy_exec_program(device: u64, inode: u64) -> bool;
     }
     let executable = std::env::current_exe().unwrap();
@@ -396,46 +357,26 @@ fn warden_runs_granted_program_and_reaps_runner() {
     let name = CString::new(executable.file_name().unwrap().as_bytes()).unwrap();
     let directory = unsafe { open(parent.as_ptr(), 0o40000 | 0o2000000) };
     assert!(directory >= 0);
-    assert!(unsafe { witchy_exec_setup(directory, [name.as_ptr()].as_ptr(), 1, 4096) });
+    assert!(exec_programs::witchy_exec_setup(directory, &[name.as_c_str()], 4096));
     assert!(witchy_exec_start_runner());
     let identity = std::fs::metadata(&executable).unwrap();
     assert!(unsafe { witchy_exec_program(identity.dev(), identity.ino()) });
     let cwd = unsafe { open(c"/tmp".as_ptr(), 0o40000 | 0o2000000) };
     assert!(cwd >= 0);
-    assert!(unsafe { witchy_exec_set_cwd(cwd) });
+    assert!(witchy_exec_set_cwd(cwd));
     let mut channel = [-1; 2];
     assert_eq!(unsafe { socketpair(1, 1, 0, channel.as_mut_ptr()) }, 0);
-    let mut reply = 0;
     let mut args = *b"--exact\0exec_broker::linux_subprocess_helper\0--nocapture\0";
-    assert!(unsafe {
-        witchy_exec_request(
-            channel[0],
-            27,
-            args.as_mut_ptr(),
-            args.len(),
-            args.len(),
-            &mut reply,
-        )
-    });
+    let count = args.len();
+    assert!(witchy_exec_request(channel[0], 27, &mut args, count).is_some());
     let mut request = [0u8; 11];
     request[1..5].copy_from_slice(&1000u32.to_be_bytes());
     request[5..9].copy_from_slice(&1024u32.to_be_bytes());
     request[9] = 3;
-    assert!(unsafe {
-        witchy_exec_request(channel[0], 28, request.as_mut_ptr(), 11, 11, &mut reply)
-    });
+    assert!(witchy_exec_request(channel[0], 28, &mut request, 11).is_some());
     assert_eq!(request[0], 0, "program status {}", request[0]);
     let mut output = [0u8; 1024];
-    assert!(unsafe {
-        witchy_exec_request(
-            channel[0],
-            29,
-            output.as_mut_ptr(),
-            0,
-            output.len(),
-            &mut reply,
-        )
-    });
+    let reply = witchy_exec_request(channel[0], 29, &mut output, 0).unwrap();
     assert!(
         output[..reply]
             .windows(b"linux-exec-hello".len())
@@ -462,41 +403,24 @@ fn warden_cleans_up_after_runner_is_killed() {
     use std::os::unix::ffi::OsStrExt;
     unsafe extern "C" {
         fn open(path: *const core::ffi::c_char, flags: c_int, ...) -> c_int;
-        fn witchy_exec_setup(
-            directory: c_int,
-            names: *const *const core::ffi::c_char,
-            count: u32,
-            budget: u64,
-        ) -> bool;
     }
     let executable = std::env::current_exe().unwrap();
     let parent = CString::new(executable.parent().unwrap().as_os_str().as_bytes()).unwrap();
     let name = CString::new(executable.file_name().unwrap().as_bytes()).unwrap();
     let directory = unsafe { open(parent.as_ptr(), 0o40000 | 0o2000000) };
     assert!(directory >= 0);
-    assert!(unsafe { witchy_exec_setup(directory, [name.as_ptr()].as_ptr(), 1, 4096) });
+    assert!(exec_programs::witchy_exec_setup(directory, &[name.as_c_str()], 4096));
     assert!(witchy_exec_start_runner());
     let mut channel = [-1; 2];
     assert_eq!(unsafe { socketpair(1, 1, 0, channel.as_mut_ptr()) }, 0);
-    let mut reply = 0;
     let mut args = *b"--exact\0exec_broker::linux_kill_runner_helper\0--nocapture\0";
-    assert!(unsafe {
-        witchy_exec_request(
-            channel[0],
-            27,
-            args.as_mut_ptr(),
-            args.len(),
-            args.len(),
-            &mut reply,
-        )
-    });
+    let count = args.len();
+    assert!(witchy_exec_request(channel[0], 27, &mut args, count).is_some());
     let mut request = [0u8; 11];
     request[1..5].copy_from_slice(&1000u32.to_be_bytes());
     request[5..9].copy_from_slice(&1024u32.to_be_bytes());
     request[9] = 3;
-    assert!(!unsafe {
-        witchy_exec_request(channel[0], 28, request.as_mut_ptr(), 11, 11, &mut reply)
-    });
+    assert!(witchy_exec_request(channel[0], 28, &mut request, 11).is_none());
     assert_eq!(witchy_exec_runner_descriptor(), -1);
     assert_eq!(witchy_exec_signal_descriptor(), -1);
     assert!(witchy_exec_finish());

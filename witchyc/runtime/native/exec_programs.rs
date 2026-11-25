@@ -10,7 +10,6 @@ unsafe extern "C" {
     fn openat(fd: c_int, name: *const c_char, flags: c_int, ...) -> c_int;
     fn fcntl(fd: c_int, command: c_int, ...) -> c_int;
     safe fn close(fd: c_int) -> c_int;
-    fn witchy_exec_plain(name: *const c_char, length: usize) -> bool;
 }
 
 const PROGRAM_LIMIT: i64 = 256 << 20;
@@ -136,8 +135,8 @@ extern "C" fn witchy_exec_program(device: u64, inode: u64) -> bool {
     unsafe { (&*(&raw const PROGRAMS)).protected(device, inode) }
 }
 
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_exec_share_budget(shared: *mut u64) {
+/// `shared` is null or stays mapped and writable for the rest of the process.
+pub(super) unsafe fn witchy_exec_share_budget(shared: *mut u64) {
     if shared.is_null() {
         return;
     }
@@ -153,27 +152,26 @@ unsafe extern "C" fn witchy_exec_share_budget(shared: *mut u64) {
     programs.shared_budget = shared;
 }
 
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_exec_descriptors(out: *mut c_int, capacity: u32) -> u32 {
-    if out.is_null() {
-        return 0;
-    }
+/// Writes the open program descriptors to the front of `out`; returns how many.
+pub(super) fn witchy_exec_descriptors(out: &mut [c_int]) -> usize {
     let programs = unsafe { &*(&raw const PROGRAMS) };
     let mut count = 0;
     for entry in &programs.entries[..programs.count] {
-        if entry.fd >= 0 && count < capacity {
-            unsafe {
-                out.add(count as usize).write(entry.fd);
-            }
+        if entry.fd >= 0
+            && let Some(slot) = out.get_mut(count)
+        {
+            *slot = entry.fd;
             count += 1;
         }
     }
     count
 }
 
-/// `directory` is owned on success; names point to live C strings.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_exec_setup(
+/// The launcher's and the decoder fuzz driver's entry (the driver,
+/// `tests/fixtures/native-sandbox/exec-fuzz.rs`, links the archive by this
+/// symbol). `names` holds `count` pointers, each null or a live C string.
+#[unsafe(export_name = "witchy_exec_setup")]
+pub(super) unsafe extern "C" fn setup_from_table(
     directory: c_int,
     names: *const *const c_char,
     count: u32,
@@ -186,6 +184,23 @@ unsafe extern "C" fn witchy_exec_setup(
     {
         return false;
     }
+    let mut table = [c""; MAX_PROGRAMS];
+    for (index, slot) in table[..count as usize].iter_mut().enumerate() {
+        // SAFETY: the caller's table has `count` entries; a non-null entry is a live C string.
+        let name = unsafe { *names.add(index) };
+        if name.is_null() {
+            return false;
+        }
+        *slot = unsafe { CStr::from_ptr(name) };
+    }
+    witchy_exec_setup(directory, &table[..count as usize], limit)
+}
+
+/// `directory` is owned on success.
+pub(super) fn witchy_exec_setup(directory: c_int, names: &[&CStr], limit: u64) -> bool {
+    if directory < 0 || names.len() > MAX_PROGRAMS || limit > BUDGET_LIMIT {
+        return false;
+    }
     let programs = unsafe { &mut *(&raw mut PROGRAMS) };
     if programs.shared_budget.is_null() {
         programs.own_budget = limit;
@@ -194,22 +209,19 @@ unsafe extern "C" fn witchy_exec_setup(
             *programs.shared_budget = limit;
         }
     }
-    for index in 0..count as usize {
-        let name = unsafe { *names.add(index) };
-        if name.is_null() {
-            return false;
-        }
-        let bytes = unsafe { CStr::from_ptr(name).to_bytes() };
-        if !unsafe { witchy_exec_plain(name, bytes.len()) } {
+    for (index, name) in names.iter().enumerate() {
+        let bytes = name.to_bytes();
+        if !super::exec_environment::witchy_exec_plain(bytes) {
             return false;
         }
         let entry = &mut programs.entries[index];
         entry.name[..bytes.len()].copy_from_slice(bytes);
         entry.name[bytes.len()] = 0;
         #[cfg(target_os = "macos")]
-        let mut fd = unsafe { openat(directory, name, OPEN_FLAGS) };
+        let mut fd = unsafe { openat(directory, name.as_ptr(), OPEN_FLAGS) };
         #[cfg(target_os = "linux")]
-        let mut fd = unsafe { super::linux_stat::openat_no_symlinks(directory, name, OPEN_FLAGS) };
+        let mut fd =
+            unsafe { super::linux_stat::openat_no_symlinks(directory, name.as_ptr(), OPEN_FLAGS) };
         if (0..=2).contains(&fd) {
             let moved = unsafe { fcntl(fd, DUP_CLOEXEC, 3 as c_int) };
             close(fd);
@@ -230,7 +242,7 @@ unsafe extern "C" fn witchy_exec_setup(
             .map_or(0, |info| info.device as u64);
         entry.inode = info.filter(|_| accepted).map_or(0, |info| info.inode);
     }
-    programs.count = count as usize;
+    programs.count = names.len();
     close(directory);
     programs.configured = true;
     true
@@ -272,13 +284,10 @@ fn setup_records_opened_executable_identity() {
     const DIR_FLAGS: c_int = 0o40000 | 0o2000000;
     let fd = unsafe { open(root_name.as_ptr(), DIR_FLAGS) };
     assert!(fd >= 0);
-    assert!(unsafe { witchy_exec_setup(fd, [name.as_ptr(), link.as_ptr()].as_ptr(), 2, 42) });
+    assert!(witchy_exec_setup(fd, &[name.as_c_str(), link.as_c_str()], 42));
     assert!(self::program(1).is_none());
     let mut descriptors = [-1];
-    assert_eq!(
-        unsafe { witchy_exec_descriptors(descriptors.as_mut_ptr(), 1) },
-        1
-    );
+    assert_eq!(witchy_exec_descriptors(&mut descriptors), 1);
     let info = stat(descriptors[0]).unwrap();
     assert!(witchy_exec_program(info.device as u64, info.inode));
     assert!(!witchy_exec_program(

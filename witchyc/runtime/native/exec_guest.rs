@@ -17,8 +17,6 @@ const CHUNK: usize = 16384;
 unsafe extern "C" {
     static witchy_entry_grants: u64;
     fn malloc(size: usize) -> *mut c_void;
-    fn witchy_exec_plain(name: *const c_char, length: usize) -> bool;
-    fn witchy_exec_env_declared(name: *const u8, length: usize) -> bool;
     fn witchy_broker_exec_args(channel: c_int, bytes: *const u8, length: usize) -> c_int;
     fn witchy_broker_exec_input(channel: c_int, bytes: *const u8, length: usize) -> c_int;
     fn witchy_broker_exec_env(channel: c_int, bytes: *const u8, length: usize) -> c_int;
@@ -182,7 +180,7 @@ fn chosen(entry: &mut Entry) -> Result<u32, u8> {
     let length = entry.name_len;
     entry.name_len = 0;
     if length > 255
-        || !unsafe { witchy_exec_plain(entry.name.as_ptr().cast(), length) }
+        || !super::exec_environment::witchy_exec_plain(&entry.name[..length])
         || !super::launch_args::valid_utf8(&entry.name[..length])
     {
         return Err(2);
@@ -493,7 +491,7 @@ extern "C" fn witchy_exec(op: u64, handle: u64, value: u64) -> u64 {
                 entry.refused = 2;
                 return 0;
             }
-            if !unsafe { witchy_exec_env_declared(entry.env_name.as_ptr(), name) } {
+            if !super::exec_environment::witchy_exec_env_declared(&entry.env_name[..name]) {
                 entry.refused = 1;
                 return 0;
             }
@@ -534,7 +532,7 @@ pub(super) unsafe fn bind_programs(names: *mut c_char) -> bool {
             }
             let part = &bytes[start..end];
             if count == 16
-                || !unsafe { witchy_exec_plain(part.as_ptr().cast(), part.len()) }
+                || !super::exec_environment::witchy_exec_plain(part)
                 || (0..count).any(|i| &bytes[starts[i]..ends[i]] == part)
             {
                 return false;
@@ -568,6 +566,10 @@ pub(super) fn program_names() -> (*const *const c_char, u32) {
 #[cfg(test)]
 #[test]
 fn guest_handles_run_only_a_granted_program() {
+    #[cfg(target_os = "macos")]
+    use super::exec_broker::witchy_exec_request;
+    #[cfg(target_os = "linux")]
+    use super::exec_linux_runner::witchy_exec_request;
     use std::ffi::CString;
     use std::os::unix::ffi::OsStrExt;
     unsafe extern "C" {
@@ -577,20 +579,6 @@ fn guest_handles_run_only_a_granted_program() {
         safe fn _exit(code: c_int) -> !;
         fn waitpid(pid: c_int, status: *mut c_int, options: c_int) -> c_int;
         fn socketpair(domain: c_int, kind: c_int, protocol: c_int, fds: *mut c_int) -> c_int;
-        fn witchy_exec_setup(
-            directory: c_int,
-            names: *const *const c_char,
-            count: u32,
-            budget: u64,
-        ) -> bool;
-        fn witchy_exec_request(
-            channel: c_int,
-            operation: u8,
-            bytes: *mut u8,
-            count: usize,
-            capacity: usize,
-            reply: *mut usize,
-        ) -> bool;
     }
     let executable = std::env::current_exe().unwrap();
     let parent = CString::new(executable.parent().unwrap().as_os_str().as_bytes()).unwrap();
@@ -600,8 +588,8 @@ fn guest_handles_run_only_a_granted_program() {
     let fd = unsafe { open(parent.as_ptr(), 0x0110_0000) };
     assert!(fd >= 0);
     assert!(unsafe { bind_programs(name.as_mut_ptr().cast()) });
-    let names = [name.as_ptr().cast::<c_char>()];
-    assert!(unsafe { witchy_exec_setup(fd, names.as_ptr(), 1, 4096) });
+    let granted = CStr::from_bytes_with_nul(&name).unwrap();
+    assert!(super::exec_programs::witchy_exec_setup(fd, &[granted], 4096));
     configure_budget(4096);
     let mut sockets = [-1; 2];
     assert_eq!(unsafe { socketpair(1, 1, 0, sockets.as_mut_ptr()) }, 0);
@@ -640,17 +628,16 @@ fn guest_handles_run_only_a_granted_program() {
                     _exit(1);
                 }
             }
-            let mut answer = 0;
-            if !unsafe {
-                witchy_exec_request(
-                    sockets[1],
-                    head[0],
-                    data.as_mut_ptr(),
-                    if head[0] == 29 { 0 } else { count },
-                    if head[0] == 29 { count } else { CHUNK },
-                    &mut answer,
-                )
-            } || !super::broker_transport::witchy_broker_reply(sockets[1], 0, answer)
+            let capacity = if head[0] == 29 { count } else { CHUNK };
+            let Some(answer) = witchy_exec_request(
+                sockets[1],
+                head[0],
+                &mut data[..capacity],
+                if head[0] == 29 { 0 } else { count },
+            ) else {
+                _exit(2)
+            };
+            if !super::broker_transport::witchy_broker_reply(sockets[1], 0, answer)
                 || !unsafe {
                     super::broker_transport::witchy_broker_transfer(
                         sockets[1],

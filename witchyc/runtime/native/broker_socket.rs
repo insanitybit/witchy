@@ -48,16 +48,12 @@ fn suppress_sigpipe(fd: c_int) -> bool {
     } // Linux transport sends with MSG_NOSIGNAL.
 }
 
-unsafe fn close_inherited(output: bool, input: bool, keep: *const c_int, count: u32) -> bool {
-    unsafe extern "C" {
-        fn witchy_close_inherited_keeping(
-            output: bool,
-            input: bool,
-            keep: *const c_int,
-            count: u32,
-        ) -> bool;
-    }
-    unsafe { witchy_close_inherited_keeping(output, input, keep, count) }
+fn close_inherited(output: bool, input: bool, keep: &[c_int]) -> bool {
+    #[cfg(target_os = "linux")]
+    use super::linux_sandbox::witchy_close_inherited_keeping;
+    #[cfg(target_os = "macos")]
+    use super::seatbelt_fds::witchy_close_inherited_keeping;
+    witchy_close_inherited_keeping(output, input, keep)
 }
 
 #[cfg(target_os = "linux")]
@@ -260,7 +256,6 @@ unsafe extern "C" fn witchy_net_connection_broker(
             set: *const super::deadline::SignalSet,
             old: *mut super::deadline::SignalSet,
         ) -> c_int;
-        fn witchy_exec_descriptors(out: *mut c_int, capacity: u32) -> u32;
         safe fn _exit(code: c_int) -> !;
     }
     const AF_UNIX: c_int = 1;
@@ -290,8 +285,8 @@ unsafe extern "C" fn witchy_net_connection_broker(
             keep[0] = worker;
             keep[1] = roots.root;
             keep[2] = roots.write_root;
-            let count = witchy_exec_descriptors(keep.as_mut_ptr().add(3), 16);
-            if dup2(stream, 0) < 0 || !close_inherited(false, true, keep.as_ptr(), count + 3) {
+            let count = super::exec_programs::witchy_exec_descriptors(&mut keep[3..]);
+            if dup2(stream, 0) < 0 || !close_inherited(false, true, &keep[..count + 3]) {
                 _exit(2);
             }
             close(2);
@@ -393,12 +388,6 @@ unsafe extern "C" fn witchy_net_start(
         fn waitpid(pid: c_int, status: *mut c_int, flags: c_int) -> c_int;
         fn signal(signal: c_int, handler: usize) -> usize;
         safe fn _exit(code: c_int) -> !;
-        fn witchy_exec_setup(
-            directory: c_int,
-            names: *const *const core::ffi::c_char,
-            count: u32,
-            budget: u64,
-        ) -> bool;
     }
 
     let mut outbound = [const { MaybeUninit::<Endpoint>::uninit() }; 16];
@@ -457,9 +446,17 @@ unsafe extern "C" fn witchy_net_start(
             || [root_fd, write_root_fd, exec_fd, output_parent]
                 .iter()
                 .any(|&fd| (0..=2).contains(&fd))
-            || !unsafe { close_inherited(false, false, keep.as_ptr(), keep.len() as u32) }
+            || !close_inherited(false, false, &keep)
             || (exec_fd >= 0
-                && !unsafe { witchy_exec_setup(exec_fd, programs, program_count, EXEC_BUDGET.get()) })
+                // SAFETY: the launcher passes exec_guest's table of `program_count` live names.
+                && !unsafe {
+                    super::exec_programs::setup_from_table(
+                        exec_fd,
+                        programs,
+                        program_count,
+                        EXEC_BUDGET.get(),
+                    )
+                })
         {
             _exit(2)
         }

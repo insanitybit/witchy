@@ -28,14 +28,12 @@ const SECCOMP: c_long = 277;
 
 /// Close every inherited descriptor except granted streams and explicitly
 /// retained descriptors, even when descriptor numbers are sparse.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_close_inherited_keeping(
+pub(super) fn witchy_close_inherited_keeping(
     output: bool,
     input: bool,
-    keep: *const c_int,
-    count: u32,
+    keep: &[c_int],
 ) -> bool {
-    if count > 64 || (count != 0 && keep.is_null()) {
+    if keep.len() > 64 {
         return false;
     }
     let mut kept = [0u32; 67];
@@ -47,8 +45,7 @@ unsafe extern "C" fn witchy_close_inherited_keeping(
         kept[n] = fd;
         n += 1;
     }
-    for i in 0..count as usize {
-        let fd = unsafe { *keep.add(i) };
+    for &fd in keep {
         if fd >= 0 {
             kept[n] = fd as u32;
             n += 1;
@@ -65,13 +62,8 @@ unsafe extern "C" fn witchy_close_inherited_keeping(
     unsafe { syscall(CLOSE_RANGE, from, u32::MAX, 0u32) == 0 }
 }
 
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_close_inherited_descriptors(
-    output: bool,
-    input: bool,
-    relay: c_int,
-) -> bool {
-    unsafe { witchy_close_inherited_keeping(output, input, &relay, 1) }
+fn witchy_close_inherited_descriptors(output: bool, input: bool, relay: c_int) -> bool {
+    witchy_close_inherited_keeping(output, input, &[relay])
 }
 
 static SIGNING: Global<bool> = Global::new(false);
@@ -597,7 +589,7 @@ unsafe extern "C" fn witchy_install_sandbox_with_relay(
     if (output && unsafe { setvbuf(stdout, (&raw mut OUTPUT_BUFFER).cast(), 0, 8192) } != 0)
         || (input && unsafe { setvbuf(stdin, (&raw mut INPUT_BUFFER).cast(), 0, 8192) } != 0)
         || !restrict_filesystem()
-        || !unsafe { witchy_close_inherited_descriptors(output, input, relay) }
+        || !witchy_close_inherited_descriptors(output, input, relay)
     {
         return false;
     }

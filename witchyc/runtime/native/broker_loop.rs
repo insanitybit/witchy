@@ -1,5 +1,9 @@
 //! Dispatch for the private broker channel.
 
+#[cfg(target_os = "macos")]
+use super::exec_broker::{witchy_exec_request, witchy_exec_set_cwd};
+#[cfg(target_os = "linux")]
+use super::exec_linux_runner::{witchy_exec_request, witchy_exec_set_cwd};
 use super::{broker_directory::*, broker_socket::*, broker_transport::*};
 use core::{
     ffi::{c_char, c_int, c_void},
@@ -10,15 +14,6 @@ unsafe extern "C" {
     safe fn close(fd: c_int) -> c_int;
     fn free(ptr: *mut c_void);
     fn fcntl(fd: c_int, command: c_int, ...) -> c_int;
-    fn witchy_exec_set_cwd(fd: c_int) -> bool;
-    fn witchy_exec_request(
-        channel: c_int,
-        operation: u8,
-        bytes: *mut u8,
-        count: usize,
-        capacity: usize,
-        reply: *mut usize,
-    ) -> bool;
 }
 
 const SLOTS: usize = 16;
@@ -170,7 +165,7 @@ unsafe fn relay(
                 } else {
                     -1
                 };
-                if count > 1 || taken < 0 || !unsafe { witchy_exec_set_cwd(taken) } {
+                if count > 1 || taken < 0 || !witchy_exec_set_cwd(taken) {
                     witchy_broker_reply(channel, 2, 0);
                     break;
                 }
@@ -189,20 +184,17 @@ unsafe fn relay(
                 {
                     break;
                 }
-                let mut answer = 0;
-                if !unsafe {
-                    witchy_exec_request(
-                        channel,
-                        operation,
-                        bytes,
-                        if operation == 29 { 0 } else { count },
-                        capacity,
-                        &mut answer,
-                    )
-                } {
+                // SAFETY: `bytes` is the CHUNK-byte scratch buffer and `capacity <= CHUNK`.
+                let buffer = unsafe { core::slice::from_raw_parts_mut(bytes, capacity) };
+                let Some(answer) = witchy_exec_request(
+                    channel,
+                    operation,
+                    buffer,
+                    if operation == 29 { 0 } else { count },
+                ) else {
                     witchy_broker_reply(channel, 2, 0);
                     break;
-                }
+                };
                 witchy_broker_reply(channel, 0, answer)
                     && (answer == 0
                         || unsafe { witchy_broker_transfer(channel, null_mut(), bytes, answer) })

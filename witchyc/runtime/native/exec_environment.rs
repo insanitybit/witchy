@@ -1,5 +1,5 @@
 //! Validation of the environment passed to an explicitly granted executable.
-use core::ffi::{CStr, c_char};
+use core::ffi::CStr;
 
 struct Names {
     names: [[u8; 64]; 16],
@@ -69,32 +69,22 @@ impl Names {
 // Configured at broker startup, before requests run on its single thread.
 static mut NAMES: Names = Names::EMPTY;
 
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_exec_env_names(list: *const c_char) -> bool {
-    if list.is_null() {
-        return false;
-    }
-    unsafe { (&mut *(&raw mut NAMES)).bind(CStr::from_ptr(list).to_bytes()) }
+pub(super) fn witchy_exec_env_names(list: &CStr) -> bool {
+    unsafe { (&mut *(&raw mut NAMES)).bind(list.to_bytes()) }
 }
 
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_exec_env_declared(name: *const u8, length: usize) -> bool {
-    if name.is_null() {
-        return false;
-    }
-    unsafe { (&*(&raw const NAMES)).contains(core::slice::from_raw_parts(name, length)) }
+pub(super) fn witchy_exec_env_declared(name: &[u8]) -> bool {
+    unsafe { (&*(&raw const NAMES)).contains(name) }
 }
 
 pub(super) fn valid_values(bytes: &[u8]) -> bool {
     unsafe { (&*(&raw const NAMES)).validate_values(bytes) }
 }
 
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_exec_plain(name: *const c_char, length: usize) -> bool {
-    if name.is_null() || length == 0 || length > 255 {
+pub(super) fn witchy_exec_plain(value: &[u8]) -> bool {
+    if value.is_empty() || value.len() > 255 {
         return false;
     }
-    let value = unsafe { core::slice::from_raw_parts(name.cast::<u8>(), length) };
     value != b"."
         && value != b".."
         && value

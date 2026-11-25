@@ -316,7 +316,6 @@ unsafe fn start_worker(
         fn fork() -> c_int;
         safe fn close(fd: c_int) -> c_int;
         fn munmap(address: *mut core::ffi::c_void, length: usize) -> c_int;
-        fn witchy_exec_descriptors(out: *mut c_int, capacity: u32) -> u32;
         fn signal(signal: c_int, handler: usize) -> usize;
         fn fflush(stream: *mut core::ffi::c_void) -> c_int;
         safe fn _exit(code: c_int) -> !;
@@ -360,7 +359,7 @@ unsafe fn start_worker(
         close(write_root);
     }
     let mut programs = [-1; 16];
-    let count = unsafe { witchy_exec_descriptors(programs.as_mut_ptr(), 16) } as usize;
+    let count = super::exec_programs::witchy_exec_descriptors(&mut programs);
     for fd in programs.into_iter().take(count.min(16)) {
         close(fd);
     }
@@ -1281,12 +1280,6 @@ pub(super) unsafe fn launch_connections(
     }
 
     unsafe extern "C" {
-        fn witchy_close_inherited_keeping(
-            output: bool,
-            input: bool,
-            kept: *const c_int,
-            count: u32,
-        ) -> bool;
         fn witchy_net_listen(endpoint: *const c_char, port: *mut u16) -> c_int;
         fn getrlimit(resource: c_int, limit: *mut DescriptorLimit) -> c_int;
         safe fn close(fd: c_int) -> c_int;
@@ -1305,13 +1298,6 @@ pub(super) unsafe fn launch_connections(
         ) -> *mut c_void;
         fn witchy_broker_server_endpoints(names: *const *const c_char, count: u32) -> bool;
         safe fn witchy_broker_server_connection_entries(entries: u64);
-        fn witchy_exec_setup(
-            directory: c_int,
-            names: *const *const c_char,
-            count: u32,
-            budget: u64,
-        ) -> bool;
-        fn witchy_exec_share_budget(shared: *mut u64);
     }
 
     if grants & 8 != 0
@@ -1328,9 +1314,11 @@ pub(super) unsafe fn launch_connections(
         return 2;
     }
     let keep = [root_fd, write_fd, exec_fd];
-    if !unsafe {
-        witchy_close_inherited_keeping(grants & 1 != 0, false, keep.as_ptr(), keep.len() as u32)
-    } {
+    #[cfg(target_os = "linux")]
+    use super::linux_sandbox::witchy_close_inherited_keeping;
+    #[cfg(target_os = "macos")]
+    use super::seatbelt_fds::witchy_close_inherited_keeping;
+    if !witchy_close_inherited_keeping(grants & 1 != 0, false, &keep) {
         unsafe {
             fputs(
                 c"native socket server could not close inherited descriptors\n".as_ptr(),
@@ -1417,7 +1405,15 @@ pub(super) unsafe fn launch_connections(
     if (grants & 4 != 0 && !unsafe { witchy_broker_server_endpoints(endpoints, endpoint_count) })
         || (grants & 262144 != 0
             && (exec_fd < 0
-                || !unsafe { witchy_exec_setup(exec_fd, programs, program_count, exec_budget) }))
+                // SAFETY: the launcher passes exec_guest's table of `program_count` live names.
+                || !unsafe {
+                    super::exec_programs::setup_from_table(
+                        exec_fd,
+                        programs,
+                        program_count,
+                        exec_budget,
+                    )
+                }))
     {
         close(listener);
         return 2;
@@ -1443,8 +1439,9 @@ pub(super) unsafe fn launch_connections(
             close(listener);
             return 2;
         }
+        // SAFETY: a fresh shared, writable mapping that the supervisor never unmaps.
         unsafe {
-            witchy_exec_share_budget(address);
+            super::exec_programs::witchy_exec_share_budget(address);
         }
         address
     } else {

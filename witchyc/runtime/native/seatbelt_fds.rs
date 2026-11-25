@@ -29,28 +29,11 @@ fn keep(fd: c_int, output: bool, input: bool, kept: &[c_int]) -> bool {
 
 // Startup owns the process descriptor table. Enumerate actual descriptors,
 // including inherited descriptors above the current RLIMIT_NOFILE.
-#[unsafe(no_mangle)]
-pub(super) extern "C" fn witchy_close_inherited_descriptors(
-    output: bool,
-    input: bool,
-    relay: c_int,
-) -> bool {
-    unsafe { witchy_close_inherited_keeping(output, input, &relay, 1) }
+pub(super) fn witchy_close_inherited_descriptors(output: bool, input: bool, relay: c_int) -> bool {
+    witchy_close_inherited_keeping(output, input, &[relay])
 }
 
-/// The caller supplies `count` live descriptor entries or a null pointer for zero entries.
-#[unsafe(no_mangle)]
-pub(super) unsafe extern "C" fn witchy_close_inherited_keeping(
-    output: bool,
-    input: bool,
-    kept: *const c_int,
-    count: u32,
-) -> bool {
-    let kept = if count == 0 {
-        &[]
-    } else {
-        unsafe { slice::from_raw_parts(kept, count as usize) }
-    };
+pub(super) fn witchy_close_inherited_keeping(output: bool, input: bool, kept: &[c_int]) -> bool {
     let pid = getpid();
     let size = unsafe { proc_pidinfo(pid, PROC_PIDLISTFDS, 0, ptr::null_mut(), 0) };
     if size <= 0 {
