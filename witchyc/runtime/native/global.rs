@@ -68,6 +68,7 @@ impl<T: Copy, const N: usize> Table<T, N> {
         true
     }
 
+    #[cfg(kani)]
     pub fn get(&self, index: usize) -> Option<T> {
         self.cells()[..self.len()].get(index).map(Cell::get)
     }
