@@ -363,6 +363,28 @@ pub(super) fn witchy_net_flush_queue(
     0
 }
 
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// Whatever header the broker answers with, the payload the guest then
+    /// reads is no longer than it asked for, and only when it asked for one.
+    #[kani::proof]
+    fn a_reply_payload_fits_the_request() {
+        let operation: u8 = kani::any();
+        let header: [u8; 3] = kani::any();
+        let length: usize = kani::any();
+        let read_payload: bool = kani::any();
+        kani::assume(length <= 16384);
+        let (result, payload) = response(operation, header, length, read_payload);
+        assert!(result >= WOULD_BLOCK && result <= 65535);
+        if payload != 0 {
+            assert!(read_payload && result >= 0 && payload == result as usize);
+            assert!(payload <= if operation == 13 { 1 } else { length });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -669,6 +669,14 @@ The runtime's process-state cells (`runtime/native/global.rs`) have their own ha
 and count over any six pushes and clears of four places, and that the pointer handed to C reaches
 every item in use. It does not check the claim the cells rest on: that the runtime has one thread.
 
+`tools/native-logic-kani` checks pure logic the launcher and the guest's broker client rest on
+(six harnesses; proofs of a file's private functions sit in that file under `cfg(kani)`): a
+launch-plan line splits into one to eight fields that are the whole line, with no empty field and
+no control byte (lines to 17 bytes); a record's width fits a line; a broker reply's payload is
+never longer than the request asked for, for every header; an Exec deadline never passes the
+launch's; an accepted environment name is plain; a file identity is two decimal numbers. They
+bound input length, and say nothing of the code that calls these functions.
+
 Three additional harnesses were checked individually: one-byte fills of up to
 eight cells, two-byte fills of up to four cells, and transfers of up to four
 cells. They exercise the actual pointer and occupancy operations, including a

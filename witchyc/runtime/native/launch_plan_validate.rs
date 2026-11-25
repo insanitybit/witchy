@@ -99,6 +99,51 @@ pub(super) fn valid(plan: &[u8]) -> bool {
     ended
 }
 
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// A line that splits has between one and eight fields, none empty and none
+    /// with a control byte, and the fields with their tabs are the whole line.
+    #[kani::proof]
+    #[kani::unwind(19)]
+    fn a_split_line_is_its_fields() {
+        // Seventeen bytes can hold nine fields, one more than a line may have.
+        let bytes: [u8; 17] = kani::any();
+        let length: usize = kani::any();
+        kani::assume(length <= bytes.len());
+        let line = &bytes[..length];
+        if let Some((found, count)) = fields(line) {
+            assert!(1 <= count && count <= MAX_FIELDS);
+            kani::cover!(count == MAX_FIELDS);
+            let mut total = count - 1;
+            let mut index = 0;
+            while index < count {
+                let field = found[index];
+                assert!(!field.is_empty());
+                let at: usize = kani::any();
+                kani::assume(at < field.len());
+                assert!(field[at] >= 0x20 && field[at] != 0x7f && field[at] != b'\t');
+                total += field.len();
+                index += 1;
+            }
+            assert_eq!(total, length);
+        }
+    }
+
+    /// Every known record is at least its tag and no wider than a line can be.
+    #[kani::proof]
+    #[kani::unwind(12)]
+    fn a_record_width_fits_a_line() {
+        let bytes: [u8; 10] = kani::any();
+        let length: usize = kani::any();
+        kani::assume(length <= bytes.len());
+        if let Some(width) = record_width(&bytes[..length]) {
+            assert!(1 <= width && width <= MAX_FIELDS);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::valid;
