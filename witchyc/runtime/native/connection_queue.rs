@@ -495,7 +495,8 @@ unsafe fn serve_connections(
     }
     // SAFETY: a fresh mapping of one writable `u64`.
     unsafe { shared_entries.write(entries) };
-    witchy_broker_server_roots(root, write_root, combined, data_only, shared_entries);
+    // SAFETY: `shared_entries` is the mapping made above, which this process never unmaps.
+    unsafe { witchy_broker_server_roots(root, write_root, combined, data_only, shared_entries) };
     if !install_stop_handler() {
         return fail(c"witchy: could not install connection supervisor signal handlers\n");
     }
@@ -620,10 +621,12 @@ unsafe fn serve_connections(
     if remaining_time() == 0 { expired() } else { 0 }
 }
 
-// The guest dispatcher owns the live slot for the duration of this call.
-fn socket_close(channel: c_int, slot: u32) -> c_int {
-    // SAFETY: calls are serialized on the guest thread, and no other reference
-    // to the table is used while this one is.
+/// # Safety
+/// The caller uses no other reference into the socket table after this call
+/// starts: the guest dispatcher owns the slot for the call.
+unsafe fn socket_close(channel: c_int, slot: u32) -> c_int {
+    // SAFETY: calls are serialized on the guest thread, and the caller holds
+    // no other reference to the table.
     let Some(socket) = (unsafe { (&mut *core::ptr::addr_of_mut!(SOCKETS)).get_mut(slot as usize) })
     else {
         return SOCKET_IO_ERROR;
@@ -855,7 +858,8 @@ fn socket_close_group(channel: c_int, handle: u64) -> bool {
             if unsafe { (*core::ptr::addr_of!(SOCKETS))[slot].handle } != token {
                 socket_trap();
             }
-            socket_close(channel, slot as u32);
+            // SAFETY: no reference into the socket table is held here.
+            unsafe { socket_close(channel, slot as u32) };
         }
     }
     group.handle = 0;
@@ -1203,7 +1207,8 @@ unsafe extern "C" fn witchy_native_net(op: u64, handle: u64, operand: u64, count
         4 | 5 | 7 | 8 | 12 | 13 => unsafe {
             socket_transfer(channel, slot as u32, op, operand, count)
         },
-        6 => socket_close(channel, slot as u32) as u64,
+        // SAFETY: `socket` is not used again on this arm.
+        6 => (unsafe { socket_close(channel, slot as u32) }) as u64,
         10 if socket.accepted && count != 0 => {
             let Some(endpoint) = listener else { return 0 };
             // The guest ABI supplies a writable span. Limit it to the maximum

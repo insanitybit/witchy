@@ -154,9 +154,11 @@ pub(super) fn witchy_broker_server_connection_entries(entries: u64) {
     });
 }
 
+/// # Safety
 /// `entries` is null or the directory budget that connection brokers share:
-/// one `u64` that stays mapped for the life of the process.
-pub(super) fn witchy_broker_server_roots(
+/// one `u64` that stays mapped for the life of the process. Connection brokers
+/// write through it.
+pub(super) unsafe fn witchy_broker_server_roots(
     root: c_int,
     write_root: c_int,
     combined: bool,
