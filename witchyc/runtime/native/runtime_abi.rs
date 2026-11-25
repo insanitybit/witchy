@@ -34,6 +34,7 @@ mod directory;
 mod entry_budget;
 mod errno;
 mod global;
+mod sys;
 mod env_names;
 mod exec_arguments;
 mod exec_broker;
