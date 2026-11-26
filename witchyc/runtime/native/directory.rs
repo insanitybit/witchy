@@ -1,6 +1,6 @@
 //! Guest directory handles and path staging on the serialized guest thread.
 
-use super::global::Global;
+use super::global::{Global, State};
 use core::ffi::c_int;
 
 use super::broker_transport::{
@@ -60,9 +60,16 @@ struct Entry {
 }
 
 static ENTRIES: Global<[Entry; SLOTS]> = Global::new([Entry { handle: 0, kind: 0 }; SLOTS]);
-static mut PATHS: [Paths; SLOTS] = [Paths::EMPTY; SLOTS];
-static mut READ_PATH: Paths = Paths::EMPTY;
-static mut WRITE_PATH: Paths = Paths::EMPTY;
+/// The paths staged for each slot, then for the read root and the write root.
+///
+/// `witchy_directory` holds them for the rest of its call, across the broker
+/// exchange that reads the staged bytes. That exchange is blocking reads and
+/// writes on the channel: it switches no task, runs no guest code and does
+/// not come back here, and `witchy_open_directory_output` stages an output
+/// and does the same. So no use begins inside another.
+static PATHS: State<[Paths; SLOTS + 2]> = State::new([Paths::EMPTY; SLOTS + 2]);
+const READ_PATH: usize = SLOTS;
+const WRITE_PATH: usize = SLOTS + 1;
 static CLOSED: Global<u32> = Global::new(0);
 static NEXT: Global<u64> = Global::new(16384);
 
@@ -145,22 +152,28 @@ extern "C" fn witchy_directory(op: u64, handle: u64, value: u64) -> u64 {
     if (op >= 7 && !write) || (!read && matches!(op, 1 | 4 | 5 | 6 | 14)) {
         trap();
     }
-    let paths = if source == SLOTS {
-        unsafe {
-            if write {
-                &mut *(&raw mut WRITE_PATH)
-            } else {
-                &mut *(&raw mut READ_PATH)
-            }
-        }
+    let place = if source != SLOTS {
+        source
+    } else if write {
+        WRITE_PATH
     } else {
-        unsafe {
-            (&mut *(&raw mut PATHS))
-                .get_mut(source)
-                .unwrap_or_else(|| trap())
-        }
+        READ_PATH
     };
-    let Paths { path, from } = paths;
+    PATHS.with(|paths| staged(paths, place, op, value, channel, source, entries))
+}
+
+/// The part of `witchy_directory` that reads or changes the paths staged at
+/// `place`, for a source and rights it has already checked.
+fn staged(
+    paths: &mut [Paths; SLOTS + 2],
+    place: usize,
+    op: u64,
+    value: u64,
+    channel: c_int,
+    source: usize,
+    mut entries: [Entry; SLOTS],
+) -> u64 {
+    let Paths { path, from } = paths.get_mut(place).unwrap_or_else(|| trap());
     if op == 0 {
         path.push(u8::try_from(value).unwrap_or_else(|_| trap()));
         return 0;
@@ -219,7 +232,7 @@ extern "C" fn witchy_directory(op: u64, handle: u64, value: u64) -> u64 {
             continue;
         }
         // The source path belongs to a live slot or a root, so the new
-        // slot cannot alias it. End the path borrow before resetting it.
+        // slot is another place. The path borrow ends before it is reset.
         let result = if op == 6 {
             witchy_broker_directory_list(channel, slot as u32, source as u8)
         } else {
@@ -237,13 +250,10 @@ extern "C" fn witchy_directory(op: u64, handle: u64, value: u64) -> u64 {
             kind,
         };
         ENTRIES.set(entries);
-        // SAFETY: `slot` is below `SLOTS`, and the borrow of the source's
-        // paths, which may be in the same table, is over.
-        unsafe {
-            let paths = (&raw mut PATHS).cast::<Paths>().add(slot);
-            (*paths).path.len = 0;
-            (*paths).from.len = 0;
-        }
+        // `slot` is below `SLOTS`.
+        let opened = &mut paths[slot];
+        opened.path.len = 0;
+        opened.from.len = 0;
         return token;
     }
     1

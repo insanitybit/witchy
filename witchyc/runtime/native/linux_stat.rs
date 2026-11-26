@@ -58,11 +58,12 @@ unsafe extern "C" {
 /// Open without following a symlink in any component. On kernels without
 /// openat2, fail closed instead of falling back to final-component checks.
 pub(super) fn open_no_symlinks(path: &CStr) -> c_int {
-    // SAFETY: `path` is a C string, and the call keeps nothing of it.
-    unsafe { openat_no_symlinks(-100, path.as_ptr(), 0o2000000 | 0o100000 | 0o4000) }
+    openat_no_symlinks(-100, path, 0o2000000 | 0o100000 | 0o4000)
 }
 
-pub(super) unsafe fn openat_no_symlinks(base: c_int, path: *const c_char, flags: c_int) -> c_int {
+/// Opens `path` under the directory `base`, or as `open` does when `base` is
+/// -100, following no symlink.
+pub(super) fn openat_no_symlinks(base: c_int, path: &CStr, flags: c_int) -> c_int {
     #[repr(C)]
     struct How {
         flags: u64,
@@ -76,7 +77,9 @@ pub(super) unsafe fn openat_no_symlinks(base: c_int, path: *const c_char, flags:
         // may not cross a mount, including a bind mount on the same device.
         resolve: 0x04 | if base == -100 { 0 } else { 0x08 | 0x01 },
     };
-    unsafe { syscall(437, base, path, &raw const how, size_of::<How>()) as c_int }
+    // SAFETY: `openat2` reads `path`, a C string, and `how` for the size
+    // given, and keeps neither.
+    unsafe { syscall(437, base, path.as_ptr(), &raw const how, size_of::<How>()) as c_int }
 }
 
 pub(super) fn stat(fd: c_int) -> Option<Stat> {
@@ -130,14 +133,14 @@ fn opening_rejects_symlinks_in_every_path_component() {
 fn rooted_open_refuses_parent_escape_and_mount_crossing() {
     use std::os::unix::fs::MetadataExt;
     unsafe extern "C" { fn close(fd: c_int) -> c_int; }
-    let root = unsafe { openat_no_symlinks(-100, c"/".as_ptr(), 0o2000000 | 0o40000) };
+    let root = openat_no_symlinks(-100, c"/", 0o2000000 | 0o40000);
     assert!(root >= 0);
-    assert_eq!(unsafe { openat_no_symlinks(root, c"../etc".as_ptr(), 0o2000000) }, -1);
+    assert_eq!(openat_no_symlinks(root, c"../etc", 0o2000000), -1);
     // /proc is normally a separate mount in Linux containers. If this host has
     // no such mount, retain the escape check rather than assuming one exists.
     if let (Ok(root_info), Ok(proc_info)) = (std::fs::metadata("/"), std::fs::metadata("/proc")) {
         if root_info.dev() != proc_info.dev() {
-            assert_eq!(unsafe { openat_no_symlinks(root, c"proc/version".as_ptr(), 0o2000000) }, -1);
+            assert_eq!(openat_no_symlinks(root, c"proc/version", 0o2000000), -1);
         }
     }
     unsafe { close(root) };

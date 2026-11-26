@@ -122,6 +122,25 @@ impl Flag {
 }
 
 impl Launch {
+    /// A launch no plan has been read into: every field zero, which is what
+    /// `witchy_launch_read` expects to replace.
+    pub(super) const ZERO: Self = Self {
+        text: ptr::null_mut(),
+        records: [Record::EMPTY; RECORDS],
+        record_count: 0,
+        flags: [Flag::EMPTY; FLAGS],
+        flag_count: 0,
+        words: [ptr::null(); WORDS],
+        word_count: 0,
+        cwd: 0,
+        sources: [Source {
+            number: 0,
+            copy: 0,
+            taken: false,
+        }; RECORDS],
+        source_count: 0,
+    };
+
     /// Forgets what the launch held and keeps `text` as its plan. A plan
     /// read earlier stays allocated, since records copied out may refer to it.
     fn reset(&mut self, text: *mut c_char) {
@@ -617,23 +636,34 @@ pub(super) mod opening {
         if storage.is_null() {
             return -1;
         }
-        let mut entry = core::mem::MaybeUninit::<Passwd>::uninit();
-        let mut found = ptr::null_mut();
-        let status = unsafe {
-            getpwuid_r(
-                getuid(),
-                entry.as_mut_ptr(),
-                storage.cast(),
-                length,
-                &mut found,
-            )
+        // Every field is a number or a pointer, so zero is a value of each.
+        let mut entry = Passwd {
+            name: ptr::null_mut(),
+            password: ptr::null_mut(),
+            uid: 0,
+            gid: 0,
+            #[cfg(target_os = "macos")]
+            change: 0,
+            #[cfg(target_os = "macos")]
+            class: ptr::null_mut(),
+            gecos: ptr::null_mut(),
+            directory: ptr::null_mut(),
+            shell: ptr::null_mut(),
+            #[cfg(target_os = "macos")]
+            expire: 0,
         };
-        let result = if status == 0 && !found.is_null() && !unsafe { (*found).directory }.is_null()
-        {
-            // SAFETY: the call succeeded, so `found` is the entry it filled, and
-            // the entry's directory, checked not to be null, is a string in
-            // `storage`, which is freed only after the walk.
-            let path = unsafe { CStr::from_ptr((*found).directory) }.to_bytes();
+        let mut found = ptr::null_mut();
+        // SAFETY: the call fills `entry` and writes its strings to the
+        // `length` bytes of `storage`, and stores `entry`'s address or null
+        // in `found`.
+        let status =
+            unsafe { getpwuid_r(getuid(), &mut entry, storage.cast(), length, &mut found) };
+        // A user that was found is the entry the call was given.
+        let result = if status == 0 && !found.is_null() && !entry.directory.is_null() {
+            // SAFETY: the call succeeded and found the user, so the entry's
+            // directory, checked not to be null, is a string in `storage`,
+            // which is freed only after the walk.
+            let path = unsafe { CStr::from_ptr(entry.directory) }.to_bytes();
             if let Some(relative) = path.strip_prefix(b"/") {
                 launch_walk::walk(root(), relative, true, None, true)
             } else {

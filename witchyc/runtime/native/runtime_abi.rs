@@ -119,15 +119,14 @@ unsafe extern "C" fn rust_eh_personality() -> ! {
 
 mod timers;
 
-/// The launcher passes admitted grants, the broker channel (or -1), and a
-/// live stdout stream. Enter the guest only after confinement succeeds.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_run_guest(
+/// The launcher passes admitted grants, the broker channel (or -1), and its
+/// streams. Enter the guest only after confinement succeeds.
+fn witchy_run_guest(
     grants: u64,
     _channel: core::ffi::c_int,
     _deadline_ms: u64,
-    stdout: *mut core::ffi::c_void,
-    _stderr: *mut core::ffi::c_void,
+    stdout: sys::Stream,
+    _stderr: sys::Stream,
 ) -> core::ffi::c_int {
     unsafe extern "C" {
         fn witchy_install_sandbox_with_relay(
@@ -138,14 +137,9 @@ unsafe extern "C" fn witchy_run_guest(
         ) -> bool;
         safe fn witchy_allow_allocator();
         fn witchy_entry(grants: u64);
-        fn fputs(
-            text: *const core::ffi::c_char,
-            stream: *mut core::ffi::c_void,
-        ) -> core::ffi::c_int;
-        fn fflush(stream: *mut core::ffi::c_void) -> core::ffi::c_int;
     }
     if _deadline_ms != 0 && !deadline::witchy_arm_deadline(_deadline_ms) {
-        unsafe { fputs(c"could not install native deadline\n".as_ptr(), _stderr) };
+        _stderr.put(c"could not install native deadline\n");
         return 2;
     }
     let output = grants & 1 != 0;
@@ -157,20 +151,22 @@ unsafe extern "C" fn witchy_run_guest(
         }
         witchy_sandbox_allow_signing();
     }
+    // SAFETY: the call takes numbers only, and checks the channel itself.
     let confined =
         unsafe { witchy_install_sandbox_with_relay(output, allocator, grants & 8 != 0, _channel) };
     if !confined {
         return 2;
     }
-    unsafe {
-        if allocator {
-            witchy_allow_allocator();
-        }
-        witchy_entry(grants);
-        let status = if output && fflush(stdout) < 0 { 2 } else { 0 };
-        heap::report_allocations();
-        status
+    if allocator {
+        witchy_allow_allocator();
     }
+    // SAFETY: the compiler emits the entry to take the grants its program
+    // declares, and the launch admitted exactly those; the process is
+    // confined, and the allocator is allowed when the entry may use it.
+    unsafe { witchy_entry(grants) };
+    let status = if output && stdout.flush() < 0 { 2 } else { 0 };
+    heap::report_allocations();
+    status
 }
 
 /// Check the ordinary launch grants in diagnostic order. The caller supplies
@@ -197,8 +193,11 @@ fn witchy_validate_grants(
 }
 
 /// Start the admitted native launch mode using live launcher strings and streams.
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_launch_native(
+///
+/// Each path and the listener is null or text that lasts for the life of the
+/// process, `programs` is `program_count` such names, and `identity` is null
+/// or readable for the call.
+unsafe fn witchy_launch_native(
     grants: u64,
     per_connection: bool,
     listener: *const core::ffi::c_char,
@@ -221,8 +220,8 @@ unsafe extern "C" fn witchy_launch_native(
     exec_budget: u64,
     input_budget: u64,
     input_budget_set: bool,
-    stdout: *mut core::ffi::c_void,
-    stderr: *mut core::ffi::c_void,
+    stdout: sys::Stream,
+    stderr: sys::Stream,
 ) -> core::ffi::c_int {
     if per_connection {
         return unsafe {
@@ -247,8 +246,8 @@ unsafe extern "C" fn witchy_launch_native(
                 exec_budget,
                 input_budget,
                 input_budget_set,
-                stdout,
-                stderr,
+                stdout.as_ptr(),
+                stderr.as_ptr(),
             )
         };
     }
@@ -271,7 +270,7 @@ unsafe extern "C" fn witchy_launch_native(
                 identity,
                 entries,
                 data_only,
-                stderr,
+                stderr.as_ptr(),
             )
         };
         if channel < 0 {
@@ -281,5 +280,5 @@ unsafe extern "C" fn witchy_launch_native(
     } else {
         -1
     };
-    unsafe { witchy_run_guest(grants, channel, deadline_ms, stdout, stderr) }
+    witchy_run_guest(grants, channel, deadline_ms, stdout, stderr)
 }

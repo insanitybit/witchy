@@ -59,7 +59,6 @@ impl Stat {
 unsafe extern "C" {
     safe fn close(fd: c_int) -> c_int;
     safe fn dup2(from: c_int, to: c_int) -> c_int;
-    fn ttyname_r(fd: c_int, path: *mut c_char, len: usize) -> c_int;
     fn fstat(fd: c_int, stat: *mut Stat) -> c_int;
     fn fstatat(fd: c_int, name: *const c_char, info: *mut Stat, flags: c_int) -> c_int;
     fn sandbox_init(profile: *const c_char, flags: u64, error: *mut *mut c_char) -> c_int;
@@ -100,8 +99,7 @@ fn restrict_stream(stream: c_int, mode: c_int) -> bool {
     // Keep only the requested direction. Reopen an interactive terminal
     // and confirm its identity before replacing the inherited descriptor.
     let mut path = [0u8; 1024];
-    // SAFETY: the call writes at most `path.len()` bytes to `path`.
-    if unsafe { ttyname_r(stream, path.as_mut_ptr().cast(), path.len()) } != 0 {
+    if sys::ttyname_r(stream, &mut path) != 0 {
         return false;
     }
     let Some(original) = stat(stream) else {

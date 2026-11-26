@@ -640,3 +640,77 @@ pub fn pidfd_send_signal(fd: c_int, signal: i32) -> core::ffi::c_long {
     unsafe { c_process::syscall(424, fd, signal, core::ptr::null::<c_void>(), 0u32) }
 }
 
+// Pages shared with forked children, the input stream's error mark, and a
+// terminal's name.
+
+mod c_shared {
+    use super::{c_int, c_void};
+
+    unsafe extern "C" {
+        pub fn mmap(
+            addr: *mut c_void,
+            size: usize,
+            prot: c_int,
+            flags: c_int,
+            fd: c_int,
+            offset: i64,
+        ) -> *mut c_void;
+        #[cfg_attr(target_os = "macos", link_name = "__stdinp")]
+        #[cfg_attr(target_os = "linux", link_name = "stdin")]
+        pub static mut IN: *mut c_void;
+        pub fn ferror(stream: *mut c_void) -> c_int;
+        #[cfg(target_os = "macos")]
+        pub fn ttyname_r(fd: c_int, path: *mut super::c_char, len: usize) -> c_int;
+    }
+}
+
+/// Maps `size` bytes of fresh zeroed pages, readable and writable, that this
+/// process shares with the children it forks afterwards. `None` when the
+/// kernel refuses. The pages stay mapped until someone unmaps them.
+pub fn map_shared(size: usize) -> Option<core::ptr::NonNull<c_void>> {
+    const READ_WRITE: c_int = 3;
+    #[cfg(target_os = "macos")]
+    const SHARED_ANONYMOUS: c_int = 0x1001;
+    #[cfg(target_os = "linux")]
+    const SHARED_ANONYMOUS: c_int = 0x21;
+    // SAFETY: with no address asked for, the kernel picks a place nothing
+    // else has, and an anonymous mapping reads no descriptor.
+    let mapped =
+        unsafe { c_shared::mmap(core::ptr::null_mut(), size, READ_WRITE, SHARED_ANONYMOUS, -1, 0) };
+    if mapped.addr() == usize::MAX {
+        return None;
+    }
+    core::ptr::NonNull::new(mapped)
+}
+
+/// Whether the C runtime's input stream has its error mark set.
+pub fn stdin_failed() -> bool {
+    // SAFETY: the C runtime sets the variable before `main` and keeps the
+    // stream open, and the runtime's one thread never writes the variable.
+    unsafe { c_shared::ferror(c_shared::IN) != 0 }
+}
+
+/// Writes the name of the terminal `fd` is, and the NUL after it, to `path`.
+/// Zero on success.
+#[cfg(target_os = "macos")]
+pub fn ttyname_r(fd: c_int, path: &mut [u8]) -> c_int {
+    // SAFETY: the call writes at most `path.len()` bytes to `path`.
+    unsafe { c_shared::ttyname_r(fd, path.as_mut_ptr().cast(), path.len()) }
+}
+
+mod c_flush {
+    use super::{c_int, c_void};
+
+    unsafe extern "C" {
+        pub fn fflush(stream: *mut c_void) -> c_int;
+    }
+}
+
+impl Stream {
+    /// Writes out what the stream holds, as `fflush` does. Negative when
+    /// that fails.
+    pub fn flush(self) -> c_int {
+        // SAFETY: the stream is one of the C runtime's own.
+        unsafe { c_flush::fflush(self.0) }
+    }
+}

@@ -224,9 +224,7 @@ pub(super) fn witchy_exec_setup(directory: c_int, names: &[&CStr], limit: u64) -
             #[cfg(target_os = "macos")]
             let mut fd = sys::openat(directory, name, OPEN_FLAGS);
             #[cfg(target_os = "linux")]
-            let mut fd = unsafe {
-                super::linux_stat::openat_no_symlinks(directory, name.as_ptr(), OPEN_FLAGS)
-            };
+            let mut fd = super::linux_stat::openat_no_symlinks(directory, name, OPEN_FLAGS);
             if (0..=2).contains(&fd) {
                 let moved = sys::duplicate_close_on_exec(fd, 3);
                 close(fd);

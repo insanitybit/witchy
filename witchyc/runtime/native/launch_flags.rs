@@ -381,8 +381,7 @@ unsafe extern "C" fn main(argc: c_int, argv: *mut *mut c_char) -> c_int {
     // them for the life of the process.
     let args: Option<Argv<'static>> = unsafe { Argv::new(argc, argv) };
     if witchy_launch_plan != 0 {
-        // SAFETY: `main` is entered once, and this is its one call.
-        return unsafe { launch_manifest(args.as_ref(), required, out, err) };
+        return launch_manifest(args.as_ref(), required, out, err);
     }
     let args = args.unwrap_or(Argv::EMPTY);
     for index in 1..args.len() {
@@ -828,8 +827,8 @@ impl NativeLaunch {
             witchy_broker_output(self.output_fd, self.output_exclusive);
         }
         // SAFETY: every path is null or lasts for the life of the process,
-        // the programs are the bound table and its length, the identity is
-        // null or this launch's own, and both streams are the C runtime's.
+        // the programs are the bound table and its length, and the identity
+        // is null or this launch's own.
         unsafe {
             super::witchy_launch_native(
                 grants,
@@ -862,8 +861,8 @@ impl NativeLaunch {
                 self.exec_budget,
                 self.budget.input,
                 self.budget.seen & 4 != 0,
-                out.as_ptr(),
-                err.as_ptr(),
+                out,
+                err,
             )
         }
     }
@@ -911,24 +910,55 @@ fn four(record: &super::launch_plan::Record, first: usize) -> Option<[&CStr; 4]>
     ])
 }
 
-/// `args` is the process argument list. The launcher must enter here at most
-/// once: the plan is read into one static place.
-unsafe fn launch_manifest(
+/// `args` is the process argument list.
+fn launch_manifest(
     args: Option<&Argv<'static>>,
     required: u64,
     out: Stream,
     err: Stream,
 ) -> c_int {
+    use super::launch_plan::Launch;
+    /// The plan, which is too large for the stack. It is used once, to read
+    /// the plan and bind what it names, and that use ends before the console
+    /// is set up and the guest is launched: reading forks nothing, runs no
+    /// guest code and does not come back here. What a launch keeps of the
+    /// plan is text in the plan's own copy, which is not in this place.
+    static PLAN: super::global::State<Launch> = super::global::State::new(Launch::ZERO);
+    let (mac, grants) = match PLAN.with(|launch| read_manifest(launch, args, required, err)) {
+        Ok(read) => read,
+        Err(status) => return status,
+    };
+    // SAFETY: both streams are the C runtime's own.
+    if !unsafe {
+        witchy_launch_console(out.as_ptr(), err.as_ptr(), grants & OUTPUT != 0, false, false)
+    } {
+        say(
+            c"launch refused: invalid or unsupported embedded launch plan\n",
+            err,
+        );
+        return 2;
+    }
+    mac.run(required, grants, out, err)
+}
+
+/// Reads the embedded plan into `launch` and binds what it and the arguments
+/// name. The launch to run and the grants the plan gives, or the status to
+/// exit with after a diagnostic.
+fn read_manifest(
+    launch: &mut super::launch_plan::Launch,
+    args: Option<&Argv<'static>>,
+    required: u64,
+    err: Stream,
+) -> Result<(NativeLaunch, u64), c_int> {
     use super::launch_args::witchy_args_bind;
     use super::launch_env::witchy_bind_env;
     use super::launch_plan::opening::{witchy_launch_open, witchy_launch_open_parent};
-    use super::launch_plan::{Launch, witchy_launch_arguments, witchy_launch_read};
+    use super::launch_plan::{witchy_launch_arguments, witchy_launch_read};
     #[cfg(witchy_native_aws_lc)]
     use super::launch_plan::{witchy_launch_descriptor, witchy_launch_take};
     use super::policy_grants_abi::witchy_bind_policy_grant;
     #[cfg(witchy_native_aws_lc)]
     use super::signer_binding::witchy_bind_store_secret;
-    use core::mem::MaybeUninit;
     unsafe extern "C" {
         safe fn close(fd: c_int) -> c_int;
         #[cfg(witchy_native_aws_lc)]
@@ -938,7 +968,6 @@ unsafe fn launch_manifest(
         #[cfg(witchy_native_aws_lc)]
         fn snprintf(out: *mut c_char, length: usize, format: *const c_char, ...) -> c_int;
     }
-    static mut PLAN: MaybeUninit<Launch> = MaybeUninit::zeroed();
     /// The name of the file a `write-file` record names, and the NUL after it.
     static OUTPUT_NAME: super::global::Table<c_char, 256> = super::global::Table::new(0);
     let fail = || {
@@ -946,11 +975,8 @@ unsafe fn launch_manifest(
             c"launch refused: invalid or unsupported embedded launch plan\n",
             err,
         );
-        2
+        Err(2)
     };
-    // SAFETY: the launcher is one thread and enters here once, so nothing
-    // else borrows the plan; zero is a value of every field of a launch.
-    let launch = unsafe { (*(&raw mut PLAN)).assume_init_mut() };
     // SAFETY: the compiler emits the plan as NUL-terminated text.
     let plan = unsafe { CStr::from_ptr((&raw const witchy_launch_plan).cast()) };
     if !witchy_launch_read(plan, launch) {
@@ -1027,7 +1053,7 @@ unsafe fn launch_manifest(
                         unsafe {
                             fprintf(err.as_ptr(), c"launch refused: the words after `--` are at most %u, %u bytes in all, UTF-8\n".as_ptr(), words, bytes);
                         }
-                        return 2;
+                        return Err(2);
                     }
                     if !witchy_args_bind(word) {
                         return fail();
@@ -1252,7 +1278,7 @@ unsafe fn launch_manifest(
                         || !same_identity(last_opened, expected.device, expected.inode)
                     {
                         say(c"launch refused: the opened object is not the one named DEVICE:INODE\n", err);
-                        return 2;
+                        return Err(2);
                     }
                     last_opened = -1;
                 } else {
@@ -1332,7 +1358,7 @@ unsafe fn launch_manifest(
                             || !unsafe { witchy_bind_signer(buffer.as_ptr()) }
                         {
                             say(c"launch refused: the secret could not be bound from its declared source\n", err);
-                            return 2;
+                            return Err(2);
                         }
                     }
                 }
@@ -1344,11 +1370,5 @@ unsafe fn launch_manifest(
         close(launch.cwd);
         launch.cwd = -1;
     }
-    // SAFETY: both streams are the C runtime's own.
-    if !unsafe {
-        witchy_launch_console(out.as_ptr(), err.as_ptr(), grants & OUTPUT != 0, false, false)
-    } {
-        return fail();
-    }
-    mac.run(required, grants, out, err)
+    Ok((mac, grants))
 }

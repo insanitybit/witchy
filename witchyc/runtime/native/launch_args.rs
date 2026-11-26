@@ -1,6 +1,6 @@
 //! Bounded UTF-8 launch arguments and guest selection.
 
-use super::global::{Global, Table};
+use super::global::{Global, State, Table};
 use core::ffi::CStr;
 
 const MAX_WORDS: usize = 256;
@@ -9,8 +9,9 @@ const ARGS: u64 = 64;
 
 // Launcher bindings and guest selections occur on one thread and never suspend.
 /// The bytes of every bound word, one word after another. The guest reads
-/// them by position, which a `Table` does not offer.
-static mut BYTES: [u8; MAX_BYTES] = [0; MAX_BYTES];
+/// them by position, which a `Table` does not offer. Each use is one copy in
+/// or one byte out, and calls nothing.
+static BYTES: State<[u8; MAX_BYTES]> = State::new([0; MAX_BYTES]);
 /// How many of `BYTES` are in use.
 static USED: Global<usize> = Global::new(0);
 /// Where each bound word ends in `BYTES`.
@@ -28,10 +29,7 @@ fn bind(word: &[u8]) -> Option<()> {
     if ENDS.len() >= MAX_WORDS {
         return None;
     }
-    // SAFETY: the runtime is one thread, and no other reference to the bytes
-    // is live: this one ends with the copy below, and `byte` copies out.
-    let storage = unsafe { (&mut *(&raw mut BYTES)).get_mut(used..end)? };
-    storage.copy_from_slice(word);
+    BYTES.with(|bytes| Some(bytes.get_mut(used..end)?.copy_from_slice(word)))?;
     ENDS.push(end);
     USED.set(end);
     Some(())
@@ -52,8 +50,7 @@ fn word(index: usize) -> Option<(usize, usize)> {
 
 /// The byte at `at`, which is within a bound word.
 fn byte(at: usize) -> Option<u8> {
-    // SAFETY: as `bind`: no reference to the bytes outlives a statement.
-    unsafe { (&*(&raw const BYTES)).get(at).copied() }
+    BYTES.with(|bytes| bytes.get(at).copied())
 }
 
 fn limit(bytes: &[u8], max: u32) -> Option<u32> {

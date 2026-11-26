@@ -34,8 +34,7 @@ fn open_path(path: &CStr) -> c_int {
     }
     #[cfg(target_os = "linux")]
     {
-        // SAFETY: `path` is a C string, and the call keeps nothing of it.
-        unsafe { super::linux_stat::openat_no_symlinks(-100, path.as_ptr(), DIRECTORY_FLAGS) }
+        super::linux_stat::openat_no_symlinks(-100, path, DIRECTORY_FLAGS)
     }
 }
 

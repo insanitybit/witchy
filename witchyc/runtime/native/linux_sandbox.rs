@@ -581,7 +581,7 @@ unsafe extern "C" fn witchy_confine_broker(
 }
 
 #[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_install_sandbox_with_relay(
+extern "C" fn witchy_install_sandbox_with_relay(
     output: bool,
     allocator: bool,
     input: bool,

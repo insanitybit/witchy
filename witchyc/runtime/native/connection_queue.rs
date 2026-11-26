@@ -1334,7 +1334,7 @@ pub(super) unsafe fn launch_connections(
         }
         #[cfg(target_os = "linux")]
         {
-            unsafe { super::linux_stat::openat_no_symlinks(-100, path, ROOT_FLAGS) }
+            super::linux_stat::openat_no_symlinks(-100, unsafe { CStr::from_ptr(path) }, ROOT_FLAGS)
         }
     };
     if !read_dir.is_null() && root < 0 {

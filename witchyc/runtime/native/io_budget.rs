@@ -3,6 +3,7 @@
 
 use super::budget;
 use super::global::Global;
+use core::ptr::NonNull;
 
 #[derive(Clone, Copy)]
 struct Counters {
@@ -25,61 +26,53 @@ impl Counters {
     }
 }
 
-static mut LOCAL: Counters = Counters::UNLIMITED;
-/// Where the run-wide counters are: `LOCAL`, or a page the workers share.
-static TOTAL: Global<*mut Counters> = Global::new(&raw mut LOCAL);
+/// The run-wide counters, until the workers share a page for them.
+static LOCAL: Global<Counters> = Global::new(Counters::UNLIMITED);
+/// The page the workers share for the run-wide counters, once there is one.
+static SHARED: Global<Option<NonNull<Counters>>> = Global::new(None);
 static CONNECTION: Global<Counters> = Global::new(Counters::UNLIMITED);
+
+/// The run-wide counters.
+fn totals() -> Counters {
+    match SHARED.get() {
+        // SAFETY: `SHARED` is only ever a mapped page that
+        // `witchy_budget_share` wrote the counters to and that is never
+        // unmapped. This process is one thread, and the launcher runs one
+        // worker at a time.
+        Some(shared) => unsafe { shared.read() },
+        None => LOCAL.get(),
+    }
+}
 
 /// One run-wide counter.
 fn total(network: bool) -> u64 {
-    // SAFETY: `TOTAL` is `LOCAL` or a mapped page that holds the counters and
-    // is never unmapped. This process is one thread, and the launcher runs
-    // one worker at a time.
-    unsafe { *(*TOTAL.get()).counter(network) }
+    *totals().counter(network)
 }
 
 /// Replaces one run-wide counter and leaves the other as it is.
 fn set_total(network: bool, value: u64) {
-    // SAFETY: as `total`.
-    unsafe { *(*TOTAL.get()).counter(network) = value }
+    match SHARED.get() {
+        // SAFETY: as `totals`.
+        Some(shared) => unsafe { *(*shared.as_ptr()).counter(network) = value },
+        None => {
+            let mut local = LOCAL.get();
+            *local.counter(network) = value;
+            LOCAL.set(local);
+        }
+    }
 }
 
 #[unsafe(no_mangle)]
 extern "C" fn witchy_budget_share() -> bool {
-    use core::ffi::{c_int, c_void};
-    unsafe extern "C" {
-        fn mmap(
-            addr: *mut c_void,
-            size: usize,
-            prot: c_int,
-            flags: c_int,
-            fd: c_int,
-            offset: i64,
-        ) -> *mut c_void;
-    }
     // A shared anonymous page carries the run-wide counters across workers.
-    #[cfg(target_os = "macos")]
-    const SHARED_ANON: c_int = 0x1001;
-    #[cfg(target_os = "linux")]
-    const SHARED_ANON: c_int = 0x21;
-    let mapped = unsafe {
-        mmap(
-            core::ptr::null_mut(),
-            size_of::<Counters>(),
-            3,
-            SHARED_ANON,
-            -1,
-            0,
-        )
-    };
-    if mapped.addr() == usize::MAX {
+    let Some(mapped) = super::sys::map_shared(size_of::<Counters>()) else {
         return false;
-    }
+    };
     let shared = mapped.cast::<Counters>();
-    // SAFETY: the page is new, writable and larger than the counters, and
-    // `TOTAL` is as `total` says.
-    unsafe { shared.write(TOTAL.get().read()) };
-    TOTAL.set(shared);
+    // SAFETY: the page is new, writable, aligned for anything and larger
+    // than the counters.
+    unsafe { shared.write(totals()) };
+    SHARED.set(Some(shared));
     true
 }
 
@@ -131,50 +124,30 @@ extern "C" fn witchy_network_remaining() -> u64 {
     total(true).min(CONNECTION.get().network)
 }
 
-static mut FILESYSTEM: u64 = u64::MAX;
-/// Where the run-wide filesystem budget is: `FILESYSTEM`, or a page the
-/// workers share.
-static FILESYSTEM_TOTAL: Global<*mut u64> = Global::new(&raw mut FILESYSTEM);
+/// The run-wide filesystem budget, until the workers share a page for it.
+static FILESYSTEM: Global<u64> = Global::new(u64::MAX);
+/// The page the workers share for the run-wide filesystem budget, once
+/// there is one.
+static FILESYSTEM_SHARED: Global<Option<NonNull<u64>>> = Global::new(None);
 static FILESYSTEM_CONNECTION: Global<u64> = Global::new(u64::MAX);
 
 fn set_filesystem_total(value: u64) {
-    // SAFETY: as `filesystem_total`.
-    unsafe { *FILESYSTEM_TOTAL.get() = value }
+    match FILESYSTEM_SHARED.get() {
+        // SAFETY: as `filesystem_total`.
+        Some(shared) => unsafe { shared.write(value) },
+        None => FILESYSTEM.set(value),
+    }
 }
 
 pub(super) fn share_filesystem() -> bool {
-    use core::ffi::{c_int, c_void};
-    unsafe extern "C" {
-        fn mmap(
-            addr: *mut c_void,
-            size: usize,
-            prot: c_int,
-            flags: c_int,
-            fd: c_int,
-            offset: i64,
-        ) -> *mut c_void;
-    }
-    #[cfg(target_os = "macos")]
-    const SHARED_ANON: c_int = 0x1001;
-    #[cfg(target_os = "linux")]
-    const SHARED_ANON: c_int = 0x21;
-    let mapped = unsafe {
-        mmap(
-            core::ptr::null_mut(),
-            size_of::<u64>(),
-            3,
-            SHARED_ANON,
-            -1,
-            0,
-        )
-    };
-    if mapped.addr() == usize::MAX {
+    let Some(mapped) = super::sys::map_shared(size_of::<u64>()) else {
         return false;
-    }
+    };
     let total = mapped.cast::<u64>();
-    // SAFETY: the page is new, writable and larger than the budget.
+    // SAFETY: the page is new, writable, aligned for anything and larger
+    // than the budget.
     unsafe { total.write(filesystem_total()) };
-    FILESYSTEM_TOTAL.set(total);
+    FILESYSTEM_SHARED.set(Some(total));
     true
 }
 
@@ -183,10 +156,14 @@ pub(super) fn set_connection_filesystem(limit: u64) {
 }
 
 pub(super) fn filesystem_total() -> u64 {
-    // SAFETY: `FILESYSTEM_TOTAL` is `FILESYSTEM` or a mapped page that holds
-    // the budget and is never unmapped. This process is one thread, and the
-    // launcher runs one worker at a time.
-    unsafe { *FILESYSTEM_TOTAL.get() }
+    match FILESYSTEM_SHARED.get() {
+        // SAFETY: `FILESYSTEM_SHARED` is only ever a mapped page that
+        // `share_filesystem` wrote the budget to and that is never unmapped.
+        // This process is one thread, and the launcher runs one worker at a
+        // time.
+        Some(shared) => unsafe { shared.read() },
+        None => FILESYSTEM.get(),
+    }
 }
 
 pub(super) fn charge_snapshot(bytes: u64) -> bool {

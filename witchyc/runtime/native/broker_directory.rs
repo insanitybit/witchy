@@ -43,8 +43,7 @@ fn open_checked(parent: c_int, name: &CStr, flags: c_int) -> c_int {
     #[cfg(target_os = "macos")]
     { super::sys::openat(parent, name, flags) }
     #[cfg(target_os = "linux")]
-    // SAFETY: `name` is a C string, and the call keeps nothing of it.
-    { unsafe { super::linux_stat::openat_no_symlinks(parent, name.as_ptr(), flags) } }
+    { super::linux_stat::openat_no_symlinks(parent, name, flags) }
 }
 
 /// Opens a path that is not relative to a descriptor the broker holds.

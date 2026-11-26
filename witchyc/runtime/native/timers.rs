@@ -5,6 +5,8 @@ const SLOTS: usize = if cfg!(kani) { 8 } else { 4096 };
 const TIMER_BIT: u64 = 1 << 48;
 const CLOCK: u64 = 16;
 
+use super::global::State;
+
 #[derive(Clone, Copy)]
 struct Timer {
     handle: u64,
@@ -16,11 +18,13 @@ struct Timers {
     sequence: u64,
     next: usize,
 }
-static mut TIMERS: Timers = Timers {
+// Each use below is one search of the table: it calls nothing outside this
+// file, so no use can begin inside another.
+static TIMERS: State<Timers> = State::new(Timers {
     slots: [Timer { handle: 0, due: 0 }; SLOTS],
     sequence: 0,
     next: 0,
-};
+});
 
 impl Timers {
     fn insert(&mut self, due: u64) -> Option<u64> {
@@ -56,8 +60,7 @@ extern "C" fn witchy_clock_timer(grant: u64, due: u64) -> u64 {
     if grant != CLOCK {
         trap()
     }
-    let timers = unsafe { &mut *(&raw mut TIMERS) };
-    match timers.insert(due) {
+    match TIMERS.with(|timers| timers.insert(due)) {
         Some(handle) => handle,
         None => trap(),
     }
@@ -68,21 +71,20 @@ extern "C" fn witchy_clock_timer_end(grant: u64, handle: u64) {
     if grant != CLOCK {
         trap()
     }
-    let timers = unsafe { &mut *(&raw mut TIMERS) };
-    let Some(timer) = timers.find(handle) else {
+    let ended = TIMERS.with(|timers| timers.find(handle).map(|timer| timer.handle = 0));
+    if ended.is_none() {
         trap()
-    };
-    timer.handle = 0;
+    }
 }
 
 /// The launcher provides one writable deadline output.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn witchy_timer_due(handle: u64, due: *mut u64) -> bool {
-    let timers = unsafe { &mut *(&raw mut TIMERS) };
-    let Some(timer) = timers.find(handle) else {
+    let Some(found) = TIMERS.with(|timers| timers.find(handle).map(|timer| timer.due)) else {
         return false;
     };
-    unsafe { due.write(timer.due) };
+    // SAFETY: the launcher's promise: `due` is one writable deadline.
+    unsafe { due.write(found) };
     true
 }
 

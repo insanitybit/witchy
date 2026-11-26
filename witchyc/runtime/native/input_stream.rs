@@ -12,9 +12,6 @@ unsafe extern "C" {
     safe fn dup2(from: c_int, to: c_int) -> c_int;
     safe fn close(fd: c_int) -> c_int;
     safe fn getchar() -> c_int;
-    fn ferror(stream: *mut c_void) -> c_int;
-    #[cfg_attr(target_os = "linux", link_name = "stdin")]
-    static mut __stdinp: *mut c_void;
     safe fn exit(status: c_int) -> !;
     fn read(fd: c_int, bytes: *mut c_void, length: usize) -> isize;
     fn malloc(size: usize) -> *mut c_void;
@@ -135,7 +132,7 @@ fn next_byte() -> Option<u8> {
         return Some(byte);
     }
     let byte = getchar();
-    if unsafe { ferror(__stdinp) } != 0 {
+    if super::sys::stdin_failed() {
         trap();
     }
     let byte = u8::try_from(byte).ok()?;
