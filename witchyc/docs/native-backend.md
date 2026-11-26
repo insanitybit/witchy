@@ -708,8 +708,12 @@ whole run takes about twelve minutes; the slowest harness takes under three.
 `tools/native-sandbox-kani` (run the same way; `linux_sandbox.rs` and macOS's `seatbelt.rs` export
 the same symbol, so it has its own crate) checks the three seccomp programs the Linux runtime
 builds, at the point where it would install them: for every grant and every descriptor, the
-program is at most 256 instructions, ends by returning, every jump lands inside it, and no rule's
-body is longer than its one-byte skip. It does not check what the programs allow.
+program is at most 256 instructions, ends by returning, and every jump lands inside it; a rule
+made by the builder's `syscall` helper has a body no longer than its one-byte skip. It does not
+check what the programs allow, or that a hand-counted skip lands on the start of the next rule.
+The endpoint and argument harnesses bound their input to ten and seven bytes, so they do not
+reach the length limits those functions also apply (63-byte labels, 253-byte hosts, 4096-byte
+arguments).
 
 Three additional harnesses were checked individually: one-byte fills of up to
 eight cells, two-byte fills of up to four cells, and transfers of up to four

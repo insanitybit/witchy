@@ -1605,10 +1605,12 @@ mod proofs {
         assert!(queue.pop().is_none());
     }
 
-    /// The listener's address is written whole or not at all: the host, a
-    /// colon and the port in decimal, with brackets round a bare IPv6 host.
-    /// This holds for every port, host text of up to five bytes and buffer of
-    /// up to twelve, which is one more than the longest such address.
+    /// The listener's address is written whole or not at all: the host up to
+    /// its last colon, a colon and the port in decimal, with brackets round a
+    /// host that holds a colon and does not open with one. It is written
+    /// exactly when the text has a colon and the buffer has room. This holds
+    /// for every port, host text of up to five bytes and buffer of up to
+    /// twelve, the longest such address.
     #[kani::proof]
     #[kani::unwind(14)]
     fn a_listener_address_fits_its_buffer() {
@@ -1623,40 +1625,60 @@ mod proofs {
         kani::assume(room <= buffer.len());
         let length = listener_address(host_port, port, &mut buffer[..room]);
         let bytes = host_port.to_bytes();
-        assert!(length <= room);
+        let digits = match port {
+            0..=9 => 1,
+            10..=99 => 2,
+            100..=999 => 3,
+            1000..=9999 => 4,
+            _ => 5,
+        };
+        // What the address should be, worked out from the text alone.
+        let mut last = None;
+        let mut earlier = false;
+        let mut at = 0;
+        while at < bytes.len() {
+            if bytes[at] == b':' {
+                earlier |= last.is_some();
+                last = Some(at);
+            }
+            at += 1;
+        }
+        let Some(host) = last else {
+            assert_eq!(length, 0);
+            return;
+        };
+        let bracketed = earlier && bytes[0] != b'[';
+        let whole = host + 1 + digits + 2 * usize::from(bracketed);
         kani::cover!(
             length == 0 && room == 5 && bytes.len() == 5 && bytes[3] == b':',
             "no room"
         );
-        if length != 0 {
-            let digits = match port {
-                0..=9 => 1,
-                10..=99 => 2,
-                100..=999 => 3,
-                1000..=9999 => 4,
-                _ => 5,
-            };
-            let colon = length - digits - 1;
-            assert_eq!(buffer[colon], b':');
-            let mut value = 0u32;
-            let mut at = colon + 1;
-            while at < length {
-                assert!(buffer[at].is_ascii_digit());
-                value = value * 10 + u32::from(buffer[at] - b'0');
-                at += 1;
-            }
-            assert_eq!(value, u32::from(port));
-            let bracketed = buffer[0] == b'[' && bytes[0] != b'[';
-            kani::cover!(bracketed, "a bare IPv6 host gains brackets");
-            kani::cover!(port == u16::MAX);
-            let host = if bracketed { colon - 2 } else { colon };
-            assert_eq!(bytes[host], b':');
-            if bracketed {
-                assert_eq!(buffer[colon - 1], b']');
-            }
+        if room < whole {
+            assert_eq!(length, 0);
             let index: usize = kani::any();
-            kani::assume(index < host);
-            assert_eq!(buffer[index + usize::from(bracketed)], bytes[index]);
+            kani::assume(index < buffer.len());
+            assert_eq!(buffer[index], 0);
+            return;
         }
+        assert_eq!(length, whole);
+        kani::cover!(bracketed, "a bare IPv6 host gains brackets");
+        kani::cover!(port == u16::MAX);
+        let colon = length - digits - 1;
+        assert_eq!(buffer[colon], b':');
+        let mut value = 0u32;
+        let mut at = colon + 1;
+        while at < length {
+            assert!(buffer[at].is_ascii_digit());
+            value = value * 10 + u32::from(buffer[at] - b'0');
+            at += 1;
+        }
+        assert_eq!(value, u32::from(port));
+        if bracketed {
+            assert_eq!(buffer[0], b'[');
+            assert_eq!(buffer[colon - 1], b']');
+        }
+        let index: usize = kani::any();
+        kani::assume(index < host);
+        assert_eq!(buffer[index + usize::from(bracketed)], bytes[index]);
     }
 }

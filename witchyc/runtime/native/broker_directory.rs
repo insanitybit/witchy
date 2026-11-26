@@ -270,8 +270,9 @@ mod proofs {
         kani::cover!(staged && length == 41);
         if staged {
             assert!((3..=41).contains(&length));
-            let split: usize = kani::any();
-            kani::assume(split < length && text[split] == b'-');
+            let Some(split) = text.iter().position(|&byte| byte == b'-') else {
+                panic!("accepted without its separator");
+            };
             assert!((1..=20).contains(&split) && (1..=20).contains(&(length - split - 1)));
             let at: usize = kani::any();
             kani::assume(at < length && at != split);

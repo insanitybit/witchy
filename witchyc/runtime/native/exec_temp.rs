@@ -367,7 +367,11 @@ mod proofs {
         kani::assume(length <= bytes.len());
         let found = owned_directory_name(&bytes[..length]);
         kani::cover!(
-            found.is_none() && length == 35 && bytes[12] == b'1' && bytes[22] == b'-',
+            found.is_none()
+                && length == 35
+                && bytes[..12] == *b"witchy-exec-"
+                && bytes[12] == b'1'
+                && bytes[22] == b'-',
             "ten digits are refused"
         );
         if let Some(pid) = found {

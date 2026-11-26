@@ -76,13 +76,16 @@ mod proofs {
         };
         let parsed = parse(input);
         // `--fs-bytes=` and 49 bytes: one more than a label may have.
-        kani::cover!(parsed.is_none() && bytes[10] == b'=' && input.to_bytes().len() == 60);
+        kani::cover!(
+            parsed.is_none() && bytes[..11] == *b"--fs-bytes=" && input.to_bytes().len() == 60
+        );
         if let Some((flag, label)) = parsed {
             let text = label.to_bytes();
             kani::cover!(text.len() == 48);
             kani::cover!(flag == 8);
             assert!(flag < FLAGS.len() && (1..=48).contains(&text.len()));
             let equal = FLAGS[flag].len();
+            assert!(bytes[..equal] == *FLAGS[flag]);
             assert!(bytes[equal] == b'=' && text.as_ptr() == bytes[equal + 1..].as_ptr());
             let at: usize = kani::any();
             kani::assume(at < text.len());
