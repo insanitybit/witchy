@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Native fixtures as the compiler emits them, against checked mode.
 
-    scripts/native-checked.py --compiler BIN --binding READY [--proof-cache DIR] [--jobs N]
+    scripts/native-checked.py --compiler BIN --binding READY [--proof-cache DIR | --private-proof-cache] [--jobs N] [--measure]
                               [--no-control] [--write-list FILE] FIXTURE.wy...
 
 A fixture is a FIXTURE.wy with a FIXTURE.expected beside it (a .wy without one is a file other
@@ -59,7 +59,11 @@ from pathlib import Path
 p = argparse.ArgumentParser()
 p.add_argument('--compiler', type=Path, required=True)
 p.add_argument('--binding', type=Path, required=True)
-p.add_argument('--proof-cache', type=Path)
+cache_options = p.add_mutually_exclusive_group()
+cache_options.add_argument('--proof-cache', type=Path)
+cache_options.add_argument('--private-proof-cache', action='store_true',
+                           help='share a fresh private proof cache across fixture builds')
+p.add_argument('--measure', action='store_true', help='print build, run and retry timings to stderr')
 p.add_argument('--jobs', type=int, default=4)
 p.add_argument('--target', default='macos-arm64')
 p.add_argument('--list', type=Path, default=Path(__file__).with_name('native-checked.list'))
@@ -117,10 +121,20 @@ def messages(stderr):
 def build(fixture, exe, extra, env=None):
     """('built',), ('refused', stderr) or ('timeout',)."""
     try:
-        built = subprocess.run([compiler, 'build', fixture, '-o', exe, f'--target={a.target}'],
+        started = time.monotonic()
+        built = subprocess.run([compiler, 'build', fixture, '-o', exe, f'--target={a.target}',
+                                *(['--measure'] if a.measure else [])],
                                env={**(env or cached), **extra}, capture_output=True, text=True, timeout=600)
     except subprocess.TimeoutExpired:
+        if a.measure:
+            print(f'build {fixture} {exe.name} timeout {time.monotonic() - started:.6f}s',
+                  file=sys.stderr, flush=True)
         return ('timeout',)
+    if a.measure:
+        print(f'build {fixture} {exe.name} status={built.returncode} {time.monotonic() - started:.6f}s',
+              file=sys.stderr, flush=True)
+        if built.returncode == 0 and built.stdout:
+            print(f'phases {fixture} {exe.name} {built.stdout.strip()}', file=sys.stderr, flush=True)
     if built.returncode == 0 and exe.is_file():
         return ('built',)
     if exe.exists():
@@ -163,7 +177,12 @@ def one(index, fixture, scratch):
             # system frees it (about 30 s on macOS), and each build's run uses the fixture's port.
             waits = (5, 15, 30) if re.search(r'--listen=\S+:[1-9]', ' '.join(run_flags(fixture, Path(scratch) / f'{index}.flags'))) else (1, 2)
             for attempt in range(len(waits) + 1):
+                started = time.monotonic()
                 results[way] = execute(fixture, exe, Path(scratch) / f'{index}.{way}.{attempt}.files')
+                if a.measure:
+                    print(f'run {key} {way} attempt {attempt + 1} status={results[way][0]} '
+                          f'{time.monotonic() - started:.6f}s',
+                          file=sys.stderr, flush=True)
                 if results[way][0] == 'timeout':
                     return 'timeout', f'TIMEOUT {key}: the {way} run', None
                 # Only the launcher's own refusal to start is tried again: a program that ran
@@ -172,7 +191,10 @@ def one(index, fixture, scratch):
                 if not busy or attempt == len(waits):
                     break
                 retried.append(way)
+                started = time.monotonic()
                 time.sleep(waits[attempt])
+                if a.measure:
+                    print(f'retry {key} {way} {time.monotonic() - started:.6f}s', file=sys.stderr, flush=True)
         if kind == 'refused' and results[way][0] == 'refused' and not rule:
             break  # a refusal comes before any code is emitted: one build shows it
     def all_ways(test):
@@ -428,6 +450,10 @@ if missing or not a.fixtures and a.no_control:
 fixtures = [f for f in a.fixtures if f.with_suffix('.expected').exists()]
 with tempfile.TemporaryDirectory(prefix='witchy-checked-') as scratch:
     scratch = str(Path(scratch).resolve())  # a directory grant names its real path
+    if a.private_proof_cache:
+        proof_cache = Path(scratch) / 'proofs'
+        proof_cache.mkdir(mode=0o700)
+        cached['WITCHY_PROOF_CACHE'] = str(proof_cache)
     with concurrent.futures.ThreadPoolExecutor(max_workers=a.jobs) as pool:
         for outcome, line, suggestion in pool.map(lambda pair: one(pair[0], pair[1], scratch), enumerate(fixtures)):
             counts[outcome] = counts.get(outcome, 0) + 1
