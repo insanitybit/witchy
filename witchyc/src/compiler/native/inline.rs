@@ -154,6 +154,7 @@ impl Candidates {
                     frame: MAX_FRAME_BYTES - frame,
                 })
                 .map_err(error)?;
+            merge_global_values(&mut context.func);
             if exposed_stack {
                 forward_stack_loads(&mut context.func);
                 remove_unobserved_stack_stores(&mut context.func);
@@ -248,6 +249,45 @@ impl Inline for Caller<'_> {
     }
 }
 
+/// The CLIF inliner gives every copied body a new copy of each global value it names, so two
+/// inlined accessors reach the heap through two `symbol_value`s that the mid-end treats as
+/// different addresses: it neither merges them nor sees a load through one repeat a load
+/// through the other. Make each copy the first global value with the same definition again.
+/// (`Caller::inline` copies a body only when its names mean the same symbols in the caller.)
+fn merge_global_values(function: &mut ir::Function) {
+    let mut first: Vec<(ir::GlobalValue, ir::GlobalValueData)> = Vec::new();
+    let mut canonical = BTreeMap::new();
+    for (gv, data) in function.global_values.iter() {
+        match first.iter().find(|(_, seen)| seen == data) {
+            Some(&(earlier, _)) => {
+                canonical.insert(gv, earlier);
+            }
+            None => first.push((gv, data.clone())),
+        }
+    }
+    if canonical.is_empty() {
+        return;
+    }
+    let map = |gv: &mut ir::GlobalValue| {
+        if let Some(&earlier) = canonical.get(gv) {
+            *gv = earlier;
+        }
+    };
+    // A derived global value (a load or an offset from another) names its base.
+    for data in function.global_values.values_mut() {
+        match data {
+            ir::GlobalValueData::Load { base, .. } | ir::GlobalValueData::IAddImm { base, .. } => map(base),
+            _ => {}
+        }
+    }
+    let insts: Vec<ir::Inst> = function.layout.blocks().flat_map(|block| function.layout.block_insts(block)).collect();
+    for inst in insts {
+        if let ir::InstructionData::UnaryGlobalValue { global_value, .. } = &mut function.dfg.insts[inst] {
+            map(global_value);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,5 +339,82 @@ mod tests {
         }
         // A callee that is no candidate is never copied, so a cycle through it unrolls nothing.
         assert!(recursive(&candidates(&[(2, &[3])])).is_empty());
+    }
+
+    /// A function whose first name is the heap, and which reads its first word.
+    fn reads_the_heap(id: u32) -> (ir::Function, ir::Block, ir::Value) {
+        let mut signature = Signature::new(CallConv::SystemV);
+        signature.returns.push(AbiParam::new(I64));
+        let mut function = ir::Function::with_name_signature(UserFuncName::user(0, id), signature);
+        let name = function.declare_imported_user_function(UserExternalName::new(1, 0));
+        let heap = function.create_global_value(ir::GlobalValueData::Symbol { name: ExternalName::User(name), offset: 0.into(), colocated: false, tls: false });
+        let block = function.dfg.make_block();
+        function.layout.append_block(block);
+        let mut pos = cranelift_codegen::cursor::FuncCursor::new(&mut function).at_bottom(block);
+        let table = pos.ins().symbol_value(I64, heap);
+        let word = pos.ins().load(I64, ir::MemFlagsData::new(), table, 0);
+        (function, block, word)
+    }
+
+    #[test]
+    fn inlined_bodies_name_the_heap_through_one_global_value() {
+        let (mut leaf, block, word) = reads_the_heap(1);
+        cranelift_codegen::cursor::FuncCursor::new(&mut leaf).at_bottom(block).ins().return_(&[word]);
+        let mut candidates = Candidates { bodies: BTreeMap::new(), called: BTreeSet::new(), recursive: BTreeSet::new(), selective: true, enabled: true };
+        candidates.consider(FuncId::from_u32(1), &leaf, 0, false);
+
+        // The caller reads the heap itself and calls the leaf twice.
+        let (mut caller, block, word) = reads_the_heap(0);
+        let mut pos = cranelift_codegen::cursor::FuncCursor::new(&mut caller).at_bottom(block);
+        let mut sum = word;
+        for _ in 0..2 {
+            let name = pos.func.declare_imported_user_function(UserExternalName::new(0, 1));
+            let signature = pos.func.import_signature(leaf.signature.clone());
+            let callee = pos.func.import_function(ExtFuncData { name: ExternalName::User(name), signature, colocated: true, patchable: false });
+            let call = pos.ins().call(callee, &[]);
+            let result = pos.func.dfg.inst_results(call)[0];
+            sum = pos.ins().iadd(sum, result);
+        }
+        pos.ins().return_(&[sum]);
+        let mut context = Context::for_function(caller);
+        candidates.inline(&mut context, 0, FuncId::from_u32(0)).expect("inlines");
+
+        let named = |function: &ir::Function| -> BTreeSet<ir::GlobalValue> {
+            function.layout.blocks().flat_map(|block| function.layout.block_insts(block)).filter_map(|inst| match function.dfg.insts[inst] {
+                ir::InstructionData::UnaryGlobalValue { global_value, .. } => Some(global_value),
+                ir::InstructionData::Call { .. } => panic!("both calls are inlined"),
+                _ => None,
+            }).collect()
+        };
+        assert_eq!(named(&context.func).len(), 1, "three reads of the heap, one name for it");
+
+        // So the mid-end sees the three reads as one.
+        let mut flags = cranelift_codegen::settings::builder();
+        cranelift_codegen::settings::Configurable::set(&mut flags, "opt_level", "speed").expect("a setting");
+        let isa = cranelift_codegen::isa::lookup_by_name("aarch64-apple-darwin").expect("arm64").finish(cranelift_codegen::settings::Flags::new(flags)).expect("an isa");
+        context.optimize(&*isa, &mut Default::default()).expect("optimizes");
+        let loads = context.func.layout.blocks().flat_map(|block| context.func.layout.block_insts(block)).filter(|&inst| context.func.dfg.insts[inst].opcode() == ir::Opcode::Load).count();
+        assert_eq!(loads, 1);
+    }
+
+    #[test]
+    fn a_name_at_another_offset_is_another_global_value() {
+        let (mut function, block, word) = reads_the_heap(0);
+        let name = function.declare_imported_user_function(UserExternalName::new(1, 0));
+        let symbol = |offset: i64| ir::GlobalValueData::Symbol { name: ExternalName::User(name), offset: offset.into(), colocated: false, tls: false };
+        let (same, further) = (function.create_global_value(symbol(0)), function.create_global_value(symbol(8)));
+        let mut pos = cranelift_codegen::cursor::FuncCursor::new(&mut function).at_bottom(block);
+        let a = pos.ins().symbol_value(I64, same);
+        let b = pos.ins().symbol_value(I64, further);
+        let sum = pos.ins().iadd(a, b);
+        let sum = pos.ins().iadd(sum, word);
+        pos.ins().return_(&[sum]);
+        merge_global_values(&mut function);
+        let named: Vec<ir::GlobalValue> = function.layout.blocks().flat_map(|block| function.layout.block_insts(block)).filter_map(|inst| match function.dfg.insts[inst] {
+            ir::InstructionData::UnaryGlobalValue { global_value, .. } => Some(global_value),
+            _ => None,
+        }).collect();
+        assert_eq!(named[0], named[1], "the same name at the same offset is one global value");
+        assert_ne!(named[1], named[2], "an offset of 8 is another address");
     }
 }
