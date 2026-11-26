@@ -574,56 +574,56 @@ pub fn setrlimit(resource: c_int, limit: &ResourceLimit) -> c_int {
     unsafe { c_process::setrlimit(resource, limit) }
 }
 
-// Each `prctl` below passes numbers only, in the types its callers passed
-// before these wrappers existed.
+// Each `prctl` below passes numbers only, as the `unsigned long` the C library
+// reads its variable arguments as.
 
 /// `prctl(PR_SET_PDEATHSIG, signal)`: sends `signal` when the parent ends.
 #[cfg(target_os = "linux")]
 pub fn set_parent_death_signal(signal: c_int) -> c_int {
     // SAFETY: the option reads numbers only.
-    unsafe { c_process::prctl(1, signal, 0, 0, 0) }
+    unsafe { c_process::prctl(1, signal as core::ffi::c_ulong, 0 as core::ffi::c_ulong, 0 as core::ffi::c_ulong, 0 as core::ffi::c_ulong) }
 }
 
 /// `prctl(PR_SET_DUMPABLE, 0)`.
 #[cfg(target_os = "linux")]
 pub fn clear_dumpable() -> c_int {
     // SAFETY: the option reads numbers only.
-    unsafe { c_process::prctl(4, 0, 0, 0, 0) }
+    unsafe { c_process::prctl(4, 0 as core::ffi::c_ulong, 0 as core::ffi::c_ulong, 0 as core::ffi::c_ulong, 0 as core::ffi::c_ulong) }
 }
 
 /// `prctl(PR_CAPBSET_DROP, capability)`.
 #[cfg(target_os = "linux")]
 pub fn drop_bounding_capability(capability: c_int) -> c_int {
     // SAFETY: the option reads numbers only.
-    unsafe { c_process::prctl(24, capability, 0, 0, 0) }
+    unsafe { c_process::prctl(24, capability as core::ffi::c_ulong, 0 as core::ffi::c_ulong, 0 as core::ffi::c_ulong, 0 as core::ffi::c_ulong) }
 }
 
 /// `prctl(PR_SET_SECUREBITS, bits)`.
 #[cfg(target_os = "linux")]
 pub fn set_securebits(bits: c_int) -> c_int {
     // SAFETY: the option reads numbers only.
-    unsafe { c_process::prctl(28, bits, 0, 0, 0) }
+    unsafe { c_process::prctl(28, bits as core::ffi::c_ulong, 0 as core::ffi::c_ulong, 0 as core::ffi::c_ulong, 0 as core::ffi::c_ulong) }
 }
 
 /// `prctl(PR_SET_CHILD_SUBREAPER, 1)`.
 #[cfg(target_os = "linux")]
 pub fn set_child_subreaper() -> c_int {
     // SAFETY: the option reads numbers only.
-    unsafe { c_process::prctl(36, 1, 0, 0, 0) }
+    unsafe { c_process::prctl(36, 1 as core::ffi::c_ulong, 0 as core::ffi::c_ulong, 0 as core::ffi::c_ulong, 0 as core::ffi::c_ulong) }
 }
 
 /// `prctl(PR_SET_NO_NEW_PRIVS, 1)`.
 #[cfg(target_os = "linux")]
 pub fn set_no_new_privileges() -> c_int {
     // SAFETY: the option reads numbers only.
-    unsafe { c_process::prctl(38, 1, 0, 0, 0) }
+    unsafe { c_process::prctl(38, 1 as core::ffi::c_ulong, 0 as core::ffi::c_ulong, 0 as core::ffi::c_ulong, 0 as core::ffi::c_ulong) }
 }
 
 /// `prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL)`.
 #[cfg(target_os = "linux")]
 pub fn clear_ambient_capabilities() -> c_int {
     // SAFETY: the option reads numbers only.
-    unsafe { c_process::prctl(47, 4, 0, 0, 0) }
+    unsafe { c_process::prctl(47, 4 as core::ffi::c_ulong, 0 as core::ffi::c_ulong, 0 as core::ffi::c_ulong, 0 as core::ffi::c_ulong) }
 }
 
 /// `pidfd_open(pid, 0)`: a descriptor for the process, or a negative value.
