@@ -72,20 +72,10 @@ pub(super) type Outcome = std::result::Result<usize, String>;
 pub(super) fn annotate(function: &mut ir::Function, roots: &[(Value, Root)]) -> Outcome {
     let cfg = ControlFlowGraph::with_function(function);
     let same = same(function, &cfg);
-    let resolve = |value: Value| -> Value {
-        let mut value = function.dfg.resolve_aliases(value);
-        for _ in 0..same.len() {
-            match same.get(&value) {
-                Some(&next) => value = function.dfg.resolve_aliases(next),
-                None => break,
-            }
-        }
-        value
-    };
     let heap = heap_symbols(function);
     let roots: BTreeMap<Value, (u32, &Root)> = roots.iter().enumerate().map(|(i, (value, root))| (*value, (i as u32, root))).collect();
     let group = |index: u32, root: &Root| if root.mutable { Group::Unique(index) } else { Group::Shared };
-    let analysis = Analysis { steps: std::cell::Cell::new(0), function, resolve: &resolve, heap: &heap };
+    let analysis = Analysis { steps: std::cell::Cell::new(0), function, same: &same, heap: &heap };
 
     let mut tagged = Vec::new();
     for block in function.layout.blocks() {
@@ -109,6 +99,15 @@ pub(super) fn annotate(function: &mut ir::Function, roots: &[(Value, Root)]) -> 
                 return Err(format!("{inst}: an address with no single base"));
             };
             let constant = place.constant + offset;
+            // Through a lane whose other arm put a filler there: on that arm this access is at
+            // the filler (below 4096) plus what was added after the join, which must be a
+            // constant below 4096, so the access would fault without any region. The pass
+            // relies on the zero page being unmapped (it is the first 4 GiB on macOS ARM64).
+            if let Some((after, variable)) = place.filler
+                && (variable || !(0..FILLER_LIMIT).contains(&(after + offset)))
+            {
+                return Err(format!("{inst}: an access through a lane with a filler, at more than a small constant past it"));
+            }
             let region = match analysis.base(place.base) {
                 Base::Frame => continue,
                 Base::Literal if !store => continue,
@@ -120,7 +119,11 @@ pub(super) fn annotate(function: &mut ir::Function, roots: &[(Value, Root)]) -> 
                 },
                 Base::Buffer(handle) => {
                     // The handle is a word read from `owner + load_offset`.
-                    let read = match function.dfg.value_def((analysis.resolve)(handle)) {
+                    let (handle, through) = analysis.resolve(handle);
+                    if through {
+                        return Err(format!("{inst}: a handle through a lane with a filler"));
+                    }
+                    let read = match function.dfg.value_def(handle) {
                         ir::ValueDef::Result(read, _) => match function.dfg.insts[read] {
                             InstructionData::Load { opcode: Opcode::Load, arg, offset, .. } => Some((arg, i64::from(i32::from(offset)))),
                             _ => None,
@@ -133,9 +136,12 @@ pub(super) fn annotate(function: &mut ir::Function, roots: &[(Value, Root)]) -> 
                     let Some(mut owner) = analysis.pointer(field) else {
                         return Err(format!("{inst}: a handle with no single base"));
                     };
+                    if owner.filler.is_some() {
+                        return Err(format!("{inst}: a handle read through a lane with a filler"));
+                    }
                     owner.load_offset = load_offset;
                     let Base::Param(value) = analysis.base(owner.base) else {
-                        let def = function.dfg.value_def((analysis.resolve)(owner.base));
+                        let def = function.dfg.value_def(analysis.resolve(owner.base).0);
                         let shown = match def {
                             ir::ValueDef::Result(i, _) => format!("{}", function.dfg.display_inst(i)),
                             other => format!("{other:?}"),
@@ -201,11 +207,17 @@ pub(super) fn annotate(function: &mut ir::Function, roots: &[(Value, Root)]) -> 
     Ok(tagged.len())
 }
 
+/// The largest filler, and the most an access may add past one: both stay in the zero page.
+const FILLER_LIMIT: i64 = 4096;
+
 /// An address: a base, a constant added to it, and whether anything else was added.
 struct Place {
     base: Value,
     constant: i64,
     variable: bool,
+    /// When the address passed through a lane joined with a filler: the constant and whether
+    /// anything else was added after that join.
+    filler: Option<(i64, bool)>,
     /// When the base is a loaded value: the offset of the load that gave it (for a handle).
     load_offset: i64,
 }
@@ -224,7 +236,7 @@ struct Analysis<'a> {
     /// Steps taken, so that no shape of address can make the walk go on without end.
     steps: std::cell::Cell<u32>,
     function: &'a ir::Function,
-    resolve: &'a dyn Fn(Value) -> Value,
+    same: &'a BTreeMap<Value, (Value, bool)>,
     heap: &'a BTreeSet<ir::GlobalValue>,
 }
 
@@ -235,8 +247,25 @@ impl Analysis<'_> {
         self.steps.get() > 1_000_000
     }
 
+    /// `value` through the block parameters that receive one value, and whether a filler was
+    /// passed over on the way.
+    fn resolve(&self, value: Value) -> (Value, bool) {
+        let mut value = self.function.dfg.resolve_aliases(value);
+        let mut through = false;
+        for _ in 0..self.same.len() {
+            match self.same.get(&value) {
+                Some(&(next, filled)) => {
+                    through |= filled;
+                    value = self.function.dfg.resolve_aliases(next);
+                }
+                None => break,
+            }
+        }
+        (value, through)
+    }
+
     fn constant(&self, value: Value) -> Option<i64> {
-        let ir::ValueDef::Result(inst, _) = self.function.dfg.value_def((self.resolve)(value)) else {
+        let ir::ValueDef::Result(inst, _) = self.function.dfg.value_def(self.function.dfg.resolve_aliases(value)) else {
             return None;
         };
         match self.function.dfg.insts[inst] {
@@ -251,41 +280,61 @@ impl Analysis<'_> {
         if self.spent() {
             return None;
         }
-        let value = (self.resolve)(value);
+        let (value, through) = self.resolve(value);
+        let mut place = self.decompose(value)?;
+        if through {
+            // What was found below this join is before it; nothing is added after it yet. A
+            // second filler on the way is more than this argument covers.
+            if place.filler.is_some() {
+                return None;
+            }
+            place.filler = Some((0, false));
+        }
+        Some(place)
+    }
+
+    fn decompose(&self, value: Value) -> Option<Place> {
         let dfg = &self.function.dfg;
+        let add = |mut place: Place, constant: i64, variable: bool| {
+            place.constant += constant;
+            place.variable |= variable;
+            if let Some((after, more)) = place.filler.as_mut() {
+                *after += constant;
+                *more |= variable;
+            }
+            place
+        };
         if let ir::ValueDef::Result(inst, _) = dfg.value_def(value) {
             match dfg.insts[inst] {
                 InstructionData::Binary { opcode: Opcode::Iadd, args } => {
                     for (this, other) in [(args[0], args[1]), (args[1], args[0])] {
                         if let Some(c) = self.constant(other) {
-                            let mut place = self.pointer(this)?;
-                            place.constant += c;
-                            return Some(place);
+                            return Some(add(self.pointer(this)?, c, false));
                         }
                     }
                     let based = |v: Value| self.pointer(v).filter(|p| !matches!(self.base(p.base), Base::Unknown(_)));
                     return match (based(args[0]), based(args[1])) {
-                        (Some(mut place), None) | (None, Some(mut place)) => {
-                            place.variable = true;
-                            Some(place)
-                        }
+                        (Some(place), None) | (None, Some(place)) => Some(add(place, 0, true)),
                         _ => None,
                     };
                 }
                 InstructionData::Load { opcode: Opcode::Load, offset, .. } => {
-                    return Some(Place { base: value, constant: 0, variable: false, load_offset: i64::from(i32::from(offset)) });
+                    return Some(Place { base: value, constant: 0, variable: false, filler: None, load_offset: i64::from(i32::from(offset)) });
                 }
                 _ => {}
             }
         }
-        Some(Place { base: value, constant: 0, variable: false, load_offset: 0 })
+        Some(Place { base: value, constant: 0, variable: false, filler: None, load_offset: 0 })
     }
 
     fn base(&self, value: Value) -> Base {
         if self.spent() {
             return Base::Unknown("an address too deep to follow".into());
         }
-        let value = (self.resolve)(value);
+        let (value, through) = self.resolve(value);
+        if through {
+            return Base::Unknown("a base through a lane with a filler".into());
+        }
         let dfg = &self.function.dfg;
         match dfg.value_def(value) {
             ir::ValueDef::Param(block, _) if Some(block) == self.function.layout.entry_block() => Base::Param(value),
@@ -299,7 +348,7 @@ impl Analysis<'_> {
                     let Some(slot) = self.pointer(arg) else {
                         return Base::Unknown("a loaded pointer with no single base".into());
                     };
-                    if !matches!(self.base(slot.base), Base::Heap) || i32::from(offset) != 0 || slot.constant != 0 || !slot.variable {
+                    if slot.filler.is_some() || !matches!(self.base(slot.base), Base::Heap) || i32::from(offset) != 0 || slot.constant != 0 || !slot.variable {
                         return Base::Unknown("a loaded pointer that is not a buffer's".into());
                     }
                     match self.handle(arg) {
@@ -323,7 +372,10 @@ impl Analysis<'_> {
             if steps > 64 {
                 return None;
             }
-            let value = (self.resolve)(value);
+            let (value, through) = self.resolve(value);
+            if through {
+                return None;
+            }
             let ir::ValueDef::Result(inst, _) = self.function.dfg.value_def(value) else {
                 return None;
             };
@@ -358,7 +410,9 @@ fn heap_symbols(function: &ir::Function) -> BTreeSet<ir::GlobalValue> {
 
 /// Block parameters that only ever receive one value (or themselves), mapped to it.
 ///
-/// A constant received besides that one value is passed over when it is the filler of a lane
+/// A parameter never resolves to a constant: two arms' constants are not one value.
+///
+/// A constant (below 4096) received besides that one value is passed over when it is the filler of a lane
 /// that only means something on another arm: a `Result` of a reference is a tag and an
 /// address, and its `Err` arm puts a constant where the address goes. It is a filler only if
 /// it comes from a block that does not dominate the join (so a path to the join need not pass
@@ -367,7 +421,7 @@ fn heap_symbols(function: &ir::Function) -> BTreeSet<ir::GlobalValue> {
 /// through the lane runs on the arm where it is the address; one made with the filler would be
 /// an access to a constant address, already wrong without any region. Native lowering makes no
 /// access through a constant address (an empty text has a data symbol of its own).
-fn same(function: &ir::Function, cfg: &ControlFlowGraph) -> BTreeMap<Value, Value> {
+fn same(function: &ir::Function, cfg: &ControlFlowGraph) -> BTreeMap<Value, (Value, bool)> {
     let dfg = &function.dfg;
     let domtree = DominatorTree::with_function(function, cfg);
     // For each parameter: each value it receives, and whether that edge may pass it over as a
@@ -395,7 +449,13 @@ fn same(function: &ir::Function, cfg: &ControlFlowGraph) -> BTreeMap<Value, Valu
             }
         }
     }
-    let constant = |value: Value| matches!(dfg.value_def(value), ir::ValueDef::Result(inst, _) if matches!(dfg.insts[inst], InstructionData::UnaryImm { opcode: Opcode::Iconst, .. }));
+    let constant = |value: Value| match dfg.value_def(value) {
+        ir::ValueDef::Result(inst, _) => match dfg.insts[inst] {
+            InstructionData::UnaryImm { opcode: Opcode::Iconst, imm } => Some(imm.bits()),
+            _ => None,
+        },
+        _ => None,
+    };
     let mut same = BTreeMap::new();
     loop {
         let mut changed = false;
@@ -406,21 +466,28 @@ fn same(function: &ir::Function, cfg: &ControlFlowGraph) -> BTreeMap<Value, Valu
             let (mut values, mut fillers, mut backward) = (BTreeSet::new(), 0, false);
             for &(source, aside, back) in sources {
                 let mut value = source;
-                while let Some(&next) = same.get(&value) {
-                    value = next;
+                for _ in 0..=same.len() {
+                    match same.get(&value) {
+                        Some(&(next, _)) => value = next,
+                        None => break,
+                    }
                 }
                 if value == param {
                     continue;
                 }
-                if constant(value) && aside {
+                if aside && constant(value).is_some_and(|c| (0..FILLER_LIMIT).contains(&c)) {
                     fillers += 1;
                     continue;
                 }
                 backward |= back;
                 values.insert(value);
             }
-            if values.len() == 1 && !(fillers > 0 && backward) {
-                same.insert(param, values.into_iter().next().expect("one source"));
+            // Never to a constant: a constant is no storage, and two arms' constants are not one.
+            let one = (values.len() == 1).then(|| *values.iter().next().expect("one source")).filter(|&value| constant(value).is_none());
+            if let Some(value) = one
+                && !(fillers > 0 && backward)
+            {
+                same.insert(param, (value, fillers > 0));
                 changed = true;
             }
         }

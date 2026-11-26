@@ -269,3 +269,87 @@ fn a_write_to_a_record_or_a_header_is_seen_by_the_next_read() {
         assert_ne!(Some(def), first_load, "header {header}: the read after the write gave the value from before it");
     }
 }
+
+/// `entry: brif param, a, b; a: jump join(first); b: jump join(second); join(lane): ...`, with
+/// `first` and `second` made by `arms` in the entry block, and `body` making the access.
+fn diamond(arms: impl FnOnce(&mut FuncCursor, Value, ir::GlobalValue) -> (Value, Value), body: impl FnOnce(&mut FuncCursor, Value, Value, ir::GlobalValue) -> Value) -> (ir::Function, Value) {
+    let (mut function, entry, heap) = function(1);
+    let param = function.dfg.block_params(entry)[0];
+    let (a, b, join) = (function.dfg.make_block(), function.dfg.make_block(), function.dfg.make_block());
+    for block in [a, b, join] {
+        function.layout.append_block(block);
+    }
+    let lane = function.dfg.append_block_param(join, I64);
+    let mut pos = FuncCursor::new(&mut function).at_bottom(entry);
+    let (first, second) = arms(&mut pos, param, heap);
+    pos.ins().brif(param, a, &[], b, &[]);
+    pos.goto_bottom(a);
+    pos.ins().jump(join, &[first.into()]);
+    pos.goto_bottom(b);
+    pos.ins().jump(join, &[second.into()]);
+    pos.goto_bottom(join);
+    let value = body(&mut pos, param, lane, heap);
+    pos.ins().return_(&[value]);
+    (function, param)
+}
+
+#[test]
+fn two_constants_are_not_one_offset() {
+    // From the review: `entry: brif c, a, join(48); a: jump join(8); join(off): read buf + off and
+    // buf + 8`. The entry dominates the join, so 48 was taken for the value and 8 for a filler:
+    // `off` became 48 and one location (`buf + 8`) was under two regions.
+    let (mut function, entry, heap) = function(1);
+    let param = function.dfg.block_params(entry)[0];
+    let (a, join) = (function.dfg.make_block(), function.dfg.make_block());
+    function.layout.append_block(a);
+    function.layout.append_block(join);
+    let off = function.dfg.append_block_param(join, I64);
+    let mut pos = FuncCursor::new(&mut function).at_bottom(entry);
+    let source = buffer(&mut pos, param, heap);
+    let far = pos.ins().iconst(I64, 48);
+    pos.ins().brif(param, a, &[], join, &[far.into()]);
+    pos.goto_bottom(a);
+    let near = pos.ins().iconst(I64, 8);
+    pos.ins().jump(join, &[near.into()]);
+    pos.goto_bottom(join);
+    let at = pos.ins().iadd(source, off);
+    let first = pos.ins().load(I64, MemFlagsData::new(), at, 0);
+    let second = pos.ins().load(I64, MemFlagsData::new(), source, 8);
+    let sum = pos.ins().iadd(first, second);
+    pos.ins().return_(&[sum]);
+    assert!(annotate(&mut function, &[(param, root(true))]).is_err());
+    assert_eq!(loads(&function).1, 0);
+}
+
+#[test]
+fn a_filler_is_small_and_nothing_large_is_added_past_it() {
+    for (filler, past, described) in [(1, 8, true), (4096, 8, false), (1, 4096, false)] {
+        let (mut function, param) = diamond(
+            |pos, param, _| (pos.ins().iconst(I64, filler), param),
+            |pos, _, lane, _| pos.ins().load(I64, MemFlagsData::new(), lane, past as i32),
+        );
+        assert_eq!(annotate(&mut function, &[(param, root(true))]).is_ok(), described, "filler {filler}, {past} past it");
+    }
+}
+
+#[test]
+fn a_handle_never_comes_through_a_filler() {
+    // A constant handle names a real slot: no filler is passed over on the way to one.
+    let (mut function, param) = diamond(
+        |pos, param, _| (pos.ins().iconst(I64, 1), pos.ins().load(I64, MemFlagsData::new(), param, 0)),
+        |pos, _, handle, heap| {
+            let mask = pos.ins().iconst(I64, 0xffff_ffff);
+            let id = pos.ins().band(handle, mask);
+            let one = pos.ins().iconst(I64, -1);
+            let index = pos.ins().iadd(id, one);
+            let table = pos.ins().symbol_value(I64, heap);
+            let sixteen = pos.ins().iconst(I64, 16);
+            let offset = pos.ins().imul(index, sixteen);
+            let slot = pos.ins().iadd(table, offset);
+            let buffer = pos.ins().load(I64, MemFlagsData::new(), slot, 0);
+            pos.ins().load(I64, MemFlagsData::new(), buffer, 28)
+        },
+    );
+    assert!(annotate(&mut function, &[(param, root(true))]).is_err());
+    assert_eq!(loads(&function).1, 0);
+}
