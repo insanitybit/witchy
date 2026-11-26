@@ -660,3 +660,40 @@ fn a_lane_whose_value_is_another_joins_lane_is_no_address() {
     assert!(outcome.is_err(), "the store through l2 (really q) was tagged");
     assert_eq!(loads(&function).1, 0);
 }
+
+/// Swap the owner fields at `a + 0` and `b + 0` (`memory.exchange` lowers to plain loads and stores).
+fn exchange(pos: &mut FuncCursor, a: Value, b: Value) {
+    let x = pos.ins().load(I64, MemFlagsData::new(), a, 0);
+    let y = pos.ins().load(I64, MemFlagsData::new(), b, 0);
+    pos.ins().store(MemFlagsData::new(), y, a, 0);
+    pos.ins().store(MemFlagsData::new(), x, b, 0);
+}
+
+#[test]
+fn a_buffer_moved_between_owners_leaves_no_region() {
+    // From the third review of the strict rule: read `b.items[0]`, exchange `a.items` and
+    // `b.items`, write `a.items[0]` (which is `b`'s old buffer), exchange back, read
+    // `b.items[0]` again. A buffer's header and payload went to the parameter whose owner field
+    // the handle was read from, as if a buffer never changed owner within a function: the write
+    // was `a`'s payload, the reads `b`'s, and the second read was taken from the first.
+    let (mut function, block, heap) = function(2);
+    let params = function.dfg.block_params(block).to_vec();
+    let (a, b) = (params[0], params[1]);
+    let mut pos = FuncCursor::new(&mut function).at_bottom(block);
+    let source = buffer(&mut pos, b, heap);
+    let at = element(&mut pos, source, 0);
+    let first = pos.ins().load(I64, MemFlagsData::new(), at, 0);
+    exchange(&mut pos, a, b);
+    let through_a = buffer(&mut pos, a, heap);
+    let to = element(&mut pos, through_a, 0);
+    let seven = pos.ins().iconst(I64, 7);
+    pos.ins().store(MemFlagsData::new(), seven, to, 0);
+    exchange(&mut pos, a, b);
+    let again = buffer(&mut pos, b, heap);
+    let at = element(&mut pos, again, 0);
+    let second = pos.ins().load(I64, MemFlagsData::new(), at, 0);
+    let both = pos.ins().iadd(first, second);
+    pos.ins().return_(&[both]);
+    assert!(annotate(&mut function, &[(a, root(true)), (b, root(true))]).is_err());
+    assert_eq!(loads(&function).1, 0);
+}

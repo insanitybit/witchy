@@ -32,9 +32,11 @@
 //! * `stack_addr`: the function's own frame, left with no region (no parameter reaches it).
 //!
 //! Each `&mut` parameter's record, headers and payloads are regions of its own. All `&`
-//! parameters share one set, since two of them may be the same storage. A store to a `&`
-//! parameter's region, or any access classified otherwise, leaves the whole function without
-//! regions.
+//! parameters share one set, since two of them may be the same storage. A buffer belongs to the
+//! parameter whose owner field named it, so a buffer must not change owner within the function:
+//! a store that may write an owner field (as `memory.exchange` of two owners does, with plain
+//! loads and stores) is refused. A store to a `&` parameter's region, or any access classified
+//! otherwise, also leaves the whole function without regions.
 use cranelift_codegen::ir::{self, AliasRegionData, ExternalName, GlobalValueData, InstructionData, Opcode, Value};
 use cranelift_codegen::dominator_tree::DominatorTree;
 use cranelift_codegen::flowgraph::ControlFlowGraph;
@@ -42,6 +44,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// The header's size: a payload begins here (`body/cells.rs` `HEADER`).
 const HEADER: i64 = 40;
+/// An owner field's size (a handle), and the widest store: a store overlapping an owner field
+/// is refused.
+const OWNER: i64 = 8;
+const WIDEST: i64 = 16;
 
 pub(super) fn enabled() -> bool {
     std::env::var_os("WITCHY_NATIVE_ALIAS").is_some()
@@ -109,6 +115,13 @@ pub(super) fn annotate(function: &mut ir::Function, roots: &[(Value, Root)]) -> 
                 Base::Literal => return Err(format!("{inst}: a store to data")),
                 Base::Heap => Region::Slots,
                 Base::Param(value) => match roots.get(&value) {
+                    // A buffer's header and payload are given to the parameter whose owner field
+                    // the handle was read from, which holds only while no owner field is written:
+                    // `memory.exchange` of two owners is plain loads and stores, and would put one
+                    // buffer under two parameters' regions.
+                    Some(&(_, root)) if store && (place.variable || root.owners.iter().any(|&owner| constant < owner + OWNER && owner < constant + WIDEST)) => {
+                        return Err(format!("{inst}: a store that may write an owner field"));
+                    }
                     Some(&(index, root)) => Region::Record(group(index, root)),
                     None => return Err(format!("{inst}: a parameter the loan rule does not describe")),
                 },
