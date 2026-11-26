@@ -353,3 +353,59 @@ fn a_handle_never_comes_through_a_filler() {
     assert!(annotate(&mut function, &[(param, root(true))]).is_err());
     assert_eq!(loads(&function).1, 0);
 }
+
+#[test]
+fn an_offset_never_comes_through_a_filler() {
+    // From the third review round: `buf + imul(lane, 8)` with `lane` an index or a filler.
+    // On the filler's arm the access is a small distance past a real address.
+    let (mut function, param) = diamond(
+        |pos, param, _| (pos.ins().iconst(I64, 1), pos.ins().load(I64, MemFlagsData::new(), param, 8)),
+        |pos, param, lane, heap| {
+            let source = buffer(pos, param, heap);
+            let payload = pos.ins().iconst(I64, HEADER);
+            let payload = pos.ins().iadd(source, payload);
+            let eight = pos.ins().iconst(I64, 8);
+            let offset = pos.ins().imul(lane, eight);
+            let at = pos.ins().iadd(payload, offset);
+            pos.ins().load(I64, MemFlagsData::new(), at, 0)
+        },
+    );
+    assert!(annotate(&mut function, &[(param, root(true))]).is_err());
+    assert_eq!(loads(&function).1, 0);
+}
+
+#[test]
+fn a_filler_passed_over_by_an_earlier_join_stays_known() {
+    // From the automated review: `join(p1)` passes over a filler; a later `next(p2)` receives
+    // only `p1`. Resolving `p2` straight to the address must still say a filler was on the way,
+    // so a handle read through it is refused.
+    let (mut function, param) = diamond(
+        |pos, param, _| (pos.ins().iconst(I64, 1), pos.ins().load(I64, MemFlagsData::new(), param, 0)),
+        |pos, _, lane, _| lane,
+    );
+    // Replace the return with a hop to `next(lane)`, where the handle is used.
+    let join = function.layout.blocks().last().expect("the join");
+    let ret = function.layout.last_inst(join).expect("a return");
+    function.layout.remove_inst(ret);
+    let next = function.dfg.make_block();
+    function.layout.append_block(next);
+    let hop = function.dfg.append_block_param(next, I64);
+    let lane = function.dfg.block_params(join)[0];
+    let heap = heap_symbols(&function).into_iter().next().expect("a heap");
+    let mut pos = FuncCursor::new(&mut function).at_bottom(join);
+    pos.ins().jump(next, &[lane.into()]);
+    pos.goto_bottom(next);
+    let mask = pos.ins().iconst(I64, 0xffff_ffff);
+    let id = pos.ins().band(hop, mask);
+    let one = pos.ins().iconst(I64, -1);
+    let index = pos.ins().iadd(id, one);
+    let table = pos.ins().symbol_value(I64, heap);
+    let sixteen = pos.ins().iconst(I64, 16);
+    let offset = pos.ins().imul(index, sixteen);
+    let slot = pos.ins().iadd(table, offset);
+    let buffer = pos.ins().load(I64, MemFlagsData::new(), slot, 0);
+    let read = pos.ins().load(I64, MemFlagsData::new(), buffer, 28);
+    pos.ins().return_(&[read]);
+    assert!(annotate(&mut function, &[(param, root(true))]).is_err());
+    assert_eq!(loads(&function).1, 0);
+}

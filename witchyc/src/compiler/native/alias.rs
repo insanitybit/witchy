@@ -264,6 +264,31 @@ impl Analysis<'_> {
         (value, through)
     }
 
+    /// Whether no value `value` is computed from was resolved over a filler. A loaded value is
+    /// data; the load's own address is classified as an access of its own.
+    fn clean(&self, value: Value) -> bool {
+        let mut work = vec![value];
+        let mut seen = BTreeSet::new();
+        while let Some(value) = work.pop() {
+            if self.spent() {
+                return false;
+            }
+            let (value, through) = self.resolve(value);
+            if through {
+                return false;
+            }
+            if !seen.insert(value) {
+                continue;
+            }
+            if let ir::ValueDef::Result(inst, _) = self.function.dfg.value_def(value)
+                && !self.function.dfg.insts[inst].opcode().can_load()
+            {
+                work.extend(self.function.dfg.inst_values(inst));
+            }
+        }
+        true
+    }
+
     fn constant(&self, value: Value) -> Option<i64> {
         let ir::ValueDef::Result(inst, _) = self.function.dfg.value_def(self.function.dfg.resolve_aliases(value)) else {
             return None;
@@ -314,7 +339,10 @@ impl Analysis<'_> {
                     }
                     let based = |v: Value| self.pointer(v).filter(|p| !matches!(self.base(p.base), Base::Unknown(_)));
                     return match (based(args[0]), based(args[1])) {
-                        (Some(place), None) | (None, Some(place)) => Some(add(place, 0, true)),
+                        // The offset may not come through a filler either: on the filler's arm it
+                        // would put the access at a small distance past a real address.
+                        (Some(place), None) if self.clean(args[1]) => Some(add(place, 0, true)),
+                        (None, Some(place)) if self.clean(args[0]) => Some(add(place, 0, true)),
                         _ => None,
                     };
                 }
@@ -463,12 +491,17 @@ fn same(function: &ir::Function, cfg: &ControlFlowGraph) -> BTreeMap<Value, (Val
             if same.contains_key(&param) || blind.contains(&param) {
                 continue;
             }
-            let (mut values, mut fillers, mut backward) = (BTreeSet::new(), 0, false);
+            // Each value received, and whether reaching it passed over a filler on the way.
+            let (mut values, mut fillers, mut backward) = (BTreeMap::<Value, bool>::new(), 0, false);
             for &(source, aside, back) in sources {
                 let mut value = source;
+                let mut filled = false;
                 for _ in 0..=same.len() {
                     match same.get(&value) {
-                        Some(&(next, _)) => value = next,
+                        Some(&(next, through)) => {
+                            filled |= through;
+                            value = next;
+                        }
                         None => break,
                     }
                 }
@@ -480,14 +513,15 @@ fn same(function: &ir::Function, cfg: &ControlFlowGraph) -> BTreeMap<Value, (Val
                     continue;
                 }
                 backward |= back;
-                values.insert(value);
+                *values.entry(value).or_default() |= filled;
             }
             // Never to a constant: a constant is no storage, and two arms' constants are not one.
-            let one = (values.len() == 1).then(|| *values.iter().next().expect("one source")).filter(|&value| constant(value).is_none());
-            if let Some(value) = one
+            let one = (values.len() == 1).then(|| values.iter().next().map(|(&value, &filled)| (value, filled)).expect("one source")).filter(|&(value, _)| constant(value).is_none());
+            if let Some((value, filled)) = one
                 && !(fillers > 0 && backward)
             {
-                same.insert(param, (value, fillers > 0));
+                // A filler passed over here or by a parameter on the way stays known.
+                same.insert(param, (value, fillers > 0 || filled));
                 changed = true;
             }
         }
