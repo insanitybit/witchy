@@ -586,6 +586,86 @@ entry that restores slot and generation for prefix buffers in every build).
 the default build under libgmalloc) against a model. `WITCHY_REPORT_LIVE=1` with
 `WITCHY_HEAP_AUDIT=1` prints the bytes still allocated when a run ends.
 
+## Full native qualification on macOS ARM64
+
+From `witchyc/`, build with `mbx build --release --offline --target-dir
+/absolute/owned-target` and set `WITCHYC` to that target’s `release/witchyc`.
+Set `WITCHY_WASM_READY_BINDING` to the [selected proof checker binding](wasm-production-build.md). For a
+cold and warm comparison, start with an empty directory and keep it
+for the second invocation. Use a directory created for this purpose,
+owned by the account running the compiler.
+
+```zsh
+qualification_cache=$(mktemp -d)
+fixtures=("${(@f)$(find tests/fixtures -name '*.wy' | LC_ALL=C sort)}")
+git rev-parse HEAD
+sysctl -n hw.logicalcpu
+for cache_state in cold warm; do
+  uptime
+  result=0
+  /usr/bin/time -p python3 scripts/native-checked.py \
+    --compiler "$WITCHYC" --binding "$WITCHY_WASM_READY_BINDING" \
+    --jobs 4 --proof-cache "$qualification_cache" --measure "${fixtures[@]}" \
+    >"qualification-$cache_state.out" 2>"qualification-$cache_state.timing" || result=$?
+  printf '%s exit=%s\n' "$cache_state" "$result"
+done
+```
+
+Both invocations run the four false-proof controls with separate caches.
+Check both exit statuses and keep the output files with the timing logs.
+`--private-proof-cache` instead starts with an empty directory that the runner
+removes at exit. A small cold admission check uses that option with
+`--jobs 1 --measure --no-control tests/fixtures/native-checked/stale-link.wy`.
+Check the three `lean_invocations` values in mode order. The recorded run had
+one invocation in default and zero in checked and observed. The check took
+0.89 s.
+
+At `465e9b0c34a0a891e498c9c02f07e22fb45c5e7e`, four workers on a
+10-logical-CPU macOS host evaluated 2,232 fixture paths. The cold run took
+551.27 s at a starting load of 20.14 / 31.37 / 23.94. The warm run took
+194.78 s at a starting load of 14.40 / 19.79 / 20.92. Observed
+`programs/heap-full.wy` reached the 60 s run limit cold and completed in
+36.12 s warm. It was the only per-mode status difference. A second warm run
+took 201.25 s at a starting load of 14.54 / 16.89 / 18.33 and matched
+every fixture result, per-mode status, and control outcome.
+
+The warm run passed 1,068 source refusals, 877 output fixtures, and 57
+trap fixtures. For each mode, 964 fixtures built, 60 listed builds were refused,
+886 executions returned zero, 57 trapped, 18 had the expected launcher
+refusal, and three ended with the expected signal. The 1,068 ordinary source
+refusals were checked at the default build as usual. The run preserved the
+six listed differences, three listed acceptances, one skip, and 139 imported
+files without expectations. All four false-proof controls passed.
+
+The original runner from `a22de9523` took 250.85 s with the same patched
+compiler, fixture list, cache, and four workers at a starting load of
+7.44 / 13.53 / 17.83. Its fixture results and false-proof control output
+matched the instrumented warm run after stripping retry notices. Both
+runners also returned the same failure for injected build and run timeouts.
+
+Cumulative worker seconds from the compiler and runner logs are shown below.
+Build phase measurements cover successful builds. Elapsed wall time also
+includes failed builds and the controls.
+
+| Run | Proof | Parse, type check, and VC | Code generation | Link | Fixture execution | Retry waits |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Original runtime, fresh cache, 8 workers | 937.09 | 69.69 | 37.05 | 607.84 | 484.69 | 1,018.38 |
+| Patched runtime, cold cache, 4 workers | 300.34 | 50.07 | 11.84 | 325.04 | 679.31 | 28.05 |
+| Patched runtime, warm cache, 4 workers | 10.56 | 43.35 | 10.58 | 266.74 | 209.75 | 28.05 |
+
+The original runtime accounted for 900.30 worker seconds of retry waits in
+`net/` fixtures. With immediate loopback listener rebinding, the cold and warm
+runs each waited about 10 s for two retries of `net/write-stalled.wy`. It
+retained its expected deadline signal in every mode.
+
+Linking was the largest compiler phase in the warm run and accounted for
+37% of total measured worker time. A 12-pair startup probe using a minimal
+object and the runtime archive took a median 95.7 ms through Clang and 54.8 ms
+when replaying the exact linker command. Calling the resolved Clang binary
+directly selected a different deployment target and omitted the SDK root.
+The qualification result uses the system driver and its existing toolchain
+selection. The compiler interface is unchanged.
+
 ## Native runtime sanitizer build
 
 On macOS ARM64, use an isolated target directory and a compatible nightly Rust
