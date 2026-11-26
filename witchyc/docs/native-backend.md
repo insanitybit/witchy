@@ -977,7 +977,7 @@ paths. These library calls keep the usual capability and allocator checks.
 
 When a direct call exposes a stack-backed argument or an indirect result,
 the inliner can spend up to 16 additional instructions on the callee within
-the existing 128-instruction caller budget. After such an inline, the
+the 512-instruction caller budget. After such an inline, the
 compiler forwards exact stack stores to loads along linear control flow
 and removes stores from slots with no remaining readers or escaping
 addresses. These passes run after proof admission. Calls and unresolved
