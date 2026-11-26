@@ -209,3 +209,63 @@ fn a_lane_joined_with_a_constant_filler_is_its_address() {
     assert!(annotate(&mut function, &[(param, root(false))]).is_ok());
     assert_eq!(loads(&function).0, loads(&function).1);
 }
+
+#[test]
+fn a_loop_offset_that_starts_at_a_constant_is_not_a_filler() {
+    // `off` starts at 0 and grows by 8 each time round: it is not the address it is added to.
+    // From the review: the filler rule took it for one and the address walk never ended.
+    let (mut function, entry, _) = function(1);
+    let param = function.dfg.block_params(entry)[0];
+    let (head, exit) = (function.dfg.make_block(), function.dfg.make_block());
+    function.layout.append_block(head);
+    function.layout.append_block(exit);
+    let off = function.dfg.append_block_param(head, I64);
+    let mut pos = FuncCursor::new(&mut function).at_bottom(entry);
+    let zero = pos.ins().iconst(I64, 0);
+    pos.ins().jump(head, &[zero.into()]);
+    pos.goto_bottom(head);
+    let at = pos.ins().iadd(param, off);
+    let value = pos.ins().load(I64, MemFlagsData::new(), at, 0);
+    let eight = pos.ins().iconst(I64, 8);
+    let next = pos.ins().iadd(off, eight);
+    pos.ins().brif(value, head, &[next.into()], exit, &[]);
+    pos.goto_bottom(exit);
+    pos.ins().return_(&[value]);
+    // Within the record, at an offset that varies: the record's region, and no endless walk.
+    assert!(annotate(&mut function, &[(param, root(true))]).is_ok());
+}
+
+/// Read `place`, write the read plus one there, read it again: the second read must give the
+/// written value, not the first read's.
+fn write_between(header: bool) -> ir::Function {
+    let (mut function, block, heap) = function(1);
+    let param = function.dfg.block_params(block)[0];
+    let mut pos = FuncCursor::new(&mut function).at_bottom(block);
+    let (base, offset) = if header { (buffer(&mut pos, param, heap), 28) } else { (param, 8) };
+    let first = pos.ins().load(I64, MemFlagsData::new(), base, offset);
+    let one = pos.ins().iconst(I64, 1);
+    let written = pos.ins().iadd(first, one);
+    let base = if header { buffer(&mut pos, param, heap) } else { param };
+    pos.ins().store(MemFlagsData::new(), written, base, offset);
+    let base = if header { buffer(&mut pos, param, heap) } else { param };
+    let second = pos.ins().load(I64, MemFlagsData::new(), base, offset);
+    pos.ins().return_(&[second]);
+    annotate(&mut function, &[(param, root(true))]).expect("described");
+    optimize(function)
+}
+
+#[test]
+fn a_write_to_a_record_or_a_header_is_seen_by_the_next_read() {
+    for header in [false, true] {
+        let optimized = write_between(header);
+        let returned = optimized.layout.blocks().flat_map(|b| optimized.layout.block_insts(b)).find(|&i| optimized.dfg.insts[i].opcode() == Opcode::Return).expect("a return");
+        let value = optimized.dfg.resolve_aliases(optimized.dfg.inst_args(returned)[0]);
+        // Either loaded again after the store, or the stored sum itself: never the first load.
+        let ir::ValueDef::Result(def, _) = optimized.dfg.value_def(value) else { panic!("a result") };
+        let first_load = optimized.layout.blocks().flat_map(|b| optimized.layout.block_insts(b)).find(|&i| {
+            let data = &optimized.dfg.insts[i];
+            data.opcode().can_load() && matches!(*data, InstructionData::Load { offset, .. } if i32::from(offset) == if header { 28 } else { 8 })
+        });
+        assert_ne!(Some(def), first_load, "header {header}: the read after the write gave the value from before it");
+    }
+}

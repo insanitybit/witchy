@@ -4,9 +4,10 @@
 //! alone. It forwards a load from an earlier identical load or store when no store to that
 //! region comes between, and at a loop's header when no store in the loop is to that
 //! region. Its contract is the frontend's: one memory location is only ever accessed under
-//! one region. An access with no region is in a region of its own, so a store with no region
-//! leaves region-tagged loads alone too. For that reason a function gets regions on all of
-//! its heap accesses or on none.
+//! one region. In 0.136.3 a store with no region is a barrier to every region (`classify`),
+//! but a load with no region is in a region of its own and is forwarded across stores tagged
+//! with any region. For that reason a function gets regions on all of its heap accesses or on
+//! none. Its own frame's accesses stay untagged, so a store to the frame ends all forwarding.
 //!
 //! The regions here come from the loan rule. A `&mut` parameter's storage is reached through
 //! no other parameter while the call runs, and a `&` parameter's storage is not written while
@@ -32,6 +33,7 @@
 //! parameter's region, or any access classified otherwise, leaves the whole function without
 //! regions.
 use cranelift_codegen::ir::{self, AliasRegionData, ExternalName, GlobalValueData, InstructionData, Opcode, Value};
+use cranelift_codegen::dominator_tree::DominatorTree;
 use cranelift_codegen::flowgraph::ControlFlowGraph;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -72,15 +74,18 @@ pub(super) fn annotate(function: &mut ir::Function, roots: &[(Value, Root)]) -> 
     let same = same(function, &cfg);
     let resolve = |value: Value| -> Value {
         let mut value = function.dfg.resolve_aliases(value);
-        while let Some(&next) = same.get(&value) {
-            value = function.dfg.resolve_aliases(next);
+        for _ in 0..same.len() {
+            match same.get(&value) {
+                Some(&next) => value = function.dfg.resolve_aliases(next),
+                None => break,
+            }
         }
         value
     };
     let heap = heap_symbols(function);
     let roots: BTreeMap<Value, (u32, &Root)> = roots.iter().enumerate().map(|(i, (value, root))| (*value, (i as u32, root))).collect();
     let group = |index: u32, root: &Root| if root.mutable { Group::Unique(index) } else { Group::Shared };
-    let analysis = Analysis { function, resolve: &resolve, heap: &heap };
+    let analysis = Analysis { steps: std::cell::Cell::new(0), function, resolve: &resolve, heap: &heap };
 
     let mut tagged = Vec::new();
     for block in function.layout.blocks() {
@@ -216,12 +221,20 @@ enum Base {
 }
 
 struct Analysis<'a> {
+    /// Steps taken, so that no shape of address can make the walk go on without end.
+    steps: std::cell::Cell<u32>,
     function: &'a ir::Function,
     resolve: &'a dyn Fn(Value) -> Value,
     heap: &'a BTreeSet<ir::GlobalValue>,
 }
 
 impl Analysis<'_> {
+    /// Whether this function's walk has gone on long enough to give up on it.
+    fn spent(&self) -> bool {
+        self.steps.set(self.steps.get() + 1);
+        self.steps.get() > 1_000_000
+    }
+
     fn constant(&self, value: Value) -> Option<i64> {
         let ir::ValueDef::Result(inst, _) = self.function.dfg.value_def((self.resolve)(value)) else {
             return None;
@@ -235,6 +248,9 @@ impl Analysis<'_> {
     /// `value` as a base plus a constant (and whether a non-constant part was added): the base
     /// is the one operand of an addition that is itself an address.
     fn pointer(&self, value: Value) -> Option<Place> {
+        if self.spent() {
+            return None;
+        }
         let value = (self.resolve)(value);
         let dfg = &self.function.dfg;
         if let ir::ValueDef::Result(inst, _) = dfg.value_def(value) {
@@ -266,6 +282,9 @@ impl Analysis<'_> {
     }
 
     fn base(&self, value: Value) -> Base {
+        if self.spent() {
+            return Base::Unknown("an address too deep to follow".into());
+        }
         let value = (self.resolve)(value);
         let dfg = &self.function.dfg;
         match dfg.value_def(value) {
@@ -337,18 +356,29 @@ fn heap_symbols(function: &ir::Function) -> BTreeSet<ir::GlobalValue> {
         .collect()
 }
 
-/// Block parameters that only ever receive one value (or themselves), mapped to it. A constant
-/// received besides that one value is passed over: it is the filler of a lane that only means
-/// something on another arm (a `Result` of a reference is a tag and an address, and its `Err`
-/// arm puts a constant where the address goes). An access through that lane runs on the arm
-/// where it is the address; one made with the filler would be an access to a constant address,
-/// already wrong without any region.
+/// Block parameters that only ever receive one value (or themselves), mapped to it.
+///
+/// A constant received besides that one value is passed over when it is the filler of a lane
+/// that only means something on another arm: a `Result` of a reference is a tag and an
+/// address, and its `Err` arm puts a constant where the address goes. It is a filler only if
+/// it comes from a block that does not dominate the join (so a path to the join need not pass
+/// it), on an edge that is not a back edge, and the value it stands beside comes on forward
+/// edges only. A loop counter that starts at a constant is therefore not a filler. An access
+/// through the lane runs on the arm where it is the address; one made with the filler would be
+/// an access to a constant address, already wrong without any region. Native lowering makes no
+/// access through a constant address (an empty text has a data symbol of its own).
 fn same(function: &ir::Function, cfg: &ControlFlowGraph) -> BTreeMap<Value, Value> {
     let dfg = &function.dfg;
-    let mut incoming: BTreeMap<Value, BTreeSet<Value>> = BTreeMap::new();
-    let mut complete = true;
+    let domtree = DominatorTree::with_function(function, cfg);
+    // For each parameter: each value it receives, and whether that edge may pass it over as a
+    // filler (forward, from a block that does not dominate the join) or is a back edge.
+    let mut incoming: BTreeMap<Value, Vec<(Value, bool, bool)>> = BTreeMap::new();
+    // Parameters with an argument the pass cannot see: never resolved.
+    let mut blind = BTreeSet::new();
     for block in function.layout.blocks() {
         for predecessor in cfg.pred_iter(block) {
+            let back = domtree.block_dominates(block, predecessor.block);
+            let aside = !back && !domtree.block_dominates(predecessor.block, block);
             let data = &dfg.insts[predecessor.inst];
             for call in data.branch_destination(&dfg.jump_tables, &dfg.exception_tables) {
                 if call.block(&dfg.value_lists) != block {
@@ -356,38 +386,41 @@ fn same(function: &ir::Function, cfg: &ControlFlowGraph) -> BTreeMap<Value, Valu
                 }
                 for (param, argument) in dfg.block_params(block).iter().zip(call.args(&dfg.value_lists)) {
                     match argument.as_value() {
-                        Some(argument) => {
-                            incoming.entry(*param).or_default().insert(dfg.resolve_aliases(argument));
+                        Some(argument) => incoming.entry(*param).or_default().push((dfg.resolve_aliases(argument), aside, back)),
+                        None => {
+                            blind.insert(*param);
                         }
-                        None => complete = false,
                     }
                 }
             }
         }
     }
+    let constant = |value: Value| matches!(dfg.value_def(value), ir::ValueDef::Result(inst, _) if matches!(dfg.insts[inst], InstructionData::UnaryImm { opcode: Opcode::Iconst, .. }));
     let mut same = BTreeMap::new();
-    if !complete {
-        return same;
-    }
     loop {
         let mut changed = false;
         for (&param, sources) in &incoming {
-            if same.contains_key(&param) {
+            if same.contains_key(&param) || blind.contains(&param) {
                 continue;
             }
-            let mut resolved = BTreeSet::new();
-            for &source in sources {
+            let (mut values, mut fillers, mut backward) = (BTreeSet::new(), 0, false);
+            for &(source, aside, back) in sources {
                 let mut value = source;
                 while let Some(&next) = same.get(&value) {
                     value = next;
                 }
-                let filler = matches!(dfg.value_def(value), ir::ValueDef::Result(inst, _) if matches!(dfg.insts[inst], InstructionData::UnaryImm { opcode: Opcode::Iconst, .. }));
-                if value != param && !filler {
-                    resolved.insert(value);
+                if value == param {
+                    continue;
                 }
+                if constant(value) && aside {
+                    fillers += 1;
+                    continue;
+                }
+                backward |= back;
+                values.insert(value);
             }
-            if resolved.len() == 1 {
-                same.insert(param, resolved.into_iter().next().expect("one source"));
+            if values.len() == 1 && !(fillers > 0 && backward) {
+                same.insert(param, values.into_iter().next().expect("one source"));
                 changed = true;
             }
         }
