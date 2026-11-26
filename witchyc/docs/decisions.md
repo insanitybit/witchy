@@ -4384,3 +4384,49 @@ file standard, now also needing the shipped text; and `all_selected_checked` is 
   | toml-zed-lock | -0.35% | -1.65% (-4.97 to +1.68) | -2.67% | -0.98% (-1.54 to -0.42) |
 
   So what this change gives up, against main, is 1.5% to 2.3% of time on the two string programs, 1.0% on one TOML input and nothing resolved on the other three. (The entry above gave the two TOML inputs as a pair without naming them: its -3.3% and -0.8% are `toml-devsm`, its -3.0% and -1.0% are `toml-zed-lock`.) **Checks at this commit**: unit tests 415, `wasm_cli` 80; every fixture built three ways: 2,001 pass, none fails, one timed out in the full run (`programs/heap-full.wy`, the checked build, with the machine at load 28; run again by itself it passes); not run as on Wasm and not counted as passed: 60 build-refused, 18 launch-refused, 3 killed, 6 differ, 3 accepted, 1 skipped; 30 files have no `.expected` and are not run; four false-proof controls pass, the prefix-buffer one trapping in both checked and observed; the `Vec` fuzz, 300 seeds of 600 operations on default, checked, observed, default under libgmalloc and Wasm, 1,500 runs, all equal to the model with no allocation left. **The fixture run on main that the entry above did not report in full** (`ca3c5b9bc`): 2,002 pass, 1 fails, none timed out; 60 build-refused, 18 launch-refused, 2 killed, 5 differ, 3 accepted, 2 skipped; 30 without `.expected`. The failure is `programs/fileserver.wy`, listed as killed (it listens on a fixed port, no client connects, and the launcher's deadline ends it): in that run its checked build exited 0 having served a client. Run alone afterwards it failed two runs in three, on a different build each time, and failed the same way two runs in three with a compiler built before any of this work, so something else on the machine connects to that port; the likeliest is another session's Wasm fixture run, whose harness supplies this fixture's client, and that was not confirmed. In this change's full run, and alone afterwards, it ended as listed. **After the rebase onto the squashed main**: unit tests 415, `wasm_cli` 80; every fixture three ways: 2,002 pass, none fails, none timed out (`heap-full` passes, `fileserver` ended as listed); 60 build-refused, 18 launch-refused, 3 killed, 6 differ, 3 accepted, 1 skipped; four controls pass; the `Vec` fuzz, 300 new seeds, 1,500 runs, all equal to the model. Main then moved by one commit that does not touch buffers; on the commit that merged, the unit tests, `wasm_cli`, the 164 fixtures of the runtime-facing groups, the four controls and 100 more fuzz seeds were run again and pass. The cause of the `fileserver` interference is still unconfirmed.
+
+## The native inliner takes a checked accessor, what it calls, and 512 instructions a function (2026-11-25)
+
+`native/inline.rs`: a function that calls nothing is copied up to 48 instructions (was 32), the
+calls a copied body brings are considered in turn against the same budgets, and one function
+may take in 512 instructions over all its sites (was 128). A candidate that can reach itself
+through candidates stays a call. Reason: `Vec.at` is 47 instructions and stayed a call in every
+loop that reads a vector; the first sites of a long function spent its budget; and an inlined
+wrapper kept the call it wrapped. The Wasm inliner (above, 2026-11-15) is unchanged.
+
+Reserved, 15 interleaved rounds, macOS ARM64, against the base it was measured on (295b74969);
+the rebase onto 2cc492238 has the same patch-id:
+
+| program | instructions | cycles (95%) |
+|---|---|---|
+| spectral | -6.6% | -42.9% (-43.5 to -42.3) |
+| words | -2.4% | -7.2% (-8.1 to -6.4) |
+| sort | +1.4% | -1.1% (-1.4 to -0.7) |
+
+One unreserved round over the rest (not a result): kernels over borrowed vectors -8% to -34%
+cycles; vecloop, nbody, fannkuch-redux, mandel, trees, trees-vec, pidigits, map, str,
+regex-redux within about 2%.
+
+What it costs, on stress shapes (wall time under load, so approximate):
+
+- A chain of 3,000 one-line wrappers: compile 0.4 s to 2.5 s (another machine: 0.9 to 3.0 s), the
+  worst ratio found within the language's limits; 512 caps a function at 256 copies.
+- One function near the size limit (32 loops over four borrowed vectors): code +29%, compile
+  1.3 s to 2.1 s. A fan-out tree of wrappers in 300 callers: code +2% to +150% depending on shape;
+  the worst built in review was 10 times the code (72,746 to 741,175 instructions).
+- Recursion: self- and mutually recursive candidates stay calls; code equal to or smaller than
+  before. Without that rule a recursive candidate was unrolled 36 to 42 times (review).
+- Known limit: nested copies spend a caller's budget first-come, so an early call tree can
+  leave a later loop's site a call.
+
+Checked on the exact tip: the compiler's tests (578), the recursion test, and recursion and
+nested-wrapper programs printing what main prints. Before the rebase: every fixture in three
+builds (2,001 pass; the one failure, `composed-links/trap-on-release.refused.wy`, is the same
+under main's compiler) and the network fixtures four rounds on main's compiler and three on
+this one. Their failures were the proof checker's deadline on `Vec.reserve` and the launcher's
+"working broker" refusal, under load, on both compilers alike (main's fourth round: 11 of 28);
+the cause is unconfirmed. Independent review, three rounds: ship.
+
+Not measured: compile time and code size across all fixtures and their largest functions; the
+Vec fuzz with this policy; reserved numbers for programs other than the three above; the TOML
+pair benchmark; the full fixture run on the rebased tip.
