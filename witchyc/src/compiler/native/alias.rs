@@ -1,4 +1,5 @@
-//! Borrow-derived alias regions (prototype; `WITCHY_NATIVE_ALIAS=1` when compiling).
+//! Borrow-derived alias regions (on by default; `WITCHY_NATIVE_ALIAS=0` when compiling turns
+//! them off).
 //!
 //! Cranelift's alias analysis lets a store to one region leave loads of every other region
 //! alone. It forwards a load from an earlier identical load or store when no store to that
@@ -59,8 +60,9 @@ const HEADER: i64 = 40;
 const OWNER: i64 = 8;
 const WIDEST: i64 = 16;
 
+/// On unless `WITCHY_NATIVE_ALIAS=0`.
 pub(super) fn enabled() -> bool {
-    std::env::var_os("WITCHY_NATIVE_ALIAS").is_some()
+    std::env::var_os("WITCHY_NATIVE_ALIAS").is_none_or(|value| value != "0")
 }
 
 /// A parameter whose storage the loan rule describes: the byte offsets of its dense owner fields.

@@ -94,12 +94,12 @@ parser.add_argument('--seeds', type=int, default=200)
 parser.add_argument('--operations', type=int, default=400)
 parser.add_argument('--first-seed', type=int, default=1)
 parser.add_argument('--expect-regions', action='store_true',
-                    help='build with WITCHY_NATIVE_ALIAS=1 and fail unless mirror and settle get alias regions in the default build')
+                    help='fail unless mirror and settle get alias regions in the default build, and forward loads compared with WITCHY_NATIVE_ALIAS=0')
 a = parser.parse_args()
 base = {**os.environ, 'WITCHY_WASM_READY_BINDING': a.binding}
 if a.expect_regions:
-    base.update(WITCHY_NATIVE_ALIAS='1', WITCHY_NATIVE_ALIAS_REPORT='1')
-for name in ('WITCHY_NATIVE_CHECKED', 'WITCHY_NATIVE_OBSERVED', 'WITCHY_NATIVE_RUNTIME_CELLS'):
+    base.update(WITCHY_NATIVE_ALIAS_REPORT='1')
+for name in ('WITCHY_NATIVE_ALIAS', 'WITCHY_NATIVE_CHECKED', 'WITCHY_NATIVE_OBSERVED', 'WITCHY_NATIVE_RUNTIME_CELLS'):
     base.pop(name, None)
 if a.proof_cache: base['WITCHY_PROOF_CACHE'] = a.proof_cache
 source = repo / 'tests/fuzz/vec-owners.wy'
@@ -126,7 +126,7 @@ def forwarding(work, with_regions):
     the value from before the write."""
     named = {**base, 'WITCHY_NATIVE_NAMES': '1'}
     without = work / 'default-no-regions'
-    plain = {k: v for k, v in named.items() if not k.startswith('WITCHY_NATIVE_ALIAS')}
+    plain = {**{k: v for k, v in named.items() if not k.startswith('WITCHY_NATIVE_ALIAS')}, 'WITCHY_NATIVE_ALIAS': '0'}
     for exe, env in ((with_regions.with_name('default-named'), named), (without, plain)):
         built = subprocess.run([a.compiler, 'build', source, '-o', exe, '--target=macos-arm64'], env=env, capture_output=True, text=True)
         if built.returncode: sys.exit(f'a named build failed:\n{built.stderr[-2000:]}')
