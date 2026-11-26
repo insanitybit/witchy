@@ -697,6 +697,14 @@ false-proof controls. In an earlier run, `net/cancel.wy` printed a shorter
 received prefix than expected. The same mismatch reproduced with the
 ordinary runner when the fixture was run on its own.
 
+Pass `--linker /absolute/path/to/ld64.mold` with `--fast` to select a
+Mach-O build of Mold. Keep the `ld64.mold` invocation name, including when
+it is a symlink to `mold`. Clang still selects the SDK and derives the
+link arguments. The alternate linker applies to plain native qualification
+workers. False-proof controls, provider links, and sanitizer links retain
+their existing driver paths. Each invocation starts with an empty link
+cache.
+
 ## Native runtime sanitizer build
 
 On macOS ARM64, use an isolated target directory and a compatible nightly Rust

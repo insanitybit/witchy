@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Native fixtures as the compiler emits them, against checked mode.
 
-    scripts/native-checked.py --compiler BIN --binding READY [--proof-cache DIR | --private-proof-cache] [--jobs N] [--measure] [--fast] [--timings-from LOG] [--parallel-fixture FIXTURE]
+    scripts/native-checked.py --compiler BIN --binding READY [--proof-cache DIR | --private-proof-cache] [--jobs N] [--measure] [--fast] [--linker PATH] [--timings-from LOG] [--parallel-fixture FIXTURE]
                               [--no-control] [--write-list FILE] FIXTURE.wy...
 
 A fixture is a FIXTURE.wy with a FIXTURE.expected beside it (a .wy without one is a file other
@@ -67,6 +67,7 @@ cache_options.add_argument('--private-proof-cache', action='store_true',
 p.add_argument('--measure', action='store_true', help='print build, run and retry timings to stderr')
 p.add_argument('--jobs', type=int)
 p.add_argument('--fast', action='store_true', help='reuse compiler workers and identical links on macOS ARM64')
+p.add_argument('--linker', type=Path, help='use this Mach-O linker for --fast worker builds')
 p.add_argument('--timings-from', type=Path, help='schedule longest fixtures first using a prior --measure log')
 p.add_argument('--parallel-fixture', metavar='FIXTURE',
                help='run modes concurrently for a fixture with no launcher flags, relative to tests/fixtures')
@@ -82,6 +83,13 @@ if a.jobs < 1:
     p.error('--jobs must be positive')
 if a.fast and (sys.platform != 'darwin' or a.target != 'macos-arm64'):
     p.error('--fast requires macOS ARM64')
+if a.linker is not None:
+    if not a.fast:
+        p.error('--linker requires --fast')
+    # The invocation name selects Mach-O mode in linkers such as ld64.mold.
+    a.linker = a.linker.expanduser().absolute()
+    if not a.linker.is_file() or not os.access(a.linker, os.X_OK):
+        p.error(f'--linker requires an executable file: {a.linker}')
 repo = Path(__file__).resolve().parents[1]
 compiler = a.compiler.resolve()
 base = {k: v for k, v in os.environ.items() if not k.startswith(('WITCHY_', 'LEAN_', 'LAKE_'))}
@@ -136,12 +144,16 @@ def qualification_link_plan(scratch):
     with tempfile.TemporaryDirectory(dir=root) as probe:
         for name in ('libwitchy_runtime.a', 'program.o'):
             (Path(probe) / name).touch()
+        linker_flag = [f'--ld-path={a.linker}'] if a.linker is not None else []
         traced = subprocess.run(['/usr/bin/clang', '-###', '-arch', 'arm64', '-Wl,-dead_strip',
-                                 'libwitchy_runtime.a', 'program.o', '-o', 'image'],
+                                 *linker_flag, 'libwitchy_runtime.a', 'program.o', '-o', 'image'],
                                 cwd=probe, env=base, capture_output=True, text=True, timeout=30, check=True)
     commands = [shlex.split(line) for line in traced.stderr.splitlines() if line.startswith(' "')]
-    if len(commands) != 1 or Path(commands[0][0]).name != 'ld' or not Path(commands[0][0]).is_absolute():
+    if len(commands) != 1:
         sys.exit('cannot determine a single macOS linker command from Clang')
+    selected = Path(commands[0][0])
+    if not selected.is_absolute() or (selected != a.linker if a.linker is not None else selected.name != 'ld'):
+        sys.exit(f'unexpected macOS linker selected by Clang: {selected}')
     (root / 'link-plan').write_bytes(b'\0'.join(word.encode() for word in commands[0]))
     return root
 
