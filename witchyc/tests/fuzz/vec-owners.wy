@@ -2,6 +2,7 @@
 // writes them and holds the model this program's output is compared with). Each operation is
 // three bytes: which, and two operands. `numbers` holds words; `owners` holds Strings, each an
 // allocation of its own, which every operation must hand on, give back or release exactly once.
+// After each operation `mirror` and `settle` copy `numbers` into a new vector and rewrite it.
 import console
 import string
 import text
@@ -18,6 +19,38 @@ fn word(allocator: &Allocator, number: U64) -> Result<String, U64>:
 // A Vec moved in and out by value.
 fn through(input: Vec<U64>, keep: U64) -> Vec<U64>:
     return input.truncate(keep)
+
+// One borrowed vector read, another written, the first read again; then the written one read
+// back. `dst` is `&mut`, so the write reaches nothing `src` names (the shape alias regions are
+// for), and the read of `dst` after the write must see it.
+fn mirror(src: &Vec<U64>, dst: &mut Vec<U64>) -> U64:
+    var total: U64 = 0
+    for i in 0..src.len():
+        match src.get(i):
+            Ok(x):
+                dst.index_set(i, x % 1000 + i)
+                match src.get(i):
+                    Ok(y):
+                        total = (total * 31 + y + dst.index(i)) % 1000000007
+                    Err(code):
+                        return 0
+            Err(code):
+                return 0
+    return total
+
+fn write_through(target: &mut Vec<U64>, at: U64, value: U64):
+    target.index_set(at, value)
+
+// A write through a reborrow of `v` (inlined), then a read through `v`: the same storage, so the
+// read must see the write.
+fn settle(v: &mut Vec<U64>) -> U64:
+    var total: U64 = 0
+    for i in 0..v.len():
+        let before = v.index(i)
+        write_through(&mut *v, i, before * 3 % 1000003)
+        let after = v.index(i)
+        total = (total * 31 + after) % 1000000007
+    return total
 
 fn show(console: &Console<Write>, numbers: &Vec<U64>, owners: &Vec<String>):
     var sum: U64 = 0
@@ -198,5 +231,17 @@ fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
                     Err(back):
                         numbers = move back
             show(&console, &numbers, &owners)
+            match Vec.filled(&allocator, numbers.len(), 0):
+                Ok(made):
+                    var shadow = move made
+                    let mirrored = mirror(&numbers, &mut shadow)
+                    let settled = settle(&mut shadow)
+                    shadow.close()
+                    console.write_u64(mirrored)
+                    console.write(" ")
+                    console.write_u64(settled)
+                    console.line("")
+                Err(e):
+                    console.line("no shadow")
     numbers.close()
     owners.discard()

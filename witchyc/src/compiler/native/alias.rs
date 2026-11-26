@@ -18,7 +18,10 @@
 //! each buffer its owner fields name.
 //!
 //! Each access is classified by where its address comes from, looking through block
-//! parameters that only ever receive one value:
+//! parameters that only ever receive one value, and through the lane of a tagged join (a
+//! `Result` of a reference: a tag and an address) where a test of the tag that excludes every
+//! other arm stands between the join and each use of the lane (see `same`). No address is
+//! classified from what an access would do on a path where it does not run.
 //!
 //! * `param + c` for a trusted parameter: that parameter's record.
 //! * `heap + f(handle)`: the runtime's slot table, one region. Nothing in a function writes
@@ -71,11 +74,12 @@ pub(super) type Outcome = std::result::Result<usize, String>;
 /// Tag every heap access of `function` (after inlining) with its region, or none of them.
 pub(super) fn annotate(function: &mut ir::Function, roots: &[(Value, Root)]) -> Outcome {
     let cfg = ControlFlowGraph::with_function(function);
+    let domtree = DominatorTree::with_function(function, &cfg);
     let same = same(function, &cfg);
     let heap = heap_symbols(function);
     let roots: BTreeMap<Value, (u32, &Root)> = roots.iter().enumerate().map(|(i, (value, root))| (*value, (i as u32, root))).collect();
     let group = |index: u32, root: &Root| if root.mutable { Group::Unique(index) } else { Group::Shared };
-    let analysis = Analysis { steps: std::cell::Cell::new(0), function, same: &same, heap: &heap };
+    let analysis = Analysis { steps: std::cell::Cell::new(0), function, cfg: &cfg, domtree: &domtree, same: &same, heap: &heap, tested: Default::default() };
 
     let mut tagged = Vec::new();
     for block in function.layout.blocks() {
@@ -95,20 +99,11 @@ pub(super) fn annotate(function: &mut ir::Function, roots: &[(Value, Root)]) -> 
                 InstructionData::Store { args, offset, .. } => (args[1], i64::from(i32::from(offset))),
                 _ => unreachable!(),
             };
-            let Some(place) = analysis.pointer(address) else {
+            let Some(place) = analysis.pointer(address, block) else {
                 return Err(format!("{inst}: an address with no single base"));
             };
             let constant = place.constant + offset;
-            // Through a lane whose other arm put a filler there: on that arm this access is at
-            // the filler (below 4096) plus what was added after the join, which must be a
-            // constant below 4096, so the access would fault without any region. The pass
-            // relies on the zero page being unmapped (it is the first 4 GiB on macOS ARM64).
-            if let Some((after, variable)) = place.filler
-                && (variable || !(0..FILLER_LIMIT).contains(&(after + offset)))
-            {
-                return Err(format!("{inst}: an access through a lane with a filler, at more than a small constant past it"));
-            }
-            let region = match analysis.base(place.base) {
+            let region = match analysis.base(place.base, place.at) {
                 Base::Frame => continue,
                 Base::Literal if !store => continue,
                 Base::Literal => return Err(format!("{inst}: a store to data")),
@@ -119,10 +114,8 @@ pub(super) fn annotate(function: &mut ir::Function, roots: &[(Value, Root)]) -> 
                 },
                 Base::Buffer(handle) => {
                     // The handle is a word read from `owner + load_offset`.
-                    let (handle, through) = analysis.resolve(handle);
-                    if through {
-                        return Err(format!("{inst}: a handle through a lane with a filler"));
-                    }
+                    let (handle, at) = handle;
+                    let handle = analysis.resolve(handle, at);
                     let read = match function.dfg.value_def(handle) {
                         ir::ValueDef::Result(read, _) => match function.dfg.insts[read] {
                             InstructionData::Load { opcode: Opcode::Load, arg, offset, .. } => Some((arg, i64::from(i32::from(offset)))),
@@ -130,18 +123,16 @@ pub(super) fn annotate(function: &mut ir::Function, roots: &[(Value, Root)]) -> 
                         },
                         _ => None,
                     };
-                    let Some((field, load_offset)) = read else {
+                    let Some((field, load_offset, read)) = read.map(|(field, offset)| (field, offset, function.dfg.value_def(handle).unwrap_inst())) else {
                         return Err(format!("{inst}: a handle that is not a word read from memory"));
                     };
-                    let Some(mut owner) = analysis.pointer(field) else {
+                    let read_block = function.layout.inst_block(read).expect("in the layout");
+                    let Some(mut owner) = analysis.pointer(field, read_block) else {
                         return Err(format!("{inst}: a handle with no single base"));
                     };
-                    if owner.filler.is_some() {
-                        return Err(format!("{inst}: a handle read through a lane with a filler"));
-                    }
                     owner.load_offset = load_offset;
-                    let Base::Param(value) = analysis.base(owner.base) else {
-                        let def = function.dfg.value_def(analysis.resolve(owner.base).0);
+                    let Base::Param(value) = analysis.base(owner.base, owner.at) else {
+                        let def = function.dfg.value_def(analysis.resolve(owner.base, owner.at));
                         let shown = match def {
                             ir::ValueDef::Result(i, _) => format!("{}", function.dfg.display_inst(i)),
                             other => format!("{other:?}"),
@@ -193,17 +184,13 @@ pub(super) fn annotate(function: &mut ir::Function, roots: &[(Value, Root)]) -> 
     Ok(tagged.len())
 }
 
-/// The largest filler, and the most an access may add past one: both stay in the zero page.
-const FILLER_LIMIT: i64 = 4096;
-
 /// An address: a base, a constant added to it, and whether anything else was added.
 struct Place {
     base: Value,
     constant: i64,
     variable: bool,
-    /// When the address passed through a lane joined with a filler: the constant and whether
-    /// anything else was added after that join.
-    filler: Option<(i64, bool)>,
+    /// The block where `base` is used: where a tagged join's lane must have been tested.
+    at: ir::Block,
     /// When the base is a loaded value: the offset of the load that gave it (for a handle).
     load_offset: i64,
 }
@@ -213,8 +200,8 @@ enum Base {
     Heap,
     Literal,
     Frame,
-    /// A buffer's pointer, read from the slot the given handle names.
-    Buffer(Value),
+    /// A buffer's pointer, read from the slot the given handle names (used in that block).
+    Buffer((Value, ir::Block)),
     Unknown(String),
 }
 
@@ -222,8 +209,12 @@ struct Analysis<'a> {
     /// Steps taken, so that no shape of address can make the walk go on without end.
     steps: std::cell::Cell<u32>,
     function: &'a ir::Function,
-    same: &'a BTreeMap<Value, (Value, bool)>,
+    cfg: &'a ControlFlowGraph,
+    domtree: &'a DominatorTree,
+    same: &'a BTreeMap<Value, Join>,
     heap: &'a BTreeSet<ir::GlobalValue>,
+    /// For a tagged join's lane: the blocks where the tag has been tested (computed once).
+    tested: std::cell::RefCell<BTreeMap<Value, BTreeSet<ir::Block>>>,
 }
 
 impl Analysis<'_> {
@@ -233,46 +224,105 @@ impl Analysis<'_> {
         self.steps.get() > 1_000_000
     }
 
-    /// `value` through the block parameters that receive one value, and whether a filler was
-    /// passed over on the way.
-    fn resolve(&self, value: Value) -> (Value, bool) {
-        let mut value = self.function.dfg.resolve_aliases(value);
-        let mut through = false;
+    /// `value` used in block `at`, through the block parameters it stands for there.
+    fn resolve(&self, value: Value, at: ir::Block) -> Value {
+        let dfg = &self.function.dfg;
+        let mut value = dfg.resolve_aliases(value);
+        // Only the first step may be a tagged lane: `same` never resolves a parameter through one.
+        if let Some(Join::Tagged { value: next, .. }) = self.same.get(&value) {
+            if !self.tested(value, at) {
+                return value;
+            }
+            value = dfg.resolve_aliases(*next);
+        }
         for _ in 0..self.same.len() {
             match self.same.get(&value) {
-                Some(&(next, filled)) => {
-                    through |= filled;
-                    value = self.function.dfg.resolve_aliases(next);
-                }
-                None => break,
+                Some(Join::One(next)) => value = dfg.resolve_aliases(*next),
+                _ => break,
             }
         }
-        (value, through)
+        value
     }
 
-    /// Whether no value `value` is computed from was resolved over a filler. A loaded value is
-    /// data; the load's own address is classified as an access of its own.
-    fn clean(&self, value: Value) -> bool {
-        let mut work = vec![value];
+    /// Whether the tagged lane `lane`, used in block `at`, is the value it was resolved to: on
+    /// every path from the join to `at` (that does not enter the join again), the tag was tested
+    /// equal to a value no other arm gives it. The tag is the join's own parameter, so the test
+    /// saw the arm of the same entry into the join that gave the lane.
+    fn tested(&self, lane: Value, at: ir::Block) -> bool {
+        let Some(Join::Tagged { join, tags, .. }) = self.same.get(&lane) else { return false };
+        if !self.domtree.block_dominates(*join, at) || at == *join {
+            return false;
+        }
+        let mut cache = self.tested.borrow_mut();
+        let passed = cache.entry(lane).or_insert_with(|| self.tests(*join, tags));
+        if passed.contains(&at) {
+            return true;
+        }
+        // Every block reached from the join without going through a tested block or the join again.
         let mut seen = BTreeSet::new();
-        while let Some(value) = work.pop() {
-            if self.spent() {
-                return false;
-            }
-            let (value, through) = self.resolve(value);
-            if through {
-                return false;
-            }
-            if !seen.insert(value) {
+        let mut work: Vec<ir::Block> = self.cfg.succ_iter(*join).collect();
+        while let Some(block) = work.pop() {
+            if block == *join || passed.contains(&block) || !seen.insert(block) {
                 continue;
             }
-            if let ir::ValueDef::Result(inst, _) = self.function.dfg.value_def(value)
-                && !self.function.dfg.insts[inst].opcode().can_load()
-            {
-                work.extend(self.function.dfg.inst_values(inst));
+            if block == at || self.spent() {
+                return false;
             }
+            work.extend(self.cfg.succ_iter(block));
         }
         true
+    }
+
+    /// The blocks entered only when one of `tags` (a tag of `join`, and the values the arms the
+    /// lane was not resolved from give it) tested equal to something else: each has one
+    /// predecessor, which ends in a two-way branch on that test.
+    fn tests(&self, join: ir::Block, tags: &[(Value, BTreeSet<i64>)]) -> BTreeSet<ir::Block> {
+        let dfg = &self.function.dfg;
+        let mut found = BTreeSet::new();
+        for block in self.function.layout.blocks() {
+            if !self.domtree.block_dominates(join, block) {
+                continue;
+            }
+            let Some(last) = self.function.layout.last_inst(block) else { continue };
+            let InstructionData::Brif { arg, blocks, .. } = dfg.insts[last] else { continue };
+            let (then, other) = (blocks[0].block(&dfg.value_lists), blocks[1].block(&dfg.value_lists));
+            if then == other {
+                continue;
+            }
+            // (tested value, the constant it equals on the way to `then`, or to `other`)
+            let condition = self.condition(arg);
+            for (tested, equal, target) in condition.into_iter().flat_map(|(v, k, eq)| [(v, k, if eq { then } else { other })]) {
+                let only = self.cfg.pred_iter(target).count() == 1;
+                if only && tags.iter().any(|(tag, others)| *tag == tested && !others.contains(&equal)) {
+                    found.insert(target);
+                }
+            }
+        }
+        found
+    }
+
+    /// `brif arg`: the value tested, the constant, and whether `then` is taken when they are
+    /// equal (`brif v` is `v != 0`; `icmp eq/ne v, k`, through `uextend`).
+    fn condition(&self, arg: Value) -> Option<(Value, i64, bool)> {
+        let dfg = &self.function.dfg;
+        let arg = dfg.resolve_aliases(arg);
+        if let ir::ValueDef::Result(inst, _) = dfg.value_def(arg) {
+            match dfg.insts[inst] {
+                InstructionData::Unary { opcode: Opcode::Uextend, arg } => return self.condition(arg),
+                InstructionData::IntCompare { cond, args, .. } if matches!(cond, ir::condcodes::IntCC::Equal | ir::condcodes::IntCC::NotEqual) => {
+                    let eq = cond == ir::condcodes::IntCC::Equal;
+                    for (v, k) in [(args[0], args[1]), (args[1], args[0])] {
+                        if let Some(k) = self.constant(k) {
+                            return Some((dfg.resolve_aliases(v), k, eq));
+                        }
+                    }
+                    return None;
+                }
+                _ => {}
+            }
+        }
+        // `brif v`: `then` when `v != 0`, so `other` when `v == 0`.
+        Some((arg, 0, false))
     }
 
     fn constant(&self, value: Value) -> Option<i64> {
@@ -285,70 +335,50 @@ impl Analysis<'_> {
         }
     }
 
-    /// `value` as a base plus a constant (and whether a non-constant part was added): the base
-    /// is the one operand of an addition that is itself an address.
-    fn pointer(&self, value: Value) -> Option<Place> {
+    /// `value`, used in block `at`, as a base plus a constant (and whether a non-constant part
+    /// was added): the base is the one operand of an addition that is itself an address.
+    fn pointer(&self, value: Value, at: ir::Block) -> Option<Place> {
         if self.spent() {
             return None;
         }
-        let (value, through) = self.resolve(value);
-        let mut place = self.decompose(value)?;
-        if through {
-            // What was found below this join is before it; nothing is added after it yet. A
-            // second filler on the way is more than this argument covers.
-            if place.filler.is_some() {
-                return None;
-            }
-            place.filler = Some((0, false));
-        }
-        Some(place)
-    }
-
-    fn decompose(&self, value: Value) -> Option<Place> {
+        let value = self.resolve(value, at);
         let dfg = &self.function.dfg;
         let add = |mut place: Place, constant: i64, variable: bool| {
             place.constant += constant;
             place.variable |= variable;
-            if let Some((after, more)) = place.filler.as_mut() {
-                *after += constant;
-                *more |= variable;
-            }
             place
         };
         if let ir::ValueDef::Result(inst, _) = dfg.value_def(value) {
+            // The operands are used where this instruction is.
+            let here = self.function.layout.inst_block(inst).expect("in the layout");
             match dfg.insts[inst] {
                 InstructionData::Binary { opcode: Opcode::Iadd, args } => {
                     for (this, other) in [(args[0], args[1]), (args[1], args[0])] {
                         if let Some(c) = self.constant(other) {
-                            return Some(add(self.pointer(this)?, c, false));
+                            return Some(add(self.pointer(this, here)?, c, false));
                         }
                     }
-                    let based = |v: Value| self.pointer(v).filter(|p| !matches!(self.base(p.base), Base::Unknown(_)));
+                    let based = |v: Value| self.pointer(v, here).filter(|p| !matches!(self.base(p.base, p.at), Base::Unknown(_)));
                     return match (based(args[0]), based(args[1])) {
-                        // The offset may not come through a filler either: on the filler's arm it
-                        // would put the access at a small distance past a real address.
-                        (Some(place), None) if self.clean(args[1]) => Some(add(place, 0, true)),
-                        (None, Some(place)) if self.clean(args[0]) => Some(add(place, 0, true)),
+                        (Some(place), None) => Some(add(place, 0, true)),
+                        (None, Some(place)) => Some(add(place, 0, true)),
                         _ => None,
                     };
                 }
                 InstructionData::Load { opcode: Opcode::Load, offset, .. } => {
-                    return Some(Place { base: value, constant: 0, variable: false, filler: None, load_offset: i64::from(i32::from(offset)) });
+                    return Some(Place { base: value, constant: 0, variable: false, at, load_offset: i64::from(i32::from(offset)) });
                 }
                 _ => {}
             }
         }
-        Some(Place { base: value, constant: 0, variable: false, filler: None, load_offset: 0 })
+        Some(Place { base: value, constant: 0, variable: false, at, load_offset: 0 })
     }
 
-    fn base(&self, value: Value) -> Base {
+    fn base(&self, value: Value, at: ir::Block) -> Base {
         if self.spent() {
             return Base::Unknown("an address too deep to follow".into());
         }
-        let (value, through) = self.resolve(value);
-        if through {
-            return Base::Unknown("a base through a lane with a filler".into());
-        }
+        let value = self.resolve(value, at);
         let dfg = &self.function.dfg;
         match dfg.value_def(value) {
             ir::ValueDef::Param(block, _) if Some(block) == self.function.layout.entry_block() => Base::Param(value),
@@ -359,13 +389,14 @@ impl Analysis<'_> {
                 InstructionData::StackAddr { opcode: Opcode::StackAddr, .. } => Base::Frame,
                 InstructionData::Load { opcode: Opcode::Load, arg, offset, .. } => {
                     // A buffer's pointer is the first word of its slot, `heap + (handle - 1) * 16`.
-                    let Some(slot) = self.pointer(arg) else {
+                    let here = self.function.layout.inst_block(inst).expect("in the layout");
+                    let Some(slot) = self.pointer(arg, here) else {
                         return Base::Unknown("a loaded pointer with no single base".into());
                     };
-                    if slot.filler.is_some() || !matches!(self.base(slot.base), Base::Heap) || i32::from(offset) != 0 || slot.constant != 0 || !slot.variable {
+                    if !matches!(self.base(slot.base, slot.at), Base::Heap) || i32::from(offset) != 0 || slot.constant != 0 || !slot.variable {
                         return Base::Unknown("a loaded pointer that is not a buffer's".into());
                     }
-                    match self.handle(arg) {
+                    match self.handle(arg, here) {
                         Some(handle) => Base::Buffer(handle),
                         None => Base::Unknown("a slot not computed from one handle".into()),
                     }
@@ -376,34 +407,35 @@ impl Analysis<'_> {
         }
     }
 
-    /// The one loaded value a slot address is computed from, besides the heap and constants.
-    fn handle(&self, slot: Value) -> Option<Value> {
+    /// The one loaded value a slot address (used in block `at`) is computed from, besides the
+    /// heap and constants, and the block where it is used.
+    fn handle(&self, slot: Value, at: ir::Block) -> Option<(Value, ir::Block)> {
         let mut leaves = BTreeSet::new();
-        let mut work = vec![slot];
+        let mut work = vec![(slot, at)];
         let mut steps = 0;
-        while let Some(value) = work.pop() {
+        while let Some((value, at)) = work.pop() {
             steps += 1;
             if steps > 64 {
                 return None;
             }
-            let (value, through) = self.resolve(value);
-            if through {
-                return None;
-            }
+            let value = self.resolve(value, at);
             let ir::ValueDef::Result(inst, _) = self.function.dfg.value_def(value) else {
                 return None;
             };
+            let here = self.function.layout.inst_block(inst).expect("in the layout");
             match self.function.dfg.insts[inst] {
                 InstructionData::UnaryImm { .. } => {}
                 InstructionData::UnaryGlobalValue { global_value, .. } if self.heap.contains(&global_value) => {}
                 InstructionData::Load { opcode: Opcode::Load, .. } => {
-                    leaves.insert(value);
+                    leaves.insert((value, at));
                 }
-                InstructionData::Binary { opcode: Opcode::Iadd | Opcode::Imul | Opcode::Ishl | Opcode::Ushr | Opcode::Band, args } => work.extend(args),
+                InstructionData::Binary { opcode: Opcode::Iadd | Opcode::Imul | Opcode::Ishl | Opcode::Ushr | Opcode::Band, args } => work.extend(args.map(|a| (a, here))),
                 _ => return None,
             }
         }
-        (leaves.len() == 1).then(|| leaves.into_iter().next().expect("one leaf"))
+        // One loaded value (it may be used in more than one block).
+        let values: BTreeSet<Value> = leaves.iter().map(|&(v, _)| v).collect();
+        (values.len() == 1).then(|| leaves.into_iter().next().expect("one leaf"))
     }
 }
 
@@ -422,44 +454,37 @@ fn heap_symbols(function: &ir::Function) -> BTreeSet<ir::GlobalValue> {
         .collect()
 }
 
-/// Block parameters that only ever receive one value (or themselves), mapped to it.
+/// What a block parameter stands for.
+#[derive(Debug)]
+enum Join {
+    /// It only ever receives this value (or itself).
+    One(Value),
+    /// The lane of a tagged join: some arms give it `value`, and on each other arm
+    /// each of `tags` (other parameters of `join`) receives a constant. Where the use of the lane
+    /// is reached only through a test that a tag equals none of its other arms' constants, the
+    /// lane is `value` (`Analysis::tested`). Nothing is assumed of the lane on the other arms.
+    Tagged { value: Value, join: ir::Block, tags: Vec<(Value, BTreeSet<i64>)> },
+}
+
+/// Block parameters that only ever receive one value (or themselves), and the lanes of tagged
+/// joins, mapped to what they stand for.
 ///
-/// A parameter never resolves to a constant: two arms' constants are not one value.
-///
-/// A constant (below 4096) received besides that one value is passed over when it is the filler of a lane
-/// that only means something on another arm: a `Result` of a reference is a tag and an
-/// address, and its `Err` arm puts a constant where the address goes. It is a filler only if
-/// it comes from a block that does not dominate the join (so a path to the join need not pass
-/// it), on an edge that is not a back edge, and the value it stands beside comes on forward
-/// edges only. A loop counter that starts at a constant is therefore not a filler. An access
-/// through the lane runs on the arm where it is the address; one made with the filler would be
-/// an access to a constant address, already wrong without any region. Native lowering makes no
-/// access through a constant address (an empty text has a data symbol of its own).
-fn same(function: &ir::Function, cfg: &ControlFlowGraph) -> BTreeMap<Value, (Value, bool)> {
+/// A parameter never stands for a constant: two arms' constants are not one value. A tagged
+/// lane is never passed on: a parameter receiving one is not resolved (the test that makes the
+/// lane its value is checked where the lane is used).
+fn same(function: &ir::Function, cfg: &ControlFlowGraph) -> BTreeMap<Value, Join> {
     let dfg = &function.dfg;
-    let domtree = DominatorTree::with_function(function, cfg);
-    // For each parameter: each value it receives, and whether that edge may pass it over as a
-    // filler (forward, from a block that does not dominate the join) or is a back edge.
-    let mut incoming: BTreeMap<Value, Vec<(Value, bool, bool)>> = BTreeMap::new();
-    // Parameters with an argument the pass cannot see: never resolved.
-    let mut blind = BTreeSet::new();
+    // For each block: each incoming edge's arguments (`None` where the pass cannot see one).
+    let mut edges: BTreeMap<ir::Block, Vec<Vec<Option<Value>>>> = BTreeMap::new();
     for block in function.layout.blocks() {
         for predecessor in cfg.pred_iter(block) {
-            let back = domtree.block_dominates(block, predecessor.block);
-            let aside = !back && !domtree.block_dominates(predecessor.block, block);
             let data = &dfg.insts[predecessor.inst];
             for call in data.branch_destination(&dfg.jump_tables, &dfg.exception_tables) {
                 if call.block(&dfg.value_lists) != block {
                     continue;
                 }
-                for (param, argument) in dfg.block_params(block).iter().zip(call.args(&dfg.value_lists)) {
-                    match argument.as_value() {
-                        Some(argument) => incoming.entry(*param).or_default().push((dfg.resolve_aliases(argument), aside, back)),
-                        None => {
-                            blind.insert(*param);
-                        }
-                    }
-                }
+                let arguments = call.args(&dfg.value_lists).map(|a| a.as_value().map(|v| dfg.resolve_aliases(v))).collect();
+                edges.entry(block).or_default().push(arguments);
             }
         }
     }
@@ -470,51 +495,88 @@ fn same(function: &ir::Function, cfg: &ControlFlowGraph) -> BTreeMap<Value, (Val
         },
         _ => None,
     };
-    let mut same = BTreeMap::new();
-    loop {
-        let mut changed = false;
-        for (&param, sources) in &incoming {
-            if same.contains_key(&param) || blind.contains(&param) {
-                continue;
-            }
-            // Each value received, and whether reaching it passed over a filler on the way.
-            let (mut values, mut fillers, mut backward) = (BTreeMap::<Value, bool>::new(), 0, false);
-            for &(source, aside, back) in sources {
-                let mut value = source;
-                let mut filled = false;
+    // What each edge into `block` gives its parameter `index`, through parameters that receive
+    // one value; `None` when an edge's argument is unseen or a tagged lane (never passed on).
+    let given = |same: &BTreeMap<Value, Join>, block: ir::Block, index: usize| -> Option<Vec<Value>> {
+        edges[&block]
+            .iter()
+            .map(|arguments| {
+                let mut value = arguments.get(index).copied().flatten()?;
                 for _ in 0..=same.len() {
                     match same.get(&value) {
-                        Some(&(next, through)) => {
-                            filled |= through;
-                            value = next;
-                        }
+                        Some(Join::One(next)) => value = *next,
+                        Some(Join::Tagged { .. }) => return None,
                         None => break,
                     }
                 }
-                if value == param {
+                Some(value)
+            })
+            .collect()
+    };
+    // First every parameter that receives one value, to a fixed point; only then tagged lanes,
+    // so that a parameter is never taken for a lane while what it receives is still unresolved
+    // (a loop header's parameter receives itself, through others, on its back edge).
+    let mut same: BTreeMap<Value, Join> = BTreeMap::new();
+    loop {
+        let mut changed = false;
+        for &block in edges.keys() {
+            for (index, &param) in dfg.block_params(block).iter().enumerate() {
+                if same.contains_key(&param) {
                     continue;
                 }
-                if aside && constant(value).is_some_and(|c| (0..FILLER_LIMIT).contains(&c)) {
-                    fillers += 1;
-                    continue;
+                let Some(given) = given(&same, block, index) else { continue };
+                let values: BTreeSet<Value> = given.into_iter().filter(|&v| v != param).collect();
+                if values.len() == 1 {
+                    let value = *values.iter().next().expect("one");
+                    if constant(value).is_none() {
+                        same.insert(param, Join::One(value));
+                        changed = true;
+                    }
                 }
-                backward |= back;
-                *values.entry(value).or_default() |= filled;
-            }
-            // Never to a constant: a constant is no storage, and two arms' constants are not one.
-            let one = (values.len() == 1).then(|| values.iter().next().map(|(&value, &filled)| (value, filled)).expect("one source")).filter(|&(value, _)| constant(value).is_none());
-            if let Some((value, filled)) = one
-                && !(fillers > 0 && backward)
-            {
-                // A filler passed over here or by a parameter on the way stays known.
-                same.insert(param, (value, fillers > 0 || filled));
-                changed = true;
             }
         }
         if !changed {
             break;
         }
     }
+    // A tagged lane: one value that is no constant, and on every other arm a constant for some
+    // other parameter of the join.
+    let mut lanes = BTreeMap::new();
+    for (&block, arrivals) in &edges {
+        let params = dfg.block_params(block);
+        for (index, &param) in params.iter().enumerate() {
+            if same.contains_key(&param) {
+                continue;
+            }
+            let Some(given) = given(&same, block, index) else { continue };
+            let values: BTreeSet<Value> = given.iter().copied().filter(|&v| v != param).collect();
+            let mut found = None;
+            for &value in values.iter().filter(|&&v| constant(v).is_none()) {
+                let others: Vec<usize> = (0..arrivals.len()).filter(|&e| given[e] != value && given[e] != param).collect();
+                let tags: Vec<(Value, BTreeSet<i64>)> = params
+                    .iter()
+                    .enumerate()
+                    .filter(|&(i, _)| i != index)
+                    .filter_map(|(i, &tag)| {
+                        let constants: Option<BTreeSet<i64>> = others.iter().map(|&e| arrivals[e].get(i).copied().flatten().and_then(constant)).collect();
+                        constants.map(|c| (tag, c))
+                    })
+                    .collect();
+                if !tags.is_empty() {
+                    // Two values could each be "the" value: then neither is.
+                    if found.is_some() {
+                        found = None;
+                        break;
+                    }
+                    found = Some(Join::Tagged { value, join: block, tags });
+                }
+            }
+            if let Some(join) = found {
+                lanes.insert(param, join);
+            }
+        }
+    }
+    same.extend(lanes);
     same
 }
 

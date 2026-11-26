@@ -178,17 +178,35 @@ fn an_access_the_loan_rule_does_not_describe_leaves_no_region() {
     assert_eq!(loads(&function).1, 0);
 }
 
-#[test]
-fn a_lane_joined_with_a_constant_filler_is_its_address() {
-    // The `Ok` arm passes the element's address, the `Err` arm a constant; the load is on `Ok`.
+/// How the test of a tagged join's tag reaches the read of its lane.
+#[derive(Clone, Copy, Debug)]
+enum Shape {
+    /// `join: brif tag, done, read; read: load lane` (the `Ok` arm's tag is 0).
+    Tested,
+    /// The address is computed in `join`, before the test, and read after it.
+    ComputedBeforeTest,
+    /// The load is in `join` itself, before the test.
+    ReadBeforeTest,
+    /// `join: brif (tag == 1), read, done`: the test lets the `Err` arm's tag through.
+    WrongTag,
+    /// `join: brif tag, aside, read; aside: jump merge; read: jump merge; merge: load lane`: the
+    /// load is reached from `join` through `aside` too, where the tag was not 0.
+    TestedOnOnePath,
+    /// `join: brif tag, done, read; read: jump next(lane); next(hop): load hop`.
+    PassedOn,
+}
+
+/// `entry: brif param, ok, err; ok: jump join(0, element); err: jump join(1, 1)`, then `shape`.
+fn tagged(shape: Shape) -> (ir::Function, Value) {
     let (mut function, entry, heap) = function(1);
     let param = function.dfg.block_params(entry)[0];
-    let (ok, err, join, read, done) = (function.dfg.make_block(), function.dfg.make_block(), function.dfg.make_block(), function.dfg.make_block(), function.dfg.make_block());
-    for block in [ok, err, join, read, done] {
+    let [ok, err, join, read, done, aside, merge] = std::array::from_fn(|_| function.dfg.make_block());
+    for block in [ok, err, join, read, done, aside, merge] {
         function.layout.append_block(block);
     }
     let tag = function.dfg.append_block_param(join, I64);
     let lane = function.dfg.append_block_param(join, I64);
+    let hop = function.dfg.append_block_param(merge, I64);
     let mut pos = FuncCursor::new(&mut function).at_bottom(entry);
     pos.ins().brif(param, ok, &[], err, &[]);
     pos.goto_bottom(ok);
@@ -200,20 +218,81 @@ fn a_lane_joined_with_a_constant_filler_is_its_address() {
     let one = pos.ins().iconst(I64, 1);
     pos.ins().jump(join, &[one.into(), one.into()]);
     pos.goto_bottom(join);
-    pos.ins().brif(tag, done, &[], read, &[]);
+    let mut early = None;
+    let mut address = lane;
+    match shape {
+        Shape::ComputedBeforeTest => address = pos.ins().iadd_imm(lane, 0),
+        Shape::ReadBeforeTest => early = Some(pos.ins().load(I64, MemFlagsData::new(), lane, 0)),
+        _ => {}
+    }
+    match shape {
+        Shape::WrongTag => {
+            let is_err = pos.ins().icmp_imm(ir::condcodes::IntCC::Equal, tag, 1);
+            pos.ins().brif(is_err, read, &[], done, &[]);
+        }
+        Shape::TestedOnOnePath => {
+            pos.ins().brif(tag, aside, &[], read, &[]);
+        }
+        _ => {
+            pos.ins().brif(tag, done, &[], read, &[]);
+        }
+    }
     pos.goto_bottom(read);
-    let value = pos.ins().load(I64, MemFlagsData::new(), lane, 0);
-    pos.ins().return_(&[value]);
+    match shape {
+        Shape::TestedOnOnePath => {
+            pos.ins().jump(merge, &[one.into()]);
+            pos.goto_bottom(aside);
+            pos.ins().jump(merge, &[one.into()]);
+            pos.goto_bottom(merge);
+            let value = pos.ins().load(I64, MemFlagsData::new(), lane, 0);
+            pos.ins().return_(&[value]);
+        }
+        Shape::PassedOn => {
+            pos.ins().jump(merge, &[lane.into()]);
+            pos.goto_bottom(merge);
+            let value = pos.ins().load(I64, MemFlagsData::new(), hop, 0);
+            pos.ins().return_(&[value]);
+            pos.goto_bottom(aside);
+            pos.ins().return_(&[one]);
+        }
+        _ => {
+            let value = early.unwrap_or_else(|| pos.ins().load(I64, MemFlagsData::new(), address, 0));
+            pos.ins().return_(&[value]);
+            pos.goto_bottom(aside);
+            pos.ins().return_(&[one]);
+            pos.goto_bottom(merge);
+            pos.ins().return_(&[one]);
+        }
+    }
     pos.goto_bottom(done);
     pos.ins().return_(&[one]);
+    (function, param)
+}
+
+#[test]
+fn a_lane_is_its_address_after_a_test_that_excludes_the_other_arm() {
+    let (mut function, param) = tagged(Shape::Tested);
     assert!(annotate(&mut function, &[(param, root(false))]).is_ok());
     assert_eq!(loads(&function).0, loads(&function).1);
 }
 
 #[test]
-fn a_loop_offset_that_starts_at_a_constant_is_not_a_filler() {
+fn a_lane_used_where_its_tag_is_not_known_is_no_address() {
+    // Each shape reaches a use of the lane on a path where the `Err` arm may have given it.
+    let mut described = Vec::new();
+    for shape in [Shape::ComputedBeforeTest, Shape::ReadBeforeTest, Shape::WrongTag, Shape::TestedOnOnePath, Shape::PassedOn] {
+        let (mut function, param) = tagged(shape);
+        if annotate(&mut function, &[(param, root(false))]).is_ok() || loads(&function).1 != 0 {
+            described.push(shape);
+        }
+    }
+    assert!(described.is_empty(), "described: {described:?}");
+}
+
+#[test]
+fn a_loop_offset_that_starts_at_a_constant_is_an_index() {
     // `off` starts at 0 and grows by 8 each time round: it is not the address it is added to.
-    // From the review: the filler rule took it for one and the address walk never ended.
+    // From the review: an earlier rule took the start for a filler and the walk never ended.
     let (mut function, entry, _) = function(1);
     let param = function.dfg.block_params(entry)[0];
     let (head, exit) = (function.dfg.make_block(), function.dfg.make_block());
@@ -322,19 +401,26 @@ fn two_constants_are_not_one_offset() {
 }
 
 #[test]
-fn a_filler_is_small_and_nothing_large_is_added_past_it() {
-    for (filler, past, described) in [(1, 8, true), (4096, 8, false), (1, 4096, false)] {
+fn a_lane_with_no_tag_is_never_an_address() {
+    // `join(lane)` gets an address on one arm and a constant on the other, and nothing tells
+    // the arms apart: whatever the constant, the access is not described. (The pass no longer
+    // reasons about what an access at a small constant address would do.)
+    for (filler, past) in [(1, 8), (4096, 8), (1, 4096)] {
         let (mut function, param) = diamond(
-            |pos, param, _| (pos.ins().iconst(I64, filler), param),
+            |pos, param, heap| {
+                let source = buffer(pos, param, heap);
+                (pos.ins().iconst(I64, filler), element(pos, source, 0))
+            },
             |pos, _, lane, _| pos.ins().load(I64, MemFlagsData::new(), lane, past as i32),
         );
-        assert_eq!(annotate(&mut function, &[(param, root(true))]).is_ok(), described, "filler {filler}, {past} past it");
+        assert!(annotate(&mut function, &[(param, root(true))]).is_err(), "filler {filler}, {past} past it");
+        assert_eq!(loads(&function).1, 0);
     }
 }
 
 #[test]
-fn a_handle_never_comes_through_a_filler() {
-    // A constant handle names a real slot: no filler is passed over on the way to one.
+fn a_handle_never_comes_through_an_untagged_join() {
+    // A constant on one arm and a handle on the other, and no tag: no handle is resolved.
     let (mut function, param) = diamond(
         |pos, param, _| (pos.ins().iconst(I64, 1), pos.ins().load(I64, MemFlagsData::new(), param, 0)),
         |pos, _, handle, heap| {
@@ -355,9 +441,10 @@ fn a_handle_never_comes_through_a_filler() {
 }
 
 #[test]
-fn an_offset_never_comes_through_a_filler() {
-    // From the third review round: `buf + imul(lane, 8)` with `lane` an index or a filler.
-    // On the filler's arm the access is a small distance past a real address.
+fn an_offset_from_a_join_is_an_index_like_any_other() {
+    // From the third review round: `buf + 40 + imul(lane, 8)` with `lane` an index or a constant.
+    // Nothing is resolved through the join: the lane is an unknown index into the payload, as any
+    // index is, and the access is the payload's whichever arm gave it.
     let (mut function, param) = diamond(
         |pos, param, _| (pos.ins().iconst(I64, 1), pos.ins().load(I64, MemFlagsData::new(), param, 8)),
         |pos, param, lane, heap| {
@@ -370,15 +457,15 @@ fn an_offset_never_comes_through_a_filler() {
             pos.ins().load(I64, MemFlagsData::new(), at, 0)
         },
     );
-    assert!(annotate(&mut function, &[(param, root(true))]).is_err());
-    assert_eq!(loads(&function).1, 0);
+    assert!(annotate(&mut function, &[(param, root(true))]).is_ok());
+    let regions: BTreeSet<String> = function.layout.blocks().flat_map(|b| function.layout.block_insts(b)).filter_map(|i| function.dfg.insts[i].alias_region(&function.dfg)).map(|r| function.dfg.alias_regions[r].description.to_string()).collect();
+    assert!(regions.contains("Payload(Unique(0))"), "{regions:?}");
 }
 
 #[test]
-fn a_filler_passed_over_by_an_earlier_join_stays_known() {
-    // From the automated review: `join(p1)` passes over a filler; a later `next(p2)` receives
-    // only `p1`. Resolving `p2` straight to the address must still say a filler was on the way,
-    // so a handle read through it is refused.
+fn a_join_passed_on_to_another_stays_unresolved() {
+    // From the automated review: `join(p1)` has a constant on one arm; a later `next(p2)`
+    // receives only `p1`. `p2` is `p1`, which is no single value, so the handle is refused.
     let (mut function, param) = diamond(
         |pos, param, _| (pos.ins().iconst(I64, 1), pos.ins().load(I64, MemFlagsData::new(), param, 0)),
         |pos, _, lane, _| lane,
@@ -408,4 +495,34 @@ fn a_filler_passed_over_by_an_earlier_join_stays_known() {
     pos.ins().return_(&[read]);
     assert!(annotate(&mut function, &[(param, root(true))]).is_err());
     assert_eq!(loads(&function).1, 0);
+}
+
+#[test]
+fn a_pointer_carried_around_a_loop_with_a_counter_is_its_parameter() {
+    // `entry: jump head(0, param); head(i, p): read p + 8; brif .., head(i + 1, p2), exit` with
+    // `p2` a parameter of a second block that receives `p`. `head` gets a constant counter on
+    // the entry edge, so it looks like a tagged join while `p2` is still unresolved: `p` must be
+    // found to be `param` first (from the spread loop: the whole function lost its regions).
+    let (mut function, entry, _) = function(1);
+    let param = function.dfg.block_params(entry)[0];
+    let (head, body, exit) = (function.dfg.make_block(), function.dfg.make_block(), function.dfg.make_block());
+    for block in [head, body, exit] {
+        function.layout.append_block(block);
+    }
+    let i = function.dfg.append_block_param(head, I64);
+    let p = function.dfg.append_block_param(head, I64);
+    let p2 = function.dfg.append_block_param(body, I64);
+    let mut pos = FuncCursor::new(&mut function).at_bottom(entry);
+    let zero = pos.ins().iconst(I64, 0);
+    pos.ins().jump(head, &[zero.into(), param.into()]);
+    pos.goto_bottom(head);
+    let value = pos.ins().load(I64, MemFlagsData::new(), p, 8);
+    pos.ins().brif(value, body, &[p.into()], exit, &[]);
+    pos.goto_bottom(body);
+    let next = pos.ins().iadd_imm(i, 1);
+    pos.ins().jump(head, &[next.into(), p2.into()]);
+    pos.goto_bottom(exit);
+    pos.ins().return_(&[value]);
+    assert!(annotate(&mut function, &[(param, root(true))]).is_ok());
+    assert_eq!(loads(&function).0, loads(&function).1);
 }

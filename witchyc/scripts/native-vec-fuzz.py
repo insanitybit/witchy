@@ -8,7 +8,10 @@ tests/fuzz/vec-owners.wy reads operations from its input, three bytes each, and 
 a Vec<U64> and a Vec<String> (each String an allocation of its own): push, pop, read, insert,
 remove, swap, truncate, extend from another Vec, replace, reverse, an allocation too large to
 grant, a Vec moved through a function by value, and release with a new Vec after it. After each
-it prints both vectors. This script holds Python lists doing the same and compares every line.
+it prints both vectors, then copies the numbers into a new Vec through two borrows (`mirror`)
+and rewrites that one through a reborrow (`settle`), and prints what both read back. With
+--expect-regions the builds have alias regions on, and the default build must give those two
+functions regions. This script holds Python lists doing the same and compares every line.
 
 The program is built for macos-arm64 three ways (default, WITCHY_NATIVE_CHECKED=1,
 WITCHY_NATIVE_OBSERVED=1) and each is run with the heap audit on and must also say that no
@@ -67,6 +70,15 @@ def model(data):
         total = 0
         for value in numbers: total = (total * 31 + value) % M
         say(' '.join([str(len(numbers)), str(total), str(len(owners)), *owners]))
+        mirrored, shadow = 0, []
+        for i, value in enumerate(numbers):
+            shadow.append(value % 1000 + i)
+            mirrored = (mirrored * 31 + value + shadow[i]) % M
+        settled = 0
+        for i in range(len(shadow)):
+            shadow[i] = shadow[i] * 3 % 1000003
+            settled = (settled * 31 + shadow[i]) % M
+        say(f'{mirrored} {settled}')
     return '\n'.join(out) + '\n' if out else ''
 
 parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -78,8 +90,12 @@ parser.add_argument('--guard', action='store_true', help='also run the default b
 parser.add_argument('--seeds', type=int, default=200)
 parser.add_argument('--operations', type=int, default=400)
 parser.add_argument('--first-seed', type=int, default=1)
+parser.add_argument('--expect-regions', action='store_true',
+                    help='build with WITCHY_NATIVE_ALIAS=1 and fail unless mirror and settle get alias regions in the default build')
 a = parser.parse_args()
 base = {**os.environ, 'WITCHY_WASM_READY_BINDING': a.binding}
+if a.expect_regions:
+    base.update(WITCHY_NATIVE_ALIAS='1', WITCHY_NATIVE_ALIAS_REPORT='1')
 for name in ('WITCHY_NATIVE_CHECKED', 'WITCHY_NATIVE_OBSERVED', 'WITCHY_NATIVE_RUNTIME_CELLS'):
     base.pop(name, None)
 if a.proof_cache: base['WITCHY_PROOF_CACHE'] = a.proof_cache
@@ -92,6 +108,14 @@ with tempfile.TemporaryDirectory(prefix='witchy-vec-fuzz-') as work:
         exe = work / name
         built = subprocess.run([a.compiler, 'build', source, '-o', exe, '--target=macos-arm64'], env={**base, **extra}, capture_output=True, text=True)
         if built.returncode: sys.exit(f'the {name} build failed:\n{built.stderr[-2000:]}')
+        if a.expect_regions:
+            # Checked and observed builds reach buffers through runtime calls, which the pass
+            # does not classify: only the default build must have regions.
+            report = dict(line.split('\t')[1:] for line in built.stderr.splitlines() if line.startswith('alias regions\t'))
+            outcomes = {function: report.get(function, 'not reported') for function in ('mirror', 'settle')}
+            print(f'{name}: ' + ', '.join(f'{f} {o}' for f, o in outcomes.items()))
+            if name == 'default' and not all(o.startswith('Ok(') and o != 'Ok(0)' for o in outcomes.values()):
+                sys.exit('the default build gave mirror or settle no alias regions')
         ways.append((name, [exe, '--output', '--input', '--allocator'], {}))
     if a.guard:
         guard = '/usr/lib/libgmalloc.dylib'
