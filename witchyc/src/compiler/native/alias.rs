@@ -119,7 +119,7 @@ pub(super) fn annotate(function: &mut ir::Function, roots: &[(Value, Root)]) -> 
                     // the handle was read from, which holds only while no owner field is written:
                     // `memory.exchange` of two owners is plain loads and stores, and would put one
                     // buffer under two parameters' regions.
-                    Some(&(_, root)) if store && (place.variable || root.owners.iter().any(|&owner| constant < owner + OWNER && owner < constant + WIDEST)) => {
+                    Some(&(_, root)) if store && root.owners.iter().any(|&owner| place.variable || (constant < owner + OWNER && owner < constant + WIDEST)) => {
                         return Err(format!("{inst}: a store that may write an owner field"));
                     }
                     Some(&(index, root)) => Region::Record(group(index, root)),

@@ -697,3 +697,21 @@ fn a_buffer_moved_between_owners_leaves_no_region() {
     assert!(annotate(&mut function, &[(a, root(true)), (b, root(true))]).is_err());
     assert_eq!(loads(&function).1, 0);
 }
+
+#[test]
+fn a_store_at_a_variable_offset_into_a_record_with_no_owner_keeps_its_regions() {
+    // A fixed array of numbers written at a computed index: no owner field to overwrite.
+    let (mut function, block, _) = function(1);
+    let param = function.dfg.block_params(block)[0];
+    let mut pos = FuncCursor::new(&mut function).at_bottom(block);
+    let index = pos.ins().load(I64, MemFlagsData::new(), param, 0);
+    let eight = pos.ins().iconst(I64, 8);
+    let offset = pos.ins().imul(index, eight);
+    let at = pos.ins().iadd(param, offset);
+    pos.ins().store(MemFlagsData::new(), index, at, 8);
+    pos.ins().return_(&[index]);
+    let numbers = Root { mutable: true, owners: BTreeSet::new() };
+    assert!(annotate(&mut function.clone(), &[(param, numbers)]).is_ok());
+    // With an owner field the same store could overwrite it.
+    assert!(annotate(&mut function, &[(param, root(true))]).is_err());
+}

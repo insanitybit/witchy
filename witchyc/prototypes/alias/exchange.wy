@@ -1,0 +1,25 @@
+// Read b[0], exchange the two vectors, write a[0] (b's old buffer), exchange back, read b[0]:
+// the second read must see the write.
+import console
+import vec
+
+fn trade(a: &mut Vec<U64>, b: &mut Vec<U64>) -> U64:
+    let first = b.index(0)
+    memory.exchange(&mut *a, &mut *b)
+    a.index_set(0, 7)
+    memory.exchange(&mut *a, &mut *b)
+    let second = b.index(0)
+    return first + second
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(one): Vec<U64> = Vec.filled(&allocator, 4, 1) else Err(code):
+        return
+    let Ok(two): Vec<U64> = Vec.filled(&allocator, 4, 2) else Err(code):
+        one.close()
+        return
+    var a = move one
+    var b = move two
+    console.write_u64(trade(&mut a, &mut b))
+    console.line("")
+    a.close()
+    b.close()
