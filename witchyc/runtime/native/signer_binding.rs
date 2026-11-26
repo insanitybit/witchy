@@ -119,30 +119,26 @@ fn store_binding(text: &[u8]) -> Option<(usize, usize, StoreSource)> {
     }
 }
 
+/// A secret of the store that was loaded, under its name and the NULs after it.
 #[cfg(not(test))]
+#[derive(Clone, Copy)]
 struct StoreGrant {
     name: [u8; 65],
     len: usize,
     reveal: bool,
 }
 
+/// The store's secrets, each at the place whose number names its slot.
 #[cfg(not(test))]
-static mut STORE_GRANTS: [StoreGrant; 64] = [const {
-    StoreGrant {
-        name: [0; 65],
-        len: 0,
-        reveal: false,
-    }
-}; 64];
+static STORE_GRANTS: super::global::Table<StoreGrant, 64> = super::global::Table::new(StoreGrant {
+    name: [0; 65],
+    len: 0,
+    reveal: false,
+});
 
 #[cfg(not(test))]
 pub(super) fn store_lookup(name: &[u8], reveal: bool) -> core::ffi::c_int {
-    let grants = unsafe { &*(&raw const STORE_GRANTS) };
-    for (index, grant) in grants
-        .iter()
-        .enumerate()
-        .take_while(|(_, grant)| grant.len != 0)
-    {
+    for (index, grant) in STORE_GRANTS.iter().enumerate() {
         if grant.name.get(..grant.len) == Some(name) {
             return if reveal && !grant.reveal {
                 -2
@@ -157,12 +153,14 @@ pub(super) fn store_lookup(name: &[u8], reveal: bool) -> core::ffi::c_int {
 /// The argument is borrowed through the synchronous OS/provider loading step.
 #[cfg(not(test))]
 pub(super) fn witchy_bind_store_secret(input: &core::ffi::CStr, reveal: bool) -> bool {
+    use core::ffi::CStr;
     let bytes = input.to_bytes();
     let Some((len, start, kind)) = store_binding(bytes) else {
         return false;
     };
     // The source starts at or before the terminating NUL.
-    let Some(source) = input.to_bytes_with_nul().get(start..) else {
+    let source = input.to_bytes_with_nul().get(start..);
+    let Some(source) = source.and_then(|source| CStr::from_bytes_with_nul(source).ok()) else {
         return false;
     };
     let Some(name) = bytes.get(..len) else {
@@ -171,31 +169,25 @@ pub(super) fn witchy_bind_store_secret(input: &core::ffi::CStr, reveal: bool) ->
     if store_lookup(name, false) != -1 {
         return false;
     }
-    let grants = unsafe { &mut *(&raw mut STORE_GRANTS) };
-    let Some((index, grant)) = grants
-        .iter_mut()
-        .enumerate()
-        .find(|(_, grant)| grant.len == 0)
-    else {
+    // A secret is added only once it has loaded, so the next place is the
+    // first one that is free.
+    let index = STORE_GRANTS.len();
+    if index >= 64 {
         return false;
+    }
+    let mut grant = StoreGrant {
+        name: [0; 65],
+        len,
+        reveal,
     };
-    grant.name = [0; 65];
     for (out, &byte) in grant.name.iter_mut().zip(name) {
         *out = byte;
     }
-    if !unsafe {
-        super::signer_crypto::load_store_secret(
-            index,
-            grant.name.as_ptr().cast(),
-            source.as_ptr().cast(),
-            kind,
-        )
-    } {
+    // The name is at most 64 bytes, so a NUL follows it.
+    let Ok(name) = CStr::from_bytes_until_nul(&grant.name) else {
         return false;
-    }
-    grant.len = len;
-    grant.reveal = reveal;
-    true
+    };
+    super::signer_crypto::load_store_secret(index, name, source, kind) && STORE_GRANTS.push(grant)
 }
 
 #[cfg(test)]
@@ -225,9 +217,7 @@ fn secret_slot(handle: u64, operation: u32) -> Option<usize> {
 }
 
 #[cfg(not(test))]
-fn trap() -> ! {
-    unsafe { core::arch::asm!("brk #0", options(noreturn, nostack)) }
-}
+use super::signer_crypto::trap;
 
 #[cfg(not(test))]
 #[unsafe(no_mangle)]
@@ -242,19 +232,14 @@ extern "C" fn witchy_secret_read(handle: u64, index: u64, reading: u64) -> u64 {
         return handle - 8192;
     }
     let slot = witchy_native_secret_slot(handle, 0);
-    let slot = unsafe { &*super::signer_crypto::slot_ptr(slot) };
-    let bytes = slot.revealed;
-    if bytes.is_null() {
-        trap();
-    }
+    let Some(bytes) = super::signer_crypto::slot(slot).revealed.get() else {
+        trap()
+    };
     if reading == 0 {
         return 0;
     }
-    if index >= slot.length as u64 {
-        return 256;
-    }
-    // The slot holds a live allocation for all bytes below its length.
-    u64::from(unsafe { bytes.add(index as usize).read() })
+    let byte = usize::try_from(index).ok().and_then(|index| bytes.get(index));
+    byte.map_or(256, |&byte| u64::from(byte))
 }
 
 #[cfg(test)]

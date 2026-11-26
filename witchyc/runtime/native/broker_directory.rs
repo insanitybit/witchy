@@ -410,14 +410,11 @@ pub(super) unsafe fn prepare_secret_protection(write_dir: *const c_char, write_f
         const DUP_CLOEXEC: c_int = 1030;
 
         unsafe extern "C" {
-            fn witchy_secret_identities(devices: *mut u64, inodes: *mut u64, capacity: u32) -> u32;
             fn fcntl(fd: c_int, command: c_int, ...) -> c_int;
         }
         let mut devices = [0u64; 192];
         let mut inodes = [0u64; 192];
-        // SAFETY: each array has room for the 192 identities the call may write.
-        let count =
-            unsafe { witchy_secret_identities(devices.as_mut_ptr(), inodes.as_mut_ptr(), 192) };
+        let count = super::signer_crypto::witchy_secret_identities(&mut devices, &mut inodes);
         let kept = (count as usize).min(192);
         witchy_broker_secret_objects(&devices[..kept], &inodes[..kept]);
         if count != 0 && (!write_dir.is_null() || write_fd >= 0) {

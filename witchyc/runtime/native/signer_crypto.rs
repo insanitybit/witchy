@@ -1,29 +1,223 @@
 //! Native ML-DSA signing through the pinned AWS-LC provider.
 
 use super::global::{Global, Table};
-use core::{
-    ffi::{c_int, c_void},
-    ptr::{null, null_mut},
-};
+use core::ffi::{CStr, c_char, c_int};
 
 use super::{
-    pkix::ffi::{free_digest_context, new_digest_context},
-    signer_binding::witchy_native_secret_slot,
-    tls_signer::{self, sign, sign_init},
+    digest::fips_mode,
+    signer_binding::{StoreSource, parse, witchy_native_secret_slot},
+    sys,
+    tls_signer::{self, Prehash, PrivateKey},
 };
+use provider::{Hmac, Seed};
 
-unsafe extern "C" {
-    #[link_name = "aws_lc_fips_0_14_4_EVP_PKEY_get_raw_public_key"]
-    fn public_key(key: *const c_void, out: *mut u8, len: *mut usize) -> c_int;
+/// The provider and C library calls made on secret bytes, behind signatures
+/// that hold each call's contract.
+mod provider {
+    use core::{
+        ffi::{CStr, c_char, c_int, c_void},
+        ptr::{NonNull, null, null_mut},
+        slice,
+    };
+
+    unsafe extern "C" {
+        fn malloc(size: usize) -> *mut c_void;
+        fn free(bytes: *mut c_void);
+        fn read(fd: c_int, bytes: *mut c_void, len: usize) -> isize;
+        fn getenv(name: *const c_char) -> *const c_char;
+        fn unsetenv(name: *const c_char) -> c_int;
+        fn strdup(s: *const c_char) -> *mut c_char;
+        fn strnlen(text: *const c_char, maximum: usize) -> usize;
+        #[link_name = "aws_lc_fips_0_14_4_OPENSSL_cleanse"]
+        fn cleanse(bytes: *mut c_void, len: usize);
+        #[link_name = "aws_lc_fips_0_14_4_HMAC_CTX_new"]
+        fn hmac_new() -> *mut c_void;
+        #[link_name = "aws_lc_fips_0_14_4_HMAC_CTX_free"]
+        fn hmac_free(ctx: *mut c_void);
+        #[link_name = "aws_lc_fips_0_14_4_HMAC_Init_ex"]
+        fn hmac_init(
+            ctx: *mut c_void,
+            key: *const c_void,
+            len: usize,
+            digest: *const c_void,
+            engine: *mut c_void,
+        ) -> c_int;
+        #[link_name = "aws_lc_fips_0_14_4_HMAC_Update"]
+        fn hmac_update(ctx: *mut c_void, bytes: *const u8, len: usize) -> c_int;
+        #[link_name = "aws_lc_fips_0_14_4_HMAC_Final"]
+        fn hmac_final(ctx: *mut c_void, bytes: *mut u8, len: *mut u32) -> c_int;
+        #[link_name = "aws_lc_fips_0_14_4_EVP_sha256"]
+        fn sha256() -> *const c_void;
+    }
+
+    /// A keyed HMAC-SHA-256 computation the provider holds. `new` is the only
+    /// way to get one and none is ever freed, so every copy names a live
+    /// context for the life of the process.
+    #[derive(Clone, Copy)]
+    pub(super) struct Hmac(NonNull<c_void>);
+
+    impl Hmac {
+        /// A computation under `key`, with nothing fed to it yet.
+        pub(super) fn new(key: &[u8]) -> Option<Self> {
+            // SAFETY: the context is checked before it is used, and freeing a
+            // null one does nothing. The provider reads `key` for its length
+            // and keeps its own copy.
+            unsafe {
+                let context = hmac_new();
+                if context.is_null()
+                    || hmac_init(context, key.as_ptr().cast(), key.len(), sha256(), null_mut()) != 1
+                {
+                    hmac_free(context);
+                    return None;
+                }
+                NonNull::new(context).map(Self)
+            }
+        }
+
+        pub(super) fn update(self, bytes: &[u8]) -> bool {
+            // SAFETY: the context is live, and `bytes` is read for its length.
+            unsafe { hmac_update(self.0.as_ptr(), bytes.as_ptr(), bytes.len()) == 1 }
+        }
+
+        /// Writes the code of what was fed. The number of bytes written, or
+        /// `None` when the provider refuses.
+        pub(super) fn finish(self, out: &mut [u8; 32]) -> Option<u32> {
+            let mut length = 0;
+            // SAFETY: the context is live and was keyed for SHA-256, so the
+            // provider writes that hash's 32 bytes, which `out` has.
+            let done = unsafe { hmac_final(self.0.as_ptr(), out.as_mut_ptr(), &mut length) } == 1;
+            done.then_some(length)
+        }
+
+        /// Starts the computation again under the same key.
+        pub(super) fn restart(self) -> bool {
+            // SAFETY: the context is live. A null key and a null hash ask the
+            // provider to keep the ones it has.
+            unsafe { hmac_init(self.0.as_ptr(), null(), 0, null(), null_mut()) == 1 }
+        }
+    }
+
+    /// Room for a secret while it is loaded. The first `length` of the
+    /// `capacity` allocated bytes hold values. Unless it is retained, all of
+    /// it is cleansed and freed when this is dropped.
+    pub(super) struct Seed {
+        bytes: NonNull<u8>,
+        capacity: usize,
+        length: usize,
+    }
+
+    impl Seed {
+        pub(super) fn new(capacity: usize) -> Option<Self> {
+            // SAFETY: `malloc` takes any size, and gives null or that many bytes.
+            let bytes = NonNull::new(unsafe { malloc(capacity) }.cast())?;
+            Some(Self { bytes, capacity, length: 0 })
+        }
+
+        pub(super) fn capacity(&self) -> usize {
+            self.capacity
+        }
+
+        /// The number of bytes that hold values.
+        pub(super) fn len(&self) -> usize {
+            self.length
+        }
+
+        pub(super) fn as_slice(&self) -> &[u8] {
+            // SAFETY: the first `length` bytes of the allocation hold values,
+            // and nothing writes them while `self` is borrowed.
+            unsafe { slice::from_raw_parts(self.bytes.as_ptr(), self.length) }
+        }
+
+        /// Reads from `fd` into the bytes that hold no value yet, as `read`
+        /// does, and counts what arrived.
+        pub(super) fn read(&mut self, fd: c_int) -> isize {
+            // SAFETY: `length` is at most `capacity`, so the call is given the
+            // unused end of the allocation and its size. It writes no more,
+            // and a positive result is the number of bytes it wrote.
+            let count = unsafe {
+                read(fd, self.bytes.as_ptr().add(self.length).cast(), self.capacity - self.length)
+            };
+            if count > 0 {
+                self.length += count as usize;
+            }
+            count
+        }
+
+        /// Makes `bytes` the contents. False, with nothing changed, unless
+        /// they are shorter than the capacity.
+        pub(super) fn fill(&mut self, bytes: &[u8]) -> bool {
+            if bytes.len() >= self.capacity {
+                return false;
+            }
+            // SAFETY: the allocation has room for `bytes`, and is not part of
+            // them because `self` is borrowed alone.
+            unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), self.bytes.as_ptr(), bytes.len()) };
+            self.length = bytes.len();
+            true
+        }
+
+        /// Keeps the contents for the life of the process.
+        pub(super) fn retain(self) -> &'static [u8] {
+            // SAFETY: as `as_slice`. Forgetting `self` leaves the allocation
+            // with no owner, so nothing frees or writes it again.
+            let kept = unsafe { slice::from_raw_parts(self.bytes.as_ptr(), self.length) };
+            core::mem::forget(self);
+            kept
+        }
+    }
+
+    impl Drop for Seed {
+        fn drop(&mut self) {
+            // SAFETY: the allocation is `capacity` bytes from `malloc`, and
+            // this is its owner's end.
+            unsafe {
+                cleanse(self.bytes.as_ptr().cast(), self.capacity);
+                free(self.bytes.as_ptr().cast());
+            }
+        }
+    }
+
+    /// Moves the value of the environment variable `name` into `seed`, and
+    /// takes the variable out of the environment with its value cleansed. The
+    /// result is a copy of the name that is never freed. `None` when there is
+    /// no such variable, its value does not fit, or the C library refuses.
+    pub(super) fn take_environment(name: &CStr, seed: &mut Seed) -> Option<&'static CStr> {
+        // SAFETY: `name` is a C string. `getenv` gives null or a C string that
+        // stays where it is until the environment changes, and `unsetenv`
+        // below is the first thing to change it; the borrow of the value has
+        // ended by then, and the cleanse writes only the bytes `strnlen`
+        // counted. `strdup` gives null or a C string of its own.
+        unsafe {
+            let value = getenv(name.as_ptr());
+            if value.is_null() {
+                return None;
+            }
+            let length = strnlen(value, seed.capacity);
+            if length >= seed.capacity {
+                return None;
+            }
+            let kept = strdup(name.as_ptr());
+            if kept.is_null() {
+                return None;
+            }
+            if !seed.fill(slice::from_raw_parts(value.cast(), length)) {
+                return None;
+            }
+            cleanse(value.cast_mut().cast(), length);
+            if unsetenv(name.as_ptr()) != 0 {
+                return None;
+            }
+            Some(CStr::from_ptr(kept))
+        }
+    }
 }
 
-fn signer(handle: u64) -> (*mut c_void, *const u8, usize) {
-    let index = witchy_native_secret_slot(handle, 2);
-    let slot = unsafe { &*slot_ptr(index) };
-    if slot.key_kind != 3 || slot.key.is_null() {
-        trap();
+fn signer(handle: u64) -> (PrivateKey, [u8; 44], usize) {
+    let slot = slot(witchy_native_secret_slot(handle, 2));
+    match slot.key.get() {
+        Some(key) if slot.key_kind.get() == 3 => (key, slot.domain.get(), slot.domain_len.get()),
+        _ => trap(),
     }
-    (slot.key, slot.domain.as_ptr(), slot.domain_len)
 }
 
 /// The guest provides writable storage for the public key.
@@ -31,14 +225,15 @@ fn signer(handle: u64) -> (*mut c_void, *const u8, usize) {
 unsafe extern "C" fn witchy_signer_public(handle: u64, output: u64, capacity: u64) -> u64 {
     let (key, _, _) = signer(handle);
     let mut bytes = [0u8; 1952];
-    let mut length = bytes.len();
-    if capacity != length as u64 {
+    if capacity != bytes.len() as u64 {
         return 2;
     }
-    if unsafe { public_key(key, bytes.as_mut_ptr(), &mut length) } != 1 || length as u64 != capacity
-    {
-        return 4;
-    }
+    let length = match key.raw_public(&mut bytes) {
+        Some(length) if length as u64 == capacity => length,
+        _ => return 4,
+    };
+    // SAFETY: the guest passes `capacity` writable bytes at `output`, and
+    // `length` is `capacity` here.
     unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), output as *mut u8, length) };
     0
 }
@@ -54,8 +249,7 @@ unsafe extern "C" fn witchy_signer_sign(
 ) -> u64 {
     let (key, domain, domain_len) = signer(handle);
     let mut signature = [0u8; 3309];
-    let mut size = signature.len();
-    if capacity != size as u64 {
+    if capacity != signature.len() as u64 {
         return 2;
     }
     if length > 1024 * 1024 {
@@ -64,56 +258,25 @@ unsafe extern "C" fn witchy_signer_sign(
     if length < domain_len as u64 {
         return 1;
     }
-    let input = message as *const u8;
-    for offset in 0..domain_len {
-        if unsafe { input.add(offset).read() != domain.add(offset).read() } {
-            return 1;
-        }
-    }
-    let ctx = unsafe { new_digest_context() };
-    if ctx.is_null() {
-        return 4;
-    }
-    let ok = unsafe {
-        let ok = sign_init(ctx, null_mut(), null(), null_mut(), key.cast()) == 1
-            && sign(
-                ctx,
-                signature.as_mut_ptr(),
-                &mut size,
-                input,
-                length as usize,
-            ) == 1
-            && size as u64 == capacity;
-        free_digest_context(ctx);
-        ok
+    let message = if length == 0 {
+        &[]
+    } else {
+        // SAFETY: the guest passes `length` readable bytes at `message`, at
+        // most 1 MiB here. The signature goes to a local, and to the guest
+        // only after the last use of this borrow.
+        unsafe { core::slice::from_raw_parts(message as *const u8, length as usize) }
     };
-    if !ok {
-        return 4;
+    if (0..domain_len).any(|offset| message.get(offset) != domain.get(offset)) {
+        return 1;
     }
+    let size = match key.sign(Prehash::None, message, &mut signature) {
+        Some(size) if size as u64 == capacity => size,
+        _ => return 4,
+    };
+    // SAFETY: the guest passes `capacity` writable bytes at `output`, and
+    // `size` is `capacity` here.
     unsafe { core::ptr::copy_nonoverlapping(signature.as_ptr(), output as *mut u8, size) };
     0
-}
-
-#[derive(Clone, Copy)]
-struct SealState {
-    context: *mut c_void,
-    length: usize,
-    digest: [u8; 32],
-}
-
-unsafe extern "C" {
-    #[link_name = "aws_lc_fips_0_14_4_HMAC_Update"]
-    fn hmac_update(ctx: *mut c_void, bytes: *const u8, len: usize) -> c_int;
-    #[link_name = "aws_lc_fips_0_14_4_HMAC_Final"]
-    fn hmac_final(ctx: *mut c_void, bytes: *mut u8, len: *mut u32) -> c_int;
-    #[link_name = "aws_lc_fips_0_14_4_HMAC_Init_ex"]
-    fn hmac_init(
-        ctx: *mut c_void,
-        key: *const c_void,
-        len: usize,
-        digest: *const c_void,
-        engine: *mut c_void,
-    ) -> c_int;
 }
 
 // Serialized guest calls exclusively access one slot for the operation.
@@ -122,78 +285,92 @@ extern "C" fn witchy_secret_seal(handle: u64, value: u64, mode: u64) -> u64 {
     if mode == 0 && matches!(handle, 8193 | 8194) {
         return handle - 8192;
     }
-    let index = witchy_native_secret_slot(handle, 1);
-    let state = unsafe { &mut (*slot_ptr(index)).seal };
-    let ctx = state.context;
-    if ctx.is_null() {
-        trap();
-    }
+    let state = slot(witchy_native_secret_slot(handle, 1));
+    let Some(seal) = state.seal.get() else { trap() };
     match mode {
         0 => 0,
         1 => {
             let Ok(byte) = u8::try_from(value) else {
                 trap()
             };
-            if state.length >= 1024 * 1024 || unsafe { hmac_update(ctx, &byte, 1) } != 1 {
+            let length = state.sealed.get();
+            if length >= 1024 * 1024 || !seal.update(&[byte]) {
                 trap();
             }
-            state.length += 1;
+            state.sealed.set(length + 1);
             0
         }
         2 => {
-            let mut length = 0;
-            if unsafe { super::digest::fips_mode() } == 0
-                || unsafe { hmac_final(ctx, state.digest.as_mut_ptr(), &mut length) } != 1
-                || length as usize != state.digest.len()
-                || unsafe { hmac_init(ctx, null(), 0, null(), null_mut()) } != 1
+            let mut digest = [0; 32];
+            if fips_mode() == 0
+                || seal.finish(&mut digest).map(|length| length as usize) != Some(digest.len())
+                || !seal.restart()
             {
                 trap();
             }
-            state.length = 0;
+            state.digest.set(digest);
+            state.sealed.set(0);
             0
         }
         3 => state
             .digest
+            .get()
             .get(value as usize)
             .map_or(256, |&byte| u64::from(byte)),
         _ => trap(),
     }
 }
 
-fn trap() -> ! {
+pub(super) fn trap() -> ! {
     unsafe { core::arch::asm!("brk #0", options(noreturn, nostack)) }
 }
 
-#[derive(Clone, Copy)]
+/// One named secret of the program, or one issued from the store. Each field
+/// is read and written whole, by the guest thread alone.
 pub(super) struct SignerSlot {
-    pub(super) key: *mut c_void,
-    pub(super) key_kind: u32,
-    pub(super) revealed: *mut u8,
-    pub(super) length: usize,
-    seal: SealState,
-    device: u64,
-    inode: u64,
-    environment: *const u8,
-    domain: [u8; 44],
-    domain_len: usize,
+    pub(super) key: Global<Option<PrivateKey>>,
+    pub(super) key_kind: Global<u32>,
+    /// The bytes a `reveal` reads. They are never freed or written again.
+    pub(super) revealed: Global<Option<&'static [u8]>>,
+    seal: Global<Option<Hmac>>,
+    /// The number of bytes fed to `seal` since its last code.
+    sealed: Global<usize>,
+    /// The last code `seal` gave.
+    digest: Global<[u8; 32]>,
+    device: Global<u64>,
+    inode: Global<u64>,
+    /// The environment variable the secret came from, in a copy that is never freed.
+    environment: Global<Option<&'static CStr>>,
+    domain: Global<[u8; 44]>,
+    domain_len: Global<usize>,
 }
 
-static mut SIGNER_SLOTS: [SignerSlot; 256] = [SignerSlot {
-    key: null_mut(),
-    key_kind: 0,
-    revealed: null_mut(),
-    length: 0,
-    seal: SealState {
-        context: null_mut(),
-        length: 0,
-        digest: [0; 32],
-    },
-    device: 0,
-    inode: 0,
-    environment: null(),
-    domain: [0; 44],
-    domain_len: 0,
-}; 256];
+impl SignerSlot {
+    const EMPTY: Self = Self {
+        key: Global::new(None),
+        key_kind: Global::new(0),
+        revealed: Global::new(None),
+        seal: Global::new(None),
+        sealed: Global::new(0),
+        digest: Global::new([0; 32]),
+        device: Global::new(0),
+        inode: Global::new(0),
+        environment: Global::new(None),
+        domain: Global::new([0; 44]),
+        domain_len: Global::new(0),
+    };
+
+    fn bound(&self) -> bool {
+        self.key.get().is_some() || self.revealed.get().is_some() || self.seal.get().is_some()
+    }
+
+    /// Whether the slot holds a secret that was read from a descriptor.
+    fn from_descriptor(&self) -> bool {
+        self.environment.get().is_none() && self.bound()
+    }
+}
+
+static SIGNER_SLOTS: [SignerSlot; 256] = [const { SignerSlot::EMPTY }; 256];
 
 static SECRET_OBJECTS: Table<(u64, u64), 64> = Table::new((0, 0));
 
@@ -204,11 +381,9 @@ extern "C" fn witchy_secret_add_object(device: u64, inode: u64) -> bool {
 
 fn secret_identities(mut visit: impl FnMut(u64, u64)) {
     for index in 0..128 {
-        let slot = unsafe { &*slot_ptr(index) };
-        if slot.environment.is_null()
-            && (!slot.key.is_null() || !slot.revealed.is_null() || !slot.seal.context.is_null())
-        {
-            visit(slot.device as u64, slot.inode);
+        let slot = slot(index);
+        if slot.from_descriptor() {
+            visit(slot.device.get(), slot.inode.get());
         }
     }
     for (device, inode) in SECRET_OBJECTS.iter() {
@@ -216,19 +391,15 @@ fn secret_identities(mut visit: impl FnMut(u64, u64)) {
     }
 }
 
-#[unsafe(no_mangle)]
-unsafe extern "C" fn witchy_secret_identities(
-    devices: *mut u64,
-    inodes: *mut u64,
-    capacity: u32,
-) -> u32 {
+/// Writes the identity of each secret source to the same place of `devices`
+/// and `inodes`, for as many as both have room for. The number written.
+pub(super) fn witchy_secret_identities(devices: &mut [u64], inodes: &mut [u64]) -> u32 {
+    let mut places = devices.iter_mut().zip(inodes.iter_mut());
     let mut count = 0;
     secret_identities(|device, inode| {
-        if count < capacity {
-            unsafe {
-                devices.add(count as usize).write(device);
-                inodes.add(count as usize).write(inode);
-            }
+        if let Some((device_out, inode_out)) = places.next() {
+            *device_out = device;
+            *inode_out = inode;
             count += 1;
         }
     });
@@ -244,78 +415,91 @@ extern "C" fn witchy_secret_source(device: u64, inode: u64) -> bool {
     found
 }
 
-pub(super) fn slot_ptr(index: usize) -> *mut SignerSlot {
-    if index >= 256 {
-        trap();
-    }
-    // Calls on the guest thread are serialized, including startup loading.
-    unsafe { (&raw mut SIGNER_SLOTS).cast::<SignerSlot>().add(index) }
+pub(super) fn slot(index: usize) -> &'static SignerSlot {
+    SIGNER_SLOTS.get(index).unwrap_or_else(|| trap())
 }
 
-pub(super) fn witchy_secret_uses_env(name: &core::ffi::CStr) -> bool {
-    use core::ffi::CStr;
-    let requested = name.to_bytes();
-    for index in 0..128 {
-        let stored = unsafe { (*slot_ptr(index)).environment };
-        if !stored.is_null() && unsafe { CStr::from_ptr(stored.cast()) }.to_bytes() == requested {
-            return true;
+pub(super) fn witchy_secret_uses_env(name: &CStr) -> bool {
+    (0..128).any(|index| slot(index).environment.get() == Some(name))
+}
+
+unsafe extern "C" {
+    // Each entry is a tag followed by a NUL-terminated name. A zero tag ends the table.
+    static witchy_secret_slots: u8;
+}
+
+/// The entries of the program's table of named secrets that are yet to be read.
+struct SlotNames(*const u8);
+
+/// The tag and the name of each named secret of the program, in slot order.
+fn slot_names() -> SlotNames {
+    SlotNames(&raw const witchy_secret_slots)
+}
+
+impl Iterator for SlotNames {
+    type Item = (u8, &'static CStr);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // SAFETY: the emitter writes the table in the form described where it
+        // is declared, and it is never written afterwards. The cursor starts
+        // at the first tag and moves only past a whole entry, never past the
+        // zero tag, so it is always at a tag of the table.
+        unsafe {
+            let kind = self.0.read();
+            if kind == 0 {
+                return None;
+            }
+            let name = CStr::from_ptr(self.0.add(1).cast());
+            self.0 = self.0.add(1 + name.to_bytes_with_nul().len());
+            Some((kind, name))
         }
     }
-    false
 }
 
 #[unsafe(no_mangle)]
 extern "C" fn witchy_signers_bound() -> bool {
-    use core::ffi::CStr;
-    let mut entry = &raw const witchy_secret_slots;
+    let mut names = slot_names();
     for index in 0..64 {
-        let kind = unsafe { entry.read() };
-        if kind == 0 {
+        let Some((kind, _)) = names.next() else {
             return true;
-        }
-        let slot = unsafe { &*slot_ptr(index) };
+        };
+        let slot = slot(index);
         let bound = match kind {
-            1 => !slot.revealed.is_null(),
-            2 => !slot.seal.context.is_null(),
-            3 | 4 => slot.key_kind == u32::from(kind) && !slot.key.is_null(),
+            1 => slot.revealed.get().is_some(),
+            2 => slot.seal.get().is_some(),
+            3 | 4 => slot.key_kind.get() == u32::from(kind) && slot.key.get().is_some(),
             _ => false,
         };
         if !bound {
             return false;
         }
-        let name = unsafe { CStr::from_ptr(entry.add(1).cast()) };
-        entry = unsafe { entry.add(1 + name.to_bytes_with_nul().len()) };
     }
-    unsafe { entry.read() == 0 }
+    names.next().is_none()
 }
 
-struct StoreRequest {
-    name: [u8; 65],
-    len: usize,
-    next: usize,
-}
+/// The name the guest is spelling for the store, a byte for each call.
+static STORE_NAME: Global<[u8; 65]> = Global::new([0; 65]);
+static STORE_NAME_LEN: Global<usize> = Global::new(0);
+/// The slot the next secret issued from the store takes.
+static STORE_NEXT: Global<usize> = Global::new(128);
 
-static mut STORE_REQUEST: StoreRequest = StoreRequest {
-    name: [0; 65],
-    len: 0,
-    next: 128,
-};
-
+// Guest calls cannot suspend or reenter while manipulating this request.
 #[unsafe(no_mangle)]
 extern "C" fn witchy_secret_store(handle: u64, value: u64, mode: u64) -> u64 {
     if handle != 65536 {
         trap();
     }
-    // Guest calls cannot suspend or reenter while manipulating this request.
-    let request = unsafe { &mut *(&raw mut STORE_REQUEST) };
     match mode {
         0 => {
             let Ok(byte) = u8::try_from(value) else {
                 trap()
             };
-            if let Some(out) = request.name.get_mut(request.len) {
+            let mut name = STORE_NAME.get();
+            let len = STORE_NAME_LEN.get();
+            if let Some(out) = name.get_mut(len) {
                 *out = byte;
-                request.len += 1;
+                STORE_NAME.set(name);
+                STORE_NAME_LEN.set(len + 1);
             }
             return 0;
         }
@@ -323,8 +507,10 @@ extern "C" fn witchy_secret_store(handle: u64, value: u64, mode: u64) -> u64 {
         1 | 2 => {}
         _ => trap(),
     }
-    let len = core::mem::take(&mut request.len);
-    let Some(name) = request.name.get(..len) else {
+    let len = STORE_NAME_LEN.get();
+    STORE_NAME_LEN.set(0);
+    let name = STORE_NAME.get();
+    let Some(name) = name.get(..len) else {
         trap()
     };
     let source = match super::signer_binding::store_lookup(name, mode == 1) {
@@ -333,37 +519,24 @@ extern "C" fn witchy_secret_store(handle: u64, value: u64, mode: u64) -> u64 {
         index @ 0..=63 => index as usize + 64,
         _ => trap(),
     };
-    if request.next >= 256 || unsafe { super::digest::fips_mode() } == 0 {
+    let next = STORE_NEXT.get();
+    if next >= 256 || fips_mode() == 0 {
         trap();
     }
-    let (bytes, len) = unsafe {
-        let source = &*slot_ptr(source);
-        (source.revealed, source.length)
+    let secret = slot(source).revealed.get();
+    let issued = slot(next);
+    let Some(seal) = Hmac::new(secret.unwrap_or(&[])) else {
+        trap()
     };
-    let issued = unsafe { &mut *slot_ptr(request.next) };
-    let context = unsafe { hmac_new() };
-    if context.is_null()
-        || unsafe { hmac_init(context, bytes.cast(), len, sha256(), null_mut()) } != 1
-    {
-        trap();
-    }
-    issued.seal.context = context;
+    issued.seal.set(Some(seal));
     if mode == 1 {
-        issued.revealed = bytes;
-        issued.length = len;
+        issued.revealed.set(secret);
     }
-    request.next += 1;
-    16 * request.next as u64 + u64::from(mode == 2)
+    STORE_NEXT.set(next + 1);
+    16 * (next + 1) as u64 + u64::from(mode == 2)
 }
 
 static SEED_DEADLINE: Global<u64> = Global::new(0);
-
-#[repr(C)]
-struct PollFd {
-    fd: c_int,
-    events: i16,
-    ready: i16,
-}
 
 fn descriptor_number(bytes: &[u8]) -> Option<c_int> {
     if bytes.is_empty() || bytes.first() == Some(&b'0') {
@@ -379,26 +552,14 @@ fn descriptor_number(bytes: &[u8]) -> Option<c_int> {
     (fd >= 3).then_some(fd)
 }
 
-/// The caller owns the destination slot and writable seed buffer during launch.
-unsafe fn read_secret_descriptor(
-    slot: *mut SignerSlot,
-    descriptor: *const core::ffi::c_char,
-    seed: *mut u8,
-    capacity: usize,
-    size: *mut usize,
-) -> bool {
-    use core::ffi::CStr;
+/// Reads the whole of the secret behind the descriptor that `descriptor`
+/// numbers into `seed`, closes it, and records its identity in `slot`. False
+/// when it is not a secret this launch may take, or it does not end in time
+/// and within the capacity of `seed`, which must hold nothing yet.
+fn read_secret_descriptor(slot: &SignerSlot, descriptor: &[u8], seed: &mut Seed) -> bool {
     unsafe extern "C" {
-        fn fcntl(fd: c_int, command: c_int, ...) -> c_int;
-        #[cfg(target_os = "macos")]
-        fn poll(ready: *mut PollFd, count: u32, timeout: c_int) -> c_int;
-        #[cfg(target_os = "linux")]
-        fn poll(ready: *mut PollFd, count: usize, timeout: c_int) -> c_int;
-        fn read(fd: c_int, bytes: *mut c_void, len: usize) -> isize;
         safe fn close(fd: c_int) -> c_int;
     }
-    const GET_FLAGS: c_int = 3;
-    const SET_FLAGS: c_int = 4;
     #[cfg(target_os = "macos")]
     const NONBLOCK: c_int = 4;
     #[cfg(target_os = "linux")]
@@ -408,7 +569,7 @@ unsafe fn read_secret_descriptor(
     const AGAIN: c_int = 35;
     #[cfg(target_os = "linux")]
     const AGAIN: c_int = 11;
-    let Some(fd) = descriptor_number(unsafe { CStr::from_ptr(descriptor) }.to_bytes()) else {
+    let Some(fd) = descriptor_number(descriptor) else {
         return false;
     };
     #[cfg(target_os = "macos")]
@@ -419,24 +580,21 @@ unsafe fn read_secret_descriptor(
         return false;
     };
     for index in 0..128 {
-        let bound = unsafe { &*slot_ptr(index) };
-        if bound.environment.is_null()
-            && (!bound.key.is_null() || !bound.revealed.is_null() || !bound.seal.context.is_null())
-            && bound.device == identity.device as u64
-            && bound.inode == identity.inode
+        let bound = self::slot(index);
+        if bound.from_descriptor()
+            && bound.device.get() == identity.device as u64
+            && bound.inode.get() == identity.inode
         {
             return false;
         }
     }
-    let flags = unsafe { fcntl(fd, GET_FLAGS) };
-    if flags < 0 || unsafe { fcntl(fd, SET_FLAGS, flags | NONBLOCK) } < 0 {
+    let flags = sys::status_flags(fd);
+    if flags < 0 || sys::set_status_flags(fd, flags | NONBLOCK) < 0 {
         return false;
     }
     let Some(now) = super::deadline::monotonic_ms() else {
-        unsafe {
-            fcntl(fd, SET_FLAGS, flags);
-            close(fd);
-        }
+        sys::set_status_flags(fd, flags);
+        close(fd);
         return false;
     };
     let deadline = {
@@ -445,9 +603,8 @@ unsafe fn read_secret_descriptor(
         }
         SEED_DEADLINE.get()
     };
-    let mut length = 0;
     let mut eof = false;
-    while length < capacity {
+    while seed.len() < seed.capacity() {
         let Some(now) = super::deadline::monotonic_ms() else {
             break;
         };
@@ -455,19 +612,19 @@ unsafe fn read_secret_descriptor(
             break;
         }
         let timeout = (deadline - now).min(c_int::MAX as u64) as c_int;
-        let mut ready = PollFd {
+        let mut ready = [sys::PollFd {
             fd,
             events: 1,
-            ready: 0,
-        };
-        let result = unsafe { poll(&mut ready, 1, timeout) };
+            returned: 0,
+        }];
+        let result = sys::poll(&mut ready, timeout);
         if result < 0 && super::errno::get() == INTERRUPTED {
             continue;
         }
         if result != 1 {
             break;
         }
-        let count = unsafe { read(fd, seed.add(length).cast(), capacity - length) };
+        let count = seed.read(fd);
         if count < 0 && matches!(super::errno::get(), INTERRUPTED | AGAIN) {
             continue;
         }
@@ -475,181 +632,88 @@ unsafe fn read_secret_descriptor(
             eof = count == 0;
             break;
         }
-        length += count as usize;
     }
-    let restored = unsafe { fcntl(fd, SET_FLAGS, flags) } == 0;
+    let restored = sys::set_status_flags(fd, flags) == 0;
     close(fd);
     if !restored || !eof {
         return false;
     }
-    unsafe {
-        (*slot).device = identity.device as u64;
-        (*slot).inode = identity.inode;
-        size.write(length);
-    }
+    slot.device.set(identity.device as u64);
+    slot.inode.set(identity.inode);
     true
 }
 
-use super::signer_binding::{StoreSource, parse};
-use core::ffi::{CStr, c_char};
-
-unsafe extern "C" {
-    fn malloc(size: usize) -> *mut c_void;
-    fn free(bytes: *mut c_void);
-    fn getenv(name: *const c_char) -> *const c_char;
-    fn unsetenv(name: *const c_char) -> c_int;
-    fn strdup(s: *const c_char) -> *mut c_char;
-    fn strnlen(text: *const c_char, maximum: usize) -> usize;
-    #[link_name = "aws_lc_fips_0_14_4_OPENSSL_cleanse"]
-    fn cleanse(bytes: *mut c_void, len: usize);
-    #[link_name = "aws_lc_fips_0_14_4_EVP_PKEY_pqdsa_new_raw_private_key"]
-    fn private_key(nid: c_int, bytes: *const u8, len: usize) -> *mut c_void;
-    #[link_name = "aws_lc_fips_0_14_4_HMAC_CTX_new"]
-    fn hmac_new() -> *mut c_void;
-    #[link_name = "aws_lc_fips_0_14_4_HMAC_CTX_free"]
-    fn hmac_free(ctx: *mut c_void);
-    #[link_name = "aws_lc_fips_0_14_4_EVP_sha256"]
-    fn sha256() -> *const c_void;
-    // Each entry is a tag followed by a NUL-terminated name. A zero tag ends the table.
-    static witchy_secret_slots: u8;
-}
-
-struct Seed {
-    bytes: *mut u8,
-    capacity: usize,
-}
-
-impl Seed {
-    fn new(capacity: usize) -> Option<Self> {
-        let bytes = unsafe { malloc(capacity) }.cast();
-        if bytes == null_mut() {
-            None
-        } else {
-            Some(Self { bytes, capacity })
-        }
-    }
-
-    fn retain(mut self) -> *mut u8 {
-        core::mem::replace(&mut self.bytes, null_mut())
-    }
-}
-
-impl Drop for Seed {
-    fn drop(&mut self) {
-        if !self.bytes.is_null() {
-            unsafe {
-                cleanse(self.bytes.cast(), self.capacity);
-                free(self.bytes.cast());
+/// Loads the secret that `source` names in the way `kind` says into `seed`,
+/// which must hold nothing yet, and records in `slot` where it came from. The
+/// secret's length.
+fn load_seed(slot: &SignerSlot, seed: &mut Seed, source: &CStr, kind: StoreSource) -> Option<usize> {
+    match kind {
+        StoreSource::Descriptor => {
+            if !read_secret_descriptor(slot, source.to_bytes(), seed) {
+                return None;
             }
         }
+        StoreSource::Literal => {
+            if !seed.fill(source.to_bytes()) {
+                return None;
+            }
+        }
+        StoreSource::Environment => {
+            if witchy_secret_uses_env(source) {
+                return None;
+            }
+            // The slot keeps the name for the life of the process, and the caller's
+            // text may be a buffer it reuses, so the slot holds its own copy.
+            let kept = provider::take_environment(source, seed)?;
+            slot.environment.set(Some(kept));
+        }
     }
+    Some(seed.len())
 }
 
-unsafe fn load_seed(
-    slot: *mut SignerSlot,
-    seed: &Seed,
-    source: *const c_char,
-    kind: StoreSource,
-) -> Option<usize> {
-    if kind == StoreSource::Descriptor {
-        let mut length = 0;
-        return unsafe {
-            read_secret_descriptor(slot, source, seed.bytes, seed.capacity, &mut length)
-        }
-        .then_some(length);
-    }
-    let environment = kind == StoreSource::Environment;
-    if environment && witchy_secret_uses_env(unsafe { CStr::from_ptr(source) }) {
-        return None;
-    }
-    let value = if environment {
-        unsafe { getenv(source) }
-    } else {
-        source
-    };
-    if value.is_null() {
-        return None;
-    }
-    let length = unsafe { strnlen(value, seed.capacity) };
-    if length >= seed.capacity {
-        return None;
-    }
-    // The slot keeps the name for the life of the process, and the caller's
-    // text may be a buffer it reuses, so the slot holds its own copy.
-    let kept = if environment {
-        let kept = unsafe { strdup(source) };
-        if kept.is_null() {
-            return None;
-        }
-        kept
-    } else {
-        null_mut()
-    };
-    unsafe { core::ptr::copy_nonoverlapping(value.cast(), seed.bytes, length) };
-    if environment {
-        unsafe { cleanse(value.cast_mut().cast(), length) };
-        if unsafe { unsetenv(source) } != 0 {
-            return None;
-        }
-        unsafe { (*slot).environment = kept.cast_const().cast() };
-    }
-    Some(length)
-}
-
-pub(super) unsafe fn load_store_secret(
+/// Loads the store's secret `index`. `name` is the variable an
+/// `Environment` secret is read from; `source` is the text or the descriptor
+/// number of the other kinds.
+pub(super) fn load_store_secret(
     index: usize,
-    name: *const c_char,
-    source: *const c_char,
+    name: &CStr,
+    source: &CStr,
     kind: StoreSource,
 ) -> bool {
     if index >= 64 {
         return false;
     }
-    let Some(seed) = Seed::new(65_537) else {
+    let Some(mut seed) = Seed::new(65_537) else {
         return false;
     };
-    let slot = slot_ptr(64 + index);
+    let slot = slot(64 + index);
     let input = if kind == StoreSource::Environment {
         name
     } else {
         source
     };
-    let Some(length) = (unsafe { load_seed(slot, &seed, input, kind) }) else {
+    if load_seed(slot, &mut seed, input, kind).is_none() {
         return false;
-    };
-    unsafe {
-        (*slot).revealed = seed.retain();
-        (*slot).length = length;
     }
+    slot.revealed.set(Some(seed.retain()));
     true
 }
 
+/// `text` is a C string that stays as it is through the call.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn witchy_bind_signer(text: *const c_char) -> bool {
-    let bytes = unsafe { CStr::from_ptr(text) }.to_bytes();
+    // SAFETY: the caller's promise.
+    let text = unsafe { CStr::from_ptr(text) };
+    let bytes = text.to_bytes();
     let Some(binding) = parse(bytes) else {
         return false;
     };
-    let mut entry = &raw const witchy_secret_slots;
-    let mut selected = None;
-    for index in 0..64 {
-        let kind = unsafe { entry.read() };
-        if kind == 0 {
-            break;
-        }
-        let name = unsafe { CStr::from_ptr(entry.add(1).cast()) };
-        if u32::from(kind) == binding.kind && bytes.get(..binding.name_len) == Some(name.to_bytes())
-        {
-            selected = Some(slot_ptr(index));
-            break;
-        }
-        entry = unsafe { entry.add(1 + name.to_bytes_with_nul().len()) };
-    }
-    let Some(slot) = selected else { return false };
-    let available = unsafe {
-        (*slot).key.is_null() && (*slot).revealed.is_null() && (*slot).seal.context.is_null()
-    };
-    if !available || (binding.kind != 1 && unsafe { super::digest::fips_mode() } == 0) {
+    let selected = slot_names().take(64).position(|(kind, name)| {
+        u32::from(kind) == binding.kind && bytes.get(..binding.name_len) == Some(name.to_bytes())
+    });
+    let Some(index) = selected else { return false };
+    let slot = slot(index);
+    if slot.bound() || (binding.kind != 1 && fips_mode() == 0) {
         return false;
     }
     let capacity = match binding.kind {
@@ -657,52 +721,53 @@ unsafe extern "C" fn witchy_bind_signer(text: *const c_char) -> bool {
         4 => tls_signer::MAX_KEY_BYTES + 1,
         _ => 65_537,
     };
-    let Some(seed) = Seed::new(capacity) else {
+    let Some(mut seed) = Seed::new(capacity) else {
         return false;
     };
-    let source = unsafe { text.add(binding.source_start) };
+    // The source starts at or before the terminating NUL.
+    let source = text.to_bytes_with_nul().get(binding.source_start..);
+    let Some(source) = source.and_then(|source| CStr::from_bytes_with_nul(source).ok()) else {
+        return false;
+    };
     let kind = if binding.environment {
         StoreSource::Environment
     } else {
         StoreSource::Descriptor
     };
-    let Some(length) = (unsafe { load_seed(slot, &seed, source, kind) }) else {
+    let Some(length) = load_seed(slot, &mut seed, source, kind) else {
         return false;
     };
     match binding.kind {
-        1 => unsafe {
-            (*slot).revealed = seed.retain();
-            (*slot).length = length;
-        },
-        2 => unsafe {
-            let ctx = hmac_new();
-            if ctx.is_null() || hmac_init(ctx, seed.bytes.cast(), length, sha256(), null_mut()) != 1
-            {
-                hmac_free(ctx);
+        1 => slot.revealed.set(Some(seed.retain())),
+        2 => {
+            let Some(seal) = Hmac::new(seed.as_slice()) else {
                 return false;
-            }
-            (*slot).seal.context = ctx;
-        },
+            };
+            slot.seal.set(Some(seal));
+        }
         3 if length == 32 => {
-            let key = unsafe { private_key(995, seed.bytes, 32) };
-            if key.is_null() {
+            let Ok(seed) = <&[u8; 32]>::try_from(seed.as_slice()) else {
                 return false;
-            }
+            };
+            let Some(key) = PrivateKey::mldsa65(seed) else {
+                return false;
+            };
             let role = bytes.iter().skip(binding.role_start).take(binding.role_len);
-            let slot = unsafe { &mut *slot };
-            for (out, &byte) in slot.domain.iter_mut().zip(b"witchy/v2/".iter().chain(role)) {
+            let mut domain = slot.domain.get();
+            for (out, &byte) in domain.iter_mut().zip(b"witchy/v2/".iter().chain(role)) {
                 *out = byte;
             }
-            slot.domain_len = b"witchy/v2/".len() + binding.role_len + 1;
-            slot.key = key;
-            slot.key_kind = 3;
+            slot.domain.set(domain);
+            slot.domain_len.set(b"witchy/v2/".len() + binding.role_len + 1);
+            slot.key.set(Some(key));
+            slot.key_kind.set(3);
         }
         4 if (1..=tls_signer::MAX_KEY_BYTES).contains(&length) => {
-            let bytes = unsafe { core::slice::from_raw_parts(seed.bytes, length) };
-            let Some(key) = tls_signer::from_pkcs8(bytes) else { return false };
-            let slot = unsafe { &mut *slot };
-            slot.key = key.as_ptr().cast();
-            slot.key_kind = 4;
+            let Some(key) = PrivateKey::from_pkcs8(seed.as_slice()) else {
+                return false;
+            };
+            slot.key.set(Some(key));
+            slot.key_kind.set(4);
         }
         _ => return false,
     }

@@ -1,7 +1,7 @@
 //! Native adapter for the pinned AWS-LC provider. The Witchy record layer
 //! owns key epochs and nonce sequencing.
 
-use super::digest::fips_mode;
+use super::digest::{clear_error, fips_mode};
 use core::{ffi::{c_int, c_void}, mem::MaybeUninit, ptr};
 
 #[repr(transparent)]
@@ -36,8 +36,6 @@ unsafe extern "C" {
     fn compare(left: *const c_void, right: *const c_void, len: usize) -> c_int;
     #[link_name = "aws_lc_fips_0_14_4_OPENSSL_cleanse"]
     fn cleanse(bytes: *mut c_void, len: usize);
-    #[link_name = "aws_lc_fips_0_14_4_ERR_clear_error"]
-    fn clear_error();
 }
 
 const TAG_BYTES: usize = 16;
@@ -66,12 +64,12 @@ unsafe extern "C" fn witchy_tls13_aead(
     if key_len != key_bytes || nonce_len != 12 || header_len != 5 || !correct_size {
         return 2;
     }
-    if unsafe { fips_mode() } != 1 {
+    if fips_mode() != 1 {
         return 4;
     }
     let context = unsafe { new_context(algorithm(), key, key_len, TAG_BYTES) };
     if context.is_null() {
-        unsafe { clear_error() };
+        clear_error();
         return 4;
     }
 
@@ -99,6 +97,8 @@ unsafe extern "C" fn witchy_tls13_aead(
 unsafe extern "C" fn witchy_verify_tag48(
     left: *const c_void, left_len: usize, right: *const c_void, right_len: usize,
 ) -> u64 {
+    // SAFETY: the emitter passes readable spans of the stated lengths, and both
+    // are 48 bytes when the comparison is reached.
     u64::from(left_len == 48 && right_len == 48
-        && unsafe { fips_mode() == 1 && compare(left, right, 48) == 0 })
+        && fips_mode() == 1 && unsafe { compare(left, right, 48) } == 0)
 }

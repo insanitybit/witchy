@@ -5,7 +5,10 @@ use core::{
     ptr::{self, NonNull},
 };
 
-use super::{digest::fips_mode, p384_slots, pkix::ffi::{EcGroup, EcKey, P384, ec_group}};
+use super::{
+    digest::{clear_error, fips_mode}, p384_slots, pkix::ffi::{EcGroup, EcKey, P384, ec_group},
+    signer_crypto::trap,
+};
 
 const POINT_BYTES: usize = 97;
 const SECRET_BYTES: usize = 48;
@@ -18,8 +21,9 @@ const PROVIDER_FAILURE: u64 = 4;
 struct EcPoint(c_void);
 
 unsafe extern "C" {
+    // The call takes a number, and gives null for one that names no curve.
     #[link_name = "aws_lc_fips_0_14_4_EC_KEY_new_by_curve_name"]
-    fn key_new(curve: c_int) -> *mut EcKey;
+    safe fn key_new(curve: c_int) -> *mut EcKey;
     #[link_name = "aws_lc_fips_0_14_4_EC_KEY_free"]
     fn key_free(key: *mut EcKey);
     #[link_name = "aws_lc_fips_0_14_4_EC_KEY_generate_key_fips"]
@@ -41,8 +45,6 @@ unsafe extern "C" {
         kdf: Option<unsafe extern "C" fn(*const c_void, usize, *mut c_void, *mut usize) -> *mut c_void>) -> c_int;
     #[link_name = "aws_lc_fips_0_14_4_OPENSSL_cleanse"]
     fn cleanse(bytes: *mut c_void, len: usize);
-    #[link_name = "aws_lc_fips_0_14_4_ERR_clear_error"]
-    fn clear_error();
 }
 
 pub(super) struct Key(NonNull<EcKey>);
@@ -74,16 +76,16 @@ impl Drop for Shared {
 struct ClearErrors;
 impl Drop for ClearErrors {
     fn drop(&mut self) {
-        unsafe { clear_error() };
+        clear_error();
     }
 }
 
 impl Key {
     fn generate() -> Result<Self, u64> {
-        if unsafe { fips_mode() } != 1 {
+        if fips_mode() != 1 {
             return Err(PROVIDER_FAILURE);
         }
-        let key = Self(NonNull::new(unsafe { key_new(P384) }).ok_or(PROVIDER_FAILURE)?);
+        let key = Self(NonNull::new(key_new(P384)).ok_or(PROVIDER_FAILURE)?);
         if unsafe { key_generate(key.0.as_ptr()) } != 1 {
             return Err(PROVIDER_FAILURE);
         }
@@ -123,10 +125,6 @@ impl Key {
         }
         Ok(())
     }
-}
-
-fn trap() -> ! {
-    unsafe { core::arch::asm!("brk #0", options(noreturn, nostack)) }
 }
 
 fn require_rand(grant: u64) {

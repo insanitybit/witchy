@@ -12,7 +12,7 @@ unsafe extern "C" fn witchy_pkix_verify(
     signature: *const u8, sig_len: usize,
 ) -> u64 {
     if !pkix::bounded(roots_len, chain_len, host_len, signed_len, sig_len)
-        || unsafe { fips_mode() } != 1
+        || fips_mode() != 1
     {
         return 0;
     }
