@@ -1,6 +1,6 @@
 //! Process state read and written by the runtime's one thread.
 
-use core::cell::Cell;
+use core::cell::{Cell, UnsafeCell};
 
 /// A value held for the life of the process. It is copied in and out, so no
 /// reference to it exists to outlive a write.
@@ -22,6 +22,40 @@ impl<T: Copy> Global<T> {
 
     pub fn set(&self, value: T) {
         self.0.set(value)
+    }
+}
+
+/// A value changed in place by one user at a time. `with` lends it to a
+/// closure, and a second `with` on the same value before the first returns
+/// stops the process: that is how two references to it are kept from existing.
+///
+/// A use must not fork, switch task or leave by a signal handler's jump: the
+/// value would stay marked in use, and the next use would stop the process.
+pub struct State<T> {
+    value: UnsafeCell<T>,
+    used: Cell<bool>,
+}
+
+// SAFETY: as for `Global`: the runtime has one thread.
+unsafe impl<T> Sync for State<T> {}
+
+impl<T> State<T> {
+    pub const fn new(value: T) -> Self {
+        Self {
+            value: UnsafeCell::new(value),
+            used: Cell::new(false),
+        }
+    }
+
+    pub fn with<R>(&self, f: impl FnOnce(&mut T) -> R) -> R {
+        if self.used.replace(true) {
+            panic!("process state used while already in use");
+        }
+        // SAFETY: `used` was clear and is now set, so no other reference made
+        // here is live, and none is made until it is cleared below.
+        let result = f(unsafe { &mut *self.value.get() });
+        self.used.set(false);
+        result
     }
 }
 

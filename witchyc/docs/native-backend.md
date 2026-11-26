@@ -667,7 +667,8 @@ failure. The OS adapters and generated machine code are outside their scope.
 The runtime's process-state cells (`runtime/native/global.rs`) have their own harness crate,
 `tools/native-global-kani` (run the same way). It checks that a `Table` agrees with a plain array
 and count over any six pushes and clears of four places, and that the pointer handed to C reaches
-every item in use. It does not check the claim the cells rest on: that the runtime has one thread.
+every item in use; and that a `State`, the cell for a value changed in place, keeps what a use
+writes and stops the process on a second use inside a first. It does not check the claim the cells rest on: that the runtime has one thread.
 
 `tools/native-logic-kani` checks pure logic the launcher, the supervisor and the guest's broker
 client rest on (24 harnesses; proofs of a file's private functions sit in that file under

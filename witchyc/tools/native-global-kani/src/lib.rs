@@ -7,7 +7,7 @@ mod global;
 
 #[cfg(kani)]
 mod proofs {
-    use super::global::{Global, Table};
+    use super::global::{Global, State, Table};
 
     const PLACES: usize = 4;
     const STEPS: usize = 6;
@@ -77,5 +77,30 @@ mod proofs {
         kani::assume(index < table.len());
         let read = unsafe { table.as_ptr().add(index).read() };
         assert_eq!(Some(read), table.get(index));
+    }
+
+    /// A change made inside one use is seen by the next, and a use returns
+    /// what its closure does. Two different values may be in use together.
+    #[kani::proof]
+    fn a_state_keeps_what_a_use_writes() {
+        let state = State::new([0u64; 2]);
+        let other = State::new(0u8);
+        let value: u64 = kani::any();
+        let back = state.with(|pair| {
+            pair[1] = value;
+            other.with(|byte| *byte = 1);
+            pair[0]
+        });
+        assert_eq!(back, 0);
+        assert_eq!(state.with(|pair| pair[1]), value);
+        assert_eq!(other.with(|byte| *byte), 1);
+    }
+
+    /// A second use of a value inside a first stops the process.
+    #[kani::proof]
+    #[kani::should_panic]
+    fn a_state_in_use_refuses_a_second_use() {
+        let state = State::new(0u64);
+        state.with(|_| state.with(|inner| *inner = 1));
     }
 }
