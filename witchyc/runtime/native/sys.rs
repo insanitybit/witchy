@@ -154,7 +154,7 @@ pub struct PollFd {
 }
 
 /// What `waitid` reports about a child.
-#[repr(C)]
+#[repr(C, align(8))]
 #[cfg(target_os = "linux")]
 pub struct SignalInfo {
     signo: i32,
@@ -521,6 +521,32 @@ pub struct ResourceLimit {
     pub current: u64,
     pub maximum: u64,
 }
+
+// Keep these values in sync with the C ABI probes in tests/fixtures/native-sandbox.
+const _: () = {
+    use core::mem::{align_of, offset_of, size_of};
+
+    assert!(size_of::<PollFd>() == 8 && align_of::<PollFd>() == 4);
+    assert!(offset_of!(PollFd, fd) == 0);
+    assert!(offset_of!(PollFd, events) == 4);
+    assert!(offset_of!(PollFd, returned) == 6);
+    assert!(size_of::<Timespec>() == 16 && align_of::<Timespec>() == 8);
+    assert!(offset_of!(Timespec, nanos) == 8);
+    assert!(size_of::<ResourceLimit>() == 16 && align_of::<ResourceLimit>() == 8);
+    assert!(offset_of!(ResourceLimit, maximum) == 8);
+    #[cfg(target_os = "macos")]
+    {
+        assert!(size_of::<SignalInfo>() == 104 && align_of::<SignalInfo>() == 8);
+        assert!(offset_of!(SignalInfo, pid) == 12);
+        assert!(offset_of!(SignalInfo, status) == 20);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        assert!(size_of::<SignalInfo>() == 128 && align_of::<SignalInfo>() == 8);
+        assert!(offset_of!(SignalInfo, pid) == 16);
+        assert!(offset_of!(SignalInfo, status) == 24);
+    }
+};
 
 mod c_process {
     use super::{ResourceLimit, c_char, c_int};

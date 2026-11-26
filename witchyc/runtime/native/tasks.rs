@@ -4,6 +4,9 @@
 use super::global::Global;
 #[path = "task_switch.rs"]
 mod task_switch;
+#[path = "task_stack_layout.rs"]
+mod task_stack_layout;
+use task_stack_layout::{GUARD, MAX_STACK, stack_layout};
 
 use core::{
     ffi::{c_int, c_void},
@@ -11,13 +14,21 @@ use core::{
 };
 
 const SLOTS: usize = 256;
-const MAX_STACK: usize = 1024 * 1024;
-const MIN_STACK: usize = 64 * 1024;
-const GUARD: usize = 256 * 1024;
 const LANES: usize = 256;
+const CONTEXT_X19: usize = 0;
+const CONTEXT_LR: usize = 11;
+const CONTEXT_SP: usize = 20;
 
 #[repr(C, align(16))]
 struct Context([usize; 22]);
+
+// task_switch.rs uses eight-byte slots and writes SP at byte offset 160.
+const _: () = {
+    assert!(size_of::<usize>() == 8);
+    assert!(size_of::<Context>() == 176);
+    assert!(align_of::<Context>() == 16);
+    assert!(core::mem::offset_of!(Context, 0) == 0);
+};
 
 type Entry = unsafe extern "C" fn(*const u64);
 
@@ -42,6 +53,16 @@ struct Task {
     size: usize,
     input: [u64; LANES],
 }
+
+// Task allocation requires 16-byte alignment. Assembly receives pointers to
+// the individual contexts, regardless of Task field order.
+const _: () = {
+    use core::mem::offset_of;
+    assert!(align_of::<Task>() == 16);
+    assert!(offset_of!(Task, task) % align_of::<Context>() == 0);
+    assert!(offset_of!(Task, caller) % align_of::<Context>() == 0);
+    assert!(size_of::<Option<Entry>>() == size_of::<*const ()>());
+};
 
 unsafe extern "C" {
     #[cfg(target_os = "macos")]
@@ -124,11 +145,9 @@ unsafe extern "C" fn witchy_task_spawn(
     let (page, flags) = (unsafe { vm_page_size }, 0x1002); // MAP_PRIVATE | MAP_ANON
     #[cfg(target_os = "linux")]
     let (page, flags) = (unsafe { getauxval(6) }, 0x22); // AT_PAGESZ, MAP_PRIVATE | MAP_ANONYMOUS
-    if page == 0 || GUARD % page != 0 {
+    let Some((stack, size)) = stack_layout(bytes, page) else {
         return 0;
-    }
-    let stack = bytes.max(MIN_STACK).div_ceil(page) * page;
-    let size = stack + 2 * GUARD;
+    };
     // Linux's sandbox permits removing access with mprotect, so start from
     // non-executable writable memory there and protect both ends.
     const NONE: c_int = 0;
@@ -141,6 +160,8 @@ unsafe extern "C" fn witchy_task_spawn(
     if mapping.addr() == usize::MAX {
         return 0;
     }
+    // SAFETY: mmap returned a live mapping of size bytes. The checked stack
+    // layout places both GUARD and GUARD + stack strictly inside it.
     let start = unsafe { mapping.cast::<u8>().add(GUARD) };
     #[cfg(target_os = "macos")]
     let guarded = unsafe { mprotect(start.cast(), stack, READ_WRITE) == 0 };
@@ -159,9 +180,9 @@ unsafe extern "C" fn witchy_task_spawn(
         return 0;
     }
     let mut context = [0; 22];
-    context[0] = task.expose_provenance();
-    context[11] = (witchy_task_bootstrap as *const ()).expose_provenance();
-    context[20] = unsafe { start.add(stack) }.expose_provenance();
+    context[CONTEXT_X19] = task.expose_provenance();
+    context[CONTEXT_LR] = (witchy_task_bootstrap as *const ()).expose_provenance();
+    context[CONTEXT_SP] = unsafe { start.add(stack) }.expose_provenance();
     unsafe {
         task.write(Task {
             task: Context(context),

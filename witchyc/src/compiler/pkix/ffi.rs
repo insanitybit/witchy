@@ -68,7 +68,7 @@ unsafe extern "C" {
     #[link_name = "aws_lc_fips_0_14_4_X509_get_key_usage"]
     pub(super) fn key_usage(cert: *mut X509) -> u32;
     #[link_name = "aws_lc_fips_0_14_4_X509_get0_pubkey"]
-    pub(super) fn public_key(cert: *mut X509) -> *mut PublicKey;
+    pub(super) fn public_key(cert: *const X509) -> *mut PublicKey;
     #[link_name = "aws_lc_fips_0_14_4_X509_get_signature_info"]
     pub(super) fn signature_info(cert: *mut X509, digest: *mut c_int, public_key: *mut c_int,
         security_bits: *mut c_int, flags: *mut u32) -> c_int;

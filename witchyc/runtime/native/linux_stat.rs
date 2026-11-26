@@ -29,6 +29,19 @@ pub(super) struct Stat {
     reserved: [u32; 2],
 }
 
+const _: () = {
+    use core::mem::{align_of, offset_of, size_of};
+    assert!(size_of::<Stat>() == 128 && align_of::<Stat>() == 8);
+    assert!(offset_of!(Dirent, kind) == 18);
+    assert!(offset_of!(Dirent, name) == 19);
+    assert!(offset_of!(Stat, device) == 0);
+    assert!(offset_of!(Stat, inode) == 8);
+    assert!(offset_of!(Stat, mode) == 16);
+    assert!(offset_of!(Stat, links) == 20);
+    assert!(offset_of!(Stat, uid) == 24);
+    assert!(offset_of!(Stat, size) == 48);
+};
+
 impl Stat {
     /// What a call fills in. Every field is an integer, so zero is a value of each.
     const ZERO: Self = Self {
@@ -70,6 +83,13 @@ pub(super) fn openat_no_symlinks(base: c_int, path: &CStr, flags: c_int) -> c_in
         mode: u64,
         resolve: u64,
     }
+    const _: () = {
+        use core::mem::{align_of, offset_of, size_of};
+        assert!(size_of::<How>() == 24 && align_of::<How>() == 8);
+        assert!(offset_of!(How, flags) == 0);
+        assert!(offset_of!(How, mode) == 8);
+        assert!(offset_of!(How, resolve) == 16);
+    };
     let how = How {
         flags: flags as u64,
         mode: 0,

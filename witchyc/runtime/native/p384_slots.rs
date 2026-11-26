@@ -69,3 +69,23 @@ impl Slots {
         slot.take().map(|entry| entry.key)
     }
 }
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(18)]
+fn exhausted_p384_handles_cannot_wrap() {
+    let room_for_one: bool = kani::any();
+    let next = u64::MAX - u64::from(room_for_one);
+    let mut slots = Slots {
+        entries: [const { None }; LIMIT],
+        next,
+    };
+    if room_for_one {
+        let place = slots.available().unwrap();
+        assert_eq!(slots.insert(place, Key(7)), u64::MAX - 1);
+        assert_eq!(slots.take(u64::MAX - 1).unwrap().0, 7);
+    }
+    assert_eq!(slots.next, u64::MAX);
+    assert!(slots.available().is_none());
+    assert!(slots.get(256).is_none());
+}

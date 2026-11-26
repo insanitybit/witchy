@@ -75,6 +75,8 @@ fn user_processes() -> u64 {
         if entry.is_null() {
             break;
         }
+        // SAFETY: libc supplies a NUL-terminated name in this live entry.
+        // The name is used before the next readdir or closedir on this stream.
         let name =
             unsafe { core::ffi::CStr::from_ptr((&raw const (*entry).name).cast()) }.to_bytes();
         if name.is_empty() || !name.iter().all(u8::is_ascii_digit) || name.len() > 255 {

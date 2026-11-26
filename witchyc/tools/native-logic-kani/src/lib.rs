@@ -180,3 +180,36 @@ mod proofs {
         }
     }
 }
+
+#[cfg(all(test, miri))]
+#[test]
+fn argv_get_can_read_an_entry_after_the_previous_borrow_ends() {
+    let mut word = *b"left=right\0";
+    let entries = [word.as_mut_ptr().cast(), core::ptr::null_mut()];
+    let args = unsafe { launch_plan::Argv::new(2, entries.as_ptr()) }.unwrap();
+
+    assert_eq!(args.get(0), Some(c"left=right"));
+    assert!(args.get(1).is_none());
+    assert!(args.get(2).is_none());
+
+    // The previous text borrow has ended, so the launcher can split its storage.
+    let raw = args.raw(0);
+    unsafe { raw.add(4).write(0) };
+    assert_eq!(args.get(0), Some(c"left"));
+    assert_eq!(unsafe { core::ffi::CStr::from_ptr(raw.add(5)) }, c"right");
+}
+
+// Miri's Darwin libc shim does not implement strdup.
+#[cfg(all(test, miri, target_os = "macos"))]
+#[unsafe(no_mangle)]
+unsafe extern "C" fn strdup(src: *const core::ffi::c_char) -> *mut core::ffi::c_char {
+    unsafe extern "C" {
+        fn malloc(size: usize) -> *mut core::ffi::c_void;
+    }
+    let bytes = unsafe { core::ffi::CStr::from_ptr(src) }.to_bytes_with_nul();
+    let copy = unsafe { malloc(bytes.len()) }.cast::<u8>();
+    if !copy.is_null() {
+        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), copy, bytes.len()) };
+    }
+    copy.cast()
+}

@@ -28,6 +28,29 @@ struct Control {
     fd: c_int,
     pad: c_int,
 }
+// Match the glibc layout checked by the Linux C ABI probe.
+const _: () = {
+    use core::mem::{align_of, offset_of};
+
+    assert!(size_of::<Iovec>() == 16 && align_of::<Iovec>() == 8);
+    assert!(offset_of!(Iovec, base) == 0);
+    assert!(offset_of!(Iovec, len) == 8);
+    assert!(size_of::<Message>() == 56 && align_of::<Message>() == 8);
+    assert!(offset_of!(Message, name) == 0);
+    assert!(offset_of!(Message, name_len) == 8);
+    assert!(offset_of!(Message, iov) == 16);
+    assert!(offset_of!(Message, iov_len) == 24);
+    assert!(offset_of!(Message, control) == 32);
+    assert!(offset_of!(Message, control_len) == 40);
+    assert!(offset_of!(Message, flags) == 48);
+    assert!(size_of::<Control>() == 24 && align_of::<Control>() == 8);
+    assert!(offset_of!(Control, len) == 0);
+    assert!(offset_of!(Control, level) == 8);
+    assert!(offset_of!(Control, kind) == 12);
+    assert!(offset_of!(Control, fd) == 16);
+    assert!(offset_of!(Control, pad) == 20);
+};
+
 unsafe extern "C" {
     fn sendmsg(fd: c_int, msg: *const Message, flags: c_int) -> isize;
     fn recvmsg(fd: c_int, msg: *mut Message, flags: c_int) -> isize;

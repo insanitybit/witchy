@@ -125,6 +125,42 @@ mod proofs {
         }
     }
 
+    #[kani::proof]
+    fn timer_due_only_writes_for_a_matching_handle() {
+        let timers = any_timers();
+        let handle: u64 = kani::any();
+        let candidate = timers.slots[handle as usize % SLOTS];
+        TIMERS.with(|current| *current = timers);
+        if handle != 0 && handle == candidate.handle {
+            let mut output = core::mem::MaybeUninit::uninit();
+            assert!(unsafe { witchy_timer_due(handle, output.as_mut_ptr()) });
+            assert_eq!(unsafe { output.assume_init() }, candidate.due);
+        } else {
+            assert!(!unsafe { witchy_timer_due(handle, core::ptr::null_mut()) });
+        }
+    }
+
+    #[kani::proof]
+    fn retired_timer_cannot_write_through_a_reused_slot() {
+        let first_due: u64 = kani::any();
+        let next_due: u64 = kani::any();
+        let first = witchy_clock_timer(CLOCK, first_due);
+        witchy_clock_timer_end(CLOCK, first);
+
+        // Advance allocation through the other slots to reuse the first one.
+        for _ in 1..SLOTS {
+            witchy_clock_timer(CLOCK, 0);
+        }
+        let next = witchy_clock_timer(CLOCK, next_due);
+        assert_eq!(first as usize % SLOTS, next as usize % SLOTS);
+        assert_ne!(first, next);
+        assert!(!unsafe { witchy_timer_due(first, core::ptr::null_mut()) });
+
+        let mut output = core::mem::MaybeUninit::uninit();
+        assert!(unsafe { witchy_timer_due(next, output.as_mut_ptr()) });
+        assert_eq!(unsafe { output.assume_init() }, next_due);
+    }
+
     /// A new timer takes the first free place from `next`, and there is none
     /// only when the table is full or the handles have run out. Its handle is
     /// marked as a timer, names that place, carries the sequence number, and

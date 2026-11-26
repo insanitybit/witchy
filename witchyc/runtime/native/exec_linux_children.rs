@@ -359,6 +359,8 @@ fn list_children(parent: c_int, out: &mut [c_int]) -> (usize, bool) {
             more |= super::errno::get() != 0;
             break;
         }
+        // SAFETY: libc supplies a NUL-terminated name in this live entry.
+        // The name is used before the next readdir or closedir on this stream.
         let name = unsafe { CStr::from_ptr((&raw const (*entry).name).cast()) }.to_bytes();
         if name.is_empty() || !name.iter().all(u8::is_ascii_digit) {
             continue;

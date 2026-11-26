@@ -57,6 +57,46 @@ fn hash(mode: u64, input: &[u8], output: &mut [u8; 64]) -> bool {
     !hashed.is_null()
 }
 
+#[inline(always)]
+fn span_error(mode: u64, length: u64, capacity: u64) -> Option<u64> {
+    if capacity != mode / 8 {
+        return Some(2);
+    }
+    if length > 64 * 1024 * 1024 {
+        return Some(3);
+    }
+    None
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn admitted_digest_spans_fit_provider_and_scratch_buffer() {
+    let mode: u64 = kani::any();
+    let length: u64 = kani::any();
+    let capacity: u64 = kani::any();
+    kani::assume(matches!(mode, 256 | 384 | 512));
+    let width = match mode {
+        256 => 32,
+        384 => 48,
+        _ => 64,
+    };
+    match span_error(mode, length, capacity) {
+        None => {
+            assert_eq!(capacity, width);
+            assert!(capacity <= 64);
+            assert!(length <= 1 << 26);
+            assert_eq!(u64::from(length as u32), length);
+            assert!(length <= isize::MAX as u64);
+        }
+        Some(2) => assert_ne!(capacity, width),
+        Some(3) => {
+            assert_eq!(capacity, width);
+            assert!(length > 1 << 26);
+        }
+        Some(_) => unreachable!(),
+    }
+}
+
 /// The guest emitter supplies readable input and writable digest storage.
 /// Hash into a local buffer so the provider never sees overlapping spans.
 #[unsafe(no_mangle)]
@@ -70,11 +110,8 @@ unsafe extern "C" fn witchy_public_digest(
     if !matches!(mode, 256 | 384 | 512) {
         unsafe { core::arch::asm!("brk #0", options(noreturn, nostack)) }
     }
-    if capacity != mode / 8 {
-        return 2;
-    }
-    if length > 64 * 1024 * 1024 {
-        return 3;
+    if let Some(error) = span_error(mode, length, capacity) {
+        return error;
     }
     #[cfg(all(target_os = "linux", not(witchy_native_aws_lc)))]
     {
@@ -106,6 +143,19 @@ unsafe extern "C" fn witchy_public_digest(
         };
         0
     }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn rejected_digest_spans_do_not_access_guest_addresses() {
+    let mode: u64 = kani::any();
+    let length: u64 = kani::any();
+    let capacity: u64 = kani::any();
+    kani::assume(matches!(mode, 256 | 384 | 512));
+    kani::assume(capacity != mode / 8 || length > 1 << 26);
+    // Rejected requests must return even when neither address is usable.
+    let result = unsafe { witchy_public_digest(mode, 0, length, 0, capacity) };
+    assert_eq!(result, if capacity != mode / 8 { 2 } else { 3 });
 }
 
 #[cfg(witchy_native_aws_lc)]

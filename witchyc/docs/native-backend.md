@@ -742,11 +742,17 @@ The separate Miri harness uses the runtime's core sources directly, including an
 allocation, transfer and release test. On macOS ARM64 with nightly Miri installed:
 
 ```sh
-RUSTUP_TOOLCHAIN=nightly mbx miri test --offline \
+MIRIFLAGS='-Zmiri-strict-provenance -Zmiri-tree-borrows' \
+  RUSTUP_TOOLCHAIN=nightly mbx miri test --offline \
   --manifest-path tools/native-core-miri/Cargo.toml --lib -- --test-threads=1
 ```
 
-Miri runs these core tests in its interpreter. Native guest code, the OS adapters
+All 20 core tests passed with strict provenance and Tree Borrows on macOS ARM64. The allocator lifecycle and
+overlap fixtures passed separately with strict provenance under both
+Stacked Borrows and Tree Borrows. The allocator test under Miri compares the
+ABI's integer address with the live allocation's address and reads via the
+allocation pointer. The regular test still reconstructs a pointer from the
+ABI address and reads through it. Native guest code, the OS adapters
 and external cryptographic libraries still require separate testing.
 
 ## Native runtime core fuzzing
@@ -777,11 +783,788 @@ With Kani 0.68.0 installed:
 mbx exec cargo-kani kani --manifest-path tools/native-core-kani/Cargo.toml --default-unwind 16
 ```
 
-All 13 harnesses passed on macOS ARM64. Occupancy checks cover up to three
+The original 13 core harnesses passed on macOS ARM64. On the current Kani
+rerun, 11 passed initially and both heap-fill harnesses passed after raising
+their unwind bounds to cover the 16-byte scratch scan. The new slice-copy
+harness passed separately. Occupancy checks cover up to three
 operations on eight cells, and the multi-slot check uses two slots. These checks
 cover the individual core functions and the states in each harness. The read
 check uses an eight-byte buffer and replaces the hardware trap with a Kani
 failure. The OS adapters and generated machine code are outside their scope.
+
+The slice-copy harness checks the linked Rust copy routine on every valid source
+and destination range in a modeled eight-byte allocation. It covers overlapping
+and empty copies. A second harness verifies that a zero-length copy does
+not access null pointers. For nonempty copies the C ABI caller supplies live
+ranges and an initialized source. This harness provides no evidence about how callers derive those ranges.
+
+Kani checks the stack layout routine used by task spawn for every admitted
+size and 4, 16, or 64 KiB page sizes. It verifies the rounded stack size,
+the two guard extents and page boundaries, and 16-byte initial stack
+alignment assuming a page-aligned mapping base. Both the beginning and
+end of the usable stack are strictly inside the mapping. A separate
+harness checks rejection for a zero page size and representative
+nondivisors of the guard size, including `usize::MAX`. Mapping behavior and
+stack switching are separate from this arithmetic proof. With the
+routine inlined, the optimized runtime instructions match the baseline
+on macOS ARM64 and Linux ARM64 musl.
+
+The task switch shares the initial x19, link register, and stack-pointer slots
+between Rust and assembly. Compile-time Rust assertions check the context size
+and alignment. A source check matched each save and restore slot for x19–x30,
+d8–d15, and SP. Both native object disassemblies put the second register
+of the x29/x30 pair at byte 88 in the source and destination contexts.
+The emitted switch restores SP and then returns through the loaded x30. Stack allocation relies on libc returning suitably aligned
+storage from `malloc`. Rust checks the task's 16-byte alignment and both
+context offsets at compile time. The ARM64 glibc probe checks 16-byte
+fundamental C alignment. Darwin ARM64's SDK reports 8-byte alignment for
+`max_align_t`. Apple's allocator documentation independently specifies
+16-byte minimum allocation alignment. [Apple's heap memory documentation](https://developer.apple.com/videos/play/wwdc2024/10173/).
+The code also relies on a successful `mmap` supplying a page-aligned mapping
+of the requested length. The OS must apply the requested protection to the
+guard pages. These assumptions need platform evidence. The assertions do not
+check actual guard-page faults, register preservation, or task reclamation.
+The `wasm_cli::native_tasks` tests exercise a pause/resume cycle with live
+locals, normal task completion, and a guard-page fault. These scenarios do
+not independently inspect every saved register or cover nested task stacks.
+Run the tests on each native host to exercise its libc and guard behavior.
+A standalone fixture passed on macOS ARM64 and Linux ARM64 musl, including
+a rerun after extracting the stack-layout routine. It resumed
+a parent and child across nested stack switches, checked the values and
+finished states, and reclaimed both task records. A separate completed task captured
+its entry SP, which the fixture rounds up from the top writable page
+to locate the mapping. On both targets, `mprotect` returned `ENOMEM`
+for every page in the calculated mapping immediately after finish,
+including the two guard regions. Separate processes verified that
+attempting reclamation of a new, paused, or currently running task traps
+on both targets. Another child process
+reused a task slot and confirmed that its old handle traps while the new
+handle remains valid. The stack-exhaustion child ended with the expected
+protection signal on both platforms. Separate subprocesses each issued a
+single byte load at the first address of the lower or upper guard and
+observed the same protection signal. The fixture does not read the
+address reported by the kernel for the recursive overflow. A fixture-only assembly wrapper also
+observed that x19–x29, d8–d15, and SP retain their values across the switch
+on both platforms with distinct seeded values on the two stacks. A macOS
+scratch build with the d8/d9 save and restore removed trapped in this
+check. A fixture-only round trip calls the real switch with two independent
+contexts and an alternate stack. On both platforms it compares x30 on
+entry and on resume with the expected instruction addresses, and checks
+both contexts' saved x30 at byte 88. Its source is
+`tests/fixtures/native-sandbox/nested-task-abi.rs`.
+On both ARM64 targets, direct reads from the computed lower and upper
+guard pages faulted. In separate subprocesses, making only the selected
+page readable with `mprotect` let the same load return. This tests that
+the direct reads fault because of the selected guard's protection.
+The standard stack-overflow case checks the terminating signal. A
+separate offline probe installs a C signal handler on an alternate
+stack and compared `si_addr` with the lower guard range recorded
+by the mapping wrapper. The recursive task overflow reached that
+range on both ARM64 targets, with SIGBUS on macOS and SIGSEGV on Linux.
+The fixture also fills all 256 task slots, checks that a further spawn
+returns zero, finishes one task and replaces it with a distinct handle.
+It checks that the table is full again and runs and finishes every
+remaining task. This passed on both ARM64 targets. The test exercises
+slot exhaustion. A separate scratch build redirected only the task
+module's OS symbols and injected failures at `mmap`, the first
+`mprotect`, and task-record `malloc`. On macOS and Linux ARM64,
+each spawn returned zero, any mapping obtained before failure was
+unmapped successfully, and a subsequent task ran and finished.
+The extended probe also failed the second Linux guard setup after the
+first succeeded and observed the same cleanup and recovery. On both
+targets, injecting `munmap` failure when finishing a completed task
+terminated the child with the runtime's trap signal. Injecting a failed
+task-record allocation together with failed cleanup `munmap` during
+spawn returned zero on both targets and left the mapping live until
+process exit. The next spawn acquired a distinct mapping and finished
+normally. The failed task publishes no handle, so this case leaks the
+mapping without exposing it through a task slot.
+
+To build the fault-injection fixture from `witchyc/`, make a temporary
+copy of the task module and redirect its four foreign declarations.
+The fixture's wrappers call the real libc functions except at the
+selected failure point.
+
+```sh
+scratch=$(mktemp -d)
+for file in tasks task_switch task_stack_layout global; do
+    cp "runtime/native/$file.rs" "$scratch/"
+done
+cp tests/fixtures/native-sandbox/task-allocation-probe.rs "$scratch/probe.rs"
+python3 - "$scratch/tasks.rs" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+source = path.read_text()
+for symbol in ("mmap", "mprotect", "munmap", "malloc"):
+    declaration = f"    fn {symbol}("
+    assert source.count(declaration) == 1
+    source = source.replace(declaration, f'    #[link_name = "probe_{symbol}"]\n{declaration}')
+path.write_text(source)
+PY
+mbx exec rustc --edition=2024 -C opt-level=2 -C panic=abort "$scratch/probe.rs" -o "$scratch/probe"
+"$scratch/probe"
+```
+
+To check the overflow address as well, compile
+`tests/fixtures/native-sandbox/task-overflow-address.c` to an object with
+the target C compiler. Add `--cfg overflow_address` and
+`-C link-arg=/absolute/path/to/overflow.o` to the Rust command above.
+The probe expects its overflow subprocess to report the fault address
+inside the lower guard through a dedicated exit code.
+Build it with `mbx exec rustc --edition=2024 -C opt-level=2 -C panic=abort`
+and run the executable on the target. For a macOS-to-musl cross build,
+add `--target=aarch64-unknown-linux-musl -C linker-flavor=ld -C linker=ld.lld`
+with an equipped Rust toolchain and LLVM linker.
+The Linux transport module's three tests also passed in the VM with musl.
+They cover descriptor transfer with close-on-exec, malformed multi-descriptor
+cleanup, and partial framing and EOF. The glibc header checks independently
+cover the transport record layouts.
+
+The macOS SDK declarations for `pollfd`, `timespec`, `rlimit`, `siginfo_t`,
+and `nfds_t` can be checked without running a program:
+
+```sh
+xcrun clang -std=c11 -D_DARWIN_C_SOURCE -Wall -Werror -fsyntax-only \
+  tests/fixtures/native-sandbox/darwin-abi-layout.c
+```
+
+The Darwin probe also checks the descriptor record and selector used for
+`proc_pidinfo`. The runtime checks the returned byte count against the
+allocation and requires whole records before forming a slice. This relies
+on `proc_pidinfo` initializing the bytes it reports and on exclusive
+ownership of the descriptor table during startup. The regular native
+startup test exercises inherited-descriptor cleanup. It leaves malformed
+or partial foreign replies outside its coverage.
+
+Both header probes check the directory-stream signatures and the offsets of
+the name and kind fields returned by `readdir`. The four broker callers close
+their descriptor when `fdopendir` fails. On success the stream owns it and
+`Entries::drop` calls `closedir`. The entry borrows the mutable stream until
+the caller finishes with the name, so a second read cannot invalidate it
+while borrowed. The temporary-directory cleanup and Linux child scan also
+close their input descriptor on failure and close the stream on success.
+These checks rely on libc preserving descriptor ownership on failure and
+providing a live NUL-terminated name until the next read or close.
+
+Both probes check the resolver record and function signatures. The Rust
+resolver keeps the original list head, accepts only non-null address
+pointers with lengths from 1 through 128, and copies each address into
+its own 128-byte record before freeing the list. The source proof of that
+destination bound still relies on libc returning a live, aligned list and
+providing initialized bytes for each reported address length.
+
+On Linux ARM64 with glibc, run:
+
+```sh
+cc -std=c11 -D_GNU_SOURCE -Wall -Werror -fsyntax-only \
+  tests/fixtures/native-sandbox/linux-abi-layout.c
+```
+
+The probes check sizes, alignments, and selected offsets against the Rust
+assertions in `runtime/native/sys.rs` and `runtime/native/linux_stat.rs`.
+The Linux probe also checks the `openat2` argument layout, syscall number
+and resolve flags against the Linux headers. The Rust layout assertions
+compiled for ARM64 musl. The optimized `open_no_symlinks` wrapper emitted
+identical instructions before and after the assertions.
+The two Linux process-enumeration loops check the `readdir` result for
+null, take a raw pointer to `d_name`, and copy the bytes they need into
+a local path buffer before advancing or closing the directory stream.
+Neither loop takes a reference to the full fixed-size Rust `Dirent`.
+The offset checks establish where the name starts. The borrow relies
+on libc supplying a readable NUL-terminated name for each non-null entry
+and retaining that storage until the next read or close of the stream.
+The clock and randomness adapter uses a second Rust timespec declaration
+with compile-time size, alignment, and offset assertions. The C probes
+check the realtime clock selector and the `arc4random_buf`, `getrandom`,
+and pinned `RAND_bytes` signatures. The standalone
+`tests/fixtures/native-sandbox/clock-random-abi.rs` fixture passed on macOS
+ARM64 and Linux ARM64 musl. Build it with `mbx exec rustc --edition=2024
+--test` and run on the target. This exercises the live clock and random
+calls. An optional Linux fixture build with `--cfg witchy_test_wrapped_getrandom`
+and GNU linker option `--wrap=getrandom` also passed. It forces an
+`EINTR` followed by three- and five-byte reads, and checks the exact
+returned bytes and requested lengths. Unscripted calls delegate to libc.
+
+The deadline adapter checks its signal action, signal set and timer
+record layouts against the Rust assertions and both platforms' C
+headers. The macOS ARM64 setup-deadline fixture passed under Seatbelt,
+including re-arming with the connection deadline. The standalone
+Linux ARM64 musl deadline fixture also passed with live libc calls.
+
+The broker resolver's `Address` and `AddrInfo` layouts are checked in
+Rust and against both C headers. The existing endpoint fixture passed
+numeric and localhost resolution on macOS ARM64 and Linux ARM64 musl.
+The Rust loop skips null, oversized and unsupported address records,
+copies each accepted address into its own buffer, and frees the
+original list after traversal. It relies on libc keeping the list and
+the advertised address bytes readable until `freeaddrinfo`.
+
+The socket timeout fixture ran on macOS ARM64 and Linux ARM64 musl.
+It reads back both five-second timeout values using the standard library
+after the broker sets them through the runtime's C wrapper. Passing an
+invalid descriptor also returned failure on both platforms.
+
+The same fixture verified the byte I/O wrappers with a pipe, a file,
+and a Unix socket pair. On both targets, a short read preserved the
+unwritten tail of the destination buffer. The positional file read
+also left the descriptor offset unchanged, and the plain reads and
+socket receive returned zero at end of input.
+
+The glibc 2.39 ARM64 headers require eight-byte alignment for `siginfo_t`.
+The Rust mirror declares that alignment explicitly. A Linux ARM64 VM smoke
+test (`tests/fixtures/native-sandbox/linux-waitid-abi.rs`) called the Rust
+`waitid` wrapper against glibc and checked the PID and
+exit status of a child that exited normally. A `WNOWAIT` call and the
+subsequent reaping call both reported the same PID and status. A final
+wait for the reaped child returned `-1` with `ECHILD`. With a child
+held open by a pipe, `WNOHANG | WNOWAIT | WEXITED` returned success with
+a zero PID, which callers treat as no event. A blocking wait interrupted
+by a signal with restart disabled returned `-1` with `EINTR`. The probe
+covers these wrapper calls. Caller retry behavior and other child state
+changes need separate evidence.
+
+To reproduce the smoke test, compile the fixture to a position-independent
+ARM64 Linux object with `mbx exec rustc --crate-type lib --edition 2024 -C
+opt-level=2 -C panic=abort -C relocation-model=pic --emit=obj`. On a cross
+host, add the installed ARM64 Linux Rust target. Link the object with
+`ld.lld -shared -o probe.so probe.o`. On the Linux ARM64 test host, run
+`timeout 10 python3 tests/fixtures/native-sandbox/linux-waitid-abi.py ./probe.so`.
+The shared object resolves the C calls through the test host's libc. The
+driver compares device, inode, mode, link count, UID and size from both
+Rust metadata wrappers against Python's `os.fstat` and checks the child
+PID and exit status reported by `waitid`. It also checks that both metadata
+wrappers return `None` for an invalid descriptor and that the directory-relative
+wrapper returns `None` for a missing name.
+
+On macOS ARM64, the separate `tests/fixtures/native-sandbox/darwin-waitid-abi.rs`
+fixture passed against libSystem with its C driver. From `witchyc/`, run
+
+```sh
+scratch=$(mktemp -d)
+mbx exec rustc --crate-type lib --edition 2024 -C opt-level=2 -C panic=abort \
+  -C relocation-model=pic --emit=obj tests/fixtures/native-sandbox/darwin-waitid-abi.rs \
+  -o "$scratch/probe.o"
+xcrun clang -arch arm64 -std=c11 -Wall -Werror \
+  tests/fixtures/native-sandbox/darwin-waitid-abi.c "$scratch/probe.o" \
+  -o "$scratch/probe"
+"$scratch/probe"
+```
+
+The fixture checks that a child held open by a pipe produces a zero PID
+with `WNOHANG`, that the peek and reap both report the child PID after it
+exits, and that waiting again returns `-1` with libSystem's `ECHILD`.
+The fixture reads the error through the runtime's thread-local errno wrapper.
+
+With `opt-level=2` and `panic=abort`, the native runtime text disassembly
+matched baseline `1a66ce305` on macOS ARM64 and when cross-compiling an ARM64
+Linux object with the installed musl Rust target. The Linux glibc probe above
+separately checks the `waitid` ABI on that host.
+
+A repeat after the heap proof and Linux layout additions compared the
+full optimized runtime objects. Darwin instruction and relocation
+disassembly matched. Linux instruction disassembly matched, with
+relocation differences confined to offsets within the string data
+section. Resolving those relocations to their NUL-terminated strings
+produced identical disassembly after normalizing the absolute checkout
+prefixes in source locations. Both objects used the default crypto
+provider for their target.
+
+With pinned AWS-LC enabled on macOS ARM64, both the instruction and
+relocation disassembly match baseline `1a66ce305` after the task,
+digest, P-384, and TLS proof changes. The P-384 and TLS record fixtures
+passed against the latest compared object. The digest fixture passed
+against the object compared after the digest proof changes.
+The PKIX `X509_get0_pubkey` input was corrected to match the provider's
+const pointer declaration. With AWS-LC enabled, optimized runtime
+objects before and after that correction were byte-identical on both
+ARM64 Darwin and the ARM64 Linux musl Rust target.
+
+The default-provider comparison was repeated after the clock, deadline,
+resolver and socket timeout layout checks. Both ARM64 runtime objects
+still emit identical instruction disassembly to the baseline.
+
+After compiling both variants, two alternating pairs of `mbx test --offline
+--locked --release --no-fail-fast` with the same proof-checker binding ran on
+macOS ARM64. Wall times were 13.05 s baseline and 10.45 s candidate, then
+6.82 s candidate and 7.21 s baseline. Each run had the same 580 passing
+tests and one ignored test. Neither pair showed a test-time regression.
+The variation between pairs limits what can be inferred about speedup.
+A repeat against the verification changes available at the time measured 7.06 s baseline
+and 8.11 s candidate, then 7.20 s candidate and 7.56 s baseline. The
+same test names and outcomes appeared in all four runs. The maximum
+observed regression was 1.05 s.
+
+After adding the word and slice proofs and the remaining Linux layout
+assertions, two further alternating runs used the same baseline and
+compiler source, with only the runtime changes applied to the candidate.
+Baseline/candidate pairs were 7.07/10.23 s and 7.87/7.42 s, then
+8.61/7.86 s and 8.33/7.32 s. All eight invocations ran the same
+580 passing tests and one ignored test. The +3.16 s observation came
+from the integration test binary on a busy host and exceeded the
+budget. It did not recur in the other three pairs. The host was shared
+and reported one-minute load above 30 on ten logical CPUs around these
+runs, so the comparison does not isolate the cause of the outlier.
+
+A follow-up with the task and digest changes used prebuilt release
+artifacts and the same baseline and test identities. The first pair was
+6.69 s baseline and 8.66 s candidate. The reversed pair was 6.68 s
+candidate and 6.85 s baseline. The largest regression in this follow-up
+was 1.97 s. One-minute host load was 24.89 at the start and 30.65 after
+the run. The results did not identify a consistent overhead to offset.
+
+A later refresh applied the current native runtime and PKIX declaration
+to the same matched test checkout. With prebuilt release artifacts,
+baseline/candidate ran in 8.07/7.33 s, then the reversed
+candidate/baseline pair ran in 7.16/7.33 s. All four runs had identical
+test names and outcomes, with 580 passing tests and one ignored test.
+One-minute load was 18.29 before the four runs and 18.32 afterward.
+Neither pair showed a regression to offset.
+
+### Native runtime verification scope
+
+Completed Kani runs verified 23 core harnesses, five global-state
+harnesses, 26 runtime-logic harnesses and three Linux sandbox harnesses.
+The combined logic run includes both timer ABI proofs. The argv bounds
+proof was added afterward and passed separately.
+The two initial heap-fill failures were unwind assertions. The
+corrected harnesses passed with those assertions enabled.
+
+| Boundary | Current evidence | Remaining obligation |
+|---|---|---|
+| Heap allocation, handles and raw copies | Kani core harnesses cover bounded layout, occupancy, aliasing and copy cases. | Establish raw-pointer preconditions at each ABI caller and cover cases outside the modeled bounds. |
+| Global state | Kani exercises the table and in-place state operations sequentially. | Establish single-threaded use and exclude access from signal handlers or while an exclusive borrow spans a switch. |
+| Task stacks | Kani verifies stack layout arithmetic. The macOS and Linux musl fixtures check register preservation, guard protection and overflow fault location, stack reclamation, slot exhaustion, and injected setup and cleanup failures. | The switching and overflow checks exercise selected call sequences. They do not prove all task interleavings or OS failure combinations. |
+| OS and broker adapters | Selected Darwin and Linux layouts and signatures are compared against C headers. Runtime fixtures exercise child waits, Linux metadata and descriptor transfer. Kani logic and sandbox harnesses cover bounded parsing and state transitions. | Check remaining C signatures and layouts, Linux ABI behavior, initialized return lengths, and descriptor ownership through failure and cleanup paths. |
+| Crypto | Kani proves digest length admission and early rejection. CommonCrypto and pinned AWS-LC fixtures exercise selected calls on macOS and Linux ARM64. | Check the remaining Rust pointer, buffer, ownership and callback contracts against the linked provider on each supported platform. |
+
+The two direct task-switch call sites are `witchy_task_step` and
+`yield_task`. Both pass raw pointers to the two embedded contexts and
+retain a raw task pointer across the switch. The bootstrap passes a raw
+pointer to the task input and creates no Rust borrow that spans the
+entry call. The task status gates protect the mapping from reclamation
+while a caller can still switch into it. This trace covers the references
+created by the switch and bootstrap code itself.
+
+The installed runtime signal handlers have separate state paths.
+`request_stop` sets an atomic flag. `stop_serving` reads the atomic
+child identifiers, performs child cleanup through libc, and exits.
+`setup_expired` exits directly. These handler paths do not touch
+`Global` or `State`. The runtime's other signal dispositions install
+SIG_IGN or SIG_DFL, or restore a previous action in the broker. The
+source inventory found no explicit thread creation in shipped Rust
+under `runtime/native/`. Task switching occurs on the calling thread.
+The process-wide single-thread assumption still depends on the linked
+code and entrypoint. The shipped C-ABI `main` is defined in Rust and
+enters the generated guest synchronously in the ordinary launch and
+socket worker paths. An undefined-symbol scan of the tested ARM64
+runtime objects and pinned AWS-LC artifacts found no direct imports
+of pthread, C11, Mach, dispatch or clone thread creation entrypoints.
+This checks those direct imports only. Indirect calls and the behavior
+of system libraries remain assumptions. Tracing every `State::with`
+closure through its callees also remains open.
+
+The timer ABI confines its `TIMERS` borrows to table lookup, insertion
+or retirement. It copies the deadline before writing to the ABI output.
+The socket worker releases its `SOCKETS` borrow before calling
+`witchy_entry`. The socket close and transfer paths retain a table
+borrow during synchronous broker I/O and budget accounting. Those
+callee paths use the broker transport and libc I/O, with no task switch
+or guest callback in the worker. Group membership edits nest the
+`SOCKETS` borrow inside `GROUPS`, and address assembly returns owned
+copies of its temporary data. The Exec broker moves its state out of
+`BROKER` before dispatch, so a fork during dispatch does not inherit
+an active borrow of that cell.
+
+The Linux child sweeps borrow their scratch arrays for one round.
+The direct sweep borrows `PIDS` and takes `INPUT` during the proc-file
+read, then takes `HANDLES` after the read ends. The descendant sweep
+borrows `TREE`, `PIDS` and `BELOW` and uses `INPUT` during each
+individual proc-file read. The nested cells are distinct. These
+rounds use synchronous process queries, signals, waits and descriptor
+cleanup, then release the borrows before sleeping. The macOS session
+sweep holds `ALL_PIDS` during synchronous process queries and signals.
+These paths issue no fork, task switch or guest callback with a
+borrow live. The source trace relies on the foreign calls returning
+through their documented interfaces and on the separate signal paths
+described above.
+
+Launch argument and policy grant helpers return copied bytes, scalar
+results or failure. Manifest loading borrows `PLAN` while it reads
+and binds launch data, including calls into separate argument and
+grant cells, then returns the launch value before guest entry.
+The directory dispatcher keeps its path borrow through synchronous
+file and broker calls. The output opener uses the path as a readable
+slice for that call and returns a handle. Exec program setup keeps its
+borrow through descriptor operations and metadata queries. The guest
+Exec dispatcher takes its owned mutable entry out of `HANDLES` before
+using it, and the socket broker takes the shared mapping out of
+`SERVER_ENTRIES` before using it. These observations cover source
+paths and depend on the corresponding libc and provider calls
+returning without re-entering the runtime.
+
+The Exec environment cell returns only validation results. Its closures
+call the name policy and inspect or copy bytes. The program cell returns
+copies of its records or scalar metadata. Its descriptor export copies
+descriptor numbers to caller-owned output. Budget reads and writes use
+the stored raw pointer only while the shared word is mapped, which is
+a separate caller obligation. No reference into either cell travels
+with these results. The mutable Exec entry moved out by
+`Option::take` points to a separate allocation, and the socket broker
+moves ownership of the shared mapping rather than borrowing it from
+the state cell.
+
+For socket launches with Exec, the supervisor obtains the budget word
+from `SharedWord::map` and transfers the mapping out of its owning
+wrapper before storing the raw address. A worker unmaps its inherited
+copy before guest entry and exits if that unmap fails. The supervisor's
+mapping remains live. The worker therefore retains an unusable pointer
+value in its inherited program table. The runtime's budget read and
+spend calls occur in the Exec broker. Keeping those calls out of the
+worker after unmap is a process-role invariant.
+
+A Miri-only harness uses the real `State::with` under strict provenance.
+It checks that same-state re-entry panics before running the inner
+closure, that the outer reference remains usable when the harness
+catches that panic, and that a later borrow observes the outer write.
+The harness passed with Stacked Borrows and Tree Borrows. The shipped
+runtime aborts on panic.
+
+The timer ABI proof calls `witchy_timer_due` against arbitrary contents
+of the eight-slot model. A matching nonzero handle initializes its
+deadline output with the stored value. Every other handle returns
+false even when the output pointer is null. A writable output pointer
+remains a caller obligation on success.
+A second timer harness exercises allocation, retirement, and slot
+reuse through the real ABI. A retired handle returns false without
+accessing a null output after its slot is reused. The replacement
+handle writes the replacement deadline.
+
+The Miri launch-argument fixture calls the actual bind, select and byte
+operations. It covers an empty word, multibyte UTF-8, rejection of
+invalid UTF-8, reads at word boundaries, overflow-sized indices and
+clearing a selection after an invalid index. It starts with Rust-owned
+C strings. The launcher separately relies on the C entrypoint's argv
+pointer and string lifetime contract.
+
+A separate Kani proof verifies `Argv`'s raw indexing for every index in
+a two-entry caller-owned model, including null entries, negative counts,
+and access beyond the declared list length. It also checks that the
+text accessor returns early for those absent entries. Kani cannot model
+the foreign `strlen` used by `CStr::from_ptr` for a present entry.
+A separate Miri fixture checks that a present argv entry can be read,
+then split through its raw pointer after the previous borrow ends.
+Both substrings remain readable. This passed with strict provenance
+and Tree Borrows.
+
+Four launch-plan tests also passed in that mode, including reading
+copied plan fields after dropping the input and taking a duplicated
+descriptor only once. The Miri harness supplies a `strdup` shim backed
+by its libc allocator because its Darwin emulation lacks that call.
+The shim exercises the Rust ownership and pointer use with a distinct
+allocation. The four ownership tests also passed against native libc
+on macOS ARM64 and Linux ARM64 musl, using the real `strdup`. The
+extended descriptor test also verifies that the copy is close-on-exec
+and can read from the pipe after closing the original. That extension
+passed on macOS ARM64 and Linux ARM64 musl against libc, and under Miri.
+
+The file snapshot loader admits at most one MiB from the metadata and
+allocates one extra byte to detect growth. Its cursor advances only by
+positive libc read counts, which must be at most the remaining capacity.
+It publishes only the bytes filled before EOF and frees the allocation
+on failure. The snapshot ABI caps copies by the initialized bytes
+remaining and the connection budget. A nonempty output must be writable
+and disjoint from the runtime-owned allocation. This is a source trace
+of the loader and snapshot copy. The live byte-I/O fixture checks a
+short read and EOF on each target. The macOS native integration tests
+also passed for an explicit read grant and a buffered snapshot copy.
+The copy test checks binary payload preservation and refusal to commit
+when the filesystem budget cannot cover the output. The standalone
+Linux musl fixture exercises the Rust loader and snapshot ABI with a
+real file. It checks successive partial and end-of-file reads, leaves
+bytes beyond the returned count intact, accepts null output for empty
+or EOF reads, and closes the snapshot. With a two-byte connection
+budget and an eight-byte request, the first read touches only two
+bytes. After replenishing the budget, the next read resumes at byte
+two. All ten tests in the
+`tests/fixtures/native-sandbox/linux-file.rs` harness passed together,
+including the existing hard-link rejection and metadata tests.
+
+The P-384 adapter gives AWS-LC a 97-byte output for the public point
+and a 48-byte output for the shared secret. Both arrays are initialized
+before the calls, and the adapter checks the returned lengths. Owned
+key and point wrappers free the allocations on drop, including early
+returns. Borrowed group and public-point pointers remain inside the
+key operation. The slot table serializes its mutable access and moves
+ownership out on take. These source checks rely on the pinned provider
+honoring buffer capacities and its owned and borrowed pointer contracts.
+The raw ABI output copies also rely on the emitter supplying writable,
+non-overlapping output ranges. The C signatures were checked against the headers bundled with
+`aws-lc-fips-sys` 0.14.4. Run the offline probe with
+`clang -I "$AWS_LC_INCLUDE" -std=c11 -Wall -Werror -fsyntax-only
+tests/fixtures/native-sandbox/aws-lc-abi.c`, with `AWS_LC_INCLUDE`
+pointing to those headers. The probe also checks the HMAC context and
+SHA-256 signatures used by the secret adapter, including the width
+of the HMAC output length. It passed for Darwin and Linux ARM64.
+The same probe checks all PKIX provider declarations on both targets.
+The PKIX adapter passes each bounded DER slice to `d2i_X509` with a
+null destination and a writable local cursor. It immediately wraps the
+returned certificate in an owning guard, so trailing bytes and partial
+chains release all certificates parsed so far. AWS-LC takes its own
+reference when a root is added to the store. The intermediate stack
+holds borrowed certificate pointers, and its destructor frees just
+the stack. The verification context drops before the store, stack
+and certificate owners on both success and early return. The adapter
+uses the verified chain and its borrowed elements only while the
+context is live, and uses the borrowed leaf public key only while
+the leaf is live. The digest verification context drops before the
+leaf. These lifetime checks use the pinned provider's ownership
+contracts and Rust's local drop order. A scratch Linux ARM64 PIE
+linked the pinned static provider and used linker wrappers around
+`X509_STORE_new`, `OPENSSL_sk_new_null`, `X509_STORE_CTX_new` and
+`EVP_MD_CTX_new`. With the PKIX known-answer inputs, it returned null
+at each of the 36 observed wrapped calls in separate verification
+attempts. Every attempt reached the injected failure and a subsequent
+unmodified verification succeeded. A second run redirected only the
+Rust runtime archive's references to those four constructors and their
+matching destructors. Each constructor failure returned false, left no
+tracked object outstanding, and was followed by a successful verification.
+The tracking covers objects returned directly by those constructors.
+Certificate reference counts and provider-internal allocations remain
+outside that tracking.
+
+To rerun the four-constructor sweep on Linux ARM64, run from
+`witchyc/` with `WITCHY_RUNTIME_RUST_ARCHIVE` set to the AWS-LC-enabled
+runtime archive and `AWS_LC_ROOT` set to the pinned provider install.
+The symbol rewrites apply to a temporary copy of the Rust archive.
+
+```sh
+scratch=$(mktemp -d)
+for symbol in X509_STORE_new X509_STORE_free OPENSSL_sk_new_null OPENSSL_sk_free \
+    X509_STORE_CTX_new X509_STORE_CTX_free EVP_MD_CTX_new EVP_MD_CTX_free; do
+    printf 'aws_lc_fips_0_14_4_%s __wrap_aws_lc_fips_0_14_4_%s\n' "$symbol" "$symbol"
+done > "$scratch/symbols"
+llvm-objcopy --redefine-syms="$scratch/symbols" \
+    "$WITCHY_RUNTIME_RUST_ARCHIVE" "$scratch/runtime.a"
+cc -O2 -Wall -Werror -Wl,--gc-sections -I "$AWS_LC_ROOT/include" \
+    tests/native-linux/pkix-allocation-probe.c "$scratch/runtime.a" \
+    "$AWS_LC_ROOT/lib/libaws_lc_fips_0_14_4_crypto.a" -lpthread -o "$scratch/pkix-probe"
+"$scratch/pkix-probe"
+```
+The regular timing run used the default provider
+configuration. A separate macOS ARM64 build linked the pinned AWS-LC
+shared library and passed all 92 `wasm_cli` tests, including P-384,
+PKIX, digest and signer tests. The linked library exported the pinned
+symbols declared by the P-384, digest, signer and TLS adapters. The
+native qualification runner separately passed `crypto/tls-aead.wy` in
+default, checked, and observed modes with the pinned provider. It exercises
+AES-128-GCM and AES-256-GCM record seal/open against known answers. The
+TLS signer smoke fixture (`tests/fixtures/native-sandbox/tls-signer-abi.wy`)
+also passed on macOS ARM64. It received a generated P-384 PKCS#8 key over
+a launch descriptor and emitted an ECDSA signature. OpenSSL verified the
+signature against the TLS 1.3 server CertificateVerify domain and the
+fixture's 48-byte transcript hash. The fixture also checks that a
+truncated DER key and a valid P-256 key both fail at launch without
+emitting a signature. Other
+provider failures and raw ABI pointer preconditions remain open.
+
+Run the signer smoke test from the repository root with the provider-enabled
+compiler and its qualification ready binding. Set `WITCHYC` and
+`WITCHY_WASM_READY_BINDING` to their absolute paths.
+
+```sh
+(
+    set -eu
+    export WITCHY_WASM_READY_BINDING
+    scratch=$(mktemp -d)
+    trap 'rm -rf "$scratch"' EXIT
+    cp witchyc/tests/fixtures/native-sandbox/tls-signer-abi.wy "$scratch/main.wy"
+    openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:secp384r1 -out "$scratch/key.pem"
+    openssl pkcs8 -topk8 -nocrypt -outform DER -in "$scratch/key.pem" -out "$scratch/key.der"
+    openssl pkey -in "$scratch/key.pem" -pubout -out "$scratch/public.pem"
+    "$WITCHYC" build "$scratch/main.wy" -o "$scratch/program" --target=macos-arm64
+    "$scratch/program" --output --secret-slot=signer:sign/tls13/server-p384:fd:3 \
+        3<"$scratch/key.der" >"$scratch/signature.der"
+    python3 -c 'import sys; sys.stdout.buffer.write(b" " * 64 + b"TLS 1.3, server CertificateVerify\x00" + bytes([7]) * 48)' \
+        >"$scratch/message"
+    openssl dgst -sha384 -verify "$scratch/public.pem" \
+        -signature "$scratch/signature.der" "$scratch/message"
+    head -c 12 "$scratch/key.der" >"$scratch/truncated.der"
+    openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:prime256v1 -out "$scratch/p256.pem"
+    openssl pkcs8 -topk8 -nocrypt -outform DER -in "$scratch/p256.pem" -out "$scratch/p256.der"
+    for invalid_key in "$scratch/truncated.der" "$scratch/p256.der"; do
+        if "$scratch/program" --output --secret-slot=signer:sign/tls13/server-p384:fd:3 \
+            3<"$invalid_key" >"$scratch/rejected.out" 2>"$scratch/rejected.err"; then
+            exit 1
+        fi
+        test ! -s "$scratch/rejected.out"
+        rg -Fx 'invalid or duplicate native secret slot binding' "$scratch/rejected.err"
+    done
+)
+```
+
+Kani verifies the size checks used by the digest ABI for every 64-bit
+length and capacity when the digest mode is valid. An admitted output
+fits the 64-byte scratch buffer, and an admitted input fits the provider's
+length type without truncation. A separate harness calls the actual
+digest entry point with null addresses for all rejected lengths and
+capacities and proves that the call returns its expected error before
+reaching the provider. Admitted nonempty spans require readable input
+and writable output storage. The inlined checks
+produced identical instructions in both default ARM64 runtime builds.
+
+The offline `tests/fixtures/native-sandbox/digest-abi.rs` fixture passed
+against CommonCrypto on macOS ARM64. It checks that SHA-256, SHA-384 and
+SHA-512 produce the same output with shared input/output storage as with
+separate buffers, leave the bytes beyond the digest unchanged, accept a
+null address for an empty input, and reject invalid capacity or oversized
+length before accessing either guest address. Build it with
+`mbx exec rustc --edition=2024 -C opt-level=2 -C panic=abort` and run the
+executable on macOS. Nonempty, admitted spans still require valid
+caller-provided storage. For each digest width, the fixture also hashes
+64 MiB of zeros, checks an independent SHA-2 known answer, and verifies
+the bytes after the digest remain untouched.
+
+On Linux ARM64 musl without a provider, the fixture also passed the
+capacity and length error cases and received the provider-unavailable
+result with null addresses. This verifies the early-return path in
+the provider-free build. A separate Linux ARM64 VM run exercised the real
+digest export against a scratch ELF build of pinned AWS-LC FIPS 0.14.4.
+It checked all three SHA-2 widths against Python's hashlib, including
+64 MiB inputs, output sentinels, empty input with a null address,
+overlapping input and output, and early rejection of invalid spans.
+The Rust runtime object targeted ARM64 musl with LSE atomics enabled
+and was loaded through a small shared object in the glibc VM.
+Witchy's Linux linker uses a static provider archive in a PIE. A second
+Linux ARM64 VM run used the pinned FIPS static archive, including the
+delocated object with its injected integrity hash, in a glibc PIE.
+The P-384 fixture passed there as well.
+The existing `tests/native-linux/signer-probe.c` passed in a separate
+PIE using the same provider archive and the Rust runtime static library.
+It reported FIPS mode enabled, matched the expected ACVP public-key
+digest, produced a verifiable signature after installing the guest
+sandbox, and rejected a message outside the slot's role.
+An ML-DSA-65 probe in the same static-provider configuration signed an
+empty message with AWS-LC and verified it through the runtime export
+with a null message address. A corrupted signature failed. A short key,
+short signature, and message longer than 64 MiB all returned false with
+null addresses. The adapter checks lengths before constructing slices
+and substitutes static storage for an empty message. It frees the
+provider digest context before the public key, including after failed
+initialization or verification. These observations cover the listed
+ML-DSA-65 cases on Linux. The standalone
+`tests/fixtures/native-sandbox/mldsa-abi.c` probe passed the same cases
+for suite 65 on Linux ARM64 with the current Rust runtime archive and
+the pinned static provider, and for suites 65 and 87 on macOS ARM64.
+On Linux, use the signer probe's static link command in
+`tests/native-linux/manifest-checks.sh` with the ML-DSA fixture in
+place of `signer-probe.c`. The VM run cross-linked it as a PIE with
+a scratch startup object. On macOS, build the runtime
+dylib as for the digest fixture with `_witchy_public_mldsa_verify`
+exported, then compile the probe with the pinned headers and link
+against both the runtime dylib and the provider. Admitted nonempty spans still require readable
+caller storage, and provider allocation failure was not injected here.
+These fixtures used a scratch startup object in place of the normal
+compiler-driven executable link.
+
+The fixture also passed on macOS ARM64 with the pinned AWS-LC FIPS
+provider. From `witchyc/`, set `AWS_LC_LIB` to the absolute path to
+the provider's library directory and run:
+
+```sh
+scratch=$(mktemp -d)
+mbx exec rustc --crate-type=lib --edition=2024 -C opt-level=2 -C panic=abort \
+  --cfg witchy_native_aws_lc --emit=obj runtime/native/runtime_abi.rs -o "$scratch/runtime.o"
+xcrun clang -arch arm64 -dynamiclib "$scratch/runtime.o" -L "$AWS_LC_LIB" \
+  -laws_lc_fips_0_14_4_crypto -Wl,-rpath,"$AWS_LC_LIB" -Wl,-dead_strip \
+  -Wl,-exported_symbol,_witchy_public_digest -o "$scratch/libwitchy_digest_runtime.dylib"
+mbx exec rustc --edition=2024 -C opt-level=2 -C panic=abort --cfg witchy_native_aws_lc \
+  -L "native=$scratch" -l dylib=witchy_digest_runtime \
+  tests/fixtures/native-sandbox/digest-abi.rs -o "$scratch/digest-abi"
+"$scratch/digest-abi"
+```
+
+The P-384 boundary fixture `tests/fixtures/native-sandbox/p384-abi.c`
+passed on macOS ARM64 and in the Linux ARM64 scratch configuration
+above with the pinned provider. It checks invalid
+lengths before pointer access, unchanged outputs when an invalid peer
+is rejected, and agreement between the one-shot and stateful APIs. It
+also checks a sentinel immediately after each successful output span.
+A failed stateful finish consumes its handle without changing the
+secret buffer, and a later public-key request on that handle returns
+an error without changing its output. Filling all 16 slots, releasing
+one, and allocating its replacement also left the old handle invalid.
+A separate Kani harness calls the same slot table with modeled key
+values and proves sequential transfer out, reuse of the freed slot,
+and rejection of the stale handle. A second proof starts at the last
+two counter values and verifies that exhausting the handle space
+prevents insertion even when a slot is free. The models exclude
+simultaneous access and provider key allocation and destruction.
+A separate Miri test uses the real slot guard with modeled keys and
+two threads. It passed with strict provenance, Tree Borrows, and
+forced preemption across four additional scheduling seeds. This
+samples interleavings of insertion, lookup and removal.
+To reproduce it, link the AWS-LC runtime object as above with only
+`_witchy_p384_start`, `_witchy_p384_public`, `_witchy_p384_finish`,
+`_witchy_p384_close`, and `_witchy_p384_agree` exported. Then compile the C fixture with
+`xcrun clang -arch arm64 -std=c11 -Wall -Werror`, passing that dylib
+as a link input, and run the executable.
+
+The pinned provider source in `crypto/fipsmodule/cipher/aead.c`
+checks the output capacity before seal and the default open path
+forward to their cipher callbacks. On success it reports the produced
+length. On error it zeros the passed output capacity and resets the
+reported length. The selected TLS AES-GCM seal callback delegates to
+the AES-GCM implementation in `crypto/fipsmodule/cipher/e_aes.c`.
+`OPENSSL_cleanse` in `crypto/mem.c` writes zeros over the supplied range
+without requiring its prior contents to be initialized. The Rust
+adapter passes only its own scratch buffer, copies out only after
+success with the exact expected length, and frees the provider context
+before the copy. The cipher callback and assembly implementations
+remain trusted for the bytes they actually write.
+
+Kani checks the actual TLS record entry point with arbitrary mode and
+length fields. All combinations rejected by the size, mode, or shape
+checks return the expected code with null addresses. Provider imports
+are left unresolved in the model, so a rejected request reaching them
+fails verification. A second harness verifies early rejection for all
+tag comparisons whose lengths differ from 48 bytes. The native
+fixture checks that the provider compares exactly 48 bytes, including
+a difference at byte 47 and ignoring a different byte at offset 48.
+
+The standalone `tests/fixtures/native-sandbox/tls-record-abi.c`
+fixture checks the real AES-128 and AES-256 adapters with the pinned
+provider. Empty records accept a null address for the zero-length
+span. Three-byte records round-trip with unchanged output sentinels,
+and corrupted tags leave the entire output untouched. Wrong and
+oversized lengths are rejected before memory access. The fixture
+also seals and opens a 16,640-byte ciphertext at the adapter limit
+and checks both output sentinels. An in-place AES-128 case exercises
+overlap through the separate provider scratch buffer. On failure it
+leaves the entire record intact, and on success it replaces only the
+plaintext prefix. Use the same dylib link procedure as the P-384 fixture with
+`_witchy_tls13_aead` and `_witchy_verify_tag48` exported.
+
+The inventory covers the 54 files under `runtime/native/` with explicit
+unsafe blocks, unsafe functions or foreign declarations, or global
+assembly. The two additional files that use only unsafe symbol export
+attributes are `broker_transport.rs` and `signer_binding.rs`. Their
+exported names and calling conventions still form part of the runtime
+ABI. The AWS-LC-enabled runtime also includes `src/compiler/pkix.rs`
+directly. Its provider calls and ownership wrappers are in scope with
+the cryptographic providers below.
+
+| Boundary | Files in `runtime/native/` | Safety obligations |
+|---|---|---|
+| Heap, runtime entry, and global state | `global.rs`, `heap.rs`, `runtime_abi.rs` | Raw payload pointer provenance and lifetime, occupancy, handle generation, and exclusive process-state access. |
+| Task contexts | `task_switch.rs`, `tasks.rs` | Live stack and context ownership across switches and reclamation, including abnormal termination. |
+| Libc and platform setup | `sys.rs`, `errno.rs`, `linux_stat.rs`, `linux_sandbox.rs`, `seatbelt.rs`, `seatbelt_fds.rs`, `secret_guard.rs`, `deadline.rs`, `clock_random.rs` | FFI argument layout, initialized kernel outputs, signal behavior, and lifetime of process resources. |
+| Launcher and grants | `launch_args.rs`, `launch_env.rs`, `launch_flags.rs`, `launch_plan.rs`, `launch_walk.rs`, `policy_grants_abi.rs` | Bounds and lifetimes for argv, environment and launch-plan buffers, plus grant ownership. |
+| Broker, network, and timers | `broker_directory.rs`, `broker_endpoint.rs`, `broker_loop.rs`, `broker_socket.rs`, `connection_queue.rs`, `socket_primitives.rs`, `timers.rs` | Socket address lengths, descriptor ownership, and buffer and state lifetimes across broker operations. |
+| File and console I/O | `console.rs`, `directory.rs`, `file_reader.rs`, `file_snapshot.rs`, `file_writer.rs`, `input_stream.rs`, `io_budget.rs` | Initialized counts from reads, writable output ranges, and file and descriptor ownership on cleanup. |
+| Child processes and transport | `exec_broker.rs`, `exec_capture.rs`, `exec_grant.rs`, `exec_guest.rs`, `exec_linux_children.rs`, `exec_linux_limits.rs`, `exec_linux_runner.rs`, `exec_linux_security.rs`, `exec_linux_transport.rs`, `exec_pending.rs`, `exec_programs.rs`, `exec_supervision.rs`, `exec_temp.rs` | Child and descriptor lifetime across fork, wait, transfer, cancellation, and partial I/O. |
+| Cryptographic providers | `digest.rs`, `p384.rs`, `p384_slots.rs`, `pkix_abi.rs`, `signer_crypto.rs`, `tls_record.rs`, `tls_signer.rs` | Provider-specific pointer ranges, initialization, ownership, and callback lifetime. |
 
 The runtime's process-state cells (`runtime/native/global.rs`) have their own harness crate,
 `tools/native-global-kani` (run the same way). It checks that a `Table` agrees with a plain array
@@ -790,7 +1573,7 @@ every item in use; and that a `State`, the cell for a value changed in place, ke
 writes and stops the process on a second use inside a first. It does not check the claim the cells rest on: that the runtime has one thread.
 
 `tools/native-logic-kani` checks pure logic the launcher, the supervisor and the guest's broker
-client rest on (24 harnesses; proofs of a file's private functions sit in that file under
+client rest on (27 harnesses; proofs of a file's private functions sit in that file under
 `cfg(kani)`). Each holds for every input up to the bound given, and each `kani::cover!` in it is
 satisfied:
 
@@ -845,6 +1628,26 @@ with real pointer provenance. Its allocator test also runs real ABI calls
 through a small independent word model: allocation, initialization, transfer,
 read, refused release, cell removal and release across 25 range combinations.
 These are targeted checks, not evidence that all runtime unsafe code is sound.
+
+A separate Kani harness calls the actual word initialization and read ABI
+with a valid preallocated eight-byte sparse buffer and a four-entry slot
+table. For every initial payload and every valid offset and count in that
+buffer, it checks byte order, preservation of bytes outside the range,
+round-trip readback, and the resulting bitmap and occupancy count. The
+harness supplies the allocation and exercises one live slot.
+
+The slice-initialization ABI is checked with four two-byte elements and
+every valid pair of source and destination ranges in that allocation.
+The expected bytes come from the original payload, so overlap in either
+direction must preserve copy semantics. The proof also checks the
+untouched payload, bitmap, occupancy count, and an empty copy with a
+null source. Nonempty sources are readable by construction in this
+harness. The caller's ability to supply such a source remains an ABI
+precondition. A separate Miri-only fixture uses an actual allocated
+buffer and passes an overlapping pointer derived from that allocation
+to the same ABI. It also passes a null source for a zero-length copy.
+Both the fill fixture and this slice fixture passed under
+`MIRIFLAGS=-Zmiri-strict-provenance`.
 
 Native allocation returns one word. Successful handles carry a nonzero
 generation in the upper 32 bits. Allocation errors have a zero generation.

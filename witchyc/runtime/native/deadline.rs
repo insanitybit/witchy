@@ -102,6 +102,30 @@ struct Timer {
     value: Timeval,
 }
 
+const _: () = {
+    use core::mem::offset_of;
+    assert!(size_of::<Timeval>() == 16 && align_of::<Timeval>() == 8);
+    assert!(offset_of!(Timeval, micros) == 8);
+    assert!(size_of::<Timer>() == 32 && align_of::<Timer>() == 8);
+    assert!(offset_of!(Timer, value) == 16);
+    assert!(offset_of!(SignalAction, handler) == 0);
+    assert!(offset_of!(SignalAction, mask) == 8);
+    assert!(align_of::<SignalAction>() == 8);
+    #[cfg(target_os = "macos")]
+    {
+        assert!(size_of::<SignalSet>() == 4 && align_of::<SignalSet>() == 4);
+        assert!(size_of::<SignalAction>() == 16);
+        assert!(offset_of!(SignalAction, flags) == 12);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        assert!(size_of::<SignalSet>() == 128 && align_of::<SignalSet>() == 8);
+        assert!(size_of::<SignalAction>() == 152);
+        assert!(offset_of!(SignalAction, flags) == 136);
+        assert!(offset_of!(SignalAction, restorer) == 144);
+    }
+};
+
 unsafe extern "C" {
     fn sigaction(signal: c_int, action: *const SignalAction, old: *mut SignalAction) -> c_int;
     fn sigemptyset(set: *mut SignalSet) -> c_int;

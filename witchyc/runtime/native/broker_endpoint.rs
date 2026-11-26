@@ -98,6 +98,28 @@ struct AddrInfo {
     next: *mut AddrInfo,
 }
 
+const _: () = {
+    use core::mem::offset_of;
+    assert!(size_of::<Address>() == 128 && align_of::<Address>() == 8);
+    assert!(size_of::<AddrInfo>() == 48 && align_of::<AddrInfo>() == 8);
+    assert!(offset_of!(AddrInfo, flags) == 0);
+    assert!(offset_of!(AddrInfo, family) == 4);
+    assert!(offset_of!(AddrInfo, socket_type) == 8);
+    assert!(offset_of!(AddrInfo, protocol) == 12);
+    assert!(offset_of!(AddrInfo, len) == 16);
+    assert!(offset_of!(AddrInfo, next) == 40);
+    #[cfg(target_os = "macos")]
+    {
+        assert!(offset_of!(AddrInfo, canonical) == 24);
+        assert!(offset_of!(AddrInfo, address) == 32);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        assert!(offset_of!(AddrInfo, address) == 24);
+        assert!(offset_of!(AddrInfo, canonical) == 32);
+    }
+};
+
 /// The addresses `text` names, numeric or by DNS, or `None` when it names none.
 pub(super) fn witchy_broker_resolve_endpoint(text: &CStr) -> Option<Endpoint> {
     use core::ffi::c_char;

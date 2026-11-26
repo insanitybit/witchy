@@ -46,6 +46,8 @@ fn load(fd: c_int, budget: u64) -> Option<Snapshot> {
     let bytes = ptr::NonNull::new(unsafe { malloc(capacity) }.cast::<u8>())?;
     let mut cursor = 0;
     while cursor < capacity {
+        // SAFETY: cursor starts at zero and advances only by a successful
+        // read count. libc writes and reports at most capacity - cursor bytes.
         let count = unsafe { read(fd, bytes.as_ptr().add(cursor).cast(), capacity - cursor) };
         if count == 0 {
             return Some(Snapshot {
@@ -134,14 +136,15 @@ extern "C" fn witchy_snapshot_byte() -> u64 {
     u64::from(byte)
 }
 
-/// The guest output address must permit writing the returned byte count.
+/// For a nonzero result, the guest output must be writable for that many bytes
+/// and disjoint from the runtime-owned snapshot allocation.
 #[unsafe(no_mangle)]
 unsafe extern "C" fn witchy_snapshot_read(out: *mut u8, count: usize) -> u64 {
     let Some(mut file) = FILE.get() else { trap() };
     let len = super::io_budget::snapshot_read_length(count.min(file.len - file.cursor));
     if len != 0 {
-        // SAFETY: the snapshot owns `len` read bytes from its cursor on, and
-        // the caller's address takes that many.
+        // SAFETY: len is bounded by the remaining initialized snapshot bytes.
+        // The caller supplies a writable, disjoint output for that count.
         unsafe { ptr::copy_nonoverlapping(file.bytes.as_ptr().add(file.cursor), out, len) };
         file.cursor += len;
         FILE.set(Some(file));

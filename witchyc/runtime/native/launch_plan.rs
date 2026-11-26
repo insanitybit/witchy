@@ -969,6 +969,31 @@ pub(super) mod opening {
 mod proofs {
     use super::*;
 
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn argv_access_stays_inside_the_caller_supplied_list() {
+        let word = [b'x' as c_char, 0];
+        let entries = [word.as_ptr().cast_mut(), ptr::null_mut()];
+        let count: c_int = kani::any();
+        let index: usize = kani::any();
+        kani::assume(count <= entries.len() as c_int);
+        let args = unsafe { Argv::new(count, entries.as_ptr()) };
+
+        assert!(unsafe { Argv::new(0, ptr::null()) }.is_none());
+        if count < 0 {
+            assert!(args.is_none());
+            return;
+        }
+        let args = args.unwrap();
+        assert_eq!(args.len(), count as usize);
+        if index == 0 && count > 0 {
+            assert_eq!(args.raw(index), word.as_ptr().cast_mut());
+        } else {
+            assert!(args.raw(index).is_null());
+            assert!(args.get(index).is_none());
+        }
+    }
+
     /// An inherited descriptor's number is read from one to four digits with no
     /// leading zero, and is past the standard streams and under 1024.
     #[kani::proof]
@@ -1034,6 +1059,7 @@ mod tests {
         )).unwrap();
         let mut launch: Launch = unsafe { core::mem::zeroed() };
         assert!(witchy_launch_read(&text, &mut launch));
+        drop(text);
         assert_eq!(launch.cwd, -1);
         assert_eq!(launch.record_count, 2);
         assert_eq!(launch.flag_count, 1);
@@ -1086,12 +1112,15 @@ mod tests {
         let copy = witchy_launch_take(&mut launch, pipe_fds[0]);
         assert!(copy >= 3 && copy != pipe_fds[0]);
         assert_eq!(witchy_launch_take(&mut launch, pipe_fds[0]), -1);
-        unsafe {
-            close(copy);
-            close(pipe_fds[0]);
-            close(pipe_fds[1]);
-            free(launch.text.cast());
-        }
+        assert_eq!(crate::sys::descriptor_flags(copy), 1); // FD_CLOEXEC
+        assert_eq!(close(pipe_fds[0]), 0);
+        assert_eq!(crate::sys::write(pipe_fds[1], b"x"), 1);
+        let mut byte = [0];
+        assert_eq!(crate::sys::read(copy, &mut byte), 1);
+        assert_eq!(&byte, b"x");
+        assert_eq!(close(copy), 0);
+        assert_eq!(close(pipe_fds[1]), 0);
+        unsafe { free(launch.text.cast()) };
     }
 
     #[test]

@@ -8,6 +8,13 @@ pub(super) struct Timespec {
     pub(super) nanos: i64,
 }
 
+const _: () = {
+    use core::mem::offset_of;
+    assert!(size_of::<Timespec>() == 16 && align_of::<Timespec>() == 8);
+    assert!(offset_of!(Timespec, seconds) == 0);
+    assert!(offset_of!(Timespec, nanos) == 8);
+};
+
 unsafe extern "C" {
     fn clock_gettime(clock: c_int, out: *mut Timespec) -> c_int;
     #[cfg(all(not(witchy_native_aws_lc), target_os = "macos"))]

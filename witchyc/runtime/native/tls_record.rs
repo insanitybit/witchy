@@ -102,3 +102,55 @@ unsafe extern "C" fn witchy_verify_tag48(
     u64::from(left_len == 48 && right_len == 48
         && fips_mode() == 1 && unsafe { compare(left, right, 48) } == 0)
 }
+
+#[cfg(kani)]
+#[kani::proof]
+fn rejected_tls_record_spans_do_not_reach_the_provider() {
+    let mode: u64 = kani::any();
+    let key_len: usize = kani::any();
+    let nonce_len: usize = kani::any();
+    let header_len: usize = kani::any();
+    let input_len: usize = kani::any();
+    let output_len: usize = kani::any();
+    let expected = if input_len > 16640 || output_len > 16640 {
+        3
+    } else if mode >= 4 {
+        4
+    } else {
+        let correct_key = if mode < 2 { 16 } else { 32 };
+        let sizes_match = match mode {
+            0 | 2 => output_len.checked_sub(16) == Some(input_len),
+            _ => input_len.checked_sub(16) == Some(output_len),
+        };
+        if key_len == correct_key && nonce_len == 12 && header_len == 5 && sizes_match {
+            return;
+        }
+        2
+    };
+    let result = unsafe {
+        witchy_tls13_aead(
+            mode,
+            ptr::null(),
+            key_len,
+            ptr::null(),
+            nonce_len,
+            ptr::null(),
+            header_len,
+            ptr::null(),
+            input_len,
+            ptr::null_mut(),
+            output_len,
+        )
+    };
+    assert_eq!(result, expected);
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn tag_comparison_rejects_wrong_lengths_without_accessing_spans() {
+    let left_len: usize = kani::any();
+    let right_len: usize = kani::any();
+    kani::assume(left_len != 48 || right_len != 48);
+    let result = unsafe { witchy_verify_tag48(ptr::null(), left_len, ptr::null(), right_len) };
+    assert_eq!(result, 0);
+}

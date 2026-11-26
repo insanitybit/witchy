@@ -20,10 +20,17 @@ fn allocated_buffers_transfer_and_release() {
         witchy_fill(first, 1, 4, &value);
         let address = witchy_cell(first, 1, 0, u64::from(READ));
         assert!(address > 2);
+        #[cfg(not(miri))]
         assert_eq!(
             ptr::with_exposed_provenance::<u8>(address as usize).read(),
             value
         );
+        #[cfg(miri)]
+        {
+            let payload = Buffer::payload(live(first));
+            assert_eq!(address as usize, payload.addr());
+            assert_eq!(payload.read(), value);
+        }
         assert_eq!(witchy_read_word(first, 1, 0, 4), 0x07070707);
         witchy_transfer(first, second, 1, 0, 4, 1);
         assert_eq!(witchy_release(first, 1), 0);
@@ -101,11 +108,16 @@ struct Buffer {
     kind: u64,
 }
 
+#[cfg(not(kani))]
+const HEAP_SLOTS: usize = 1 << 18;
+#[cfg(kani)]
+const HEAP_SLOTS: usize = 4;
+
 /// Compiled code reads the slot table in place at `witchy_heap` (its first field) for a proved
 /// cell access; see src/compiler/native/body/cells.rs. The slot count is `SLOTS` there.
 #[repr(C)]
 struct Heap {
-    slots: Slots<ptr::NonNull<Buffer>, { 1 << 18 }>,
+    slots: Slots<ptr::NonNull<Buffer>, HEAP_SLOTS>,
     bytes: usize,
     granted: bool,
 }
@@ -161,7 +173,8 @@ const _: () = {
     assert!(PREFIX == 1 << 29);
     assert!(core::mem::offset_of!(Heap, slots) == 0);
     assert!(super::heap_slots::SLOT_BYTES == 16 && super::heap_slots::SLOT_GENERATION == 8);
-    assert!(size_of::<Slots<ptr::NonNull<Buffer>, { 1 << 18 }>>() == (1 << 18) * 16 + 8);
+    #[cfg(not(kani))]
+    assert!(size_of::<Slots<ptr::NonNull<Buffer>, HEAP_SLOTS>>() == (1 << 18) * 16 + 8);
 };
 
 #[unsafe(export_name = "witchy_heap")]
@@ -667,7 +680,8 @@ fn fill_accepts_a_source_in_the_destination_allocation() {
 
 #[cfg(kani)]
 #[kani::proof]
-#[kani::unwind(10)]
+// The zero-fill scan can visit all 16 scratch bytes.
+#[kani::unwind(17)]
 fn filling_with_an_alias_stays_in_payload() {
     #[repr(C)]
     struct Fixture {
@@ -710,7 +724,8 @@ fn filling_with_an_alias_stays_in_payload() {
 
 #[cfg(kani)]
 #[kani::proof]
-#[kani::unwind(10)]
+// The zero-fill scan can visit all 16 scratch bytes.
+#[kani::unwind(17)]
 fn filling_multibyte_cells_with_an_alias_stays_in_payload() {
     #[repr(C)]
     struct Fixture {
@@ -746,6 +761,55 @@ fn filling_multibyte_cells_with_an_alias_stays_in_payload() {
     }
     assert_eq!(fixture.bitmap, ((1u16 << count) - 1) as u8);
     assert_eq!(fixture.header.occupied, u32::from(count));
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(17)]
+fn word_initialization_round_trips_little_endian_bytes() {
+    let word: u64 = kani::any();
+    let original: [u8; 8] = kani::any();
+    let count: u8 = kani::any();
+    let at: u8 = kani::any();
+    kani::assume(count <= 8 && at <= 8 - count);
+    #[repr(C)]
+    struct Fixture {
+        header: Buffer,
+        payload: [u8; 8],
+        bitmap: u8,
+    }
+    let mut fixture = Fixture {
+        header: Buffer {
+            capacity: 8,
+            stride: 1,
+            bytes: size_of::<Fixture>(),
+            occupied: 0,
+            prefix: 0,
+            kind: 1,
+        },
+        payload: original,
+        bitmap: 0,
+    };
+    // SAFETY: the harness exclusively owns the table, and the fixture outlives the handle.
+    let handle = unsafe {
+        (&mut *(&raw mut HEAP)).slots.insert(ptr::NonNull::from(&mut fixture.header)).unwrap()
+    };
+    witchy_init_word(handle, 1, at as usize, count as usize, word);
+    let read = witchy_read_word(handle, 1, at as usize, count as usize);
+    let mask = ((1u128 << (u32::from(count) * 8)) - 1) as u64;
+    assert_eq!(read, word & mask);
+    let word_bytes = word.to_le_bytes();
+    for index in 0..original.len() {
+        let expected = if (usize::from(at)..usize::from(at + count)).contains(&index) {
+            word_bytes[index - usize::from(at)]
+        } else {
+            original[index]
+        };
+        assert_eq!(fixture.payload[index], expected);
+    }
+    assert_eq!(fixture.bitmap, (((1u16 << count) - 1) << at) as u8);
+    assert_eq!(fixture.header.occupied, u32::from(count));
+    unsafe { (&mut *(&raw mut HEAP)).slots.remove(handle) }.unwrap();
 }
 
 #[unsafe(no_mangle)]
@@ -804,10 +868,128 @@ unsafe extern "C" fn witchy_init_slice(
     }
 }
 
+#[cfg(all(test, miri))]
+#[test]
+fn slice_initialization_uses_allocation_provenance() {
+    use std::alloc::{Layout, alloc_zeroed, dealloc};
+
+    let layout = Layout::from_size_align(size_of::<Buffer>() + 9, align_of::<Buffer>()).unwrap();
+    unsafe {
+        let allocation = alloc_zeroed(layout);
+        let buffer = ptr::NonNull::new(allocation.cast::<Buffer>()).unwrap();
+        buffer.as_ptr().write(Buffer {
+            capacity: 4,
+            stride: 2,
+            bytes: layout.size(),
+            occupied: 0,
+            prefix: 0,
+            kind: 1,
+        });
+        let handle = (&mut *(&raw mut HEAP)).slots.insert(buffer).unwrap();
+        let payload = Buffer::payload(buffer.as_ptr());
+        let original = [1, 2, 3, 4, 5, 6, 7, 8];
+        ptr::copy_nonoverlapping(original.as_ptr(), payload, original.len());
+
+        witchy_init_slice(handle, 1, 4, ptr::null(), 0);
+        assert_eq!(slice::from_raw_parts(payload, 8), &original);
+        assert_eq!(*payload.add(8), 0);
+
+        witchy_init_slice(handle, 1, 1, payload, 3);
+        assert_eq!(slice::from_raw_parts(payload, 8), &[1, 2, 1, 2, 3, 4, 5, 6]);
+        assert_eq!(*payload.add(8), 0b1110);
+
+        assert_eq!((&mut *(&raw mut HEAP)).slots.remove(handle), Some(buffer));
+        dealloc(allocation, layout);
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(17)]
+fn slice_initialization_copies_overlapping_elements_and_marks_range() {
+    #[repr(C)]
+    struct Fixture {
+        header: Buffer,
+        payload: [[u8; 2]; 4],
+        bitmap: u8,
+    }
+    let original: [[u8; 2]; 4] = kani::any();
+    let count: u8 = kani::any();
+    let at: u8 = kani::any();
+    let from: u8 = kani::any();
+    kani::assume(count <= 4 && at <= 4 - count && from <= 4 - count);
+    let mut fixture = Fixture {
+        header: Buffer {
+            capacity: 4,
+            stride: 2,
+            bytes: size_of::<Fixture>(),
+            occupied: 0,
+            prefix: 0,
+            kind: 1,
+        },
+        payload: original,
+        bitmap: 0,
+    };
+    let buffer = &raw mut fixture.header;
+    let handle = unsafe {
+        (&mut *(&raw mut HEAP)).slots.insert(ptr::NonNull::new(buffer).unwrap()).unwrap()
+    };
+    // The source uses the fixture's allocation provenance. For an empty range
+    // there is no source allocation to read.
+    let source = if count == 0 {
+        ptr::null()
+    } else {
+        unsafe { Buffer::payload(buffer).add(usize::from(from) * 2) }
+    };
+    unsafe { witchy_init_slice(handle, 1, usize::from(at), source, usize::from(count)) };
+    for index in 0..4 {
+        let expected = if at <= index && index < at + count {
+            original[usize::from(from + (index - at))]
+        } else {
+            original[usize::from(index)]
+        };
+        assert_eq!(fixture.payload[usize::from(index)], expected);
+    }
+    assert_eq!(fixture.bitmap, (((1u16 << count) - 1) << at) as u8);
+    assert_eq!(fixture.header.occupied, u32::from(count));
+    unsafe { (&mut *(&raw mut HEAP)).slots.remove(handle) }.unwrap();
+}
+
 #[unsafe(no_mangle)]
 unsafe extern "C" fn witchy_copy_slice(target: *mut u8, source: *const u8, bytes: usize) {
     if bytes != 0 {
         unsafe { ptr::copy(source, target, bytes) };
+    }
+}
+
+#[cfg(kani)]
+#[kani::proof]
+fn empty_slice_copy_does_not_access_null_pointers() {
+    // Empty copies return before calling the pointer intrinsic.
+    unsafe { witchy_copy_slice(ptr::null_mut(), ptr::null(), 0) };
+}
+
+#[cfg(kani)]
+#[kani::proof]
+#[kani::unwind(9)]
+fn slice_copy_preserves_bytes_outside_destination() {
+    let original: [u8; 8] = kani::any();
+    let source: usize = kani::any_where(|start| *start <= original.len());
+    let target: usize = kani::any_where(|start| *start <= original.len());
+    let count: usize = kani::any_where(|count| {
+        *count <= original.len() - source && *count <= original.len() - target
+    });
+    let mut actual = original;
+    let base = actual.as_mut_ptr();
+    // Both ranges fit the same live allocation. They may overlap.
+    unsafe { witchy_copy_slice(base.add(target), base.add(source), count) };
+    for (index, byte) in actual.into_iter().enumerate() {
+        let expected = if (target..target + count).contains(&index) {
+            original[source + (index - target)]
+        } else {
+            original[index]
+        };
+        assert_eq!(byte, expected);
     }
 }
 

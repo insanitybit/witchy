@@ -1,0 +1,8 @@
+import crypto
+fn main(out: Console<Write>, signer: TlsSigner):
+    let hash: [U8; 48] = [7; 48]
+    var signature: [U8; 104] = [0; 104]
+    let Ok(length) = signer.certificate_verify(hash.slice(), signature.slice_mut()) else Err(error):
+        return
+    for index in 0..length:
+        out.print_byte(signature[index])

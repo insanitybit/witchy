@@ -10,6 +10,12 @@ struct Timeval {
     #[cfg(target_os = "linux")]
     micros: i64,
 }
+const _: () = {
+    assert!(size_of::<Timeval>() == 16 && align_of::<Timeval>() == 8);
+    assert!(core::mem::offset_of!(Timeval, seconds) == 0);
+    assert!(core::mem::offset_of!(Timeval, micros) == 8);
+};
+
 pub(super) use super::sys::PollFd;
 unsafe extern "C" {
     safe fn close(fd: c_int) -> c_int;
