@@ -234,7 +234,17 @@ pub(super) fn witchy_broker_bind_listener(
     let on: c_int = 1;
     // The range check above keeps `len` within the storage.
     let bound = &mut address[..len as usize];
-    let ok = (family != AF_INET6 || sys::setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &on) == 0)
+    // Let a loopback listener restart after its accepted connections enter TIME_WAIT.
+    #[cfg(target_os = "macos")]
+    let reusable = {
+        const SO_REUSEADDR: c_int = 4;
+        let loopback = family == AF_INET && bound.get(4..8) == Some(&[127, 0, 0, 1]);
+        !loopback || sys::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &on) == 0
+    };
+    #[cfg(not(target_os = "macos"))]
+    let reusable = true;
+    let ok = reusable
+        && (family != AF_INET6 || sys::setsockopt(fd, IPPROTO_IPV6, IPV6_V6ONLY, &on) == 0)
         && sys::bind(fd, bound) == 0
         && listen(fd, 16) == 0
         && sys::set_status_flags(fd, O_NONBLOCK) == 0
@@ -366,6 +376,30 @@ mod tests {
         close(dial);
         close(accepted);
         close(listener);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn loopback_listener_rebinds_after_an_accepted_connection_closes() {
+        let mut address = [0u8; 128];
+        let size = witchy_broker_endpoint_address(c"127.0.0.1:0", &mut address, true);
+        let mut port = 0;
+        let listener = witchy_broker_bind_listener(&mut address, size, &mut port);
+        assert!(listener >= 0);
+        let mut same_address = address;
+        assert_eq!(witchy_broker_bind_listener(&mut same_address, size, &mut port), -1);
+
+        let dial = witchy_broker_dial(&address[..size as usize]);
+        assert!(dial >= 0);
+        let accepted = witchy_broker_accept_stream(listener, 1000, &mut false);
+        assert!(accepted >= 0);
+        close(accepted);
+        close(dial);
+        close(listener);
+
+        let rebound = witchy_broker_bind_listener(&mut address, size, &mut port);
+        assert!(rebound >= 0);
+        close(rebound);
     }
 
     #[test]
