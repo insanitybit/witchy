@@ -452,6 +452,7 @@ impl Session {
     /// What a cached proof is tied to: the selected checker record (helper, SDK and helper source hashes).
     pub(super) fn note_cached_proofs(&mut self) { self.used_cached_proofs = true; }
     pub(super) fn cache_identity(&self) -> Option<&str> { self.ready.as_ref().map(|binding| binding.identity.as_str()) }
+    pub(super) fn poisoned(&self) -> bool { self.poisoned }
     pub(super) fn available(&self) -> bool {
         // Reserve a possible INSTALL before planning the next source, plus STOP.
         // This prevents a late first generic body from turning a clean budget end into a protocol refusal.

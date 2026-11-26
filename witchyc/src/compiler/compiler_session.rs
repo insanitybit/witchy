@@ -712,6 +712,9 @@ pub fn serve(path: &Path) -> io::Result<()> {
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub fn qualification_worker(root: &Path) -> io::Result<()> {
     super::native::configure_qualification(root)?;
+    let binding = ready::Binding::configured().map_err(|e| io::Error::other(proof_error(e)))?;
+    let mut checker = binding.clone().map(proof_session::Session::for_binding)
+        .transpose().map_err(|e| io::Error::other(proof_error(e)))?;
     use std::io::BufRead;
     for line in std::io::stdin().lock().lines() {
         let line = line?;
@@ -721,7 +724,25 @@ pub fn qualification_worker(root: &Path) -> io::Result<()> {
         let _ = check::later_refusals();
         PROOF_TIME.set((0, 0));
         MESSAGES.with_borrow_mut(|messages| *messages = Some(String::new()));
-        let result = super::build_native(input.as_ref(), output.as_ref(), super::native::TARGET, true, None);
+        let result = (|| {
+            if checker.as_ref().is_some_and(proof_session::Session::poisoned) {
+                checker = binding.clone().map(proof_session::Session::for_binding)
+                    .transpose().map_err(proof_error)?;
+            }
+            if let Some(session) = &mut checker && !session.available() {
+                session.renew().map_err(proof_error)?;
+            }
+            let result = files::build_native_in(input.as_ref(), output.as_ref(), None,
+                checker.as_mut(), false, None, None);
+            if result.is_err() && let Some(session) = &mut checker
+                && !session.poisoned() && session.validate_publication().is_err()
+            {
+                session.refuse();
+            }
+            let times = result?;
+            println!("{}", times.json());
+            Ok::<(), String>(())
+        })();
         let mut messages = MESSAGES.with_borrow_mut(Option::take).unwrap_or_default();
         let status = if let Err(error) = result {
             messages.push_str(&error);
@@ -733,6 +754,10 @@ pub fn qualification_worker(root: &Path) -> io::Result<()> {
         let encoded: String = messages.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
         println!("qualification-response\t{status}\t{encoded}");
         std::io::stdout().flush()?;
+    }
+    if let Some(session) = &mut checker && !session.poisoned() {
+        session.validate_publication().and_then(|()| session.finish())
+            .map_err(|e| io::Error::other(proof_error(e)))?;
     }
     Ok(())
 }
