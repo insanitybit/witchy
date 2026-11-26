@@ -7,6 +7,7 @@ use super::{
     exec_pending::{Kind, Pending},
     exec_programs,
     exec_temp::Directory,
+    global::State,
     sys,
 };
 use core::{
@@ -19,14 +20,11 @@ unsafe extern "C" {
     fn sigaction(signal: c_int, action: *const SignalAction, old: *mut SignalAction) -> c_int;
     fn sigemptyset(set: *mut SignalSet) -> c_int;
     fn sigprocmask(how: c_int, set: *const SignalSet, old: *mut SignalSet) -> c_int;
-    fn signal(signal: c_int, handler: usize) -> usize;
-    fn open(path: *const c_char, flags: c_int, ...) -> c_int;
     safe fn close(fd: c_int) -> c_int;
     fn fork() -> c_int;
     safe fn dup2(source: c_int, destination: c_int) -> c_int;
     safe fn setsid() -> c_int;
     safe fn fchdir(fd: c_int) -> c_int;
-    fn chdir(path: *const c_char) -> c_int;
     fn execve(path: *const c_char, argv: *const *const c_char, env: *const *const c_char) -> c_int;
     safe fn _exit(code: c_int) -> !;
 }
@@ -37,12 +35,15 @@ struct Broker {
     capture: Option<Capture>,
     output_at: usize,
 }
-static mut BROKER: Broker = Broker {
-    pending: Pending::EMPTY,
-    cwd: -1,
-    capture: None,
-    output_at: 0,
-};
+impl Broker {
+    const EMPTY: Self = Self {
+        pending: Pending::EMPTY,
+        cwd: -1,
+        capture: None,
+        output_at: 0,
+    };
+}
+static BROKER: State<Broker> = State::new(Broker::EMPTY);
 static STOPPED: AtomicBool = AtomicBool::new(false);
 extern "C" fn request_stop(_: c_int) {
     STOPPED.store(true, Ordering::Relaxed);
@@ -208,46 +209,51 @@ fn run_program(
     let process_limit = super::exec_linux_limits::current_limit();
     let child = unsafe { fork() };
     if child == 0 {
+        #[cfg(target_os = "linux")]
+        if !super::exec_linux_limits::prepare_program(&process_limit) {
+            _exit(127);
+        }
+        let mut none = super::deadline::empty_signal_set();
+        // SAFETY: the calls write the set and then read it.
         unsafe {
-            #[cfg(target_os = "linux")]
-            if !super::exec_linux_limits::prepare_program(&process_limit) {
-                _exit(127);
-            }
-            let mut none = super::deadline::empty_signal_set();
             sigemptyset(&mut none);
             #[cfg(target_os = "macos")]
             sigprocmask(3, &none, ptr::null_mut());
             #[cfg(target_os = "linux")]
             sigprocmask(2, &none, ptr::null_mut());
-            signal(13, 0);
-            signal(15, 0);
-            if setsid() < 0 {
-                _exit(127);
-            }
-            let null = open(c"/dev/null".as_ptr(), 2);
-            if null < 0
-                || dup2(
-                    if input.is_empty() {
-                        null
-                    } else {
-                        pipes.input[0]
-                    },
-                    0,
-                ) < 0
-                || dup2(pipes.out[1], 1) < 0
-                || dup2(pipes.err[1], 2) < 0
-                || if broker.cwd >= 0 {
-                    fchdir(broker.cwd) != 0
-                } else {
-                    chdir(temp.path_ptr()) != 0
-                }
-                || !close_inherited()
-            {
-                _exit(127);
-            }
-            execve(executable.as_ptr().cast(), argv.as_ptr(), env.as_ptr());
+        }
+        sys::default_signal(13);
+        sys::default_signal(15);
+        if setsid() < 0 {
             _exit(127);
         }
+        let null = sys::open(c"/dev/null", 2);
+        if null < 0
+            || dup2(
+                if input.is_empty() {
+                    null
+                } else {
+                    pipes.input[0]
+                },
+                0,
+            ) < 0
+            || dup2(pipes.out[1], 1) < 0
+            || dup2(pipes.err[1], 2) < 0
+            || if broker.cwd >= 0 {
+                fchdir(broker.cwd) != 0
+            } else {
+                temp.path().is_none_or(|path| sys::chdir(path) != 0)
+            }
+            || !close_inherited()
+        {
+            _exit(127);
+        }
+        // SAFETY: `executable` ends in a zero, and `argv` and `env` end in a
+        // null after pointers to C strings that live until the call.
+        unsafe {
+            execve(executable.as_ptr().cast(), argv.as_ptr(), env.as_ptr());
+        }
+        _exit(127);
     }
     Pipes::close_at(&mut pipes.out, 1);
     Pipes::close_at(&mut pipes.err, 1);
@@ -317,11 +323,12 @@ fn run(
 }
 
 pub(super) fn set_cwd_here(fd: c_int) -> bool {
-    let broker = unsafe { &mut *(&raw mut BROKER) };
-    if broker.cwd >= 0 {
-        close(broker.cwd);
-    }
-    broker.cwd = fd;
+    BROKER.with(|broker| {
+        if broker.cwd >= 0 {
+            close(broker.cwd);
+        }
+        broker.cwd = fd;
+    });
     true
 }
 
@@ -342,7 +349,23 @@ pub(super) fn request_here(
     if !exec_programs::configured() {
         return None;
     }
-    let broker = unsafe { &mut *(&raw mut BROKER) };
+    // A run forks, and neither the fork nor the program it starts may find the
+    // state marked in use. So the state is moved out, served from here, and
+    // moved back; nothing `serve` calls comes back to this function.
+    let mut broker = BROKER.with(|held| core::mem::replace(held, Broker::EMPTY));
+    let answer = serve(&mut broker, channel, operation, buffer, count);
+    // The value left behind owns nothing, so it is forgotten, not dropped.
+    BROKER.with(|held| core::mem::forget(core::mem::replace(held, broker)));
+    answer
+}
+
+fn serve(
+    broker: &mut Broker,
+    channel: c_int,
+    operation: u8,
+    buffer: &mut [u8],
+    count: usize,
+) -> Option<usize> {
     match operation {
         27 | 30 | 31 => broker
             .pending

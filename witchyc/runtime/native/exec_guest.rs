@@ -4,7 +4,7 @@ use super::broker_transport::{
     witchy_broker_exec_args, witchy_broker_exec_env, witchy_broker_exec_input,
     witchy_broker_exec_out, witchy_broker_exec_run,
 };
-use super::global::{Global, Table};
+use super::global::{Global, State, Table};
 use super::{exec_pending::Buffer, file_reader};
 use core::{
     ffi::{CStr, c_char, c_int, c_void},
@@ -88,8 +88,20 @@ impl Entry {
 }
 
 static PROGRAMS: Table<*const c_char, 16> = Table::new(ptr::null());
-static mut ENTRIES: [*mut Entry; MAX_HANDLES] = [ptr::null_mut(); MAX_HANDLES];
-static mut ENTRY_COUNT: usize = 0;
+
+/// Every handle's entry. An entry is allocated once and never freed; its place
+/// here is empty before it is issued and while `witchy_exec` works on it.
+struct Handles {
+    entries: [Option<&'static mut Entry>; MAX_HANDLES],
+    count: usize,
+    rooted: bool,
+}
+
+static HANDLES: State<Handles> = State::new(Handles {
+    entries: [const { None }; MAX_HANDLES],
+    count: 0,
+    rooted: false,
+});
 static PENDING: Global<usize> = Global::new(0);
 static BYTES_LEFT: Global<u64> = Global::new(1048576);
 static BYTES_GRANTED: Global<u64> = Global::new(1048576);
@@ -98,72 +110,82 @@ fn trap() -> ! {
     unsafe { core::arch::asm!("brk #0", options(noreturn, nostack)) }
 }
 
-fn allocate(kind: u8) -> *mut Entry {
+fn allocate(kind: u8) -> &'static mut Entry {
     let p = unsafe { malloc(size_of::<Entry>()) }.cast::<Entry>();
     if p.is_null() {
         trap();
     }
+    // SAFETY: `p` is a fresh allocation of an `Entry`'s size, aligned for any
+    // type, and it is never freed, so the one reference made here may live as
+    // long as the process.
     unsafe {
         p.write(Entry::new(kind));
+        &mut *p
     }
-    p
 }
 
-fn issue(entry: *mut Entry) -> u64 {
-    let count = unsafe { &mut *(&raw mut ENTRY_COUNT) };
-    if *count == 0 {
-        *count = 1;
-    }
-    if *count >= MAX_HANDLES || entry.is_null() {
-        trap();
-    }
-    unsafe {
-        (*(&raw mut ENTRIES))[*count] = entry;
-    }
-    let result = HANDLE_BASE + *count as u64;
-    *count += 1;
-    result
+fn issue(entry: &'static mut Entry) -> u64 {
+    HANDLES.with(|handles| {
+        if handles.count == 0 {
+            handles.count = 1;
+        }
+        if handles.count >= MAX_HANDLES {
+            trap();
+        }
+        handles.entries[handles.count] = Some(entry);
+        let result = HANDLE_BASE + handles.count as u64;
+        handles.count += 1;
+        result
+    })
 }
 
 fn failed(code: u8) -> u64 {
     let entry = allocate(3);
-    unsafe {
-        (*entry).code = i64::from(code);
-    }
+    entry.code = i64::from(code);
     issue(entry)
 }
 
-fn entry(handle: u64) -> &'static mut Entry {
-    let entries = unsafe { &mut *(&raw mut ENTRIES) };
-    if handle == EXEC {
+/// Takes the entry `handle` names out of its place, so that the one reference
+/// to it is the caller's until `put` returns it. Nothing `witchy_exec` calls
+/// yields to another task or calls back into guest code, so no second call
+/// meets the empty place; one that did would trap as for a handle never issued.
+fn take(handle: u64) -> (usize, &'static mut Entry) {
+    let index = if handle == EXEC {
         if unsafe { witchy_entry_grants & EXEC == 0 } || file_reader::channel() < 0 {
             trap();
         }
-        if entries[0].is_null() {
+        if !HANDLES.with(|handles| handles.rooted) {
             let root = allocate(1);
-            let count = PROGRAMS.len();
-            unsafe {
-                (*root).allowed = (1u32 << count) - 1;
-            }
-            entries[0] = root;
-            if unsafe { ENTRY_COUNT == 0 } {
-                unsafe {
-                    ENTRY_COUNT = 1;
+            root.allowed = (1u32 << PROGRAMS.len()) - 1;
+            HANDLES.with(|handles| {
+                handles.entries[0] = Some(root);
+                handles.rooted = true;
+                if handles.count == 0 {
+                    handles.count = 1;
                 }
-            }
+            });
         }
-        return unsafe { &mut *entries[0] };
-    }
-    let Some(index) = handle
-        .checked_sub(HANDLE_BASE)
-        .and_then(|i| usize::try_from(i).ok())
-    else {
-        trap();
+        0
+    } else {
+        let Some(index) = handle
+            .checked_sub(HANDLE_BASE)
+            .and_then(|i| usize::try_from(i).ok())
+        else {
+            trap();
+        };
+        if index == 0 || index >= HANDLES.with(|handles| handles.count) {
+            trap();
+        }
+        index
     };
-    if index == 0 || index >= unsafe { ENTRY_COUNT } || entries[index].is_null() {
-        trap();
+    match HANDLES.with(|handles| handles.entries[index].take()) {
+        Some(entry) => (index, entry),
+        None => trap(),
     }
-    unsafe { &mut *entries[index] }
+}
+
+fn put(index: usize, entry: &'static mut Entry) {
+    HANDLES.with(|handles| handles.entries[index] = Some(entry));
 }
 
 fn chosen(entry: &mut Entry) -> Result<u32, u8> {
@@ -273,12 +295,11 @@ fn start(entry: &mut Entry, program: u32) -> u64 {
         trap();
     }
     let run = allocate(2);
-    let run_entry = unsafe { &mut *run };
-    run_entry.code = code;
+    run.code = code;
     let mut chunk = [0u8; CHUNK];
     for (length, buffer) in [
-        (out as usize, &mut run_entry.output),
-        (err as usize, &mut run_entry.errors),
+        (out as usize, &mut run.output),
+        (err as usize, &mut run.errors),
     ] {
         let mut remaining = length;
         while remaining != 0 {
@@ -296,7 +317,13 @@ fn start(entry: &mut Entry, program: u32) -> u64 {
 
 #[unsafe(no_mangle)]
 extern "C" fn witchy_exec(op: u64, handle: u64, value: u64) -> u64 {
-    let entry = entry(handle);
+    let (index, entry) = take(handle);
+    let result = operate(op, entry, value);
+    put(index, entry);
+    result
+}
+
+fn operate(op: u64, entry: &mut Entry, value: u64) -> u64 {
     match op {
         0 => {
             if entry.kind != 1 || value > 255 {
@@ -316,9 +343,7 @@ extern "C" fn witchy_exec(op: u64, handle: u64, value: u64) -> u64 {
                 Err(code) => failed(code),
                 Ok(index) => {
                     let next = allocate(1);
-                    unsafe {
-                        (*next).allowed = 1 << index;
-                    }
+                    next.allowed = 1 << index;
                     issue(next)
                 }
             }

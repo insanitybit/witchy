@@ -3,11 +3,7 @@ use super::global::Global;
 use super::linux_stat::Dirent;
 use core::ffi::{c_char, c_int, c_void};
 
-#[repr(C)]
-pub(super) struct Limit {
-    current: u64,
-    maximum: u64,
-}
+pub(super) use super::sys::ResourceLimit as Limit;
 #[repr(C)]
 struct PollFd {
     fd: c_int,
@@ -22,9 +18,6 @@ unsafe extern "C" {
     fn openat(fd: c_int, path: *const c_char, flags: c_int, ...) -> c_int;
     safe fn close(fd: c_int) -> c_int;
     safe fn getuid() -> u32;
-    fn getrlimit(resource: c_int, limit: *mut Limit) -> c_int;
-    fn setrlimit(resource: c_int, limit: *const Limit) -> c_int;
-    fn prctl(option: c_int, ...) -> c_int;
     fn syscall(number: core::ffi::c_long, ...) -> core::ffi::c_long;
 }
 
@@ -116,7 +109,7 @@ pub(super) fn current_limit() -> Limit {
         current: 0,
         maximum: 0,
     };
-    if unsafe { getrlimit(6, &raw mut hard) } == 0 && hard.maximum != u64::MAX {
+    if super::sys::getrlimit(6, &mut hard) == 0 && hard.maximum != u64::MAX {
         amount = amount.min(hard.maximum);
     }
     Limit {
@@ -141,18 +134,21 @@ pub(super) fn prepare_child(alive_read: c_int, alive_write: c_int, limit: &Limit
         seconds: 0,
         nanos: 0,
     };
-    (unsafe {
-        prctl(1, 9, 0, 0, 0) == 0
-            && syscall(
+    super::sys::set_parent_death_signal(9) == 0
+        // SAFETY: the call reads one descriptor record and one time, and
+        // writes the record; a null mask leaves the signal mask alone.
+        && unsafe {
+            syscall(
                 73,
                 &raw mut poll,
                 1usize,
                 &raw const zero,
                 core::ptr::null::<c_void>(),
                 0usize,
-            ) == 0
-            && setrlimit(6, limit) == 0
-    }) && super::exec_linux_security::drop_capabilities()
+            )
+        } == 0
+        && super::sys::setrlimit(6, limit) == 0
+        && super::exec_linux_security::drop_capabilities()
 }
 
 #[cfg(test)]

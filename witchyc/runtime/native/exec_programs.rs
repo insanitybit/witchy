@@ -3,6 +3,7 @@
 use super::linux_stat::stat;
 #[cfg(target_os = "macos")]
 use super::seatbelt::stat;
+use super::global::State;
 use super::sys;
 use core::ffi::{CStr, c_char, c_int};
 
@@ -64,69 +65,74 @@ impl Programs {
 }
 
 // Initialization and broker requests are serialized in one process/thread.
-static mut PROGRAMS: Programs = Programs::EMPTY;
+// Every use below is short and calls nothing that comes back here; none forks.
+static PROGRAMS: State<Programs> = State::new(Programs::EMPTY);
 
 pub(super) fn configured() -> bool {
-    unsafe { (*(&raw const PROGRAMS)).configured }
+    PROGRAMS.with(|programs| programs.configured)
 }
 
 /// The Linux broker retains executable identities after the runner inherits
 /// the open descriptors, but must not retain the descriptors themselves.
 #[cfg(target_os = "linux")]
 pub(super) fn close_broker_descriptors() {
-    let programs = unsafe { &mut *(&raw mut PROGRAMS) };
-    for entry in &mut programs.entries[..programs.count] {
-        if entry.fd >= 0 {
-            close(entry.fd);
-            entry.fd = -2;
+    PROGRAMS.with(|programs| {
+        for entry in &mut programs.entries[..programs.count] {
+            if entry.fd >= 0 {
+                close(entry.fd);
+                entry.fd = -2;
+            }
         }
-    }
+    })
 }
 
 pub(super) fn program(index: usize) -> Option<Program> {
-    let programs = unsafe { &*(&raw const PROGRAMS) };
-    programs
-        .entries
-        .get(index)
-        .copied()
-        .filter(|program| index < programs.count && program.fd >= 0)
+    PROGRAMS.with(|programs| {
+        programs
+            .entries
+            .get(index)
+            .copied()
+            .filter(|program| index < programs.count && program.fd >= 0)
+    })
 }
 
 pub(super) fn budget() -> u64 {
-    let programs = unsafe { &*(&raw const PROGRAMS) };
-    if programs.shared_budget.is_null() {
-        programs.own_budget
-    } else {
-        unsafe { *programs.shared_budget }
-    }
+    PROGRAMS.with(|programs| {
+        if programs.shared_budget.is_null() {
+            programs.own_budget
+        } else {
+            // SAFETY: `witchy_exec_share_budget` was given a mapping that stays readable.
+            unsafe { *programs.shared_budget }
+        }
+    })
 }
 
 pub(super) fn spend(amount: u64) {
-    let programs = unsafe { &mut *(&raw mut PROGRAMS) };
-    if programs.shared_budget.is_null() {
-        programs.own_budget -= amount;
-    } else {
-        unsafe {
-            *programs.shared_budget -= amount;
+    PROGRAMS.with(|programs| {
+        if programs.shared_budget.is_null() {
+            programs.own_budget -= amount;
+        } else {
+            // SAFETY: `witchy_exec_share_budget` was given a mapping that stays writable.
+            unsafe {
+                *programs.shared_budget -= amount;
+            }
         }
-    }
+    })
 }
 
 #[unsafe(no_mangle)]
 extern "C" fn witchy_exec_granted() {
-    unsafe {
-        (*(&raw mut PROGRAMS)).granted = true;
-    }
+    PROGRAMS.with(|programs| programs.granted = true)
 }
 
 #[unsafe(no_mangle)]
 extern "C" fn witchy_exec_guarded() -> bool {
-    unsafe { (&*(&raw const PROGRAMS)).guarded() }
+    PROGRAMS.with(|programs| programs.guarded())
 }
 
 #[unsafe(no_mangle)]
 extern "C" fn witchy_exec_program(device: u64, inode: u64) -> bool {
-    unsafe { (&*(&raw const PROGRAMS)).protected(device, inode) }
+    PROGRAMS.with(|programs| programs.protected(device, inode))
 }
 
 /// `shared` is null or stays mapped and writable for the rest of the process.
@@ -134,31 +140,33 @@ pub(super) unsafe fn witchy_exec_share_budget(shared: *mut u64) {
     if shared.is_null() {
         return;
     }
-    let programs = unsafe { &mut *(&raw mut PROGRAMS) };
-    let value = if programs.shared_budget.is_null() {
-        programs.own_budget
-    } else {
-        unsafe { *programs.shared_budget }
-    };
-    unsafe {
-        *shared = value;
-    }
-    programs.shared_budget = shared;
+    PROGRAMS.with(|programs| {
+        let value = if programs.shared_budget.is_null() {
+            programs.own_budget
+        } else {
+            unsafe { *programs.shared_budget }
+        };
+        unsafe {
+            *shared = value;
+        }
+        programs.shared_budget = shared;
+    })
 }
 
 /// Writes the open program descriptors to the front of `out`; returns how many.
 pub(super) fn witchy_exec_descriptors(out: &mut [c_int]) -> usize {
-    let programs = unsafe { &*(&raw const PROGRAMS) };
-    let mut count = 0;
-    for entry in &programs.entries[..programs.count] {
-        if entry.fd >= 0
-            && let Some(slot) = out.get_mut(count)
-        {
-            *slot = entry.fd;
-            count += 1;
+    PROGRAMS.with(|programs| {
+        let mut count = 0;
+        for entry in &programs.entries[..programs.count] {
+            if entry.fd >= 0
+                && let Some(slot) = out.get_mut(count)
+            {
+                *slot = entry.fd;
+                count += 1;
+            }
         }
-    }
-    count
+        count
+    })
 }
 
 /// The launcher's and the decoder fuzz driver's entry (the driver,
@@ -195,51 +203,57 @@ pub(super) fn witchy_exec_setup(directory: c_int, names: &[&CStr], limit: u64) -
     if directory < 0 || names.len() > MAX_PROGRAMS || limit > BUDGET_LIMIT {
         return false;
     }
-    let programs = unsafe { &mut *(&raw mut PROGRAMS) };
-    if programs.shared_budget.is_null() {
-        programs.own_budget = limit;
-    } else {
-        unsafe {
-            *programs.shared_budget = limit;
+    // The opens, the stat and the closes below call nothing that uses `PROGRAMS`.
+    PROGRAMS.with(|programs| {
+        if programs.shared_budget.is_null() {
+            programs.own_budget = limit;
+        } else {
+            // SAFETY: `witchy_exec_share_budget` was given a mapping that stays writable.
+            unsafe {
+                *programs.shared_budget = limit;
+            }
         }
-    }
-    for (index, name) in names.iter().enumerate() {
-        let bytes = name.to_bytes();
-        if !super::exec_environment::witchy_exec_plain(bytes) {
-            return false;
+        for (index, name) in names.iter().enumerate() {
+            let bytes = name.to_bytes();
+            if !super::exec_environment::witchy_exec_plain(bytes) {
+                return false;
+            }
+            let entry = &mut programs.entries[index];
+            entry.name[..bytes.len()].copy_from_slice(bytes);
+            entry.name[bytes.len()] = 0;
+            #[cfg(target_os = "macos")]
+            let mut fd = sys::openat(directory, name, OPEN_FLAGS);
+            #[cfg(target_os = "linux")]
+            let mut fd = unsafe {
+                super::linux_stat::openat_no_symlinks(directory, name.as_ptr(), OPEN_FLAGS)
+            };
+            if (0..=2).contains(&fd) {
+                let moved = sys::duplicate_close_on_exec(fd, 3);
+                close(fd);
+                fd = moved;
+            }
+            let info = if fd >= 0 { stat(fd) } else { None };
+            let accepted = info.as_ref().is_some_and(|info| {
+                info.mode & 0o170000 == 0o100000
+                    && info.mode & 0o111 != 0
+                    && info.size <= PROGRAM_LIMIT
+            });
+            if fd >= 0 && !accepted {
+                close(fd);
+                fd = -1;
+            }
+            entry.fd = fd;
+            entry.device = info
+                .as_ref()
+                .filter(|_| accepted)
+                .map_or(0, |info| info.device as u64);
+            entry.inode = info.filter(|_| accepted).map_or(0, |info| info.inode);
         }
-        let entry = &mut programs.entries[index];
-        entry.name[..bytes.len()].copy_from_slice(bytes);
-        entry.name[bytes.len()] = 0;
-        #[cfg(target_os = "macos")]
-        let mut fd = sys::openat(directory, name, OPEN_FLAGS);
-        #[cfg(target_os = "linux")]
-        let mut fd =
-            unsafe { super::linux_stat::openat_no_symlinks(directory, name.as_ptr(), OPEN_FLAGS) };
-        if (0..=2).contains(&fd) {
-            let moved = sys::duplicate_close_on_exec(fd, 3);
-            close(fd);
-            fd = moved;
-        }
-        let info = if fd >= 0 { stat(fd) } else { None };
-        let accepted = info.as_ref().is_some_and(|info| {
-            info.mode & 0o170000 == 0o100000 && info.mode & 0o111 != 0 && info.size <= PROGRAM_LIMIT
-        });
-        if fd >= 0 && !accepted {
-            close(fd);
-            fd = -1;
-        }
-        entry.fd = fd;
-        entry.device = info
-            .as_ref()
-            .filter(|_| accepted)
-            .map_or(0, |info| info.device as u64);
-        entry.inode = info.filter(|_| accepted).map_or(0, |info| info.inode);
-    }
-    programs.count = names.len();
-    close(directory);
-    programs.configured = true;
-    true
+        programs.count = names.len();
+        close(directory);
+        programs.configured = true;
+        true
+    })
 }
 
 #[cfg(test)]

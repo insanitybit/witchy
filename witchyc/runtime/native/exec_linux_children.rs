@@ -1,6 +1,6 @@
 //! Linux subreaper cleanup. Only this process's unreaped children are signalled,
 //! and each signal is sent through a pidfd to prevent PID-reuse mistakes.
-use super::global::Global;
+use super::global::{Global, State};
 use super::sys::{self, Timespec};
 use core::{
     ffi::{CStr, c_char, c_int, c_long, c_void},
@@ -11,13 +11,15 @@ const HELD: usize = 16384;
 const SWEEP_MS: u64 = 5000;
 static CHILDREN_FD: Global<c_int> = Global::new(-1);
 static OWNER: Global<c_int> = Global::new(0);
-static mut INPUT: [u8; 65536] = [0; 65536];
-static mut PIDS: [c_int; HELD] = [0; HELD];
-static mut HANDLES: [c_int; HELD] = [-1; HELD];
+// The sweeps below run on the one thread of a warden or a runner, never from
+// a signal handler. Each use of these reads and signals processes; it starts
+// none, and nothing it calls uses the same one again.
+static INPUT: State<[u8; 65536]> = State::new([0; 65536]);
+static PIDS: State<[c_int; HELD]> = State::new([0; HELD]);
+static HANDLES: State<[c_int; HELD]> = State::new([-1; HELD]);
 
 unsafe extern "C" {
     safe fn getpid() -> c_int;
-    fn prctl(option: c_int, ...) -> c_int;
     safe fn close(fd: c_int) -> c_int;
     fn snprintf(out: *mut c_char, size: usize, format: *const c_char, ...) -> c_int;
     fn syscall(number: c_long, ...) -> c_long;
@@ -54,7 +56,7 @@ extern "C" fn witchy_exec_supervise() -> bool {
             pid,
         )
     };
-    if n <= 0 || n as usize >= path.len() || unsafe { prctl(36, 1, 0, 0, 0) } != 0 {
+    if n <= 0 || n as usize >= path.len() || sys::set_child_subreaper() != 0 {
         return false;
     }
     // The text written above ends before the end of `path`, which began as zeros.
@@ -92,42 +94,43 @@ pub(super) fn discard_inherited() {
 // A near-full read could end in the middle of a PID. Discard that last token
 // and force another sweep rather than interpreting a truncated PID.
 fn read_children(fd: c_int, output: &mut [c_int]) -> Result<(usize, bool), ()> {
-    let input = unsafe { &mut *(&raw mut INPUT) };
-    let wanted = input.len() - 1;
-    let n = sys::pread(fd, &mut input[..wanted], 0);
-    if n < 0 {
-        return Err(());
-    }
-    let mut used = n as usize;
-    let mut more = used >= input.len() - 64;
-    if more {
-        used = input[..used].iter().rposition(|&b| b == b' ').unwrap_or(0);
-    }
-    let mut count = 0;
-    for part in input[..used]
-        .split(|&b| b.is_ascii_whitespace())
-        .filter(|p| !p.is_empty())
-    {
-        let mut pid = 0i32;
-        for &digit in part {
-            if !digit.is_ascii_digit() {
-                return Err(());
-            }
-            pid = pid
-                .checked_mul(10)
-                .and_then(|p| p.checked_add(i32::from(digit - b'0')))
-                .ok_or(())?;
+    INPUT.with(|input| {
+        let wanted = input.len() - 1;
+        let n = sys::pread(fd, &mut input[..wanted], 0);
+        if n < 0 {
+            return Err(());
         }
-        if pid > 1 {
-            if count == output.len() {
-                more = true;
-                break;
-            }
-            output[count] = pid;
-            count += 1;
+        let mut used = n as usize;
+        let mut more = used >= input.len() - 64;
+        if more {
+            used = input[..used].iter().rposition(|&b| b == b' ').unwrap_or(0);
         }
-    }
-    Ok((count, more))
+        let mut count = 0;
+        for part in input[..used]
+            .split(|&b| b.is_ascii_whitespace())
+            .filter(|p| !p.is_empty())
+        {
+            let mut pid = 0i32;
+            for &digit in part {
+                if !digit.is_ascii_digit() {
+                    return Err(());
+                }
+                pid = pid
+                    .checked_mul(10)
+                    .and_then(|p| p.checked_add(i32::from(digit - b'0')))
+                    .ok_or(())?;
+            }
+            if pid > 1 {
+                if count == output.len() {
+                    more = true;
+                    break;
+                }
+                output[count] = pid;
+                count += 1;
+            }
+        }
+        Ok((count, more))
+    })
 }
 
 /// Kill and reap this subreaper's direct children. Each round is bounded and
@@ -143,31 +146,31 @@ extern "C" fn witchy_exec_sweep_own() -> bool {
     };
     let deadline = start.saturating_add(SWEEP_MS);
     loop {
-        let pids = unsafe { &mut *(&raw mut PIDS) };
-        let Ok((count, more)) = read_children(fd, pids) else {
+        let round = PIDS.with(|pids| {
+            let (count, more) = read_children(fd, pids)?;
+            HANDLES.with(|handles| {
+                let mut opened = 0;
+                for &pid in &pids[..count] {
+                    let handle = sys::pidfd_open(pid);
+                    if handle >= 0 {
+                        sys::pidfd_send_signal(handle, 19);
+                        handles[opened] = handle;
+                        opened += 1;
+                    }
+                }
+                for &handle in &handles[..opened] {
+                    sys::pidfd_send_signal(handle, 9);
+                    close(handle);
+                }
+            });
+            for &pid in &pids[..count] {
+                sys::waitpid(pid, None, 1);
+            }
+            Ok::<_, ()>((count, more))
+        });
+        let Ok((count, more)) = round else {
             return false;
         };
-        let handles = unsafe { &mut *(&raw mut HANDLES) };
-        let mut opened = 0;
-        for &pid in &pids[..count] {
-            let handle = unsafe { syscall(434, pid, 0u32) } as c_int;
-            if handle >= 0 {
-                unsafe {
-                    syscall(424, handle, 19i32, ptr::null::<c_void>(), 0u32);
-                }
-                handles[opened] = handle;
-                opened += 1;
-            }
-        }
-        for &handle in &handles[..opened] {
-            unsafe {
-                syscall(424, handle, 9i32, ptr::null::<c_void>(), 0u32);
-            }
-            close(handle);
-        }
-        for &pid in &pids[..count] {
-            sys::waitpid(pid, None, 1);
-        }
         if count == 0 && !more {
             return true;
         }
@@ -309,12 +312,14 @@ struct Held {
     pid: c_int,
     parent: c_int,
 }
-static mut TREE: [Held; HELD] = [Held {
-    fd: -1,
-    pid: 0,
-    parent: 0,
-}; HELD];
-static mut BELOW: [c_int; HELD] = [0; HELD];
+static TREE: State<[Held; HELD]> = State::new(
+    [Held {
+        fd: -1,
+        pid: 0,
+        parent: 0,
+    }; HELD],
+);
+static BELOW: State<[c_int; HELD]> = State::new([0; HELD]);
 
 fn list_children(parent: c_int, out: &mut [c_int]) -> (usize, bool) {
     let mut path = [0u8; 64];
@@ -467,7 +472,7 @@ fn hold(
         *more = true;
         return;
     }
-    let fd = unsafe { syscall(434, pid, 0u32) } as c_int;
+    let fd = sys::pidfd_open(pid);
     if fd < 0 {
         return;
     }
@@ -475,9 +480,7 @@ fn hold(
         close(fd);
         return;
     }
-    unsafe {
-        syscall(424, fd, 19i32, ptr::null::<c_void>(), 0u32);
-    }
+    sys::pidfd_send_signal(fd, 19);
     tree[*count] = Held { fd, pid, parent };
     *count += 1;
 }
@@ -494,44 +497,47 @@ pub(super) fn sweep_descendants(keep: c_int) -> bool {
     let deadline = start.saturating_add(SWEEP_MS);
     let myself = getpid();
     loop {
-        let tree = unsafe { &mut *(&raw mut TREE) };
-        let direct = unsafe { &mut *(&raw mut PIDS) };
-        let below = unsafe { &mut *(&raw mut BELOW) };
-        let (children, mut more) = list_children(myself, direct);
-        let mut held = 0;
-        for &pid in &direct[..children] {
-            hold(pid, myself, -1, tree, &mut held, &mut more);
-        }
-        let mut at = 0;
-        while at < held {
-            let parent = tree[at];
-            let (found, truncated) = list_children(parent.pid, below);
-            more |= truncated;
-            if still_running(parent.fd) {
-                for &pid in &below[..found] {
-                    hold(pid, parent.pid, parent.fd, tree, &mut held, &mut more);
-                }
-            }
-            at += 1;
-        }
-        let mut others = 0;
-        for process in &tree[..held] {
-            unsafe {
-                syscall(424, process.fd, 9i32, ptr::null::<c_void>(), 0u32);
-            }
-            if process.pid != keep {
-                others += 1;
-            }
-        }
-        for process in &tree[..held] {
-            if process.parent == myself && process.pid != keep {
-                sys::waitpid(process.pid, None, 1);
-            }
-            close(process.fd);
-        }
-        let mut seen = SignalInfo::zeroed();
-        let ended =
-            sys::waitid(1, keep as u32, &mut seen, 4 | 1 | 0x01000000) == 0 && seen.pid == keep;
+        // One round: neither the lists nor the pidfds outlive it.
+        let (others, more, ended) = TREE.with(|tree| {
+            PIDS.with(|direct| {
+                BELOW.with(|below| {
+                    let (children, mut more) = list_children(myself, direct);
+                    let mut held = 0;
+                    for &pid in &direct[..children] {
+                        hold(pid, myself, -1, tree, &mut held, &mut more);
+                    }
+                    let mut at = 0;
+                    while at < held {
+                        let parent = tree[at];
+                        let (found, truncated) = list_children(parent.pid, below);
+                        more |= truncated;
+                        if still_running(parent.fd) {
+                            for &pid in &below[..found] {
+                                hold(pid, parent.pid, parent.fd, tree, &mut held, &mut more);
+                            }
+                        }
+                        at += 1;
+                    }
+                    let mut others = 0;
+                    for process in &tree[..held] {
+                        sys::pidfd_send_signal(process.fd, 9);
+                        if process.pid != keep {
+                            others += 1;
+                        }
+                    }
+                    for process in &tree[..held] {
+                        if process.parent == myself && process.pid != keep {
+                            sys::waitpid(process.pid, None, 1);
+                        }
+                        close(process.fd);
+                    }
+                    let mut seen = SignalInfo::zeroed();
+                    let ended = sys::waitid(1, keep as u32, &mut seen, 4 | 1 | 0x01000000) == 0
+                        && seen.pid == keep;
+                    (others, more, ended)
+                })
+            })
+        });
         if others == 0 && !more && ended {
             return true;
         }

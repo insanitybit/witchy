@@ -16,7 +16,6 @@ struct Data {
 
 unsafe extern "C" {
     fn syscall(number: c_long, ...) -> c_long;
-    fn prctl(option: c_int, ...) -> c_int;
 }
 
 /// Drop the bounding and ambient sets, lock root-related securebits when
@@ -38,18 +37,18 @@ pub(super) fn drop_capabilities() -> bool {
     }
     let any = data.iter().any(|d| d.effective != 0 || d.permitted != 0);
     if any {
-        if unsafe { prctl(28, SECUREBITS, 0, 0, 0) } != 0 {
+        if super::sys::set_securebits(SECUREBITS) != 0 {
             return false;
         }
         for capability in 0..=63 {
-            if unsafe { prctl(24, capability, 0, 0, 0) } != 0
+            if super::sys::drop_bounding_capability(capability) != 0
                 && super::errno::get() != 22
             {
                 return false;
             }
         }
     }
-    if unsafe { prctl(47, 4, 0, 0, 0) } != 0 && super::errno::get() != 22 {
+    if super::sys::clear_ambient_capabilities() != 0 && super::errno::get() != 22 {
         return false;
     }
     data.fill(Data {

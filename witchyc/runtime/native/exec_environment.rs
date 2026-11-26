@@ -1,4 +1,5 @@
 //! Validation of the environment passed to an explicitly granted executable.
+use super::global::State;
 use core::ffi::CStr;
 
 struct Names {
@@ -67,18 +68,19 @@ impl Names {
 }
 
 // Configured at broker startup, before requests run on its single thread.
-static mut NAMES: Names = Names::EMPTY;
+// Each use is one of `Names`' own methods, which call only the name policy.
+static NAMES: State<Names> = State::new(Names::EMPTY);
 
 pub(super) fn witchy_exec_env_names(list: &CStr) -> bool {
-    unsafe { (&mut *(&raw mut NAMES)).bind(list.to_bytes()) }
+    NAMES.with(|names| names.bind(list.to_bytes()))
 }
 
 pub(super) fn witchy_exec_env_declared(name: &[u8]) -> bool {
-    unsafe { (&*(&raw const NAMES)).contains(name) }
+    NAMES.with(|names| names.contains(name))
 }
 
 pub(super) fn valid_values(bytes: &[u8]) -> bool {
-    unsafe { (&*(&raw const NAMES)).validate_values(bytes) }
+    NAMES.with(|names| names.validate_values(bytes))
 }
 
 pub(super) fn witchy_exec_plain(value: &[u8]) -> bool {

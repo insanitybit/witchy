@@ -1,6 +1,7 @@
 //! macOS process cleanup while a child still owns its PID and session ID.
+use super::global::State;
 use core::ffi::{c_int, c_void};
-use core::mem::{MaybeUninit, size_of};
+use core::mem::size_of;
 
 #[repr(C)]
 struct ProcessInfo {
@@ -22,6 +23,27 @@ struct ProcessInfo {
     start_microseconds: u64,
 }
 
+impl ProcessInfo {
+    const ZERO: Self = Self {
+        flags: 0,
+        status: 0,
+        exit_status: 0,
+        pid: 0,
+        parent: 0,
+        ids_and_reserved: [0; 7],
+        command: [0; 16],
+        name: [0; 32],
+        descriptors: 0,
+        group: 0,
+        jobs: 0,
+        terminal: 0,
+        terminal_group: 0,
+        nice: 0,
+        start_seconds: 0,
+        start_microseconds: 0,
+    };
+}
+
 unsafe extern "C" {
     fn proc_pidinfo(pid: c_int, flavor: c_int, arg: u64, buffer: *mut c_void, size: c_int)
     -> c_int;
@@ -38,12 +60,14 @@ const CONTINUE: c_int = 19;
 const KILL: c_int = 9;
 
 fn process(pid: c_int) -> Option<ProcessInfo> {
-    let mut info = MaybeUninit::<ProcessInfo>::uninit();
+    let mut info = ProcessInfo::ZERO;
     let size = size_of::<ProcessInfo>() as c_int;
-    if unsafe { proc_pidinfo(pid, PID_BSD_INFO, 0, info.as_mut_ptr().cast(), size) } != size {
+    // SAFETY: the call writes at most `size` bytes, the size of `info`, and
+    // every byte pattern is a value of each of its fields.
+    if unsafe { proc_pidinfo(pid, PID_BSD_INFO, 0, (&raw mut info).cast(), size) } != size {
         return None;
     }
-    Some(unsafe { info.assume_init() })
+    Some(info)
 }
 
 fn child_of(pid: c_int, parent: c_int) -> bool {
@@ -76,49 +100,53 @@ fn stop_tree(parent: c_int, depth: u32) {
     }
 }
 
-// Only called by one broker thread, and never after `leader` was reaped.
-static mut ALL_PIDS: [c_int; 16384] = [0; 16384];
+// Only called by one broker thread, and never after `leader` was reaped. The
+// use below signals and asks about processes; it starts none, and nothing it
+// calls comes back here.
+static ALL_PIDS: State<[c_int; 16384]> = State::new([0; 16384]);
 
 pub(super) fn stop_session(leader: c_int) {
-    for _ in 0..32 {
-        let pids = unsafe { &mut *(&raw mut ALL_PIDS) };
-        let count = unsafe {
-            proc_listallpids(
-                pids.as_mut_ptr().cast(),
-                size_of::<[c_int; 16384]>() as c_int,
-            )
-        };
-        if count <= 0 {
-            return;
-        }
-        let mut found = 0;
-        for index in 0..(count as usize).min(pids.len()) {
-            let pid = pids[index];
-            if pid <= 1
-                || pid == leader
-                || getsid(pid) != leader
-                || !process(pid).is_some_and(|info| info.status != ZOMBIE)
-            {
-                continue;
+    ALL_PIDS.with(|pids| {
+        for _ in 0..32 {
+            // SAFETY: the call writes at most the size passed, which is the size of `pids`.
+            let count = unsafe {
+                proc_listallpids(
+                    pids.as_mut_ptr().cast(),
+                    size_of::<[c_int; 16384]>() as c_int,
+                )
+            };
+            if count <= 0 {
+                return;
             }
-            kill(pid, STOP);
-            pids[found] = pid;
-            found += 1;
+            let mut found = 0;
+            for index in 0..(count as usize).min(pids.len()) {
+                let pid = pids[index];
+                if pid <= 1
+                    || pid == leader
+                    || getsid(pid) != leader
+                    || !process(pid).is_some_and(|info| info.status != ZOMBIE)
+                {
+                    continue;
+                }
+                kill(pid, STOP);
+                pids[found] = pid;
+                found += 1;
+            }
+            if found == 0 {
+                return;
+            }
+            for &pid in &pids[..found] {
+                kill(
+                    pid,
+                    if getsid(pid) == leader {
+                        KILL
+                    } else {
+                        CONTINUE
+                    },
+                );
+            }
         }
-        if found == 0 {
-            return;
-        }
-        for &pid in &pids[..found] {
-            kill(
-                pid,
-                if getsid(pid) == leader {
-                    KILL
-                } else {
-                    CONTINUE
-                },
-            );
-        }
-    }
+    })
 }
 
 pub(super) fn stop_live(child: c_int) {

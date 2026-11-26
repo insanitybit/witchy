@@ -511,3 +511,132 @@ pub fn descriptor_flags(fd: c_int) -> c_int {
     unsafe { c_stream::fcntl(fd, 1) }
 }
 
+// What the Exec broker and its Linux runner ask of a process: a working
+// directory, a private directory's name, resource limits, and the Linux
+// calls that take only numbers.
+
+/// A resource's limit now and the most it may be raised to.
+#[repr(C)]
+pub struct ResourceLimit {
+    pub current: u64,
+    pub maximum: u64,
+}
+
+mod c_process {
+    use super::{ResourceLimit, c_char, c_int};
+
+    unsafe extern "C" {
+        pub fn chdir(path: *const c_char) -> c_int;
+        pub fn mkdtemp(template: *mut c_char) -> *mut c_char;
+        #[cfg(target_os = "macos")]
+        pub fn confstr(name: c_int, buffer: *mut c_char, len: usize) -> usize;
+        pub fn getrlimit(resource: c_int, limit: *mut ResourceLimit) -> c_int;
+        pub fn setrlimit(resource: c_int, limit: *const ResourceLimit) -> c_int;
+        #[cfg(target_os = "linux")]
+        pub fn prctl(option: c_int, ...) -> c_int;
+        #[cfg(target_os = "linux")]
+        pub fn syscall(number: core::ffi::c_long, ...) -> core::ffi::c_long;
+    }
+}
+
+pub fn chdir(path: &CStr) -> c_int {
+    // SAFETY: `path` is a C string, and the call keeps nothing of it.
+    unsafe { c_process::chdir(path.as_ptr()) }
+}
+
+/// Makes a private directory named by the C string at the front of
+/// `template`, whose last letters the call replaces. False when none was
+/// made, or when `template` holds no zero and so no C string.
+pub fn mkdtemp(template: &mut [u8]) -> bool {
+    if !template.contains(&0) {
+        return false;
+    }
+    // SAFETY: a C string ends inside `template`, and the call writes only
+    // letters before that end.
+    !unsafe { c_process::mkdtemp(template.as_mut_ptr().cast()) }.is_null()
+}
+
+/// Writes the system's text for `name` to `out`, cut short to fit, and gives
+/// the length the whole text needs, or 0 when there is none.
+#[cfg(target_os = "macos")]
+pub fn confstr(name: c_int, out: &mut [u8]) -> usize {
+    // SAFETY: the call writes at most `out.len()` bytes.
+    unsafe { c_process::confstr(name, out.as_mut_ptr().cast(), out.len()) }
+}
+
+pub fn getrlimit(resource: c_int, limit: &mut ResourceLimit) -> c_int {
+    // SAFETY: the call writes one limit.
+    unsafe { c_process::getrlimit(resource, limit) }
+}
+
+pub fn setrlimit(resource: c_int, limit: &ResourceLimit) -> c_int {
+    // SAFETY: the call reads one limit.
+    unsafe { c_process::setrlimit(resource, limit) }
+}
+
+// Each `prctl` below passes numbers only, in the types its callers passed
+// before these wrappers existed.
+
+/// `prctl(PR_SET_PDEATHSIG, signal)`: sends `signal` when the parent ends.
+#[cfg(target_os = "linux")]
+pub fn set_parent_death_signal(signal: c_int) -> c_int {
+    // SAFETY: the option reads numbers only.
+    unsafe { c_process::prctl(1, signal, 0, 0, 0) }
+}
+
+/// `prctl(PR_SET_DUMPABLE, 0)`.
+#[cfg(target_os = "linux")]
+pub fn clear_dumpable() -> c_int {
+    // SAFETY: the option reads numbers only.
+    unsafe { c_process::prctl(4, 0, 0, 0, 0) }
+}
+
+/// `prctl(PR_CAPBSET_DROP, capability)`.
+#[cfg(target_os = "linux")]
+pub fn drop_bounding_capability(capability: c_int) -> c_int {
+    // SAFETY: the option reads numbers only.
+    unsafe { c_process::prctl(24, capability, 0, 0, 0) }
+}
+
+/// `prctl(PR_SET_SECUREBITS, bits)`.
+#[cfg(target_os = "linux")]
+pub fn set_securebits(bits: c_int) -> c_int {
+    // SAFETY: the option reads numbers only.
+    unsafe { c_process::prctl(28, bits, 0, 0, 0) }
+}
+
+/// `prctl(PR_SET_CHILD_SUBREAPER, 1)`.
+#[cfg(target_os = "linux")]
+pub fn set_child_subreaper() -> c_int {
+    // SAFETY: the option reads numbers only.
+    unsafe { c_process::prctl(36, 1, 0, 0, 0) }
+}
+
+/// `prctl(PR_SET_NO_NEW_PRIVS, 1)`.
+#[cfg(target_os = "linux")]
+pub fn set_no_new_privileges() -> c_int {
+    // SAFETY: the option reads numbers only.
+    unsafe { c_process::prctl(38, 1, 0, 0, 0) }
+}
+
+/// `prctl(PR_CAP_AMBIENT, PR_CAP_AMBIENT_CLEAR_ALL)`.
+#[cfg(target_os = "linux")]
+pub fn clear_ambient_capabilities() -> c_int {
+    // SAFETY: the option reads numbers only.
+    unsafe { c_process::prctl(47, 4, 0, 0, 0) }
+}
+
+/// `pidfd_open(pid, 0)`: a descriptor for the process, or a negative value.
+#[cfg(target_os = "linux")]
+pub fn pidfd_open(pid: c_int) -> c_int {
+    // SAFETY: the call reads two numbers.
+    unsafe { c_process::syscall(434, pid, 0u32) as c_int }
+}
+
+/// `pidfd_send_signal(fd, signal, NULL, 0)`: signals the process `fd` names.
+#[cfg(target_os = "linux")]
+pub fn pidfd_send_signal(fd: c_int, signal: i32) -> core::ffi::c_long {
+    // SAFETY: a null record asks for the signal's default one, and the rest are numbers.
+    unsafe { c_process::syscall(424, fd, signal, core::ptr::null::<c_void>(), 0u32) }
+}
+

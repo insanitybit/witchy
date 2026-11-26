@@ -1,3 +1,5 @@
+#[path = "../../../runtime/native/global.rs"]
+mod global;
 #[path = "../../../runtime/native/sys.rs"]
 mod sys;
 #[path = "../../../src/compiler/exec_env_policy.rs"]

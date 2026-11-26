@@ -6,14 +6,15 @@ use super::sys::{self, PollFd, SignalInfo};
 use super::{
     exec_broker, exec_linux_children as children, exec_linux_transport as transport, exec_programs,
 };
-use core::ffi::{c_int, c_void};
-use core::ptr;
+use core::ffi::c_int;
 
 const BUFFER: usize = 1 << 17;
 static RUNNER: Global<c_int> = Global::new(-1);
 static WARDEN_FD: Global<c_int> = Global::new(-1);
 static WARDEN_PIPE: Global<c_int> = Global::new(-1);
 static FAILED: Global<bool> = Global::new(false);
+// Not a `State`: the runner holds this buffer across the request it serves,
+// and serving a run forks the program.
 static mut SCRATCH: [u8; BUFFER] = [0; BUFFER];
 
 unsafe extern "C" {
@@ -22,9 +23,6 @@ unsafe extern "C" {
     safe fn shutdown(fd: c_int, how: c_int) -> c_int;
     safe fn getpid() -> c_int;
     safe fn getppid() -> c_int;
-    fn prctl(option: c_int, ...) -> c_int;
-    fn signal(signal: c_int, handler: usize) -> usize;
-    fn syscall(number: core::ffi::c_long, ...) -> core::ffi::c_long;
     safe fn witchy_exec_supervise() -> bool;
     safe fn witchy_exec_sweep_own() -> bool;
     safe fn _exit(code: c_int) -> !;
@@ -47,13 +45,13 @@ fn poll_one(fd: c_int, timeout: c_int) -> c_int {
 
 fn runner_loop(channel: c_int, broker_pid: c_int) -> ! {
     let parent = getppid();
-    if unsafe { signal(17, 0) } == usize::MAX
-        || unsafe { prctl(1, 15, 0, 0, 0) } != 0
+    if !sys::default_signal(17)
+        || sys::set_parent_death_signal(15) != 0
         || getppid() != parent
         || parent == broker_pid
-        || unsafe { prctl(36, 1, 0, 0, 0) } != 0
-        || unsafe { prctl(38, 1, 0, 0, 0) } != 0
-        || unsafe { prctl(4, 0, 0, 0, 0) } != 0
+        || sys::set_child_subreaper() != 0
+        || sys::set_no_new_privileges() != 0
+        || sys::clear_dumpable() != 0
     {
         _exit(2)
     }
@@ -82,6 +80,8 @@ fn runner_loop(channel: c_int, broker_pid: c_int) -> ! {
             }
             _exit(2)
         }
+        // SAFETY: this loop is the buffer's one user, on the runner's one
+        // thread, and no reference from an earlier turn is still live.
         let buffer = unsafe { &mut *(&raw mut SCRATCH) };
         if !transport::read_exact(channel, &mut buffer[..count]) {
             if let Some(fd) = passed {
@@ -145,9 +145,9 @@ fn start_warden(pair: [c_int; 2], broker: c_int) -> c_int {
     super::exec_temp::set_directory_owner(broker);
     close(pair[0]);
     close(alive[1]);
-    if unsafe { signal(17, 0) } == usize::MAX
+    if !sys::default_signal(17)
         || !witchy_exec_supervise()
-        || unsafe { prctl(4, 0, 0, 0, 0) } != 0
+        || sys::clear_dumpable() != 0
         || getppid() != broker
     {
         _exit(2)
@@ -194,7 +194,7 @@ extern "C" fn witchy_exec_start_runner() -> bool {
     }
     close(pair[1]);
     RUNNER.set(pair[0]);
-    let pidfd = unsafe { syscall(434, warden, 0u32) } as c_int;
+    let pidfd = sys::pidfd_open(warden);
     if pidfd < 0 {
         close(pair[0]);
         RUNNER.set(-1);
@@ -230,9 +230,7 @@ extern "C" fn witchy_exec_finish() -> bool {
     }
     if WARDEN_FD.get() >= 0 {
         if poll_one(WARDEN_FD.get(), 7000) != 1 {
-            unsafe {
-                syscall(424, WARDEN_FD.get(), 9i32, ptr::null::<c_void>(), 0u32);
-            }
+            sys::pidfd_send_signal(WARDEN_FD.get(), 9);
             FAILED.set(true);
             let _ = poll_one(WARDEN_FD.get(), 2000);
         }

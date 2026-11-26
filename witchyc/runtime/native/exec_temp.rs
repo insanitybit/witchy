@@ -2,12 +2,13 @@
 #[cfg(target_os = "linux")]
 use super::global::Global;
 #[cfg(target_os = "linux")]
-use super::linux_stat::{Stat, stat};
+use super::linux_stat::{Stat, stat, stat_at};
 #[cfg(target_os = "macos")]
-use super::seatbelt::{Stat, stat};
+use super::seatbelt::{Stat, stat, stat_at};
 use super::sys;
-use core::ffi::{CStr, c_char, c_int, c_void};
-use core::mem::MaybeUninit;
+#[cfg(target_os = "macos")]
+use core::ffi::c_char;
+use core::ffi::{CStr, c_int, c_void};
 
 const PATH_MAX: usize = 1024;
 #[cfg(target_os = "macos")]
@@ -24,8 +25,6 @@ const NOFOLLOW: c_int = 0x100;
 const NOFOLLOW: c_int = 0o100000;
 #[cfg(target_os = "macos")]
 const AT_SYMLINK_NOFOLLOW: c_int = 0x20;
-#[cfg(target_os = "linux")]
-const AT_SYMLINK_NOFOLLOW: c_int = 0x100;
 #[cfg(target_os = "macos")]
 const AT_REMOVEDIR: c_int = 0x80;
 #[cfg(target_os = "linux")]
@@ -46,10 +45,6 @@ struct Dirent {
 use super::linux_stat::Dirent;
 
 unsafe extern "C" {
-    #[cfg(target_os = "macos")]
-    fn confstr(name: c_int, buffer: *mut c_char, len: usize) -> usize;
-    fn mkdtemp(template: *mut c_char) -> *mut c_char;
-    fn fstatat(parent: c_int, name: *const c_char, info: *mut Stat, flags: c_int) -> c_int;
     safe fn dup(fd: c_int) -> c_int;
     safe fn close(fd: c_int) -> c_int;
     fn fdopendir(fd: c_int) -> *mut c_void;
@@ -62,38 +57,53 @@ unsafe extern "C" {
 
 /// What `name` under `parent` is, not following a link at `name`.
 fn stat_named(parent: c_int, name: &CStr) -> Option<Stat> {
-    let mut info = MaybeUninit::<Stat>::uninit();
-    // SAFETY: `name` is a C string and `info` has room for the one record the
-    // call writes; it has written all of it when it returns zero.
-    unsafe {
-        if fstatat(parent, name.as_ptr(), info.as_mut_ptr(), AT_SYMLINK_NOFOLLOW) != 0 {
-            return None;
-        }
-        Some(info.assume_init())
-    }
+    #[cfg(target_os = "macos")]
+    return stat_at(parent, name, AT_SYMLINK_NOFOLLOW);
+    #[cfg(target_os = "linux")]
+    return stat_at(parent, name);
 }
 
-fn remove_tree(fd: c_int, depth: u32) {
+/// Calls `each` with the name of each of the first 65536 entries of the
+/// directory `fd`, which stays open: a copy of it is read and closed.
+/// Nothing is called when the directory cannot be read.
+fn each_name(fd: c_int, each: &mut dyn FnMut(&CStr)) {
     let scan = dup(fd);
     if scan < 0 {
         return;
     }
+    // SAFETY: the call takes a descriptor number; the stream it gives is
+    // closed below and nowhere else.
     let dir = unsafe { fdopendir(scan) };
     if dir.is_null() {
         close(scan);
         return;
     }
     for _ in 0..65536 {
-        let entry = unsafe { readdir(dir) };
-        if entry.is_null() {
-            break;
-        }
-        let name = unsafe { CStr::from_ptr((&raw const (*entry).name).cast()) };
+        // SAFETY: `dir` is the open stream. An entry it gives stays in place
+        // until the stream's next read, which is after `each` returns, and
+        // its name ends in a zero.
+        let name = unsafe {
+            let entry = readdir(dir);
+            if entry.is_null() {
+                break;
+            }
+            CStr::from_ptr((&raw const (*entry).name).cast())
+        };
+        each(name);
+    }
+    // SAFETY: `dir` is the open stream, and it is not used again.
+    unsafe {
+        closedir(dir);
+    }
+}
+
+fn remove_tree(fd: c_int, depth: u32) {
+    each_name(fd, &mut |name| {
         if matches!(name.to_bytes(), b"." | b"..") {
-            continue;
+            return;
         }
         if sys::unlinkat(fd, name, 0) == 0 || depth >= 32 {
-            continue;
+            return;
         }
         let child = sys::openat(fd, name, DIR | CLOEXEC | NOFOLLOW);
         if child >= 0 {
@@ -101,15 +111,12 @@ fn remove_tree(fd: c_int, depth: u32) {
             close(child);
             sys::unlinkat(fd, name, AT_REMOVEDIR);
         }
-    }
-    unsafe {
-        closedir(dir);
-    }
+    });
 }
 
 fn temporary_base(buffer: &mut [u8; PATH_MAX]) -> Option<usize> {
     #[cfg(target_os = "macos")]
-    let length = unsafe { confstr(65537, buffer.as_mut_ptr().cast(), buffer.len()) };
+    let length = sys::confstr(65537, buffer);
     #[cfg(target_os = "linux")]
     let length = {
         buffer[..5].copy_from_slice(b"/tmp\0");
@@ -137,8 +144,9 @@ pub(super) struct Directory {
 }
 
 impl Directory {
-    pub(super) fn path_ptr(&self) -> *const c_char {
-        self.path.as_ptr().cast()
+    /// The directory's name. `create` left it ending in a zero.
+    pub(super) fn path(&self) -> Option<&CStr> {
+        CStr::from_bytes_until_nul(&self.path).ok()
     }
     pub(super) fn create() -> Option<Self> {
         let mut path = [0u8; PATH_MAX];
@@ -179,7 +187,7 @@ impl Directory {
             at = end;
         }
         path[at] = 0;
-        if unsafe { mkdtemp(path.as_mut_ptr().cast()) }.is_null() {
+        if !sys::mkdtemp(&mut path) {
             return None;
         }
         // The name ends at the zero written above; `mkdtemp` changed only letters before it.
@@ -217,8 +225,7 @@ impl Drop for Directory {
     fn drop(&mut self) {
         remove_tree(self.fd, 0);
         close(self.fd);
-        // `create` left the name ending in a zero.
-        if let Ok(path) = CStr::from_bytes_until_nul(&self.path) {
+        if let Some(path) = self.path() {
             sys::rmdir(path);
         }
     }
@@ -289,47 +296,29 @@ extern "C" fn witchy_exec_sweep(broker: c_int) {
     if root < 0 {
         return;
     }
-    let scan = dup(root);
-    let dir = if scan >= 0 {
-        unsafe { fdopendir(scan) }
-    } else {
-        ptr::null_mut()
-    };
-    if dir.is_null() {
-        if scan >= 0 {
-            close(scan);
-        }
-        close(root);
-        return;
-    }
-    for _ in 0..65536 {
-        let entry = unsafe { readdir(dir) };
-        if entry.is_null() {
-            break;
-        }
-        let name = unsafe { CStr::from_ptr((&raw const (*entry).name).cast()) };
+    each_name(root, &mut |name| {
         let Some(pid) = owned_directory_name(name.to_bytes()) else {
-            continue;
+            return;
         };
         if if broker > 0 {
             pid != broker
         } else {
             kill(pid, 0) == 0 || super::errno::get() != 3
         } {
-            continue;
+            return;
         }
         let Some(named) = stat_named(root, name) else {
-            continue;
+            return;
         };
         if named.mode & 0o170000 != 0o040000
             || named.uid != getuid()
             || named.mode & 0o7777 != 0o700
         {
-            continue;
+            return;
         }
         let fd = sys::openat(root, name, DIR | CLOEXEC | NOFOLLOW);
         if fd < 0 {
-            continue;
+            return;
         }
         if stat(fd)
             .is_some_and(|opened| opened.device == named.device && opened.inode == named.inode)
@@ -343,14 +332,10 @@ extern "C" fn witchy_exec_sweep(broker: c_int) {
             }
         }
         close(fd);
-    }
-    unsafe {
-        closedir(dir);
-    }
+    });
     close(root);
 }
 
-use core::ptr;
 
 #[cfg(kani)]
 mod proofs {
