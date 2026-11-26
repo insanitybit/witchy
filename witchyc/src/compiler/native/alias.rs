@@ -175,20 +175,6 @@ pub(super) fn annotate(function: &mut ir::Function, roots: &[(Value, Root)]) -> 
         }
     }
 
-    // Each inlined callee brought its own copy of the heap's name; with one, the same slot is
-    // the same address value and Cranelift can see a second load of it is the first.
-    if let Some(&first) = heap.iter().next() {
-        for block in function.layout.blocks().collect::<Vec<_>>() {
-            for inst in function.layout.block_insts(block).collect::<Vec<_>>() {
-                if let InstructionData::UnaryGlobalValue { opcode: Opcode::SymbolValue, global_value } = &mut function.dfg.insts[inst]
-                    && heap.contains(global_value)
-                {
-                    *global_value = first;
-                }
-            }
-        }
-    }
-
     let mut ids = BTreeMap::new();
     for &(_, region) in &tagged {
         let next = ids.len() as u32;
