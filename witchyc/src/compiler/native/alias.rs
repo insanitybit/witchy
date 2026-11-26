@@ -554,7 +554,16 @@ fn same(function: &ir::Function, cfg: &ControlFlowGraph) -> BTreeMap<Value, Join
             let Some(given) = given(&same, block, index) else { continue };
             let values: BTreeSet<Value> = given.iter().copied().filter(|&v| v != param).collect();
             let mut found = None;
-            for &value in values.iter().filter(|&&v| constant(v).is_none()) {
+            // The value may not be a block parameter of the body: one entry into the join can
+            // copy it, and its own block can be entered again before the lane is used, giving it
+            // another value (and another lane's test something else to pass) while the lane keeps
+            // the copy. A value an instruction computed is fixed, and anything it was computed
+            // from is checked where that instruction is.
+            let fixed = |v: Value| match dfg.value_def(v) {
+                ir::ValueDef::Param(block, _) => Some(block) == function.layout.entry_block(),
+                _ => true,
+            };
+            for &value in values.iter().filter(|&&v| constant(v).is_none() && fixed(v)) {
                 // Every edge that does not give `value` is another arm, including one that carries
                 // the lane back unchanged: it may set the tag afresh while the lane keeps what an
                 // earlier entry gave it. Only an edge that carries the tag back unchanged as well

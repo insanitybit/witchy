@@ -601,3 +601,62 @@ fn a_back_edge_that_carries_both_tag_and_lane_keeps_them_together() {
     assert!(annotate(&mut function, &[(param, root(false))]).is_ok());
     assert_eq!(loads(&function).0, loads(&function).1);
 }
+
+#[test]
+fn a_lane_whose_value_is_another_joins_lane_is_no_address() {
+    // entry(p, q): jump j2(0, 0)
+    // j2(l2, t2): x = t2 + 7; jump j(p, x)
+    // j(l, t): brif t2 == 1, b, c
+    // c: brif t == 0, a, d      a: jump j2(l, 1)      d: jump j(q, 0)
+    // b: brif t == 8, u, y      u: load q; store 7 -> l2; load q
+    // Run: j2(0,0) j(p,7) c d j(q,0) c a j2(q,1) j(p,8) b u: l2 is q. From the second review of
+    // the strict rule: `l2` was a tagged lane standing for `l`, and `l` was tested where `l2` is
+    // used, not where `l2` copied it, so the store was tagged as `p`'s record.
+    let (mut function, entry, _) = function(2);
+    let params = function.dfg.block_params(entry).to_vec();
+    let (p, q) = (params[0], params[1]);
+    let [j2, j, a, b, c, d, u, y] = std::array::from_fn(|_| function.dfg.make_block());
+    for block in [j2, j, a, b, c, d, u, y] {
+        function.layout.append_block(block);
+    }
+    let l2 = function.dfg.append_block_param(j2, I64);
+    let t2 = function.dfg.append_block_param(j2, I64);
+    let l = function.dfg.append_block_param(j, I64);
+    let t = function.dfg.append_block_param(j, I64);
+    let mut pos = FuncCursor::new(&mut function).at_bottom(entry);
+    let zero = pos.ins().iconst(I64, 0);
+    pos.ins().jump(j2, &[zero.into(), zero.into()]);
+    pos.goto_bottom(j2);
+    let x = pos.ins().iadd_imm(t2, 7);
+    pos.ins().jump(j, &[p.into(), x.into()]);
+    pos.goto_bottom(j);
+    let one = pos.ins().iconst(I64, 1);
+    let is_one = pos.ins().icmp(ir::condcodes::IntCC::Equal, t2, one);
+    pos.ins().brif(is_one, b, &[], c, &[]);
+    pos.goto_bottom(c);
+    let zero_c = pos.ins().iconst(I64, 0);
+    let is_zero = pos.ins().icmp(ir::condcodes::IntCC::Equal, t, zero_c);
+    pos.ins().brif(is_zero, a, &[], d, &[]);
+    pos.goto_bottom(a);
+    let one_a = pos.ins().iconst(I64, 1);
+    pos.ins().jump(j2, &[l.into(), one_a.into()]);
+    pos.goto_bottom(d);
+    let zero_d = pos.ins().iconst(I64, 0);
+    pos.ins().jump(j, &[q.into(), zero_d.into()]);
+    pos.goto_bottom(b);
+    let eight = pos.ins().iconst(I64, 8);
+    let is_eight = pos.ins().icmp(ir::condcodes::IntCC::Equal, t, eight);
+    pos.ins().brif(is_eight, u, &[], y, &[]);
+    pos.goto_bottom(u);
+    let first = pos.ins().load(I64, MemFlagsData::new(), q, 0);
+    let seven = pos.ins().iconst(I64, 7);
+    pos.ins().store(MemFlagsData::new(), seven, l2, 0);
+    let second = pos.ins().load(I64, MemFlagsData::new(), q, 0);
+    let sum = pos.ins().iadd(first, second);
+    pos.ins().return_(&[sum]);
+    pos.goto_bottom(y);
+    pos.ins().return_(&[zero]);
+    let outcome = annotate(&mut function, &[(p, root(true)), (q, root(true))]);
+    assert!(outcome.is_err(), "the store through l2 (really q) was tagged");
+    assert_eq!(loads(&function).1, 0);
+}
