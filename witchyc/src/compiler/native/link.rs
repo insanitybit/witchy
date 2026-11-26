@@ -9,6 +9,33 @@ use std::{
     time::Instant,
 };
 
+#[cfg(target_os = "macos")]
+thread_local! {
+    static QUALIFICATION: std::cell::OnceCell<(PathBuf, Vec<String>)> = const { std::cell::OnceCell::new() };
+}
+
+#[cfg(target_os = "macos")]
+pub(in crate::compiler) fn configure_qualification(root: &Path) -> io::Result<()> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let metadata = fs::symlink_metadata(root)?;
+    if !root.is_absolute() || !metadata.is_dir() || metadata.permissions().mode() & 0o077 != 0 {
+        return Err(io::Error::other("qualification requires a private absolute directory"));
+    }
+    let cache = root.join("links");
+    let metadata_cache = fs::symlink_metadata(&cache)?;
+    if !metadata_cache.is_dir() || metadata_cache.uid() != metadata.uid()
+        || metadata_cache.permissions().mode() & 0o077 != 0 {
+        return Err(io::Error::other("qualification requires a private link cache"));
+    }
+    let plan = fs::read_to_string(root.join("link-plan"))?;
+    let args: Vec<_> = plan.split_terminator('\0').map(str::to_owned).collect();
+    if args.first().is_none_or(|arg| !Path::new(arg).is_absolute()) {
+        return Err(io::Error::other("qualification linker is not an absolute path"));
+    }
+    QUALIFICATION.with(|config| config.set((cache, args)))
+        .map_err(|_| io::Error::other("qualification linker already configured"))
+}
+
 static NEXT: AtomicU64 = AtomicU64::new(0);
 const RUNTIME_ARCHIVE: &str = env!("WITCHY_NATIVE_ARCHIVE_FILE");
 const ARCHIVE: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/", env!("WITCHY_NATIVE_ARCHIVE_FILE")));
@@ -60,6 +87,24 @@ pub(in crate::compiler) fn link(
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     let image = Image::stage(parent).map_err(|e| e.to_string())?;
+    #[cfg(all(target_os = "macos", not(witchy_native_sanitized)))]
+    let qualification = (!object.requires_aws_lc)
+        .then(|| QUALIFICATION.with(|config| config.get().cloned())).flatten();
+    #[cfg(all(target_os = "macos", not(witchy_native_sanitized)))]
+    let cache_entry = qualification.as_ref().map(|(cache, _)| {
+        super::super::proof_digest::bytes(&object.bytes).map(|digest| cache.join(digest))
+    }).transpose().map_err(|e| e.to_string())?;
+    #[cfg(all(target_os = "macos", not(witchy_native_sanitized)))]
+    if let Some(entry) = &cache_entry {
+        match fs::copy(entry, image.0.join("image")) {
+            Ok(_) => {
+                times.object_ns += phase.elapsed().as_nanos();
+                return Ok(image);
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.to_string()),
+        }
+    }
     fs::write(image.0.join("program.o"), &object.bytes).map_err(|e| e.to_string())?;
     stage_runtime(&image.0.join(RUNTIME_ARCHIVE), object.requires_aws_lc)
         .map_err(|e| e.to_string())?;
@@ -101,6 +146,11 @@ pub(in crate::compiler) fn link(
         .map_err(|e| e.to_string())?;
         linker.arg("aws_lc_fips.a").arg("-lpthread");
     }
+    #[cfg(all(target_os = "macos", not(witchy_native_sanitized)))]
+    if let Some((_, args)) = qualification {
+        linker = Command::new(&args[0]);
+        linker.current_dir(&image.0).args(&args[1..]);
+    }
     let linked = linker
         .output()
         .map_err(|e| format!("start native linker: {e}"))?;
@@ -110,6 +160,16 @@ pub(in crate::compiler) fn link(
             "native link failed: {}",
             String::from_utf8_lossy(&linked.stderr).trim()
         ));
+    }
+    #[cfg(all(target_os = "macos", not(witchy_native_sanitized)))]
+    if let Some(entry) = cache_entry {
+        let cached = image.0.join("cached-image");
+        fs::copy(image.0.join("image"), &cached).map_err(|e| e.to_string())?;
+        match fs::hard_link(&cached, entry) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.to_string()),
+        }
     }
     Ok(image)
 }

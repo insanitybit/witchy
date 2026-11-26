@@ -3,6 +3,8 @@ mod body;
 mod inline;
 mod layout;
 mod link;
+#[cfg(target_os = "macos")]
+pub(super) use link::configure_qualification;
 #[cfg(witchy_native_aws_lc)]
 #[path = "../../../runtime/native/tls_grant.rs"]
 mod tls_grant;

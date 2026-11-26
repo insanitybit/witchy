@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Native fixtures as the compiler emits them, against checked mode.
 
-    scripts/native-checked.py --compiler BIN --binding READY [--proof-cache DIR | --private-proof-cache] [--jobs N] [--measure]
+    scripts/native-checked.py --compiler BIN --binding READY [--proof-cache DIR | --private-proof-cache] [--jobs N] [--measure] [--fast] [--timings-from LOG] [--parallel-fixture FIXTURE]
                               [--no-control] [--write-list FILE] FIXTURE.wy...
 
 A fixture is a FIXTURE.wy with a FIXTURE.expected beside it (a .wy without one is a file other
@@ -53,6 +53,7 @@ is wrong. The refused goal is then written into a cache of its own as accepted, 
 proof would be. Checked mode must trap, and the default build must run on (or the control
 shows nothing).
 """
+import collections, select, shlex, threading
 import argparse, concurrent.futures, os, re, signal, subprocess, sys, tempfile, time
 from pathlib import Path
 
@@ -64,13 +65,23 @@ cache_options.add_argument('--proof-cache', type=Path)
 cache_options.add_argument('--private-proof-cache', action='store_true',
                            help='share a fresh private proof cache across fixture builds')
 p.add_argument('--measure', action='store_true', help='print build, run and retry timings to stderr')
-p.add_argument('--jobs', type=int, default=4)
+p.add_argument('--jobs', type=int)
+p.add_argument('--fast', action='store_true', help='reuse compiler workers and identical links on macOS ARM64')
+p.add_argument('--timings-from', type=Path, help='schedule longest fixtures first using a prior --measure log')
+p.add_argument('--parallel-fixture', metavar='FIXTURE',
+               help='run modes concurrently for a fixture with no launcher flags, relative to tests/fixtures')
 p.add_argument('--target', default='macos-arm64')
 p.add_argument('--list', type=Path, default=Path(__file__).with_name('native-checked.list'))
 p.add_argument('--no-control', action='store_true')
 p.add_argument('--write-list', type=Path, help='write a list line for each unlisted fixture that fails in a way a line can describe')
 p.add_argument('fixtures', nargs='*', type=Path)
 a = p.parse_args()
+if a.jobs is None:
+    a.jobs = 7 if a.fast else 4
+if a.jobs < 1:
+    p.error('--jobs must be positive')
+if a.fast and (sys.platform != 'darwin' or a.target != 'macos-arm64'):
+    p.error('--fast requires macOS ARM64')
 repo = Path(__file__).resolve().parents[1]
 compiler = a.compiler.resolve()
 base = {k: v for k, v in os.environ.items() if not k.startswith(('WITCHY_', 'LEAN_', 'LAKE_'))}
@@ -118,13 +129,86 @@ def messages(stderr):
     return '\n'.join(re.findall(r'W\d{4}(?: \d+\.\.\d+| \([^)]*\))?: (.*)', stderr)
                      + [line for line in stderr.splitlines() if line.startswith(('proof failed: ', '  not proved: '))])
 
+def qualification_link_plan(scratch):
+    root = Path(scratch) / 'qualification'
+    root.mkdir(mode=0o700)
+    (root / 'links').mkdir(mode=0o700)
+    with tempfile.TemporaryDirectory(dir=root) as probe:
+        for name in ('libwitchy_runtime.a', 'program.o'):
+            (Path(probe) / name).touch()
+        traced = subprocess.run(['/usr/bin/clang', '-###', '-arch', 'arm64', '-Wl,-dead_strip',
+                                 'libwitchy_runtime.a', 'program.o', '-o', 'image'],
+                                cwd=probe, env=base, capture_output=True, text=True, timeout=30, check=True)
+    commands = [shlex.split(line) for line in traced.stderr.splitlines() if line.startswith(' "')]
+    if len(commands) != 1 or Path(commands[0][0]).name != 'ld' or not Path(commands[0][0]).is_absolute():
+        sys.exit('cannot determine a single macOS linker command from Clang')
+    (root / 'link-plan').write_bytes(b'\0'.join(word.encode() for word in commands[0]))
+    return root
+
+workers = []
+worker_state = threading.local()
+
+def kill_worker(worker):
+    if worker.poll() is None:
+        try:
+            os.killpg(worker.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    worker.wait()
+
+def close_workers():
+    for worker in workers:
+        if worker.poll() is None:
+            worker.stdin.close()
+    for worker in workers:
+        try:
+            worker.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            kill_worker(worker)
+
+def resident_build(fixture, exe, extra):
+    if not hasattr(worker_state, 'modes'):
+        worker_state.modes = {}
+    key = tuple(extra.items())
+    worker = worker_state.modes.get(key)
+    if worker is None or worker.poll() is not None:
+        worker = subprocess.Popen([compiler, 'qualification-worker', qualification_root],
+                                  env={**cached, **extra}, stdin=subprocess.PIPE,
+                                  stdout=subprocess.PIPE,
+                                  bufsize=0, start_new_session=True)
+        workers.append(worker)
+        worker_state.modes[key] = worker
+    wire = f'{fixture}\t{exe}\n'.encode()
+    if wire.count(b'\t') != 1 or wire.count(b'\n') != 1:
+        raise ValueError('qualification paths cannot contain tabs or newlines')
+    worker.stdin.write(wire)
+    received = bytearray()
+    expires = time.monotonic() + 600
+    while True:
+        remaining = expires - time.monotonic()
+        if remaining <= 0 or not select.select([worker.stdout], [], [], remaining)[0]:
+            kill_worker(worker)
+            raise subprocess.TimeoutExpired(worker.args, 600)
+        chunk = os.read(worker.stdout.fileno(), 8192)
+        if not chunk:
+            raise RuntimeError(f'qualification compiler stopped during build of {fixture}')
+        received.extend(chunk)
+        if received.endswith(b'\n') and b'qualification-response\t' in received:
+            output, response = received.rsplit(b'qualification-response\t', 1)
+            status, diagnostics = response.rstrip(b'\n').split(b'\t', 1)
+            return subprocess.CompletedProcess(worker.args, int(status),
+                                               output.decode(), bytes.fromhex(diagnostics.decode()).decode())
+
 def build(fixture, exe, extra, env=None):
     """('built',), ('refused', stderr) or ('timeout',)."""
     try:
         started = time.monotonic()
-        built = subprocess.run([compiler, 'build', fixture, '-o', exe, f'--target={a.target}',
-                                *(['--measure'] if a.measure else [])],
-                               env={**(env or cached), **extra}, capture_output=True, text=True, timeout=600)
+        if a.fast and env is None:
+            built = resident_build(fixture, exe, extra)
+        else:
+            built = subprocess.run([compiler, 'build', fixture, '-o', exe, f'--target={a.target}',
+                                    *(['--measure'] if a.measure else [])],
+                                   env={**(env or cached), **extra}, capture_output=True, text=True, timeout=600)
     except subprocess.TimeoutExpired:
         if a.measure:
             print(f'build {fixture} {exe.name} timeout {time.monotonic() - started:.6f}s',
@@ -163,31 +247,31 @@ def one(index, fixture, scratch):
     rule = listed.get(key)
     if rule and rule[0] == 'skipped':
         return 'skipped', f'skipped        {key} ({rule[1]})', None
-    results, retried = {}, []
-    for way, extra in WAYS:
+    def run_mode(pair):
+        way, extra = pair
+        retried = []
         exe = Path(scratch) / f'{index}.{way}'
         built = build(fixture, exe, extra)
         if built[0] == 'timeout':
-            return 'timeout', f'TIMEOUT {key}: the {way} build', None
+            return None, 'build', retried
         if built[0] == 'refused':
-            results[way] = built
+            result = built
         else:
-            results[way] = None
             # The native launcher cannot listen again on a port a run has just closed until the
             # system frees it (about 30 s on macOS), and each build's run uses the fixture's port.
             waits = (5, 15, 30) if re.search(r'--listen=\S+:[1-9]', ' '.join(run_flags(fixture, Path(scratch) / f'{index}.flags'))) else (1, 2)
             for attempt in range(len(waits) + 1):
                 started = time.monotonic()
-                results[way] = execute(fixture, exe, Path(scratch) / f'{index}.{way}.{attempt}.files')
+                result = execute(fixture, exe, Path(scratch) / f'{index}.{way}.{attempt}.files')
                 if a.measure:
-                    print(f'run {key} {way} attempt {attempt + 1} status={results[way][0]} '
+                    print(f'run {key} {way} attempt {attempt + 1} status={result[0]} '
                           f'{time.monotonic() - started:.6f}s',
                           file=sys.stderr, flush=True)
-                if results[way][0] == 'timeout':
-                    return 'timeout', f'TIMEOUT {key}: the {way} run', None
+                if result[0] == 'timeout':
+                    return None, 'run', retried
                 # Only the launcher's own refusal to start is tried again: a program that ran
                 # and failed has failed.
-                busy = results[way][0] == 2 and results[way][1] == b'' and b'native I/O requires' in results[way][2]
+                busy = result[0] == 2 and result[1] == b'' and b'native I/O requires' in result[2]
                 if not busy or attempt == len(waits):
                     break
                 retried.append(way)
@@ -195,8 +279,21 @@ def one(index, fixture, scratch):
                 time.sleep(waits[attempt])
                 if a.measure:
                     print(f'retry {key} {way} {time.monotonic() - started:.6f}s', file=sys.stderr, flush=True)
-        if kind == 'refused' and results[way][0] == 'refused' and not rule:
-            break  # a refusal comes before any code is emitted: one build shows it
+        return result, None, retried
+
+    results, retried = {}, []
+    if key == a.parallel_fixture:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as modes:
+            measured_modes = list(modes.map(run_mode, WAYS))
+    else:
+        measured_modes = map(run_mode, WAYS)
+    for (way, _), (result, timed_out, retries) in zip(WAYS, measured_modes):
+        if timed_out:
+            return 'timeout', f'TIMEOUT {key}: the {way} {timed_out}', None
+        results[way] = result
+        retried.extend(retries)
+        if kind == 'refused' and result[0] == 'refused' and not rule:
+            break
     def all_ways(test):
         return len(results) == len(WAYS) and all(test(r) for r in results.values())
     refusal = lambda text: lambda r: r[0] == 'refused' and text in r[1]
@@ -443,6 +540,10 @@ def control(scratch, number, name, mention, text):
         return False, 'the default build did not run on: the control no longer tells the two apart; ' + report
     return True, report
 
+def run_controls(scratch):
+    return [(name, *control(scratch, number, name, mention, text))
+            for number, (name, mention, text) in enumerate(CONTROLS)]
+
 counts, suggestions, failed = {}, [], False
 missing = [str(f) for f in a.fixtures if not f.is_file()]
 if missing or not a.fixtures and a.no_control:
@@ -454,16 +555,35 @@ with tempfile.TemporaryDirectory(prefix='witchy-checked-') as scratch:
         proof_cache = Path(scratch) / 'proofs'
         proof_cache.mkdir(mode=0o700)
         cached['WITCHY_PROOF_CACHE'] = str(proof_cache)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=a.jobs) as pool:
-        for outcome, line, suggestion in pool.map(lambda pair: one(pair[0], pair[1], scratch), enumerate(fixtures)):
-            counts[outcome] = counts.get(outcome, 0) + 1
-            if suggestion: suggestions.append(suggestion)
-            print(line, flush=True)
-    if not a.no_control:
-        for number, (name, mention, text) in enumerate(CONTROLS):
-            ok, detail = control(scratch, number, name, mention, text)
-            print(f"{'pass' if ok else 'FAIL'} false proof control, {name}: {detail}", flush=True)
-            failed |= not ok
+    if a.fast:
+        qualification_root = qualification_link_plan(scratch)
+    if a.parallel_fixture:
+        key = a.parallel_fixture
+        fixture = next((fixture for fixture in fixtures if name(fixture) == key), None)
+        if (fixture is None or key.endswith('.refused.wy') or key in listed
+                or run_flags(fixture, Path(scratch) / 'parallel-flags')):
+            p.error(f'parallel fixture must run without launcher flags: {key}')
+    if a.timings_from:
+        durations = collections.Counter()
+        for line in a.timings_from.read_text().splitlines():
+            words = line.split()
+            if words and words[0] in ('build', 'run', 'retry'):
+                key = words[1].split('tests/fixtures/')[-1]
+                durations[key] += float(words[-1].removesuffix('s'))
+        fixtures.sort(key=lambda fixture: -durations[name(fixture)])
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=a.jobs) as pool:
+            controls = pool.submit(run_controls, scratch) if a.fast and not a.no_control else None
+            for outcome, line, suggestion in pool.map(lambda pair: one(pair[0], pair[1], scratch), enumerate(fixtures)):
+                counts[outcome] = counts.get(outcome, 0) + 1
+                if suggestion: suggestions.append(suggestion)
+                print(line, flush=True)
+        if not a.no_control:
+            for control_name, ok, detail in (controls.result() if controls else run_controls(scratch)):
+                print(f"{'pass' if ok else 'FAIL'} false proof control, {control_name}: {detail}", flush=True)
+                failed |= not ok
+    finally:
+        close_workers()
 if a.write_list and suggestions:
     a.write_list.write_text('\n'.join(sorted(suggestions)) + '\n')
 get = lambda k: counts.get(k, 0)

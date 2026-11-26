@@ -666,6 +666,37 @@ directly selected a different deployment target and omitted the SDK root.
 The qualification result uses the system driver and its existing toolchain
 selection. The compiler interface is unchanged.
 
+### Faster repeat qualification
+
+On macOS ARM64, use the same warmed proof cache and a previous
+`--measure` log to put long fixtures first:
+
+```zsh
+/usr/bin/time -p python3 scripts/native-checked.py \
+  --compiler "$WITCHYC" --binding "$WITCHY_WASM_READY_BINDING" \
+  --fast --proof-cache "$qualification_cache" --measure \
+  --timings-from qualification-warm.timing \
+  --parallel-fixture programs/heap-full.wy "${fixtures[@]}" \
+  >qualification-fast.out 2>qualification-fast.timing
+```
+
+The fast runner defaults to seven fixture workers and retains all four
+false-proof controls. Each resident compiler process has one fixed mode
+and runs the ordinary build pipeline with a fresh proof session per request.
+Clang supplies the native linker command for the run. For plain native
+objects, the runner links an object once per sweep and reuses the result
+when another build emits the same bytes. The link cache is private and
+empty at the start of every sweep. Provider and sanitizer links keep their
+existing driver path. The selected fixture may overlap modes only when
+it has no launcher flags after Wasm metering flags are removed.
+
+A seven-worker run on a Mac with ten logical CPUs took 91.33 s at a
+starting load of 15.73 / 9.15 / 4.74. It reused 727 links and matched the
+ordinary runner's fixture and per-mode outcomes, including all four
+false-proof controls. In an earlier run, `net/cancel.wy` printed a shorter
+received prefix than expected. The same mismatch reproduced with the
+ordinary runner when the fixture was run on its own.
+
 ## Native runtime sanitizer build
 
 On macOS ARM64, use an isolated target directory and a compatible nightly Rust

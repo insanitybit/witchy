@@ -123,6 +123,8 @@ mod vector_object;
 pub use vector_object::build_object;
 mod compiler_session;
 pub use compiler_session::serve;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use compiler_session::qualification_worker;
 macro_rules! compiler_diagnostic {
     ($($arg:tt)*) => { $crate::compiler::compiler_session::diagnostic(format_args!($($arg)*)) };
 }

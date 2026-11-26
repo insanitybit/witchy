@@ -707,3 +707,32 @@ pub fn serve(path: &Path) -> io::Result<()> {
     })?;
     fs::remove_file(path)
 }
+
+/// The qualification runner starts a separate worker for each build mode.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub fn qualification_worker(root: &Path) -> io::Result<()> {
+    super::native::configure_qualification(root)?;
+    use std::io::BufRead;
+    for line in std::io::stdin().lock().lines() {
+        let line = line?;
+        let Some((input, output)) = line.split_once('\t') else {
+            return Err(io::Error::other("qualification request missing output"));
+        };
+        let _ = check::later_refusals();
+        PROOF_TIME.set((0, 0));
+        MESSAGES.with_borrow_mut(|messages| *messages = Some(String::new()));
+        let result = super::build_native(input.as_ref(), output.as_ref(), super::native::TARGET, true, None);
+        let mut messages = MESSAGES.with_borrow_mut(Option::take).unwrap_or_default();
+        let status = if let Err(error) = result {
+            messages.push_str(&error);
+            messages.push('\n');
+            1
+        } else {
+            0
+        };
+        let encoded: String = messages.as_bytes().iter().map(|b| format!("{b:02x}")).collect();
+        println!("qualification-response\t{status}\t{encoded}");
+        std::io::stdout().flush()?;
+    }
+    Ok(())
+}

@@ -17,6 +17,13 @@ fn run() -> ExitCode {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
     }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    if let [command, root] = args.as_slice() && command == "qualification-worker" {
+        return match witchy_two::compiler::qualification_worker(root.as_ref()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => { eprintln!("{error}"); ExitCode::FAILURE }
+        };
+    }
     if let [command, socket] = args.as_slice() && command == "compiler-session" {
         return match witchy_two::compiler::serve(socket.as_ref()) {
             Ok(()) => ExitCode::SUCCESS, Err(e) => { eprintln!("{e}"); ExitCode::FAILURE }
