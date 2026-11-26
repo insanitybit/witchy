@@ -464,8 +464,8 @@ fn an_offset_from_a_join_is_an_index_like_any_other() {
 
 #[test]
 fn a_join_passed_on_to_another_stays_unresolved() {
-    // From the automated review: `join(p1)` has a constant on one arm; a later `next(p2)`
-    // receives only `p1`. `p2` is `p1`, which is no single value, so the handle is refused.
+    // From the automated review: `join(p1)` has a constant on one arm and no tag; a later
+    // `next(p2)` receives only `p1`. `p2` is `p1`, which is no single value: the handle is refused.
     let (mut function, param) = diamond(
         |pos, param, _| (pos.ins().iconst(I64, 1), pos.ins().load(I64, MemFlagsData::new(), param, 0)),
         |pos, _, lane, _| lane,
@@ -524,5 +524,80 @@ fn a_pointer_carried_around_a_loop_with_a_counter_is_its_parameter() {
     pos.goto_bottom(exit);
     pos.ins().return_(&[value]);
     assert!(annotate(&mut function, &[(param, root(true))]).is_ok());
+    assert_eq!(loads(&function).0, loads(&function).1);
+}
+
+#[test]
+fn a_back_edge_that_retags_a_carried_lane_is_another_arm() {
+    // From the review of the strict rule: `a: jump join(x, a); b: jump join(0, b);
+    // join(tag, lane): brif tag == 1, then, other; other: jump join(1, lane)`. The back edge
+    // carries `lane` unchanged but sets the tag to 1, so after `b, other, join` the test passes
+    // with `lane` still `b`. The store through `lane` was tagged as `a`'s record and the second
+    // read of `b` was taken from the first.
+    let (mut function, entry, _) = function(3);
+    let params = function.dfg.block_params(entry).to_vec();
+    let (a, b, x) = (params[0], params[1], params[2]);
+    let [arm_a, arm_b, join, then, other] = std::array::from_fn(|_| function.dfg.make_block());
+    for block in [arm_a, arm_b, join, then, other] {
+        function.layout.append_block(block);
+    }
+    let tag = function.dfg.append_block_param(join, I64);
+    let lane = function.dfg.append_block_param(join, I64);
+    let mut pos = FuncCursor::new(&mut function).at_bottom(entry);
+    pos.ins().brif(x, arm_a, &[], arm_b, &[]);
+    pos.goto_bottom(arm_a);
+    pos.ins().jump(join, &[x.into(), a.into()]);
+    pos.goto_bottom(arm_b);
+    let zero = pos.ins().iconst(I64, 0);
+    pos.ins().jump(join, &[zero.into(), b.into()]);
+    pos.goto_bottom(join);
+    let is_one = pos.ins().icmp_imm(ir::condcodes::IntCC::Equal, tag, 1);
+    pos.ins().brif(is_one, then, &[], other, &[]);
+    pos.goto_bottom(other);
+    let one = pos.ins().iconst(I64, 1);
+    pos.ins().jump(join, &[one.into(), lane.into()]);
+    pos.goto_bottom(then);
+    let first = pos.ins().load(I64, MemFlagsData::new(), b, 0);
+    let seven = pos.ins().iconst(I64, 7);
+    pos.ins().store(MemFlagsData::new(), seven, lane, 0);
+    let second = pos.ins().load(I64, MemFlagsData::new(), b, 0);
+    let sum = pos.ins().iadd(first, second);
+    pos.ins().return_(&[sum]);
+    assert!(annotate(&mut function, &[(a, root(true)), (b, root(true))]).is_err());
+    assert_eq!(loads(&function).1, 0);
+}
+
+#[test]
+fn a_back_edge_that_carries_both_tag_and_lane_keeps_them_together() {
+    // As above, but the back edge passes the tag through too: the pair stays one entry's.
+    let (mut function, entry, heap) = function(2);
+    let params = function.dfg.block_params(entry).to_vec();
+    let (param, x) = (params[0], params[1]);
+    let [ok, err, join, read, other, done] = std::array::from_fn(|_| function.dfg.make_block());
+    for block in [ok, err, join, read, other, done] {
+        function.layout.append_block(block);
+    }
+    let tag = function.dfg.append_block_param(join, I64);
+    let lane = function.dfg.append_block_param(join, I64);
+    let mut pos = FuncCursor::new(&mut function).at_bottom(entry);
+    pos.ins().brif(x, ok, &[], err, &[]);
+    pos.goto_bottom(ok);
+    let source = buffer(&mut pos, param, heap);
+    let at = element(&mut pos, source, 2);
+    let zero = pos.ins().iconst(I64, 0);
+    pos.ins().jump(join, &[zero.into(), at.into()]);
+    pos.goto_bottom(err);
+    let one = pos.ins().iconst(I64, 1);
+    pos.ins().jump(join, &[one.into(), one.into()]);
+    pos.goto_bottom(join);
+    pos.ins().brif(tag, done, &[], read, &[]);
+    pos.goto_bottom(read);
+    let value = pos.ins().load(I64, MemFlagsData::new(), lane, 0);
+    pos.ins().brif(value, other, &[], done, &[]);
+    pos.goto_bottom(other);
+    pos.ins().jump(join, &[tag.into(), lane.into()]);
+    pos.goto_bottom(done);
+    pos.ins().return_(&[one]);
+    assert!(annotate(&mut function, &[(param, root(false))]).is_ok());
     assert_eq!(loads(&function).0, loads(&function).1);
 }

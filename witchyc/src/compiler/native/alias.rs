@@ -228,7 +228,7 @@ impl Analysis<'_> {
     fn resolve(&self, value: Value, at: ir::Block) -> Value {
         let dfg = &self.function.dfg;
         let mut value = dfg.resolve_aliases(value);
-        // Only the first step may be a tagged lane: `same` never resolves a parameter through one.
+        // Only the first step may be a tagged lane (no parameter is resolved through one).
         if let Some(Join::Tagged { value: next, .. }) = self.same.get(&value) {
             if !self.tested(value, at) {
                 return value;
@@ -469,9 +469,12 @@ enum Join {
 /// Block parameters that only ever receive one value (or themselves), and the lanes of tagged
 /// joins, mapped to what they stand for.
 ///
-/// A parameter never stands for a constant: two arms' constants are not one value. A tagged
-/// lane is never passed on: a parameter receiving one is not resolved (the test that makes the
-/// lane its value is checked where the lane is used).
+/// A parameter never stands for a constant: two arms' constants are not one value. Lanes are
+/// classified only after the single-value parameters, so no parameter is resolved *through* a
+/// lane. A parameter may still stand for a lane (it receives the lane itself); `resolve` then
+/// stops there, and the lane is taken further only by a later `resolve` of it where it is used,
+/// with its own test. That use is dominated by the parameter's block, which is dominated by the
+/// lane's join, so every path from the lane's last entry to the use passes the test.
 fn same(function: &ir::Function, cfg: &ControlFlowGraph) -> BTreeMap<Value, Join> {
     let dfg = &function.dfg;
     // For each block: each incoming edge's arguments (`None` where the pass cannot see one).
@@ -496,7 +499,7 @@ fn same(function: &ir::Function, cfg: &ControlFlowGraph) -> BTreeMap<Value, Join
         _ => None,
     };
     // What each edge into `block` gives its parameter `index`, through parameters that receive
-    // one value; `None` when an edge's argument is unseen or a tagged lane (never passed on).
+    // one value; `None` when an edge's argument is unseen (or, after phase 1, a tagged lane).
     let given = |same: &BTreeMap<Value, Join>, block: ir::Block, index: usize| -> Option<Vec<Value>> {
         edges[&block]
             .iter()
@@ -552,13 +555,21 @@ fn same(function: &ir::Function, cfg: &ControlFlowGraph) -> BTreeMap<Value, Join
             let values: BTreeSet<Value> = given.iter().copied().filter(|&v| v != param).collect();
             let mut found = None;
             for &value in values.iter().filter(|&&v| constant(v).is_none()) {
-                let others: Vec<usize> = (0..arrivals.len()).filter(|&e| given[e] != value && given[e] != param).collect();
+                // Every edge that does not give `value` is another arm, including one that carries
+                // the lane back unchanged: it may set the tag afresh while the lane keeps what an
+                // earlier entry gave it. Only an edge that carries the tag back unchanged as well
+                // keeps the two together, and needs no constant.
+                let others: Vec<usize> = (0..arrivals.len()).filter(|&e| given[e] != value).collect();
                 let tags: Vec<(Value, BTreeSet<i64>)> = params
                     .iter()
                     .enumerate()
                     .filter(|&(i, _)| i != index)
                     .filter_map(|(i, &tag)| {
-                        let constants: Option<BTreeSet<i64>> = others.iter().map(|&e| arrivals[e].get(i).copied().flatten().and_then(constant)).collect();
+                        let constants: Option<BTreeSet<i64>> = others
+                            .iter()
+                            .filter(|&&e| !(given[e] == param && arrivals[e].get(i).copied().flatten() == Some(tag)))
+                            .map(|&e| arrivals[e].get(i).copied().flatten().and_then(constant))
+                            .collect();
                         constants.map(|c| (tag, c))
                     })
                     .collect();
