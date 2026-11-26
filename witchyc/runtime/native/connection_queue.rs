@@ -1,6 +1,6 @@
 //! FIFO for accepted sockets waiting for the active worker.
 
-use super::global::Global;
+use super::global::{Global, State};
 use super::sys;
 use core::ffi::{CStr, c_int};
 use core::sync::atomic::{AtomicI32, Ordering};
@@ -69,14 +69,8 @@ fn stop_signals(how: c_int) -> bool {
 }
 
 extern "C" fn stop_serving(signal: c_int) {
-    #[repr(C)]
-    struct Timespec {
-        seconds: i64,
-        nanoseconds: i64,
-    }
     unsafe extern "C" {
         safe fn kill(pid: c_int, signal: c_int) -> c_int;
-        fn nanosleep(duration: *const Timespec, remaining: *mut Timespec) -> c_int;
         safe fn _exit(code: c_int) -> !;
     }
     let worker = SERVING_WORKER.load(Ordering::Relaxed);
@@ -87,9 +81,9 @@ extern "C" fn stop_serving(signal: c_int) {
     if broker > 0 {
         kill(broker, 15);
         let mut status = 0;
-        let delay = Timespec {
+        let delay = sys::Timespec {
             seconds: 0,
-            nanoseconds: 5_000_000,
+            nanos: 5_000_000,
         };
         let mut done = 0;
         for _ in 0..200 {
@@ -97,10 +91,7 @@ extern "C" fn stop_serving(signal: c_int) {
             if done > 0 || (done < 0 && super::errno::get() != 4) {
                 break;
             }
-            // SAFETY: the call reads `delay`, and a null remainder asks for none to be written.
-            unsafe {
-                nanosleep(&delay, core::ptr::null_mut());
-            }
+            sys::nanosleep(&delay);
         }
         // A failed wait does not establish that the PID is still our child.
         if done == 0 {
@@ -165,7 +156,21 @@ impl NativeSocket {
     }
 }
 
-static mut SOCKETS: [NativeSocket; SOCKET_SLOTS] = [NativeSocket::EMPTY; SOCKET_SLOTS];
+// A use of the table may wait on the broker channel, which is a blocking read
+// or write: no task is switched and no guest code runs inside one. No signal or
+// exit handler reaches the table.
+static SOCKETS: State<[NativeSocket; SOCKET_SLOTS]> =
+    State::new([NativeSocket::EMPTY; SOCKET_SLOTS]);
+
+/// The token of the socket in `slot`, and whether it is in a group. A slot past
+/// the table reads as empty.
+fn socket_state(slot: usize) -> (u64, bool) {
+    SOCKETS.with(|sockets| {
+        sockets
+            .get(slot)
+            .map_or((0, false), |socket| (socket.handle, socket.grouped))
+    })
+}
 
 #[repr(C)]
 struct Queue {
@@ -362,16 +367,18 @@ unsafe fn start_worker(
     if !exec_shared.is_null() && unsafe { munmap(exec_shared.cast(), size_of::<u64>()) } != 0 {
         _exit(setup_failed);
     }
-    unsafe {
-        core::ptr::addr_of_mut!(SOCKETS)
-            .cast::<NativeSocket>()
-            .add(slot)
-            .write(NativeSocket {
+    // The supervisor checked `slot` against the table before its first worker.
+    // The table is not in use: the supervisor, which this child copies, never
+    // reads it.
+    SOCKETS.with(|sockets| {
+        if let Some(socket) = sockets.get_mut(slot) {
+            *socket = NativeSocket {
                 handle: ENTRY_SOCKET,
                 accepted: true,
                 ..NativeSocket::EMPTY
-            });
-    }
+            };
+        }
+    });
     unsafe {
         let remaining = || {
             if run_deadline == 0 {
@@ -450,14 +457,6 @@ unsafe fn serve_connections(
         safe fn witchy_run_deadline_left_ms(end: u64, now: u64) -> u64;
         #[cfg(target_os = "linux")]
         safe fn witchy_exec_sweep_own() -> bool;
-        fn mmap(
-            address: *mut core::ffi::c_void,
-            length: usize,
-            protection: c_int,
-            flags: c_int,
-            fd: c_int,
-            offset: i64,
-        ) -> *mut core::ffi::c_void;
     }
     const SETUP_FAILED: c_int = 125;
     let say = |message: &CStr| {
@@ -475,28 +474,11 @@ unsafe fn serve_connections(
     {
         return fail(c"witchy: could not initialize connection budgets\n");
     }
-    #[cfg(target_os = "macos")]
-    const SHARED_ANON: c_int = 0x1001;
-    #[cfg(target_os = "linux")]
-    const SHARED_ANON: c_int = 0x21;
-    let shared_entries = unsafe {
-        mmap(
-            core::ptr::null_mut(),
-            size_of::<u64>(),
-            3,
-            SHARED_ANON,
-            -1,
-            0,
-        )
-    }
-    .cast::<u64>();
-    if shared_entries.addr() == usize::MAX {
+    let Some(mut shared_entries) = sys::SharedWord::map() else {
         return fail(c"witchy: could not allocate the shared directory budget\n");
-    }
-    // SAFETY: a fresh mapping of one writable `u64`.
-    unsafe { shared_entries.write(entries) };
-    // SAFETY: `shared_entries` is the mapping made above, which this process never unmaps.
-    unsafe { witchy_broker_server_roots(root, write_root, combined, data_only, shared_entries) };
+    };
+    shared_entries.set(entries);
+    witchy_broker_server_roots(root, write_root, combined, data_only, Some(shared_entries));
     if !install_stop_handler() {
         return fail(c"witchy: could not install connection supervisor signal handlers\n");
     }
@@ -621,31 +603,47 @@ unsafe fn serve_connections(
     if remaining_time() == 0 { expired() } else { 0 }
 }
 
-/// # Safety
-/// The caller uses no other reference into the socket table after this call
-/// starts: the guest dispatcher owns the slot for the call.
-unsafe fn socket_close(channel: c_int, slot: u32) -> c_int {
-    // SAFETY: calls are serialized on the guest thread, and the caller holds
-    // no other reference to the table.
-    let Some(socket) = (unsafe { (&mut *core::ptr::addr_of_mut!(SOCKETS)).get_mut(slot as usize) })
-    else {
-        return SOCKET_IO_ERROR;
-    };
-    let flushed = socket.flush(channel, slot);
-    let closed = witchy_net_close(channel, slot);
-    socket.handle = 0;
-    socket.accepted = false;
-    socket.grouped = false;
-    if flushed != 0 || closed != 0 {
-        SOCKET_IO_ERROR
-    } else {
-        0
-    }
+/// Must not be called inside a use of the socket table.
+fn socket_close(channel: c_int, slot: u32) -> c_int {
+    SOCKETS.with(|sockets| {
+        let Some(socket) = sockets.get_mut(slot as usize) else {
+            return SOCKET_IO_ERROR;
+        };
+        let flushed = socket.flush(channel, slot);
+        let closed = witchy_net_close(channel, slot);
+        socket.handle = 0;
+        socket.accepted = false;
+        socket.grouped = false;
+        if flushed != 0 || closed != 0 {
+            SOCKET_IO_ERROR
+        } else {
+            0
+        }
+    })
 }
 
 // The guest dispatcher validates the live socket and supplies a guest
 // pointer for slice operations. Only the bounded transfer reaches the ABI.
+// Must not be called inside a use of the socket table.
 unsafe fn socket_transfer(channel: c_int, slot: u32, op: u64, operand: u64, count: u64) -> u64 {
+    SOCKETS.with(|sockets| {
+        let Some(socket) = sockets.get_mut(slot as usize) else {
+            socket_trap()
+        };
+        // SAFETY: the caller's promise about `operand` and `count`.
+        unsafe { transfer(socket, channel, slot, op, operand, count) }
+    })
+}
+
+/// As `socket_transfer`, on the socket that `slot` names.
+unsafe fn transfer(
+    socket: &mut NativeSocket,
+    channel: c_int,
+    slot: u32,
+    op: u64,
+    operand: u64,
+    count: u64,
+) -> u64 {
     unsafe extern "C" {
         safe fn witchy_network_remaining() -> u64;
         safe fn witchy_network_charge(bytes: usize);
@@ -657,10 +655,6 @@ unsafe fn socket_transfer(channel: c_int, slot: u32, op: u64, operand: u64, coun
     const IO: u64 = SOCKET_IO_ERROR as u64;
     const WOULD_BLOCK: u64 = 7;
 
-    let Some(socket) = (unsafe { (&mut *core::ptr::addr_of_mut!(SOCKETS)).get_mut(slot as usize) })
-    else {
-        socket_trap()
-    };
     let remaining = || witchy_network_remaining();
     let charge = |size| witchy_network_charge(size);
     let transfer_error = |status| (if status == -4 { WOULD_BLOCK } else { IO }) << 32;
@@ -781,11 +775,13 @@ const GROUP_BASE: u64 = 1 << 47;
 const TIMER_BIT: u64 = 1 << 48;
 const LISTENER: u64 = 512;
 
-static mut GROUPS: [NetworkGroup; GROUP_SLOTS] = [NetworkGroup {
-    handle: 0,
-    members: [0; SOCKET_SLOTS],
-    listener: false,
-}; GROUP_SLOTS];
+static GROUPS: State<[NetworkGroup; GROUP_SLOTS]> = State::new(
+    [NetworkGroup {
+        handle: 0,
+        members: [0; SOCKET_SLOTS],
+        listener: false,
+    }; GROUP_SLOTS],
+);
 static NEXT_GROUP: Global<u64> = Global::new(GROUP_BASE);
 
 fn socket_trap() -> ! {
@@ -798,71 +794,80 @@ fn live_group(groups: &mut [NetworkGroup; GROUP_SLOTS], handle: u64) -> Option<&
 }
 
 fn socket_group(op: u64, handle: u64, operand: u64) -> u64 {
-    // Calls are serialized on the guest thread.
-    let groups = unsafe { &mut *core::ptr::addr_of_mut!(GROUPS) };
-    if op == 15 {
-        for _ in 0..GROUP_SLOTS {
-            let token = NEXT_GROUP.get();
-            if token >= TIMER_BIT {
-                break;
+    // The socket table is used inside the use of the groups, and nowhere are
+    // the groups used inside a use of the socket table.
+    GROUPS.with(|groups| {
+        if op == 15 {
+            for _ in 0..GROUP_SLOTS {
+                let token = NEXT_GROUP.get();
+                if token >= TIMER_BIT {
+                    break;
+                }
+                NEXT_GROUP.set(token + 1);
+                let group = &mut groups[token as usize % GROUP_SLOTS];
+                if group.handle == 0 {
+                    *group = NetworkGroup {
+                        handle: token,
+                        members: [0; SOCKET_SLOTS],
+                        listener: handle == LISTENER,
+                    };
+                    return token;
+                }
             }
-            NEXT_GROUP.set(token + 1);
-            let group = &mut groups[token as usize % GROUP_SLOTS];
-            if group.handle == 0 {
-                *group = NetworkGroup {
-                    handle: token,
-                    members: [0; SOCKET_SLOTS],
-                    listener: handle == LISTENER,
-                };
-                return token;
-            }
-        }
-        socket_trap();
-    }
-    let group = live_group(groups, handle).unwrap_or_else(|| socket_trap());
-    let sockets = unsafe { &mut *core::ptr::addr_of_mut!(SOCKETS) };
-    if op == 17 {
-        let member = group
-            .members
-            .get_mut(operand as usize)
-            .unwrap_or_else(|| socket_trap());
-        let token = *member;
-        let socket = &mut sockets[token as usize % SOCKET_SLOTS];
-        if token == 0 || socket.handle != token {
             socket_trap();
         }
-        *member = 0;
-        socket.grouped = false;
-        return token;
-    }
-    let socket = &mut sockets[operand as usize % SOCKET_SLOTS];
-    if op != 16 || operand == 0 || socket.handle != operand || socket.grouped {
-        socket_trap();
-    }
-    let Some(index) = group.members.iter().position(|member| *member == 0) else {
-        socket_trap();
-    };
-    group.members[index] = operand;
-    socket.grouped = true;
-    index as u64
+        let group = live_group(groups, handle).unwrap_or_else(|| socket_trap());
+        SOCKETS.with(|sockets| {
+            if op == 17 {
+                let member = group
+                    .members
+                    .get_mut(operand as usize)
+                    .unwrap_or_else(|| socket_trap());
+                let token = *member;
+                let socket = &mut sockets[token as usize % SOCKET_SLOTS];
+                if token == 0 || socket.handle != token {
+                    socket_trap();
+                }
+                *member = 0;
+                socket.grouped = false;
+                return token;
+            }
+            let socket = &mut sockets[operand as usize % SOCKET_SLOTS];
+            if op != 16 || operand == 0 || socket.handle != operand || socket.grouped {
+                socket_trap();
+            }
+            let Some(index) = group.members.iter().position(|member| *member == 0) else {
+                socket_trap();
+            };
+            group.members[index] = operand;
+            socket.grouped = true;
+            index as u64
+        })
+    })
+}
+
+/// The members of the live group `handle`, copied out.
+fn group_members(handle: u64) -> Option<[u64; SOCKET_SLOTS]> {
+    GROUPS.with(|groups| live_group(groups, handle).map(|group| group.members))
 }
 
 fn socket_close_group(channel: c_int, handle: u64) -> bool {
-    let groups = unsafe { &mut *core::ptr::addr_of_mut!(GROUPS) };
-    let Some(group) = live_group(groups, handle) else {
+    // The members are copied out, so neither table is in use while a member
+    // is closed.
+    let Some(members) = group_members(handle) else {
         return false;
     };
-    for token in group.members {
+    for token in members {
         if token != 0 {
             let slot = token as usize % SOCKET_SLOTS;
-            if unsafe { (*core::ptr::addr_of!(SOCKETS))[slot].handle } != token {
+            if socket_state(slot).0 != token {
                 socket_trap();
             }
-            // SAFETY: no reference into the socket table is held here.
-            unsafe { socket_close(channel, slot as u32) };
+            socket_close(channel, slot as u32);
         }
     }
-    group.handle = 0;
+    // Closing a socket changes no group, so this is the group found above.
+    GROUPS.with(|groups| groups[handle as usize % GROUP_SLOTS].handle = 0);
     true
 }
 
@@ -890,19 +895,19 @@ unsafe fn socket_poll(
     if count > 4097 {
         socket_trap();
     }
+    // A copy: nothing below changes a group.
     let group = if group == 0 {
         None
     } else {
-        let groups = unsafe { &mut *core::ptr::addr_of_mut!(GROUPS) };
-        Some(&*live_group(groups, group).unwrap_or_else(|| socket_trap()))
+        let live = GROUPS.with(|groups| live_group(groups, group).map(|group| *group));
+        Some(live.unwrap_or_else(|| socket_trap()))
     };
     if count == 0 {
         return 0;
     }
     let entries = unsafe { core::slice::from_raw_parts_mut(entries, count as usize) };
-    let sockets = unsafe { &*core::ptr::addr_of!(SOCKETS) };
     let target = |slot: u64| {
-        let handle = if let Some(group) = group {
+        let handle = if let Some(group) = &group {
             if slot == LISTENER_SLOT {
                 if !group.listener {
                     socket_trap();
@@ -918,8 +923,8 @@ unsafe fn socket_poll(
             return PollTarget::Socket(0);
         }
         let index = handle as usize % SOCKET_SLOTS;
-        let socket = &sockets[index];
-        if handle != 0 && socket.handle == handle && (group.is_some() || !socket.grouped) {
+        let (token, grouped) = socket_state(index);
+        if handle != 0 && token == handle && (group.is_some() || !grouped) {
             return PollTarget::Socket(index + 1);
         }
         let mut due = 0;
@@ -994,7 +999,6 @@ fn socket_open(channel: c_int, op: u64, endpoint: u32) -> u64 {
     const WOULD_BLOCK: u64 = 7;
     const BROKER_TIMED_OUT: c_int = -3;
 
-    let sockets = unsafe { &mut *core::ptr::addr_of_mut!(SOCKETS) };
     for _ in 0..SOCKET_SLOTS {
         let token = NEXT_SOCKET.get();
         if token >= GROUP_BASE {
@@ -1002,8 +1006,7 @@ fn socket_open(channel: c_int, op: u64, endpoint: u32) -> u64 {
         }
         NEXT_SOCKET.set(token + 1);
         let slot = token as usize % SOCKET_SLOTS;
-        let socket = &mut sockets[slot];
-        if socket.handle != 0 {
+        if socket_state(slot).0 != 0 {
             continue;
         }
         let result = {
@@ -1015,8 +1018,12 @@ fn socket_open(channel: c_int, op: u64, endpoint: u32) -> u64 {
         };
         let error = match result {
             0 => {
-                socket.handle = token;
-                socket.accepted = op != 2;
+                // The broker call is over, so the table is used only here.
+                SOCKETS.with(|sockets| {
+                    let socket = &mut sockets[slot];
+                    socket.handle = token;
+                    socket.accepted = op != 2;
+                });
                 return token;
             }
             BROKER_TIMED_OUT if op == 9 => TIMED_OUT,
@@ -1040,10 +1047,40 @@ struct PendingAddress {
     len: usize,
 }
 
-static mut ADDRESSES: [PendingAddress; ENDPOINT_LIMIT + 1] = [PendingAddress {
-    bytes: [0; 256],
-    len: 0,
-}; ENDPOINT_LIMIT + 1];
+static ADDRESSES: State<[PendingAddress; ENDPOINT_LIMIT + 1]> = State::new(
+    [PendingAddress {
+        bytes: [0; 256],
+        len: 0,
+    }; ENDPOINT_LIMIT + 1],
+);
+
+/// Adds a byte to the address being spelled at `index`. One past the room is dropped.
+fn push_address_byte(index: usize, byte: u8) {
+    ADDRESSES.with(|addresses| {
+        let address = &mut addresses[index];
+        if let Some(out) = address.bytes.get_mut(address.len) {
+            *out = byte;
+            address.len += 1;
+        }
+    })
+}
+
+/// Ends the address being spelled at `index` and gives a copy of it with one
+/// NUL, at `len`. None when it filled the room or holds a NUL.
+fn take_address(index: usize) -> Option<PendingAddress> {
+    ADDRESSES.with(|addresses| {
+        let address = &mut addresses[index];
+        let len = core::mem::take(&mut address.len);
+        if len >= address.bytes.len() || address.bytes.iter().take(len).any(|&byte| byte == 0) {
+            return None;
+        }
+        address.bytes[len] = 0;
+        Some(PendingAddress {
+            bytes: address.bytes,
+            len,
+        })
+    })
+}
 
 fn listener_address(host_port: &core::ffi::CStr, port: u16, output: &mut [u8]) -> usize {
     let bytes = host_port.to_bytes();
@@ -1140,22 +1177,17 @@ unsafe extern "C" fn witchy_native_net(op: u64, handle: u64, operand: u64, count
                 socket_trap();
             }
             let index = narrowed.map_or(0, |index| index as usize + 1);
-            let address = unsafe { &mut (*core::ptr::addr_of_mut!(ADDRESSES))[index] };
             if op == 0 {
                 let byte = u8::try_from(operand).unwrap_or_else(|_| socket_trap());
-                if let Some(out) = address.bytes.get_mut(address.len) {
-                    *out = byte;
-                    address.len += 1;
-                }
+                push_address_byte(index, byte);
                 return 0;
             }
-            let len = core::mem::take(&mut address.len);
-            if len >= address.bytes.len() || address.bytes.iter().take(len).any(|&byte| byte == 0) {
+            // A copy, so the table is not in use while endpoints are compared
+            // and the socket is opened.
+            let Some(address) = take_address(index) else {
                 return FAILED_HANDLE + 1;
-            }
-            address.bytes[len] = 0;
-            // The checks above leave one NUL, at `len`.
-            let Ok(candidate) = CStr::from_bytes_with_nul(&address.bytes[..=len]) else {
+            };
+            let Ok(candidate) = CStr::from_bytes_with_nul(&address.bytes[..=address.len]) else {
                 return FAILED_HANDLE + 1;
             };
             let span = narrowed.map_or(0..endpoint_count, |index| {
@@ -1190,8 +1222,12 @@ unsafe extern "C" fn witchy_native_net(op: u64, handle: u64, operand: u64, count
         _ => {}
     }
     let slot = handle as usize % SOCKET_SLOTS;
-    let socket = unsafe { &(*core::ptr::addr_of!(SOCKETS))[slot] };
-    let live = handle != 0 && socket.handle == handle;
+    // Copies: the transfer and the close below use the table themselves.
+    let (token, grouped, accepted) = SOCKETS.with(|sockets| {
+        let socket = &sockets[slot];
+        (socket.handle, socket.grouped, socket.accepted)
+    });
+    let live = handle != 0 && token == handle;
     if op == 3 {
         if net || live {
             return 0;
@@ -1200,16 +1236,15 @@ unsafe extern "C" fn witchy_native_net(op: u64, handle: u64, operand: u64, count
             return handle - FAILED_HANDLE;
         }
     }
-    if !live || socket.grouped {
+    if !live || grouped {
         socket_trap();
     }
     match op {
         4 | 5 | 7 | 8 | 12 | 13 => unsafe {
             socket_transfer(channel, slot as u32, op, operand, count)
         },
-        // SAFETY: `socket` is not used again on this arm.
-        6 => (unsafe { socket_close(channel, slot as u32) }) as u64,
-        10 if socket.accepted && count != 0 => {
+        6 => socket_close(channel, slot as u32) as u64,
+        10 if accepted && count != 0 => {
             let Some(endpoint) = listener else { return 0 };
             // The guest ABI supplies a writable span. Limit it to the maximum
             // bytes this operation could write before constructing a slice.
@@ -1251,29 +1286,14 @@ pub(super) unsafe fn launch_connections(
 ) -> c_int {
     use core::ffi::{c_char, c_void};
 
-    #[repr(C)]
-    struct DescriptorLimit {
-        current: u64,
-        maximum: u64,
-    }
-
     use super::broker_socket::{
         launch_endpoint_count, witchy_broker_server_connection_entries,
         witchy_broker_server_endpoints, witchy_net_listen,
     };
     unsafe extern "C" {
-        fn getrlimit(resource: c_int, limit: *mut DescriptorLimit) -> c_int;
         safe fn close(fd: c_int) -> c_int;
         fn fprintf(stream: *mut c_void, format: *const c_char, ...) -> c_int;
         fn fputs(text: *const c_char, stream: *mut c_void) -> c_int;
-        fn mmap(
-            address: *mut c_void,
-            length: usize,
-            protection: c_int,
-            flags: c_int,
-            fd: c_int,
-            offset: i64,
-        ) -> *mut c_void;
     }
 
     let fail = |message: &CStr| {
@@ -1311,7 +1331,7 @@ pub(super) unsafe fn launch_connections(
     const RLIMIT_NOFILE: c_int = 7;
     // Reserve standard streams, listener, next accepted socket, and broker FDs.
     const RESERVED_DESCRIPTORS: u64 = 8;
-    let mut descriptors = DescriptorLimit {
+    let mut descriptors = sys::ResourceLimit {
         current: 0,
         maximum: 0,
     };
@@ -1383,25 +1403,12 @@ pub(super) unsafe fn launch_connections(
     }
     witchy_broker_server_connection_entries(connection_entries);
     let exec_shared = if grants & 262144 != 0 {
-        #[cfg(target_os = "macos")]
-        const SHARED_ANON: c_int = 0x1001;
-        #[cfg(target_os = "linux")]
-        const SHARED_ANON: c_int = 0x21;
-        let address = unsafe {
-            mmap(
-                core::ptr::null_mut(),
-                size_of::<u64>(),
-                3,
-                SHARED_ANON,
-                -1,
-                0,
-            )
-        }
-        .cast::<u64>();
-        if address.addr() == usize::MAX {
+        let Some(shared) = sys::SharedWord::map() else {
             close(listener);
             return 2;
-        }
+        };
+        // The Exec budget keeps the address, and each worker unmaps its copy.
+        let address = shared.into_raw();
         // SAFETY: a fresh shared, writable mapping that the supervisor never unmaps.
         unsafe {
             super::exec_programs::witchy_exec_share_budget(address);
@@ -1422,7 +1429,7 @@ pub(super) unsafe fn launch_connections(
         }
     }
 
-    let status = if unsafe { getrlimit(RLIMIT_NOFILE, &mut descriptors) } != 0 {
+    let status = if sys::getrlimit(RLIMIT_NOFILE, &mut descriptors) != 0 {
         2
     } else {
         let room = descriptors.current.saturating_sub(RESERVED_DESCRIPTORS);

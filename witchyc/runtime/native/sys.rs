@@ -714,3 +714,45 @@ impl Stream {
         unsafe { c_flush::fflush(self.0) }
     }
 }
+
+/// One `u64` on a shared anonymous mapping of its own: this process and every
+/// process forked after `map` read and write the same word. The mapping is
+/// never removed here, so the word is readable and writable while the value
+/// exists. It cannot be copied, so a process holds one way to the word.
+/// The processes that share it are expected to take turns: nothing here
+/// orders a write in one against a read in another.
+pub struct SharedWord(core::ptr::NonNull<u64>);
+
+impl SharedWord {
+    /// Maps the word, which starts at zero. None when the kernel refuses.
+    pub fn map() -> Option<Self> {
+        map_shared(size_of::<u64>()).map(|word| Self(word.cast()))
+    }
+
+    pub fn get(&self) -> u64 {
+        // SAFETY: the mapping holds one readable `u64` and is never removed.
+        unsafe { self.0.read() }
+    }
+
+    pub fn set(&mut self, value: u64) {
+        // SAFETY: the mapping holds one writable `u64` and is never removed.
+        unsafe { self.0.write(value) }
+    }
+
+    /// The word itself, for code that counts a budget down in place.
+    ///
+    /// # Safety
+    /// No other process reads or writes the word while the reference lives.
+    pub unsafe fn as_mut(&mut self) -> &mut u64 {
+        // SAFETY: the mapping holds one writable `u64`, is page-aligned and is
+        // never removed; `self` is the only way to it in this process, and
+        // the caller answers for the others.
+        unsafe { self.0.as_mut() }
+    }
+
+    /// Gives up the value for the address of the word, which stays mapped.
+    pub fn into_raw(self) -> *mut u64 {
+        self.0.as_ptr()
+    }
+}
+

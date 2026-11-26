@@ -431,14 +431,6 @@ fn protected_tree(parent: c_int, name: &CStr, depth: u32, remaining: &mut u32) -
 pub(super) unsafe fn prepare_secret_protection(write_dir: *const c_char, write_fd: c_int) -> bool {
     #[cfg(witchy_native_aws_lc)]
     {
-        #[cfg(target_os = "macos")]
-        const DUP_CLOEXEC: c_int = 67;
-        #[cfg(target_os = "linux")]
-        const DUP_CLOEXEC: c_int = 1030;
-
-        unsafe extern "C" {
-            fn fcntl(fd: c_int, command: c_int, ...) -> c_int;
-        }
         let mut devices = [0u64; 192];
         let mut inodes = [0u64; 192];
         let count = super::signer_crypto::witchy_secret_identities(&mut devices, &mut inodes);
@@ -446,8 +438,7 @@ pub(super) unsafe fn prepare_secret_protection(write_dir: *const c_char, write_f
         witchy_broker_secret_objects(&devices[..kept], &inodes[..kept]);
         if count != 0 && (!write_dir.is_null() || write_fd >= 0) {
             let fd = if write_fd >= 0 {
-                // SAFETY: duplicating a descriptor takes an integer argument.
-                unsafe { fcntl(write_fd, DUP_CLOEXEC, 3 as c_int) }
+                super::sys::duplicate_close_on_exec(write_fd, 3)
             } else {
                 // SAFETY: `write_dir` is not null here, so the caller vouches
                 // that it is a live C string.
@@ -1258,24 +1249,24 @@ pub(super) struct Roots {
     pub(super) write: c_int,
     pub(super) output: c_int,
     pub(super) staging: c_int,
-    pub(super) name: [c_char; 256],
+    /// The root output's name, which ends at a NUL.
+    pub(super) name: [u8; 256],
 }
 
 /// Called during broker child startup. On failure the child exits, which
-/// closes any descriptors opened before a later check failed. Each path is
-/// null or a live C string, `identity` is null or readable, and `roots` is
-/// writable.
-pub(super) unsafe fn open_roots(
-    read: *const c_char,
-    write: *const c_char,
+/// closes any descriptors opened before a later check failed. A path or an
+/// identity that is `None` is one the launch did not give. `write` is the
+/// same directory as `read` when the two are one text at one address.
+pub(super) fn open_roots(
+    read: Option<&CStr>,
+    write: Option<&CStr>,
     read_fd: c_int,
     write_fd: c_int,
-    output: *const c_char,
+    output: Option<&CStr>,
     output_parent: c_int,
-    identity: *const super::file_identity::Identity,
+    identity: Option<&super::file_identity::Identity>,
     data_only: bool,
-    roots: *mut Roots,
-) -> bool {
+) -> Option<Roots> {
     unsafe extern "C" {
         safe fn dup(fd: c_int) -> c_int;
     }
@@ -1291,32 +1282,29 @@ pub(super) unsafe fn open_roots(
         staging: -1,
         name: [0; 256],
     };
-    if !read.is_null() {
+    if let Some(read) = read {
         opened.read = if read_fd >= 0 {
             read_fd
         } else {
-            // SAFETY: `read` is not null, so it is a live C string.
-            open_absolute(unsafe { CStr::from_ptr(read) }, FLAGS)
+            open_absolute(read, FLAGS)
         };
         if opened.read < 0 {
-            return false;
+            return None;
         }
     }
-    if !write.is_null() {
-        opened.write = if write == read {
+    if let Some(write) = write {
+        opened.write = if read.is_some_and(|read| read.as_ptr() == write.as_ptr()) {
             dup(opened.read)
         } else if write_fd >= 0 {
             write_fd
         } else {
-            // SAFETY: `write` is not null, so it is a live C string.
-            open_absolute(unsafe { CStr::from_ptr(write) }, FLAGS)
+            open_absolute(write, FLAGS)
         };
         if opened.write < 0 {
-            return false;
+            return None;
         }
     }
-    // SAFETY: the caller passes null or a readable identity.
-    if let Some(expected) = unsafe { identity.as_ref() } {
+    if let Some(expected) = identity {
         let selected = if opened.read >= 0 {
             opened.read
         } else {
@@ -1325,12 +1313,10 @@ pub(super) unsafe fn open_roots(
         if !stat(selected).is_some_and(|info| {
             info.device as u64 == expected.device && info.inode == expected.inode
         }) {
-            return false;
+            return None;
         }
     }
-    if !output.is_null() {
-        // SAFETY: `output` is not null, so it is a live C string.
-        let output = unsafe { CStr::from_ptr(output) };
+    if let Some(output) = output {
         opened.output = if output_parent >= 0 {
             let name = output.to_bytes();
             if name.is_empty()
@@ -1339,33 +1325,29 @@ pub(super) unsafe fn open_roots(
                 || name == b"."
                 || name == b".."
             {
-                return false;
+                return None;
             }
             for (out, byte) in opened.name.iter_mut().zip(name) {
-                *out = *byte as c_char;
+                *out = *byte;
             }
             output_parent
         } else {
             let mut name = [0; 256];
             let fd = witchy_broker_open_output_parent(AT_FDCWD, output, &mut name, false);
-            for (out, byte) in opened.name.iter_mut().zip(name) {
-                *out = byte as c_char;
-            }
+            opened.name = name;
             fd
         };
         if opened.output < 0 {
-            return false;
+            return None;
         }
     }
     if data_only && opened.write >= 0 {
         opened.staging = witchy_broker_open_staging(opened.write);
         if opened.staging < 0 {
-            return false;
+            return None;
         }
     }
-    // SAFETY: the caller passes a place for the result.
-    unsafe { roots.write(opened) };
-    true
+    Some(opened)
 }
 
 #[repr(C)]
@@ -1375,8 +1357,8 @@ pub(super) struct Output {
     pub(super) name: [u8; 256],
 }
 
-/// While `root_output` holds a descriptor, `root_name` is a live C string.
-pub(super) unsafe fn witchy_broker_output_request(
+/// `root_name` names the root output. A commit to it fails when there is none.
+pub(super) fn witchy_broker_output_request(
     channel: c_int,
     operation: u8,
     slot: usize,
@@ -1384,7 +1366,7 @@ pub(super) unsafe fn witchy_broker_output_request(
     scratch: &mut [u8; 16384],
     outputs: &mut [Output; 16],
     root_output: &mut c_int,
-    root_name: *const c_char,
+    root_name: Option<&CStr>,
     root_exclusive: bool,
     write_root: c_int,
     staging: c_int,
@@ -1479,8 +1461,7 @@ pub(super) unsafe fn witchy_broker_output_request(
         let name = match name {
             // Opening the slot stored its name with a NUL.
             Some(name) => text(name),
-            // SAFETY: the root output is open, so the caller vouches for its name.
-            None => Some(unsafe { CStr::from_ptr(root_name) }),
+            None => root_name,
         };
         let Some(name) = name else {
             return false;

@@ -1,14 +1,7 @@
 //! Synchronous transport for the native broker's framed socket.
 
-use core::ffi::{c_int, c_void};
-
-unsafe extern "C" {
-    fn read(fd: c_int, out: *mut c_void, len: usize) -> isize;
-    #[cfg(target_os = "macos")]
-    fn write(fd: c_int, bytes: *const c_void, len: usize) -> isize;
-    #[cfg(target_os = "linux")]
-    fn send(fd: c_int, bytes: *const c_void, len: usize, flags: c_int) -> isize;
-}
+use super::sys;
+use core::ffi::c_int;
 
 const EINTR: c_int = 4;
 
@@ -17,17 +10,11 @@ pub(super) fn witchy_broker_send(fd: c_int, bytes: &[u8]) -> bool {
     let mut sent = 0;
     while sent < bytes.len() {
         let rest = &bytes[sent..];
-        // SAFETY: `rest` is readable for its whole length.
-        let count = unsafe {
-            #[cfg(target_os = "macos")]
-            {
-                write(fd, rest.as_ptr().cast(), rest.len())
-            }
-            #[cfg(target_os = "linux")]
-            {
-                send(fd, rest.as_ptr().cast(), rest.len(), 0x4000)
-            }
-        };
+        #[cfg(target_os = "macos")]
+        let count = sys::write(fd, rest);
+        // MSG_NOSIGNAL.
+        #[cfg(target_os = "linux")]
+        let count = sys::send(fd, rest, 0x4000);
         if count < 0 && super::errno::get() == EINTR {
             continue;
         }
@@ -44,8 +31,7 @@ pub(super) fn witchy_broker_receive(fd: c_int, bytes: &mut [u8]) -> bool {
     let mut received = 0;
     while received < bytes.len() {
         let rest = &mut bytes[received..];
-        // SAFETY: `rest` is writable for its whole length.
-        let count = unsafe { read(fd, rest.as_mut_ptr().cast(), rest.len()) };
+        let count = sys::read(fd, rest);
         if count < 0 && super::errno::get() == EINTR {
             continue;
         }

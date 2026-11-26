@@ -1,6 +1,6 @@
 //! Socket operations used by the broker.
 
-use super::global::{Global, Table};
+use super::global::{Global, State, Table};
 use super::sys::{self, PollFd};
 use core::ffi::{CStr, c_char, c_int};
 
@@ -89,7 +89,6 @@ struct ServerRoots {
     write_root: c_int,
     combined: bool,
     data_only: bool,
-    entries: *mut u64,
     connection_entries: u64,
 }
 
@@ -98,9 +97,11 @@ static SERVER_ROOTS: Global<ServerRoots> = Global::new(ServerRoots {
     write_root: -1,
     combined: false,
     data_only: false,
-    entries: core::ptr::null_mut(),
     connection_entries: u64::MAX,
 });
+/// The directory budget that connection brokers share, when there is one. The
+/// supervisor never reads it: each forked broker takes its own copy of the handle.
+static SERVER_ENTRIES: State<Option<sys::SharedWord>> = State::new(None);
 static SERVER_OUTBOUND: Table<Endpoint, ENDPOINT_CAPACITY> = Table::new(Endpoint::EMPTY);
 
 /// The resolved endpoints of connection brokers, copied to `out`, and their count.
@@ -154,25 +155,23 @@ pub(super) fn witchy_broker_server_connection_entries(entries: u64) {
     });
 }
 
-/// # Safety
-/// `entries` is null or the directory budget that connection brokers share:
-/// one `u64` that stays mapped for the life of the process. Connection brokers
-/// write through it.
-pub(super) unsafe fn witchy_broker_server_roots(
+/// `entries` is the directory budget that connection brokers share and write
+/// through, or `None` for no limit.
+pub(super) fn witchy_broker_server_roots(
     root: c_int,
     write_root: c_int,
     combined: bool,
     data_only: bool,
-    entries: *mut u64,
+    entries: Option<sys::SharedWord>,
 ) {
     SERVER_ROOTS.set(ServerRoots {
         root,
         write_root,
         combined,
         data_only,
-        entries,
         ..SERVER_ROOTS.get()
     });
+    SERVER_ENTRIES.with(|shared| *shared = entries);
 }
 
 /// The endpoint was initialized by the Rust resolver before broker startup.
@@ -282,22 +281,23 @@ pub(super) fn witchy_net_connection_broker(stream: c_int, slot: u32, relay: &mut
             _exit(2);
         }
         super::entry_budget::set_connection(roots.connection_entries);
-        // SAFETY: `roots.entries` is what `witchy_broker_server_roots` was given: null, or
-        // the shared directory budget, which stays mapped and which this process reaches
-        // through no other reference.
-        unsafe {
-            super::broker_loop::relay_connection(
-                worker,
-                slot,
-                outbound,
-                roots.root,
-                roots.write_root,
-                roots.combined,
-                roots.data_only,
-                roots.entries,
-                staging,
-            );
-        }
+        // This child's copy of the handle. The supervisor is not using the
+        // budget when it forks, and the relay below is this process's one user.
+        let mut entries = SERVER_ENTRIES.with(Option::take);
+        super::broker_loop::relay_connection(
+            worker,
+            slot,
+            outbound,
+            roots.root,
+            roots.write_root,
+            roots.combined,
+            roots.data_only,
+            // SAFETY: the supervisor runs one connection broker at a time and
+            // reaps it before starting the next, and reads the word in none
+            // of that time, so this process is its one user.
+            entries.as_mut().map(|word| unsafe { word.as_mut() }),
+            staging,
+        );
         #[cfg(target_os = "linux")]
         {
             unsafe extern "C" {
@@ -339,7 +339,6 @@ pub(super) unsafe fn witchy_net_start(
     bound_port: &mut u16,
     relay: &mut c_int,
 ) -> c_int {
-    use core::mem::MaybeUninit;
     unsafe extern "C" {
         fn fork() -> c_int;
         safe fn _exit(code: c_int) -> !;
@@ -425,23 +424,22 @@ pub(super) unsafe fn witchy_net_start(
             }
             fd
         };
-        let mut roots = MaybeUninit::uninit();
-        if !unsafe {
-            super::broker_directory::open_roots(
-                dir_path,
-                write_dir,
-                root_fd,
-                write_root_fd,
-                output_path,
-                output_parent,
-                directory_id,
-                data_only,
-                roots.as_mut_ptr(),
-            )
-        } {
+        // SAFETY: the caller passes each path as null or a live C string.
+        let [read_path, write_path, output_name] = [dir_path, write_dir, output_path]
+            .map(|path| (!path.is_null()).then(|| unsafe { CStr::from_ptr(path) }));
+        let Some(roots) = super::broker_directory::open_roots(
+            read_path,
+            write_path,
+            root_fd,
+            write_root_fd,
+            output_name,
+            output_parent,
+            // SAFETY: the caller passes null or one readable identity.
+            unsafe { directory_id.as_ref() },
+            data_only,
+        ) else {
             _exit(2)
-        }
-        let roots = unsafe { roots.assume_init() };
+        };
         #[cfg(target_os = "linux")]
         if !confine_linux(roots.read, roots.write, roots.output, outbound) {
             _exit(2)
@@ -458,23 +456,21 @@ pub(super) unsafe fn witchy_net_start(
         } else {
             1
         };
-        // SAFETY: `roots.name` is the C string `open_roots` wrote.
-        unsafe {
-            super::broker_loop::relay_shared(
-                worker,
-                outbound,
-                listener,
-                roots.read,
-                roots.write,
-                !dir_path.is_null() && dir_path == write_dir,
-                roots.output,
-                roots.name.as_ptr(),
-                OUTPUT_EXCLUSIVE.get(),
-                entries,
-                mode,
-                roots.staging,
-            );
-        }
+        super::broker_loop::relay_shared(
+            worker,
+            outbound,
+            listener,
+            roots.read,
+            roots.write,
+            !dir_path.is_null() && dir_path == write_dir,
+            roots.output,
+            // The name `open_roots` wrote, which ends before the last byte.
+            CStr::from_bytes_until_nul(&roots.name).ok(),
+            OUTPUT_EXCLUSIVE.get(),
+            entries,
+            mode,
+            roots.staging,
+        );
         #[cfg(target_os = "linux")]
         {
             unsafe extern "C" {
@@ -664,18 +660,8 @@ pub(super) fn witchy_broker_read_request(channel: c_int) -> Option<(u8, usize, u
 
 /// `waitid` for the process `pid`: what the call returned, and the PID it reported.
 pub(super) fn wait_process(pid: c_int, options: c_int) -> (c_int, c_int) {
-    unsafe extern "C" {
-        fn waitid(
-            kind: c_int,
-            id: u32,
-            info: *mut super::exec_capture::SignalInfo,
-            options: c_int,
-        ) -> c_int;
-    }
-    // SAFETY: every field is an integer or a pointer, for which all zeroes is a value.
-    let mut info: super::exec_capture::SignalInfo = unsafe { core::mem::zeroed() };
-    // SAFETY: the call writes one `SignalInfo`.
-    let result = unsafe { waitid(1, pid as u32, &mut info, options) };
+    let mut info = sys::SignalInfo::zeroed();
+    let result = sys::waitid(1, pid as u32, &mut info, options);
     (result, info.pid)
 }
 
