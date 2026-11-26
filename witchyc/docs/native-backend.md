@@ -669,13 +669,47 @@ The runtime's process-state cells (`runtime/native/global.rs`) have their own ha
 and count over any six pushes and clears of four places, and that the pointer handed to C reaches
 every item in use. It does not check the claim the cells rest on: that the runtime has one thread.
 
-`tools/native-logic-kani` checks pure logic the launcher and the guest's broker client rest on
-(six harnesses; proofs of a file's private functions sit in that file under `cfg(kani)`): a
-launch-plan line splits into one to eight fields that are the whole line, with no empty field and
-no control byte (lines to 17 bytes); a record's width fits a line; a broker reply's payload is
-never longer than the request asked for, for every header; an Exec deadline never passes the
-launch's; an accepted environment name is plain; a file identity is two decimal numbers. They
-bound input length, and say nothing of the code that calls these functions.
+`tools/native-logic-kani` checks pure logic the launcher, the supervisor and the guest's broker
+client rest on (24 harnesses; proofs of a file's private functions sit in that file under
+`cfg(kani)`). Each holds for every input up to the bound given, and each `kani::cover!` in it is
+satisfied:
+
+- launch plan: a line splits into one to eight fields that are the whole line, with no empty field
+  and no control byte (lines to 17 bytes); a record's width fits a line; an inherited descriptor's
+  number is 3 to 1023 and is its one to four digits (6 bytes); an object identity is digits, a
+  colon, digits, at most twenty a side (43 bytes).
+- launch arguments: the stated limits are at most 256 words and 65536 bytes (12 bytes); one limit
+  is its digits' value and no more than its bound, for every bound (11 bytes); the runtime's UTF-8
+  check agrees with `core::str::from_utf8` (5 bytes); a limit label belongs to a known flag and is
+  1 to 48 plain bytes after the first `=` (61 bytes).
+- connection queue: for any ring of up to 4096 places, a push is taken exactly when there is room
+  and lands after the last descriptor waiting, a pop takes the head, both keep the indices inside
+  the ring, and two pushes onto an empty queue pop in order; the listener's address is written
+  whole or not at all, with the port's digits and brackets round a bare IPv6 host (host text to 5
+  bytes, buffer to 12, every port).
+- broker: a reply's payload is never longer than the request asked for, for every header; a DNS
+  endpoint that is accepted is a host of letters, digits, dots and inner hyphens, a colon and a
+  port that is not zero (10 bytes); a staged file's name is digits, a hyphen, digits (43 bytes); a
+  directory path's length stays inside its 4096-byte array for every push.
+- Exec: a command's deadline never passes the launch's; accepted argument offsets are exactly
+  `count` zero-ended texts that are the whole buffer (7 bytes); a swept directory's name gives a
+  process number from 2 to 999,999,999 (35 bytes).
+- timers, on a table cut to eight places for the proof (`SLOTS` under `cfg(kani)`): a handle finds
+  only the timer that holds it; a new timer takes the first free place from `next`, changes no
+  other, and is found by its handle.
+- an accepted environment name is plain; a file identity is two decimal numbers; a budget debit
+  matches its policy (the harness `budget.rs` carries).
+
+They bound input length, and say nothing of the code that calls these functions. The crate
+includes most of the runtime's files to reach these functions, so a file that gains a dependency
+on one not listed in its `lib.rs` stops the crate from building until that file is added. The
+whole run takes about twelve minutes; the slowest harness takes under three.
+
+`tools/native-sandbox-kani` (run the same way; `linux_sandbox.rs` and macOS's `seatbelt.rs` export
+the same symbol, so it has its own crate) checks the three seccomp programs the Linux runtime
+builds, at the point where it would install them: for every grant and every descriptor, the
+program is at most 256 instructions, ends by returning, every jump lands inside it, and no rule's
+body is longer than its one-byte skip. It does not check what the programs allow.
 
 Three additional harnesses were checked individually: one-byte fills of up to
 eight cells, two-byte fills of up to four cells, and transfers of up to four

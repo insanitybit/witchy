@@ -253,6 +253,33 @@ fn staged_name(text: &[u8]) -> bool {
         .all(|part| (1..=20).contains(&part.len()) && part.iter().all(u8::is_ascii_digit))
 }
 
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// A staged name is digits, one hyphen, digits, with at most twenty on
+    /// each side, for every name of up to 43 bytes.
+    #[kani::proof]
+    #[kani::unwind(45)]
+    fn a_staged_name_is_two_numbers() {
+        let bytes: [u8; 43] = kani::any();
+        let length: usize = kani::any();
+        kani::assume(length <= bytes.len());
+        let text = &bytes[..length];
+        let staged = staged_name(text);
+        kani::cover!(staged && length == 41);
+        if staged {
+            assert!((3..=41).contains(&length));
+            let split: usize = kani::any();
+            kani::assume(split < length && text[split] == b'-');
+            assert!((1..=20).contains(&split) && (1..=20).contains(&(length - split - 1)));
+            let at: usize = kani::any();
+            kani::assume(at < length && at != split);
+            assert!(text[at].is_ascii_digit());
+        }
+    }
+}
+
 #[repr(C)]
 #[cfg(target_os = "macos")]
 struct Dirent {

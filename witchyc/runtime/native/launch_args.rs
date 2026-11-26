@@ -161,3 +161,69 @@ extern "C" fn witchy_args_byte(grant: u64, index: usize) -> u64 {
         })
         .map_or(256, u64::from)
 }
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// The argument limits a launch states are never past what the runtime
+    /// holds, and no text of up to twelve bytes overflows them.
+    #[kani::proof]
+    #[kani::unwind(14)]
+    fn stated_limits_are_within_the_store() {
+        let bytes: [u8; 12] = kani::any();
+        let length: usize = kani::any();
+        kani::assume(length <= bytes.len());
+        let text = &bytes[..length];
+        let limits = parse_limits(text);
+        kani::cover!(limits.is_none() && length == 12 && bytes[0] == b'0' && bytes[1] == b':');
+        if let Some((words, size)) = limits {
+            kani::cover!(words == MAX_WORDS as u32 && size == MAX_BYTES as u32);
+            kani::cover!(words == 0 && size == 0);
+            assert!(words as usize <= MAX_WORDS && size as usize <= MAX_BYTES);
+            let at: usize = kani::any();
+            kani::assume(at < length);
+            assert!(text[at] == b':' || text[at].is_ascii_digit());
+        }
+    }
+
+    /// One limit is its digits' value and no more than `max`, for every `max`
+    /// and every text of up to eleven bytes.
+    #[kani::proof]
+    #[kani::unwind(13)]
+    fn a_limit_is_no_more_than_its_bound() {
+        let bytes: [u8; 11] = kani::any();
+        let length: usize = kani::any();
+        kani::assume(length <= bytes.len());
+        let max: u32 = kani::any();
+        if let Some(value) = limit(&bytes[..length], max) {
+            kani::cover!(value == u32::MAX);
+            assert!(value <= max && length != 0);
+            let mut expected = 0u64;
+            let mut at = 0;
+            while at < length {
+                expected = expected * 10 + u64::from(bytes[at] - b'0');
+                at += 1;
+            }
+            assert_eq!(expected, u64::from(value));
+        }
+    }
+
+    /// The runtime's own UTF-8 check agrees with core's on every text of up to
+    /// five bytes: every lead byte with every continuation, and a byte after.
+    #[kani::proof]
+    #[kani::unwind(7)]
+    fn utf8_is_what_core_says_it_is() {
+        let bytes: [u8; 5] = kani::any();
+        let length: usize = kani::any();
+        kani::assume(length <= bytes.len());
+        let text = &bytes[..length];
+        let valid = valid_utf8(text);
+        kani::cover!(valid && bytes[0] == 0xf4 && length == 5);
+        kani::cover!(
+            !valid && bytes[0] == 0xed && bytes[1] == 0xa0,
+            "a surrogate is refused"
+        );
+        assert_eq!(valid, core::str::from_utf8(text).is_ok());
+    }
+}

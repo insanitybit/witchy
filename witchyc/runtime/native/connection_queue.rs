@@ -1528,3 +1528,135 @@ pub(super) unsafe fn witchy_validate_connection_launch(
     }
     allowed
 }
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// Any queue the supervisor can hold: it starts empty at place zero with
+    /// room for at most 4096, and only `push` and `pop` change it.
+    fn any_queue() -> Queue {
+        let queue = Queue {
+            slots: kani::any(),
+            head: kani::any(),
+            len: kani::any(),
+            capacity: kani::any(),
+        };
+        kani::assume(holds(&queue));
+        queue
+    }
+
+    fn holds(queue: &Queue) -> bool {
+        queue.capacity <= queue.slots.len()
+            && queue.len <= queue.capacity
+            && (queue.head < queue.capacity || queue.head == 0)
+    }
+
+    /// A push is taken exactly when there is room and the descriptor is one,
+    /// and it lands in the place after the last one waiting, inside the ring.
+    #[kani::proof]
+    fn a_push_lands_after_the_last_waiting() {
+        let mut queue = any_queue();
+        let (head, len, capacity) = (queue.head, queue.len, queue.capacity);
+        let fd: c_int = kani::any();
+        let pushed = queue.push(fd);
+        assert_eq!(pushed, len < capacity && fd >= 0);
+        assert!(holds(&queue) && queue.head == head && queue.capacity == capacity);
+        if pushed {
+            let place = (head + len) % capacity;
+            kani::cover!(place < head, "the ring wraps");
+            assert!(queue.len == len + 1 && queue.slots[place] == fd);
+        } else {
+            assert_eq!(queue.len, len);
+        }
+    }
+
+    /// A pop gives the descriptor at the head, when one waits, and moves the
+    /// head one place round the ring.
+    #[kani::proof]
+    fn a_pop_takes_the_head() {
+        let mut queue = any_queue();
+        let (head, len, capacity) = (queue.head, queue.len, queue.capacity);
+        let first = queue.slots[head];
+        let popped = queue.pop();
+        assert!(holds(&queue) && queue.capacity == capacity);
+        if len == 0 {
+            assert!(popped.is_none() && queue.head == head && queue.len == 0);
+        } else {
+            kani::cover!(queue.head == 0 && head != 0, "the head wraps");
+            assert!(popped == Some(first) && queue.len == len - 1);
+            assert_eq!(queue.head, (head + 1) % capacity);
+        }
+    }
+
+    /// Two descriptors pushed onto an empty queue come back in that order,
+    /// wherever the head is, and `room` counts them against the budget.
+    #[kani::proof]
+    fn descriptors_leave_in_the_order_they_came() {
+        let mut queue = any_queue();
+        kani::assume(queue.len == 0 && queue.capacity >= 2);
+        let (first, second): (c_int, c_int) = (kani::any(), kani::any());
+        kani::assume(first >= 0 && second >= 0);
+        kani::cover!(queue.head == queue.capacity - 1, "the second wraps");
+        assert!(!queue.room(0) && queue.room(1));
+        assert!(queue.push(first) && queue.push(second));
+        assert!(!queue.room(2) && queue.room(3) == (queue.capacity > 2));
+        assert!(queue.pop() == Some(first) && queue.pop() == Some(second));
+        assert!(queue.pop().is_none());
+    }
+
+    /// The listener's address is written whole or not at all: the host, a
+    /// colon and the port in decimal, with brackets round a bare IPv6 host.
+    /// This holds for every port, host text of up to five bytes and buffer of
+    /// up to twelve, which is one more than the longest such address.
+    #[kani::proof]
+    #[kani::unwind(14)]
+    fn a_listener_address_fits_its_buffer() {
+        let mut text: [u8; 6] = kani::any();
+        text[5] = 0;
+        let Ok(host_port) = core::ffi::CStr::from_bytes_until_nul(&text) else {
+            return;
+        };
+        let port: u16 = kani::any();
+        let mut buffer = [0u8; 12];
+        let room: usize = kani::any();
+        kani::assume(room <= buffer.len());
+        let length = listener_address(host_port, port, &mut buffer[..room]);
+        let bytes = host_port.to_bytes();
+        assert!(length <= room);
+        kani::cover!(
+            length == 0 && room == 5 && bytes.len() == 5 && bytes[3] == b':',
+            "no room"
+        );
+        if length != 0 {
+            let digits = match port {
+                0..=9 => 1,
+                10..=99 => 2,
+                100..=999 => 3,
+                1000..=9999 => 4,
+                _ => 5,
+            };
+            let colon = length - digits - 1;
+            assert_eq!(buffer[colon], b':');
+            let mut value = 0u32;
+            let mut at = colon + 1;
+            while at < length {
+                assert!(buffer[at].is_ascii_digit());
+                value = value * 10 + u32::from(buffer[at] - b'0');
+                at += 1;
+            }
+            assert_eq!(value, u32::from(port));
+            let bracketed = buffer[0] == b'[' && bytes[0] != b'[';
+            kani::cover!(bracketed, "a bare IPv6 host gains brackets");
+            kani::cover!(port == u16::MAX);
+            let host = if bracketed { colon - 2 } else { colon };
+            assert_eq!(bytes[host], b':');
+            if bracketed {
+                assert_eq!(buffer[colon - 1], b']');
+            }
+            let index: usize = kani::any();
+            kani::assume(index < host);
+            assert_eq!(buffer[index + usize::from(bracketed)], bytes[index]);
+        }
+    }
+}

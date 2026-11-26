@@ -197,6 +197,42 @@ pub(super) fn witchy_broker_resolve_endpoint(text: &CStr) -> Option<Endpoint> {
     Some(endpoint)
 }
 
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// A name and port that are accepted are the whole text: a host of
+    /// letters, digits, dots and inner hyphens, a colon, and a decimal port
+    /// that is not zero. No text of up to ten bytes overflows the port.
+    #[kani::proof]
+    #[kani::unwind(12)]
+    fn a_dns_endpoint_is_a_host_and_a_port() {
+        let bytes: [u8; 10] = kani::any();
+        let length: usize = kani::any();
+        kani::assume(length <= bytes.len());
+        let text = &bytes[..length];
+        let Some((host, port)) = dns_endpoint(text) else {
+            return;
+        };
+        kani::cover!(port == u16::MAX);
+        kani::cover!(host.contains(&b'.') && host.contains(&b'-'));
+        let size = host.len();
+        assert!(port != 0 && size != 0 && size + 2 <= length);
+        assert!(host.as_ptr() == text.as_ptr() && text[size] == b':');
+        assert!(host[0].is_ascii_alphanumeric() && host[size - 1] != b'-');
+        let at: usize = kani::any();
+        kani::assume(at < length && at != size);
+        if at < size {
+            assert!(host[at].is_ascii_alphanumeric() || host[at] == b'.' || host[at] == b'-');
+            if at > 0 && host[at] == b'.' {
+                assert!(host[at - 1].is_ascii_alphanumeric());
+            }
+        } else {
+            assert!(text[at].is_ascii_digit());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

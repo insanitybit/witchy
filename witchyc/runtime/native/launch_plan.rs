@@ -935,6 +935,57 @@ pub(super) mod opening {
     }
 }
 
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// An inherited descriptor's number is read from one to four digits with no
+    /// leading zero, and is past the standard streams and under 1024.
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn a_descriptor_number_is_past_the_standard_streams() {
+        let bytes: [u8; 6] = kani::any();
+        let length: usize = kani::any();
+        kani::assume(length <= bytes.len());
+        let text = &bytes[..length];
+        if let Some(number) = descriptor_number(text) {
+            kani::cover!(number == 1023);
+            kani::cover!(number == 3);
+            assert!((3..=1023).contains(&number));
+            assert!((1..=4).contains(&length) && text[0] != b'0');
+            let mut value = 0;
+            let mut at = 0;
+            while at < length {
+                assert!(text[at].is_ascii_digit());
+                value = value * 10 + c_int::from(text[at] - b'0');
+                at += 1;
+            }
+            assert_eq!(value, number);
+        }
+    }
+
+    /// An object's identity is digits, one colon, digits, with at most twenty
+    /// on each side, for every text of up to 43 bytes.
+    #[kani::proof]
+    #[kani::unwind(45)]
+    fn an_object_is_two_numbers() {
+        let bytes: [u8; 43] = kani::any();
+        let length: usize = kani::any();
+        kani::assume(length <= bytes.len());
+        let text = &bytes[..length];
+        let valid = valid_object(text);
+        kani::cover!(valid && length == 41);
+        if valid {
+            let split: usize = kani::any();
+            kani::assume(split < length && text[split] == b':');
+            assert!((1..=20).contains(&split) && (1..=20).contains(&(length - split - 1)));
+            let at: usize = kani::any();
+            kani::assume(at < length && at != split);
+            assert!(text[at].is_ascii_digit());
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

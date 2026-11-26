@@ -4,4 +4,4 @@ version = "0.1.0"
 edition = "2024"
 
 [lints.rust]
-unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)'] }
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(kani)', 'cfg(witchy_native_aws_lc)'] }

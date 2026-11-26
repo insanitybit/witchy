@@ -352,6 +352,32 @@ extern "C" fn witchy_exec_sweep(broker: c_int) {
 
 use core::ptr;
 
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// A swept directory's name gives a process that can be signalled alone:
+    /// more than one and under a thousand million, read from at most nine
+    /// digits without overflow, for every name of up to 35 bytes.
+    #[kani::proof]
+    #[kani::unwind(37)]
+    fn an_owned_directory_names_one_process() {
+        let bytes: [u8; 35] = kani::any();
+        let length: usize = kani::any();
+        kani::assume(length <= bytes.len());
+        let found = owned_directory_name(&bytes[..length]);
+        kani::cover!(
+            found.is_none() && length == 35 && bytes[12] == b'1' && bytes[22] == b'-',
+            "ten digits are refused"
+        );
+        if let Some(pid) = found {
+            kani::cover!(pid == 999_999_999);
+            assert!(1 < pid && pid <= 999_999_999);
+            assert!((26..=34).contains(&length) && bytes[length - 13] == b'-');
+        }
+    }
+}
+
 #[cfg(test)]
 #[test]
 fn private_directory_is_removed_and_names_are_checked() {

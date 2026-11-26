@@ -324,3 +324,28 @@ pub(super) fn witchy_directory_grants(
         }
     }
 }
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// A path keeps its source byte and its bytes inside the array: the length
+    /// never passes the last place, and a byte that is taken is the last one.
+    #[kani::proof]
+    fn a_path_stays_inside_its_array() {
+        let mut path = Path {
+            bytes: kani::any(),
+            len: kani::any(),
+        };
+        kani::assume(path.len < PATH_CAPACITY);
+        let (len, source) = (path.len, path.bytes[0]);
+        let byte: u8 = kani::any();
+        path.push(byte);
+        kani::cover!(path.len == len, "a full path drops the byte");
+        assert!(path.len < PATH_CAPACITY && path.bytes[0] == source);
+        assert_eq!(path.len == len, len == PATH_CAPACITY - 1);
+        if path.len != len {
+            assert!(path.len == len + 1 && path.bytes[path.len] == byte);
+        }
+    }
+}

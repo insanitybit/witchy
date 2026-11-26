@@ -371,6 +371,8 @@ impl FilterBuilder {
     }
 
     fn syscall(&mut self, number: u32, body: &[Filter]) {
+        #[cfg(kani)]
+        assert!(body.len() <= usize::from(u8::MAX));
         self.add(&[equal(number, 0, body.len() as u8)]);
         self.add(body);
     }
@@ -378,6 +380,7 @@ impl FilterBuilder {
     /// Installs the instructions added so far as this thread's seccomp
     /// filter: `seccomp(SECCOMP_SET_MODE_FILTER, 0, program)`. False when the
     /// kernel refuses it.
+    #[cfg(not(kani))]
     fn install(&self) -> bool {
         #[repr(C)]
         struct Program {
@@ -391,6 +394,13 @@ impl FilterBuilder {
         // SAFETY: the program names `len` instructions of `code`, which holds
         // at least that many, and the kernel copies them during the call.
         unsafe { syscall(SECCOMP, 1u32, 0u32, &raw const program) == 0 }
+    }
+
+    /// A proof checks the program where the runtime would install it.
+    #[cfg(kani)]
+    fn install(&self) -> bool {
+        proofs::well_formed(self);
+        true
     }
 }
 
@@ -629,4 +639,62 @@ extern "C" fn witchy_install_sandbox(output: bool, allocator: bool) -> bool {
         close(1);
     }
     restrict_syscalls(output, allocator)
+}
+
+#[cfg(kani)]
+mod proofs {
+    use super::*;
+
+    /// What the kernel asks of a program, checked where the runtime would
+    /// install it: it is not empty, it ends by returning, and every jump
+    /// lands inside it.
+    pub(super) fn well_formed(filter: &FilterBuilder) {
+        assert!(0 < filter.len && filter.len <= filter.code.len());
+        assert!(filter.code[filter.len - 1].code == 0x06);
+        let at: usize = kani::any();
+        kani::assume(at < filter.len);
+        let instruction = &filter.code[at];
+        if matches!(instruction.code, 0x15 | 0x45) {
+            kani::cover!(
+                instruction.yes > 8 || instruction.no > 8,
+                "a long jump is checked"
+            );
+            assert!(at + 1 + usize::from(instruction.yes) < filter.len);
+            assert!(at + 1 + usize::from(instruction.no) < filter.len);
+        } else {
+            assert!(matches!(instruction.code, 0x20 | 0x54 | 0x06));
+            assert!(instruction.yes == 0 && instruction.no == 0);
+        }
+    }
+
+    /// The unbrokered guest's filter is well formed whatever it is granted.
+    #[kani::proof]
+    fn the_guest_filter_is_well_formed() {
+        SIGNING.set(kani::any());
+        assert!(restrict_syscalls(kani::any(), kani::any()));
+    }
+
+    /// The brokered guest's filter is well formed for every relay descriptor.
+    #[kani::proof]
+    fn the_relay_filter_is_well_formed() {
+        SIGNING.set(kani::any());
+        assert!(restrict_relay_syscalls(
+            kani::any(),
+            kani::any(),
+            kani::any(),
+            kani::any()
+        ));
+    }
+
+    /// The broker's filter is well formed for every descriptor it may keep,
+    /// and no rule's body is longer than its one-byte skip can pass.
+    #[kani::proof]
+    #[kani::unwind(29)]
+    fn the_broker_filter_is_well_formed() {
+        assert!(restrict_broker_syscalls(
+            kani::any(),
+            kani::any(),
+            kani::any()
+        ));
+    }
 }
