@@ -192,8 +192,12 @@ enum Shape {
     /// `join: brif tag, aside, read; aside: jump merge; read: jump merge; merge: load lane`: the
     /// load is reached from `join` through `aside` too, where the tag was not 0.
     TestedOnOnePath,
-    /// `join: brif tag, done, read; read: jump next(lane); next(hop): load hop`.
+    /// `join: brif tag, done, read; read: jump next(lane); next(hop): load hop`: `hop` is the
+    /// lane, received after the test on every edge.
     PassedOn,
+    /// `join: brif tag, aside, read; read: jump merge(lane); aside: jump merge(lane);
+    /// merge(hop): load hop`: `hop` is the lane, received from the untested arm too.
+    PassedOnFromBothArms,
 }
 
 /// `entry: brif param, ok, err; ok: jump join(0, element); err: jump join(1, 1)`, then `shape`.
@@ -230,7 +234,7 @@ fn tagged(shape: Shape) -> (ir::Function, Value) {
             let is_err = pos.ins().icmp_imm(ir::condcodes::IntCC::Equal, tag, 1);
             pos.ins().brif(is_err, read, &[], done, &[]);
         }
-        Shape::TestedOnOnePath => {
+        Shape::TestedOnOnePath | Shape::PassedOnFromBothArms => {
             pos.ins().brif(tag, aside, &[], read, &[]);
         }
         _ => {
@@ -245,6 +249,14 @@ fn tagged(shape: Shape) -> (ir::Function, Value) {
             pos.ins().jump(merge, &[one.into()]);
             pos.goto_bottom(merge);
             let value = pos.ins().load(I64, MemFlagsData::new(), lane, 0);
+            pos.ins().return_(&[value]);
+        }
+        Shape::PassedOnFromBothArms => {
+            pos.ins().jump(merge, &[lane.into()]);
+            pos.goto_bottom(aside);
+            pos.ins().jump(merge, &[lane.into()]);
+            pos.goto_bottom(merge);
+            let value = pos.ins().load(I64, MemFlagsData::new(), hop, 0);
             pos.ins().return_(&[value]);
         }
         Shape::PassedOn => {
@@ -271,16 +283,20 @@ fn tagged(shape: Shape) -> (ir::Function, Value) {
 
 #[test]
 fn a_lane_is_its_address_after_a_test_that_excludes_the_other_arm() {
-    let (mut function, param) = tagged(Shape::Tested);
-    assert!(annotate(&mut function, &[(param, root(false))]).is_ok());
-    assert_eq!(loads(&function).0, loads(&function).1);
+    // Read where it is tested, or passed on after the test to a block that only the tested arm
+    // reaches (as an inlined accessor's result is: `cell_mut` then a store through it).
+    for shape in [Shape::Tested, Shape::PassedOn] {
+        let (mut function, param) = tagged(shape);
+        assert!(annotate(&mut function, &[(param, root(false))]).is_ok(), "{shape:?}");
+        assert_eq!(loads(&function).0, loads(&function).1, "{shape:?}");
+    }
 }
 
 #[test]
 fn a_lane_used_where_its_tag_is_not_known_is_no_address() {
     // Each shape reaches a use of the lane on a path where the `Err` arm may have given it.
     let mut described = Vec::new();
-    for shape in [Shape::ComputedBeforeTest, Shape::ReadBeforeTest, Shape::WrongTag, Shape::TestedOnOnePath, Shape::PassedOn] {
+    for shape in [Shape::ComputedBeforeTest, Shape::ReadBeforeTest, Shape::WrongTag, Shape::TestedOnOnePath, Shape::PassedOnFromBothArms] {
         let (mut function, param) = tagged(shape);
         if annotate(&mut function, &[(param, root(false))]).is_ok() || loads(&function).1 != 0 {
             described.push(shape);

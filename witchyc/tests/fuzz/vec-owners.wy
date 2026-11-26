@@ -31,7 +31,11 @@ fn mirror(src: &Vec<U64>, dst: &mut Vec<U64>) -> U64:
                 dst.index_set(i, x % 1000 + i)
                 match src.get(i):
                     Ok(y):
-                        total = (total * 31 + y + dst.index(i)) % 1000000007
+                        match dst.get(i):
+                            Ok(z):
+                                total = (total * 31 + y + z) % 1000000007
+                            Err(code):
+                                return 0
                     Err(code):
                         return 0
             Err(code):
@@ -39,10 +43,14 @@ fn mirror(src: &Vec<U64>, dst: &mut Vec<U64>) -> U64:
     return total
 
 fn write_through(target: &mut Vec<U64>, at: U64, value: U64):
-    target.index_set(at, value)
+    let place = target.cell_mut(at)
+    *place = value
 
 // A write through a reborrow of `v` (inlined), then a read through `v`: the same storage, so the
-// read must see the write.
+// read must see the write. Both reads are `index`, so they have one address: a region that let
+// the second be forwarded from the first would give the value from before the write, which the
+// model sees. It uses accessors `mirror` does not (`index`, `cell_mut`), so `shadow` reaches
+// them first through here and they are lowered before it.
 fn settle(v: &mut Vec<U64>) -> U64:
     var total: U64 = 0
     for i in 0..v.len():
@@ -51,6 +59,24 @@ fn settle(v: &mut Vec<U64>) -> U64:
         let after = v.index(i)
         total = (total * 31 + after) % 1000000007
     return total
+
+// Copy `numbers` into a new vector through `mirror`, rewrite it through `settle`, print both.
+// `main` calls this first, before anything else reaches the vector accessors these use, so the
+// native backend lowers those accessors first and can inline them here (it lowers the functions
+// `main` reaches in reverse of the order it first reaches them).
+fn shadow(console: &Console<Write>, allocator: &Allocator, numbers: &Vec<U64>):
+    match Vec.filled(allocator, numbers.len(), 0):
+        Ok(made):
+            var copy = move made
+            let mirrored = mirror(numbers, &mut copy)
+            let settled = settle(&mut copy)
+            copy.close()
+            console.write_u64(mirrored)
+            console.write(" ")
+            console.write_u64(settled)
+            console.line("")
+        Err(e):
+            console.line("no shadow")
 
 fn show(console: &Console<Write>, numbers: &Vec<U64>, owners: &Vec<String>):
     var sum: U64 = 0
@@ -70,6 +96,7 @@ fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
     let Ok(first): Vec<U64> = Vec.new(&allocator, 0) else Err(e):
         return
     var numbers = move first
+    shadow(&console, &allocator, &numbers)
     let Ok(second): Vec<String> = Vec.new(&allocator, 1) else Err(e):
         numbers.close()
         return
@@ -231,17 +258,6 @@ fn main(console: Console<Write>, input: Console<Read>, allocator: Allocator):
                     Err(back):
                         numbers = move back
             show(&console, &numbers, &owners)
-            match Vec.filled(&allocator, numbers.len(), 0):
-                Ok(made):
-                    var shadow = move made
-                    let mirrored = mirror(&numbers, &mut shadow)
-                    let settled = settle(&mut shadow)
-                    shadow.close()
-                    console.write_u64(mirrored)
-                    console.write(" ")
-                    console.write_u64(settled)
-                    console.line("")
-                Err(e):
-                    console.line("no shadow")
+            shadow(&console, &allocator, &numbers)
     numbers.close()
     owners.discard()

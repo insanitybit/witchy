@@ -10,8 +10,10 @@ remove, swap, truncate, extend from another Vec, replace, reverse, an allocation
 grant, a Vec moved through a function by value, and release with a new Vec after it. After each
 it prints both vectors, then copies the numbers into a new Vec through two borrows (`mirror`)
 and rewrites that one through a reborrow (`settle`), and prints what both read back. With
---expect-regions the builds have alias regions on, and the default build must give those two
-functions regions. This script holds Python lists doing the same and compares every line.
+--expect-regions the builds have alias regions on; the default build must give those two
+functions regions, keep no call in either, and have fewer loads in `mirror` than a build
+without regions (a load forwarded across the other vector's store). The model then checks that
+`settle`'s read after its write saw the write. This script holds Python lists doing the same and compares every line.
 
 The program is built for macos-arm64 three ways (default, WITCHY_NATIVE_CHECKED=1,
 WITCHY_NATIVE_OBSERVED=1) and each is run with the heap audit on and must also say that no
@@ -36,6 +38,7 @@ M = 1000000007
 def model(data):
     numbers, owners, out = [], [], []
     say = out.append
+    say('0 0')  # the shadow of the empty vector, printed before any operation
     for at in range(0, len(data) - len(data) % 3, 3):
         op, a, b = data[at] % 16, data[at + 1], data[at + 2]
         if op == 0: numbers.append(a * 256 + b)
@@ -100,6 +103,41 @@ for name in ('WITCHY_NATIVE_CHECKED', 'WITCHY_NATIVE_OBSERVED', 'WITCHY_NATIVE_R
     base.pop(name, None)
 if a.proof_cache: base['WITCHY_PROOF_CACHE'] = a.proof_cache
 source = repo / 'tests/fuzz/vec-owners.wy'
+
+
+def machine(exe, function):
+    """(instructions, loads, calls) of `function` in `exe`, built with WITCHY_NATIVE_NAMES=1."""
+    listing = subprocess.run(['otool', '-tvV', exe], capture_output=True, text=True, check=True).stdout.splitlines()
+    body, inside = [], False
+    for line in listing:
+        if line.startswith('_'):
+            inside = line.rstrip(':').split('_', 4)[-1] == function and line.startswith('_witchy_function_')
+            continue
+        if inside and '\t' in line:
+            body.append(line.split('\t')[1])
+    return len(body), sum(op.startswith('ld') for op in body), sum(op in ('bl', 'blr') for op in body)
+
+
+def forwarding(work, with_regions):
+    """The default build with regions against one without: `mirror` and `settle` keep no call (so
+    their accessors were inlined and their loops are what the regions act on), and `mirror`
+    has fewer loads with regions (Cranelift forwarded loads across the store to the other
+    vector). `settle`'s read after its write is checked by the model: a forwarded read would give
+    the value from before the write."""
+    named = {**base, 'WITCHY_NATIVE_NAMES': '1'}
+    without = work / 'default-no-regions'
+    plain = {k: v for k, v in named.items() if not k.startswith('WITCHY_NATIVE_ALIAS')}
+    for exe, env in ((with_regions.with_name('default-named'), named), (without, plain)):
+        built = subprocess.run([a.compiler, 'build', source, '-o', exe, '--target=macos-arm64'], env=env, capture_output=True, text=True)
+        if built.returncode: sys.exit(f'a named build failed:\n{built.stderr[-2000:]}')
+    counts = {(f, on): machine(exe, f) for f in ('mirror', 'settle') for on, exe in ((True, with_regions.with_name('default-named')), (False, without))}
+    for f in ('mirror', 'settle'):
+        (i1, l1, c1), (i0, l0, c0) = counts[f, True], counts[f, False]
+        print(f'  {f}: {i0} instructions, {l0} loads without regions; {i1} instructions, {l1} loads with them; calls {c1}')
+        if i1 == 0 or c1:
+            sys.exit(f'{f} is missing or still calls: its loop is not what the regions act on')
+    if not counts['mirror', True][1] < counts['mirror', False][1]:
+        sys.exit('mirror has no fewer loads with regions: no load was forwarded')
 failed = False
 with tempfile.TemporaryDirectory(prefix='witchy-vec-fuzz-') as work:
     work = Path(work).resolve()
@@ -114,8 +152,10 @@ with tempfile.TemporaryDirectory(prefix='witchy-vec-fuzz-') as work:
             report = dict(line.split('\t')[1:] for line in built.stderr.splitlines() if line.startswith('alias regions\t'))
             outcomes = {function: report.get(function, 'not reported') for function in ('mirror', 'settle')}
             print(f'{name}: ' + ', '.join(f'{f} {o}' for f, o in outcomes.items()))
-            if name == 'default' and not all(o.startswith('Ok(') and o != 'Ok(0)' for o in outcomes.values()):
-                sys.exit('the default build gave mirror or settle no alias regions')
+            if name == 'default':
+                if not all(o.startswith('Ok(') and o != 'Ok(0)' for o in outcomes.values()):
+                    sys.exit('the default build gave mirror or settle no alias regions')
+                forwarding(work, exe)
         ways.append((name, [exe, '--output', '--input', '--allocator'], {}))
     if a.guard:
         guard = '/usr/lib/libgmalloc.dylib'

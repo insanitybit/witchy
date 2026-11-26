@@ -7,15 +7,18 @@ import vec
 fn write_through(target: &mut Vec<U64>, at: U64, value: U64):
     target.index_set(at, value)
 
+// One round a call: a function that reaches itself is never inlined, so `main` (which gets no
+// regions) calls this function with its regions rather than an inlined copy without them.
 fn bump(v: &mut Vec<U64>, rounds: U64) -> U64:
+    if rounds == 0:
+        return 0
     var total: U64 = 0
-    for round in 0..rounds:
-        for i in 0..v.len():
-            let before = v.index(i)
-            write_through(&mut *v, i, before + 1)
-            let after = v.index(i)
-            total += after - before
-    return total
+    for i in 0..v.len():
+        let before = v.index(i)
+        write_through(&mut *v, i, before + 1)
+        let after = v.index(i)
+        total += after - before
+    return total + bump(&mut *v, rounds - 1)
 
 fn copy_twice(src: &mut Vec<U64>, dst: &mut Vec<U64>) -> U64:
     var total: U64 = 0

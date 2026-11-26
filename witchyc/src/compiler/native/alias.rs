@@ -251,16 +251,18 @@ impl Analysis<'_> {
     fn resolve(&self, value: Value, at: ir::Block) -> Value {
         let dfg = &self.function.dfg;
         let mut value = dfg.resolve_aliases(value);
-        // Only the first step may be a tagged lane (no parameter is resolved through one).
-        if let Some(Join::Tagged { value: next, .. }) = self.same.get(&value) {
-            if !self.tested(value, at) {
-                return value;
-            }
-            value = dfg.resolve_aliases(*next);
-        }
-        for _ in 0..self.same.len() {
+        // Parameters that receive one value, then at most one tagged lane, tested at `at`: a
+        // lane's value is never a block parameter, so the tagged step is the last. A parameter
+        // that receives the lane on every edge is in a block the lane's join dominates, and `at`
+        // is in one that block dominates, so every path from the join's last entry to `at` passes
+        // the parameter's block: the test at `at` covers the value the parameter received.
+        for _ in 0..=self.same.len() {
             match self.same.get(&value) {
                 Some(Join::One(next)) => value = dfg.resolve_aliases(*next),
+                Some(Join::Tagged { value: next, .. }) if self.tested(value, at) => {
+                    value = dfg.resolve_aliases(*next);
+                    break;
+                }
                 _ => break,
             }
         }
@@ -424,7 +426,7 @@ impl Analysis<'_> {
                         None => Base::Unknown("a slot not computed from one handle".into()),
                     }
                 }
-                _ => Base::Unknown(format!("a pointer made by {}", dfg.insts[inst].opcode())),
+                _ => Base::Unknown(format!("a pointer made by {} ({})", dfg.insts[inst].opcode(), dfg.display_inst(inst))),
             },
             _ => Base::Unknown("a value of no definition".into()),
         }
@@ -493,11 +495,9 @@ enum Join {
 /// joins, mapped to what they stand for.
 ///
 /// A parameter never stands for a constant: two arms' constants are not one value. Lanes are
-/// classified only after the single-value parameters, so no parameter is resolved *through* a
-/// lane. A parameter may still stand for a lane (it receives the lane itself); `resolve` then
-/// stops there, and the lane is taken further only by a later `resolve` of it where it is used,
-/// with its own test. That use is dominated by the parameter's block, which is dominated by the
-/// lane's join, so every path from the lane's last entry to the use passes the test.
+/// classified only after the single-value parameters, so no lane is classified through another.
+/// A parameter may still stand for a lane (it receives the lane on every edge); `resolve` follows
+/// it to the lane and takes the lane's step only where its test covers the use (see `resolve`).
 fn same(function: &ir::Function, cfg: &ControlFlowGraph) -> BTreeMap<Value, Join> {
     let dfg = &function.dfg;
     // For each block: each incoming edge's arguments (`None` where the pass cannot see one).
