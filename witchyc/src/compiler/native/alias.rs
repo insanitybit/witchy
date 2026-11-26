@@ -32,11 +32,21 @@
 //! * `stack_addr`: the function's own frame, left with no region (no parameter reaches it).
 //!
 //! Each `&mut` parameter's record, headers and payloads are regions of its own. All `&`
-//! parameters share one set, since two of them may be the same storage. A buffer belongs to the
-//! parameter whose owner field named it, so a buffer must not change owner within the function:
-//! a store that may write an owner field (as `memory.exchange` of two owners does, with plain
-//! loads and stores) is refused. A store to a `&` parameter's region, or any access classified
-//! otherwise, also leaves the whole function without regions.
+//! parameters share one set, since two of them may be the same storage (`f(v.at(0), &v)` gives
+//! one location as `Record(Shared)` and `Payload(Shared)`): that is harmless only because no store
+//! to a shared region is admitted. A buffer belongs to the parameter whose owner field named it,
+//! so a buffer must not change owner between two fences: a store that may write an owner field
+//! (as `memory.exchange` of two owners does, with plain loads and stores) is refused. A buffer
+//! may change owner inside a call (freeing, allocating, growing and moving are all runtime
+//! calls), since a call fences every region. A store to a `&` parameter's region, or any access
+//! classified otherwise, also leaves the whole function without regions.
+//!
+//! Cranelift 0.136.3 uses the regions for redundant-load elimination and also for dead-store
+//! elimination (a tagged store is dead when no load of its region comes before the next store to
+//! the same address), so the regions must be disjoint between fences for both. A record written at
+//! a variable offset (a fixed array) relies on the index being in bounds: checked by
+//! `index_address`, or proved. The entry block is never a branch target (the verifier refuses it),
+//! so an entry-block parameter is the caller's value throughout.
 use cranelift_codegen::ir::{self, AliasRegionData, ExternalName, GlobalValueData, InstructionData, Opcode, Value};
 use cranelift_codegen::dominator_tree::DominatorTree;
 use cranelift_codegen::flowgraph::ControlFlowGraph;
