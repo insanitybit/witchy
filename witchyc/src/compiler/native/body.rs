@@ -76,6 +76,8 @@ struct Body<'a, 'b> {
 pub(super) struct Lowered {
     pub frame_bytes: u32,
     pub requires_aws_lc: bool,
+    /// Parameters the loan rule describes, for `alias.rs`.
+    pub roots: Vec<(Value, super::alias::Root)>,
 }
 
 pub(super) fn lower(
@@ -162,6 +164,7 @@ pub(super) fn lower(
         };
         body.locals.push(storage);
     }
+    let mut roots = Vec::new();
     for (i, ty) in function.params.iter().enumerate() {
         if layout.float_pair(*ty)? {
             let vector = args.next().ok_or_else(|| error("missing float pair argument"))?;
@@ -177,6 +180,9 @@ pub(super) fn lower(
             .by_ref()
             .take(layout.lanes(*ty)? as usize)
             .collect::<Vec<_>>();
+        if let ([value], Some(root)) = (values.as_slice(), alias_root(layout, *ty)?) {
+            roots.push((*value, root));
+        }
         body.set(i as u32, &values)?;
     }
     // The synthetic logical EntryConsole assignment is emitted below using this value.
@@ -192,7 +198,33 @@ pub(super) fn lower(
     }
     body.fb.seal_all_blocks();
     body.fb.finalize(config);
-    Ok(Lowered { frame_bytes: body.frame_bytes, requires_aws_lc: body.requires_aws_lc })
+    Ok(Lowered { frame_bytes: body.frame_bytes, requires_aws_lc: body.requires_aws_lc, roots })
+}
+
+/// A parameter `alias.rs` may trust: a borrow of a record or fixed array whose fields are plain
+/// data or dense buffers of plain data, with the byte offsets of those buffers' owner fields.
+fn alias_root(layout: &Layout, ty: Ty) -> Result<Option<super::alias::Root>> {
+    let Ty::Borrow { mutable, pointee: crate::compiler::logical_body::Pointee::Aggregate(id) } = ty else {
+        return Ok(None);
+    };
+    let record = Ty::Aggregate(id);
+    let mut owners = std::collections::BTreeSet::new();
+    let count = layout.aggregate(record)?.fields.len() as u32;
+    for ordinal in 0..count {
+        let field = layout.field(record, ordinal)?;
+        match field.ty {
+            Ty::Buffer(buffer) => {
+                let Some(described) = layout.types.buffers().get(buffer as usize) else { return Ok(None) };
+                if !described.dense || !layout.is_plain_data(described.element) {
+                    return Ok(None);
+                }
+                owners.insert(i64::from(field.byte_offset));
+            }
+            other if layout.is_plain_data(other) => {}
+            _ => return Ok(None),
+        }
+    }
+    Ok(Some(super::alias::Root { mutable, owners }))
 }
 
 impl Body<'_, '_> {

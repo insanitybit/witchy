@@ -1,0 +1,42 @@
+// One borrowed vector read, a second written, the first read again: the write is to another
+// allocation (`dst` is `&mut`, so nothing else reaches it while it is lent), so the second read
+// of `src` sees what the first saw.
+import console
+import vec
+
+fn spread(src: &Vec<U64>, dst: &mut Vec<U64>, rounds: U64) -> U64:
+    var total: U64 = 0
+    for round in 0..rounds:
+        for i in 0..src.len():
+            match src.get(i):
+                Ok(x):
+                    dst.index_set(i, x + round)
+                    match src.get(i):
+                        Ok(y):
+                            total += y
+                        Err(code):
+                            return 0
+                Err(code):
+                    return 0
+    return total
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(first): Vec<U64> = Vec.filled(&allocator, 1024, 3) else Err(code):
+        return
+    var src = move first
+    let Ok(second): Vec<U64> = Vec.filled(&allocator, 1024, 0) else Err(code):
+        src.close()
+        return
+    var dst = move second
+    for i in 0..1024:
+        match src.set(i, i * 7):
+            Ok:
+                ()
+            Err(code):
+                ()
+    console.write_u64(spread(&src, &mut dst, 100000))
+    console.line("")
+    console.write_u64(dst.index(5))
+    console.line("")
+    src.close()
+    dst.close()

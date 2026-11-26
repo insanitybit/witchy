@@ -1,4 +1,5 @@
 //! Native lowering starts from selected logical instances after source admission.
+mod alias;
 mod body;
 mod inline;
 mod layout;
@@ -444,6 +445,20 @@ fn object(
 
         let phase = Instant::now();
         candidates.inline(&mut context, frame, function.id)?;
+        if alias::enabled() {
+            let outcome = alias::annotate(&mut context.func, &lowered.roots);
+            if std::env::var_os("WITCHY_NATIVE_ALIAS_REPORT").is_some() {
+                eprintln!("alias regions\t{}\t{outcome:?}", instance.function.name);
+            }
+        }
+        // WITCHY_NATIVE_CLIF=<part of a name>: print that function's CLIF as Cranelift gets it
+        // and after Cranelift's mid-end, for codegen experiments.
+        if let Some(want) = std::env::var("WITCHY_NATIVE_CLIF").ok().filter(|want| instance.function.name.contains(want.as_str())) {
+            eprintln!("; {want}: {} as lowered\n{}", instance.function.name, context.func.display());
+            let mut optimized = cranelift_codegen::Context::for_function(context.func.clone());
+            optimized.optimize(module.isa(), &mut Default::default()).map_err(error)?;
+            eprintln!("; {} after Cranelift's mid-end\n{}", instance.function.name, optimized.func.display());
+        }
         module
             .define_function(function.id, &mut context)
             .map_err(error)?;

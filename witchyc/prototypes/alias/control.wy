@@ -1,0 +1,46 @@
+// Controls: every read here must see the write before it.
+// `bump` writes through a reborrow handed to an inlined helper, then reads through the owner.
+// `swap_sum` writes one of two vectors and reads both, the same vector passed as neither.
+import console
+import vec
+
+fn write_through(target: &mut Vec<U64>, at: U64, value: U64):
+    target.index_set(at, value)
+
+fn bump(v: &mut Vec<U64>, rounds: U64) -> U64:
+    var total: U64 = 0
+    for round in 0..rounds:
+        for i in 0..v.len():
+            let before = v.index(i)
+            write_through(&mut *v, i, before + 1)
+            let after = v.index(i)
+            total += after - before
+    return total
+
+fn copy_twice(src: &mut Vec<U64>, dst: &mut Vec<U64>) -> U64:
+    var total: U64 = 0
+    for i in 0..src.len():
+        let x = src.index(i)
+        dst.index_set(i, x + 1)
+        src.index_set(i, x + 2)
+        total += src.index(i) + dst.index(i)
+    return total
+
+fn main(console: Console<Write>, allocator: Allocator):
+    let Ok(first): Vec<U64> = Vec.filled(&allocator, 64, 5) else Err(code):
+        return
+    var a = move first
+    let Ok(second): Vec<U64> = Vec.filled(&allocator, 64, 0) else Err(code):
+        a.close()
+        return
+    var b = move second
+    console.write_u64(bump(&mut a, 3))
+    console.line("")
+    console.write_u64(a.index(7))
+    console.line("")
+    console.write_u64(copy_twice(&mut a, &mut b))
+    console.line("")
+    console.write_u64(a.index(3) * 1000 + b.index(3))
+    console.line("")
+    a.close()
+    b.close()
